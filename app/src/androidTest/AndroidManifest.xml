@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity
+            android:name="com.envi.wispr.PasteTargetActivity"
+            android:exported="true"
+            android:label="Paste target" />
+        <activity
+            android:name="com.envi.wispr.SpeakerPlaybackActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="Speaker playback" />
+        <activity
+            android:name="com.envi.wispr.ClipboardPasteTargetActivity"
+            android:exported="true"
+            android:label="Clipboard paste target"
+            android:launchMode="singleTask" />
+    </application>
+</manifest>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:allowBackup="false"
+        android:label="S1 Accelerator Benchmark"
+        android:supportsRtl="true"
+        android:theme="@style/BenchmarkTheme">
+        <activity
+            android:name=".BenchmarkActivity"
+            android:exported="true" />
+    </application>
+</manifest>

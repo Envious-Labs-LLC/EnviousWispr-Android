@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <application
+        android:name=".models.ModelBootstrapApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.EnviousWispr">
+
+        <!-- Main app shell -->
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="true"
+            android:theme="@style/Theme.EnviousWispr">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Transparent dictation overlay Activity -->
+        <activity
+            android:name=".ui.VoiceInputActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:noHistory="true"
+            android:taskAffinity="com.envi.wispr.dictation.launcher"
+            android:theme="@style/Theme.EnviousWispr.Launcher"
+            android:excludeFromRecents="true">
+            <!-- Samsung side button double-press intent -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Headless owner for the complete dictation session. -->
+        <service
+            android:name=".ui.DictationSessionService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|dataSync"
+            android:stopWithTask="false" />
+
+        <!-- Audio capture in separate process -->
+        <service
+            android:name=".audio.AudioCaptureService"
+            android:process=":audio"
+            android:exported="false" />
+
+        <!-- ASR in separate process -->
+        <service
+            android:name=".asr.AsrService"
+            android:process=":asr"
+            android:exported="false" />
+
+        <!-- S1-mini lives in its own process so its memory is isolated from ASR. -->
+        <service
+            android:name=".polish.PolishService"
+            android:process=":polish"
+            android:exported="false" />
+
+        <!-- WorkManager's foreground worker is data transfer only, never microphone. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:replace="android:foregroundServiceType" />
+
+        <receiver
+            android:name=".models.ModelDeliveryCancelReceiver"
+            android:exported="false" />
+
+        <!-- Accessibility service for auto-paste -->
+        <service
+            android:name=".paste.PasteAccessibilityService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <service
+            android:name=".shortcuts.DictationTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_wispr_mic"
+            android:label="EnviousWispr"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="true" />
+        </service>
+
+    </application>
+</manifest>

@@ -1,0 +1,29 @@
+{
+  "scope": "Physical S26 QAIRT runtime proof with published base Qwen3-0.6B W4A16 bundle; not S1 quality evidence",
+  "device": "Samsung SM-S948U1",
+  "soc": "SM8850",
+  "runtime": "GenieX 0.4.0 qairt",
+  "bundle_sha256": "fe3cd3d323573ee80a7b7eaece68d9c9e00920c0f916ace0a3dc9d6154f12be7",
+  "cold_load_ms_observed": [1998.404009, 2409.341927],
+  "warm": {
+    "short": {"runs": 10, "p50_ms": 105.02599, "p95_ms": 107.018073, "max_pss_kb": 246798, "errors": 0},
+    "medium": {"runs": 10, "p50_ms": 474.125469, "p95_ms": 483.024427, "max_pss_kb": 134540, "errors": 0},
+    "long": {"runs": 10, "p50_ms": 1218.636145, "p95_ms": 1291.845729, "max_pss_kb": 135038, "errors": 0}
+  },
+  "long_soak": {
+    "runs": 30,
+    "p50_ms": 1255.912916,
+    "p95_ms": 1349.541927,
+    "min_ms": 1216.350104,
+    "max_ms": 1357.228229,
+    "first5_average_ms": 1306.7753332,
+    "last5_average_ms": 1281.6300308,
+    "peak_pss_kb": 142074,
+    "thermal_statuses": [0, 1],
+    "battery_temperature_before_c": 31.4,
+    "battery_temperature_after_c": 36.9,
+    "unique_output_hashes": 1,
+    "errors": 0
+  },
+  "privacy": "Only aggregate metrics and output-hash cardinality retained; no prompt or generated text is stored in this receipt."
+}

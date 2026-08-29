@@ -1,0 +1,52 @@
+# Build outputs
+.gradle/
+.kotlin/
+.cxx/
+build/
+app/build/
+llama-android/build/
+accelerator-benchmark/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+
+# Binary libs — too large for git. See docs/enviouswispr-android-architecture.md.
+app/libs/*.aar
+
+# Local operating harness — not part of the product
+.claude/
+CLAUDE.md
+AGENTS.md
+.mcp.json
+.beads/
+.dolt/
+*.db
+
+# Local device and bridge tooling — belongs to the phone-workstation project, not the app
+android-bridge/
+android-mcp/
+mac-bridge/
+mac-mcp/
+capabilities.json
+scripts/brain-*.sh
+scripts/brain-refresh/
+
+# Internal-only documents
+docs/android-bridge.md
+docs/brain-seed-briefing-for-phone.md
+docs/brain-seed-response.md
+docs/claude-tunnel.md
+docs/session-briefing.md
+docs/learnings.md
+docs/linkedin-demo-script.md
+docs/poc-architecture.md
+docs/wispr-flow-teardown.md
+
+# Temp
+.temp/
+.git-private-archive/

@@ -15,14 +15,20 @@ local.properties
 # OS
 .DS_Store
 
-# Binary libs — too large for git. See docs/enviouswispr-android-architecture.md.
-app/libs/*.aar
+# Binary libs — too large for git. The whole directory, so an unpacked archive
+# cannot slip through as a directory beside the file pattern.
+app/libs/
 
-# Local operating harness — not part of the product
+# Local operating harness — not part of the product.
+# Directory forms are ignored alongside the file forms on purpose: a pattern that
+# matches only a file lets a directory of the same private kind through silently.
 .claude/
 CLAUDE.md
+CLAUDE/
 AGENTS.md
+AGENTS/
 .mcp.json
+.mcp/
 .beads/
 .dolt/
 *.db
@@ -33,19 +39,12 @@ android-mcp/
 mac-bridge/
 mac-mcp/
 capabilities.json
-scripts/brain-*.sh
-scripts/brain-refresh/
+capabilities/
+scripts/brain-*
 
-# Internal-only documents
-docs/android-bridge.md
-docs/brain-seed-briefing-for-phone.md
-docs/brain-seed-response.md
-docs/claude-tunnel.md
-docs/session-briefing.md
-docs/learnings.md
-docs/linkedin-demo-script.md
-docs/poc-architecture.md
-docs/wispr-flow-teardown.md
+# Internal-only documents. One directory, so a new internal doc is private by
+# default instead of needing its own line here.
+docs/internal/
 
 # Temp
 .temp/

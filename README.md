@@ -58,10 +58,18 @@ module is a research sandbox, not part of the app. Build the `:app` targets inst
 
 After cloning, run `git submodule update --init --recursive`.
 
-## Licence
+## License
 
-Not yet chosen. Until a licence file is added, all rights are reserved. The macOS project is GPLv3; the
-Android licence needs a review first because of the bundled vendor runtime.
+EnviousWispr for Android is open source under the [GNU General Public License v3](LICENSE) (GPLv3), an
+OSI-approved license. You can read, build, modify, and redistribute the code under the terms of the GPL,
+including for commercial purposes; distributed derivative works must also be licensed under the GPLv3 with
+their source available.
+
+Copyright (C) 2026 Envious Labs LLC.
+
+The app depends on third-party components under their own licenses, including the Qualcomm GenieX runtime,
+NVIDIA Parakeet (CC-BY-4.0), S1-mini (Apache 2.0), sherpa-onnx, and llama.cpp. A full third-party notice
+file is still outstanding.
 
 ## Status
 

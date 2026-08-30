@@ -5,7 +5,8 @@
 # judged its own output would be marking its own homework.
 #
 # It asserts: run.json parses, carries schema_version 1, and carries EVERY field this script reads, each
-# with the right TYPE; head_sha matches the CURRENT HEAD, so a run cannot be reused across commits;
+# with the right TYPE; head_sha matches the CURRENT HEAD and change_digest matches the CURRENT WORKING
+# TREE, so a run can be reused across neither a commit nor an uncommitted edit;
 # declared_lane and every detected lane is one of the four exact-case names; declared_lane is among
 # detected_lanes; more than one detected lane requires is_mixed_pr; every artifact each detected lane
 # requires exists and is not BLANK; and every skipped obligation carries a written reason on its own line.
@@ -27,10 +28,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 RUN="${1:-}"; STRICT=0; [ "${2:-}" = "--strict" ] && STRICT=1
 [ -n "$RUN" ] && [ -d "$RUN" ] || { echo "FAIL: no such run directory: ${RUN:-<none>}" >&2; exit 2; }
 
-exec python3 - "$RUN" "$STRICT" "$(git rev-parse HEAD)" <<'PY'
+DIGEST=$(scripts/change-digest.sh) || DIGEST=""
+exec python3 - "$RUN" "$STRICT" "$(git rev-parse HEAD)" "$DIGEST" <<'PY'
 import json, os, re, sys
 
-run, strict, head = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
+run, strict, head, digest = sys.argv[1], sys.argv[2] == "1", sys.argv[3], sys.argv[4]
 fails, warns = [], []
 
 LANES = {"Code", "Benchmark", "CI/workflow", "Docs/dev-tooling"}
@@ -59,10 +61,20 @@ if data.get("schema_version") != 1:
     fails.append(f"schema_version is {data.get('schema_version')!r}, expected 1")
 
 # A run pinned to another commit is evidence about other code. This is the check that stops a stale run
-# being re-presented after an edit, which is the same class as a cached test count.
+# being re-presented after a COMMIT, which is the same class as a cached test count.
 if data.get("head_sha") != head:
     fails.append(f"head_sha {str(data.get('head_sha'))[:12]} is not the current HEAD {head[:12]} — "
                  f"this run describes different code")
+
+# And this is the half head_sha cannot see. Phase 3 runs BEFORE the commit, deliberately, so an
+# uncommitted edit changes what was validated without moving HEAD at all. Without the digest a run
+# directory stayed current while its subject was rewritten underneath it.
+if not digest:
+    (fails if strict else warns).append("the change digest could not be computed, so this run cannot be "
+                                        "shown to describe the current working tree")
+elif data.get("change_digest") != digest:
+    fails.append(f"change_digest {str(data.get('change_digest'))[:12]} is not the working tree's "
+                 f"{digest[:12]} — the code changed after this run was recorded")
 
 # Every field this verifier reads must be PRESENT and the right TYPE before any check consumes it, and
 # all three failures below LOOKED LIKE A PASS rather than an error. A missing list defaulted to empty and
@@ -72,7 +84,8 @@ if data.get("head_sha") != head:
 # mixed-lane check read it as yes. `type(...) is not` rather than isinstance, because bool is a subclass
 # of int and `"schema_version": true` must not satisfy an int.
 EXPECTED_TYPES = {
-    "schema_version": int, "head_sha": str, "branch": str, "declared_lane": str,
+    "schema_version": int, "head_sha": str, "base_sha": str, "change_digest": str,
+    "branch": str, "declared_lane": str,
     "detected_lanes": list, "changed_files": list, "is_mixed_pr": bool,
     "obligations_satisfied": list, "obligations_skipped": list,
 }

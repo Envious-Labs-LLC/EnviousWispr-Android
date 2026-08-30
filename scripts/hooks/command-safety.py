@@ -17,20 +17,23 @@ user-defined alias all reach it without passing this parser — and even inside 
 best-effort match on the direct forms. Both jobs below are best effort. The BRANCH is the protection; this
 raises the cost of the accidental shape.
 
-1. THE DIRECT COMMIT CHECK. On `main`, three shapes are denied: an index-bypassing flag (`-a`, `-am`),
-   an explicit pathspec after `--`, and a staged set that touches a ship path. The first two matter
-   because they change what gets committed WITHOUT it appearing in `git diff --cached`, so the staged-set
-   check cannot see what it would be approving.
+1. THE DIRECT COMMIT CHECK. On `main`, three shapes are denied: an index-bypassing flag (`-a`, `-am`), a
+   ship path in the pathspec whether written bare or after `--`, and a staged set that touches a ship
+   path. The first two matter because they change what gets committed WITHOUT it appearing in
+   `git diff --cached`, so the staged-set check cannot see what it would be approving.
 
 WHAT THIS PARSER RECOGNISES, AND WHY THE LIST IS CLOSED. Four review rounds each produced a new shell or
 git form, which is what happens when the population is somebody else's grammar: it has no last member.
 The threat model above already decides how far to go — there is no adversary, so the requirement is the
 DIRECT shapes a cooperative author actually types.
 
-So the rule is stated once and applied everywhere below. **An input this parser does not confidently
-understand yields NO decision.** `git_subcommand` returns None on an unknown option rather than guessing
-where the subcommand is; `commit_shape` reports "writes nothing" for a dangling option value; anything
-that is not a recognised executable in a recognised position is simply not our business. A missed exotic
+So the rule is stated once, and here is exactly where it is implemented, because a promise wider than
+its code is the worse failure. **These four inputs yield NO decision:** an unrecognised `git` global
+option, where `git_subcommand` refuses to guess which token is the subcommand; a dangling option value at
+the end of the arguments; a commit whose subject this parser cannot read, listed in `COMMIT_ABSTAIN`; and
+anything that is not a recognised executable in a recognised position. An unrecognised COMMIT option is
+NOT in that list — it is collected as an option and the staged set is still judged, because `--amend`
+and its neighbours are ordinary shapes that must not become a way through. A missed exotic
 form costs a mistake that still has to get through review. A false denial costs the guard itself, because
 the next session routes around it. Those are not symmetric, and this parser is tuned accordingly.
 
@@ -78,11 +81,17 @@ GIT_GLOBAL_COMPACT = ("-C", "-c")
 # index bypass. It is the false-positive half that matters most, because a guard that fires on correct
 # work is worse than no guard.
 COMMIT_WITH_VALUE = {"-m", "--message", "-F", "--file", "--author", "--date", "-C", "--reuse-message",
-                     "-c", "--reedit-message", "--fixup", "--squash", "--pathspec-from-file",
-                     "-t", "--template", "-S", "--gpg-sign", "-u", "--untracked-files",
-                     "--cleanup", "--trailer"}
+                     "-c", "--reedit-message", "--fixup", "--squash",
+                     "-t", "--template", "--cleanup", "--trailer"}
+# `-S[<keyid>]` and `-u[<mode>]` take an OPTIONAL value and only when ATTACHED. They are absent from the
+# table above for that reason, and it matters in both directions: consuming the next argument ate the
+# pathspec out of `git commit --gpg-sign docs/note.md`, which then fell through to the unrelated staged
+# set, and it ate the `-a` out of `git commit -S -a -m x`, which is a real all-files commit.
 # Shapes of `git commit` that write no history at all, so nothing here has anything to object to.
 COMMIT_NO_WRITE = {"--dry-run", "--help", "-h", "--short", "--porcelain", "--long"}
+# Shapes whose SUBJECT this parser cannot see: the pathspec lives in a file, or the author is about to
+# choose hunks interactively. Judging the index instead would be judging the wrong thing, so abstain.
+COMMIT_ABSTAIN = {"--pathspec-from-file", "--interactive", "-p", "--patch"}
 
 # A leading `VAR=value` is an environment assignment, not the command.
 ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=")
@@ -112,8 +121,8 @@ def staged() -> list[str]:
     return [ln.strip() for ln in out.splitlines() if ln.strip()]
 
 
-def commit_shape(args: list[str]) -> "tuple[bool, list[str], list[str]]":
-    """(writes history, the OPTIONS, the PATHSPEC) for what follows `commit`.
+def commit_shape(args: list[str]) -> "tuple[bool, list[str], list[str]] | None":
+    """(writes history, the OPTIONS, the PATHSPEC) for what follows `commit`, or None to abstain.
 
     Reading the argument list as a flat bag of strings produced a false denial for every option value
     that happens to look like a flag — `git commit -m -a`, `git commit -F -a` — and missed that bare
@@ -128,6 +137,8 @@ def commit_shape(args: list[str]) -> "tuple[bool, list[str], list[str]]":
             return True, options, args[index + 1:]
         if token in COMMIT_NO_WRITE:
             return False, options, []
+        if token in COMMIT_ABSTAIN or token.split("=")[0] in COMMIT_ABSTAIN:
+            return None  # the subject is somewhere this parser cannot read
         if token in COMMIT_WITH_VALUE:
             if index + 1 >= len(args):
                 return False, [], []  # a dangling option: git will reject it, and so this decides nothing
@@ -147,7 +158,10 @@ def check_commit(args: list[str]) -> None:
     if branch() != "main":
         return  # the branch IS the protection
 
-    writes, options, pathspec = commit_shape(args)
+    shape = commit_shape(args)
+    if shape is None:
+        return  # abstain: see COMMIT_ABSTAIN
+    writes, options, pathspec = shape
     if not writes:
         return  # a dry run or a help page changes nothing there is anything to object to
 

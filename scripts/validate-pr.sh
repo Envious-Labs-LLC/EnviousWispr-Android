@@ -23,6 +23,9 @@ HEAD_SHA=$(git rev-parse HEAD)
 SHORT=$(git rev-parse --short HEAD)
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+# The content fingerprint, not just the commit. Phase 3 runs before the commit, so HEAD does not move
+# when the thing being validated changes. Owner: scripts/change-digest.sh.
+DIGEST=$(scripts/change-digest.sh) || { echo "could not fingerprint the change set" >&2; exit 2; }
 RUN=".validation/runs/${STAMP}-${SHORT}"
 
 # Working tree included on purpose: Phase 3 runs BEFORE the commit, so a detector that reads only
@@ -99,6 +102,8 @@ cat > "$RUN/run.json" <<JSON
 {
   "schema_version": 1,
   "head_sha": "$HEAD_SHA",
+  "base_sha": "$BASE",
+  "change_digest": "$DIGEST",
   "branch": "$BRANCH",
   "declared_lane": "$PRIMARY",
   "detected_lanes": $(json_array $DETECTED),

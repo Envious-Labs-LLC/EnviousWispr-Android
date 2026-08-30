@@ -136,6 +136,11 @@ assert_main 'the compact -C. global option'                deny  command-safety.
 assert_main 'a positional SHIP pathspec'                   deny  command-safety.py '{"tool_input": {"command": "git commit -m x app/src/main/Foo.kt"}}'
 assert_main 'sed -i.bak into a ship path'                  deny  command-safety.py '{"tool_input": {"command": "sed -i.bak s/a/b/ app/src/main/Foo.kt"}}'
 assert_main 'the >| redirection into a ship path'          deny  command-safety.py '{"tool_input": {"command": "echo x >| app/src/main/Foo.kt"}}'
+# `-S[<keyid>]` and `-u[<mode>]` take an optional ATTACHED value. Consuming the next argument ate the
+# pathspec here, and ate the `-a` out of a real all-files commit below.
+assert_main "--gpg-sign keeps its pathspec"    allow command-safety.py '{"tool_input":{"command":"git commit --gpg-sign -m x docs/note.md"}}'
+assert_main "-S does not swallow -a"           deny  command-safety.py '{"tool_input":{"command":"git commit -S -a -m x"}}'
+assert_main "a pathspec read from a file"      allow command-safety.py '{"tool_input":{"command":"git commit --pathspec-from-file=list.txt -m x"}}'
 # The ABSTENTION, which is the design and therefore needs a control: an option this parser does not know
 # must yield no decision rather than a guess about where the subcommand is.
 assert_main "an unknown git global option"     allow command-safety.py '{"tool_input":{"command":"git --nonsense commit -am x"}}'

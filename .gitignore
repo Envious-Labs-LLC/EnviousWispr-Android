@@ -50,3 +50,7 @@ docs/internal/
 .temp/
 .git-private-archive/
 .validation/
+
+# Python bytecode from the guard hooks
+__pycache__/
+*.pyc

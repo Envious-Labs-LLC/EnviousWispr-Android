@@ -109,31 +109,59 @@ def check_commit(tokens: list[str], command: str) -> None:
         )
 
 
-def redirect_targets(command: str) -> set[str]:
-    """`> p` and `>> p` as SHELL SYNTAX, never as characters inside a quoted string.
+SHELL_BREAKS = {"|", "||", "&&", ";", "\n"}
 
-    A regex over the raw command text cannot tell the two apart, so `printf 'see > app/src/Foo.kt'` —
-    ordinary correct work — was denied as a write to a ship path. A guard that fires on correct work is
-    worse than no guard, because it trains the reader to route around it.
+
+def shell_tokens(command: str) -> list[str]:
+    """The command split as SHELL SYNTAX, with operators kept as their own tokens.
+
+    `shlex.split` folds `>` and `|` into whatever word they touch, so it can neither find a redirect nor
+    see where one command ends and the next begins. Both of those are needed below.
     """
     lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>")
     lexer.whitespace_split = True
     try:
-        tokens = list(lexer)
+        return list(lexer)
     except ValueError:
-        return set()
+        return []
+
+
+def command_tail(tokens: list[str], start: int) -> list[str]:
+    """The arguments belonging to ONE command, stopping at the next shell operator.
+
+    Reading to the end of the token list instead makes every later word an argument of an earlier
+    command: `printf x | tee /tmp/log | cat app/src/main/Foo.kt` reads the file being CAT-ed as a third
+    `tee` target and denies an ordinary pipeline. A guard that fires on correct work is worse than no
+    guard, because it trains the reader to route around it.
+    """
+    tail = []
+    for token in tokens[start:]:
+        if token in SHELL_BREAKS:
+            break
+        tail.append(token)
+    return tail
+
+
+def redirect_targets(tokens: list[str]) -> set[str]:
+    """`> p` and `>> p` as SHELL SYNTAX, never as characters inside a quoted string.
+
+    A regex over the raw command text cannot tell the two apart, so `printf 'see > app/src/Foo.kt'` —
+    ordinary correct work — was denied as a write to a ship path.
+    """
     return {tokens[i + 1] for i, tok in enumerate(tokens[:-1]) if tok in (">", ">>")}
 
 
 def check_writes(tokens: list[str], command: str) -> None:
     if branch() != "main":
         return
-    targets = redirect_targets(command)
-    for i, tok in enumerate(tokens):
+    shell = shell_tokens(command)
+    targets = redirect_targets(shell)
+    for i, tok in enumerate(shell):
+        tail = command_tail(shell, i + 1)
         if tok == "tee":
-            targets.update(t for t in tokens[i + 1:] if not t.startswith("-"))
-        if tok == "sed" and "-i" in tokens[i + 1:i + 3]:
-            targets.update(t for t in tokens[i + 1:] if not t.startswith("-") and "/" in t)
+            targets.update(t for t in tail if not t.startswith("-"))
+        if tok == "sed" and "-i" in tail[:2]:
+            targets.update(t for t in tail if not t.startswith("-") and "/" in t)
     for raw in targets:
         rel = os.path.relpath(raw, ROOT) if os.path.isabs(raw) else raw
         if rel.startswith("..") or not is_ship_path(rel):

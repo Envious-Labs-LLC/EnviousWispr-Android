@@ -16,8 +16,10 @@ THE FOUR CHECKS
    reviewed. Calling it one-shot would be a claim the code does not keep. Making it truly one-shot needs a
    PostToolUse hook to remove it after the write SUCCEEDS; removing it here would spend the attestation
    before knowing whether the write happened, and a denial would then cost the session its own gate.
-   **It preserves the draft on denial.** macOS does this and it is required, not incidental: a gate that
-   destroys work teaches its own bypass, and the next session will route around it rather than attest.
+   **It TRIES to preserve the draft on denial**, and says so in the denial either way. macOS does this and
+   it is required, not incidental: a gate that destroys work teaches its own bypass, and the next session
+   will route around it rather than attest. The write can fail — `/tmp` full or read-only — and a denial
+   that claimed a recovery copy it never made would be worse than one that admits it.
 
 2. USER RUBRIC (Gate 0.5). Every plan carries the rubric or `User Rubric: N/A — <reason>`. **Structural
    completeness only.** Whether the reason is honest is a job for grounded review; a hook cannot infer
@@ -43,32 +45,36 @@ LANES = ["Code", "Benchmark", "CI/workflow", "Docs/dev-tooling"]
 PLAN = re.compile(r"docs/feature-requests/(issue-(\d+)|plan)-[\w.-]+\.md$")
 
 
-def resulting_document(tool_input: dict, full_path: str) -> str:
+def resulting_document(tool_input: dict, full_path: str) -> str | None:
     """The document as it will EXIST after this call, never the fragment the call carries.
 
     Write hands over the whole file in `content`. Edit and MultiEdit hand over pieces, and judging a piece
     denies ordinary work: replacing one typo in a finished plan yields a `new_string` with no rubric and
-    no lane, so checks 2-4 all fire on a plan that satisfies every one of them. Returns "" whenever the
-    result cannot be reconstructed exactly, because a guess is a worse input to a gate than no input.
+    no lane, so checks 2-4 all fire on a plan that satisfies every one of them.
+
+    `None` means "I could not reconstruct this", and it is a SEPARATE value from `""` on purpose. An
+    earlier version returned `""` for both, and `""` is also the exact, correct result of writing an empty
+    plan file — so `if not body: return 0` waved an empty plan past every gate while looking like the
+    careful branch. A guess is a worse input to a gate than no input; an empty document is neither.
     """
     if isinstance(tool_input.get("content"), str):
         return tool_input["content"]
     try:
         body = open(full_path, encoding="utf-8").read()
     except OSError:
-        return ""
+        return None
     edits = tool_input.get("edits")
     if not isinstance(edits, list):
         old, new = tool_input.get("old_string"), tool_input.get("new_string")
         if not isinstance(old, str) or not isinstance(new, str):
-            return ""
+            return None
         edits = [{"old_string": old, "new_string": new}]
     for edit in edits:
         if not isinstance(edit, dict):
-            return ""
+            return None
         old, new = edit.get("old_string"), edit.get("new_string")
         if not isinstance(old, str) or not isinstance(new, str) or body.count(old) != 1:
-            return ""
+            return None
         body = body.replace(old, new, 1)
     return body
 
@@ -96,7 +102,7 @@ def main() -> int:
 
     full_path = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
     body = resulting_document(tool_input, full_path)
-    if not body:
+    if body is None:
         return 0  # an edit we cannot reconstruct is not a plan we can judge
 
     issue = match.group(2)
@@ -115,14 +121,14 @@ def main() -> int:
                 saved = (f"\n\nDRAFT PRESERVED at {recovery} ({len(body)} chars). Do NOT regenerate it.\n"
                          f"  touch {sentinel}\n"
                          f"Then re-issue the SAME Write call, so every remaining plan gate still runs.")
-            except OSError:
-                saved = ""
+            except OSError as exc:
+                saved = f"\n\nDRAFT NOT PRESERVED: could not write {recovery}: {exc}"
             deny(
                 f"BLOCKED: Gate 0 has not been attested for issue #{issue}.\n\n"
                 f"Read the issue AND .claude/knowledge/session-log.md, plus the PAR rows and the owning "
                 f"knowledge file, then post `Prior context for #{issue}: ...` in chat.\n\n"
                 f"Prose in chat is not mechanically observable, so attest it:\n"
-                f"  touch {sentinel}      # one-shot, expires in 30 minutes"
+                f"  touch {sentinel}      # issue-scoped, reusable for 30 minutes"
                 f"{saved}"
             )
 

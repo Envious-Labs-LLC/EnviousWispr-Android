@@ -11,9 +11,13 @@ built in the wrong checkout. This one refuses the first edit, which is the momen
 
 SCOPE, STATED HONESTLY. A PreToolUse matcher on Edit/Write/MultiEdit sees the assistant's file tools and
 nothing else. It does not see a Bash heredoc, `tee`, `sed -i`, or another process writing. The Bash shapes
-are covered by command-safety.py; Codex is constrained at its call site by running read-only. **Edit-time
-protection is best effort and always will be, because the set of ways to write a file is open. The COMMIT
-GATE is the guarantee**, because every author must pass through `git commit` to reach history.
+are covered by command-safety.py; Codex is constrained at its call site by running read-only.
+
+**BOTH LAYERS ARE BEST EFFORT, and neither is a guarantee.** An earlier version of this paragraph called
+the commit gate one, on the reasoning that every author must pass through `git commit`. They do not:
+`git merge`, `git cherry-pick`, `git rebase --continue`, `git am` and a user alias all write history
+without it. The set of ways to write a file is open and so is the set of ways to write a commit. THE
+BRANCH is the protection; these guards raise the cost of reaching `main` by accident.
 
 Reads the hook JSON on stdin. Emits a deny and exit 0 to block; exits 0 silently to allow.
 """

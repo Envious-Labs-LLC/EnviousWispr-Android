@@ -24,7 +24,7 @@ BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
 
 # READ THE PORCELAIN COLUMNS, never a leading-character pattern. `grep -c '^ M'` sees an unstaged
 # modification and nothing else: an unstaged DELETION (` D`), a rename, a type change and a conflict all
-# went uncounted, and a file both staged and modified (`MM`) was counted twice once staged was added.
+# went uncounted. An `MM` file was reported only as staged, hiding that it also carried unstaged changes.
 # Column 1 is the index, column 2 is the working tree, and `??` is neither.
 STATUS=$(git status --porcelain=v1 2>/dev/null) || exit 0
 count() { printf '%s\n' "$STATUS" | awk "$1"' { n++ } END { print n+0 }'; }

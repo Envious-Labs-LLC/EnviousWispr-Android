@@ -38,9 +38,9 @@ if [ ! -d "$RESULTS" ]; then
     exit 2
 fi
 
-python3 - "$RESULTS" "$QUIET" <<'PY'
+python3 - "$RESULTS" "$QUIET" "$GRADLE_EXIT" <<'PY'
 import glob, os, re, sys
-results, quiet = sys.argv[1], sys.argv[2] == "1"
+results, quiet, gradle_exit = sys.argv[1], sys.argv[2] == "1", int(sys.argv[3])
 tests = failures = errors = skipped = 0
 suites = 0
 failed_names = []
@@ -73,6 +73,20 @@ if tests == 0:
     print("MEASUREMENT FAILED: suites were written but they contain no tests.", file=sys.stderr)
     sys.exit(2)
 
+# GRADLE EXIT IS PART OF THE MEASUREMENT, so it is read here rather than after the count is printed.
+# Gradle exits non-zero for a failing test AND for a run that stopped partway, and the two are not
+# distinguishable from the XML. Either way the aggregate describes the suites that happened to be written
+# before it stopped, so the aggregate is withheld — while the tests that DID fail are still named, because
+# that is the part a red run exists to tell you.
+if gradle_exit != 0:
+    if failed_names and not quiet:
+        print("Failed before Gradle stopped:")
+        for n in failed_names:
+            print(f"  {n}")
+    print(f"MEASUREMENT FAILED: Gradle exited {gradle_exit}, so this count may cover only the suites "
+          f"written before it stopped. It is not quotable. See /tmp/measure-tests.log", file=sys.stderr)
+    sys.exit(1 if (failures or errors) else 2)
+
 print(f"tests={tests} suites={suites} failures={failures} errors={errors} skipped={skipped}")
 if failed_names and not quiet:
     print("\nFailed:")
@@ -80,12 +94,4 @@ if failed_names and not quiet:
         print(f"  {n}")
 sys.exit(1 if (failures or errors) else 0)
 PY
-PY_EXIT=$?
-
-# A green parse while Gradle failed means the failure was outside the tests: still not a pass.
-if [ "$PY_EXIT" -eq 0 ] && [ "$GRADLE_EXIT" -ne 0 ]; then
-    echo "Tests parsed clean but Gradle exited $GRADLE_EXIT — the failure is outside the test run." >&2
-    echo "See /tmp/measure-tests.log" >&2
-    exit 2
-fi
-exit "$PY_EXIT"
+exit $?

@@ -3,7 +3,7 @@
 #
 # For the obligations no script can satisfy on its own: a Codex review, a hardware UAT, a CI run. It moves
 # the id from obligations_skipped to obligations_satisfied and files the artifact. It does NOT judge the
-# artifact's contents; check-validation.sh asserts it exists and is non-empty, and a human is responsible
+# artifact's contents; check-validation.sh asserts it exists and is not blank, and a human is responsible
 # for it being true.
 #
 #   scripts/attest.sh codex-review /path/to/review.md

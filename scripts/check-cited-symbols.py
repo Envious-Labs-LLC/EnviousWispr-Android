@@ -42,10 +42,14 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Every source root that ships. Searching only app/src would report a working llama-android or JNI symbol
-# as broken, which is the direction that trains dismissal.
-SOURCE_ROOTS = ["app/src", "llama-android", "third_party", "accelerator-benchmark"]
-SOURCE_SUFFIXES = (".kt", ".java", ".cpp", ".h", ".hpp", ".c", ".cc", ".aidl", ".kts", ".xml")
+# Every source root, which is wider than every root that ships. Searching only app/src would report a
+# working llama-android or JNI symbol as broken, the direction that trains dismissal — and leaving
+# `scripts/` out did exactly that: the Docs/dev-tooling lane is mostly diffs to these scripts, so every
+# Python or shell identifier they cited was UNRESOLVED by construction, and the obligation was
+# unsatisfiable for the lane that runs it most.
+SOURCE_ROOTS = ["app/src", "llama-android", "third_party", "accelerator-benchmark", "scripts"]
+SOURCE_SUFFIXES = (".kt", ".java", ".cpp", ".h", ".hpp", ".c", ".cc", ".aidl", ".kts", ".xml",
+                   ".py", ".sh")
 
 # Words that appear in backticks as PROSE, not as a claim about a symbol. Kotlin and Gradle prose is full of
 # them. Keeping this list short is a design constraint, not a convenience: if it has to grow past ~20 to

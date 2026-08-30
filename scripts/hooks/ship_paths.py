@@ -47,8 +47,8 @@ def _normalise(path: str) -> str:
     """Strip a leading `./` PREFIX, never leading characters.
 
     The first version used `path.lstrip("./")`, which strips any leading `.` or `/` character rather than
-    the two-character prefix. `.gitmodules` became `gitmodules` and stopped matching, so the submodule
-    pointer — a shipped build input — was silently unprotected. Caught by the two-way control that asserted
+    the two-character prefix. `.gitmodules` lost its leading dot, stopped matching, and the submodule
+    configuration — a build input — was left unprotected in silence. Caught by the two-way control that asserted
     it should deny; nothing else would have noticed, because the guard stays quiet when it allows.
     """
     while path.startswith("./"):
@@ -57,5 +57,9 @@ def _normalise(path: str) -> str:
 
 
 def is_ship_path(path: str) -> bool:
-    """True when editing `path` changes shipped behaviour or build reproducibility."""
+    """True when editing `path` belongs on a feature branch rather than on `main`.
+
+    Read the module docstring before assuming this means "ships to a user": it is wider than that on one
+    side (tests, `.github/`) and narrower on the other (two gitignored build inputs are outside it).
+    """
     return bool(SHIP_PATH.match(_normalise(path)))

@@ -7,8 +7,9 @@ wiring in a form git does keep, so a fresh clone can restore it.
 The block below is therefore a second copy of a live file, which is normally a defect. It stays because
 deleting it would leave a fresh clone with four scripts and no way to arm them, and the alternative —
 tracking `.claude/` in a public repository — is a founder decision, not a cleanup. What makes the copy
-safe is that it is CHECKED: `test-hooks.sh` parses this block and the live `.claude/settings.json` and
-fails when they disagree, so the two cannot drift apart quietly. Edit either one and run that script.
+safe is that it is CHECKED: when `.claude/settings.json` exists, `test-hooks.sh` parses this block and
+that file and fails when their `hooks` objects disagree. In a fresh clone the live file is legitimately
+absent, and the suite says so rather than passing quietly. Edit either one and run that script.
 
 ```json
 "hooks": {
@@ -30,18 +31,21 @@ fails when they disagree, so the two cannot drift apart quietly. Edit either one
 | Guard | Event | Denies | Silent when |
 |---|---|---|---|
 | `check-protected-paths.py` | Edit/Write/MultiEdit | a ship-path edit while on `main` | on a branch, or editing a local-only path |
-| `command-safety.py` | Bash | a ship-path commit, an index-bypassing flag, or an explicit `-- <pathspec>` on `main`; a shell write into a ship path on `main` | on a branch, or any other command |
+| `command-safety.py` | Bash | a RECOGNISED direct `git commit` touching a ship path, an index-bypassing flag, or an explicit `-- <pathspec>` on `main`; a recognised shell write into a ship path on `main` | on a branch, or any other command |
 | `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, or a valid lane | every file that is not a plan |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
 
 ## The two things worth knowing before changing any of them
 
-**Edit-time protection is BEST EFFORT. The commit gate is the guarantee.** A PreToolUse matcher on
-Edit/Write sees the assistant's file tools and nothing else — not a shell heredoc, not `tee`, not another
-process. Measured 2026-08-30: every file written by the session that designed these guards went through a
-Bash heredoc, including the design document. `command-safety.py` covers the direct shell shapes, and it will
-never be complete, because the set of ways to write a file is open. Every author must pass through
-`git commit` to reach history, which is why that gate is the only one that can be.
+**BOTH LAYERS ARE BEST EFFORT, and the branch is the protection.** A PreToolUse matcher on Edit/Write sees
+the assistant's file tools and nothing else — not a shell heredoc, not `tee`, not another process.
+Measured 2026-08-30: every file written by the session that designed these guards went through a Bash
+heredoc, including the design document. `command-safety.py` covers the direct shell shapes and the direct
+`git commit` shapes, and neither set can be complete: the ways to write a file are open-ended, and
+`git merge`, `git cherry-pick`, `git rebase --continue`, `git am` and a user alias all write history
+without passing through `git commit` at all. An earlier version of this paragraph called the commit gate a
+guarantee on exactly that false premise. These guards raise the cost of reaching `main` by accident; they
+do not make it impossible.
 
 **There is no adversary.** The only actor is Claude, often several instances at once. These enforce workflow
 etiquette so cooperative agents do not corrupt `main`. The failure to prevent is a path-of-least-resistance
@@ -51,12 +55,19 @@ it.
 ## Testing
 
 ```bash
-scripts/hooks/test-hooks.sh          # on a branch: the allow halves
-git checkout main && scripts/hooks/test-hooks.sh   # the deny halves
+scripts/hooks/test-hooks.sh          # every control, from any branch
 ```
 
-Every guard is asserted in both directions. The silent-when-clean half is the one that matters most: an
-always-firing guard looks like protection while training the reader to skim past it.
+Every guard is asserted in both directions, and the suite no longer needs you to be on `main` to reach the
+deny halves: it builds a throwaway git repository that is on `main`, copies the guards into it, and runs
+them there. The guards derive their repository root from their own location, so the shipped bytes execute
+and no test seam is added to a guard.
+
+Three outcomes, not two. `allow`, `deny`, and `error` — because a guard that crashed produces no stdout,
+and a helper that read empty stdout as `allow` would have passed every allow control while nothing ran.
+
+The allow halves matter most: an always-firing guard looks like protection while training the reader to
+skim past it.
 
 ## What a fresh clone will NOT have
 
@@ -66,7 +77,7 @@ and `docs/internal/`, so a clone gets the guards and none of their reasoning:
 | Lives in | Tracked? | What is lost |
 |---|---|---|
 | `scripts/` | yes | — |
-| `.claude/rules/workflow-process.md` | **no** | the ten-step process, the four lanes, definition-of-done, and the seven rules that explain why each guard exists |
+| `.claude/rules/workflow-process.md` | **no** | the ten-step process, the four lanes, definition-of-done, and every rule that explains why each guard exists (`grep -c '^## RULE:' .claude/rules/workflow-process.md`) |
 | `.claude/settings.json` | **no** | the registration that arms them, reproduced above |
 | `.claude/knowledge/` | **no** | 14 files |
 | `docs/internal/` | **no** | the port plan and its seven review rounds |

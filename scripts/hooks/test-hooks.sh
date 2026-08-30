@@ -17,17 +17,43 @@ PASS=0; FAIL=0
 
 payload() { python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1])))" "$1"; }
 
-# assert <name> <deny|allow> <hook> <json>
-assert() {
-    local name="$1" want="$2" hook="$3" json="$4"
-    local out; out=$(payload "$json" | "$HOOKS/$hook" 2>/dev/null)
-    local got="allow"; [ -n "$out" ] && got="deny"
+# THREE OUTCOMES, NOT TWO. The first version read empty stdout as `allow` and any stdout as `deny`, with
+# stderr sent to /dev/null and the exit status never looked at. A guard that CRASHED therefore passed every
+# single allow control, and a traceback printed to stdout would have passed a deny control — the silent
+# third answer that `validation-discipline` FACT: silent-empty-traps says always collapses into "no".
+# `error` is that third answer, given a name so it can fail. A deny is only a deny when the JSON says so.
+assert_at() {
+    local dir="$1" name="$2" want="$3" hook="$4" json="$5"
+    local out rc got err="$STDERR"
+    out=$(payload "$json" | "$dir/$hook" 2>"$err"); rc=$?
+    if [ "$rc" -ne 0 ] || [ -s "$err" ]; then
+        got="error"
+    elif [ -z "$out" ]; then
+        got="allow"
+    elif printf '%s' "$out" | python3 -c '
+import json, sys
+try:
+    decision = json.load(sys.stdin)["hookSpecificOutput"]["permissionDecision"]
+except Exception:
+    sys.exit(1)
+sys.exit(0 if decision == "deny" else 1)
+'; then
+        got="deny"
+    else
+        got="error"
+    fi
     if [ "$got" = "$want" ]; then
         PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$name" "$got"
     else
         FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted %s, got %s\n' "$name" "$want" "$got"
+        [ -s "$err" ] && sed 's/^/          /' "$err"
     fi
 }
+
+# assert <name> <deny|allow> <hook> <json>          — run against this checkout, on whatever branch it is
+assert()      { assert_at "$HOOKS" "$@"; }
+# assert_main <name> <deny|allow> <hook> <json>     — run against the throwaway repository that is on main
+assert_main() { assert_at "$ON_MAIN" "$@"; }
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 echo "Guard controls (branch: $BRANCH)"
@@ -43,25 +69,22 @@ echo
 # repository whose current branch really is `main`, copy the guards into it, and run them there. Both
 # guards derive their repository root from their own `__file__`, so the copy reads the throwaway repo and
 # the SHIPPED BYTES are what gets exercised — no source modification anywhere.
-MAINREPO=$(mktemp -d)
-trap 'rm -rf "$MAINREPO"' EXIT
-git init -q -b main "$MAINREPO"
-mkdir -p "$MAINREPO/scripts/hooks" "$MAINREPO/app/src/main"
-cp "$HOOKS"/*.py "$MAINREPO/scripts/hooks/"
-git -C "$MAINREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
-ON_MAIN="$MAINREPO/scripts/hooks"
+MAINREPO=$(mktemp -d) || exit 2
+STDERR="$MAINREPO/hook-stderr"
+SENTINEL=/tmp/.ew-android-issue-9901-context-read
+# A plan file under a FIXED name would overwrite and then delete a real file of that name. The suite
+# cleans up after itself, so it must only ever create something nothing else owns.
+EDITPLAN=$(mktemp docs/feature-requests/issue-9902-2026-01-01-control-XXXXXX.md) || exit 2
+trap 'rm -rf "$MAINREPO"; rm -f "$EDITPLAN" "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md' EXIT
 
-# assert_main <name> <deny|allow> <hook> <json> — the same contract, run inside the `main` repository.
-assert_main() {
-    local name="$1" want="$2" hook="$3" json="$4"
-    local out; out=$(payload "$json" | "$ON_MAIN/$hook" 2>/dev/null)
-    local got="allow"; [ -n "$out" ] && got="deny"
-    if [ "$got" = "$want" ]; then
-        PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$name" "$got"
-    else
-        FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted %s, got %s\n' "$name" "$want" "$got"
-    fi
-}
+# Every setup step is checked. A half-built repository makes controls fail for a reason that has nothing
+# to do with the guards, which is the slowest kind of red to read.
+git init -q -b main "$MAINREPO" || exit 2
+[ "$(git -C "$MAINREPO" symbolic-ref --short HEAD)" = "main" ] || exit 2
+mkdir -p "$MAINREPO/scripts/hooks" "$MAINREPO/app/src/main" || exit 2
+cp "$HOOKS"/*.py "$MAINREPO/scripts/hooks/" || exit 2
+git -C "$MAINREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base || exit 2
+ON_MAIN="$MAINREPO/scripts/hooks"
 
 echo "check-protected-paths.py — edit time"
 assert "ship-path edit on a branch"            allow check-protected-paths.py '{"tool_input":{"file_path":"app/src/main/Foo.kt"}}'
@@ -86,6 +109,8 @@ assert_main "an ordinary read command"         allow command-safety.py '{"tool_i
 # The false-positive half. A quoted `>` is text, not shell syntax, and denying it would fire the guard on
 # ordinary correct work — the failure `guard-design-pre-read` calls worse than having no guard at all.
 assert_main "a quoted redirect is not a write" allow command-safety.py '{"tool_input":{"command":"printf %s \"see > app/src/main/Foo.kt\""}}'
+assert_main "a later pipeline stage is not a tee target" allow command-safety.py '{"tool_input":{"command":"printf x | tee /tmp/log | cat app/src/main/Foo.kt"}}'
+assert_main "tee into a ship path on main"     deny  command-safety.py '{"tool_input":{"command":"printf x | tee app/src/main/Foo.kt"}}'
 # The staged-set half, which needs a real index rather than a command string.
 : > "$MAINREPO/app/src/main/Foo.kt"; git -C "$MAINREPO" add app/src/main/Foo.kt
 assert_main "staged ship path on main"         deny  command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
@@ -95,7 +120,6 @@ echo
 
 echo "check-plan-gates.py — the Tier 0 plan gates"
 PLAN='docs/feature-requests/issue-9901-2026-01-01-control.md'
-SENTINEL=/tmp/.ew-android-issue-9901-context-read
 rm -f "$SENTINEL"
 assert "a non-plan file"                       allow check-plan-gates.py '{"tool_input":{"file_path":"app/src/main/Foo.kt","content":"x"}}'
 assert "new plan, prior context not attested"  deny  check-plan-gates.py "{\"tool_input\":{\"file_path\":\"$PLAN\",\"content\":\"body\"}}"
@@ -112,14 +136,14 @@ import json,sys; print(json.dumps({'tool_input':{'file_path':'$PLAN','content':s
 # fragment a call carries rather than the document the call produces, so fixing a single typo in a
 # finished plan arrived as a "body" with no rubric and no lane, and all three gates fired on a plan that
 # satisfied every one of them.
-EDITPLAN='docs/feature-requests/issue-9902-2026-01-01-control.md'
 printf 'User Rubric: N/A — internal only\n**Lane:** Code\n\nteh design is fine.\n' > "$EDITPLAN"
 assert "typo fix in a complete plan"           allow check-plan-gates.py "$(python3 -c "
 import json; print(json.dumps({'tool_input':{'file_path':'$EDITPLAN','old_string':'teh','new_string':'the'}}))")"
 printf 'no rubric here\n' > "$EDITPLAN"
 assert "edit leaving a plan incomplete"        deny  check-plan-gates.py "$(python3 -c "
 import json; print(json.dumps({'tool_input':{'file_path':'$EDITPLAN','old_string':'no rubric here','new_string':'still no rubric'}}))")"
-rm -f "$EDITPLAN"
+# An empty Write is an exactly-known document, not a failure to reconstruct one. The gates must judge it.
+assert "an empty plan is still judged"         deny  check-plan-gates.py "{\"tool_input\":{\"file_path\":\"$PLAN\",\"content\":\"\"}}"
 rm -f "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md
 echo
 

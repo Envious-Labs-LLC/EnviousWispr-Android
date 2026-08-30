@@ -51,6 +51,9 @@ try:
 except json.JSONDecodeError as exc:
     print(f"FAIL: run.json does not parse: {exc}", file=sys.stderr)
     sys.exit(2)
+if not isinstance(data, dict):
+    print(f"FAIL: run.json must be a JSON object, got {type(data).__name__}", file=sys.stderr)
+    sys.exit(2)
 
 if data.get("schema_version") != 1:
     fails.append(f"schema_version is {data.get('schema_version')!r}, expected 1")
@@ -65,11 +68,23 @@ if data.get("head_sha") != head:
 # A missing list defaults to empty and a check over nothing passes; a string where a list belongs is
 # worse, because `for lane in "Code"` iterates four characters, matches no required artifact, and
 # reports PASS. Absence and wrong-shape both have to fail here, before the first read.
-REQUIRED_FIELDS = ("schema_version", "head_sha", "branch", "declared_lane", "detected_lanes",
-                   "changed_files", "is_mixed_pr", "obligations_satisfied", "obligations_skipped")
-for field in REQUIRED_FIELDS:
+# Presence is only half of it. A field of the WRONG TYPE is the plausible-value trap: `"is_mixed_pr":
+# "false"` is a truthy string, so the mixed-lane check reads it as yes and passes.  `type(...) is not`
+# rather than isinstance, because bool is a subclass of int and `"schema_version": true` must not pass.
+EXPECTED_TYPES = {
+    "schema_version": int, "head_sha": str, "branch": str, "declared_lane": str,
+    "detected_lanes": list, "changed_files": list, "is_mixed_pr": bool,
+    "obligations_satisfied": list, "obligations_skipped": list,
+}
+for field, expected in EXPECTED_TYPES.items():
     if field not in data:
         fails.append(f"run.json is missing required field {field!r}")
+    elif type(data[field]) is not expected:
+        fails.append(f"{field} must be {expected.__name__}, got {type(data[field]).__name__}")
+
+for field in ("detected_lanes", "changed_files", "obligations_satisfied", "obligations_skipped"):
+    if isinstance(data.get(field), list) and not all(isinstance(v, str) for v in data[field]):
+        fails.append(f"{field} must contain only strings")
 
 declared = data.get("declared_lane")
 if declared not in LANES:

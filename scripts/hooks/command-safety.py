@@ -25,9 +25,16 @@ WHAT IS LEFT HERE, and why neither piece can move to a git hook.
    ways to write a file is open, so this will never be complete, and it does not need to be: the
    pre-commit hook is what every write must eventually pass through to reach history.
 
-2. `--no-verify`, which skips every git hook including that one. It is one literal token, unambiguous in
-   a way `git commit -m -a` never was, so matching it needs no grammar at all. This is
-   GR-NEVER-WEAKEN-GUARDRAILS at the only place that can see it coming.
+2. `--no-verify`, which skips every git hook including that one. This is GR-NEVER-WEAKEN-GUARDRAILS at
+   the only place that can see it coming.
+
+   **It is matched as a bare token anywhere in a git command, and that has ONE known false positive:
+   `git commit -m --no-verify`, where the flag is the commit MESSAGE.** Naming it is the point. Telling
+   an option from an option's VALUE is exactly the grammar this file just deleted 150 lines of, and
+   reintroducing it for one implausible message is the trade the threat model exists to refuse. The cost
+   is bounded and visible: a denial that names the token, on a commit message nobody writes by accident,
+   which the author fixes by wording the message differently. Weigh that against what the general parser
+   cost — eight false denials of ordinary work across five review rounds — and this is the cheaper side.
 
 Exits 0 silently to allow; emits a deny and exits 0 to block. Fails OPEN on its own error: a broken guard
 must not block every command.
@@ -139,10 +146,14 @@ def redirect_targets(tokens: list[str]) -> set[str]:
 
 
 def check_no_verify(segments: list[list[str]]) -> None:
-    """One literal token, which is why this needs no grammar and the old commit check did.
+    """A bare token match, accepting one named false positive rather than parsing git's options again.
 
     `--no-verify` turns off `scripts/githooks/pre-commit`, which is where the real commit check lives now.
     Denied on EVERY branch, not only `main`: skipping a hook is never the fix for what the hook says.
+
+    `git commit -m --no-verify` is denied although the flag is the message. See the module docstring for
+    why that is accepted and not fixed: distinguishing an option from its value is the grammar this file
+    deleted, and it cost eight false denials of ordinary work while it was here.
     """
     for segment in segments:
         found = executable(segment)

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# pre-applypatch — git uses a DIFFERENT EVENT for this operation, so pre-commit is not called.
+#
+# The stock git templates delegate the same way, and this file exists because the claim that a merge was
+# "covered by construction" was checked against git's own template rather than assumed. Without it, a
+# merge onto `main` carrying a ship path passed unexamined while the commit path was refused.
+exec "$(dirname "$0")/pre-commit" "$@"

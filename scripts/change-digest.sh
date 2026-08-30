@@ -19,6 +19,9 @@
 # written here. The throwaway index is why the real one is untouched, and why staging is invisible:
 # `git add -A` into a scratch index reaches the same tree whether or not you had already staged.
 #
+# The scratch index and the scratch object directory are both `mktemp`, both removed by one EXIT trap,
+# and the real index and object database are untouched.
+#
 # ONE OWNER, DELIBERATELY. validate-pr.sh records this and check-validation.sh recomputes it. Two
 # spellings of one question would drift and then fail correct runs, which is the shape that gets a check
 # disabled rather than fixed.
@@ -28,13 +31,25 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 
-INDEX=$(mktemp) || { echo "digest could not be computed: no scratch index" >&2; exit 2; }
-trap 'rm -f "$INDEX"' EXIT
-rm -f "$INDEX"   # read-tree needs the file ABSENT, not empty
-
 fail() { echo "digest could not be computed: $1" >&2; exit 2; }
 
+INDEX=$(mktemp)      || fail "no scratch index"
+OBJECTS=$(mktemp -d) || fail "no scratch object directory"
+trap 'rm -f "$INDEX"; rm -rf "$OBJECTS"' EXIT
+rm -f "$INDEX"   # read-tree needs the file ABSENT, not empty
+
+# THE OBJECTS ARE THROWAWAY TOO, and this is easy to miss because the digest is correct without it.
+# `git add -A` writes a blob for every file and `git write-tree` writes the trees. Sent to the real object
+# database they are unreachable the moment this script exits, so every validation run would quietly grow
+# the repository with garbage nothing ever collects on a schedule. Point new writes at a temporary
+# directory and name the real one as an ALTERNATE, so reading HEAD still works.
+REAL_OBJECTS=$(git rev-parse --git-path objects) || fail "could not resolve the real object directory"
+REAL_OBJECTS=$(cd "$REAL_OBJECTS" && pwd)        || fail "could not resolve the real object directory"
+
 export GIT_INDEX_FILE="$INDEX"
+export GIT_OBJECT_DIRECTORY="$OBJECTS"
+export GIT_ALTERNATE_OBJECT_DIRECTORIES="$REAL_OBJECTS"
+
 git read-tree HEAD 2>/dev/null            || fail "could not read HEAD into the scratch index"
 git add -A 2>/dev/null                    || fail "could not stage the working tree into the scratch index"
 TREE=$(git write-tree 2>/dev/null)        || fail "could not write the tree"

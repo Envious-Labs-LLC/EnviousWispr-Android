@@ -5,28 +5,45 @@
 # to PREDICT, from the text of a command, whether a commit was about to happen and what it would contain.
 # Five review rounds each found another form that parser got wrong: an option value that looked like a
 # flag, `--dry-run`, a bare positional pathspec, `-S` swallowing `-a`, `git -C.`, `env FOO=1 git`, a bare
-# `&`, a newline. Those were not eight defects. They were one: git's option grammar and the shell's
-# grammar are not ours, and a private parser for either has no last divergence.
+# `&`, a newline. Those were not eight defects. They were one — git's option grammar is not ours.
 #
-# Git runs THIS at the moment the answer exists. `git diff --cached` is the real staged set, not a guess
-# at one, so `-a`, an explicit pathspec, `--pathspec-from-file`, `--interactive`, an alias, `--amend`,
-# `git merge`, `git cherry-pick`, `git rebase --continue` and `git am` are all covered by construction —
-# including every form the old parser abstained on, and every form nobody has thought of yet.
+# Git runs THIS at the moment the answer exists, so `git diff --cached` is the real staged set rather than
+# a guess at one. `git commit -a`, an explicit `--` pathspec, a bare positional pathspec,
+# `--pathspec-from-file`, `--interactive`, `--amend` and a user alias all arrive here identically.
 #
-# ARMED BY `git config core.hooksPath scripts/githooks`, which a fresh clone must run. scripts/hooks/README.md
-# carries that line beside the settings.json it already has to restore.
+# WHAT IT DOES NOT COVER BY ITSELF, because git uses a DIFFERENT EVENT and an earlier comment here claimed
+# otherwise: a merge commit runs `pre-merge-commit`, and `git am` runs `pre-applypatch`. Those are separate
+# files beside this one, each delegating here, and they exist because the claim was checked rather than
+# assumed. `git rebase` runs no pre-commit hook at all for its replayed commits — that is a real gap, it is
+# stated rather than papered over, and the branch remains the protection.
+#
+# ARMED BY `git config core.hooksPath scripts/githooks`, which every clone must run. The hook FILES are
+# tracked; git does not arm them. test-hooks.sh asserts this checkout is armed, so an unarmed clone is a
+# red control rather than a quiet absence.
 #
 # `--no-verify` skips this, as it skips every git hook. That is GR-NEVER-WEAKEN-GUARDRAILS, not a hole to
-# parse around: the Bash guard denies that one token, which is unambiguous in a way `git commit -m -a`
-# never was.
+# parse around: the Bash guard denies that token.
+#
+# EXIT: 0 allow · 1 this commit is refused · 2 the check itself broke.
+# It FAILS CLOSED, unlike the PreToolUse guards, and the difference is deliberate. A broken PreToolUse hook
+# that blocked every command would stop all work, so those fail open. This one runs at a single moment, on
+# one commit, and it is the only check standing between a ship path and `main` — so a check that cannot
+# answer must not answer "yes".
 
 set -uo pipefail
-cd "$(git rev-parse --show-toplevel)" || exit 0   # not a repo: nothing to protect
 
-BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
+fail() { echo "pre-commit check FAILED: $1" >&2; echo "This is not an approval. Fix the check." >&2; exit 2; }
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || fail "could not resolve the repository root"
+cd "$ROOT" || fail "could not enter the repository root"
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || fail "could not resolve the branch"
 [ "$BRANCH" = "main" ] || exit 0                  # the branch IS the protection
 
-STAGED=$(git diff --cached --name-only --diff-filter=ACMRT 2>/dev/null) || exit 0
+# `D` for a DELETION, which `ACMRT` omitted — removing a ship path from `main` is a ship-path commit.
+# `--no-renames` so a rename is reported as both its old and new path, and a ship path renamed to a docs
+# path cannot disappear into a single destination entry.
+STAGED=$(git diff --cached --name-only --no-renames --diff-filter=ACDMRT) || fail "could not read the staged set"
 [ -n "$STAGED" ] || exit 0
 
 SHIP=$(printf '%s\n' "$STAGED" | python3 -c '
@@ -37,7 +54,7 @@ for line in sys.stdin:
     path = line.strip()
     if path and is_ship_path(path):
         print(path)
-') || exit 0
+') || fail "could not classify the staged paths against scripts/hooks/ship_paths.py"
 [ -n "$SHIP" ] || exit 0
 
 COUNT=$(printf '%s\n' "$SHIP" | wc -l | tr -d ' ')

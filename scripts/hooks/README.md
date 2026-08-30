@@ -2,11 +2,15 @@
 
 ## Arming them in a fresh clone
 
-Two commands, and neither is optional. The first is tracked and takes effect immediately:
+Two steps, and neither is optional. The commit-hook FILES are tracked; git does not arm them, so run
+this once in every clone:
 
 ```bash
 git config core.hooksPath scripts/githooks   # arms the commit check
 ```
+
+`test-hooks.sh` asserts this checkout is armed, so forgetting it is a red control rather than a silent
+absence.
 
 The second is the `.claude/settings.json` block below, which has to be restored by hand for the reason
 that follows.
@@ -46,7 +50,8 @@ absent, and the suite says so rather than passing quietly. Edit either one and r
 | `command-safety.py` | Bash | a recognised shell write into a ship path on `main`; `--no-verify` on any branch | on a branch, or any other command |
 | `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer | every file that is not a plan, and any edit whose result it cannot reconstruct |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
-| `../githooks/pre-commit` | git's own pre-commit | any commit whose staged set touches a ship path, on `main` | on a branch, or a commit touching nothing shipped |
+| `../githooks/pre-commit` | git's pre-commit | any commit whose staged set adds, changes, renames or DELETES a ship path, on `main` | on a branch, or a commit touching nothing shipped |
+| `../githooks/pre-merge-commit` · `pre-applypatch` | git's merge and `am` events | the same, delegated | the same |
 
 ## The two things worth knowing before changing any of them
 
@@ -61,10 +66,15 @@ mistake produced four separate defects in the validation fingerprint before that
 ask `git write-tree` instead of describing what git would record.
 
 `githooks/pre-commit` runs at the moment the answer exists, so `git diff --cached` is the real staged set
-rather than a guess at one. `-a`, a pathspec, `--pathspec-from-file`, `--interactive`, `--amend`, an
-alias, `git merge`, `git cherry-pick`, `git rebase --continue` and `git am` are covered by construction,
-including the forms nobody has thought of yet. Its controls run real commits rather than feeding strings
-to a parser.
+rather than a guess at one. `-a`, an explicit `--` pathspec, a bare positional pathspec,
+`--pathspec-from-file`, `--interactive`, `--amend` and a user alias all arrive there identically. Its
+controls run real commits rather than feeding strings to a parser.
+
+**A merge and `git am` use DIFFERENT git events**, so they are not covered by that file alone —
+`pre-merge-commit` and `pre-applypatch` sit beside it and delegate. They exist because the claim was
+checked against git's own hook templates rather than assumed; without them a merge onto `main` carrying a
+ship path passed unexamined. **`git rebase` runs no pre-commit hook for its replayed commits at all.**
+That is a real gap and it is stated rather than papered over.
 
 **The edit-time and write-shape layers are still best effort, and the branch is still the protection.** A
 PreToolUse matcher on Edit/Write sees the assistant's file tools and nothing else — not a shell heredoc,

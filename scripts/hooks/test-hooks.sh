@@ -78,7 +78,7 @@ SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan file under a FIXED name would overwrite and then delete a real file of that name. The suite
 # cleans up after itself, so it must only ever create something nothing else owns.
 EDITPLAN=$(mktemp docs/feature-requests/issue-9902-2026-01-01-control-XXXXXX.md) || exit 2
-trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; rm -f "$STDERR" "$EDITPLAN" "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md' EXIT
+trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; rm -f "$STDERR" "$EDITPLAN" scripts/.digest-control-*.tmp "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md' EXIT
 
 # Every setup step is checked. A half-built repository makes controls fail for a reason that has nothing
 # to do with the guards, which is the slowest kind of red to read.
@@ -125,23 +125,42 @@ echo
 # THE COMMIT CHECK IS A REAL GIT HOOK NOW, so it is exercised by RUNNING COMMITS rather than by feeding
 # command strings to a parser. Every form below was a separate defect while this was a parser. Here they
 # are one code path, because git computes the staged set before it calls the hook.
+echo "githooks/pre-commit — arming"
+# WITHOUT THIS ASSERTION THE WHOLE SUITE CAN PASS IN A CLONE WHERE NO COMMIT IS PROTECTED, because every
+# control below arms its own throwaway repository. The hook files are tracked; git does not arm them.
+ARMED=$(git config --local --get core.hooksPath 2>/dev/null || true)
+if [ "$ARMED" = "scripts/githooks" ]; then
+    PASS=$((PASS+1)); echo "  ok    this checkout has the commit hook armed"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  this checkout is NOT armed. Run: git config core.hooksPath scripts/githooks"
+fi
+echo
+
 echo "githooks/pre-commit — every commit form, by running it"
 HOOKREPO=$(mktemp -d) || exit 2
 mkdir -p "$HOOKREPO/app/src/main" "$HOOKREPO/docs" "$HOOKREPO/scripts/hooks" "$HOOKREPO/scripts/githooks" || exit 2
 git init -q -b main "$HOOKREPO" || exit 2
 cp "$HOOKS/ship_paths.py" "$HOOKREPO/scripts/hooks/" || exit 2
-cp scripts/githooks/pre-commit "$HOOKREPO/scripts/githooks/" || exit 2
-git -C "$HOOKREPO" config core.hooksPath scripts/githooks || exit 2
+cp scripts/githooks/pre-commit scripts/githooks/pre-merge-commit scripts/githooks/pre-applypatch \
+   "$HOOKREPO/scripts/githooks/" || exit 2
 gitc() { git -C "$HOOKREPO" -c user.email=t@t -c user.name=t "$@"; }
-: > "$HOOKREPO/docs/ok.md"; gitc add -A >/dev/null 2>&1 || exit 2
+# THE SHIP FIXTURE IS COMMITTED FIRST, and this is the difference between a control that proves the hook
+# refused and one that passes for the wrong reason. While `Foo.kt` was untracked, `git commit -a` had
+# nothing to include and failed because git found NOTHING TO COMMIT — which reads as `deny` and says
+# nothing at all about the hook.
+printf 'base\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
+: > "$HOOKREPO/docs/ok.md" || exit 2
+gitc add -A >/dev/null 2>&1 || exit 2
 gitc commit -q -m base >/dev/null 2>&1 || exit 2
+git -C "$HOOKREPO" config core.hooksPath scripts/githooks || exit 2
 
 commit_case() {  # commit_case <name> <allow|deny> <git args...>
     local name="$1" want="$2"; shift 2
-    printf 'x\n' > "$HOOKREPO/app/src/main/Foo.kt"
+    printf 'changed %s\n' "$RANDOM" > "$HOOKREPO/app/src/main/Foo.kt"
     gitc reset -q >/dev/null 2>&1
     local got="deny"
-    if gitc "$@" >/dev/null 2>&1; then got="allow"; gitc reset -q --hard HEAD >/dev/null 2>&1; fi
+    if gitc "$@" >/dev/null 2>&1; then got="allow"; fi
+    gitc reset -q --hard HEAD >/dev/null 2>&1
     if [ "$got" = "$want" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$name" "$got"
     else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted %s, got %s\n' "$name" "$want" "$got"; fi
 }
@@ -149,30 +168,52 @@ commit_case "git commit -am"                   deny commit -am wip
 commit_case "git commit -a -m, separated"      deny commit -a -m wip
 commit_case "an explicit -- pathspec"          deny commit -m wip -- app/src/main/Foo.kt
 commit_case "a bare positional pathspec"       deny commit -m wip app/src/main/Foo.kt
-# The forms the old parser could never reach, now the same code path as the four above. `--amend` needs
-# its own setup: commit_case unstages first, and amending with an EMPTY index only rewrites a message,
-# which touches no file and is correctly allowed.
-printf 'x\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc add app/src/main/Foo.kt >/dev/null 2>&1
+# A DELETION is a ship-path commit. `--diff-filter=ACMRT` omitted `D`, so removing a ship path from
+# `main` was allowed while changing one was refused.
+gitc rm -q app/src/main/Foo.kt >/dev/null 2>&1
+if gitc commit -q -m del >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "deleting a ship path"
+else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "deleting a ship path" "deny"; fi
+gitc reset -q --hard HEAD >/dev/null 2>&1
+# A RENAME reported only by its destination would hide the ship path it came from.
+gitc mv app/src/main/Foo.kt docs/moved.md >/dev/null 2>&1
+if gitc commit -q -m mv >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "renaming a ship path into docs"
+else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "renaming a ship path into docs" "deny"; fi
+gitc reset -q --hard HEAD >/dev/null 2>&1
+# `--amend` needs its own setup: commit_case unstages first, and amending an EMPTY index rewrites only a
+# message, which touches no file and is correctly allowed.
+printf 'amended\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc add app/src/main/Foo.kt >/dev/null 2>&1
 if gitc commit -q --amend -m x >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "git commit --amend, ship path staged"
-    gitc reset -q --hard HEAD >/dev/null 2>&1
-else
-    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git commit --amend, ship path staged" "deny"
-fi
-gitc reset -q >/dev/null 2>&1; rm -f "$HOOKREPO/app/src/main/Foo.kt"
-# Amending only the MESSAGE stages nothing, so it must go through.
+else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git commit --amend, ship path staged" "deny"; fi
+gitc reset -q --hard HEAD >/dev/null 2>&1
 if gitc commit -q --amend -m "reworded" >/dev/null 2>&1; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git commit --amend, message only" "allow"
-else
-    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "git commit --amend, message only"
-fi
-# And the direction that matters more: a commit touching nothing shipped must go straight through.
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "git commit --amend, message only"; fi
+# A MERGE uses `pre-merge-commit`, a different event. Without the delegating hook beside pre-commit, a
+# merge onto `main` carrying a ship path passed unexamined.
+gitc checkout -q -b side >/dev/null 2>&1
+printf 'on the side\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc commit -q -am side >/dev/null 2>&1
+gitc checkout -q main >/dev/null 2>&1
+: > "$HOOKREPO/docs/diverge.md"; gitc add -A >/dev/null 2>&1; gitc commit -q -m diverge >/dev/null 2>&1
+if gitc merge --no-ff -m merge side >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a merge carrying a ship path"
+else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a merge carrying a ship path" "deny"; fi
+gitc merge --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1
+# The direction that matters more: a commit touching nothing shipped must go straight through.
 : > "$HOOKREPO/docs/two.md"; gitc add -A >/dev/null 2>&1
 if gitc commit -q -m docs >/dev/null 2>&1; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a docs-only commit on main" "allow"
-else
-    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "a docs-only commit on main"
-fi
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "a docs-only commit on main"; fi
+# AND IT FAILS CLOSED. Unlike the PreToolUse guards, a broken check here must not answer "yes": it is the
+# only thing between a ship path and `main`, and it runs once, on one commit.
+mv "$HOOKREPO/scripts/hooks/ship_paths.py" "$HOOKREPO/ship_paths.hidden" || exit 2
+printf 'broken classifier\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc add -A >/dev/null 2>&1
+if gitc commit -q -m x >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a broken classifier does not approve"
+else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a broken classifier does not approve" "deny"; fi
+mv "$HOOKREPO/ship_paths.hidden" "$HOOKREPO/scripts/hooks/ship_paths.py" || exit 2
 rm -rf "$HOOKREPO"
 echo
 
@@ -276,19 +317,37 @@ check() {  # check <name> <same|differs> <before> <after>
     if [ "$got" = "$2" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$1" "$got"
     else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted %s, got %s\n' "$1" "$2" "$got"; fi
 }
-DIG_PROBE=scripts/.digest-control.tmp
+# A FIXED path in the real working tree would overwrite and then delete a real file of that name, and
+# every mutation below is checked, because a `git add` that silently failed would make the control that
+# matters most — "staging does not move it" — pass without staging anything.
+# `-u` gives an unused NAME without creating the file. Creating it first put an empty probe into the
+# baseline, so "removing it returns to the baseline" compared against a tree that already had it.
+DIG_PROBE=$(mktemp -u scripts/.digest-control-XXXXXX.tmp) || exit 2
 BASE_DIGEST=$(digest)
 check "the same tree twice"                    same    "$BASE_DIGEST" "$(digest)"
-: > "$DIG_PROBE"; UNTRACKED_DIGEST=$(digest)
+printf 'probe\n' > "$DIG_PROBE" || exit 2
+UNTRACKED_DIGEST=$(digest)
 check "one new untracked file"                 differs "$BASE_DIGEST" "$UNTRACKED_DIGEST"
-git add "$DIG_PROBE" >/dev/null 2>&1
+git add "$DIG_PROBE" >/dev/null 2>&1 || exit 2
 # THE ONE THAT MATTERS. `git add` is the next step of the normal Phase 3 route to a commit, so a digest
 # that moved here would fail correct runs and be disabled rather than fixed.
 check "staging that file does not move it"     same    "$UNTRACKED_DIGEST" "$(digest)"
-chmod +x "$DIG_PROBE"
+chmod +x "$DIG_PROBE" || exit 2
 check "the executable bit moves it"            differs "$UNTRACKED_DIGEST" "$(digest)"
-git reset -q HEAD "$DIG_PROBE" >/dev/null 2>&1; rm -f "$DIG_PROBE"
+# Staging a DELETION was the other half of the same defect, so it gets the same control.
+git rm -q --cached -f "$DIG_PROBE" >/dev/null 2>&1 || exit 2
+rm -f "$DIG_PROBE"
 check "removing it returns to the baseline"    same    "$BASE_DIGEST" "$(digest)"
+# The real object database must not grow. `git add -A` writes a blob per file and `write-tree` writes the
+# trees; sent to the real store they would be unreachable garbage after every validation run.
+OBJ_BEFORE=$(find .git/objects -type f | wc -l | tr -d " ")
+digest >/dev/null; digest >/dev/null
+OBJ_AFTER=$(find .git/objects -type f | wc -l | tr -d " ")
+if [ "$OBJ_BEFORE" = "$OBJ_AFTER" ]; then
+    PASS=$((PASS+1)); echo "  ok    two runs leave no loose objects behind"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  two runs left $((OBJ_AFTER - OBJ_BEFORE)) loose object(s)"
+fi
 # A repository with NO COMMITS has no HEAD to read, which is the enumeration failing. The point of the
 # control is that a failure produces no digest at all: a well-formed hash of an unknown subset would be
 # the most confident-looking wrong answer this script could give.

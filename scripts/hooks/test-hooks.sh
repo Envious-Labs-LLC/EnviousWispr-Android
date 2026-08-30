@@ -134,23 +134,16 @@ if [ "$ARMED" = "scripts/githooks" ]; then
 else
     FAIL=$((FAIL+1)); echo "  FAIL  this checkout is NOT armed. Run: git config core.hooksPath scripts/githooks"
 fi
-# The second half of arming, and it is not a preference: a FAST-FORWARD merge creates no commit, so no
-# hook runs at all and `main` moves to a branch's ship-path work unexamined.
-FFARM=$(git config --local --get branch.main.mergeOptions 2>/dev/null || true)
-if [ "$FFARM" = "--no-ff" ]; then
-    PASS=$((PASS+1)); echo "  ok    merges into main are routed through the hook"
-else
-    FAIL=$((FAIL+1)); echo "  FAIL  fast-forward merges bypass every hook. Run: git config branch.main.mergeOptions --no-ff"
-fi
+# One setting arms BOTH hooks. An earlier design needed a second, forcing a merge commit so a
+# fast-forward could not slip past; the ref hook sees the fast-forward itself, so that is gone.
 echo
 
-echo "githooks/pre-commit — every commit form, by running it"
+echo "githooks — every way \`main\` can move, by actually moving it"
 HOOKREPO=$(mktemp -d) || exit 2
 mkdir -p "$HOOKREPO/app/src/main" "$HOOKREPO/docs" "$HOOKREPO/scripts/hooks" "$HOOKREPO/scripts/githooks" || exit 2
 git init -q -b main "$HOOKREPO" || exit 2
 cp "$HOOKS/ship_paths.py" "$HOOKREPO/scripts/hooks/" || exit 2
-cp scripts/githooks/pre-commit scripts/githooks/pre-merge-commit scripts/githooks/pre-applypatch \
-   "$HOOKREPO/scripts/githooks/" || exit 2
+cp scripts/githooks/pre-commit scripts/githooks/reference-transaction "$HOOKREPO/scripts/githooks/" || exit 2
 gitc() { git -C "$HOOKREPO" -c user.email=t@t -c user.name=t "$@"; }
 # THE SHIP FIXTURE IS COMMITTED FIRST, and this is the difference between a control that proves the hook
 # refused and one that passes for the wrong reason. While `Foo.kt` was untracked, `git commit -a` had
@@ -161,7 +154,6 @@ printf 'base\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
 gitc add -A >/dev/null 2>&1 || exit 2
 gitc commit -q -m base >/dev/null 2>&1 || exit 2
 git -C "$HOOKREPO" config core.hooksPath scripts/githooks || exit 2
-git -C "$HOOKREPO" config branch.main.mergeOptions --no-ff || exit 2
 
 commit_case() {  # commit_case <name> <allow|deny> <git args...>
     local name="$1" want="$2"; shift 2
@@ -239,17 +231,29 @@ if gitc merge -m merge docmerge >/dev/null 2>&1; then
 else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "a merge carrying only docs"; fi
 gitc merge --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1 || exit 2
 
-# A FAST-FORWARD merge creates no commit, so `pre-merge-commit` never runs and `main` moves anyway. This
-# control does NOT pass `--no-ff`: it relies on the same `branch.main.mergeOptions` the arming sets, so
-# it goes red in a checkout armed only halfway.
+# EVERY FORM BELOW CREATES NO COMMIT, so no commit hook of any kind sees it. Each one moved `main` onto
+# ship-path work until `reference-transaction` was added, and each was found in a separate review round
+# while the design was still adding commit-event hooks.
 gitc checkout -q -b ffside >/dev/null 2>&1 || exit 2
 printf 'fast forward\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
 gitc commit -q -am ff >/dev/null 2>&1 || exit 2
 gitc checkout -q main >/dev/null 2>&1 || exit 2
-if gitc merge ffside >/dev/null 2>&1; then
-    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a fast-forward-shaped merge"
-else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a fast-forward-shaped merge" "deny"; fi
-gitc merge --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1 || exit 2
+FF_BEFORE=$(gitc rev-parse main) || exit 2
+refmove_case() {  # refmove_case <name> <git args...>
+    local name="$1"; shift
+    local got="deny"
+    if gitc "$@" >/dev/null 2>&1 && [ "$(gitc rev-parse main)" != "$FF_BEFORE" ]; then got="allow"; fi
+    gitc merge --abort >/dev/null 2>&1; gitc am --abort >/dev/null 2>&1
+    gitc checkout -q main >/dev/null 2>&1
+    gitc update-ref refs/heads/main "$FF_BEFORE" >/dev/null 2>&1
+    gitc reset -q --hard "$FF_BEFORE" >/dev/null 2>&1
+    if [ "$got" = "deny" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$name" "deny"
+    else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "$name"; fi
+}
+refmove_case "a fast-forward merge"            merge --ff-only ffside
+refmove_case "git reset --hard onto a branch"  reset --hard ffside
+refmove_case "git checkout -B main"            checkout -B main ffside
+refmove_case "git update-ref refs/heads/main"  update-ref refs/heads/main ffside
 
 # `git am` raises `pre-applypatch`, a THIRD event. Installing that hook is not evidence it runs, so this
 # builds a real patch on a branch and applies it to `main`.
@@ -289,6 +293,54 @@ if gitc commit -q -m x >/dev/null 2>&1; then
 else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a broken classifier does not approve" "deny"; fi
 mv "$HOOKREPO/ship_paths.hidden" "$HOOKREPO/scripts/hooks/ship_paths.py" || exit 2
 rm -rf "$HOOKREPO"
+echo
+
+echo "githooks/reference-transaction — must not break clone, fetch or pull"
+REMOTE_W=$(mktemp -d) || exit 2
+git init -q --bare -b main "$REMOTE_W/origin.git" || exit 2
+mkdir -p "$REMOTE_W/a/app/src/main" "$REMOTE_W/a/docs" "$REMOTE_W/a/scripts/hooks" "$REMOTE_W/a/scripts/githooks" || exit 2
+git init -q -b main "$REMOTE_W/a" || exit 2
+cp "$HOOKS/ship_paths.py" "$REMOTE_W/a/scripts/hooks/" || exit 2
+cp scripts/githooks/pre-commit scripts/githooks/reference-transaction "$REMOTE_W/a/scripts/githooks/" || exit 2
+ga() { git -C "$REMOTE_W/a" -c user.email=t@t -c user.name=t "$@"; }
+printf 'shipped\n' > "$REMOTE_W/a/app/src/main/Foo.kt" || exit 2
+: > "$REMOTE_W/a/docs/ok.md" || exit 2
+ga add -A >/dev/null 2>&1 || exit 2
+ga commit -q -m "base carrying ship paths" >/dev/null 2>&1 || exit 2
+ga remote add origin "$REMOTE_W/origin.git" || exit 2
+ga push -q -u origin main >/dev/null 2>&1 || exit 2
+
+refallow() {  # refallow <name> <dir> <git args...>
+    local name="$1" dir="$2"; shift 2
+    if git -C "$dir" -c user.email=t@t -c user.name=t "$@" >/dev/null 2>&1; then
+        PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$name" "allow"
+    else
+        FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "$name"
+    fi
+}
+if git clone -q "$REMOTE_W/origin.git" "$REMOTE_W/b" >/dev/null 2>&1; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "cloning a repo whose main carries ship paths" "allow"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "cloning a repo whose main carries ship paths"
+fi
+git -C "$REMOTE_W/b" config core.hooksPath scripts/githooks || exit 2
+printf 'shipped again\n' > "$REMOTE_W/a/app/src/main/Foo.kt" || exit 2
+ga commit -q -am "upstream ship change" >/dev/null 2>&1 || exit 2
+ga push -q origin main >/dev/null 2>&1 || exit 2
+refallow "fetching upstream ship-path work"    "$REMOTE_W/b" fetch
+refallow "pulling it into main"                "$REMOTE_W/b" pull --ff-only
+# And the discriminator still holds: LOCAL ship-path work cannot ride the same route.
+git -C "$REMOTE_W/b" checkout -q -b localwork >/dev/null 2>&1 || exit 2
+printf 'local only\n' > "$REMOTE_W/b/app/src/main/Bar.kt" || exit 2
+git -C "$REMOTE_W/b" add -A >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/b" -c user.email=t@t -c user.name=t commit -q -m local >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/b" checkout -q main >/dev/null 2>&1 || exit 2
+if git -C "$REMOTE_W/b" merge --ff-only localwork >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "local work still cannot fast-forward main"
+else
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "local work still cannot fast-forward main" "deny"
+fi
+rm -rf "$REMOTE_W"
 echo
 
 echo "check-plan-gates.py — the Tier 0 plan gates"
@@ -432,19 +484,27 @@ THIS=$(digest) || exit 2
 check "removing it returns to the baseline"    same    "$BASE_DIGEST" "$THIS"
 # The real object database must not grow. `git add -A` writes a blob per file and `write-tree` writes the
 # trees; sent to the real store they would be unreachable garbage after every validation run.
+# The content must be UNIQUE and must exist only between the two counts. Measuring after the probe was
+# removed counted a tree whose blobs the object database already had, so a digest writing into the real
+# store would have shown no growth at all.
+LEAK_PROBE="$DIG_DIR/object-leak-$RANDOM-$RANDOM"
+printf 'unique %s %s\n' "$RANDOM" "$RANDOM" > "$LEAK_PROBE" || exit 2
 OBJ_BEFORE=$(find .git/objects -type f | wc -l | tr -d " ")
-digest >/dev/null || exit 2; digest >/dev/null || exit 2
+digest >/dev/null || exit 2
 OBJ_AFTER=$(find .git/objects -type f | wc -l | tr -d " ")
+rm -f "$LEAK_PROBE" || exit 2
 if [ "$OBJ_BEFORE" = "$OBJ_AFTER" ]; then
-    PASS=$((PASS+1)); echo "  ok    two runs leave no loose objects behind"
+    PASS=$((PASS+1)); echo "  ok    hashing new content leaves no loose objects behind"
 else
-    FAIL=$((FAIL+1)); echo "  FAIL  two runs left $((OBJ_AFTER - OBJ_BEFORE)) loose object(s)"
+    FAIL=$((FAIL+1)); echo "  FAIL  hashing new content left $((OBJ_AFTER - OBJ_BEFORE)) loose object(s)"
 fi
 # A repository with NO COMMITS has no HEAD to read, which is the enumeration failing. The point of the
 # control is that a failure produces no digest at all: a well-formed hash of an unknown subset would be
 # the most confident-looking wrong answer this script could give.
-DIG_REPO=$(mktemp -d); git init -q -b main "$DIG_REPO"; mkdir -p "$DIG_REPO/scripts"
-cp scripts/change-digest.sh "$DIG_REPO/scripts/"
+DIG_REPO=$(mktemp -d) || exit 2
+git init -q -b main "$DIG_REPO" || exit 2
+mkdir -p "$DIG_REPO/scripts" || exit 2
+cp scripts/change-digest.sh "$DIG_REPO/scripts/" || exit 2
 DIG_OUT=$("$DIG_REPO/scripts/change-digest.sh" 2>/dev/null); DIG_RC=$?
 if [ "$DIG_RC" -eq 2 ] && [ -z "$DIG_OUT" ]; then
     PASS=$((PASS+1)); echo "  ok    a failed enumeration exits 2 and prints nothing"

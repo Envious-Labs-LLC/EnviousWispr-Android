@@ -2,17 +2,14 @@
 
 ## Arming them in a fresh clone
 
-Two settings, and neither is optional. The commit-hook FILES are tracked; git does not arm them, so run
-these once in every clone:
+One setting. The hook FILES are tracked; git does not arm them, so run this once in every clone:
 
 ```bash
-git config core.hooksPath scripts/githooks         # arms the commit check
-git config branch.main.mergeOptions --no-ff        # routes merges into main through it
+git config core.hooksPath scripts/githooks
 ```
 
-**The second is not a preference.** A fast-forward merge creates no commit, so no hook of any kind runs
-and `main` moves to a branch's ship-path work unexamined — measured, not assumed. Forcing a merge commit
-when merging INTO main is what routes it through `pre-merge-commit`; other branches are unaffected.
+`test-hooks.sh` asserts this checkout is armed, so forgetting it is a red control rather than a silent
+absence.
 
 `test-hooks.sh` asserts this checkout is armed, so forgetting it is a red control rather than a silent
 absence.
@@ -56,7 +53,7 @@ absent, and the suite says so rather than passing quietly. Edit either one and r
 | `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer | every file that is not a plan, and any edit whose result it cannot reconstruct |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
 | `../githooks/pre-commit` | git's pre-commit | any commit whose staged set adds, changes, renames or DELETES a ship path, on `main` | on a branch, or a commit touching nothing shipped |
-| `../githooks/pre-merge-commit` · `pre-applypatch` | git's merge and `am` events | the same, delegated | the same |
+| `../githooks/reference-transaction` | every update to `refs/heads/main` | moving `main` forward onto ship-path commits that are not on `origin/main` | a clone, a fetch, a pull, a reset backwards, or a move carrying nothing shipped |
 
 ## The two things worth knowing before changing any of them
 
@@ -72,12 +69,21 @@ ask `git write-tree` instead of describing what git would record.
 
 `githooks/pre-commit` runs at the moment the answer exists, so `git diff --cached` is the real staged set
 rather than a guess at one. `-a`, an explicit `--` pathspec, a bare positional pathspec,
-`--pathspec-from-file`, `--interactive`, `--amend` and a user alias all arrive there identically. Its
-controls run real commits rather than feeding strings to a parser.
+`--pathspec-from-file`, `--interactive`, `--amend` and a user alias all arrive there identically.
 
-**A merge and `git am` use DIFFERENT git events**, so they are not covered by that file alone —
-`pre-merge-commit` and `pre-applypatch` sit beside it and delegate, and `pre-merge-commit` only fires for
-a merge that CREATES a commit, which is why arming also forces `--no-ff` into main. They exist because the claim was
+**Then the same lesson repeated one level out, and it took three rounds to see.** Every commit hook fires
+on an event that CREATES A COMMIT, and a merge, `git am`, a rebase, a fast-forward, a
+`git reset --hard <branch>`, a `git checkout -B main` and a `git update-ref` all move `main` without
+creating one. The answer was not more commit-event hooks — two of those were written and then deleted,
+along with a `--no-ff` merge setting — but `githooks/reference-transaction`, which guards the REF that
+all of them were proxies for.
+
+**The hard half of that hook is what it must NOT refuse**, because it fires inside `clone`, `fetch` and
+`pull`. A commit already reachable from `origin/main` went through a branch and its review, so it is
+allowed; a move backwards is how a mistake gets undone, so that is allowed; and `main` not existing yet
+is a clone. Only a forward move onto commits that are NOT on the remote is judged. Controls assert a
+clone, a fetch and a pull of upstream ship-path work all succeed, and that local ship-path work still
+cannot ride the same route. They exist because the claim was
 checked against git's own hook templates rather than assumed; without them a merge onto `main` carrying a
 ship path passed unexamined. **`git rebase` runs no pre-commit hook for its replayed commits at all.**
 That is a real gap and it is stated rather than papered over.

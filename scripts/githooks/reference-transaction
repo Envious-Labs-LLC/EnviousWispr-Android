@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# reference-transaction — refuse to MOVE `main` onto local ship-path work.
+#
+# WHY A REF HOOK AND NOT ANOTHER COMMIT HOOK. `pre-commit`, `pre-merge-commit` and `pre-applypatch` all
+# fire on an EVENT THAT CREATES A COMMIT. Measured 2026-08-30: `git merge --ff-only`, `git pull --ff-only`,
+# `git reset --hard <branch>`, `git checkout -B main <commit>` and `git update-ref refs/heads/main` create
+# no commit, so none of the three runs and `main` moves onto ship-path work unexamined. `git rebase` is the
+# same shape. Guarding the events was guarding a proxy; what needs guarding is the REF.
+#
+# THE OLD VALUE GIT HANDS US IS OFTEN ZEROS, and a first version trusted it. `checkout -B` and
+# `update-ref` both report `0000...` as the old OID, so a hook that read it treated a MOVE as a creation
+# and allowed it. The current value is read from the ref itself instead.
+#
+# WHAT IT MUST NOT BREAK, which is the harder half. This hook fires during `clone` and `fetch` and `pull`.
+#   · `main` does not exist yet -> a clone creating it. Allow: nothing local is being smuggled.
+#   · the new commit is already reachable from `origin/main` -> a pull or fast-forward of reviewed work.
+#     Allow. That is the discriminator: work that reached the remote went through the branch and the
+#     review; work that has not is local.
+#   · the move is not forward -> a reset BACK, which is how a mistake gets undone. Allow.
+# Only a forward move of `main` onto commits that are NOT on `origin/main` is judged, and only its
+# ship-path content is refused.
+#
+# ARMED BY `git config core.hooksPath scripts/githooks`, the same setting as the others.
+# `--no-verify` does NOT skip this one; git offers no such bypass for a reference transaction.
+#
+# EXIT: 0 allow · 1 refuse the whole transaction. It fails OPEN on its own error, unlike pre-commit, and
+# the reason is the blast radius: this hook runs inside `clone`, `fetch` and `pull`, so a broken version
+# that failed closed would make the repository unusable rather than protect one branch. The commit hooks
+# are the ones that fail closed; this is the backstop behind them.
+
+set -uo pipefail
+[ "${1:-}" = "prepared" ] || exit 0
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$ROOT" || exit 0
+[ -r "scripts/hooks/ship_paths.py" ] || exit 0
+
+REFUSE=0
+while read -r _OLD NEW REF; do
+    [ "$REF" = "refs/heads/main" ] || continue
+    # A 40- or 64-character hex OID and nothing else: `ref:refs/heads/main` is a symbolic update, and an
+    # all-zero NEW is a deletion.
+    case "$NEW" in
+        *[!0-9a-f]* | "") continue ;;
+        *[!0]*) : ;;
+        *) continue ;;
+    esac
+
+    CURRENT=$(git rev-parse --verify --quiet refs/heads/main) || CURRENT=""
+    [ -n "$CURRENT" ] || continue            # main is being created: a clone, not a local move
+    [ "$CURRENT" != "$NEW" ] || continue     # not a move at all
+
+    git merge-base --is-ancestor "$CURRENT" "$NEW" 2>/dev/null || continue   # a reset back: allow
+
+    # Already on the remote means it went through a branch and the review that gates one.
+    if git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+        git merge-base --is-ancestor "$NEW" refs/remotes/origin/main 2>/dev/null && continue
+    fi
+
+    CHANGED=$(git diff --name-only --no-renames "$CURRENT" "$NEW" 2>/dev/null) || continue
+    [ -n "$CHANGED" ] || continue
+
+    SHIP=$(printf '%s\n' "$CHANGED" | python3 -c '
+import sys, os
+sys.path.insert(0, os.path.join("scripts", "hooks"))
+from ship_paths import is_ship_path
+for line in sys.stdin:
+    path = line.strip()
+    if path and is_ship_path(path):
+        print(path)
+' 2>/dev/null) || continue
+    [ -n "$SHIP" ] || continue
+
+    COUNT=$(printf '%s\n' "$SHIP" | wc -l | tr -d ' ')
+    echo "BLOCKED: moving \`main\` onto $COUNT ship-path file(s) that are not on \`origin/main\`." >&2
+    printf '%s\n' "$SHIP" | head -8 | sed 's/^/    /' >&2
+    [ "$COUNT" -gt 8 ] && echo "    ... and $((COUNT - 8)) more" >&2
+    echo >&2
+    echo "This is the ref-level backstop. It sees every way \`main\` can move, including the ones that" >&2
+    echo "create no commit for a commit hook to catch: a fast-forward, a reset, a checkout -B, an" >&2
+    echo "update-ref, a rebase. Ship-path work reaches \`main\` through a branch and its review, per" >&2
+    echo ".claude/rules/workflow-process.md RULE: ten-step-shape." >&2
+    REFUSE=1
+done
+exit "$REFUSE"

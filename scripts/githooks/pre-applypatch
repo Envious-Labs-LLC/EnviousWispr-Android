@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# pre-applypatch — git uses a DIFFERENT EVENT for this operation, so pre-commit is not called.
-#
-# The stock git template delegates the same way, and this file exists because the claim that `git am` was
-# "covered by construction" was checked against that template rather than assumed. Without it, `git am`
-# applies and commits a ship-path patch onto `main` without pre-commit ever running.
-exec "$(dirname "$0")/pre-commit" "$@"

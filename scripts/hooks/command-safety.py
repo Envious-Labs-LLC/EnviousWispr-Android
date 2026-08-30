@@ -7,10 +7,9 @@ another form it got wrong — an option value that looked like a flag, `--dry-ru
 pathspec, `-S` swallowing `-a`, `git -C.`, `env FOO=1 git`, a bare `&`, a newline splitting two lines.
 Those were not eight defects. They were one: git's option grammar and the shell's grammar are not ours,
 and a private parser for either has no last divergence. `scripts/githooks/pre-commit` asks git instead, at
-the moment the staged set actually exists, which covers `-a`, an explicit pathspec, a bare pathspec,
-`--pathspec-from-file`, `--interactive`, `--amend` and a user alias identically. Separate
-`pre-merge-commit` and `pre-applypatch` hooks delegate to it, because git raises different events for a
-merge and for `git am`; replayed `git rebase` commits raise none of them and are a documented gap.
+the moment the staged set actually exists, and `scripts/githooks/reference-transaction` guards every
+update to `refs/heads/main` — including the merges, rebases, fast-forwards and resets that move the
+branch without creating a commit for any commit hook to see.
 
 THREAT MODEL, carried over from macOS `git_target.py` because it BOUNDS THE WORK. The only actor here is
 Claude, often five or more concurrent instances, and THERE IS NO ADVERSARY. These gates enforce workflow
@@ -23,8 +22,8 @@ WHAT IS LEFT HERE, and why neither piece can move to a git hook.
    went through a Bash heredoc, including the design document itself. An Edit/Write matcher would have
    watched that happen and said nothing, and git never sees a write that is not a commit. So `> path`,
    `>> path`, `>| path`, `tee path` and `sed -i` into a ship path on `main` are denied here. The set of
-   ways to write a file is open, so this will never be complete, and it does not need to be: the
-   pre-commit hook is what every write must eventually pass through to reach history.
+   ways to write a file is open, so this will never be complete, and it does not need to be: to reach
+   `main`, a write has to move that ref, and the reference-transaction hook is on it.
 
 2. `--no-verify`, which skips the applicable verification hooks, including the commit check for whichever
    git operation is running. This is GR-NEVER-WEAKEN-GUARDRAILS at the only place that can see it coming.

@@ -11,21 +11,25 @@
 # a guess at one. `git commit -a`, an explicit `--` pathspec, a bare positional pathspec,
 # `--pathspec-from-file`, `--interactive`, `--amend` and a user alias all arrive here identically.
 #
-# WHAT IT DOES NOT COVER BY ITSELF, because git uses a DIFFERENT EVENT and an earlier comment here claimed
-# otherwise: a merge commit runs `pre-merge-commit`, and `git am` runs `pre-applypatch`. Those are separate
-# files beside this one, each delegating here, and they exist because the claim was checked rather than
-# assumed. `git rebase` runs no pre-commit hook at all for its replayed commits — that is a real gap, it is
-# stated rather than papered over, and the branch remains the protection.
+# THIS FILE IS NOT THE COMPLETE CHECK, AND IT IS NOT TRYING TO BE. It fires on an event that creates a
+# commit, so a merge, `git am`, a rebase, a fast-forward, a reset and an `update-ref` all move `main`
+# without it running. Three earlier rounds tried to cover those by adding more commit-event hooks —
+# `pre-merge-commit`, `pre-applypatch`, a `--no-ff` merge setting — and each round found the next event
+# that creates no commit. `reference-transaction` beside this file guards the REF instead, which is the
+# thing all of them were proxies for, and it subsumes every one of them.
 #
-# ARMED BY TWO local settings, which every clone must run because the hook FILES are tracked and git does
+# So why keep this file at all: it refuses BEFORE the commit object is written and it names the staged
+# files, which is the clearer error on the route a session actually takes every day. The ref hook is the
+# backstop; this is the good message on the common path.
+#
+# ARMED BY ONE local setting, which every clone must run because the hook FILES are tracked and git does
 # not arm them:
 #
 #   git config core.hooksPath scripts/githooks
-#   git config branch.main.mergeOptions --no-ff
 #
-# The second is not optional. A FAST-FORWARD merge creates no commit, so no hook of any kind runs and
-# `main` moves to a branch's ship-path work unexamined. Forcing a merge commit when merging into main is
-# what routes it through `pre-merge-commit`; other branches are unaffected. test-hooks.sh asserts both.
+# It used to take two, the second forcing a merge commit so a fast-forward could not slip past. The ref
+# hook makes that unnecessary: it sees the fast-forward itself. test-hooks.sh asserts this checkout is
+# armed, so an unarmed clone is a red control rather than a quiet absence.
 #
 # `--no-verify` skips this, as it skips the applicable verification hooks. That is
 # GR-NEVER-WEAKEN-GUARDRAILS, not a hole to parse around: the Bash guard denies that token.

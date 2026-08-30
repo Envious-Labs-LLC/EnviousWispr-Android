@@ -78,14 +78,23 @@ echo
 # resources allocated on the lines either side of it. The ordering is a property of the BLOCK, so every
 # name is declared empty first, the cleanup is armed once, and allocation happens after. A `[ -n ... ]`
 # guard on each means an interruption between any two lines removes exactly what exists.
+# EVERY `mktemp` IN THIS FILE, enumerated with `grep mktemp` rather than from the block I happened to be
+# editing. The previous version registered the six in this block and left four allocated hundreds of
+# lines later, each removed only on its own success path — so an interruption before that line leaked it.
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
+HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 
 cleanup() {
     [ -n "$MAINREPO" ]   && rm -rf "$MAINREPO" "$MAINREPO.git"
     [ -n "$BRANCHREPO" ] && rm -rf "$BRANCHREPO"
-    [ -n "$DIG_DIR" ]    && rm -rf "$DIG_DIR"     # never a glob: that would take a concurrent run's
+    [ -n "$HOOKREPO" ]   && rm -rf "$HOOKREPO"
+    [ -n "$REMOTE_W" ]   && rm -rf "$REMOTE_W"
+    [ -n "$DIG_REPO" ]   && rm -rf "$DIG_REPO"
+    # NEVER a `scripts/.digest-control-*` glob here: it would take a concurrent run's directory too.
+    [ -n "$DIG_DIR" ]    && rm -rf "$DIG_DIR"
     [ -n "$NOHOOKS" ]    && rm -rf "$NOHOOKS"
+    [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -f "$STDERR"
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
     rm -f "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md
@@ -672,6 +681,27 @@ echo
 # is the only thing a fresh clone can restore the wiring from. A copy nothing compares is how the two
 # drift apart silently, so compare them here. The README says this check exists; that sentence is only
 # true while this block is.
+# THE MISTAKE MADE IMPOSSIBLE TO MISS, rather than a fourth reminder. Three review rounds found the same
+# unregistered-resource defect, the last one four allocations away from the block being edited. This
+# reads the file itself: every `NAME=$(mktemp ...)` must appear inside `cleanup()`, so adding a
+# temporary resource without registering it goes red instead of leaking on the next interrupted run.
+echo "the suite's own temporaries — all registered for cleanup"
+if python3 - <<'PY'
+import re, sys
+s = open("scripts/hooks/test-hooks.sh", encoding="utf-8").read()
+allocated = set(re.findall(r'^([A-Z_]+)=\$\(mktemp', s, re.M))
+body = re.search(r'^cleanup\(\) \{(.*?)^\}', s, re.S | re.M)
+if not body:
+    print("  cleanup() not found"); sys.exit(1)
+missing = sorted(allocated - set(re.findall(r'\$\{?([A-Z_]+)', body.group(1))))
+if missing:
+    print("  never removed on an interrupted run:", ", ".join(missing)); sys.exit(1)
+sys.exit(0 if allocated else 1)
+PY
+then PASS=$((PASS+1)); echo "  ok    every mktemp in this file is registered in cleanup()"
+else FAIL=$((FAIL+1)); echo "  FAIL  a temporary resource is not registered in cleanup()"; fi
+echo
+
 echo "registration mirror — README against the live settings"
 if [ -f .claude/settings.json ]; then
     if python3 - <<'PY'

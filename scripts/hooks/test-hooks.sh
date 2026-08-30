@@ -95,7 +95,7 @@ cleanup() {
     [ -n "$DIG_DIR" ]    && rm -rf "$DIG_DIR"
     [ -n "$NOHOOKS" ]    && rm -rf "$NOHOOKS"
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
-    [ -n "$STDERR" ]     && rm -f "$STDERR"
+    [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
     rm -f "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md
     return 0
@@ -698,9 +698,10 @@ if not body:
     print("  cleanup() not found"); sys.exit(1)
 # A NAME APPEARING IN cleanup() IS NOT A REMOVAL. A comment mentioning it, or a `: "$NAME"`, satisfied a
 # search for the name and removed nothing — the check would have been green while the resource leaked.
-# This requires the actual guarded `rm`.
+# `rm -f` is not accepted either: it does nothing at all to a directory, so a `mktemp -d` paired with it
+# was another green that leaked. The requirement is a guarded RECURSIVE removal.
 removed = {name for name in allocated if re.search(
-    rf'^\s*\[ -n "\${name}" \]\s*&&\s*rm -(?:rf|fr|f) "\${name}"(?:\s|$)', body.group(1), re.M)}
+    rf'^\s*\[ -n "\${name}" \]\s*&&\s*rm -(?:rf|fr) "\${name}"(?:\s|$)', body.group(1), re.M)}
 missing = sorted(allocated - removed)
 if missing:
     print("  never removed on an interrupted run:", ", ".join(missing)); sys.exit(1)

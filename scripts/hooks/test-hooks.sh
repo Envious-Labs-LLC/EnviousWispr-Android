@@ -429,6 +429,63 @@ else
 fi
 git -C "$REMOTE_W/b" rebase --abort >/dev/null 2>&1
 rm -rf "$NOHOOKS_B"
+# A DIVERGENT history that changes a ship path, reverts it, and ends at a tree identical to main's. Tree
+# equality alone would wave this through as if it were an amend; the exception requires the PARENTS to
+# match too, which pins it to a rewrite of exactly one commit.
+git -C "$REMOTE_W/c" checkout -q -b divergent-revert HEAD~1 >/dev/null 2>&1 || \
+    git -C "$REMOTE_W/c" checkout -q -b divergent-revert >/dev/null 2>&1 || exit 2
+DR_ORIG=$(cat "$REMOTE_W/c/app/src/main/Foo.kt" 2>/dev/null || echo x)
+printf 'divergent change\n' > "$REMOTE_W/c/app/src/main/Foo.kt" || exit 2
+git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent -c user.email=t@t -c user.name=t \
+    commit -q -am "divergent change" >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" checkout -q main -- . >/dev/null 2>&1 || true
+git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent -c user.email=t@t -c user.name=t \
+    commit -q -am "back to main's content" >/dev/null 2>&1 || true
+git -C "$REMOTE_W/c" checkout -q main >/dev/null 2>&1 || exit 2
+DV_BEFORE=$(git -C "$REMOTE_W/c" rev-parse main) || exit 2
+git -C "$REMOTE_W/c" reset --hard divergent-revert >/dev/null 2>&1
+if [ "$(git -C "$REMOTE_W/c" rev-parse main)" = "$DV_BEFORE" ]; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a divergent history ending at main's own tree" "deny"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a divergent history ending at main's own tree"
+    git -C "$REMOTE_W/c" reset -q --hard "$DV_BEFORE" >/dev/null 2>&1
+fi
+git -C "$REMOTE_W/c" checkout -q -f main >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" reset -q --hard "$DV_BEFORE" >/dev/null 2>&1 || exit 2
+
+# A MERGE COMMIT's own conflict resolution. `git log --name-only` shows nothing for a merge without `-m`,
+# so a resolution that edits a ship path only in the merge commit was invisible even though both sides
+# touched nothing but docs.
+git -C "$REMOTE_W/c" checkout -q -b sideA >/dev/null 2>&1 || exit 2
+printf 'A\n' > "$REMOTE_W/c/docs/conflict.md" || exit 2
+git -C "$REMOTE_W/c" add -A >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" -c user.email=t@t -c user.name=t commit -q -m sideA >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" checkout -q main >/dev/null 2>&1 || exit 2
+printf 'B\n' > "$REMOTE_W/c/docs/conflict.md" || exit 2
+git -C "$REMOTE_W/c" add -A >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" -c user.email=t@t -c user.name=t commit -q -m sideB >/dev/null 2>&1 || exit 2
+MG_BEFORE=$(git -C "$REMOTE_W/c" rev-parse main) || exit 2
+# The merge is built ON A BRANCH with hooks off, then main is fast-forwarded onto it. Committing the
+# merge on main directly would be answered by `pre-commit`, whose staged set does contain the resolution
+# — and this control is about whether the REF hook can SEE a merge commit's own changes, which
+# `git log --name-only` does not show without `-m`.
+git -C "$REMOTE_W/c" checkout -q -b mergeside >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent merge --no-commit sideA >/dev/null 2>&1
+printf 'resolved\n' > "$REMOTE_W/c/docs/conflict.md" || exit 2
+printf 'sneaked in during the resolution\n' > "$REMOTE_W/c/app/src/main/Resolved.kt" || exit 2
+git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent add -A >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent -c user.email=t@t -c user.name=t \
+    commit -q -m "merge with a ship path in the resolution" >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" checkout -q main >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" merge --ff-only mergeside >/dev/null 2>&1
+if [ "$(git -C "$REMOTE_W/c" rev-parse main)" = "$MG_BEFORE" ]; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a ship path added only in a merge resolution" "deny"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a ship path added only in a merge resolution"
+fi
+git -C "$REMOTE_W/c" merge --abort >/dev/null 2>&1
+git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent reset -q --hard "$MG_BEFORE" >/dev/null 2>&1 || exit 2
+
 # A branch that changes a ship path and then REVERTS it has no endpoint difference at all, so a hook
 # diffing two endpoints let both of those commits into main's history.
 git -C "$REMOTE_W/c" checkout -q -b revertside >/dev/null 2>&1 || exit 2
@@ -453,8 +510,17 @@ git -C "$REMOTE_W/c" -c user.email=t@t -c user.name=t commit -q -m recreate >/de
 git -C "$REMOTE_W/c" branch -q -D main >/dev/null 2>&1 || exit 2
 if git -C "$REMOTE_W/c" branch main recreate >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "recreating a deleted main at local ship work"
+    git -C "$REMOTE_W/c" branch -q -D main >/dev/null 2>&1
 else
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating a deleted main at local ship work" "deny"
+fi
+# The allow half: recreating it at its own configured upstream. `for-each-ref` cannot answer once the
+# branch is gone, so the upstream has to come from `branch.main.remote` and `branch.main.merge`.
+UPSTREAM_TIP=$(git -C "$REMOTE_W/c" rev-parse refs/remotes/upstream/main) || exit 2
+if git -C "$REMOTE_W/c" branch main "$UPSTREAM_TIP" >/dev/null 2>&1; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating a deleted main at its upstream" "allow"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "recreating a deleted main at its upstream"
 fi
 # And the discriminator still holds: LOCAL ship-path work cannot ride the same route.
 git -C "$REMOTE_W/b" checkout -q -b localwork >/dev/null 2>&1 || exit 2

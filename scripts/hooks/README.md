@@ -50,7 +50,7 @@ absent, and the suite says so rather than passing quietly. Edit either one and r
 | `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer | every file that is not a plan, and any edit whose result it cannot reconstruct |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
 | `../githooks/pre-commit` | git's pre-commit | any commit whose staged set adds, changes, renames or DELETES a ship path, on `main` | on a branch, or a commit touching nothing shipped |
-| `../githooks/reference-transaction` | every update to `refs/heads/main` | any move of `main` onto ship-path commits that are not on its configured upstream | a fetch, a pull (including `--rebase`), a reset backwards, or a move carrying nothing shipped |
+| `../githooks/reference-transaction` | every update to `refs/heads/main` | any move — forward OR divergent — onto ship-path commits that are not on the upstream | a fetch, a pull (including `--rebase`), a reset backwards, an amend of the current commit, or a move carrying nothing shipped |
 
 ## The two things worth knowing before changing any of them
 
@@ -78,12 +78,23 @@ setting now cover more than three hooks and two settings did.
 
 **The hard half of that hook is what it must NOT refuse**, because it fires inside `clone`, `fetch` and
 `pull`, and a version that refused work arriving from the remote would make the repository unusable while
-looking exactly like protection. Two things pass without inspection: a commit already reachable from
-`main`'s CONFIGURED UPSTREAM — resolved with `for-each-ref`, never a hard-coded `origin`, which refused a
-legitimate pull in any checkout whose remote is named otherwise — and a move BACKWARD, which is how a
-mistake gets undone. Everything else is judged, including a divergent move: reading "not forward" as
-"backward" let a rebase and a reset onto a divergent branch straight through, with a comment three lines
-above claiming rebase was covered.
+looking exactly like protection. Three things pass without inspection. A commit already reachable from `main`'s CONFIGURED UPSTREAM —
+resolved with `for-each-ref`, never a hard-coded `origin`, which refused a legitimate pull in any checkout
+whose remote is named otherwise, and falling back to any remote-tracking ref once `main` is deleted,
+because deleting a branch deletes its upstream configuration too. A move BACKWARD, which is how a mistake
+gets undone. And a new commit with the SAME TREE AND THE SAME PARENTS as the current one, which is
+`git commit --amend -m "reword"` and changes no file and no earlier commit.
+
+**That third one is where a looser rule breaks.** Tree equality alone waves through a divergent history
+that changes a ship path, reverts it, and lands on the same tree — carrying both commits. Requiring the
+parents to match pins the exception to a rewrite of exactly one commit. Two controls hold each other
+honest: the reword must pass and the divergent revert must fail.
+
+Everything else is judged, forward and divergent alike: reading "not forward" as "backward" let a rebase
+and a reset onto a divergent branch straight through, under a comment claiming rebase was covered. And
+the enumeration reads every commit in the range with `git log -m`, because two endpoints cancel a
+change-and-revert out entirely, and a merge commit shows none of its own conflict resolution without
+`-m` — which is exactly where a resolution lives.
 
 **One accepted gap:** where history is shallow or incomplete, an ancestry test cannot answer and the hook
 allows the move. It fails open on its own errors, unlike `pre-commit`, because it runs inside `clone` and

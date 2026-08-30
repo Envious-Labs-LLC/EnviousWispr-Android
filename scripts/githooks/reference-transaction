@@ -14,15 +14,18 @@
 # `update-ref` both report `0000...` as the old OID, so a hook that read it treated a MOVE as a creation
 # and allowed it. The current value is read from the ref itself instead.
 #
-# WHAT IT MUST NOT BREAK, which is the harder half. This hook fires during `clone`, `fetch` and `pull`.
-# Exactly two things are allowed without inspection, and the list is short on purpose:
-#   · the new commit is already reachable from `main`'s CONFIGURED UPSTREAM -> a fetch or pull of work
+# WHAT IT MUST NOT BREAK, which is the harder half. This hook fires on `fetch` and `pull` in an armed
+# checkout. THREE things are allowed without inspection, and the list is short on purpose:
+#   · the new commit is already reachable from `main`'s CONFIGURED UPSTREAM, or from any remote-tracking
+#     ref when `main` has been deleted and its configuration with it -> a fetch or pull of work
 #     that reached the remote, which means it went through a branch and the review that gates one.
 #     Resolved with `for-each-ref '%(upstream)'`, never hard-coded: a first version tested
 #     `refs/remotes/origin/main` and refused a legitimate pull in any checkout whose remote is named
 #     anything else.
 #   · the move is BACKWARD, meaning the new commit is an ancestor of the current one. That is how a
 #     mistake gets undone.
+#   · the new commit has the SAME TREE AND THE SAME PARENTS as the current one — an amend of exactly one
+#     commit, changing no file and no earlier history. Tree equality alone is not enough; see below.
 #
 # EVERYTHING ELSE IS JUDGED, and getting this wrong was the defect worth naming. A first version asked
 # whether CURRENT is an ancestor of NEW and allowed the operation when it was not — reading "not forward"
@@ -70,6 +73,22 @@ while read -r _OLD NEW REF; do
     # Reviewed work arriving from the remote. The upstream is whatever THIS branch is configured to
     # track, not a hard-coded `origin`.
     UPSTREAM=$(git for-each-ref --format='%(upstream)' refs/heads/main 2>/dev/null) || UPSTREAM=""
+    # `for-each-ref` can only answer about a branch that EXISTS, and `git branch -D main` deletes the
+    # `branch.main.*` configuration along with the ref — so once `main` is gone there is no upstream to
+    # read from anywhere. Recreating it at reviewed remote history is ordinary and was refused for the
+    # upstream's own ship-path content.
+    #
+    # The question that survives the branch is simply: has this commit been to a remote? Any
+    # remote-tracking ref answers it, and reaching one means the work went through a branch and the
+    # review that gates one, which is the same test the configured upstream was standing in for.
+    if [ -z "$UPSTREAM" ]; then
+        for CANDIDATE in $(git for-each-ref --format='%(refname)' refs/remotes 2>/dev/null); do
+            if git merge-base --is-ancestor "$NEW" "$CANDIDATE" 2>/dev/null; then
+                UPSTREAM="$CANDIDATE"
+                break
+            fi
+        done
+    fi
     BASE="$CURRENT"
     if [ -n "$UPSTREAM" ] && git rev-parse --verify --quiet "$UPSTREAM" >/dev/null 2>&1; then
         # At or behind the upstream: nothing local is being added.
@@ -87,18 +106,21 @@ while read -r _OLD NEW REF; do
     if [ -n "$CURRENT" ]; then
         git merge-base --is-ancestor "$NEW" "$CURRENT" 2>/dev/null && continue
 
-        # A DIVERGENT move whose resulting TREE is identical to the current one is a history rewrite that
-        # changes no file: `git commit --amend -m "reword"` is the everyday case, and refusing it was a
-        # false positive found by a control. It is narrow on purpose, and the two conditions have to hold
-        # together. A FORWARD move with an identical end tree is NOT this — a branch that changes a ship
-        # path and then reverts it has exactly that shape, and both of its commits do enter main's
-        # history, so it falls through and is judged.
-        if ! git merge-base --is-ancestor "$CURRENT" "$NEW" 2>/dev/null; then
-            CURRENT_TREE=$(git rev-parse --verify --quiet "$CURRENT^{tree}") || CURRENT_TREE=""
-            NEW_TREE=$(git rev-parse --verify --quiet "$NEW^{tree}") || NEW_TREE=""
-            if [ -n "$CURRENT_TREE" ] && [ "$CURRENT_TREE" = "$NEW_TREE" ]; then
-                continue
-            fi
+        # AMENDING THE CURRENT COMMIT, and nothing wider. `git commit --amend -m "reword"` produces a
+        # commit with the SAME TREE and the SAME PARENTS as the one it replaces, so not one file and not
+        # one earlier commit changes. Refusing it was a false positive a control found.
+        #
+        # Tree equality ALONE is far too broad, and this is the trap: a divergent history can change a
+        # ship path, revert it, and end at a tree identical to the current one while carrying both of
+        # those commits. Requiring the parent list to match as well pins the exception to a rewrite of
+        # exactly one commit — the only shape where "no file and no history changed" is actually true.
+        CURRENT_TREE=$(git rev-parse --verify --quiet "$CURRENT^{tree}") || CURRENT_TREE=""
+        NEW_TREE=$(git rev-parse --verify --quiet "$NEW^{tree}") || NEW_TREE=""
+        CURRENT_PARENTS=$(git show -s --format='%P' "$CURRENT" 2>/dev/null) || CURRENT_PARENTS="x"
+        NEW_PARENTS=$(git show -s --format='%P' "$NEW" 2>/dev/null) || NEW_PARENTS="y"
+        if [ -n "$CURRENT_TREE" ] && [ "$CURRENT_TREE" = "$NEW_TREE" ] &&
+           [ "$CURRENT_PARENTS" = "$NEW_PARENTS" ]; then
+            continue
         fi
     fi
 
@@ -107,8 +129,11 @@ while read -r _OLD NEW REF; do
     # puts both of those commits into main's history. The promise this hook makes is about the commits,
     # so the enumeration has to be about the commits too.
     if [ -n "$BASE" ]; then RANGE="$BASE..$NEW"; else RANGE="$NEW"; fi
-    CHANGED=$(git log --root --format= --name-only --no-renames --diff-filter=ACDMRT "$RANGE" 2>/dev/null) \
-        || continue
+    # `-m` so a MERGE COMMIT's own changes are visible. Without it `git log --name-only` shows nothing
+    # for a merge, and a conflict resolution that edits a ship path only in the merge commit — which is
+    # exactly where a resolution lives — was absent from the list entirely.
+    CHANGED=$(git log --root -m --format= --name-only --no-renames --diff-filter=ACDMRT "$RANGE" \
+        2>/dev/null) || continue
     [ -n "$CHANGED" ] || continue
 
     SHIP=$(printf '%s\n' "$CHANGED" | python3 -c '
@@ -127,9 +152,10 @@ for line in sys.stdin:
     printf '%s\n' "$SHIP" | head -8 | sed 's/^/    /' >&2
     [ "$COUNT" -gt 8 ] && echo "    ... and $((COUNT - 8)) more" >&2
     echo >&2
-    echo "This is the ref-level backstop. It sees every way \`main\` can move, including the ones that" >&2
-    echo "create no commit for a commit hook to catch: a fast-forward, a reset, a checkout -B, an" >&2
-    echo "update-ref, a rebase. Ship-path work reaches \`main\` through a branch and its review, per" >&2
+    echo "This is the ref-level backstop. It sees every way \`main\` can move, including a fast-forward," >&2
+    echo "a reset, a checkout -B and an update-ref, which create no commit at all, and a rebase, whose" >&2
+    echo "replayed commits never reach pre-commit. Ship-path work reaches \`main\` through a branch and" >&2
+    echo "its review, per" >&2
     echo ".claude/rules/workflow-process.md RULE: ten-step-shape." >&2
     REFUSE=1
 done

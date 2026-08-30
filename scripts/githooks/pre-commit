@@ -37,8 +37,9 @@
 # EXIT: 0 allow · 1 this commit is refused · 2 the check itself broke.
 # It FAILS CLOSED, unlike the PreToolUse guards, and the difference is deliberate. A broken PreToolUse hook
 # that blocked every command would stop all work, so those fail open. This one runs at a single moment, on
-# one commit, and it is the only check standing between a ship path and `main` — so a check that cannot
-# answer must not answer "yes".
+# one commit, and refusing a commit it cannot judge costs nothing but a retry. `reference-transaction`
+# behind it fails OPEN for the opposite reason: it runs inside `clone` and `fetch`, where failing closed
+# would break the repository rather than protect one branch.
 
 set -uo pipefail
 

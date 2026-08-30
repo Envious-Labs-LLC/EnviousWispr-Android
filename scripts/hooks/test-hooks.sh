@@ -73,29 +73,41 @@ echo
 # repository whose current branch really is `main`, copy the guards into it, and run them there. Both
 # guards derive their repository root from their own `__file__`, so the copy reads the throwaway repo and
 # the SHIPPED BYTES are what gets exercised — no source modification anywhere.
+# NOTHING IS ALLOCATED BEFORE THE TRAP THAT REMOVES IT. Two earlier versions fixed this one resource at
+# a time — first the scratch index in change-digest.sh, then the plan file here — and each left the
+# resources allocated on the lines either side of it. The ordering is a property of the BLOCK, so every
+# name is declared empty first, the cleanup is armed once, and allocation happens after. A `[ -n ... ]`
+# guard on each means an interruption between any two lines removes exactly what exists.
+MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
+SENTINEL=/tmp/.ew-android-issue-9901-context-read
+
+cleanup() {
+    [ -n "$MAINREPO" ]   && rm -rf "$MAINREPO" "$MAINREPO.git"
+    [ -n "$BRANCHREPO" ] && rm -rf "$BRANCHREPO"
+    [ -n "$DIG_DIR" ]    && rm -rf "$DIG_DIR"     # never a glob: that would take a concurrent run's
+    [ -n "$NOHOOKS" ]    && rm -rf "$NOHOOKS"
+    [ -n "$STDERR" ]     && rm -f "$STDERR"
+    [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
+    rm -f "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md
+    return 0
+}
+trap cleanup EXIT
+
 MAINREPO=$(mktemp -d) || exit 2
 # Deliberately OUTSIDE $MAINREPO: session-end-check.sh is asserted against that repository being CLEAN,
 # and a stray file inside it would make the clean control impossible to reach.
 STDERR=$(mktemp) || exit 2
-SENTINEL=/tmp/.ew-android-issue-9901-context-read
-# A plan file under a FIXED name would overwrite and then delete a real file of that name. The suite
-# cleans up after itself, so it must only ever create something nothing else owns.
+
+# A plan file under a FIXED name would overwrite and then delete a real file of that name, so it must
+# only ever create something nothing else owns.
 #
 # NOT `mktemp`, and the reason is a defect this suite left in the working tree: BSD mktemp requires the
 # X's at the END of the template, and the plan-gate regex requires the name to end in `.md`. Given
-# `...-XXXXXX.md` it created a file called exactly that, so an early exit left a literal `XXXXXX` file
-# behind. The name is built here instead, and refused if anything already holds it.
-EDITPLAN="docs/feature-requests/issue-9902-2026-01-01-control-$$-$RANDOM.md"
-[ -e "$EDITPLAN" ] && exit 2
-DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
-# The trap removes only the exact paths THIS run reserved; a `scripts/.digest-control-*` glob would take
-# a concurrent session's directory with it.
-#
-# AND IT IS INSTALLED BEFORE THE PLAN FILE EXISTS, which is the same ordering defect the digest script
-# had on its own error path. Creating the file first leaves a window — short, and the only window where
-# the sentence "the suite cleans up after itself" would be false. The name is reserved above; the file is
-# created below.
-trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; [ -n "$BRANCHREPO" ] && rm -rf "$BRANCHREPO"; rm -f "$STDERR" "$EDITPLAN" "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md; [ -n "$DIG_DIR" ] && rm -rf "$DIG_DIR"; [ -n "$NOHOOKS" ] && rm -rf "$NOHOOKS"' EXIT
+# `...-XXXXXX.md` it created a file called exactly that, and an early exit left a literal `XXXXXX` file
+# behind.
+EDITPLAN_CANDIDATE="docs/feature-requests/issue-9902-2026-01-01-control-$$-$RANDOM.md"
+[ -e "$EDITPLAN_CANDIDATE" ] && exit 2
+EDITPLAN="$EDITPLAN_CANDIDATE"
 : > "$EDITPLAN" || exit 2
 
 # Every setup step is checked. A half-built repository makes controls fail for a reason that has nothing

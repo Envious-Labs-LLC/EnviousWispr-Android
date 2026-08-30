@@ -8,11 +8,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.VibrationEffect
+import android.os.Vibrator
 import android.os.VibratorManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.envi.wispr.asr.IAsrCallback
@@ -28,6 +31,13 @@ import com.envi.wispr.history.HistoryPublicationPolicy
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
+import com.envi.wispr.insertion.ClipboardOutcome
+import com.envi.wispr.insertion.FallbackAnnouncement
+import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.paste.AccessibilityPermission
+import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.paste.AutoPasteReadiness
+import com.envi.wispr.paste.InsertionHandoff
 import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
@@ -116,7 +126,14 @@ class DictationSessionService : Service() {
     @Volatile private var structuredTerms: List<CustomTerm> = emptyList()
     @Volatile private var vocabularyEnabled = true
     @Volatile private var cleanupOptions = CleanupOptions()
-    @Volatile private var clipboardPolicy = ClipboardInsertionPolicy()
+    /**
+     * Null until `AppPreferences` delivers the user's real values, which on a cold start is AFTER
+     * the listening notification is built. A `ClipboardInsertionPolicy()` stand-in here reads as a
+     * decided answer and its auto-copy default is `true`, so the notification promised the
+     * clipboard to a user who had turned auto-copy off and whose words went to History only
+     * (`validation-discipline.md` FACT: silent-empty-traps, plausible-value traps).
+     */
+    @Volatile private var clipboardPolicy: ClipboardInsertionPolicy? = null
     @Volatile private var sessionPreferences = SessionPreferences()
     private val cleanupPreferencesReady = CompletableDeferred<Unit>()
     private val structuredTermsReady = CompletableDeferred<Unit>()
@@ -262,6 +279,11 @@ class DictationSessionService : Service() {
 
     private fun beginSession() {
         if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return
+        // The standing result notification is a present-tense claim about the clipboard made by
+        // the PREVIOUS dictation, and this dictation is about to overwrite that clipboard. Every
+        // entry point reaches insertion through here, so this is the one place that sees the
+        // supersession (`architecture-rules.md` RULE: one-owner-for-the-session).
+        DictationNotificationController.dismissWordsNotInserted(this)
         promoteToForeground(processing = false)
         PasteAccessibilityService.pinTargetForDictation()
         publicationStarted.set(false)
@@ -296,7 +318,9 @@ class DictationSessionService : Service() {
                     vocabularyEnabled = vocabularyEnabled,
                     terms = termsSnapshot,
                     matcher = matcher,
-                    clipboard = clipboardPolicy,
+                    // Non-null by construction: cleanupPreferencesReady, awaited above, is
+                    // completed only after the line that writes this field.
+                    clipboard = clipboardPolicy ?: ClipboardInsertionPolicy(),
                 )
                 bindPipelineServices()
             }
@@ -360,7 +384,7 @@ class DictationSessionService : Service() {
             }
             DictationSurfaceState.update(this, DictationSurfaceState.Phase.LISTENING)
             RecordingOverlayState.show()
-            vibrate(confirm = true)
+            vibrate(HapticCue.SESSION_TRANSITION)
             DebugLogger.log(TAG, "Recording started")
             startPolling()
         } catch (error: Exception) {
@@ -410,7 +434,7 @@ class DictationSessionService : Service() {
         RecordingOverlayState.hide()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.PROCESSING)
         promoteToForeground(processing = true)
-        vibrate(confirm = true)
+        vibrate(HapticCue.SESSION_TRANSITION)
         DebugLogger.log(TAG, "Stopping recording and starting transcription")
 
         Thread({
@@ -576,42 +600,60 @@ class DictationSessionService : Service() {
                 persistedId = persistedId,
                 persistenceSucceeded = saveResult.isSuccess,
             )
-            val scheduled = if (route == HistoryPublicationPolicy.Route.AUTO_INSERT) {
+            val handoff = if (route == HistoryPublicationPolicy.Route.AUTO_INSERT) {
                 PasteAccessibilityService.pasteWhenTargetReturns(
                     persistedId,
                     finalText,
                     policy = sessionPreferences.clipboard,
                 )
             } else {
-                false
+                InsertionHandoff.HISTORY_NOT_DURABLE
             }
-            if (!scheduled) {
+            if (handoff != InsertionHandoff.SCHEDULED) {
                 PasteAccessibilityService.releasePinnedTarget()
                 val mustPreventDataLoss = persistedId <= 0L
-                if (sessionPreferences.clipboard.autoCopyToClipboard || mustPreventDataLoss) {
-                    val clipboard = getSystemService(ClipboardManager::class.java)
-                    keepOnClipboard(clipboard, persistedId, finalText)
-                } else {
-                    keepInHistoryOnly(persistedId)
-                    mainHandler.post {
-                        Toast.makeText(
-                            this@DictationSessionService,
-                            "Automatic insertion unavailable. Transcript saved in History.",
-                            Toast.LENGTH_LONG,
-                        ).show()
+                // Three outcomes, not two. A copy that was never attempted is the user's own
+                // auto-copy setting and History is then the destination; a copy that was attempted
+                // and failed is a fault whatever else was true.
+                val clipboard =
+                    if (sessionPreferences.clipboard.autoCopyToClipboard || mustPreventDataLoss) {
+                        if (
+                            keepOnClipboard(
+                                getSystemService(ClipboardManager::class.java),
+                                persistedId,
+                                finalText,
+                            )
+                        ) {
+                            ClipboardOutcome.COPIED
+                        } else {
+                            ClipboardOutcome.WRITE_FAILED
+                        }
+                    } else {
+                        keepInHistoryOnly(persistedId)
+                        ClipboardOutcome.NOT_ATTEMPTED
                     }
-                }
+                // Nothing was handed to the accessibility service on this branch, so it will never
+                // speak: the announcement has to originate here
+                // (`architecture-rules.md` RULE: insertion-fails-safe-never-silently). The routes
+                // where the service DID accept the text and then failed announce themselves, in
+                // PasteAccessibilityService.recordAndAnnounce.
+                announceInsertionFallback(
+                    handoff = handoff,
+                    clipboard = clipboard,
+                    savedInHistory = persistedId > 0L,
+                )
             }
             DebugLogger.log(
                 TAG,
                 when {
-                    scheduled -> "Auto-insert handed to accessibility target tracker"
+                    handoff == InsertionHandoff.SCHEDULED ->
+                        "Auto-insert handed to accessibility target tracker"
                     route == HistoryPublicationPolicy.Route.COPY_ONLY ->
                         "History persistence unavailable; transcript kept on clipboard only"
                     sessionPreferences.clipboard.autoCopyToClipboard || persistedId <= 0L ->
                         "Accessibility unavailable; transcript kept on clipboard"
                     else -> "Accessibility unavailable; transcript retained in History"
-                },
+                } + " (handoff=$handoff)",
             )
             DebugLogger.log(TAG, DebugLogger.pipelineSummary())
             finishSession()
@@ -634,27 +676,65 @@ class DictationSessionService : Service() {
         )
     }
 
+    /** @return whether the words actually reached the clipboard, which the copy depends on. */
     private suspend fun keepOnClipboard(
         clipboard: ClipboardManager,
         transcriptId: Long,
         text: String,
-    ) {
+    ): Boolean {
         val copied = runCatching {
             clipboard.setPrimaryClip(ClipData.newPlainText("EnviousWispr", text))
         }.isSuccess
-        if (transcriptId <= 0L) return
+        if (transcriptId <= 0L) return copied
 
         runCatching {
             transcriptRepository.finalizeInsertionOutcome(
                 transcriptId,
                 TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
-                if (copied) "clipboard" else "insertion_failed",
+                if (copied) InsertionResults.CLIPBOARD else InsertionResults.INSERTION_FAILED,
                 interrupted = true,
             )
         }.onFailure { error ->
             DebugLogger.warn(TAG, "Unable to finalize clipboard-only history: ${error.message}")
         }
+        return copied
     }
+
+    /**
+     * Tells the user where their words went, on the two surfaces that survive a crashed
+     * accessibility service: a toast now, and a notification they can still find later.
+     *
+     * Whether to speak at all is `FallbackAnnouncement`'s decision, not this method's: a user
+     * who never granted the permission is in clipboard-only mode by choice and gets nothing.
+     */
+    private fun announceInsertionFallback(
+        handoff: InsertionHandoff,
+        clipboard: ClipboardOutcome,
+        savedInHistory: Boolean,
+    ) {
+        val announcement = FallbackAnnouncement.fallbackAnnouncement(
+            autoPaste = autoPasteAvailability(),
+            handoff = handoff,
+            clipboard = clipboard,
+            savedInHistory = savedInHistory,
+        ) ?: return
+        if (announcement.haptic) vibrate(HapticCue.FAILURE)
+        mainHandler.post {
+            Toast.makeText(this, announcement.toast, Toast.LENGTH_LONG).show()
+        }
+        DictationNotificationController.wordsNotInserted(this, announcement)
+    }
+
+    /**
+     * Liveness is a volatile read. The permission half is a `Settings.Secure` lookup, which the
+     * platform serves from a per-process cache after the first call. Read only when a session
+     * starts and when a dictation falls back, never at idle (`architecture-rules.md`
+     * RULE: no-idle-cost). The setting alone cannot answer this: it still names a crashed service.
+     */
+    private fun autoPasteAvailability(): AutoPasteAvailability = AutoPasteReadiness.evaluate(
+        permittedInSettings = AccessibilityPermission.isGranted(this),
+        serviceBound = PasteAccessibilityService.isBound.value,
+    )
 
     private suspend fun keepInHistoryOnly(transcriptId: Long) {
         if (transcriptId <= 0L) return
@@ -662,7 +742,7 @@ class DictationSessionService : Service() {
             transcriptRepository.finalizeInsertionOutcome(
                 transcriptId,
                 TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
-                "history_only",
+                InsertionResults.HISTORY_ONLY,
                 interrupted = true,
             )
         }.onFailure { error ->
@@ -675,7 +755,7 @@ class DictationSessionService : Service() {
         RecordingOverlayState.hide()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
-        vibrate(confirm = false)
+        vibrate(HapticCue.SESSION_CANCELED)
         serviceScope.launch {
             val ready = runCatching {
                 audioService?.stopCapture()
@@ -698,7 +778,7 @@ class DictationSessionService : Service() {
         if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
-        vibrate(confirm = false)
+        vibrate(HapticCue.SESSION_CANCELED)
         finishSession()
     }
 
@@ -708,7 +788,7 @@ class DictationSessionService : Service() {
         RecordingOverlayState.hide()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
-        vibrate(confirm = false)
+        vibrate(HapticCue.FAILURE)
         mainHandler.post { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
         stopAudioCaptureService()
         finishSession()
@@ -739,7 +819,15 @@ class DictationSessionService : Service() {
         val notification = if (processing) {
             DictationNotificationController.processing(this)
         } else {
-            DictationNotificationController.listening(this)
+            DictationNotificationController.listening(
+                context = this,
+                autoPaste = autoPasteAvailability(),
+                // The live field, not the session snapshot: this runs before `beginSession`
+                // freezes one, and it is the field that snapshot is taken from. It is null on a
+                // cold start, which is the state the notification has to be able to say nothing
+                // about rather than guess at.
+                clipboard = clipboardPolicy,
+            )
         }
         startForeground(
             DictationNotificationController.NOTIFICATION_ID,
@@ -800,16 +888,50 @@ class DictationSessionService : Service() {
         polishService = null
     }
 
-    private fun vibrate(confirm: Boolean) {
+    /**
+     * The cues this service fires, and whether each one is the user's to switch off.
+     *
+     * The gate belongs to the CUE, not to `vibrate`, because the two kinds answer to different
+     * settings. `Settings.System.HAPTIC_FEEDBACK_ENABLED` governs touch and long-press feedback,
+     * so honouring it for a RESULT cue is parity with `PasteAccessibilityService.performResultHaptic`.
+     * A session cue is not feedback on a touch: on the side-button path there is no window, the
+     * user's eyes are on another app's text field, and the buzz is the only signal that recording
+     * started or stopped. Gating those on the touch-feedback switch silences the whole product for
+     * a user who turned off keyboard clicks.
+     */
+    private enum class HapticCue(
+        val durationMs: Long,
+        val amplitude: Int,
+        val honoursSystemHapticSetting: Boolean,
+    ) {
+        /** Recording started, or stopped for transcription. The only cue on a windowless path. */
+        SESSION_TRANSITION(28L, 120, honoursSystemHapticSetting = false),
+
+        /** The user cancelled. Also a windowless acknowledgement, with the heavier waveform. */
+        SESSION_CANCELED(45L, 180, honoursSystemHapticSetting = false),
+
+        /** A result cue: the dictation did not land. Parity with performResultHaptic. */
+        FAILURE(45L, 180, honoursSystemHapticSetting = true),
+    }
+
+    private fun vibrate(cue: HapticCue) {
+        if (cue.honoursSystemHapticSetting &&
+            Settings.System.getInt(contentResolver, Settings.System.HAPTIC_FEEDBACK_ENABLED, 1) != 1
+        ) {
+            return
+        }
         runCatching {
-            val vibrator = getSystemService(VibratorManager::class.java).defaultVibrator
+            // VibratorManager is API 31 against minSdk 30. Guarded here as well as in
+            // PasteAccessibilityService.performResultHaptic: the runCatching only degrades to no
+            // haptics at all on the oldest supported phone, which is a silent loss of every cue.
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                getSystemService(VibratorManager::class.java)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Vibrator::class.java)
+            } ?: return
             if (vibrator.hasVibrator()) {
-                vibrator.vibrate(
-                    VibrationEffect.createOneShot(
-                        if (confirm) 28L else 45L,
-                        if (confirm) 120 else 180,
-                    ),
-                )
+                vibrator.vibrate(VibrationEffect.createOneShot(cue.durationMs, cue.amplitude))
             }
         }
     }

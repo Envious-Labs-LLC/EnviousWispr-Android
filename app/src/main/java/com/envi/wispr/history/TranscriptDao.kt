@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import com.envi.wispr.insertion.InsertionResults
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -76,7 +77,7 @@ interface TranscriptDao {
 
     @Query(
         "UPDATE transcripts SET status = '${TranscriptEntity.STATUS_INSERTION_INTERRUPTED}', " +
-            "insertionResult = 'insertion_interrupted', stateChangedAtMs = :nowMs, interrupted = 1 " +
+            "insertionResult = '${InsertionResults.INSERTION_INTERRUPTED}', stateChangedAtMs = :nowMs, interrupted = 1 " +
             "WHERE stateChangedAtMs <= :cutoffMs AND status = '${TranscriptEntity.STATUS_READY_FOR_INSERTION}'",
     )
     suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int

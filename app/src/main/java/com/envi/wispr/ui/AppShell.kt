@@ -101,6 +101,9 @@ import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.models.modelUiState
 import com.envi.wispr.history.TranscriptEntity
+import com.envi.wispr.insertion.InsertionOutcomeMessages
+import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderConfiguration
@@ -182,6 +185,7 @@ fun EnviousWisprApp(
         OnboardingScreen(
             step = uiState.preferences.onboardingStep,
             readiness = uiState.readiness,
+            autoPaste = uiState.autoPaste,
             onStepChange = onOnboardingStep,
             onDismiss = onDismissOnboarding,
             onRequestMicrophone = onRequestMicrophone,
@@ -230,8 +234,10 @@ fun EnviousWisprApp(
             when (current) {
                 AppDestination.Home -> HomeScreen(
                     readiness = uiState.readiness,
+                    autoPaste = uiState.autoPaste,
                     onStartDictation = onStartDictation,
                     onContinueSetup = onResumeOnboarding,
+                    onOpenAccessibility = onOpenAccessibility,
                 )
                 AppDestination.History -> HistoryScreen(
                     transcripts = uiState.history,
@@ -405,8 +411,10 @@ private fun ScreenContainer(
 @Composable
 private fun HomeScreen(
     readiness: AppReadiness,
+    autoPaste: AutoPasteAvailability,
     onStartDictation: () -> Unit,
     onContinueSetup: () -> Unit,
+    onOpenAccessibility: () -> Unit,
 ) {
     val view = LocalView.current
     ScreenContainer(
@@ -472,7 +480,7 @@ private fun HomeScreen(
             }
         }
 
-        if (!readiness.coreReady || !readiness.accessibilityEnabled) {
+        if (!readiness.coreReady || autoPaste == AutoPasteAvailability.NOT_PERMITTED) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
             ) {
@@ -498,6 +506,41 @@ private fun HomeScreen(
             }
         }
 
+        // A separate, CALMER card, and calmer has to be visible or the split is only in the source.
+        // The permission is granted, so routing the user back to grant it would be a wrong
+        // instruction, and the service is legitimately unbound for a moment at every cold start:
+        // firing the same red alarm through that window would train the user to ignore it.
+        // Suppressed entirely while the setup card above is showing, so the screen never carries
+        // two alarm cards for one unfinished setup.
+        if (readiness.coreReady && autoPaste == AutoPasteAvailability.PERMITTED_NOT_RUNNING) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                ),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StatusDot(ready = false, description = autoPaste.statusDescription())
+                    Column(Modifier.weight(1f)) {
+                        Text("Auto-paste is not connected", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Your words go to the clipboard until it reconnects. If it stays " +
+                                "disconnected, turn EnviousWispr off and then on in Accessibility settings.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    FilledTonalButton(onClick = onOpenAccessibility) {
+                        Text("Accessibility settings")
+                    }
+                }
+            }
+        }
+
         Text("Readiness", style = MaterialTheme.typography.titleLarge)
         Row(
             modifier = Modifier
@@ -508,7 +551,11 @@ private fun HomeScreen(
             ReadinessChip("Microphone", readiness.microphoneGranted)
             ReadinessChip("Speech", readiness.speechModelReady)
             ReadinessChip("Polish", readiness.polishModelReady)
-            ReadinessChip("Insert", readiness.accessibilityEnabled)
+            ReadinessChip(
+                label = "Insert",
+                ready = autoPaste == AutoPasteAvailability.LIVE,
+                description = autoPaste.statusDescription(),
+            )
         }
 
         Card {
@@ -599,7 +646,10 @@ private fun HistoryScreen(
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (transcript.status != TranscriptEntity.STATUS_COMPLETED) {
                             Text(
-                                "Status: ${transcript.status.replace('_', ' ')}",
+                                InsertionOutcomeMessages.historyStatusLine(
+                                    transcript.status,
+                                    transcript.insertionResult,
+                                ),
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.error,
                             )
@@ -619,6 +669,13 @@ private fun HistoryScreen(
                                         ?.setPrimaryClip(ClipData.newPlainText("EnviousWispr", transcript.finalText))
                                         ?: error("Clipboard unavailable")
                                 }.isSuccess
+                                // This row now owns the clipboard, so the standing "press and hold,
+                                // then tap Paste" claim about an earlier dictation is false. The app
+                                // made this replacement itself and knows it succeeded, which is the
+                                // only reason it can be retracted at all.
+                                if (copied) {
+                                    DictationNotificationController.dismissWordsNotInserted(context)
+                                }
                                 Toast.makeText(context, if (copied) "Copied" else "Unable to copy", Toast.LENGTH_SHORT).show()
                             }) { Text("Copy") }
                             TextButton(onClick = { onKeep(transcript) }) { Text(if (transcript.kept) "Unkeep" else "Keep") }
@@ -720,6 +777,11 @@ private fun WordsScreen(
                             ?.setPrimaryClip(ClipData.newPlainText("EnviousWispr vocabulary", exported))
                             ?: error("Clipboard unavailable")
                     }.isSuccess
+                    // Vocabulary JSON is now on the clipboard, so any standing claim that a
+                    // dictation is waiting there to be pasted is false.
+                    if (copied) {
+                        DictationNotificationController.dismissWordsNotInserted(context)
+                    }
                     Toast.makeText(
                         context,
                         if (copied) "Vocabulary copied" else "Unable to export vocabulary",
@@ -1244,17 +1306,19 @@ private fun SettingsScreen(
             HorizontalDivider()
             SettingsActionRow(
                 title = "Auto-paste access",
-                subtitle = if (uiState.readiness.accessibilityEnabled) {
-                    "Ready for right-button dictation"
-                } else {
-                    "Needs accessibility permission"
+                subtitle = when (uiState.autoPaste) {
+                    AutoPasteAvailability.LIVE -> "Ready for right-button dictation"
+                    AutoPasteAvailability.PERMITTED_NOT_RUNNING ->
+                        "Turned on but not connected. Your words go to the clipboard until it reconnects."
+                    AutoPasteAvailability.NOT_PERMITTED -> "Needs accessibility permission"
                 },
-                ready = uiState.readiness.accessibilityEnabled,
+                ready = uiState.autoPaste == AutoPasteAvailability.LIVE,
+                statusDescription = uiState.autoPaste.statusDescription(),
                 onClick = onOpenAccessibility,
             )
         }
         SettingsGroup("Product") {
-            SettingsActionRow("Continue guided setup", "Resume from your saved step", false, onContinueSetup)
+            SettingsActionRow("Continue guided setup", "Resume from your saved step", false, onClick = onContinueSetup)
             HorizontalDivider()
             SettingsActionRow(
                 "Text cleanup",
@@ -1266,7 +1330,7 @@ private fun SettingsScreen(
                 showPolishSettings = true
             }
             HorizontalDivider()
-            SettingsActionRow("Microphone and sounds", "Routing, warm start, cues", null, {})
+            SettingsActionRow("Microphone and sounds", "Routing, warm start, cues", null, onClick = {})
             HorizontalDivider()
             SettingsActionRow(
                 "Clipboard and insertion",
@@ -1275,9 +1339,9 @@ private fun SettingsScreen(
             ) { showClipboardSettings = true }
         }
         SettingsGroup("About") {
-            SettingsActionRow("Open-source licenses", "S1-mini, llama.cpp, sherpa-onnx, and more", null, onOpenLicenses)
+            SettingsActionRow("Open-source licenses", "S1-mini, llama.cpp, sherpa-onnx, and more", null, onClick = onOpenLicenses)
             HorizontalDivider()
-            SettingsActionRow("Version 0.1.0", "Android parity foundation", null, {})
+            SettingsActionRow("Version 0.1.0", "Android parity foundation", null, onClick = {})
         }
     }
 
@@ -1761,6 +1825,7 @@ private fun SettingsActionRow(
     title: String,
     subtitle: String,
     ready: Boolean?,
+    statusDescription: String? = null,
     onClick: () -> Unit,
 ) {
     TextButton(
@@ -1774,7 +1839,7 @@ private fun SettingsActionRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (ready != null) StatusDot(ready)
+            if (ready != null) StatusDot(ready, statusDescription)
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1788,6 +1853,7 @@ private fun SettingsActionRow(
 private fun OnboardingScreen(
     step: Int,
     readiness: AppReadiness,
+    autoPaste: AutoPasteAvailability,
     onStepChange: (Int) -> Unit,
     onDismiss: () -> Unit,
     onRequestMicrophone: () -> Unit,
@@ -1868,6 +1934,7 @@ private fun OnboardingScreen(
                         SetupStepAction(
                             step = safeStep,
                             readiness = readiness,
+                            autoPaste = autoPaste,
                             onRequestMicrophone = onRequestMicrophone,
                             onRequestNotifications = onRequestNotifications,
                             onOpenAccessibility = onOpenAccessibility,
@@ -1907,6 +1974,7 @@ private data class SetupStep(val eyebrow: String, val title: String, val descrip
 private fun SetupStepAction(
     step: Int,
     readiness: AppReadiness,
+    autoPaste: AutoPasteAvailability,
     onRequestMicrophone: () -> Unit,
     onRequestNotifications: () -> Unit,
     onOpenAccessibility: () -> Unit,
@@ -1931,19 +1999,21 @@ private fun SetupStepAction(
             onClick = onRequestNotifications,
         )
         4 -> SetupActionCard(
-            title = if (readiness.accessibilityEnabled) {
-                "Right-button auto-insert ready"
-            } else {
-                "Enable right-button auto-insert"
+            title = when (autoPaste) {
+                AutoPasteAvailability.LIVE -> "Right-button auto-insert ready"
+                AutoPasteAvailability.PERMITTED_NOT_RUNNING ->
+                    "Auto-insert is turned on but not connected"
+                AutoPasteAvailability.NOT_PERMITTED -> "Enable right-button auto-insert"
             },
-            ready = readiness.accessibilityEnabled,
-            action = if (readiness.accessibilityEnabled) null else "Accessibility settings",
+            ready = autoPaste == AutoPasteAvailability.LIVE,
+            action = if (autoPaste == AutoPasteAvailability.LIVE) null else "Accessibility settings",
+            statusDescription = autoPaste.statusDescription(),
             onClick = onOpenAccessibility,
         )
         5 -> {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                SetupActionCard("Fast speech model", readiness.speechModelReady, if (readiness.speechModelReady) null else "Repair", { ModelDeliveryWorker.enqueue(context, ModelManifest.parakeet) })
-                SetupActionCard("${S1Config.MODEL_NAME} local polish", readiness.polishModelReady, if (readiness.polishModelReady) null else "Repair", { ModelDeliveryWorker.enqueue(context, ModelManifest.s1) })
+                SetupActionCard("Fast speech model", readiness.speechModelReady, if (readiness.speechModelReady) null else "Repair", onClick = { ModelDeliveryWorker.enqueue(context, ModelManifest.parakeet) })
+                SetupActionCard("${S1Config.MODEL_NAME} local polish", readiness.polishModelReady, if (readiness.polishModelReady) null else "Repair", onClick = { ModelDeliveryWorker.enqueue(context, ModelManifest.s1) })
             }
         }
         6 -> Button(
@@ -1963,6 +2033,7 @@ private fun SetupActionCard(
     title: String,
     ready: Boolean,
     action: String?,
+    statusDescription: String? = null,
     onClick: () -> Unit,
 ) {
     Card(
@@ -1978,7 +2049,7 @@ private fun SetupActionCard(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            StatusDot(ready)
+            StatusDot(ready, statusDescription)
             Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             if (action != null) FilledTonalButton(onClick = onClick) { Text(action) }
         }
@@ -2040,7 +2111,7 @@ private fun MicrophoneGlyph(modifier: Modifier, color: Color = Color.Unspecified
 }
 
 @Composable
-private fun ReadinessChip(label: String, ready: Boolean) {
+private fun ReadinessChip(label: String, ready: Boolean, description: String? = null) {
     Surface(
         shape = RoundedCornerShape(100.dp),
         color = if (ready) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer,
@@ -2050,7 +2121,7 @@ private fun ReadinessChip(label: String, ready: Boolean) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            StatusDot(ready)
+            StatusDot(ready, description)
             Text(label, style = MaterialTheme.typography.labelLarge)
         }
     }
@@ -2072,12 +2143,21 @@ private fun StatusPill(label: String, ready: Boolean) {
 }
 
 @Composable
-private fun StatusDot(ready: Boolean) {
+private fun StatusDot(ready: Boolean, description: String? = null) {
+    // The screen-reader label is the fifth surface that said Ready while auto-paste was dead, and
+    // the one that matters most on a feature built out of an accessibility service.
+    val label = description ?: if (ready) "Ready" else "Needs attention"
     Box(
         modifier = Modifier
             .size(10.dp)
             .clip(CircleShape)
             .background(if (ready) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-            .semantics { contentDescription = if (ready) "Ready" else "Needs attention" },
+            .semantics { contentDescription = label },
     )
+}
+
+private fun AutoPasteAvailability.statusDescription(): String = when (this) {
+    AutoPasteAvailability.LIVE -> "Ready"
+    AutoPasteAvailability.PERMITTED_NOT_RUNNING -> "Not connected"
+    AutoPasteAvailability.NOT_PERMITTED -> "Needs attention"
 }

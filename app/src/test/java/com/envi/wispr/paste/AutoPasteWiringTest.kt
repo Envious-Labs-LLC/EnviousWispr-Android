@@ -225,6 +225,40 @@ class AutoPasteWiringTest {
     }
 
     /**
+     * REVERT: dropping the pin result on the floor in `beginSession`, or handing insertion's own
+     * answer straight to the branch.
+     *
+     * Either one restores a silence that no announcement test can see, because both surfaces are
+     * then told the truthful thing about the wrong moment. The service can die before the pin and
+     * be rebound before insertion, or be pinned and then torn down mid-dictation; both arrive at
+     * insertion as a live service with nothing pinned, which is the destination four of the five
+     * entry points are DESIGNED to reach. The correction has to happen where the handoff is
+     * produced, once, or the toast, the notification, the History row and the log stop agreeing.
+     */
+    @Test
+    fun theHandoffIsJudgedByWhatTheStartSawNotOnlyByWhatInsertionFound() {
+        val source = read("ui/DictationSessionService.kt")
+        val begin = slice(source, "private fun beginSession() {", "\n    private fun ")
+        assertTrue(
+            "beginSession discards the pin result again, so nothing can tell a dead service at " +
+                "the start from the four entry points that never had a target: $begin",
+            begin.contains("targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()"),
+        )
+        assertEquals(
+            "The handoff must pass through InsertionJudgement.handoffToJudge exactly once, at the " +
+                "point it is produced. Zero sites is the shipped silence; two is two owners of one " +
+                "decision, which is the defect issue #16 itself was",
+            1,
+            Regex("InsertionJudgement\\.handoffToJudge\\(").findAll(source).count(),
+        )
+        assertTrue(
+            "handoffToJudge is no longer reading the value the START recorded, so it can only " +
+                "repeat what insertion already said",
+            source.contains("startPin = targetPinAtStart"),
+        )
+    }
+
+    /**
      * REVERT: any readiness surface reading the permission fact alone again, and, the revert the
      * old single `AutoPasteAvailability.LIVE` check could not see, DELETING any four of the five
      * surfaces. One survivor kept that check green while four screens went back to reporting the

@@ -37,7 +37,9 @@ import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.paste.AccessibilityPermission
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.AutoPasteReadiness
+import com.envi.wispr.paste.DictationTargetPin
 import com.envi.wispr.paste.InsertionHandoff
+import com.envi.wispr.paste.InsertionJudgement
 import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
@@ -119,6 +121,11 @@ class DictationSessionService : Service() {
     private var asrBound = false
     private var polishBound = false
     private var rawTranscript = ""
+    // What the START of this dictation saw when it tried to pin an editor. Read at the end,
+    // by which time the service may have been replaced. NO_TARGET until a session begins, so
+    // a value that outlived its session can only ever suppress an announcement, never invent
+    // one.
+    @Volatile private var targetPinAtStart = DictationTargetPin.NO_TARGET
     private var recordingStartedAtMs = 0L
     @Volatile private var recordingDurationMs = 0L
     private var draftCreation: Deferred<Long>? = null
@@ -285,7 +292,10 @@ class DictationSessionService : Service() {
         // supersession (`architecture-rules.md` RULE: one-owner-for-the-session).
         DictationNotificationController.dismissWordsNotInserted(this)
         promoteToForeground(processing = false)
-        PasteAccessibilityService.pinTargetForDictation()
+        // Kept for the whole session. Android may rebind the accessibility service while the user
+        // is still speaking, so the state insertion finds minutes later cannot say whether this
+        // dictation ever had a field to aim at (`InsertionJudgement.handoffToJudge`).
+        targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()
         publicationStarted.set(false)
         teardownStarted.set(false)
         draftId.set(0L)
@@ -600,15 +610,20 @@ class DictationSessionService : Service() {
                 persistedId = persistedId,
                 persistenceSucceeded = saveResult.isSuccess,
             )
-            val handoff = if (route == HistoryPublicationPolicy.Route.AUTO_INSERT) {
-                PasteAccessibilityService.pasteWhenTargetReturns(
-                    persistedId,
-                    finalText,
-                    policy = sessionPreferences.clipboard,
-                )
-            } else {
-                InsertionHandoff.HISTORY_NOT_DURABLE
-            }
+            // Corrected once, here, so the announcement, the History row and the log all read the
+            // same handoff. Deriving it twice is how the two surfaces started disagreeing.
+            val handoff = InsertionJudgement.handoffToJudge(
+                startPin = targetPinAtStart,
+                insertionHandoff = if (route == HistoryPublicationPolicy.Route.AUTO_INSERT) {
+                    PasteAccessibilityService.pasteWhenTargetReturns(
+                        persistedId,
+                        finalText,
+                        policy = sessionPreferences.clipboard,
+                    )
+                } else {
+                    InsertionHandoff.HISTORY_NOT_DURABLE
+                },
+            )
             if (handoff != InsertionHandoff.SCHEDULED) {
                 PasteAccessibilityService.releasePinnedTarget()
                 val mustPreventDataLoss = persistedId <= 0L

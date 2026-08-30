@@ -43,6 +43,11 @@ class VoiceInputActivity : Activity() {
         if (action == DictationSessionService.ACTION_START ||
             action == DictationSessionService.ACTION_TOGGLE
         ) {
+            // Pinned here because this window is closing and the user's editor is still focused.
+            // The ANSWER is deliberately not carried: the session pins again in `beginSession` and
+            // that later value is the one every announcement is judged against. Keeping this one
+            // too would put two records of one fact in two components with different lifetimes,
+            // and this one dies first.
             PasteAccessibilityService.pinTargetForDictation()
         }
         runCatching { DictationSessionService.sendCommand(this, action) }

@@ -146,10 +146,18 @@ class PasteAccessibilityService : AccessibilityService() {
             }
         }
 
-        /** Pins the editor active before the windowless dictation launcher exits. */
-        fun pinTargetForDictation(): Boolean {
-            val service = instance ?: return false
-            return service.callOnMain(false) { service.pinTarget() }
+        /**
+         * Pins the editor active before the windowless dictation launcher exits.
+         *
+         * The answer is [DictationTargetPin] rather than a Boolean because the session has to
+         * carry WHY nothing was pinned all the way to the announcement. See
+         * [InsertionJudgement.handoffToJudge].
+         */
+        fun pinTargetForDictation(): DictationTargetPin {
+            val service = instance ?: return DictationTargetPin.SERVICE_NOT_RUNNING
+            return service.callOnMain(DictationTargetPin.SERVICE_DID_NOT_ANSWER) {
+                if (service.pinTarget()) DictationTargetPin.PINNED else DictationTargetPin.NO_TARGET
+            }
         }
 
         fun releasePinnedTarget() {

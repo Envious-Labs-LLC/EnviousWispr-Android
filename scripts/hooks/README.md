@@ -50,7 +50,7 @@ absent, and the suite says so rather than passing quietly. Edit either one and r
 | `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer | every file that is not a plan, and any edit whose result it cannot reconstruct |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
 | `../githooks/pre-commit` | git's pre-commit | any commit whose staged set adds, changes, renames or DELETES a ship path, on `main` | on a branch, or a commit touching nothing shipped |
-| `../githooks/reference-transaction` | every update to `refs/heads/main` | any move — forward OR divergent — onto ship-path commits that are not on the upstream | a fetch, a pull (including `--rebase`), a reset backwards, an amend of the current commit, or a move carrying nothing shipped |
+| `../githooks/reference-transaction` | every update to `refs/heads/main` | any move — forward OR divergent — onto ship-path commits that are not on the upstream | a reviewed upstream fetch or pull, including `--rebase` with no local ship commits; a reset backwards; an amend of the current commit; a move carrying nothing shipped |
 
 ## The two things worth knowing before changing any of them
 
@@ -76,9 +76,10 @@ two of those were written and then deleted, along with a `--no-ff` merge setting
 `githooks/reference-transaction` guards the REF that all of them were proxies for. Two hooks and one
 setting now cover more than three hooks and two settings did.
 
-**The hard half of that hook is what it must NOT refuse**, because it fires inside `clone`, `fetch` and
-`pull`, and a version that refused work arriving from the remote would make the repository unusable while
-looking exactly like protection. Three things pass without inspection. A commit already reachable from `main`'s CONFIGURED UPSTREAM,
+**The hard half of that hook is what it must NOT refuse**, because it fires inside `fetch`, `pull` and
+every other armed ref transaction, and a version that refused work arriving from the remote would make
+the repository unusable while looking exactly like protection. An ordinary clone is not among them: the
+setting that arms it does not exist until the clone finishes. Three things pass without inspection. A commit already reachable from `main`'s CONFIGURED UPSTREAM,
 resolved with `for-each-ref` and never a hard-coded `origin` — that refused a legitimate pull in any
 checkout whose remote is named otherwise.
 
@@ -115,8 +116,8 @@ combined diff reports only what differs from ALL parents, which is the resolutio
 both ends: the resolution-added path denies, the ordinary merge allows.
 
 **One accepted gap:** where history is shallow or incomplete, an ancestry test cannot answer and the hook
-allows the move. It fails open on its own errors, unlike `pre-commit`, because it runs inside `clone` and
-`fetch` and a broken version failing closed would break the repository rather than protect one branch.
+allows the move. It fails open on its own errors, unlike `pre-commit`, because it runs inside `fetch` and
+`pull` and a broken version failing closed would break the repository rather than protect one branch.
 
 **The edit-time and write-shape layers are still best effort, and the branch is still the protection.** A
 PreToolUse matcher on Edit/Write sees the assistant's file tools and nothing else — not a shell heredoc,

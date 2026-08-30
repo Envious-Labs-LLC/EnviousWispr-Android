@@ -44,7 +44,8 @@
 # `--no-verify` does NOT skip this one; git offers no such bypass for a reference transaction.
 #
 # EXIT: 0 allow · 1 refuse the whole transaction. It fails OPEN on its own error, unlike pre-commit, and
-# the reason is the blast radius: this hook runs inside `clone`, `fetch` and `pull`, so a broken version
+# the reason is the blast radius: this hook runs inside `fetch`, `pull` and every other armed ref
+# transaction, so a broken version
 # that failed closed would make the repository unusable rather than protect one branch. The commit hooks
 # are the ones that fail closed; this is the backstop behind them.
 

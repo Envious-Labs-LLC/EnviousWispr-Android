@@ -38,7 +38,7 @@
 # It FAILS CLOSED, unlike the PreToolUse guards, and the difference is deliberate. A broken PreToolUse hook
 # that blocked every command would stop all work, so those fail open. This one runs at a single moment, on
 # one commit, and refusing a commit it cannot judge costs nothing but a retry. `reference-transaction`
-# behind it fails OPEN for the opposite reason: it runs inside `clone` and `fetch`, where failing closed
+# behind it fails OPEN for the opposite reason: it runs inside `fetch` and `pull`, where failing closed
 # would break the repository rather than protect one branch.
 
 set -uo pipefail

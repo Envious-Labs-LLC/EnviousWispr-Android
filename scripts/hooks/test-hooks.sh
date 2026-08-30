@@ -340,8 +340,9 @@ if gitc commit -q -m docs >/dev/null 2>&1; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a docs-only commit on main" "allow"
 else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "a docs-only commit on main"; fi
 # AND IT FAILS CLOSED. Unlike the PreToolUse guards, a broken check here must not answer "yes": it is the
-# check that cannot judge a commit must not approve it, and it runs once, on one commit. The ref hook
-# behind it fails OPEN for the opposite reason: it runs inside `fetch` and `pull`.
+# check that cannot judge a commit must not approve it, and it runs once, on one commit. It is the FIRST
+# fail-closed check on the common commit path, not the only one: `reference-transaction` is the ref-level
+# backstop, and it fails OPEN because it runs inside `fetch` and `pull`.
 mv "$HOOKREPO/scripts/hooks/ship_paths.py" "$HOOKREPO/ship_paths.hidden" || exit 2
 printf 'broken classifier\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
 gitc add -A >/dev/null 2>&1 || exit 2
@@ -352,7 +353,7 @@ mv "$HOOKREPO/ship_paths.hidden" "$HOOKREPO/scripts/hooks/ship_paths.py" || exit
 rm -rf "$HOOKREPO"
 echo
 
-echo "githooks/reference-transaction — must not break clone, fetch or pull"
+echo "githooks/reference-transaction — must not break fetch, pull or an ordinary merge"
 REMOTE_W=$(mktemp -d) || exit 2
 git init -q --bare -b main "$REMOTE_W/origin.git" || exit 2
 mkdir -p "$REMOTE_W/a/app/src/main" "$REMOTE_W/a/docs" "$REMOTE_W/a/scripts/hooks" "$REMOTE_W/a/scripts/githooks" || exit 2
@@ -478,7 +479,7 @@ MG_BEFORE=$(git -C "$REMOTE_W/c" rev-parse main) || exit 2
 # The merge is built ON A BRANCH with hooks off, then main is fast-forwarded onto it. Committing the
 # merge on main directly would be answered by `pre-commit`, whose staged set does contain the resolution
 # — and this control is about whether the REF hook can SEE a merge commit's own changes, which
-# `git log --name-only` does not show without `-m`.
+# `git log --name-only` does not show for a merge at all, and `--cc` is what makes it visible.
 git -C "$REMOTE_W/c" checkout -q -b mergeside >/dev/null 2>&1 || exit 2
 git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent merge --no-commit sideA >/dev/null 2>&1
 # The merge is EXPECTED to exit non-zero on the conflict, so its status proves nothing. MERGE_HEAD proves
@@ -554,7 +555,8 @@ else
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating a deleted main at local ship work" "deny"
 fi
 # A LOCAL SHIP BRANCH THAT HAS BEEN PUSHED is on a remote-tracking ref, and "has been pushed somewhere"
-# is not "has been reviewed into main". Only a remote's default branch stands in for the upstream.
+# is not "has been reviewed into main". No remote is inferred as canonical either: a pushed feature branch
+# and a fork's own default branch are both untrusted unless `workflow.mainUpstream` names the ref.
 git -C "$REMOTE_W/c" checkout -q -b feature recreate >/dev/null 2>&1 || exit 2
 git -C "$REMOTE_W/c" push -q upstream feature:feature >/dev/null 2>&1 || exit 2
 git -C "$REMOTE_W/c" fetch -q upstream >/dev/null 2>&1 || exit 2

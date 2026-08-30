@@ -51,3 +51,27 @@ git checkout main && scripts/hooks/test-hooks.sh   # the deny halves
 
 Every guard is asserted in both directions. The silent-when-clean half is the one that matters most: an
 always-firing guard looks like protection while training the reader to skim past it.
+
+## What a fresh clone will NOT have
+
+These scripts are tracked. **The rules that explain them are not.** This repository gitignores `.claude/`
+and `docs/internal/`, so a clone gets the guards and none of their reasoning:
+
+| Lives in | Tracked? | What is lost |
+|---|---|---|
+| `scripts/` | yes | — |
+| `.claude/rules/workflow-process.md` | **no** | the ten-step process, the four lanes, definition-of-done, and the seven rules that explain why each guard exists |
+| `.claude/settings.json` | **no** | the registration that arms them, reproduced above |
+| `.claude/knowledge/` | **no** | 14 files |
+| `docs/internal/` | **no** | the port plan and its seven review rounds |
+
+**A guard whose rule is unreachable is a denial nobody can understand**, and the first response to a denial
+nobody understands is to look for the bypass. That makes this a correctness problem for the guards, not only
+a backup problem.
+
+Measured 2026-08-30: `.claude/` holds 35 files here and 263 on macOS, none tracked in either. The Windows
+repository tracks its `.claude/`, so the three products already disagree. No Time Machine destination is
+configured on this machine.
+
+Deciding whether to track it is a founder call, not a session's. Until it is made, this table is the record
+of what a clone is missing.

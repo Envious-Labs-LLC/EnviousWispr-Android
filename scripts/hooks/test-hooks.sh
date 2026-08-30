@@ -689,11 +689,19 @@ echo "the suite's own temporaries — all registered for cleanup"
 if python3 - <<'PY'
 import re, sys
 s = open("scripts/hooks/test-hooks.sh", encoding="utf-8").read()
-allocated = set(re.findall(r'^([A-Z_]+)=\$\(mktemp', s, re.M))
+# The allocator pattern accepts the ordinary variants, not just the one spelling used today: a quoted
+# substitution, `local`/`export`/`readonly`, spacing around `=`, and `command mktemp`.
+allocated = set(re.findall(
+    r'^(?:export |readonly |local )?([A-Za-z_]\w*)\s*=\s*"?\$\(\s*(?:command\s+)?mktemp\b', s, re.M))
 body = re.search(r'^cleanup\(\) \{(.*?)^\}', s, re.S | re.M)
 if not body:
     print("  cleanup() not found"); sys.exit(1)
-missing = sorted(allocated - set(re.findall(r'\$\{?([A-Z_]+)', body.group(1))))
+# A NAME APPEARING IN cleanup() IS NOT A REMOVAL. A comment mentioning it, or a `: "$NAME"`, satisfied a
+# search for the name and removed nothing — the check would have been green while the resource leaked.
+# This requires the actual guarded `rm`.
+removed = {name for name in allocated if re.search(
+    rf'^\s*\[ -n "\${name}" \]\s*&&\s*rm -(?:rf|fr|f) "\${name}"(?:\s|$)', body.group(1), re.M)}
+missing = sorted(allocated - removed)
 if missing:
     print("  never removed on an interrupted run:", ", ".join(missing)); sys.exit(1)
 sys.exit(0 if allocated else 1)

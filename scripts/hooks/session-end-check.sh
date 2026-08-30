@@ -23,9 +23,17 @@ BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
 MODIFIED=$(git status --porcelain 2>/dev/null | grep -c '^ M' || true)
 UNTRACKED=$(git status --porcelain 2>/dev/null | grep -c '^??' || true)
 STAGED=$(git status --porcelain 2>/dev/null | grep -c '^[MARD]' || true)
+# A branch that has NEVER been pushed has no upstream, and `@{u}` fails. Counting only against an
+# upstream therefore reports 0 for the case with the most work at risk: a local branch nobody else has.
+# Fall back to origin/main, and say which comparison was used so the number is not ambiguous.
 UNPUSHED=0
+UNPUSHED_AGAINST=""
 if git rev-parse --abbrev-ref "@{u}" >/dev/null 2>&1; then
     UNPUSHED=$(git rev-list --count "@{u}"..HEAD 2>/dev/null || echo 0)
+    UNPUSHED_AGAINST="its upstream"
+elif git rev-parse --verify origin/main >/dev/null 2>&1; then
+    UNPUSHED=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+    UNPUSHED_AGAINST="origin/main, because this branch has never been pushed"
 fi
 
 TOTAL=$((MODIFIED + UNTRACKED + STAGED))
@@ -35,7 +43,7 @@ echo "This session is leaving work behind on \`$BRANCH\`:"
 [ "$MODIFIED"  -gt 0 ] && echo "  $MODIFIED modified"
 [ "$STAGED"    -gt 0 ] && echo "  $STAGED staged"
 [ "$UNTRACKED" -gt 0 ] && echo "  $UNTRACKED untracked"
-[ "$UNPUSHED"  -gt 0 ] && echo "  $UNPUSHED commit(s) not pushed"
+[ "$UNPUSHED"  -gt 0 ] && echo "  $UNPUSHED commit(s) not pushed, measured against $UNPUSHED_AGAINST"
 echo
 echo "workflow-process.md RULE: definition-of-done — work that exists only in the working tree is not"
 echo "delivered. Measured 2026-08-29: a Codex-cleared change sat in 23 uncommitted files for six hours."

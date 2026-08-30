@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# pre-commit — refuse a commit that puts a ship path onto `main`.
+#
+# ASK GIT; DO NOT MODEL GIT. This replaces a commit check that lived in the Bash PreToolUse hook and tried
+# to PREDICT, from the text of a command, whether a commit was about to happen and what it would contain.
+# Five review rounds each found another form that parser got wrong: an option value that looked like a
+# flag, `--dry-run`, a bare positional pathspec, `-S` swallowing `-a`, `git -C.`, `env FOO=1 git`, a bare
+# `&`, a newline. Those were not eight defects. They were one: git's option grammar and the shell's
+# grammar are not ours, and a private parser for either has no last divergence.
+#
+# Git runs THIS at the moment the answer exists. `git diff --cached` is the real staged set, not a guess
+# at one, so `-a`, an explicit pathspec, `--pathspec-from-file`, `--interactive`, an alias, `--amend`,
+# `git merge`, `git cherry-pick`, `git rebase --continue` and `git am` are all covered by construction —
+# including every form the old parser abstained on, and every form nobody has thought of yet.
+#
+# ARMED BY `git config core.hooksPath scripts/githooks`, which a fresh clone must run. scripts/hooks/README.md
+# carries that line beside the settings.json it already has to restore.
+#
+# `--no-verify` skips this, as it skips every git hook. That is GR-NEVER-WEAKEN-GUARDRAILS, not a hole to
+# parse around: the Bash guard denies that one token, which is unambiguous in a way `git commit -m -a`
+# never was.
+
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 0   # not a repo: nothing to protect
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
+[ "$BRANCH" = "main" ] || exit 0                  # the branch IS the protection
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMRT 2>/dev/null) || exit 0
+[ -n "$STAGED" ] || exit 0
+
+SHIP=$(printf '%s\n' "$STAGED" | python3 -c '
+import sys, os
+sys.path.insert(0, os.path.join("scripts", "hooks"))
+from ship_paths import is_ship_path
+for line in sys.stdin:
+    path = line.strip()
+    if path and is_ship_path(path):
+        print(path)
+') || exit 0
+[ -n "$SHIP" ] || exit 0
+
+COUNT=$(printf '%s\n' "$SHIP" | wc -l | tr -d ' ')
+echo "BLOCKED: committing $COUNT ship-path file(s) on \`main\`." >&2
+printf '%s\n' "$SHIP" | head -8 | sed 's/^/    /' >&2
+[ "$COUNT" -gt 8 ] && echo "    ... and $((COUNT - 8)) more" >&2
+cat >&2 <<'MSG'
+
+Ship-path work goes on a branch, per .claude/rules/workflow-process.md RULE: ten-step-shape.
+Measured 2026-08-29: a Codex-cleared change to the insertion path sat in 23 uncommitted files
+on `main` for six hours with that rule in context.
+
+  git checkout -b <type>/<issue>-<slug>   # your staged set follows you
+MSG
+exit 1

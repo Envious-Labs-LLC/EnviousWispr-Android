@@ -1,6 +1,18 @@
 # Guards
 
-**Registration lives in `.claude/settings.json`, which this repository GITIGNORES.** The scripts are here in
+## Arming them in a fresh clone
+
+Two commands, and neither is optional. The first is tracked and takes effect immediately:
+
+```bash
+git config core.hooksPath scripts/githooks   # arms the commit check
+```
+
+The second is the `.claude/settings.json` block below, which has to be restored by hand for the reason
+that follows.
+
+**Registration for the PreToolUse and SessionEnd guards lives in `.claude/settings.json`, which this
+repository GITIGNORES.** The scripts are here in
 `scripts/` so git can see them; the wiring that arms them cannot be tracked the same way. This file is that
 wiring in a form git does keep, so a fresh clone can restore it.
 
@@ -31,21 +43,35 @@ absent, and the suite says so rather than passing quietly. Edit either one and r
 | Guard | Event | Denies | Silent when |
 |---|---|---|---|
 | `check-protected-paths.py` | Edit/Write/MultiEdit | a ship-path edit while on `main` | on a branch, or editing a local-only path |
-| `command-safety.py` | Bash | a RECOGNISED direct `git commit` touching a ship path, an index-bypassing flag, or an explicit `-- <ship-path>` pathspec on `main`; a recognised shell write into a ship path on `main` | on a branch, or any other command |
+| `command-safety.py` | Bash | a recognised shell write into a ship path on `main`; `--no-verify` on any branch | on a branch, or any other command |
 | `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer | every file that is not a plan, and any edit whose result it cannot reconstruct |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
+| `../githooks/pre-commit` | git's own pre-commit | any commit whose staged set touches a ship path, on `main` | on a branch, or a commit touching nothing shipped |
 
 ## The two things worth knowing before changing any of them
 
-**BOTH LAYERS ARE BEST EFFORT, and the branch is the protection.** A PreToolUse matcher on Edit/Write sees
-the assistant's file tools and nothing else — not a shell heredoc, not `tee`, not another process.
-Measured 2026-08-30: every file written by the session that designed these guards went through a Bash
-heredoc, including the design document. `command-safety.py` covers the direct shell shapes and the direct
-`git commit` shapes, and neither set can be complete: the ways to write a file are open-ended, and
-`git merge`, `git cherry-pick`, `git rebase --continue`, `git am` and a user alias all write history
-without passing through `git commit` at all. An earlier version of this paragraph called the commit gate a
-guarantee on exactly that false premise. These guards raise the cost of reaching `main` by accident; they
-do not make it impossible.
+**ASK GIT; DO NOT MODEL GIT.** This is the one lesson that cost the most rounds, and it applies twice.
+
+The commit check used to live in `command-safety.py`, which read the TEXT of a Bash command and tried to
+predict whether a commit was about to happen and what it would contain. Five review rounds each found
+another form it got wrong: an option value that looked like a flag, `--dry-run`, a bare positional
+pathspec, `-S` swallowing `-a`, `git -C.`, `env FOO=1 git`, a bare `&`, a newline. That is not eight
+defects. It is one — a private parser for somebody else's grammar has no last divergence — and the same
+mistake produced four separate defects in the validation fingerprint before that script was rewritten to
+ask `git write-tree` instead of describing what git would record.
+
+`githooks/pre-commit` runs at the moment the answer exists, so `git diff --cached` is the real staged set
+rather than a guess at one. `-a`, a pathspec, `--pathspec-from-file`, `--interactive`, `--amend`, an
+alias, `git merge`, `git cherry-pick`, `git rebase --continue` and `git am` are covered by construction,
+including the forms nobody has thought of yet. Its controls run real commits rather than feeding strings
+to a parser.
+
+**The edit-time and write-shape layers are still best effort, and the branch is still the protection.** A
+PreToolUse matcher on Edit/Write sees the assistant's file tools and nothing else — not a shell heredoc,
+not `tee`, not another process. Measured 2026-08-30: every file written by the session that designed
+these guards went through a Bash heredoc, including the design document. The ways to write a file are
+open-ended, so that half will never be complete. It does not need to be: every write must reach history
+through a commit, and that is where the check is now.
 
 **There is no adversary.** The only actor is Claude, often several instances at once. These enforce workflow
 etiquette so cooperative agents do not corrupt `main`. The failure to prevent is a path-of-least-resistance
@@ -69,6 +95,12 @@ and a helper that read empty stdout as `allow` would have passed every allow con
 The allow halves matter most: an always-firing guard looks like protection while training the reader to
 skim past it.
 
+**The commit check is exercised by RUNNING COMMITS, not by feeding strings to a parser.** The suite builds
+a second throwaway repository with `core.hooksPath` set and commits into it seven ways — `-am`, a
+separated `-a -m`, an explicit `--` pathspec, a bare positional pathspec, `--amend` with a ship path
+staged, `--amend` with only a message, and a docs-only commit that must go through. While this check was
+a parser, each of those was a separate defect found in a separate round. They are one code path now.
+
 ## What a fresh clone will NOT have
 
 These scripts are tracked. **The rules that explain them are not.** This repository gitignores `.claude/`
@@ -78,7 +110,8 @@ and `docs/internal/`, so a clone gets the guards and none of their reasoning:
 |---|---|---|
 | `scripts/` | yes | — |
 | `.claude/rules/workflow-process.md` | **no** | the ten-step process, the four lanes, definition-of-done, and every rule that explains why each guard exists (`grep -c '^## RULE:' .claude/rules/workflow-process.md`) |
-| `.claude/settings.json` | **no** | the registration that arms them, reproduced above |
+| `.claude/settings.json` | **no** | the registration that arms the PreToolUse and SessionEnd guards, reproduced above |
+| `core.hooksPath` | n/a, it is local config | the commit check, until `git config core.hooksPath scripts/githooks` is run |
 | `.claude/knowledge/` | **no** | its whole contents (`find .claude/knowledge -type f \| wc -l`) |
 | `docs/internal/` | **no** | the port plan and its seven review rounds |
 

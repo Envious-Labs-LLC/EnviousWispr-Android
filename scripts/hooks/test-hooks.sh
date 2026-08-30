@@ -99,63 +99,81 @@ assert_main "local-only path on main"          allow check-protected-paths.py '{
 assert_main "the benchmark is not a ship path" allow check-protected-paths.py '{"tool_input":{"file_path":"accelerator-benchmark/src/main/B.kt"}}'
 echo
 
-echo "command-safety.py — commit gate and shell writes"
-assert "git commit -am on a branch"            allow command-safety.py '{"tool_input":{"command":"git commit -am wip"}}'
+echo "command-safety.py — the shell writes, which no git hook can see"
 assert "an ordinary read command"              allow command-safety.py '{"tool_input":{"command":"git status --short"}}'
-assert_main "git commit -am on main"           deny  command-safety.py '{"tool_input":{"command":"git commit -am wip"}}'
-assert_main "explicit pathspec on main"        deny  command-safety.py '{"tool_input":{"command":"git commit -m x -- app/src/main/Foo.kt"}}'
+assert_main "an ordinary read command"         allow command-safety.py '{"tool_input":{"command":"git status --short"}}'
 assert_main "heredoc into a ship path on main" deny  command-safety.py '{"tool_input":{"command":"cat > app/src/main/Foo.kt <<EOF"}}'
 assert_main "append into a ship path on main"  deny  command-safety.py '{"tool_input":{"command":"echo x >> app/src/main/Foo.kt"}}'
-assert_main "sed -i into a ship path on main"  deny  command-safety.py '{"tool_input":{"command":"sed -i \"\" s/a/b/ app/src/main/AndroidManifest.xml"}}'
-assert_main "write to a local-only path"       allow command-safety.py '{"tool_input":{"command":"cat > docs/internal/x.md <<EOF"}}'
-assert_main "an ordinary read command"         allow command-safety.py '{"tool_input":{"command":"git status --short"}}'
-# The false-positive half. A quoted `>` is text, not shell syntax, and denying it would fire the guard on
-# ordinary correct work — the failure `guard-design-pre-read` calls worse than having no guard at all.
-assert_main "a quoted redirect is not a write" allow command-safety.py '{"tool_input":{"command":"printf %s \"see > app/src/main/Foo.kt\""}}'
-assert_main "a later pipeline stage is not a tee target" allow command-safety.py '{"tool_input":{"command":"printf x | tee /tmp/log | cat app/src/main/Foo.kt"}}'
+assert_main "the >| redirection on main"       deny  command-safety.py '{"tool_input":{"command":"echo x >| app/src/main/Foo.kt"}}'
 assert_main "tee into a ship path on main"     deny  command-safety.py '{"tool_input":{"command":"printf x | tee app/src/main/Foo.kt"}}'
-# COMMAND POSITION. Every recognition here used to match a WORD anywhere in the token list, so a command
-# that merely PRINTED the words was denied. These three are ordinary correct work and must stay allowed.
-assert_main "printing the word git commit"     allow command-safety.py '{"tool_input":{"command":"printf %s git commit -a"}}'
+assert_main "sed -i into a ship path on main"  deny  command-safety.py '{"tool_input":{"command":"sed -i \"\" s/a/b/ app/src/main/AndroidManifest.xml"}}'
+assert_main "sed -i.bak into a ship path"      deny  command-safety.py '{"tool_input":{"command":"sed -i.bak s/a/b/ app/src/main/Foo.kt"}}'
+assert_main "a bare & starts a new command"    deny  command-safety.py '{"tool_input":{"command":"ls & echo x > app/src/main/Foo.kt"}}'
+assert_main "env wrapping a real tee"          deny  command-safety.py '{"tool_input":{"command":"env FOO=1 tee app/src/main/Foo.kt"}}'
+assert_main "write to a local-only path"       allow command-safety.py '{"tool_input":{"command":"cat > docs/internal/x.md <<EOF"}}'
+# The false-positive half, which decides whether a guard survives contact with ordinary work.
+assert_main "a quoted redirect is not a write" allow command-safety.py '{"tool_input":{"command":"printf %s \"see > app/src/main/Foo.kt\""}}'
+assert_main "a later pipeline stage"           allow command-safety.py '{"tool_input":{"command":"printf x | tee /tmp/log | cat app/src/main/Foo.kt"}}'
 assert_main "printing the word tee"            allow command-safety.py '{"tool_input":{"command":"printf %s tee app/src/main/Foo.kt"}}'
-assert_main "a later -a is not this commit's"  allow command-safety.py '{"tool_input":{"command":"git commit -m x ; ls -a"}}'
-# And the position parse must still find a real commit behind git's global options.
-assert_main "git -C before the subcommand"     deny  command-safety.py '{"tool_input":{"command":"git -C . commit -am wip"}}'
-assert_main "FOO=1 git commit -am"             deny  command-safety.py '{"tool_input":{"command":"FOO=1 git commit -am wip"}}'
-# ROUND 4's population: git's own option grammar. An option VALUE that looks like a flag, a dry
-# run, and a bare positional pathspec are all ordinary, and all three were denied while the
-# arguments were read as a flat bag of strings instead of by position.
-assert_main 'an option value that looks like a flag'       allow command-safety.py '{"tool_input": {"command": "git commit -m -a"}}'
-assert_main 'a filename that looks like a flag'            allow command-safety.py '{"tool_input": {"command": "git commit -F -a"}}'
-assert_main 'a dry run writes no history'                  allow command-safety.py '{"tool_input": {"command": "git commit --dry-run -am x"}}'
-assert_main 'a positional non-ship pathspec'               allow command-safety.py '{"tool_input": {"command": "git commit -m x docs/note.md"}}'
-# And the other direction: real commits that escaped while the shell and git forms were narrow.
-assert_main 'a bare & starts a new command'                deny  command-safety.py '{"tool_input": {"command": "git status & git commit -am x"}}'
-assert_main 'a newline starts a new command'               deny  command-safety.py '{"tool_input": {"command": "git status\ngit commit -am x"}}'
-assert_main 'env FOO=1 git commit -am'                     deny  command-safety.py '{"tool_input": {"command": "env FOO=1 git commit -am x"}}'
-assert_main 'the compact -C. global option'                deny  command-safety.py '{"tool_input": {"command": "git -C. commit -am x"}}'
-assert_main 'a positional SHIP pathspec'                   deny  command-safety.py '{"tool_input": {"command": "git commit -m x app/src/main/Foo.kt"}}'
-assert_main 'sed -i.bak into a ship path'                  deny  command-safety.py '{"tool_input": {"command": "sed -i.bak s/a/b/ app/src/main/Foo.kt"}}'
-assert_main 'the >| redirection into a ship path'          deny  command-safety.py '{"tool_input": {"command": "echo x >| app/src/main/Foo.kt"}}'
-# `-S[<keyid>]` and `-u[<mode>]` take an optional ATTACHED value. Consuming the next argument ate the
-# pathspec here, and ate the `-a` out of a real all-files commit below.
-assert_main "--gpg-sign keeps its pathspec"    allow command-safety.py '{"tool_input":{"command":"git commit --gpg-sign -m x docs/note.md"}}'
-assert_main "-S does not swallow -a"           deny  command-safety.py '{"tool_input":{"command":"git commit -S -a -m x"}}'
-assert_main "a pathspec read from a file"      allow command-safety.py '{"tool_input":{"command":"git commit --pathspec-from-file=list.txt -m x"}}'
-# The ABSTENTION, which is the design and therefore needs a control: an option this parser does not know
-# must yield no decision rather than a guess about where the subcommand is.
-assert_main "an unknown git global option"     allow command-safety.py '{"tool_input":{"command":"git --nonsense commit -am x"}}'
-# And a newline INSIDE quotes is text, not a command separator.
 assert_main "a newline inside quotes"          allow command-safety.py '{"tool_input":{"command":"printf \"a\nb\" app/src/main/Foo.kt"}}'
-# The staged-set half, which needs a real index rather than a command string.
-: > "$MAINREPO/app/src/main/Foo.kt"; git -C "$MAINREPO" add app/src/main/Foo.kt
-assert_main "staged ship path on main"         deny  command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
-assert_main "a non-commit git with it staged"  allow command-safety.py '{"tool_input":{"command":"git log --oneline"}}'
-# An explicit pathspec decides what the commit CONTAINS, so an unrelated staged file must not deny it.
-mkdir -p "$MAINREPO/docs"; : > "$MAINREPO/docs/note.md"
-assert_main "pathspec excluding the ship path" allow command-safety.py '{"tool_input":{"command":"git commit -m x -- docs/note.md"}}'
-git -C "$MAINREPO" reset -q
-assert_main "empty index on main"              allow command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
+# `--no-verify` is denied on EVERY branch, because skipping a hook is never the fix for what it says.
+assert "--no-verify on a branch"               deny  command-safety.py '{"tool_input":{"command":"git commit --no-verify -m x"}}'
+assert_main "--no-verify on main"              deny  command-safety.py '{"tool_input":{"command":"git commit --no-verify -m x"}}'
+assert "an ordinary commit on a branch"        allow command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
+echo
+
+# THE COMMIT CHECK IS A REAL GIT HOOK NOW, so it is exercised by RUNNING COMMITS rather than by feeding
+# command strings to a parser. Every form below was a separate defect while this was a parser. Here they
+# are one code path, because git computes the staged set before it calls the hook.
+echo "githooks/pre-commit — every commit form, by running it"
+HOOKREPO=$(mktemp -d) || exit 2
+mkdir -p "$HOOKREPO/app/src/main" "$HOOKREPO/docs" "$HOOKREPO/scripts/hooks" "$HOOKREPO/scripts/githooks" || exit 2
+git init -q -b main "$HOOKREPO" || exit 2
+cp "$HOOKS/ship_paths.py" "$HOOKREPO/scripts/hooks/" || exit 2
+cp scripts/githooks/pre-commit "$HOOKREPO/scripts/githooks/" || exit 2
+git -C "$HOOKREPO" config core.hooksPath scripts/githooks || exit 2
+gitc() { git -C "$HOOKREPO" -c user.email=t@t -c user.name=t "$@"; }
+: > "$HOOKREPO/docs/ok.md"; gitc add -A >/dev/null 2>&1 || exit 2
+gitc commit -q -m base >/dev/null 2>&1 || exit 2
+
+commit_case() {  # commit_case <name> <allow|deny> <git args...>
+    local name="$1" want="$2"; shift 2
+    printf 'x\n' > "$HOOKREPO/app/src/main/Foo.kt"
+    gitc reset -q >/dev/null 2>&1
+    local got="deny"
+    if gitc "$@" >/dev/null 2>&1; then got="allow"; gitc reset -q --hard HEAD >/dev/null 2>&1; fi
+    if [ "$got" = "$want" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$name" "$got"
+    else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted %s, got %s\n' "$name" "$want" "$got"; fi
+}
+commit_case "git commit -am"                   deny commit -am wip
+commit_case "git commit -a -m, separated"      deny commit -a -m wip
+commit_case "an explicit -- pathspec"          deny commit -m wip -- app/src/main/Foo.kt
+commit_case "a bare positional pathspec"       deny commit -m wip app/src/main/Foo.kt
+# The forms the old parser could never reach, now the same code path as the four above. `--amend` needs
+# its own setup: commit_case unstages first, and amending with an EMPTY index only rewrites a message,
+# which touches no file and is correctly allowed.
+printf 'x\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc add app/src/main/Foo.kt >/dev/null 2>&1
+if gitc commit -q --amend -m x >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "git commit --amend, ship path staged"
+    gitc reset -q --hard HEAD >/dev/null 2>&1
+else
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git commit --amend, ship path staged" "deny"
+fi
+gitc reset -q >/dev/null 2>&1; rm -f "$HOOKREPO/app/src/main/Foo.kt"
+# Amending only the MESSAGE stages nothing, so it must go through.
+if gitc commit -q --amend -m "reworded" >/dev/null 2>&1; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git commit --amend, message only" "allow"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "git commit --amend, message only"
+fi
+# And the direction that matters more: a commit touching nothing shipped must go straight through.
+: > "$HOOKREPO/docs/two.md"; gitc add -A >/dev/null 2>&1
+if gitc commit -q -m docs >/dev/null 2>&1; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a docs-only commit on main" "allow"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "a docs-only commit on main"
+fi
+rm -rf "$HOOKREPO"
 echo
 
 echo "check-plan-gates.py — the Tier 0 plan gates"
@@ -271,9 +289,11 @@ chmod +x "$DIG_PROBE"
 check "the executable bit moves it"            differs "$UNTRACKED_DIGEST" "$(digest)"
 git reset -q HEAD "$DIG_PROBE" >/dev/null 2>&1; rm -f "$DIG_PROBE"
 check "removing it returns to the baseline"    same    "$BASE_DIGEST" "$(digest)"
+# A repository with NO COMMITS has no HEAD to read, which is the enumeration failing. The point of the
+# control is that a failure produces no digest at all: a well-formed hash of an unknown subset would be
+# the most confident-looking wrong answer this script could give.
 DIG_REPO=$(mktemp -d); git init -q -b main "$DIG_REPO"; mkdir -p "$DIG_REPO/scripts"
 cp scripts/change-digest.sh "$DIG_REPO/scripts/"
-git -C "$DIG_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
 DIG_OUT=$("$DIG_REPO/scripts/change-digest.sh" 2>/dev/null); DIG_RC=$?
 if [ "$DIG_RC" -eq 2 ] && [ -z "$DIG_OUT" ]; then
     PASS=$((PASS+1)); echo "  ok    a failed enumeration exits 2 and prints nothing"

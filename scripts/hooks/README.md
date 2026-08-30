@@ -2,12 +2,17 @@
 
 ## Arming them in a fresh clone
 
-Two steps, and neither is optional. The commit-hook FILES are tracked; git does not arm them, so run
-this once in every clone:
+Two settings, and neither is optional. The commit-hook FILES are tracked; git does not arm them, so run
+these once in every clone:
 
 ```bash
-git config core.hooksPath scripts/githooks   # arms the commit check
+git config core.hooksPath scripts/githooks         # arms the commit check
+git config branch.main.mergeOptions --no-ff        # routes merges into main through it
 ```
+
+**The second is not a preference.** A fast-forward merge creates no commit, so no hook of any kind runs
+and `main` moves to a branch's ship-path work unexamined — measured, not assumed. Forcing a merge commit
+when merging INTO main is what routes it through `pre-merge-commit`; other branches are unaffected.
 
 `test-hooks.sh` asserts this checkout is armed, so forgetting it is a red control rather than a silent
 absence.
@@ -71,7 +76,8 @@ rather than a guess at one. `-a`, an explicit `--` pathspec, a bare positional p
 controls run real commits rather than feeding strings to a parser.
 
 **A merge and `git am` use DIFFERENT git events**, so they are not covered by that file alone —
-`pre-merge-commit` and `pre-applypatch` sit beside it and delegate. They exist because the claim was
+`pre-merge-commit` and `pre-applypatch` sit beside it and delegate, and `pre-merge-commit` only fires for
+a merge that CREATES a commit, which is why arming also forces `--no-ff` into main. They exist because the claim was
 checked against git's own hook templates rather than assumed; without them a merge onto `main` carrying a
 ship path passed unexamined. **`git rebase` runs no pre-commit hook for its replayed commits at all.**
 That is a real gap and it is stated rather than papered over.

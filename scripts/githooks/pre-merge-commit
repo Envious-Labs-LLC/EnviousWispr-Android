@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # pre-merge-commit — git uses a DIFFERENT EVENT for this operation, so pre-commit is not called.
 #
-# The stock git templates delegate the same way, and this file exists because the claim that a merge was
+# The stock git template delegates the same way, and this file exists because the claim that a merge was
 # "covered by construction" was checked against git's own template rather than assumed. Without it, a
 # merge onto `main` carrying a ship path passed unexamined while the commit path was refused.
+#
+# IT ONLY FIRES FOR A MERGE THAT CREATES A COMMIT. A fast-forward creates none, so no hook runs at all and
+# `main` moves anyway — measured, not assumed. Arming therefore also sets
+# `git config branch.main.mergeOptions --no-ff`, which forces a merge commit when merging INTO main and
+# leaves every other branch alone. test-hooks.sh asserts both settings and drives a fast-forward-shaped
+# merge, so a checkout with only half the arming is a red control.
 exec "$(dirname "$0")/pre-commit" "$@"

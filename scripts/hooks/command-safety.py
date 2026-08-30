@@ -26,8 +26,8 @@ WHAT IS LEFT HERE, and why neither piece can move to a git hook.
    ways to write a file is open, so this will never be complete, and it does not need to be: the
    pre-commit hook is what every write must eventually pass through to reach history.
 
-2. `--no-verify`, which skips every git hook including that one. This is GR-NEVER-WEAKEN-GUARDRAILS at
-   the only place that can see it coming.
+2. `--no-verify`, which skips the applicable verification hooks, including the commit check for whichever
+   git operation is running. This is GR-NEVER-WEAKEN-GUARDRAILS at the only place that can see it coming.
 
    **It is matched as a bare token anywhere in a git command, and that has ONE known false positive:
    `git commit -m --no-verify`, where the flag is the commit MESSAGE.** Naming it is the point. Telling

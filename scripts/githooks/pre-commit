@@ -17,9 +17,15 @@
 # assumed. `git rebase` runs no pre-commit hook at all for its replayed commits — that is a real gap, it is
 # stated rather than papered over, and the branch remains the protection.
 #
-# ARMED BY `git config core.hooksPath scripts/githooks`, which every clone must run. The hook FILES are
-# tracked; git does not arm them. test-hooks.sh asserts this checkout is armed, so an unarmed clone is a
-# red control rather than a quiet absence.
+# ARMED BY TWO local settings, which every clone must run because the hook FILES are tracked and git does
+# not arm them:
+#
+#   git config core.hooksPath scripts/githooks
+#   git config branch.main.mergeOptions --no-ff
+#
+# The second is not optional. A FAST-FORWARD merge creates no commit, so no hook of any kind runs and
+# `main` moves to a branch's ship-path work unexamined. Forcing a merge commit when merging into main is
+# what routes it through `pre-merge-commit`; other branches are unaffected. test-hooks.sh asserts both.
 #
 # `--no-verify` skips this, as it skips the applicable verification hooks. That is
 # GR-NEVER-WEAKEN-GUARDRAILS, not a hole to parse around: the Bash guard denies that token.

@@ -134,6 +134,14 @@ if [ "$ARMED" = "scripts/githooks" ]; then
 else
     FAIL=$((FAIL+1)); echo "  FAIL  this checkout is NOT armed. Run: git config core.hooksPath scripts/githooks"
 fi
+# The second half of arming, and it is not a preference: a FAST-FORWARD merge creates no commit, so no
+# hook runs at all and `main` moves to a branch's ship-path work unexamined.
+FFARM=$(git config --local --get branch.main.mergeOptions 2>/dev/null || true)
+if [ "$FFARM" = "--no-ff" ]; then
+    PASS=$((PASS+1)); echo "  ok    merges into main are routed through the hook"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  fast-forward merges bypass every hook. Run: git config branch.main.mergeOptions --no-ff"
+fi
 echo
 
 echo "githooks/pre-commit — every commit form, by running it"
@@ -153,6 +161,7 @@ printf 'base\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
 gitc add -A >/dev/null 2>&1 || exit 2
 gitc commit -q -m base >/dev/null 2>&1 || exit 2
 git -C "$HOOKREPO" config core.hooksPath scripts/githooks || exit 2
+git -C "$HOOKREPO" config branch.main.mergeOptions --no-ff || exit 2
 
 commit_case() {  # commit_case <name> <allow|deny> <git args...>
     local name="$1" want="$2"; shift 2
@@ -184,20 +193,21 @@ commit_case "an explicit -- pathspec"          deny commit -m wip -- app/src/mai
 commit_case "a bare positional pathspec"       deny commit -m wip app/src/main/Foo.kt
 # A DELETION is a ship-path commit. `--diff-filter=ACMRT` omitted `D`, so removing a ship path from
 # `main` was allowed while changing one was refused.
-gitc rm -q app/src/main/Foo.kt >/dev/null 2>&1
+gitc rm -q app/src/main/Foo.kt >/dev/null 2>&1 || exit 2
 if gitc commit -q -m del >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "deleting a ship path"
 else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "deleting a ship path" "deny"; fi
 gitc reset -q --hard HEAD >/dev/null 2>&1
 # A RENAME reported only by its destination would hide the ship path it came from.
-gitc mv app/src/main/Foo.kt docs/moved.md >/dev/null 2>&1
+gitc mv app/src/main/Foo.kt docs/moved.md >/dev/null 2>&1 || exit 2
 if gitc commit -q -m mv >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "renaming a ship path into docs"
 else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "renaming a ship path into docs" "deny"; fi
 gitc reset -q --hard HEAD >/dev/null 2>&1
 # `--amend` needs its own setup: commit_case unstages first, and amending an EMPTY index rewrites only a
 # message, which touches no file and is correctly allowed.
-printf 'amended\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc add app/src/main/Foo.kt >/dev/null 2>&1
+printf 'amended\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
+gitc add app/src/main/Foo.kt >/dev/null 2>&1 || exit 2
 if gitc commit -q --amend -m x >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "git commit --amend, ship path staged"
 else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git commit --amend, ship path staged" "deny"; fi
@@ -207,34 +217,73 @@ if gitc commit -q --amend -m "reworded" >/dev/null 2>&1; then
 else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "git commit --amend, message only"; fi
 # A MERGE uses `pre-merge-commit`, a different event. Without the delegating hook beside pre-commit, a
 # merge onto `main` carrying a ship path passed unexamined.
-gitc checkout -q -b side >/dev/null 2>&1
-printf 'on the side\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc commit -q -am side >/dev/null 2>&1
-gitc checkout -q main >/dev/null 2>&1
-: > "$HOOKREPO/docs/diverge.md"; gitc add -A >/dev/null 2>&1; gitc commit -q -m diverge >/dev/null 2>&1
+gitc checkout -q -b side >/dev/null 2>&1 || exit 2
+printf 'on the side\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
+gitc commit -q -am side >/dev/null 2>&1 || exit 2
+gitc checkout -q main >/dev/null 2>&1 || exit 2
+: > "$HOOKREPO/docs/diverge.md" || exit 2
+gitc add -A >/dev/null 2>&1 || exit 2
+gitc commit -q -m diverge >/dev/null 2>&1 || exit 2
 if gitc merge --no-ff -m merge side >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a merge carrying a ship path"
 else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a merge carrying a ship path" "deny"; fi
 gitc merge --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1
+# The allow half for the merge hook. Without it, `pre-merge-commit` had two deny controls and no proof it
+# ever lets an ordinary merge through, which is the half that decides whether a guard survives contact.
+gitc checkout -q -b docmerge >/dev/null 2>&1 || exit 2
+: > "$HOOKREPO/docs/merged.md" || exit 2
+gitc add -A >/dev/null 2>&1 || exit 2; gitc commit -q -m "docs on a branch" >/dev/null 2>&1 || exit 2
+gitc checkout -q main >/dev/null 2>&1 || exit 2
+if gitc merge -m merge docmerge >/dev/null 2>&1; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a merge carrying only docs" "allow"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "a merge carrying only docs"; fi
+gitc merge --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1 || exit 2
+
+# A FAST-FORWARD merge creates no commit, so `pre-merge-commit` never runs and `main` moves anyway. This
+# control does NOT pass `--no-ff`: it relies on the same `branch.main.mergeOptions` the arming sets, so
+# it goes red in a checkout armed only halfway.
+gitc checkout -q -b ffside >/dev/null 2>&1 || exit 2
+printf 'fast forward\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
+gitc commit -q -am ff >/dev/null 2>&1 || exit 2
+gitc checkout -q main >/dev/null 2>&1 || exit 2
+if gitc merge ffside >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a fast-forward-shaped merge"
+else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a fast-forward-shaped merge" "deny"; fi
+gitc merge --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1 || exit 2
+
 # `git am` raises `pre-applypatch`, a THIRD event. Installing that hook is not evidence it runs, so this
 # builds a real patch on a branch and applies it to `main`.
-gitc checkout -q -b patchside >/dev/null 2>&1
-printf 'via a patch\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc commit -q -am "patch" >/dev/null 2>&1
+gitc checkout -q -b patchside >/dev/null 2>&1 || exit 2
+printf 'via a patch\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
+gitc commit -q -am "patch" >/dev/null 2>&1 || exit 2
 PATCHDIR="$HOOKREPO/.patches"
 gitc format-patch -1 -o "$PATCHDIR" >/dev/null 2>&1 || exit 2
-gitc checkout -q main >/dev/null 2>&1
+gitc checkout -q main >/dev/null 2>&1 || exit 2
 if gitc am "$PATCHDIR"/*.patch >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "git am applying a ship path"
 else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git am applying a ship path" "deny"; fi
-gitc am --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1
+gitc am --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1 || exit 2
+# The allow half for the same hook: a docs-only patch must apply.
+gitc checkout -q -b docpatch >/dev/null 2>&1 || exit 2
+printf 'doc change\n' > "$HOOKREPO/docs/patched.md" || exit 2
+gitc add -A >/dev/null 2>&1 || exit 2; gitc commit -q -m "doc patch" >/dev/null 2>&1 || exit 2
+gitc format-patch -1 -o "$HOOKREPO/.docpatches" >/dev/null 2>&1 || exit 2
+gitc checkout -q main >/dev/null 2>&1 || exit 2
+if gitc am "$HOOKREPO/.docpatches"/*.patch >/dev/null 2>&1; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git am applying a docs-only patch" "allow"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "git am applying a docs-only patch"; fi
+gitc am --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1 || exit 2
 # The direction that matters more: a commit touching nothing shipped must go straight through.
-: > "$HOOKREPO/docs/two.md"; gitc add -A >/dev/null 2>&1
+: > "$HOOKREPO/docs/two.md" || exit 2
+gitc add -A >/dev/null 2>&1 || exit 2
 if gitc commit -q -m docs >/dev/null 2>&1; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a docs-only commit on main" "allow"
 else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "a docs-only commit on main"; fi
 # AND IT FAILS CLOSED. Unlike the PreToolUse guards, a broken check here must not answer "yes": it is the
 # only thing between a ship path and `main`, and it runs once, on one commit.
 mv "$HOOKREPO/scripts/hooks/ship_paths.py" "$HOOKREPO/ship_paths.hidden" || exit 2
-printf 'broken classifier\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc add -A >/dev/null 2>&1
+printf 'broken classifier\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
+gitc add -A >/dev/null 2>&1 || exit 2
 if gitc commit -q -m x >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a broken classifier does not approve"
 else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a broken classifier does not approve" "deny"; fi
@@ -338,9 +387,14 @@ fi
 echo "change-digest.sh — the fingerprint a validation receipt is pinned to"
 # Every digest invocation is checked. Comparing two EMPTY strings reports "same", so a script that had
 # stopped working entirely would pass the two controls that assert sameness.
+# It RETURNS NON-ZERO on failure rather than printing anything. An earlier version printed a unique
+# marker so two failures could not compare equal — but a unique marker also DIFFERS from a valid digest,
+# so every control expecting "differs" passed when its second invocation failed. Both directions have to
+# be unsatisfiable by a broken script, and the only value that manages that is no value at all.
 digest() {
-    local out; out=$(scripts/change-digest.sh 2>/dev/null) || { echo "DIGEST-FAILED-$RANDOM"; return; }
-    [ -n "$out" ] || { echo "DIGEST-EMPTY-$RANDOM"; return; }
+    local out
+    out=$(scripts/change-digest.sh 2>/dev/null) || return 2
+    [ -n "$out" ] || return 2
     printf '%s' "$out"
 }
 check() {  # check <name> <same|differs> <before> <after>
@@ -357,25 +411,29 @@ check() {  # check <name> <same|differs> <before> <after>
 # reserved directory that is empty at baseline avoids both.
 DIG_DIR=$(mktemp -d "scripts/.digest-control-XXXXXX") || exit 2
 DIG_PROBE="$DIG_DIR/probe"
-BASE_DIGEST=$(digest)
-check "the same tree twice"                    same    "$BASE_DIGEST" "$(digest)"
+BASE_DIGEST=$(digest) || exit 2
+THIS=$(digest) || exit 2
+check "the same tree twice"                    same    "$BASE_DIGEST" "$THIS"
 printf 'probe\n' > "$DIG_PROBE" || exit 2
-UNTRACKED_DIGEST=$(digest)
+UNTRACKED_DIGEST=$(digest) || exit 2
 check "one new untracked file"                 differs "$BASE_DIGEST" "$UNTRACKED_DIGEST"
 git add "$DIG_PROBE" >/dev/null 2>&1 || exit 2
 # THE ONE THAT MATTERS. `git add` is the next step of the normal Phase 3 route to a commit, so a digest
 # that moved here would fail correct runs and be disabled rather than fixed.
-check "staging that file does not move it"     same    "$UNTRACKED_DIGEST" "$(digest)"
+THIS=$(digest) || exit 2
+check "staging that file does not move it"     same    "$UNTRACKED_DIGEST" "$THIS"
 chmod +x "$DIG_PROBE" || exit 2
-check "the executable bit moves it"            differs "$UNTRACKED_DIGEST" "$(digest)"
+THIS=$(digest) || exit 2
+check "the executable bit moves it"            differs "$UNTRACKED_DIGEST" "$THIS"
 # Staging a DELETION was the other half of the same defect, so it gets the same control.
 git rm -q --cached -f "$DIG_PROBE" >/dev/null 2>&1 || exit 2
 rm -f "$DIG_PROBE" || exit 2
-check "removing it returns to the baseline"    same    "$BASE_DIGEST" "$(digest)"
+THIS=$(digest) || exit 2
+check "removing it returns to the baseline"    same    "$BASE_DIGEST" "$THIS"
 # The real object database must not grow. `git add -A` writes a blob per file and `write-tree` writes the
 # trees; sent to the real store they would be unreachable garbage after every validation run.
 OBJ_BEFORE=$(find .git/objects -type f | wc -l | tr -d " ")
-digest >/dev/null; digest >/dev/null
+digest >/dev/null || exit 2; digest >/dev/null || exit 2
 OBJ_AFTER=$(find .git/objects -type f | wc -l | tr -d " ")
 if [ "$OBJ_BEFORE" = "$OBJ_AFTER" ]; then
     PASS=$((PASS+1)); echo "  ok    two runs leave no loose objects behind"

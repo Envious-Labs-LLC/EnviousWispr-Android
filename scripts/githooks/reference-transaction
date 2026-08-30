@@ -16,8 +16,8 @@
 #
 # WHAT IT MUST NOT BREAK, which is the harder half. This hook fires on `fetch` and `pull` in an armed
 # checkout. THREE things are allowed without inspection, and the list is short on purpose:
-#   · the new commit is already reachable from `main`'s CONFIGURED UPSTREAM, or from any remote-tracking
-#     ref when `main` has been deleted and its configuration with it -> a fetch or pull of work
+#   · the new commit is already reachable from `main`'s CONFIGURED UPSTREAM, or from a remote's DEFAULT
+#     BRANCH when `main` has been deleted and its configuration with it -> a fetch or pull of work
 #     that reached the remote, which means it went through a branch and the review that gates one.
 #     Resolved with `for-each-ref '%(upstream)'`, never hard-coded: a first version tested
 #     `refs/remotes/origin/main` and refused a legitimate pull in any checkout whose remote is named
@@ -78,13 +78,15 @@ while read -r _OLD NEW REF; do
     # read from anywhere. Recreating it at reviewed remote history is ordinary and was refused for the
     # upstream's own ship-path content.
     #
-    # The question that survives the branch is simply: has this commit been to a remote? Any
-    # remote-tracking ref answers it, and reaching one means the work went through a branch and the
-    # review that gates one, which is the same test the configured upstream was standing in for.
+    # ANY remote-tracking ref is the wrong fallback, and it is the tempting one. "Has been pushed
+    # somewhere" is not "has been reviewed into main": a local ship branch pushed to `origin/feature` is
+    # on a remote-tracking ref, so deleting `main` and recreating it at that tip would have been allowed.
+    # Only a remote's DEFAULT BRANCH stands in for the upstream, which is the thing review gates.
     if [ -z "$UPSTREAM" ]; then
-        for CANDIDATE in $(git for-each-ref --format='%(refname)' refs/remotes 2>/dev/null); do
-            if git merge-base --is-ancestor "$NEW" "$CANDIDATE" 2>/dev/null; then
-                UPSTREAM="$CANDIDATE"
+        for HEADREF in $(git for-each-ref --format='%(symref)' 'refs/remotes/*/HEAD' 2>/dev/null); do
+            [ -n "$HEADREF" ] || continue
+            if git merge-base --is-ancestor "$NEW" "$HEADREF" 2>/dev/null; then
+                UPSTREAM="$HEADREF"
                 break
             fi
         done
@@ -129,10 +131,13 @@ while read -r _OLD NEW REF; do
     # puts both of those commits into main's history. The promise this hook makes is about the commits,
     # so the enumeration has to be about the commits too.
     if [ -n "$BASE" ]; then RANGE="$BASE..$NEW"; else RANGE="$NEW"; fi
-    # `-m` so a MERGE COMMIT's own changes are visible. Without it `git log --name-only` shows nothing
-    # for a merge, and a conflict resolution that edits a ship path only in the merge commit — which is
-    # exactly where a resolution lives — was absent from the list entirely.
-    CHANGED=$(git log --root -m --format= --name-only --no-renames --diff-filter=ACDMRT "$RANGE" \
+    # `--cc`, the COMBINED diff, so a merge commit's own resolution is visible without its inherited
+    # content being counted as new. Plain `git log --name-only` shows nothing at all for a merge, and a
+    # resolution that adds a ship path lives exactly there. But `-m`, the obvious fix, reports the merge
+    # against EACH parent separately — so merging reviewed upstream ship work into a local docs branch
+    # listed every upstream ship path as though it were local, and refused an ordinary merge. A combined
+    # diff reports only what differs from ALL parents, which is the resolution itself.
+    CHANGED=$(git log --root --cc --format= --name-only --no-renames --diff-filter=ACDMRT "$RANGE" \
         2>/dev/null) || continue
     [ -n "$CHANGED" ] || continue
 
@@ -147,6 +152,9 @@ for line in sys.stdin:
 ' 2>/dev/null) || continue
     [ -n "$SHIP" ] || continue
 
+    # UNIQUE FILES. The enumeration walks commits, so one file touched in ten of them appeared ten times
+    # and the message said "10 ship-path file(s)" about one file.
+    SHIP=$(printf '%s\n' "$SHIP" | sort -u)
     COUNT=$(printf '%s\n' "$SHIP" | wc -l | tr -d ' ')
     echo "BLOCKED: moving \`main\` onto $COUNT ship-path file(s) that are not on its upstream." >&2
     printf '%s\n' "$SHIP" | head -8 | sed 's/^/    /' >&2

@@ -80,8 +80,10 @@ setting now cover more than three hooks and two settings did.
 `pull`, and a version that refused work arriving from the remote would make the repository unusable while
 looking exactly like protection. Three things pass without inspection. A commit already reachable from `main`'s CONFIGURED UPSTREAM —
 resolved with `for-each-ref`, never a hard-coded `origin`, which refused a legitimate pull in any checkout
-whose remote is named otherwise, and falling back to any remote-tracking ref once `main` is deleted,
-because deleting a branch deletes its upstream configuration too. A move BACKWARD, which is how a mistake
+whose remote is named otherwise, and falling back to a remote's DEFAULT BRANCH once `main` is deleted,
+because deleting a branch deletes its upstream configuration too. Not to any remote-tracking ref: "has
+been pushed somewhere" is not "has been reviewed into main", and a local ship branch pushed to
+`origin/feature` would otherwise have authorised recreating `main` at its tip. A move BACKWARD, which is how a mistake
 gets undone. And a new commit with the SAME TREE AND THE SAME PARENTS as the current one, which is
 `git commit --amend -m "reword"` and changes no file and no earlier commit.
 
@@ -91,10 +93,15 @@ parents to match pins the exception to a rewrite of exactly one commit. Two cont
 honest: the reword must pass and the divergent revert must fail.
 
 Everything else is judged, forward and divergent alike: reading "not forward" as "backward" let a rebase
-and a reset onto a divergent branch straight through, under a comment claiming rebase was covered. And
-the enumeration reads every commit in the range with `git log -m`, because two endpoints cancel a
-change-and-revert out entirely, and a merge commit shows none of its own conflict resolution without
-`-m` — which is exactly where a resolution lives.
+and a reset onto a divergent branch straight through, under a comment claiming rebase was covered.
+
+The enumeration reads every commit in the range, because two endpoints cancel a change-and-revert out
+entirely. It uses `git log --cc`, and the choice between that and `-m` is the whole question for merges: a
+merge shows none of its own conflict resolution without one of them, and a resolution is exactly where a
+smuggled path would live — but `-m` reports the merge against EACH parent, so merging reviewed upstream
+ship work into a local docs branch listed every upstream path as local and refused an ordinary merge. The
+combined diff reports only what differs from ALL parents, which is the resolution itself. Controls hold
+both ends: the resolution-added path denies, the ordinary merge allows.
 
 **One accepted gap:** where history is shallow or incomplete, an ancestry test cannot answer and the hook
 allows the move. It fails open on its own errors, unlike `pre-commit`, because it runs inside `clone` and

@@ -165,6 +165,7 @@ restore_main() {
 # refused and one that passes for the wrong reason. While `Foo.kt` was untracked, `git commit -a` had
 # nothing to include and failed because git found NOTHING TO COMMIT — which reads as `deny` and says
 # nothing at all about the hook.
+printf '__pycache__/\n*.pyc\n' > "$HOOKREPO/.gitignore" || exit 2
 printf 'base\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
 : > "$HOOKREPO/docs/ok.md" || exit 2
 gitc add -A >/dev/null 2>&1 || exit 2
@@ -358,6 +359,7 @@ git init -q -b main "$REMOTE_W/a" || exit 2
 cp "$HOOKS/ship_paths.py" "$REMOTE_W/a/scripts/hooks/" || exit 2
 cp scripts/githooks/pre-commit scripts/githooks/reference-transaction "$REMOTE_W/a/scripts/githooks/" || exit 2
 ga() { git -C "$REMOTE_W/a" -c user.email=t@t -c user.name=t "$@"; }
+printf '__pycache__/\n*.pyc\n' > "$REMOTE_W/a/.gitignore" || exit 2
 printf 'shipped\n' > "$REMOTE_W/a/app/src/main/Foo.kt" || exit 2
 : > "$REMOTE_W/a/docs/ok.md" || exit 2
 ga add -A >/dev/null 2>&1 || exit 2
@@ -438,10 +440,17 @@ DR_ORIG=$(cat "$REMOTE_W/c/app/src/main/Foo.kt" 2>/dev/null || echo x)
 printf 'divergent change\n' > "$REMOTE_W/c/app/src/main/Foo.kt" || exit 2
 git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent -c user.email=t@t -c user.name=t \
     commit -q -am "divergent change" >/dev/null 2>&1 || exit 2
-git -C "$REMOTE_W/c" checkout -q main -- . >/dev/null 2>&1 || true
+git -C "$REMOTE_W/c" checkout -q main -- . >/dev/null 2>&1 || exit 2
 git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent -c user.email=t@t -c user.name=t \
-    commit -q -am "back to main's content" >/dev/null 2>&1 || true
+    commit -q -am "back to main's content" >/dev/null 2>&1 || exit 2
 git -C "$REMOTE_W/c" checkout -q main >/dev/null 2>&1 || exit 2
+# ASSERT THE FIXTURE IS THE SHAPE THE CONTROL NAMES. With `|| true` on the revert, a failed second commit
+# left a branch carrying an UNREVERTED ship change — which the hook denies for an entirely different
+# reason, and the control would have reported success for testing nothing it claimed.
+[ "$(git -C "$REMOTE_W/c" rev-parse 'divergent-revert^{tree}')" = \
+  "$(git -C "$REMOTE_W/c" rev-parse 'main^{tree}')" ] || exit 2
+[ "$(git -C "$REMOTE_W/c" show -s --format='%P' divergent-revert)" != \
+  "$(git -C "$REMOTE_W/c" show -s --format='%P' main)" ] || exit 2
 DV_BEFORE=$(git -C "$REMOTE_W/c" rev-parse main) || exit 2
 git -C "$REMOTE_W/c" reset --hard divergent-revert >/dev/null 2>&1
 if [ "$(git -C "$REMOTE_W/c" rev-parse main)" = "$DV_BEFORE" ]; then
@@ -471,6 +480,10 @@ MG_BEFORE=$(git -C "$REMOTE_W/c" rev-parse main) || exit 2
 # `git log --name-only` does not show without `-m`.
 git -C "$REMOTE_W/c" checkout -q -b mergeside >/dev/null 2>&1 || exit 2
 git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent merge --no-commit sideA >/dev/null 2>&1
+# The merge is EXPECTED to exit non-zero on the conflict, so its status proves nothing. MERGE_HEAD proves
+# a merge is genuinely in progress; without it a different setup failure would be followed by an ordinary
+# ship-path commit, and the control would report the right answer for the wrong reason.
+[ -f "$REMOTE_W/c/.git/MERGE_HEAD" ] || exit 2
 printf 'resolved\n' > "$REMOTE_W/c/docs/conflict.md" || exit 2
 printf 'sneaked in during the resolution\n' > "$REMOTE_W/c/app/src/main/Resolved.kt" || exit 2
 git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent add -A >/dev/null 2>&1 || exit 2
@@ -485,6 +498,31 @@ else
 fi
 git -C "$REMOTE_W/c" merge --abort >/dev/null 2>&1
 git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent reset -q --hard "$MG_BEFORE" >/dev/null 2>&1 || exit 2
+
+# THE ALLOW HALF OF THE MERGE QUESTION, and the reason the enumeration uses `--cc` rather than `-m`. An
+# ordinary merge of reviewed upstream ship work into a local docs branch has the upstream's ship paths in
+# its diff against the LOCAL parent, so a per-parent listing calls them local and refuses the merge.
+# A FRESH CLONE, because `b` already carries a local ship commit from the control above and the range
+# would legitimately contain it — the control would then fail for a reason that has nothing to do with
+# merges, which is the same "passes/fails for the wrong cause" trap one step along.
+git clone -q "$REMOTE_W/origin.git" "$REMOTE_W/d" >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/d" config core.hooksPath scripts/githooks || exit 2
+printf 'sixth upstream ship change\n' > "$REMOTE_W/a/app/src/main/Foo.kt" || exit 2
+ga commit -q -am sixth >/dev/null 2>&1 || exit 2
+ga push -q origin main >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/d" fetch -q >/dev/null 2>&1 || exit 2
+: > "$REMOTE_W/d/docs/before-merge.md" || exit 2
+git -C "$REMOTE_W/d" add -A >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/d" -c user.email=t@t -c user.name=t commit -q -m "local docs" >/dev/null 2>&1 || exit 2
+MB_BEFORE=$(git -C "$REMOTE_W/d" rev-parse main) || exit 2
+git -C "$REMOTE_W/d" -c user.email=t@t -c user.name=t merge --no-ff -m "merge upstream" origin/main \
+    >/dev/null 2>&1
+if [ "$(git -C "$REMOTE_W/d" rev-parse main)" != "$MB_BEFORE" ]; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "merging upstream ship work into local docs" "allow"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "merging upstream ship work into local docs"
+fi
+git -C "$REMOTE_W/d" merge --abort >/dev/null 2>&1
 
 # A branch that changes a ship path and then REVERTS it has no endpoint difference at all, so a hook
 # diffing two endpoints let both of those commits into main's history.
@@ -514,8 +552,21 @@ if git -C "$REMOTE_W/c" branch main recreate >/dev/null 2>&1; then
 else
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating a deleted main at local ship work" "deny"
 fi
-# The allow half: recreating it at its own configured upstream. `for-each-ref` cannot answer once the
-# branch is gone, so the upstream has to come from `branch.main.remote` and `branch.main.merge`.
+# A LOCAL SHIP BRANCH THAT HAS BEEN PUSHED is on a remote-tracking ref, and "has been pushed somewhere"
+# is not "has been reviewed into main". Only a remote's default branch stands in for the upstream.
+git -C "$REMOTE_W/c" checkout -q -b feature recreate >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" push -q upstream feature:feature >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" fetch -q upstream >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" checkout -q --detach feature >/dev/null 2>&1 || exit 2
+if git -C "$REMOTE_W/c" branch main refs/remotes/upstream/feature >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "recreating main at a PUSHED feature branch"
+    git -C "$REMOTE_W/c" branch -q -D main >/dev/null 2>&1
+else
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating main at a PUSHED feature branch" "deny"
+fi
+# The allow half: recreating it at the remote's DEFAULT branch. `for-each-ref` cannot answer once the
+# branch is gone, and `git branch -D` deletes `branch.main.*` too, so the answer comes from the remote
+# HEAD symref.
 UPSTREAM_TIP=$(git -C "$REMOTE_W/c" rev-parse refs/remotes/upstream/main) || exit 2
 if git -C "$REMOTE_W/c" branch main "$UPSTREAM_TIP" >/dev/null 2>&1; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating a deleted main at its upstream" "allow"

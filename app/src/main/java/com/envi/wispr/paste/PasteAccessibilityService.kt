@@ -156,7 +156,7 @@ class PasteAccessibilityService : AccessibilityService() {
         fun pinTargetForDictation(): DictationTargetPin {
             val service = instance ?: return DictationTargetPin.SERVICE_NOT_RUNNING
             return service.callOnMain(DictationTargetPin.SERVICE_DID_NOT_ANSWER) {
-                if (service.pinTarget()) DictationTargetPin.PINNED else DictationTargetPin.NO_TARGET
+                service.pinTarget()
             }
         }
 
@@ -404,10 +404,22 @@ class PasteAccessibilityService : AccessibilityService() {
         return InsertionHandoff.SCHEDULED
     }
 
-    private fun pinTarget(): Boolean {
-        if (pendingInsertion != null) return false
+    /**
+     * Pins the editor this dictation should return to, and NAMES its own outcome.
+     *
+     * A Boolean here was read by the caller as "no editor was focused", which is only one of the two
+     * ways this declines. Refusing while an insertion is still pending is a dictation started on top
+     * of another one, and the words of the second are the ones at risk; classifying it as the
+     * ordinary no-editor case suppressed the only sentence that user would have seen. The type is
+     * the fix rather than a second matcher at the call site: a new exit here has to say which it is
+     * (`workflow-process.md` RULE: enumerate-from-the-producer-not-from-the-findings).
+     */
+    private fun pinTarget(): DictationTargetPin {
+        if (pendingInsertion != null) return DictationTargetPin.INSERTION_BUSY
         pinnedTarget?.let { existing ->
-            if (existing.node.refresh() && isSafeFocusedEditor(existing.node)) return true
+            if (existing.node.refresh() && isSafeFocusedEditor(existing.node)) {
+                return DictationTargetPin.PINNED
+            }
             clearPinnedTarget()
         }
 
@@ -417,7 +429,7 @@ class PasteAccessibilityService : AccessibilityService() {
             target = findFocusedEditableTarget()
             lastTarget = target
         }
-        target ?: return false
+        target ?: return DictationTargetPin.NO_TARGET
         pinnedTarget = TargetToken(
             node = AccessibilityNodeInfo.obtain(target.node),
             packageName = target.packageName,
@@ -426,7 +438,7 @@ class PasteAccessibilityService : AccessibilityService() {
             viewId = target.viewId,
         )
         Log.i(TAG, "Pinned original editor package=${target.packageName} window=${target.windowId}")
-        return true
+        return DictationTargetPin.PINNED
     }
 
     private fun findFocusedEditableTarget(): TargetSnapshot? {

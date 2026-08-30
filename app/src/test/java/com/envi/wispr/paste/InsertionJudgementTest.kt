@@ -13,7 +13,7 @@ import org.junit.Test
  * Product Outcome. When this fails the user dictates into an editor, the words land on the
  * clipboard, and nothing on the phone says so.
  *
- * The matrix is enumerated from `values()` on both enums rather than from a list of interesting
+ * The matrix is enumerated from `entries` on both enums rather than from a list of interesting
  * pairs, so a new member of either is a red row here instead of a silent hole
  * (`workflow-process.md` RULE: enumerate-from-the-producer-not-from-the-findings).
  */
@@ -21,8 +21,8 @@ class InsertionJudgementTest {
 
     @Test
     fun `every handoff other than NO_PINNED_TARGET is returned unchanged`() {
-        for (pin in DictationTargetPin.values()) {
-            for (handoff in InsertionHandoff.values()) {
+        for (pin in DictationTargetPin.entries) {
+            for (handoff in InsertionHandoff.entries) {
                 if (handoff == InsertionHandoff.NO_PINNED_TARGET) continue
                 assertEquals(
                     "$pin at start must not rewrite $handoff",
@@ -78,8 +78,19 @@ class InsertionJudgementTest {
     }
 
     @Test
+    fun `a dictation started on top of a pending insertion is a fault, not a missing editor`() {
+        assertEquals(
+            InsertionHandoff.INSERTION_ALREADY_PENDING,
+            InsertionJudgement.handoffToJudge(
+                DictationTargetPin.INSERTION_BUSY,
+                InsertionHandoff.NO_PINNED_TARGET,
+            ),
+        )
+    }
+
+    @Test
     fun `exactly one start state leaves a missing pin unannounced`() {
-        val unannounced = DictationTargetPin.values().filter { pin ->
+        val unannounced = DictationTargetPin.entries.filter { pin ->
             InsertionJudgement.handoffToJudge(pin, InsertionHandoff.NO_PINNED_TARGET) ==
                 InsertionHandoff.NO_PINNED_TARGET
         }

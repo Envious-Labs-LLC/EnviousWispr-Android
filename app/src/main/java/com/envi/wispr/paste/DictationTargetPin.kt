@@ -3,12 +3,16 @@ package com.envi.wispr.paste
 /**
  * What happened when a dictation tried to pin the editor it was started from.
  *
- * Four values, not the Boolean this replaced, because `false` folded the one case that is a fault
- * into the four entry points for which having no target is the design. The tile, the Home button,
- * onboarding practice and the side button pressed outside an editor all fail to pin against a
- * perfectly live service, and for all of them the clipboard is the destination the product intends.
- * A side button pressed INSIDE an editor while the service is dead fails to pin for a completely
- * different reason, and that one is issue #16.
+ * Five values, not the Boolean this replaced, because `false` folded three different situations
+ * into the one for which having no target is the design. The tile, the Home button, onboarding
+ * practice and the side button pressed outside an editor all fail to pin against a perfectly live
+ * service, and for all of them the clipboard is the destination the product intends. A side button
+ * pressed INSIDE an editor while the service is dead fails to pin for a completely different
+ * reason, which is issue #16; and a dictation started on top of one still being inserted fails for
+ * a third, where the words at risk are the new ones.
+ *
+ * The members are produced by `PasteAccessibilityService.pinTarget` and its wrapper, one per exit,
+ * so a new way to decline has to name itself rather than inherit the ordinary case.
  */
 enum class DictationTargetPin {
     /** An editor was pinned. Insertion has somewhere to go. */
@@ -16,6 +20,9 @@ enum class DictationTargetPin {
 
     /** The service answered and there was no editor to pin. The designed clipboard case. */
     NO_TARGET,
+
+    /** A previous insertion is still pending, so this dictation could not take the path. */
+    INSERTION_BUSY,
 
     /** No service instance was bound when the dictation started. */
     SERVICE_NOT_RUNNING,
@@ -57,6 +64,11 @@ object InsertionJudgement {
             DictationTargetPin.PINNED -> InsertionHandoff.SERVICE_NOT_RUNNING
             DictationTargetPin.SERVICE_NOT_RUNNING -> InsertionHandoff.SERVICE_NOT_RUNNING
             DictationTargetPin.SERVICE_DID_NOT_ANSWER -> InsertionHandoff.SERVICE_DID_NOT_ANSWER
+            // Back to back dictation. The first insertion held the path when this one started, and
+            // if it finishes before this transcript is ready, insertion finds a free service and no
+            // pin and reports the designed case. The words of the SECOND dictation are the ones
+            // that then went nowhere in silence.
+            DictationTargetPin.INSERTION_BUSY -> InsertionHandoff.INSERTION_ALREADY_PENDING
         }
     }
 }

@@ -95,7 +95,9 @@ def strings(field):
     `"declared_lane": []` reached `[] not in LANES` and raised `TypeError: unhashable type: 'list'`, and
     a dict inside an obligation list did the same at set construction. A verifier that dies with a
     traceback has not returned a verdict, and its exit status then means something different from every
-    other failure it can report. Nothing below this line reads `data` directly.
+    other failure it can report. No check below that CONSUMES A COLLECTION reads an unsanitized value;
+    the scalar reads that remain are `is_mixed_pr`, coerced to a bool here, and the original values
+    quoted back in error messages, which is the one place the raw input is the point.
     """
     value = data.get(field)
     return value if isinstance(value, list) and all(isinstance(v, str) for v in value) else []
@@ -120,7 +122,8 @@ skipped = strings("obligations_skipped")
 
 if declared and declared not in detected:
     fails.append(f"declared_lane {declared!r} is not among detected_lanes {detected}")
-if len(detected) > 1 and not data.get("is_mixed_pr"):
+mixed = data.get("is_mixed_pr") is True  # a truthy string must not answer this
+if len(detected) > 1 and not mixed:
     (fails if strict else warns).append(f"{len(detected)} lanes detected but is_mixed_pr is false")
 
 for name in satisfied + skipped:

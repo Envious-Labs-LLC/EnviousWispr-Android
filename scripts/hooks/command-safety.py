@@ -22,6 +22,18 @@ raises the cost of the accidental shape.
    because they change what gets committed WITHOUT it appearing in `git diff --cached`, so the staged-set
    check cannot see what it would be approving.
 
+WHAT THIS PARSER RECOGNISES, AND WHY THE LIST IS CLOSED. Four review rounds each produced a new shell or
+git form, which is what happens when the population is somebody else's grammar: it has no last member.
+The threat model above already decides how far to go — there is no adversary, so the requirement is the
+DIRECT shapes a cooperative author actually types.
+
+So the rule is stated once and applied everywhere below. **An input this parser does not confidently
+understand yields NO decision.** `git_subcommand` returns None on an unknown option rather than guessing
+where the subcommand is; `commit_shape` reports "writes nothing" for a dangling option value; anything
+that is not a recognised executable in a recognised position is simply not our business. A missed exotic
+form costs a mistake that still has to get through review. A false denial costs the guard itself, because
+the next session routes around it. Those are not symmetric, and this parser is tuned accordingly.
+
 2. THE WRITE SHAPES. Measured 2026-08-30: every file written during the session that designed this guard
    went through a Bash heredoc, including the design document itself. An Edit/Write matcher would have
    watched that happen and said nothing. So `> path`, `>> path`, `tee path` and `sed -i` into a ship path
@@ -46,8 +58,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # Flags that CHANGE WHAT GETS COMMITTED without passing through the index.
 INDEX_BYPASSING = {"-a", "--all", "-am", "-am.", "--include", "-i"}
 
-# The shell operators that end one command and begin the next.
-SHELL_BREAKS = {"|", "||", "&&", ";", "\n"}
+# The shell operators that end one command and begin the next. A bare `&` and a NEWLINE are both here
+# because both start a new command, and leaving either out kept `git status & git commit -am x` and a
+# two-line command as ONE segment whose executable was `git status`.
+SHELL_BREAKS = {"|", "||", "&", "&&", ";", "\n"}
 
 # `git` options that come BEFORE the subcommand. Without these, `git -C /tmp commit` misses its
 # subcommand entirely and `git -c user.name=x status` finds one that is not there.
@@ -56,6 +70,19 @@ GIT_GLOBAL_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", 
 GIT_GLOBAL_NO_VALUE = {"-p", "-P", "--paginate", "--no-pager", "--bare", "--literal-pathspecs",
                        "--no-literal-pathspecs", "--glob-pathspecs", "--icase-pathspecs",
                        "--no-optional-locks", "--no-replace-objects"}
+# The same options written compactly, `-C.` and `-cuser.name=x`, which are valid and were not recognised.
+GIT_GLOBAL_COMPACT = ("-C", "-c")
+
+# `git commit` options that CONSUME THE NEXT ARGUMENT. Without this table every scan of the argument list
+# reads an option's VALUE as an option: `git commit -m -a` has the message "-a", and was denied as an
+# index bypass. It is the false-positive half that matters most, because a guard that fires on correct
+# work is worse than no guard.
+COMMIT_WITH_VALUE = {"-m", "--message", "-F", "--file", "--author", "--date", "-C", "--reuse-message",
+                     "-c", "--reedit-message", "--fixup", "--squash", "--pathspec-from-file",
+                     "-t", "--template", "-S", "--gpg-sign", "-u", "--untracked-files",
+                     "--cleanup", "--trailer"}
+# Shapes of `git commit` that write no history at all, so nothing here has anything to object to.
+COMMIT_NO_WRITE = {"--dry-run", "--help", "-h", "--short", "--porcelain", "--long"}
 
 # A leading `VAR=value` is an environment assignment, not the command.
 ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=")
@@ -85,12 +112,46 @@ def staged() -> list[str]:
     return [ln.strip() for ln in out.splitlines() if ln.strip()]
 
 
+def commit_shape(args: list[str]) -> "tuple[bool, list[str], list[str]]":
+    """(writes history, the OPTIONS, the PATHSPEC) for what follows `commit`.
+
+    Reading the argument list as a flat bag of strings produced a false denial for every option value
+    that happens to look like a flag — `git commit -m -a`, `git commit -F -a` — and missed that bare
+    positional arguments ARE a pathspec, so `git commit app/src/main/Foo.kt` looked like an ordinary
+    commit of an empty index. Position is the only way to tell an option from its value.
+    """
+    options, positional = [], []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return True, options, args[index + 1:]
+        if token in COMMIT_NO_WRITE:
+            return False, options, []
+        if token in COMMIT_WITH_VALUE:
+            if index + 1 >= len(args):
+                return False, [], []  # a dangling option: git will reject it, and so this decides nothing
+            options.append(token)
+            index += 2
+            continue
+        if token.startswith("-"):
+            options.append(token)
+        else:
+            positional.append(token)
+        index += 1
+    return True, options, positional
+
+
 def check_commit(args: list[str]) -> None:
     """`args` is what follows the `commit` SUBCOMMAND, and nothing else in the command line."""
     if branch() != "main":
         return  # the branch IS the protection
 
-    bypass = [t for t in args if t in INDEX_BYPASSING or re.fullmatch(r"-[a-zA-Z]*a[a-zA-Z]*", t)]
+    writes, options, pathspec = commit_shape(args)
+    if not writes:
+        return  # a dry run or a help page changes nothing there is anything to object to
+
+    bypass = [t for t in options if t in INDEX_BYPASSING or re.fullmatch(r"-[a-zA-Z]*a[a-zA-Z]*", t)]
     if bypass:
         deny(
             f"BLOCKED: `git commit {' '.join(bypass)}` on `main` bypasses the index.\n\n"
@@ -99,21 +160,20 @@ def check_commit(args: list[str]) -> None:
             f"  git checkout -b <type>/<issue>-<slug>"
         )
 
-    # `git commit -- <path>` commits the WORKING TREE content of exactly those paths, staged or not.
-    # It is therefore BOTH a shape the staged-set check cannot see AND a shape that makes the staged set
-    # irrelevant: whatever else is in the index is not what this commit will contain. Judge the pathspec
-    # and return, or an ordinary `git commit -m x -- docs/note.md` is denied for an unrelated staged file.
-    if "--" in args:
-        pathspec = args[args.index("--") + 1:]
-        if pathspec:
-            ship = [p for p in pathspec if is_ship_path(p)]
-            if ship:
-                deny(
-                    f"BLOCKED: `git commit -- {' '.join(ship)}` on `main` commits working-tree content "
-                    f"without it passing through the index.\n\n"
-                    f"  git checkout -b <type>/<issue>-<slug>"
-                )
-            return
+    # A pathspec — after `--` or as bare positional arguments — commits the WORKING TREE content of
+    # exactly those paths, staged or not. So it is BOTH a shape the staged-set check cannot see AND a
+    # shape that makes the staged set irrelevant, because whatever else is in the index is not what this
+    # commit will contain. Judge the pathspec and RETURN: reading the index too would deny an ordinary
+    # `git commit -m x -- docs/note.md` for an unrelated staged file.
+    if pathspec:
+        ship = [p for p in pathspec if is_ship_path(p)]
+        if ship:
+            deny(
+                f"BLOCKED: `git commit {' '.join(ship)}` on `main` commits working-tree content "
+                f"without it passing through the index.\n\n"
+                f"  git checkout -b <type>/<issue>-<slug>"
+            )
+        return
 
     ship = [p for p in staged() if is_ship_path(p)]
     if ship:
@@ -134,7 +194,12 @@ def shell_tokens(command: str) -> list[str]:
     `shlex.split` folds `>` and `|` into whatever word they touch, so it can neither find a redirect nor
     see where one command ends and the next begins. Both of those are needed below.
     """
-    lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>")
+    # A newline separates two commands as surely as `;` does. shlex counts it as whitespace by default,
+    # so a two-line command arrived as ONE segment whose executable came from the first line. It has to
+    # be BOTH removed from whitespace and added to the operators — removing it alone glues the two lines
+    # into a single token. A newline inside quotes is untouched by this, which the controls assert.
+    lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>\n")
+    lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     try:
         return list(lexer)
@@ -143,7 +208,12 @@ def shell_tokens(command: str) -> list[str]:
 
 
 def command_segments(tokens: list[str]) -> list[list[str]]:
-    """One list per command actually being RUN, split on the shell operators between them."""
+    """One list per command actually being RUN, split on every operator in SHELL_BREAKS.
+
+    `&` and a newline are in that set for the same reason `;` is: each begins a new command, and while
+    they were missing, `git status & git commit -am x` and a two-line command were one segment whose
+    executable was read from the FIRST command in it.
+    """
     segments, current = [], []
     for token in tokens:
         if token in SHELL_BREAKS:
@@ -169,11 +239,22 @@ def executable(segment: list[str]) -> "tuple[str, list[str]] | None":
     Leading `VAR=value` assignments are skipped, because `FOO=1 git commit` really does run git.
     """
     index = 0
-    while index < len(segment) and ASSIGNMENT.match(segment[index]):
-        index += 1
+    # A segment can OPEN with a redirection (`> out.txt cat in.txt`), and it can carry environment
+    # assignments. Neither is the command; skipping both is what makes the next token the executable.
+    while index < len(segment) and (ASSIGNMENT.match(segment[index])
+                                    or segment[index] in (">", ">>", ">|", "<")):
+        index += 2 if segment[index] in (">", ">>", ">|", "<") else 1
     if index >= len(segment):
         return None
-    return os.path.basename(segment[index]), segment[index + 1:]
+    name = os.path.basename(segment[index])
+    # `env FOO=1 git commit` runs git. Classifying it as `env` reads a real commit as an unrelated
+    # command, which is the same position mistake one level further out.
+    if name == "env":
+        rest = segment[index + 1:]
+        while rest and (ASSIGNMENT.match(rest[0]) or rest[0] in ("-i", "--ignore-environment")):
+            rest = rest[1:]
+        return (os.path.basename(rest[0]), rest[1:]) if rest else None
+    return name, segment[index + 1:]
 
 
 def git_subcommand(args: list[str]) -> "tuple[str, list[str]] | None":
@@ -192,6 +273,11 @@ def git_subcommand(args: list[str]) -> "tuple[str, list[str]] | None":
             index += 2
             continue
         if token.startswith("-"):
+            # `-C.` and `-cuser.name=x` attach the value to the option, and are as ordinary as the
+            # separated forms. Missing them made `git -C. commit -am x` unrecognised, so it escaped.
+            if any(token.startswith(f) and len(token) > len(f) for f in GIT_GLOBAL_COMPACT):
+                index += 1
+                continue
             if "=" in token or token in GIT_GLOBAL_NO_VALUE:
                 index += 1
                 continue
@@ -206,7 +292,7 @@ def redirect_targets(tokens: list[str]) -> set[str]:
     A regex over the raw command text cannot tell the two apart, so `printf 'see > app/src/Foo.kt'` —
     ordinary correct work — was denied as a write to a ship path.
     """
-    return {tokens[i + 1] for i, tok in enumerate(tokens[:-1]) if tok in (">", ">>")}
+    return {tokens[i + 1] for i, tok in enumerate(tokens[:-1]) if tok in (">", ">>", ">|")}
 
 
 def check_writes(tokens: list[str]) -> None:
@@ -220,7 +306,10 @@ def check_writes(tokens: list[str]) -> None:
         name, args = found
         if name == "tee":
             targets.update(t for t in args if not t.startswith("-"))
-        elif name == "sed" and "-i" in args[:2]:
+        elif name == "sed" and any(a == "-i" or a == "--in-place" or a.startswith("-i.")
+                                   or (a.startswith("-") and not a.startswith("--") and "i" in a[1:])
+                                   for a in args):
+            # `-i`, `-i.bak`, `--in-place`, and `-i` inside a cluster like `-Ei` are all in-place edits.
             targets.update(t for t in args if not t.startswith("-") and "/" in t)
     for raw in targets:
         rel = os.path.relpath(raw, ROOT) if os.path.isabs(raw) else raw

@@ -31,7 +31,7 @@ absent, and the suite says so rather than passing quietly. Edit either one and r
 | Guard | Event | Denies | Silent when |
 |---|---|---|---|
 | `check-protected-paths.py` | Edit/Write/MultiEdit | a ship-path edit while on `main` | on a branch, or editing a local-only path |
-| `command-safety.py` | Bash | a RECOGNISED direct `git commit` touching a ship path, an index-bypassing flag, or an explicit `-- <pathspec>` on `main`; a recognised shell write into a ship path on `main` | on a branch, or any other command |
+| `command-safety.py` | Bash | a RECOGNISED direct `git commit` touching a ship path, an index-bypassing flag, or an explicit `-- <ship-path>` pathspec on `main`; a recognised shell write into a ship path on `main` | on a branch, or any other command |
 | `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer | every file that is not a plan, and any edit whose result it cannot reconstruct |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
 
@@ -86,9 +86,9 @@ and `docs/internal/`, so a clone gets the guards and none of their reasoning:
 nobody understands is to look for the bypass. That makes this a correctness problem for the guards, not only
 a backup problem.
 
-Measured 2026-08-30: `.claude/` holds 35 files here and 263 on macOS, none tracked in either. The Windows
-repository tracks its `.claude/`, so the three products already disagree. No Time Machine destination is
-configured on this machine.
+Regenerate the local inventory with `find .claude -type f | wc -l` rather than reading a number here.
+The Windows repository tracks its `.claude/`; this one and macOS do not, so the three products already
+disagree. Measured 2026-08-30: no Time Machine destination is configured on this machine.
 
 Deciding whether to track it is a founder call, not a session's. Until it is made, this table is the record
 of what a clone is missing.

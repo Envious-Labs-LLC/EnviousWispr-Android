@@ -121,6 +121,26 @@ assert_main "a later -a is not this commit's"  allow command-safety.py '{"tool_i
 # And the position parse must still find a real commit behind git's global options.
 assert_main "git -C before the subcommand"     deny  command-safety.py '{"tool_input":{"command":"git -C . commit -am wip"}}'
 assert_main "FOO=1 git commit -am"             deny  command-safety.py '{"tool_input":{"command":"FOO=1 git commit -am wip"}}'
+# ROUND 4's population: git's own option grammar. An option VALUE that looks like a flag, a dry
+# run, and a bare positional pathspec are all ordinary, and all three were denied while the
+# arguments were read as a flat bag of strings instead of by position.
+assert_main 'an option value that looks like a flag'       allow command-safety.py '{"tool_input": {"command": "git commit -m -a"}}'
+assert_main 'a filename that looks like a flag'            allow command-safety.py '{"tool_input": {"command": "git commit -F -a"}}'
+assert_main 'a dry run writes no history'                  allow command-safety.py '{"tool_input": {"command": "git commit --dry-run -am x"}}'
+assert_main 'a positional non-ship pathspec'               allow command-safety.py '{"tool_input": {"command": "git commit -m x docs/note.md"}}'
+# And the other direction: real commits that escaped while the shell and git forms were narrow.
+assert_main 'a bare & starts a new command'                deny  command-safety.py '{"tool_input": {"command": "git status & git commit -am x"}}'
+assert_main 'a newline starts a new command'               deny  command-safety.py '{"tool_input": {"command": "git status\ngit commit -am x"}}'
+assert_main 'env FOO=1 git commit -am'                     deny  command-safety.py '{"tool_input": {"command": "env FOO=1 git commit -am x"}}'
+assert_main 'the compact -C. global option'                deny  command-safety.py '{"tool_input": {"command": "git -C. commit -am x"}}'
+assert_main 'a positional SHIP pathspec'                   deny  command-safety.py '{"tool_input": {"command": "git commit -m x app/src/main/Foo.kt"}}'
+assert_main 'sed -i.bak into a ship path'                  deny  command-safety.py '{"tool_input": {"command": "sed -i.bak s/a/b/ app/src/main/Foo.kt"}}'
+assert_main 'the >| redirection into a ship path'          deny  command-safety.py '{"tool_input": {"command": "echo x >| app/src/main/Foo.kt"}}'
+# The ABSTENTION, which is the design and therefore needs a control: an option this parser does not know
+# must yield no decision rather than a guess about where the subcommand is.
+assert_main "an unknown git global option"     allow command-safety.py '{"tool_input":{"command":"git --nonsense commit -am x"}}'
+# And a newline INSIDE quotes is text, not a command separator.
+assert_main "a newline inside quotes"          allow command-safety.py '{"tool_input":{"command":"printf \"a\nb\" app/src/main/Foo.kt"}}'
 # The staged-set half, which needs a real index rather than a command string.
 : > "$MAINREPO/app/src/main/Foo.kt"; git -C "$MAINREPO" add app/src/main/Foo.kt
 assert_main "staged ship path on main"         deny  command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
@@ -195,8 +215,8 @@ echo "session-end-check.sh — both directions, in a repository whose state we c
 # would make the clean case unreachable. So give the throwaway repo a real bare origin and push to it.
 git init -q --bare "$MAINREPO.git" || exit 2
 git -C "$MAINREPO" remote add origin "$MAINREPO.git" || exit 2
-git -C "$MAINREPO" add -A >/dev/null 2>&1
-git -C "$MAINREPO" -c user.email=t@t -c user.name=t commit -q -m fixtures >/dev/null 2>&1
+git -C "$MAINREPO" add -A >/dev/null 2>&1 || exit 2
+git -C "$MAINREPO" -c user.email=t@t -c user.name=t commit -q -m fixtures >/dev/null 2>&1 || exit 2
 git -C "$MAINREPO" push -q -u origin main >/dev/null 2>&1 || exit 2
 CLEAN_OUT=$("$MAINREPO/scripts/hooks/session-end-check.sh" 2>&1)
 if [ -z "$CLEAN_OUT" ]; then

@@ -2,7 +2,7 @@
 """Every backticked identifier a diff ADDS must appear LEXICALLY in a configured source root.
 
 WHAT THAT DOES AND DOES NOT PROVE, because the difference decides how much a green run is worth. The
-matcher joins every configured file and looks for the word. It catches the failures worth catching — a
+matcher joins every configured file and looks for the word. It can catch the failures worth catching — a
 misspelling, an invented symbol, a name whose file was deleted — and it does NOT establish that the
 occurrence is a definition, that it is the symbol the sentence meant, or that it is in a relevant file.
 A word that also exists somewhere unrelated resolves. Read a green as "nothing obviously invented",
@@ -49,7 +49,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Every source root, which is wider than every root that ships. Searching only app/src would report a
+# The CONFIGURED source roots, which are wider than the roots that ship and narrower than the tree. Searching only app/src would report a
 # working llama-android or JNI symbol as broken, the direction that trains dismissal. Leaving `scripts/`
 # out did the same to repository tooling: the Docs/dev-tooling lane is mostly diffs to these scripts, so
 # an identifier defined only in one of them could not resolve, and the obligation was hard to satisfy for

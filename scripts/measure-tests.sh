@@ -6,7 +6,9 @@
 # The agent said so in its own notes and the number was carried forward as a receipt anyway.
 #
 # `BUILD SUCCESSFUL` is not a test result, and an UP-TO-DATE task returns the PREVIOUS run's XML. So this
-# script always passes --rerun-tasks and reports the count parsed from the XML it just caused to be written.
+# script always passes --rerun-tasks. It reports an aggregate only when Gradle completed; otherwise it
+# names the failures it can see and WITHHOLDS the count, because a run that stopped partway produces a
+# well-formed number describing only the suites written before it stopped.
 # `definition-of-done` names this script as the only quotable source for a test count.
 #
 #   scripts/measure-tests.sh            # run and report

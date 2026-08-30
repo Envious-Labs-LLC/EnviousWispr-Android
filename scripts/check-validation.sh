@@ -64,13 +64,13 @@ if data.get("head_sha") != head:
     fails.append(f"head_sha {str(data.get('head_sha'))[:12]} is not the current HEAD {head[:12]} — "
                  f"this run describes different code")
 
-# Every field this verifier reads must be PRESENT and the right TYPE before any check consumes it.
-# A missing list defaults to empty and a check over nothing passes; a string where a list belongs is
-# worse, because `for lane in "Code"` iterates four characters, matches no required artifact, and
-# reports PASS. Absence and wrong-shape both have to fail here, before the first read.
-# Presence is only half of it. A field of the WRONG TYPE is the plausible-value trap: `"is_mixed_pr":
-# "false"` is a truthy string, so the mixed-lane check reads it as yes and passes.  `type(...) is not`
-# rather than isinstance, because bool is a subclass of int and `"schema_version": true` must not pass.
+# Every field this verifier reads must be PRESENT and the right TYPE before any check consumes it, and
+# all three failures below LOOKED LIKE A PASS rather than an error. A missing list defaulted to empty and
+# a check over nothing passed. A string where a list belongs is worse: `for lane in "Code"` iterates four
+# characters, matches no required artifact, and reports PASS having verified nothing. A well-formed value
+# of the wrong type is worse again, because `"is_mixed_pr": "false"` is a truthy string and the
+# mixed-lane check read it as yes. `type(...) is not` rather than isinstance, because bool is a subclass
+# of int and `"schema_version": true` must not satisfy an int.
 EXPECTED_TYPES = {
     "schema_version": int, "head_sha": str, "branch": str, "declared_lane": str,
     "detected_lanes": list, "changed_files": list, "is_mixed_pr": bool,
@@ -86,34 +86,48 @@ for field in ("detected_lanes", "changed_files", "obligations_satisfied", "oblig
     if isinstance(data.get(field), list) and not all(isinstance(v, str) for v in data[field]):
         fails.append(f"{field} must contain only strings")
 
+
+
+def strings(field):
+    """The field's value when it is a list of strings, and an empty list otherwise.
+
+    RECORDING a type failure is not SURVIVING one. Every check below is written for strings, so
+    `"declared_lane": []` reached `[] not in LANES` and raised `TypeError: unhashable type: 'list'`, and
+    a dict inside an obligation list did the same at set construction. A verifier that dies with a
+    traceback has not returned a verdict, and its exit status then means something different from every
+    other failure it can report. Nothing below this line reads `data` directly.
+    """
+    value = data.get(field)
+    return value if isinstance(value, list) and all(isinstance(v, str) for v in value) else []
+
+
 declared = data.get("declared_lane")
+if not isinstance(declared, str):
+    declared = ""
 if declared not in LANES:
-    fails.append(f"unknown declared_lane: {declared!r}. Exactly one of {sorted(LANES)}")
+    fails.append(f"unknown declared_lane: {data.get('declared_lane')!r}. Exactly one of {sorted(LANES)}")
 
-detected = data.get("detected_lanes")
-if not isinstance(detected, list) or not detected:
-    fails.append(f"detected_lanes must be a non-empty JSON array, got {type(detected).__name__}")
-    detected = []
-else:
-    for lane in detected:
-        if lane not in LANES:
-            fails.append(f"unknown detected lane: {lane!r}. Exactly one of {sorted(LANES)}")
+detected = strings("detected_lanes")
+if not detected:
+    fails.append(f"detected_lanes must be a non-empty JSON array of lane names, got "
+                 f"{data.get('detected_lanes')!r}")
+for lane in detected:
+    if lane not in LANES:
+        fails.append(f"unknown detected lane: {lane!r}. Exactly one of {sorted(LANES)}")
 
-for field in ("obligations_satisfied", "obligations_skipped"):
-    if not isinstance(data.get(field, []), list):
-        fails.append(f"{field} must be a JSON array, got {type(data.get(field)).__name__}")
-        data[field] = []
+satisfied = strings("obligations_satisfied")
+skipped = strings("obligations_skipped")
 
 if declared and declared not in detected:
     fails.append(f"declared_lane {declared!r} is not among detected_lanes {detected}")
 if len(detected) > 1 and not data.get("is_mixed_pr"):
     (fails if strict else warns).append(f"{len(detected)} lanes detected but is_mixed_pr is false")
 
-for name in data.get("obligations_satisfied", []) + data.get("obligations_skipped", []):
+for name in satisfied + skipped:
     if name not in OBLIGATIONS:
         fails.append(f"unknown obligation id: {name!r}. Exactly one of {sorted(OBLIGATIONS)}")
 
-overlap = set(data.get("obligations_satisfied", [])) & set(data.get("obligations_skipped", []))
+overlap = set(satisfied) & set(skipped)
 if overlap:
     fails.append(f"obligation both satisfied and skipped: {sorted(overlap)}")
 
@@ -126,7 +140,6 @@ for lane in detected:
             fails.append(f"{lane}: required artifact {artifact} exists but is BLANK, which is not "
                          f"evidence. Size alone cannot see this: a file of spaces passes a size check")
 
-skipped = data.get("obligations_skipped", [])
 note = os.path.join(run, "skip-note.txt")
 if skipped:
     if not os.path.exists(note) or os.path.getsize(note) == 0:

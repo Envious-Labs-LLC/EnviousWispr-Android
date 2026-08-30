@@ -46,6 +46,20 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # Flags that CHANGE WHAT GETS COMMITTED without passing through the index.
 INDEX_BYPASSING = {"-a", "--all", "-am", "-am.", "--include", "-i"}
 
+# The shell operators that end one command and begin the next.
+SHELL_BREAKS = {"|", "||", "&&", ";", "\n"}
+
+# `git` options that come BEFORE the subcommand. Without these, `git -C /tmp commit` misses its
+# subcommand entirely and `git -c user.name=x status` finds one that is not there.
+GIT_GLOBAL_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+                         "--super-prefix", "--config-env"}
+GIT_GLOBAL_NO_VALUE = {"-p", "-P", "--paginate", "--no-pager", "--bare", "--literal-pathspecs",
+                       "--no-literal-pathspecs", "--glob-pathspecs", "--icase-pathspecs",
+                       "--no-optional-locks", "--no-replace-objects"}
+
+# A leading `VAR=value` is an environment assignment, not the command.
+ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=")
+
 
 def deny(reason: str) -> None:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -71,11 +85,12 @@ def staged() -> list[str]:
     return [ln.strip() for ln in out.splitlines() if ln.strip()]
 
 
-def check_commit(tokens: list[str], command: str) -> None:
+def check_commit(args: list[str]) -> None:
+    """`args` is what follows the `commit` SUBCOMMAND, and nothing else in the command line."""
     if branch() != "main":
         return  # the branch IS the protection
 
-    bypass = [t for t in tokens if t in INDEX_BYPASSING or re.fullmatch(r"-[a-zA-Z]*a[a-zA-Z]*", t)]
+    bypass = [t for t in args if t in INDEX_BYPASSING or re.fullmatch(r"-[a-zA-Z]*a[a-zA-Z]*", t)]
     if bypass:
         deny(
             f"BLOCKED: `git commit {' '.join(bypass)}` on `main` bypasses the index.\n\n"
@@ -84,17 +99,21 @@ def check_commit(tokens: list[str], command: str) -> None:
             f"  git checkout -b <type>/<issue>-<slug>"
         )
 
-    # `git commit -- <path>` commits the WORKING TREE content of those paths, staged or not, so the
-    # staged-set check below is reading the wrong thing entirely and would report an empty index.
-    after = tokens[tokens.index("commit") + 1:]
-    if "--" in after and after[after.index("--") + 1:]:
-        paths = [p for p in after[after.index("--") + 1:] if is_ship_path(p)]
-        if paths:
-            deny(
-                f"BLOCKED: `git commit -- {' '.join(paths)}` on `main` commits working-tree content "
-                f"without it passing through the index, so the staged-set check below cannot see it.\n\n"
-                f"  git checkout -b <type>/<issue>-<slug>"
-            )
+    # `git commit -- <path>` commits the WORKING TREE content of exactly those paths, staged or not.
+    # It is therefore BOTH a shape the staged-set check cannot see AND a shape that makes the staged set
+    # irrelevant: whatever else is in the index is not what this commit will contain. Judge the pathspec
+    # and return, or an ordinary `git commit -m x -- docs/note.md` is denied for an unrelated staged file.
+    if "--" in args:
+        pathspec = args[args.index("--") + 1:]
+        if pathspec:
+            ship = [p for p in pathspec if is_ship_path(p)]
+            if ship:
+                deny(
+                    f"BLOCKED: `git commit -- {' '.join(ship)}` on `main` commits working-tree content "
+                    f"without it passing through the index.\n\n"
+                    f"  git checkout -b <type>/<issue>-<slug>"
+                )
+            return
 
     ship = [p for p in staged() if is_ship_path(p)]
     if ship:
@@ -107,9 +126,6 @@ def check_commit(tokens: list[str], command: str) -> None:
             f"files on `main` for six hours with that rule in context.\n\n"
             f"  git checkout -b <type>/<issue>-<slug>   # your staged set follows you"
         )
-
-
-SHELL_BREAKS = {"|", "||", "&&", ";", "\n"}
 
 
 def shell_tokens(command: str) -> list[str]:
@@ -126,20 +142,62 @@ def shell_tokens(command: str) -> list[str]:
         return []
 
 
-def command_tail(tokens: list[str], start: int) -> list[str]:
-    """The arguments belonging to ONE command, stopping at the next shell operator.
-
-    Reading to the end of the token list instead makes every later word an argument of an earlier
-    command: `printf x | tee /tmp/log | cat app/src/main/Foo.kt` reads the file being CAT-ed as a third
-    `tee` target and denies an ordinary pipeline. A guard that fires on correct work is worse than no
-    guard, because it trains the reader to route around it.
-    """
-    tail = []
-    for token in tokens[start:]:
+def command_segments(tokens: list[str]) -> list[list[str]]:
+    """One list per command actually being RUN, split on the shell operators between them."""
+    segments, current = [], []
+    for token in tokens:
         if token in SHELL_BREAKS:
-            break
-        tail.append(token)
-    return tail
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def executable(segment: list[str]) -> "tuple[str, list[str]] | None":
+    """The command being RUN and its arguments, or None when the segment runs nothing.
+
+    THE DEFECT THIS EXISTS TO CLOSE ran through every recognition in this file: a word was matched
+    anywhere in the token list rather than in the position where a shell would execute it.
+    `printf '%s' git commit -a` contains `git`, `commit` and `-a`, runs none of them, and was denied. So
+    was `printf '%s' tee app/src/main/Foo.kt`, and so was a `tee` target belonging to a later pipeline
+    stage. Reading position is what makes those ordinary commands ordinary again.
+
+    Leading `VAR=value` assignments are skipped, because `FOO=1 git commit` really does run git.
+    """
+    index = 0
+    while index < len(segment) and ASSIGNMENT.match(segment[index]):
+        index += 1
+    if index >= len(segment):
+        return None
+    return os.path.basename(segment[index]), segment[index + 1:]
+
+
+def git_subcommand(args: list[str]) -> "tuple[str, list[str]] | None":
+    """The git subcommand and ITS arguments, skipping the global options that precede it.
+
+    Returns None when the subcommand cannot be identified — an option this parser does not know, or
+    nothing after the options. That is deliberate: an ambiguous parse must produce NO decision rather
+    than a denial of work that may be perfectly ordinary. There is no adversary here, so the cost of
+    missing an exotic form is a mistake that still has to get past review; the cost of a false denial is
+    a guard the next session routes around.
+    """
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token in GIT_GLOBAL_WITH_VALUE:
+            index += 2
+            continue
+        if token.startswith("-"):
+            if "=" in token or token in GIT_GLOBAL_NO_VALUE:
+                index += 1
+                continue
+            return None
+        return token, args[index + 1:]
+    return None
 
 
 def redirect_targets(tokens: list[str]) -> set[str]:
@@ -151,17 +209,19 @@ def redirect_targets(tokens: list[str]) -> set[str]:
     return {tokens[i + 1] for i, tok in enumerate(tokens[:-1]) if tok in (">", ">>")}
 
 
-def check_writes(tokens: list[str], command: str) -> None:
+def check_writes(tokens: list[str]) -> None:
     if branch() != "main":
         return
-    shell = shell_tokens(command)
-    targets = redirect_targets(shell)
-    for i, tok in enumerate(shell):
-        tail = command_tail(shell, i + 1)
-        if tok == "tee":
-            targets.update(t for t in tail if not t.startswith("-"))
-        if tok == "sed" and "-i" in tail[:2]:
-            targets.update(t for t in tail if not t.startswith("-") and "/" in t)
+    targets = redirect_targets(tokens)
+    for segment in command_segments(tokens):
+        found = executable(segment)
+        if found is None:
+            continue
+        name, args = found
+        if name == "tee":
+            targets.update(t for t in args if not t.startswith("-"))
+        elif name == "sed" and "-i" in args[:2]:
+            targets.update(t for t in args if not t.startswith("-") and "/" in t)
     for raw in targets:
         rel = os.path.relpath(raw, ROOT) if os.path.isabs(raw) else raw
         if rel.startswith("..") or not is_ship_path(rel):
@@ -181,16 +241,18 @@ def main() -> int:
         command = (payload.get("tool_input") or {}).get("command") or ""
         if not command:
             return 0
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
-            tokens = command.split()
+        tokens = shell_tokens(command)
     except Exception:
         return 0  # fail open
 
-    if "git" in tokens and "commit" in tokens:
-        check_commit(tokens, command)
-    check_writes(tokens, command)
+    for segment in command_segments(tokens):
+        found = executable(segment)
+        if found is None or found[0] != "git":
+            continue
+        sub = git_subcommand(found[1])
+        if sub is not None and sub[0] == "commit":
+            check_commit(sub[1])
+    check_writes(tokens)
     return 0
 
 

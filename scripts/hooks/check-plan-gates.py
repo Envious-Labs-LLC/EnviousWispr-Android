@@ -8,7 +8,9 @@ document. Splitting is right when the triggers differ; these do not.
 
 THE FOUR CHECKS
 
-1. PRIOR CONTEXT (Gate 0). A plan may not be written until prior context has been read and posted. Prose
+1. PRIOR CONTEXT (Gate 0). For an Edit, Write or MultiEdit call this hook can reconstruct, creating an
+   issue plan is refused until prior context has been read and posted. It sees no other way of writing a
+   file, so this is an objection, not a prohibition. Prose
    posted in chat is NOT MECHANICALLY OBSERVABLE, so this is sentinel-armed exactly as macOS does it:
    summarise prior context, `touch /tmp/.ew-android-issue-<N>-context-read`, then write.
    **The sentinel is issue-scoped and reusable for 30 minutes, not one-shot.** Nothing removes it, so any

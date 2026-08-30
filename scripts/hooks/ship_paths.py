@@ -12,7 +12,8 @@ predicate answers "does editing this belong on a branch", never "does this reach
 `.github/` is included although it does not exist yet: this is a PREFIX match, so it starts protecting the
 directory the day issue #13 creates it, with no edit here.
 
-TWO BUILD INPUTS ARE DELIBERATELY OUTSIDE IT, and the reason is that git already holds the line.
+TWO GITIGNORED BUILD INPUTS ARE DELIBERATELY OUTSIDE IT, and the reason is that git already holds the
+line.
 `app/libs/` and `local.properties` are both required to build and both gitignored, so no author can commit
 them and there is nothing for a branch rule to protect. Do not read this predicate as covering every input
 that affects a build; it covers every input that can enter HISTORY.

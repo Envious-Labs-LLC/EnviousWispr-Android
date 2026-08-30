@@ -32,7 +32,7 @@ absent, and the suite says so rather than passing quietly. Edit either one and r
 |---|---|---|---|
 | `check-protected-paths.py` | Edit/Write/MultiEdit | a ship-path edit while on `main` | on a branch, or editing a local-only path |
 | `command-safety.py` | Bash | a RECOGNISED direct `git commit` touching a ship path, an index-bypassing flag, or an explicit `-- <pathspec>` on `main`; a recognised shell write into a ship path on `main` | on a branch, or any other command |
-| `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, or a valid lane | every file that is not a plan |
+| `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer | every file that is not a plan, and any edit whose result it cannot reconstruct |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
 
 ## The two things worth knowing before changing any of them
@@ -79,7 +79,7 @@ and `docs/internal/`, so a clone gets the guards and none of their reasoning:
 | `scripts/` | yes | — |
 | `.claude/rules/workflow-process.md` | **no** | the ten-step process, the four lanes, definition-of-done, and every rule that explains why each guard exists (`grep -c '^## RULE:' .claude/rules/workflow-process.md`) |
 | `.claude/settings.json` | **no** | the registration that arms them, reproduced above |
-| `.claude/knowledge/` | **no** | 14 files |
+| `.claude/knowledge/` | **no** | its whole contents (`find .claude/knowledge -type f \| wc -l`) |
 | `docs/internal/` | **no** | the port plan and its seven review rounds |
 
 **A guard whose rule is unreachable is a denial nobody can understand**, and the first response to a denial

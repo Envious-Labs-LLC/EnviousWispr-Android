@@ -70,19 +70,21 @@ echo
 # guards derive their repository root from their own `__file__`, so the copy reads the throwaway repo and
 # the SHIPPED BYTES are what gets exercised — no source modification anywhere.
 MAINREPO=$(mktemp -d) || exit 2
-STDERR="$MAINREPO/hook-stderr"
+# Deliberately OUTSIDE $MAINREPO: session-end-check.sh is asserted against that repository being CLEAN,
+# and a stray file inside it would make the clean control impossible to reach.
+STDERR=$(mktemp) || exit 2
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan file under a FIXED name would overwrite and then delete a real file of that name. The suite
 # cleans up after itself, so it must only ever create something nothing else owns.
 EDITPLAN=$(mktemp docs/feature-requests/issue-9902-2026-01-01-control-XXXXXX.md) || exit 2
-trap 'rm -rf "$MAINREPO"; rm -f "$EDITPLAN" "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md' EXIT
+trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; rm -f "$STDERR" "$EDITPLAN" "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md' EXIT
 
 # Every setup step is checked. A half-built repository makes controls fail for a reason that has nothing
 # to do with the guards, which is the slowest kind of red to read.
 git init -q -b main "$MAINREPO" || exit 2
 [ "$(git -C "$MAINREPO" symbolic-ref --short HEAD)" = "main" ] || exit 2
 mkdir -p "$MAINREPO/scripts/hooks" "$MAINREPO/app/src/main" || exit 2
-cp "$HOOKS"/*.py "$MAINREPO/scripts/hooks/" || exit 2
+cp "$HOOKS"/*.py "$HOOKS"/session-end-check.sh "$MAINREPO/scripts/hooks/" || exit 2
 git -C "$MAINREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base || exit 2
 ON_MAIN="$MAINREPO/scripts/hooks"
 
@@ -111,9 +113,21 @@ assert_main "an ordinary read command"         allow command-safety.py '{"tool_i
 assert_main "a quoted redirect is not a write" allow command-safety.py '{"tool_input":{"command":"printf %s \"see > app/src/main/Foo.kt\""}}'
 assert_main "a later pipeline stage is not a tee target" allow command-safety.py '{"tool_input":{"command":"printf x | tee /tmp/log | cat app/src/main/Foo.kt"}}'
 assert_main "tee into a ship path on main"     deny  command-safety.py '{"tool_input":{"command":"printf x | tee app/src/main/Foo.kt"}}'
+# COMMAND POSITION. Every recognition here used to match a WORD anywhere in the token list, so a command
+# that merely PRINTED the words was denied. These three are ordinary correct work and must stay allowed.
+assert_main "printing the word git commit"     allow command-safety.py '{"tool_input":{"command":"printf %s git commit -a"}}'
+assert_main "printing the word tee"            allow command-safety.py '{"tool_input":{"command":"printf %s tee app/src/main/Foo.kt"}}'
+assert_main "a later -a is not this commit's"  allow command-safety.py '{"tool_input":{"command":"git commit -m x ; ls -a"}}'
+# And the position parse must still find a real commit behind git's global options.
+assert_main "git -C before the subcommand"     deny  command-safety.py '{"tool_input":{"command":"git -C . commit -am wip"}}'
+assert_main "FOO=1 git commit -am"             deny  command-safety.py '{"tool_input":{"command":"FOO=1 git commit -am wip"}}'
 # The staged-set half, which needs a real index rather than a command string.
 : > "$MAINREPO/app/src/main/Foo.kt"; git -C "$MAINREPO" add app/src/main/Foo.kt
 assert_main "staged ship path on main"         deny  command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
+assert_main "a non-commit git with it staged"  allow command-safety.py '{"tool_input":{"command":"git log --oneline"}}'
+# An explicit pathspec decides what the commit CONTAINS, so an unrelated staged file must not deny it.
+mkdir -p "$MAINREPO/docs"; : > "$MAINREPO/docs/note.md"
+assert_main "pathspec excluding the ship path" allow command-safety.py '{"tool_input":{"command":"git commit -m x -- docs/note.md"}}'
 git -C "$MAINREPO" reset -q
 assert_main "empty index on main"              allow command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
 echo
@@ -175,7 +189,32 @@ else
 fi
 echo
 
-echo "session-end-check.sh — silent when clean"
+echo "session-end-check.sh — both directions, in a repository whose state we control"
+# The silent half needs a genuinely clean, genuinely pushed repository, and both halves of that matter:
+# with no remote at all, `HEAD --not --remotes` counts every commit as unpushed, which is correct and
+# would make the clean case unreachable. So give the throwaway repo a real bare origin and push to it.
+git init -q --bare "$MAINREPO.git" || exit 2
+git -C "$MAINREPO" remote add origin "$MAINREPO.git" || exit 2
+git -C "$MAINREPO" add -A >/dev/null 2>&1
+git -C "$MAINREPO" -c user.email=t@t -c user.name=t commit -q -m fixtures >/dev/null 2>&1
+git -C "$MAINREPO" push -q -u origin main >/dev/null 2>&1 || exit 2
+CLEAN_OUT=$("$MAINREPO/scripts/hooks/session-end-check.sh" 2>&1)
+if [ -z "$CLEAN_OUT" ]; then
+    PASS=$((PASS+1)); echo "  ok    a clean tree is completely silent"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a clean tree printed ${#CLEAN_OUT} chars: $CLEAN_OUT"
+fi
+: > "$MAINREPO/app/src/main/Leftover.kt"
+DIRTY_OUT=$("$MAINREPO/scripts/hooks/session-end-check.sh" 2>&1)
+if printf '%s' "$DIRTY_OUT" | grep -q "1 file(s) dirty"; then
+    PASS=$((PASS+1)); echo "  ok    one untracked file is reported"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  one untracked file reported: ${DIRTY_OUT:-nothing}"
+fi
+rm -f "$MAINREPO/app/src/main/Leftover.kt"
+echo
+
+echo "session-end-check.sh — against this checkout"
 OUT=$("$HOOKS/session-end-check.sh" 2>&1)
 DIRTY=$(( $(git status --porcelain | wc -l) ))
 AHEAD=$(git rev-list --count '@{u}'..HEAD 2>/dev/null || git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)

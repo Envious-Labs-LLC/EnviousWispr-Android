@@ -51,8 +51,11 @@ sys.exit(0 if decision == "deny" else 1)
     fi
 }
 
-# assert <name> <deny|allow> <hook> <json>          — run against this checkout, on whatever branch it is
+# assert <name> <deny|allow> <hook> <json>          — run against this checkout, wherever it happens to be
 assert()      { assert_at "$HOOKS" "$@"; }
+# assert_branch <name> <deny|allow> <hook> <json>   — run against a throwaway repository that is ON A
+# BRANCH, so the answer does not depend on where this checkout is standing
+assert_branch() { assert_at "$ON_BRANCH" "$@"; }
 # assert_main <name> <deny|allow> <hook> <json>     — run against the throwaway repository that is on main
 assert_main() { assert_at "$ON_MAIN" "$@"; }
 
@@ -77,11 +80,19 @@ STDERR=$(mktemp) || exit 2
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan file under a FIXED name would overwrite and then delete a real file of that name. The suite
 # cleans up after itself, so it must only ever create something nothing else owns.
-EDITPLAN=$(mktemp docs/feature-requests/issue-9902-2026-01-01-control-XXXXXX.md) || exit 2
+#
+# NOT `mktemp`, and the reason is a defect this suite left in the working tree: BSD mktemp requires the
+# X's at the END of the template, and the plan-gate regex requires the name to end in `.md`. Given
+# `...-XXXXXX.md` it created a file called exactly that, so an early exit left a literal `XXXXXX` file
+# behind. The name is built here and the file is created only if nothing holds it.
+EDITPLAN="docs/feature-requests/issue-9902-2026-01-01-control-$$-$RANDOM.md"
+[ -e "$EDITPLAN" ] && exit 2
+: > "$EDITPLAN" || exit 2
 DIG_DIR=""; NOHOOKS=""
 # Only the exact paths THIS run reserved. A `scripts/.digest-control-*` glob would take a concurrent
 # session's directory with it.
-trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; rm -f "$STDERR" "$EDITPLAN" "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md; [ -n "$DIG_DIR" ] && rm -rf "$DIG_DIR"; [ -n "$NOHOOKS" ] && rm -rf "$NOHOOKS"' EXIT
+BRANCHREPO=""
+trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; [ -n "$BRANCHREPO" ] && rm -rf "$BRANCHREPO"; rm -f "$STDERR" "$EDITPLAN" "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md; [ -n "$DIG_DIR" ] && rm -rf "$DIG_DIR"; [ -n "$NOHOOKS" ] && rm -rf "$NOHOOKS"' EXIT
 
 # Every setup step is checked. A half-built repository makes controls fail for a reason that has nothing
 # to do with the guards, which is the slowest kind of red to read.
@@ -92,8 +103,21 @@ cp "$HOOKS"/*.py "$HOOKS"/session-end-check.sh "$MAINREPO/scripts/hooks/" || exi
 git -C "$MAINREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base || exit 2
 ON_MAIN="$MAINREPO/scripts/hooks"
 
+# THE ALLOW HALF NEEDS ITS OWN REPOSITORY TOO, and the reason is a defect this suite caught on the day
+# the branch merged. `assert` ran against THIS checkout, so "a ship-path edit on a branch is allowed"
+# passed only while the checkout happened to be on a branch — and went red the moment the work landed on
+# `main`. A control whose answer depends on where you are standing is not a control.
+BRANCHREPO=$(mktemp -d) || exit 2
+git init -q -b main "$BRANCHREPO" || exit 2
+mkdir -p "$BRANCHREPO/scripts/hooks" "$BRANCHREPO/app/src/main" || exit 2
+cp "$HOOKS"/*.py "$BRANCHREPO/scripts/hooks/" || exit 2
+git -C "$BRANCHREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base || exit 2
+git -C "$BRANCHREPO" checkout -q -b work || exit 2
+[ "$(git -C "$BRANCHREPO" rev-parse --abbrev-ref HEAD)" = "work" ] || exit 2
+ON_BRANCH="$BRANCHREPO/scripts/hooks"
+
 echo "check-protected-paths.py — edit time"
-assert "ship-path edit on a branch"            allow check-protected-paths.py '{"tool_input":{"file_path":"app/src/main/Foo.kt"}}'
+assert_branch "ship-path edit on a branch"     allow check-protected-paths.py '{"tool_input":{"file_path":"app/src/main/Foo.kt"}}'
 assert_main "ship-path edit on main"           deny  check-protected-paths.py '{"tool_input":{"file_path":"app/src/main/Foo.kt"}}'
 assert_main "Room schema on main"              deny  check-protected-paths.py '{"tool_input":{"file_path":"app/schemas/1.json"}}'
 assert_main "submodule pointer on main"        deny  check-protected-paths.py '{"tool_input":{"file_path":".gitmodules"}}'
@@ -103,7 +127,7 @@ assert_main "the benchmark is not a ship path" allow check-protected-paths.py '{
 echo
 
 echo "command-safety.py — the shell writes, which no git hook can see"
-assert "an ordinary read command"              allow command-safety.py '{"tool_input":{"command":"git status --short"}}'
+assert_branch "an ordinary read command"       allow command-safety.py '{"tool_input":{"command":"git status --short"}}'
 assert_main "an ordinary read command"         allow command-safety.py '{"tool_input":{"command":"git status --short"}}'
 assert_main "heredoc into a ship path on main" deny  command-safety.py '{"tool_input":{"command":"cat > app/src/main/Foo.kt <<EOF"}}'
 assert_main "append into a ship path on main"  deny  command-safety.py '{"tool_input":{"command":"echo x >> app/src/main/Foo.kt"}}'
@@ -120,9 +144,9 @@ assert_main "a later pipeline stage"           allow command-safety.py '{"tool_i
 assert_main "printing the word tee"            allow command-safety.py '{"tool_input":{"command":"printf %s tee app/src/main/Foo.kt"}}'
 assert_main "a newline inside quotes"          allow command-safety.py '{"tool_input":{"command":"printf \"a\nb\" app/src/main/Foo.kt"}}'
 # `--no-verify` is denied on EVERY branch, because skipping a hook is never the fix for what it says.
-assert "--no-verify on a branch"               deny  command-safety.py '{"tool_input":{"command":"git commit --no-verify -m x"}}'
+assert_branch "--no-verify on a branch"        deny  command-safety.py '{"tool_input":{"command":"git commit --no-verify -m x"}}'
 assert_main "--no-verify on main"              deny  command-safety.py '{"tool_input":{"command":"git commit --no-verify -m x"}}'
-assert "an ordinary commit on a branch"        allow command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
+assert_branch "an ordinary commit on a branch" allow command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
 echo
 
 # THE COMMIT CHECK IS A REAL GIT HOOK NOW, so it is exercised by RUNNING COMMITS rather than by feeding

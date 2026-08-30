@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test-hooks.sh — every guard, both directions. A guard never observed failing is a comment.
+# test-hooks.sh — every guard, and every other check that decides something, in BOTH directions.
+# A guard never observed failing is a comment.
 #
 # Each case asserts BOTH that the guard fires on a real violation AND that it stays silent on the
 # legitimate case. The second half is the one that matters most: `check-must-not-fire-on-a-clean-tree`
@@ -250,6 +251,37 @@ else
     if [ -n "$OUT" ]; then PASS=$((PASS+1)); echo "  ok    leftovers reported ($DIRTY dirty, $AHEAD unpushed)"
     else FAIL=$((FAIL+1)); echo "  FAIL  $DIRTY dirty and $AHEAD unpushed, reported nothing"; fi
 fi
+echo "change-digest.sh — the fingerprint a validation receipt is pinned to"
+digest() { scripts/change-digest.sh 2>/dev/null; }
+check() {  # check <name> <same|differs> <before> <after>
+    local got="differs"; [ "$3" = "$4" ] && got="same"
+    if [ "$got" = "$2" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$1" "$got"
+    else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted %s, got %s\n' "$1" "$2" "$got"; fi
+}
+DIG_PROBE=scripts/.digest-control.tmp
+BASE_DIGEST=$(digest)
+check "the same tree twice"                    same    "$BASE_DIGEST" "$(digest)"
+: > "$DIG_PROBE"; UNTRACKED_DIGEST=$(digest)
+check "one new untracked file"                 differs "$BASE_DIGEST" "$UNTRACKED_DIGEST"
+git add "$DIG_PROBE" >/dev/null 2>&1
+# THE ONE THAT MATTERS. `git add` is the next step of the normal Phase 3 route to a commit, so a digest
+# that moved here would fail correct runs and be disabled rather than fixed.
+check "staging that file does not move it"     same    "$UNTRACKED_DIGEST" "$(digest)"
+chmod +x "$DIG_PROBE"
+check "the executable bit moves it"            differs "$UNTRACKED_DIGEST" "$(digest)"
+git reset -q HEAD "$DIG_PROBE" >/dev/null 2>&1; rm -f "$DIG_PROBE"
+check "removing it returns to the baseline"    same    "$BASE_DIGEST" "$(digest)"
+DIG_REPO=$(mktemp -d); git init -q -b main "$DIG_REPO"; mkdir -p "$DIG_REPO/scripts"
+cp scripts/change-digest.sh "$DIG_REPO/scripts/"
+git -C "$DIG_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+DIG_OUT=$("$DIG_REPO/scripts/change-digest.sh" 2>/dev/null); DIG_RC=$?
+if [ "$DIG_RC" -eq 2 ] && [ -z "$DIG_OUT" ]; then
+    PASS=$((PASS+1)); echo "  ok    a failed enumeration exits 2 and prints nothing"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a failed enumeration gave exit $DIG_RC and '${DIG_OUT}'"
+fi
+rm -rf "$DIG_REPO"
 echo
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -70,8 +70,11 @@ if data.get("head_sha") != head:
 # uncommitted edit changes what was validated without moving HEAD at all. Without the digest a run
 # directory stayed current while its subject was rewritten underneath it.
 if not digest:
-    (fails if strict else warns).append("the change digest could not be computed, so this run cannot be "
-                                        "shown to describe the current working tree")
+    # A FAILURE, never a warning. The header calls this script the thing that fails closed, and a run
+    # whose subject cannot be identified is exactly the case it exists to refuse — "PASS with 1 warning"
+    # would have been the most confident-looking wrong answer here.
+    fails.append("the change digest could not be computed, so this run cannot be shown to describe the "
+                 "current working tree")
 elif data.get("change_digest") != digest:
     fails.append(f"change_digest {str(data.get('change_digest'))[:12]} is not the working tree's "
                  f"{digest[:12]} — the code changed after this run was recorded")

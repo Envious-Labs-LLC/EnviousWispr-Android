@@ -13,499 +13,328 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * PRODUCT OUTCOME for every row except the two declared DRIFT GUARDs at the end, which are not
- * counted as product coverage. When a product row fails, a user is told their words are somewhere
- * they are not, on the screen they open when the product looks broken, or is told a working
- * dictation failed.
+ * PRODUCT OUTCOME for every row except the DRIFT GUARDs declared as such, which are not counted as
+ * product coverage. When a product row fails, a user is told their words are somewhere they are
+ * not, or a working dictation is reported to them as a failure.
+ *
+ * **This suite now enforces a CALM contract, and that is a change of subject rather than a change
+ * of wording.** The surfaces it used to hold together, a toast beside a durable notification, are
+ * one line; the failure haptic is gone; and History says nothing about delivery. macOS is the
+ * reference and shows a single pill, `Copied. Press ⌘V to paste`, for every clipboard-only outcome.
+ * The rows that protected agreement BETWEEN two surfaces are gone with the second surface, and
+ * three rows below replace them by asserting that neither surface can come back.
  *
  * The clipboard write genuinely can fail: `keepTranscriptOnClipboard` refuses when newer clipboard
  * content is detected, and shipped copy claimed "Transcript copied" on that path regardless.
  */
 class InsertionOutcomeMessagesTest {
 
-    @Test
-    fun aCrashedServiceIsNamedRatherThanBlamingTheField() {
-        assertEquals(
-            "Auto-paste is not connected. Your words are on the clipboard, ready to paste.",
-            InsertionOutcomeMessages.fallbackToast(
-                autoPaste = AutoPasteAvailability.PERMITTED_NOT_RUNNING,
-                handoff = InsertionHandoff.SERVICE_NOT_RUNNING,
-                clipboard = ClipboardOutcome.COPIED,
-                savedInHistory = true,
-            ),
-        )
-    }
+    private val copiedLine = "Copied. Press and hold, then tap Paste."
+    private val historyLine = "Saved in History. Open EnviousWispr to copy."
+    private val lostLine = "Your words could not be saved. Please dictate again."
+
+    // ---------------------------------------------------------------- whether it speaks at all
 
     /**
-     * Issue #16 review, CLASS A. The four handoffs where auto-paste WAS expected to work name the
-     * failure; the three where there was never a field to insert into state where the words are
-     * and report no fault. Every member of the enum appears in one list or the other, so a new one
-     * cannot be added without deciding which it is.
+     * Issue #16 review, CLASS A. The four handoffs where auto-paste WAS expected to work speak; the
+     * three where there was never a field to insert into stay silent, because for them the
+     * clipboard is the designed destination and the dictation worked. Every member of the enum is
+     * in one list or the other, so a new one cannot be added without deciding which it is.
      */
     @Test
-    fun onlyTheHandoffsWhereAutoPasteWasExpectedToWorkNameAFailure() {
-        val faults = listOf(
-            InsertionHandoff.SERVICE_NOT_RUNNING to
-                "Auto-paste is not connected. Your words are on the clipboard, ready to paste.",
-            InsertionHandoff.INSERTION_ALREADY_PENDING to
-                "Automatic insertion did not reach your field. Your words are on the clipboard, " +
-                    "ready to paste.",
-            InsertionHandoff.SERVICE_DID_NOT_ANSWER to
-                "Automatic insertion did not reach your field. Your words are on the clipboard, " +
-                    "ready to paste.",
-            // Not an auto-paste sentence: this handoff is chosen in the session owner before any
-            // field is consulted, and four of the five entry points never have one.
-            InsertionHandoff.HISTORY_NOT_DURABLE to
-                "History could not store this dictation. Your words are on the clipboard, " +
-                    "ready to paste.",
-        )
-        val notFaults = listOf(
-            InsertionHandoff.NO_PINNED_TARGET,
-            InsertionHandoff.EMPTY_TEXT,
-            InsertionHandoff.SCHEDULED,
-        )
-        assertEquals(
-            "A handoff member is in neither list, so the enum grew and nobody decided whether it " +
-                "is a fault the user should be told about",
-            InsertionHandoff.entries.toSet(),
-            (faults.map { it.first } + notFaults).toSet(),
-        )
-        faults.forEach { (handoff, expected) ->
-            assertEquals(
-                "Handoff $handoff produced the wrong sentence",
-                expected,
-                InsertionOutcomeMessages.fallbackToast(
-                    autoPaste = AutoPasteAvailability.LIVE,
-                    handoff = handoff,
-                    clipboard = ClipboardOutcome.COPIED,
-                    savedInHistory = true,
-                ),
-            )
-        }
-        notFaults.forEach { handoff ->
-            assertEquals(
-                "Handoff $handoff told the user automatic insertion failed, and it did not: there " +
-                    "was no field to insert into and the clipboard is the designed destination",
-                "Your words are on the clipboard, ready to paste.",
-                InsertionOutcomeMessages.fallbackToast(
-                    autoPaste = AutoPasteAvailability.LIVE,
-                    handoff = handoff,
-                    clipboard = ClipboardOutcome.COPIED,
-                    savedInHistory = true,
-                ),
-            )
-        }
-    }
-
-    @Test
-    fun aFailedClipboardWriteIsNeverDescribedAsCopied() {
-        val message = InsertionOutcomeMessages.fallbackToast(
-            autoPaste = AutoPasteAvailability.PERMITTED_NOT_RUNNING,
-            handoff = InsertionHandoff.SERVICE_NOT_RUNNING,
-            clipboard = ClipboardOutcome.WRITE_FAILED,
-            savedInHistory = true,
-        )
-        assertEquals(
-            "Auto-paste is not connected. Your words are saved in History.",
-            message,
-        )
-        assertFalse("A failed clipboard write must not mention the clipboard", message.contains("clipboard"))
-    }
-
-    @Test
-    fun wordsThatReachedNothingAskTheUserToDictateAgain() {
-        // No field was in play, so the sentence reports no fault. The words are still gone, which
-        // is the half the user has to act on.
-        assertEquals(
-            "Your words could not be saved. Please dictate again.",
-            InsertionOutcomeMessages.fallbackToast(
-                autoPaste = AutoPasteAvailability.LIVE,
-                handoff = InsertionHandoff.NO_PINNED_TARGET,
-                clipboard = ClipboardOutcome.WRITE_FAILED,
-                savedInHistory = false,
-            ),
-        )
-        assertEquals(
-            "Automatic insertion did not reach your field. Your words could not be saved. " +
-                "Please dictate again.",
-            InsertionOutcomeMessages.fallbackToast(
-                autoPaste = AutoPasteAvailability.LIVE,
-                handoff = InsertionHandoff.SERVICE_DID_NOT_ANSWER,
-                clipboard = ClipboardOutcome.WRITE_FAILED,
-                savedInHistory = false,
-            ),
-        )
-    }
-
-    /**
-     * Issue #16 review, MAJ-1 and MAJ-6. Declining the accessibility permission IS clipboard-only
-     * mode, because `AppReadiness.coreReady` excludes accessibility and there is no other toggle.
-     * Announcing a fallback there buzzes the failure pattern and posts a shade notification after
-     * every successful dictation, and reports the disconnection of something never connected.
-     */
-    @Test
-    fun aUserWhoNeverEnabledAutoPasteIsNotToldTheirWorkingDictationFailed() {
-        InsertionHandoff.entries.forEach { handoff ->
-            assertNull(
-                "Handoff $handoff announced a fallback to a user who never granted the permission",
-                FallbackAnnouncement.fallbackAnnouncement(
-                    autoPaste = AutoPasteAvailability.NOT_PERMITTED,
-                    handoff = handoff,
-                    clipboard = ClipboardOutcome.COPIED,
-                    savedInHistory = true,
-                ),
-            )
-        }
-    }
-
-    /** The same user must still hear about words the clipboard did NOT take. */
-    @Test
-    fun silenceForAnUnpermittedUserStopsAtWordsThatCouldBeLost() {
-        val announcement = FallbackAnnouncement.fallbackAnnouncement(
-            autoPaste = AutoPasteAvailability.NOT_PERMITTED,
-            handoff = InsertionHandoff.SERVICE_NOT_RUNNING,
-            clipboard = ClipboardOutcome.WRITE_FAILED,
-            savedInHistory = true,
-        )
-        assertNotNull("Words the clipboard did not take must always be announced", announcement)
-        assertEquals("Your words are saved in History", announcement!!.notificationTitle)
-    }
-
-    /** A user who DID connect auto-paste and lost it is told, because for them it is a fault. */
-    @Test
-    fun aUserWhoConnectedAutoPasteIsToldWhenItStopsReachingTheField() {
-        val announcement = FallbackAnnouncement.fallbackAnnouncement(
-            autoPaste = AutoPasteAvailability.PERMITTED_NOT_RUNNING,
-            handoff = InsertionHandoff.SERVICE_NOT_RUNNING,
-            clipboard = ClipboardOutcome.COPIED,
-            savedInHistory = true,
-        )
-        assertNotNull(announcement)
-        assertEquals(
-            "Auto-paste is not connected. Your words are on the clipboard, ready to paste.",
-            announcement!!.toast,
-        )
-        assertEquals("Your words are on the clipboard", announcement.notificationTitle)
-        assertTrue("A fault the user can act on still earns its haptic", announcement.haptic)
-    }
-
-    /**
-     * Issue #16 review, CLASS A, the whole table. One row per `InsertionHandoff` member at each
-     * `AutoPasteAvailability`, because the defect was a suppression that named ONE state and let
-     * every other combination through to a failure buzz, a long toast and a shade notification.
-     *
-     * Four of the five entry points cannot pin a target: the Quick Settings tile, the Home button,
-     * onboarding practice, and the side button pressed outside a text field. All four produce
-     * NO_PINNED_TARGET with a perfectly live service, so the wrong answer here buzzes a failure on
-     * ordinary, working use of the product.
-     */
-    @Test
-    fun onlyAFaultTheUserCanActOnIsAnnounced() {
-        val announcedWhenPermitted = setOf(
+    fun onlyTheHandoffsWhereAutoPasteWasExpectedToWorkSpeakAtAll() {
+        val speaks = listOf(
             InsertionHandoff.SERVICE_NOT_RUNNING,
             InsertionHandoff.INSERTION_ALREADY_PENDING,
             InsertionHandoff.SERVICE_DID_NOT_ANSWER,
             InsertionHandoff.HISTORY_NOT_DURABLE,
         )
-        AutoPasteAvailability.entries.forEach { autoPaste ->
-            InsertionHandoff.entries.forEach { handoff ->
-                val announcement = FallbackAnnouncement.fallbackAnnouncement(
-                    autoPaste = autoPaste,
-                    handoff = handoff,
-                    clipboard = ClipboardOutcome.COPIED,
-                    savedInHistory = true,
-                )
-                val expected = autoPaste != AutoPasteAvailability.NOT_PERMITTED &&
-                    handoff in announcedWhenPermitted
-                assertEquals(
-                    "autoPaste=$autoPaste handoff=$handoff announced=${announcement != null}, " +
-                        "expected=$expected. A dictation that reached the clipboard as designed " +
-                        "must not buzz and notify; a dictation that lost the field must.",
-                    expected,
-                    announcement != null,
-                )
-            }
+        val silent = listOf(
+            InsertionHandoff.NO_PINNED_TARGET,
+            InsertionHandoff.EMPTY_TEXT,
+            InsertionHandoff.SCHEDULED,
+        )
+        assertEquals(
+            "A handoff member is in neither list, so the enum grew and nobody decided whether the " +
+                "user hears about it",
+            InsertionHandoff.entries.toSet(),
+            (speaks + silent).toSet(),
+        )
+        speaks.forEach { handoff ->
+            assertEquals(
+                "Handoff $handoff said the wrong thing",
+                copiedLine,
+                announce(AutoPasteAvailability.LIVE, handoff)?.line,
+            )
+        }
+        silent.forEach { handoff ->
+            assertNull(
+                "Handoff $handoff interrupted a dictation that worked: there was no field to " +
+                    "insert into and the clipboard is the designed destination",
+                announce(AutoPasteAvailability.LIVE, handoff),
+            )
         }
     }
 
-    /**
-     * The floor under the suppression above. Whatever the handoff and whatever the permission, if
-     * the words are in neither place the user can retrieve them from, they are told, because that
-     * is the case where saying nothing loses them.
-     */
+    @Test
+    fun aUserWhoNeverEnabledAutoPasteIsNotToldTheirWorkingDictationFailed() {
+        InsertionHandoff.entries.forEach { handoff ->
+            assertNull(
+                "handoff=$handoff spoke to a user who never granted the permission. Declining it " +
+                    "IS clipboard-only mode and is a supported steady state",
+                announce(AutoPasteAvailability.NOT_PERMITTED, handoff),
+            )
+        }
+    }
+
+    /** The silence has a floor: words the user cannot reach are announced whatever else was true. */
+    @Test
+    fun silenceForAnUnpermittedUserStopsAtWordsThatCouldBeLost() {
+        assertEquals(
+            lostLine,
+            announce(
+                AutoPasteAvailability.NOT_PERMITTED,
+                InsertionHandoff.NO_PINNED_TARGET,
+                clipboard = ClipboardOutcome.WRITE_FAILED,
+                savedInHistory = false,
+            )?.line,
+        )
+    }
+
     @Test
     fun wordsThatReachedNeitherTheClipboardNorHistoryAreAlwaysAnnounced() {
         AutoPasteAvailability.entries.forEach { autoPaste ->
             InsertionHandoff.entries.forEach { handoff ->
-                listOf(ClipboardOutcome.WRITE_FAILED, ClipboardOutcome.NOT_ATTEMPTED)
-                    .forEach { clipboard ->
-                        val announcement = FallbackAnnouncement.fallbackAnnouncement(
-                            autoPaste = autoPaste,
-                            handoff = handoff,
-                            clipboard = clipboard,
-                            savedInHistory = false,
-                        )
-                        assertNotNull(
-                            "autoPaste=$autoPaste handoff=$handoff clipboard=$clipboard lost the " +
-                                "words silently",
-                            announcement,
-                        )
-                        assertEquals(
-                            "Your words could not be saved",
-                            announcement!!.notificationTitle,
-                        )
-                    }
+                assertNotNull(
+                    "autoPaste=$autoPaste handoff=$handoff said nothing about words that reached " +
+                        "nowhere the user can get them back from",
+                    announce(
+                        autoPaste,
+                        handoff,
+                        clipboard = ClipboardOutcome.WRITE_FAILED,
+                        savedInHistory = false,
+                    ),
+                )
             }
         }
     }
 
     /**
-     * The two ways of not being on the clipboard, which a single Boolean could not tell apart.
-     *
-     * A copy that was ATTEMPTED and failed is a fault for every user: the place they will press
-     * and hold is empty. A copy that was never attempted is `autoCopyToClipboard` turned off, so
-     * History is the destination and the dictation worked. Announcing that one buzzed and posted a
-     * shade notification after every successful dictation for a user who chose History.
+     * A copy that was never ATTEMPTED is the user's own auto-copy setting and History is then the
+     * destination, so it is a success. A copy that was attempted and failed is a fault. The
+     * three-valued [ClipboardOutcome] is what keeps those apart.
      */
     @Test
     fun aClipboardCopyTheUserTurnedOffIsNotReportedAsAFailedOne() {
-        val turnedOff = FallbackAnnouncement.fallbackAnnouncement(
-            autoPaste = AutoPasteAvailability.NOT_PERMITTED,
-            handoff = InsertionHandoff.SERVICE_NOT_RUNNING,
-            clipboard = ClipboardOutcome.NOT_ATTEMPTED,
-            savedInHistory = true,
-        )
         assertNull(
-            "A dictation that went to History because the user turned auto-copy off is a " +
-                "success, and announcing it reports a fault that did not happen",
-            turnedOff,
+            "A dictation that went to History by the user's own setting was reported as a fault",
+            announce(
+                AutoPasteAvailability.LIVE,
+                InsertionHandoff.NO_PINNED_TARGET,
+                clipboard = ClipboardOutcome.NOT_ATTEMPTED,
+                savedInHistory = true,
+            ),
         )
-        val failed = FallbackAnnouncement.fallbackAnnouncement(
-            autoPaste = AutoPasteAvailability.NOT_PERMITTED,
-            handoff = InsertionHandoff.NO_PINNED_TARGET,
+        assertEquals(
+            "The same setting with no History row left the words nowhere, and that is announced",
+            lostLine,
+            announce(
+                AutoPasteAvailability.LIVE,
+                InsertionHandoff.NO_PINNED_TARGET,
+                clipboard = ClipboardOutcome.NOT_ATTEMPTED,
+                savedInHistory = false,
+            )?.line,
+        )
+    }
+
+    // ------------------------------------------------------------------------- what it says
+
+    /**
+     * The whole of the calm contract in one row: the line states a measured destination and the
+     * gesture that retrieves the words, and names no mechanism. A sentence blaming auto-paste has
+     * to be right about a mechanism, and the one it was wrong about is the case where a dead
+     * service makes the entry point unknowable.
+     */
+    @Test
+    fun theLineNamesTheDestinationAndTheGestureAndNeverAFault() {
+        val line = announce(
+            AutoPasteAvailability.PERMITTED_NOT_RUNNING,
+            InsertionHandoff.SERVICE_NOT_RUNNING,
+        )!!.line
+        assertEquals(copiedLine, line)
+        listOf("Auto-paste", "auto-paste", "insertion", "failed", "could not reach").forEach { word ->
+            assertFalse("The calm line blamed a mechanism with '$word': $line", line.contains(word))
+        }
+    }
+
+    @Test
+    fun aFailedClipboardWriteIsNeverDescribedAsCopied() {
+        val line = announce(
+            AutoPasteAvailability.PERMITTED_NOT_RUNNING,
+            InsertionHandoff.SERVICE_NOT_RUNNING,
             clipboard = ClipboardOutcome.WRITE_FAILED,
             savedInHistory = true,
-        )
-        assertNotNull(
-            "The clipboard was the destination for this dictation and it is empty, so the user " +
-                "will press and hold and find somebody else's clip",
-            failed,
-        )
-        assertEquals("Your words are saved in History", failed!!.notificationTitle)
+        )!!.line
+        assertEquals(historyLine, line)
+        assertFalse("A failed clipboard write claimed a copy", line.contains("Copied"))
     }
 
-    /**
-     * Issue #16 review, CLASS B. The service side used to pass a toast LITERAL saying "Transcript
-     * copied" while the notification beside it was computed from the clipboard write's real
-     * result, so on a failed copy the two surfaces stated opposite facts about one event in the
-     * same second. Both are now composed from the same two measured facts.
-     *
-     * The property, not a sample of sentences: each surface names the clipboard exactly when the
-     * clipboard took the words, and History exactly when it did not and the row survived.
-     */
     @Test
-    fun theToastAndTheDurableNotificationNeverNameDifferentDestinations() {
-        ServiceFallbackReason.entries.forEach { reason ->
-            ClipboardOutcome.entries.forEach { clipboard ->
-                listOf(true, false).forEach { savedInHistory ->
-                    val announcement = FallbackAnnouncement.serviceFallbackAnnouncement(
-                        reason = reason,
-                        clipboard = clipboard,
-                        savedInHistory = savedInHistory,
-                    )
-                    val notification =
-                        announcement.notificationTitle + " " + announcement.notificationBody
-                    val where = "reason=$reason clipboard=$clipboard " +
-                        "savedInHistory=$savedInHistory"
-                    val onTheClipboard = clipboard == ClipboardOutcome.COPIED
-                    listOf("toast" to announcement.toast, "notification" to notification)
-                        .forEach { (surface, text) ->
-                            assertEquals(
-                                "$where: the $surface names the clipboard and the words are " +
-                                    "${if (onTheClipboard) "" else "not "}on it",
-                                onTheClipboard,
-                                text.contains("clipboard"),
-                            )
-                            assertEquals(
-                                "$where: the $surface names History and the words are " +
-                                    "${if (savedInHistory) "" else "not "}there",
-                                !onTheClipboard && savedInHistory,
-                                text.contains("History"),
-                            )
-                        }
-                }
-            }
-        }
+    fun wordsThatReachedNothingAskTheUserToDictateAgain() {
+        assertEquals(
+            lostLine,
+            announce(
+                AutoPasteAvailability.LIVE,
+                InsertionHandoff.SERVICE_NOT_RUNNING,
+                clipboard = ClipboardOutcome.WRITE_FAILED,
+                savedInHistory = false,
+            )?.line,
+        )
     }
 
     /**
-     * Issue #16 review, CLASS B on the third surface. The toast and the notification hedge on the
-     * unverified path, where the editor action RAN and only the read-back failed. The History row
-     * used to keep that hedge only when the clipboard write ALSO succeeded, so a failed copy
-     * downgraded the same event to a flat "Not inserted" in the record the user reads later.
-     *
-     * `NOT_ATTEMPTED` is absent because the service always attempts the copy: the transcript goes
-     * on the clipboard as part of the insertion itself.
-     */
-    @Test
-    fun theHistoryRowKeepsTheHedgeTheOtherSurfacesGiveTheSameEvent() {
-        ServiceFallbackReason.entries.forEach { reason ->
-            listOf(ClipboardOutcome.COPIED, ClipboardOutcome.WRITE_FAILED).forEach { clipboard ->
-                val row = historyLine(InsertionResults.forServiceFallback(reason, clipboard))
-                val announcement = FallbackAnnouncement.serviceFallbackAnnouncement(
-                    reason = reason,
-                    clipboard = clipboard,
-                    savedInHistory = true,
-                )
-                val where = "reason=$reason clipboard=$clipboard"
-                val hedges = reason == ServiceFallbackReason.UNVERIFIED
-                assertEquals(
-                    "$where: the notification says '${announcement.notificationBody}'",
-                    hedges,
-                    announcement.notificationBody.contains("could not be confirmed"),
-                )
-                assertEquals(
-                    "$where: the notification hedges and the History row says '$row', so the " +
-                        "user reads a flat claim the code cannot make and pastes text that is " +
-                        "already in their field",
-                    hedges,
-                    row.contains("could not be confirmed"),
-                )
-                assertEquals(
-                    "$where: the History row says '$row' about a clipboard that is $clipboard",
-                    clipboard == ClipboardOutcome.COPIED,
-                    row.contains("clipboard"),
-                )
-            }
-        }
-    }
-
-    /**
-     * The one service-side outcome where the editor action RAN. Telling this user to press and
-     * hold and tap Paste duplicates the words already in their field.
+     * The editor action RAN on this one path and only the read-back failed, so the words are very
+     * likely already in the field. A flat instruction to paste would duplicate them.
      */
     @Test
     fun anInsertionThatRanAndCouldNotBeReadBackNeverInstructsAPaste() {
-        val announcement = FallbackAnnouncement.serviceFallbackAnnouncement(
-            reason = ServiceFallbackReason.UNVERIFIED,
-            clipboard = ClipboardOutcome.COPIED,
+        val line = FallbackAnnouncement.serviceFallbackAnnouncement(
+            ServiceFallbackReason.UNVERIFIED,
+            ClipboardOutcome.COPIED,
             savedInHistory = true,
-        )
-        assertEquals("Check your text field", announcement.notificationTitle)
-        assertFalse(
-            "Unverified copy must not instruct a paste: ${announcement.notificationBody}",
-            announcement.notificationBody.contains("tap Paste"),
-        )
-        assertFalse(
-            "Unverified copy must not instruct a paste: ${announcement.toast}",
-            announcement.toast.contains("ready to paste"),
-        )
-        // The other three reasons DID fail to place the words, so they say so plainly.
-        assertEquals(
-            "Your original text field did not come back. Your words are on the clipboard, " +
-                "ready to paste.",
-            FallbackAnnouncement.serviceFallbackAnnouncement(
-                reason = ServiceFallbackReason.TARGET_NEVER_RETURNED,
-                clipboard = ClipboardOutcome.COPIED,
-                savedInHistory = true,
-            ).toast,
-        )
-    }
-
-    @Test
-    fun theDurableNotificationNamesTheGestureThatRetrievesTheWords() {
-        assertEquals(
-            "Your words are on the clipboard" to
-                "Auto-paste did not reach your text field. Press and hold the field, then tap Paste.",
-            InsertionOutcomeMessages.fallbackNotification(
-                clipboard = ClipboardOutcome.COPIED,
-                savedInHistory = true,
-                cause = InsertionOutcomeMessages.FallbackCause.AUTO_PASTE_MISSED_THE_FIELD,
-            ),
-        )
-        assertEquals(
-            "Your words are saved in History" to
-                "Auto-paste did not reach your text field. Open EnviousWispr to copy them.",
-            InsertionOutcomeMessages.fallbackNotification(
-                clipboard = ClipboardOutcome.WRITE_FAILED,
-                savedInHistory = true,
-                cause = InsertionOutcomeMessages.FallbackCause.AUTO_PASTE_MISSED_THE_FIELD,
-            ),
-        )
-        assertEquals(
-            "Your words could not be saved" to
-                "Auto-paste did not reach your text field. The transcript could not be stored. " +
-                    "Please dictate again.",
-            InsertionOutcomeMessages.fallbackNotification(
-                clipboard = ClipboardOutcome.WRITE_FAILED,
-                savedInHistory = false,
-                cause = InsertionOutcomeMessages.FallbackCause.AUTO_PASTE_MISSED_THE_FIELD,
-            ),
-        )
+        ).line
+        assertEquals("Copied too, if it did not arrive. Press and hold, then tap Paste.", line)
+        assertFalse("An unconfirmed insertion was reported as a flat failure", line == copiedLine)
     }
 
     /**
-     * The notification is the surface that outlives the toast, so it is the one the user reads
-     * later. It must not name auto-paste as failed on a phone where it was never connected: that
-     * is the same wrong sentence the toast used to carry, one surface down.
+     * Every other service-side reason gets the same calm destination line, because "interrupted"
+     * and "the field never came back" are not things a user acts on differently. Enumerated from
+     * the enum so a new reason cannot quietly inherit somebody else's sentence.
      */
     @Test
-    fun theDurableNotificationBlamesAutoPasteOnlyWhereItWasExpectedToWork() {
-        val forAUserWithoutAutoPaste = FallbackAnnouncement.fallbackAnnouncement(
-            autoPaste = AutoPasteAvailability.NOT_PERMITTED,
-            handoff = InsertionHandoff.SERVICE_NOT_RUNNING,
-            clipboard = ClipboardOutcome.WRITE_FAILED,
-            savedInHistory = true,
-        )
-        assertNotNull(
-            "A clipboard copy that was attempted and failed is a fault for every user",
-            forAUserWithoutAutoPaste,
-        )
-        assertEquals(
-            "The notification told a user who never granted the permission that auto-paste failed",
-            "Open EnviousWispr to copy them.",
-            forAUserWithoutAutoPaste!!.notificationBody,
-        )
-        assertEquals("Your words are saved in History.", forAUserWithoutAutoPaste.toast)
-        val forAUserWhoLostIt = FallbackAnnouncement.fallbackAnnouncement(
-            autoPaste = AutoPasteAvailability.PERMITTED_NOT_RUNNING,
-            handoff = InsertionHandoff.SERVICE_NOT_RUNNING,
-            clipboard = ClipboardOutcome.WRITE_FAILED,
-            savedInHistory = true,
-        )
-        assertEquals(
-            "Auto-paste did not reach your text field. Open EnviousWispr to copy them.",
-            forAUserWhoLostIt!!.notificationBody,
-        )
+    fun everyServiceFallbackReasonExceptTheUnverifiedOneSaysTheSameCalmLine() {
+        ServiceFallbackReason.entries
+            .filter { it != ServiceFallbackReason.UNVERIFIED }
+            .forEach { reason ->
+                assertEquals(
+                    "Reason $reason said something other than where the words are",
+                    copiedLine,
+                    FallbackAnnouncement.serviceFallbackAnnouncement(
+                        reason,
+                        ClipboardOutcome.COPIED,
+                        savedInHistory = true,
+                    ).line,
+                )
+            }
     }
 
+    // ------------------------------------------------------------------------ how loud it is
+
     /**
-     * The unverified route performed the editor action and could not read it back, so the words are
-     * probably already in the field. Telling this user to paste duplicates their dictation.
+     * The type carries ONE user-facing string. While it carried four fields, a caller could post a
+     * durable notification and buzz the phone from the same value, and every row above would stay
+     * green. Read by reflection so adding a field back is red here rather than at a call site
+     * nobody is looking at.
      */
     @Test
-    fun anUnconfirmedInsertionIsNeverAnnouncedAsAFailureToPasteFrom() {
-        val (title, body) = InsertionOutcomeMessages.unverifiedNotification(
-            clipboard = ClipboardOutcome.COPIED,
-            savedInHistory = true,
+    fun theAnnouncementCarriesOneUserFacingStringAndNothingElse() {
+        // Instance fields only. `Companion` is a static field on this class and is where the
+        // factories live, so counting it would make the guard fail against correct code.
+        val fields = FallbackAnnouncement::class.java.declaredFields
+            .filterNot { it.isSynthetic || Modifier.isStatic(it.modifiers) }
+            .map { it.name }
+        assertEquals(
+            "FallbackAnnouncement grew a field. A clipboard fallback is one calm line: a second " +
+                "field is a second surface, which is what made this event four announcements",
+            listOf("line"),
+            fields,
         )
-        assertEquals("Check your text field", title)
-        assertFalse("Unverified copy must not instruct a paste: $body", body.contains("tap Paste"))
-        assertTrue(body.contains("could not be confirmed"))
     }
 
     /**
-     * Written at the START of a session, so it may only state what is already decided. Three
-     * sentences it used to carry were not: a fault on the ordinary cold-start connect window, a
-     * destination read off the accessibility permission rather than off the setting that picks the
-     * destination, and a destination read off that setting BEFORE it had been loaded.
+     * DRIFT GUARD, not product coverage. REVERT: `DictationNotificationController.wordsNotInserted`
+     * and the 1002 result notification coming back, from any caller.
      *
-     * The last of those is a property of the CALLER, not of this function, so the final block reads
-     * the session owner. A pure test of correct inputs stays green while `promoteToForeground`
-     * hands over a default whose auto-copy value is `true`, which is the shipped defect: on a cold
-     * start with auto-copy off and accessibility not permitted, the notification promised the
-     * clipboard while the words went to History only. That block is a DRIFT GUARD and is not
-     * counted as product coverage; every row above it is Product Outcome.
+     * macOS posts nothing durable for a clipboard fallback. Where the words went is a fact about
+     * one moment, and a shade entry outlives the clipboard it describes: the next dictation
+     * overwrites that clipboard and the standing instruction then sends the user to paste
+     * somebody else's text.
+     */
+    @Test
+    fun nothingPostsADurableNotificationForAClipboardFallback() {
+        val offences = mainSources().filter { file ->
+            val text = file.readText()
+            text.contains("wordsNotInserted") || text.contains("RESULT_NOTIFICATION_ID")
+        }
+        assertEquals(
+            "A durable fallback notification is back: ${offences.map { it.name }}",
+            emptyList<File>(),
+            offences,
+        )
+    }
+
+    /**
+     * DRIFT GUARD, not product coverage. REVERT: a failure haptic on either announcement path.
+     *
+     * Both sites are checked because they are the two places a missed dictation is spoken from, and
+     * a guard on one of them would have said nothing about the other.
+     */
+    @Test
+    fun noFallbackPathBuzzesThePhone() {
+        val session = slice(
+            read("ui/DictationSessionService.kt"),
+            "private fun announceInsertionFallback(",
+            "\n    /**",
+        )
+        assertFalse(
+            "The session owner buzzes on a clipboard fallback, which reports a fault on an " +
+                "ordinary outcome of a working product: $session",
+            session.contains("vibrate("),
+        )
+        val service = slice(
+            read("paste/PasteAccessibilityService.kt"),
+            "private fun recordAndAnnounce(reason: ServiceFallbackReason, pending: PendingInsertion) {",
+            "\n    private fun ",
+        )
+        assertFalse(
+            "The accessibility service buzzes on a clipboard fallback: $service",
+            service.contains("performResultHaptic("),
+        )
+    }
+
+    // ----------------------------------------------------------------------------- History
+
+    /**
+     * History is read for weeks; where one dictation's words went is a fact about one moment. A red
+     * "Not inserted" turned a clipboard fallback the user resolved in two seconds into a permanent
+     * mark against a transcript that is intact and shown directly below it. macOS keeps delivery
+     * outcomes out of History entirely.
+     */
+    @Test
+    fun historySaysNothingAboutWhereOneDictationsWordsWent() {
+        assertEquals("", InsertionOutcomeMessages.historyStatusLine(TranscriptEntity.STATUS_INSERTION_INTERRUPTED))
+        assertEquals("", InsertionOutcomeMessages.historyStatusLine(TranscriptEntity.STATUS_COMPLETED))
+    }
+
+    /**
+     * Two-way control: without it the row above passes against a function that returns "" for
+     * everything, and a user whose dictation genuinely failed would see no reason at all.
+     */
+    @Test
+    fun historyStillNamesAGenuineTranscriptFailure() {
+        assertEquals(
+            "Status: asr error",
+            InsertionOutcomeMessages.historyStatusLine(TranscriptEntity.STATUS_ASR_ERROR),
+        )
+    }
+
+    // ------------------------------------------------------------- unchanged by the quieting
+
+    /**
+     * The line under "EnviousWispr is listening" is written BEFORE the words exist, so it may only
+     * state what is already decided. The last block is a DRIFT GUARD and is not counted as product
+     * coverage; every row above it is Product Outcome.
      */
     @Test
     fun theListeningNotificationStatesOnlyWhatIsAlreadyDecided() {
@@ -576,109 +405,18 @@ class InsertionOutcomeMessagesTest {
     }
 
     /**
-     * Slices [source] between two delimiters, failing when either is missing.
+     * DRIFT GUARD, not product coverage. The insertion result still reaches the database and the
+     * DAO's stale-row recovery still writes one, so a producer inventing a raw literal would still
+     * put a value nothing else knows about into a user's history.
      *
-     * `substringAfter` and `substringBefore` both return their receiver when the delimiter is
-     * absent, which turns a moved line into a check that passes against anything.
-     */
-    private fun slice(source: String, after: String, before: String): String {
-        assertTrue(
-            "The anchor '$after' was not found, so this check would scan the whole file",
-            source.contains(after),
-        )
-        val tail = source.substringAfter(after)
-        assertTrue("The anchor '$before' was not found after '$after'", tail.contains(before))
-        return tail.substringBefore(before)
-    }
-
-    private fun read(relativePath: String): String {
-        // A wrong working directory must fail loudly rather than pass vacuously.
-        val candidates = listOf(
-            File("src/main/java/com/envi/wispr/$relativePath"),
-            File("app/src/main/java/com/envi/wispr/$relativePath"),
-        )
-        return candidates.firstOrNull { it.isFile && it.length() > 0L }?.readText()
-            ?: throw AssertionError(
-                "$relativePath was not found from working directory ${File(".").absolutePath}",
-            )
-    }
-
-    @Test
-    fun theHistoryRowSaysWhereTheWordsWentInsteadOfNamingAStatusConstant() {
-        assertEquals(
-            "Not inserted. Copied to the clipboard.",
-            historyLine(InsertionResults.CLIPBOARD),
-        )
-        assertEquals(
-            "Not inserted. Copied to the clipboard.",
-            historyLine(InsertionResults.COPY_ONLY_INTERRUPTED),
-        )
-        assertEquals(
-            "Not inserted. Saved here only.",
-            historyLine(InsertionResults.INSERTION_FAILED),
-        )
-        assertEquals(
-            "Not inserted. Saved here only.",
-            historyLine(InsertionResults.HISTORY_ONLY),
-        )
-    }
-
-    /**
-     * The action RAN on this path and only the read-back failed, so a flat "Not inserted" sends the
-     * user to paste text already in their field.
-     */
-    @Test
-    fun anUnconfirmedInsertionIsNotRecordedAsAFlatFailure() {
-        assertEquals(
-            "Insertion could not be confirmed. Also copied to the clipboard.",
-            historyLine(InsertionResults.COPY_ONLY_UNVERIFIED),
-        )
-    }
-
-    /** Written by the DAO's stale-row recovery, which fires exactly when a process was killed. */
-    @Test
-    fun aRowRecoveredAfterAProcessDeathClaimsNoDestinationItCannotKnow() {
-        val line = historyLine(InsertionResults.INSERTION_INTERRUPTED)
-        assertEquals("Interrupted before insertion could be confirmed. Your words are saved here.", line)
-        assertFalse("Where the words went is unknown on this path", line.contains("clipboard"))
-    }
-
-    /**
-     * The population, not a sample. This is what makes the two rows above impossible to add without
-     * also mapping them: `insertion_interrupted` was a live producer with no sentence, written by a
-     * third writer (the DAO) that a hand-listed sweep missed.
-     */
-    @Test
-    fun everyProducedInsertionResultHasASentence() {
-        val values = producedInsertionResults()
-        assertTrue("Reflection found no constants, so this test proves nothing", values.size >= 9)
-        values.forEach { value ->
-            val line = historyLine(value)
-            assertFalse(
-                "insertionResult '$value' has no sentence and falls through to machine-speak: $line",
-                line.startsWith("Status: "),
-            )
-        }
-    }
-
-    /** Two-way control: without it the row above could pass by mapping everything to one line. */
-    @Test
-    fun anUnmappedOutcomeClaimsNoDestination() {
-        assertEquals("Status: insertion interrupted", historyLine("a_result_nobody_mapped"))
-        assertEquals(
-            "Status: asr error",
-            InsertionOutcomeMessages.historyStatusLine(TranscriptEntity.STATUS_ASR_ERROR, "asr_error"),
-        )
-    }
-
-    /**
-     * DRIFT GUARD, not product coverage. The enumeration above is only as complete as the object,
-     * so a producer that writes a raw literal instead of a constant would reopen exactly the hole
-     * this closed.
+     * What this row no longer protects, stated rather than dropped in silence: every produced
+     * result used to need a History SENTENCE. There is no such sentence any more, because History
+     * says nothing about delivery, so that requirement went with the surface rather than lapsing.
      */
     @Test
     fun noProducerWritesAnInsertionResultAsARawLiteral() {
         val values = producedInsertionResults()
+        assertTrue("Reflection found no constants, so this test proves nothing", values.size >= 9)
         // The two constant HOMES are not producers. Every other file that names one of these
         // strings is writing it to the database.
         val constantHomes = setOf("InsertionResults.kt", "TranscriptEntity.kt")
@@ -714,14 +452,8 @@ class InsertionOutcomeMessagesTest {
                 for (handoff in InsertionHandoff.entries) {
                     for (clipboard in ClipboardOutcome.entries) {
                         for (savedInHistory in listOf(true, false)) {
-                            add(
-                                InsertionOutcomeMessages.fallbackToast(
-                                    autoPaste,
-                                    handoff,
-                                    clipboard,
-                                    savedInHistory,
-                                ),
-                            )
+                            announce(autoPaste, handoff, clipboard, savedInHistory)
+                                ?.let { add(it.line) }
                         }
                     }
                 }
@@ -739,34 +471,20 @@ class InsertionOutcomeMessagesTest {
                     ),
                 )
             }
-            for (clipboard in ClipboardOutcome.entries) {
-                for (savedInHistory in listOf(true, false)) {
-                    for (cause in InsertionOutcomeMessages.FallbackCause.entries) {
-                        val (title, body) = InsertionOutcomeMessages.fallbackNotification(
-                            clipboard,
-                            savedInHistory,
-                            cause,
-                        )
-                        add(title)
-                        add(body)
-                    }
-                }
-            }
             for (reason in ServiceFallbackReason.entries) {
                 for (clipboard in ClipboardOutcome.entries) {
                     for (savedInHistory in listOf(true, false)) {
-                        val announcement = FallbackAnnouncement.serviceFallbackAnnouncement(
-                            reason,
-                            clipboard,
-                            savedInHistory,
+                        add(
+                            FallbackAnnouncement.serviceFallbackAnnouncement(
+                                reason,
+                                clipboard,
+                                savedInHistory,
+                            ).line,
                         )
-                        add(announcement.toast)
-                        add(announcement.notificationTitle)
-                        add(announcement.notificationBody)
                     }
                 }
             }
-            producedInsertionResults().forEach { add(historyLine(it)) }
+            add(InsertionOutcomeMessages.historyStatusLine(TranscriptEntity.STATUS_ASR_ERROR))
         }
         sentences.forEach { sentence ->
             assertFalse("Em-dash in user-facing copy: $sentence", sentence.contains('—'))
@@ -775,11 +493,47 @@ class InsertionOutcomeMessagesTest {
         assertTrue("The sweep found no sentences to check", sentences.isNotEmpty())
     }
 
-    private fun historyLine(insertionResult: String): String =
-        InsertionOutcomeMessages.historyStatusLine(
-            TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
-            insertionResult,
+    // ----------------------------------------------------------------------------- helpers
+
+    private fun announce(
+        autoPaste: AutoPasteAvailability,
+        handoff: InsertionHandoff,
+        clipboard: ClipboardOutcome = ClipboardOutcome.COPIED,
+        savedInHistory: Boolean = true,
+    ): FallbackAnnouncement? = FallbackAnnouncement.fallbackAnnouncement(
+        autoPaste = autoPaste,
+        handoff = handoff,
+        clipboard = clipboard,
+        savedInHistory = savedInHistory,
+    )
+
+    /**
+     * Slices [source] between two delimiters, failing when either is missing.
+     *
+     * `substringAfter` and `substringBefore` both return their receiver when the delimiter is
+     * absent, which turns a moved line into a check that passes against anything.
+     */
+    private fun slice(source: String, after: String, before: String): String {
+        assertTrue(
+            "The anchor '$after' was not found, so this check would scan the whole file",
+            source.contains(after),
         )
+        val tail = source.substringAfter(after)
+        assertTrue("The anchor '$before' was not found after '$after'", tail.contains(before))
+        return tail.substringBefore(before)
+    }
+
+    private fun read(relativePath: String): String {
+        // A wrong working directory must fail loudly rather than pass vacuously.
+        val candidates = listOf(
+            File("src/main/java/com/envi/wispr/$relativePath"),
+            File("app/src/main/java/com/envi/wispr/$relativePath"),
+        )
+        return candidates.firstOrNull { it.isFile && it.length() > 0L }?.readText()
+            ?: throw AssertionError(
+                "$relativePath was not found from working directory ${File(".").absolutePath}",
+            )
+    }
 
     /** Every constant the object declares, read back rather than hand-listed. */
     private fun producedInsertionResults(): List<String> =

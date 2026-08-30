@@ -286,11 +286,6 @@ class DictationSessionService : Service() {
 
     private fun beginSession() {
         if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return
-        // The standing result notification is a present-tense claim about the clipboard made by
-        // the PREVIOUS dictation, and this dictation is about to overwrite that clipboard. Every
-        // entry point reaches insertion through here, so this is the one place that sees the
-        // supersession (`architecture-rules.md` RULE: one-owner-for-the-session).
-        DictationNotificationController.dismissWordsNotInserted(this)
         promoteToForeground(processing = false)
         // Kept for the whole session. Android may rebind the accessibility service while the user
         // is still speaking, so the state insertion finds minutes later cannot say whether this
@@ -716,11 +711,13 @@ class DictationSessionService : Service() {
     }
 
     /**
-     * Tells the user where their words went, on the two surfaces that survive a crashed
-     * accessibility service: a toast now, and a notification they can still find later.
+     * Tells the user where their words went, in one calm line and nothing else.
      *
      * Whether to speak at all is `FallbackAnnouncement`'s decision, not this method's: a user
-     * who never granted the permission is in clipboard-only mode by choice and gets nothing.
+     * who never granted the permission is in clipboard-only mode by choice and gets nothing. What
+     * it says is a measured destination and never an inferred fault, which is why there is no
+     * failure haptic and nothing left in the shade: this is an ordinary outcome of a working
+     * product, not an error.
      */
     private fun announceInsertionFallback(
         handoff: InsertionHandoff,
@@ -733,11 +730,9 @@ class DictationSessionService : Service() {
             clipboard = clipboard,
             savedInHistory = savedInHistory,
         ) ?: return
-        if (announcement.haptic) vibrate(HapticCue.FAILURE)
         mainHandler.post {
-            Toast.makeText(this, announcement.toast, Toast.LENGTH_LONG).show()
+            Toast.makeText(this, announcement.line, Toast.LENGTH_LONG).show()
         }
-        DictationNotificationController.wordsNotInserted(this, announcement)
     }
 
     /**

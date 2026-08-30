@@ -529,8 +529,12 @@ private fun HomeScreen(
                     Column(Modifier.weight(1f)) {
                         Text("Auto-paste is not connected", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Your words go to the clipboard until it reconnects. If it stays " +
-                                "disconnected, turn EnviousWispr off and then on in Accessibility settings.",
+                            // No destination named here. `autoCopyToClipboard` decides whether
+                            // that is the clipboard or History, and this card cannot see it; the
+                            // line after a dictation names the destination that was measured.
+                            "Your words will not go into the field until it reconnects. If it " +
+                                "stays disconnected, turn EnviousWispr off and then on in " +
+                                "Accessibility settings.",
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
@@ -644,12 +648,14 @@ private fun HistoryScreen(
             items(transcripts, key = { it.id }) { transcript ->
                 ElevatedCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (transcript.status != TranscriptEntity.STATUS_COMPLETED) {
+                        // Empty for every delivery outcome, because where one dictation's words
+                        // went is a fact about one moment while this row is read for weeks. What
+                        // survives is a genuine transcript failure. Owner:
+                        // `InsertionOutcomeMessages.historyStatusLine`.
+                        val statusLine = InsertionOutcomeMessages.historyStatusLine(transcript.status)
+                        if (statusLine.isNotEmpty()) {
                             Text(
-                                InsertionOutcomeMessages.historyStatusLine(
-                                    transcript.status,
-                                    transcript.insertionResult,
-                                ),
+                                statusLine,
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.error,
                             )
@@ -674,7 +680,6 @@ private fun HistoryScreen(
                                 // made this replacement itself and knows it succeeded, which is the
                                 // only reason it can be retracted at all.
                                 if (copied) {
-                                    DictationNotificationController.dismissWordsNotInserted(context)
                                 }
                                 Toast.makeText(context, if (copied) "Copied" else "Unable to copy", Toast.LENGTH_SHORT).show()
                             }) { Text("Copy") }
@@ -780,7 +785,6 @@ private fun WordsScreen(
                     // Vocabulary JSON is now on the clipboard, so any standing claim that a
                     // dictation is waiting there to be pasted is false.
                     if (copied) {
-                        DictationNotificationController.dismissWordsNotInserted(context)
                     }
                     Toast.makeText(
                         context,
@@ -1309,7 +1313,7 @@ private fun SettingsScreen(
                 subtitle = when (uiState.autoPaste) {
                     AutoPasteAvailability.LIVE -> "Ready for right-button dictation"
                     AutoPasteAvailability.PERMITTED_NOT_RUNNING ->
-                        "Turned on but not connected. Your words go to the clipboard until it reconnects."
+                        "Turned on but not connected. Words will not go into the field until it reconnects."
                     AutoPasteAvailability.NOT_PERMITTED -> "Needs accessibility permission"
                 },
                 ready = uiState.autoPaste == AutoPasteAvailability.LIVE,

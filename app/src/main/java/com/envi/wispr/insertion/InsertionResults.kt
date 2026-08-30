@@ -38,9 +38,9 @@ object InsertionResults {
 
     /**
      * The editor action RAN, could not be read back, AND the clipboard write failed. Same hedge as
-     * `COPY_ONLY_UNVERIFIED`, without the clipboard. Folding this into `INSERTION_FAILED` made the
-     * History row say "Not inserted" while the notification for the same event said the insertion
-     * could not be confirmed.
+     * `COPY_ONLY_UNVERIFIED`, without the clipboard. Folding this into `INSERTION_FAILED` recorded a
+     * flat failure for an insertion that may well have arrived, which is the one distinction the
+     * spoken line still keeps.
      */
     const val UNVERIFIED_NOT_COPIED = "unverified_not_copied"
 

@@ -34,7 +34,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.runBlocking
 import org.junit.After
-import org.junit.Assert.assertNull
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -228,7 +228,9 @@ class VoicePipelineDeviceTest {
                 .contains("com.envi.wispr/com.envi.wispr.paste.PasteAccessibilityService"),
         )
         val notificationManager = context.getSystemService(NotificationManager::class.java)
-        notificationManager.cancel(DictationNotificationController.RESULT_NOTIFICATION_ID)
+        // The session's own notification is dismissed when the session ends, so an empty tray at
+        // the end of this run is the state to assert against.
+        notificationManager.cancel(DictationNotificationController.NOTIFICATION_ID)
         // The ring buffer wraps, so observedHandoff() must read THIS run
         // (`android-tooling.md` RULE: clear-logcat-before-you-measure).
         shell("logcat -c")
@@ -284,19 +286,27 @@ class VoicePipelineDeviceTest {
             handoff == "NO_PINNED_TARGET",
         )
 
-        val posted = notificationManager.activeNotifications
-            .firstOrNull { it.id == DictationNotificationController.RESULT_NOTIFICATION_ID }
-        val title = posted?.notification?.extras
-            ?.getCharSequence(android.app.Notification.EXTRA_TITLE)
-            ?.toString()
-            .orEmpty()
-        assertNull(
-            "A dictation with no field to insert into posted a fallback notification titled " +
-                "\"$title\". There was no field, the clipboard is the designed destination, and " +
-                "this is what every tile and Home-button dictation does.",
-            posted,
+        // NOT a check for one id. The durable fallback notification was DELETED in the messaging
+        // rework, so asserting its absence would be a green row about nothing
+        // (`testing-philosophy.md` RULE: the-rig-decides-where-a-test-lives-not-the-subject). What
+        // is asserted instead is the property that outlives it: after an ordinary dictation with no
+        // field, this app has left NOTHING in the user's shade. That goes red if any durable
+        // announcement comes back, whatever id it chooses.
+        val ourNotifications = notificationManager.activeNotifications
+            .filter { it.packageName == context.packageName }
+        val titles = ourNotifications.joinToString {
+            it.notification.extras?.getCharSequence(android.app.Notification.EXTRA_TITLE)
+                ?.toString()
+                .orEmpty() + " (id=${it.id})"
+        }
+        assertEquals(
+            "A dictation with no field to insert into left something in the shade: $titles. There " +
+                "was no field, the clipboard is the designed destination, and this is what every " +
+                "tile and Home-button dictation does.",
+            emptyList<String>(),
+            ourNotifications.map { "id=${'$'}{it.id}" },
         )
-        Log.i("VoiceFallbackDeviceTest", "handoff=$handoff fallbackNotification=none")
+        Log.i("VoiceFallbackDeviceTest", "handoff=$handoff shadeAfterDictation=empty")
     }
 
     /** The handoff the session owner logged for the run that just finished, or `"none"`. */

@@ -327,16 +327,19 @@ class AutoPasteWiringTest {
     }
 
     /**
-     * REVERT: `wordsNotInserted(context: Context, title: String, detail: String)`, and with it any
-     * caller composing the durable notification's own sentences.
+     * REVERT: making `FallbackAnnouncement`'s constructor reachable, or the service composing its
+     * own sentence instead of asking for one.
      *
-     * The first two assertions are the ones that hold against a caller this file has never seen.
-     * Scanning `PasteAccessibilityService` for a toast literal was the old shape and it could only
-     * ever see today's callers: a NEW class posting a notification that contradicts its toast was
-     * invisible to it. The property is now carried by the TYPE. `FallbackAnnouncement`'s
-     * constructor is private to its own file, its two factories derive both surfaces in one call,
-     * and the notification API accepts nothing else, so the contradiction is unrepresentable rather
-     * than merely absent from the current source.
+     * These hold against a caller this file has never seen. Scanning `PasteAccessibilityService`
+     * for a toast literal was the old shape and could only ever see today's callers.
+     *
+     * DELETED WITH THE SECOND SURFACE, stated rather than dropped in silence: this used to pin
+     * `wordsNotInserted(Context, FallbackAnnouncement)`, so no caller could compose a durable
+     * notification contradicting its own toast. There is no durable notification, so that
+     * requirement has no subject. Two stronger properties replace it, both in
+     * `InsertionOutcomeMessagesTest`: `nothingPostsADurableNotificationForAClipboardFallback`
+     * fails if one comes back at all, and `theAnnouncementCarriesOneUserFacingStringAndNothingElse`
+     * fails if the type grows a second surface to disagree with the first.
      */
     @Test
     fun theServiceCannotHandItsOwnSentenceToTheUser() {
@@ -346,31 +349,20 @@ class AutoPasteWiringTest {
         val reachable = constructors.filterNot { Modifier.isPrivate(it.modifiers) }
         assertEquals(
             "FallbackAnnouncement can be constructed from outside its own file, so any caller can " +
-                "hand the durable notification sentences that contradict the toast beside it: " +
+                "hand the user a sentence nothing derived: " +
                 reachable.joinToString { it.toString() },
             emptyList<String>(),
             reachable.map { it.toString() },
         )
-        val posted = DictationNotificationController::class.java.declaredMethods
-            .filter { it.name == "wordsNotInserted" }
-        assertEquals("wordsNotInserted is not declared once", 1, posted.size)
-        assertEquals(
-            "wordsNotInserted no longer takes the derived announcement, so a caller can compose " +
-                "the durable notification's own sentences again: " +
-                posted.first().parameterTypes.joinToString { it.simpleName },
-            listOf("Context", "FallbackAnnouncement"),
-            posted.first().parameterTypes.map { it.simpleName },
-        )
-        // The toast half stays a source check: which surface a service SHOWS is not visible to
-        // reflection, and one call site is what keeps it reading from the same value.
+        // Which surface a service SHOWS is not visible to reflection, and one call site is what
+        // keeps it reading from the same value.
         val source = read("paste/PasteAccessibilityService.kt")
         val toastCalls = Regex("Toast\\.makeText\\(").findAll(source).count()
         assertEquals("The service shows a toast from more than one place", 1, toastCalls)
         assertTrue(
-            "The service composes a toast from something other than the announcement, so the " +
-                "toast and the durable notification can state opposite facts about one event, " +
-                "which is what 'Transcript copied' beside 'saved in History' was",
-            source.contains("Toast.makeText(this, announcement.toast, Toast.LENGTH_LONG)"),
+            "The service composes a toast from something other than the announcement, so it can " +
+                "state a destination nothing measured",
+            source.contains("Toast.makeText(this, announcement.line, Toast.LENGTH_LONG)"),
         )
         assertTrue(
             "The service no longer asks FallbackAnnouncement what to say",
@@ -420,53 +412,19 @@ class AutoPasteWiringTest {
         )
     }
 
-    /**
-     * REVERT: deleting the `dismissWordsNotInserted` call, which left notification 1002 standing
-     * as a present-tense claim about a clipboard the next dictation is about to overwrite.
+    /*
+     * DELETED, and recorded rather than dropped in silence:
+     * `eachDictationRetractsThePreviousOnesClipboardClaim`.
+     *
+     * It protected the retraction of notification 1002, a present-tense claim about a clipboard the
+     * next dictation was about to overwrite, from its three callers: `beginSession`, the History
+     * row's Copy button and vocabulary Export. There is no durable claim to retract, so the
+     * requirement has no subject rather than having lapsed.
+     *
+     * What replaces it is strictly stronger, because a claim that cannot be posted cannot go stale:
+     * `InsertionOutcomeMessagesTest.nothingPostsADurableNotificationForAClipboardFallback` sweeps
+     * every main source and fails if `wordsNotInserted` or `RESULT_NOTIFICATION_ID` returns.
      */
-    @Test
-    fun eachDictationRetractsThePreviousOnesClipboardClaim() {
-        val controller = read("shortcuts/DictationNotificationController.kt")
-        assertTrue(
-            "Nothing cancels RESULT_NOTIFICATION_ID, so the durable 'press and hold, then tap " +
-                "Paste' notification outlives the clipboard it describes",
-            controller.contains("cancel(RESULT_NOTIFICATION_ID)"),
-        )
-        val session = read("ui/DictationSessionService.kt")
-        val beginSession = slice(session, "private fun beginSession() {", "\n    private fun ")
-        assertTrue(
-            "beginSession no longer retracts the previous dictation's result notification. It is " +
-                "the one place every entry point passes through, so the stale claim survives and " +
-                "sends the user to paste words the clipboard no longer holds.",
-            beginSession.contains("DictationNotificationController.dismissWordsNotInserted("),
-        )
-        // A dictation is not the only thing that replaces the clipboard. These two are the app's
-        // own successful clipboard writes, and each knows its write succeeded, which is why they
-        // can retract a claim that a clipboard change by another app cannot.
-        val shell = read("ui/AppShell.kt")
-        assertEquals(
-            "A clipboard replacement the app makes itself no longer retracts the standing 'press " +
-                "and hold, then tap Paste' claim, so the History Copy button or vocabulary Export " +
-                "leaves the user instructed to paste a transcript that is no longer there",
-            2,
-            Regex("DictationNotificationController\\.dismissWordsNotInserted\\(context\\)")
-                .findAll(shell).count(),
-        )
-        listOf(
-            "the History row's Copy button" to "ClipData.newPlainText(\"EnviousWispr\",",
-            "vocabulary Export" to "ClipData.newPlainText(\"EnviousWispr vocabulary\",",
-        ).forEach { (surface, write) ->
-            // From the clipboard write to the moment the same handler tells the user it worked.
-            // Both retractions have to happen inside that span, because after the toast the
-            // handler is over and the false claim is already standing beside a fresh clipboard.
-            val handler = slice(shell, write, "Toast.makeText(")
-            assertTrue(
-                "$surface replaces the clipboard without retracting the earlier dictation's " +
-                    "claim on it: $handler",
-                handler.contains("dismissWordsNotInserted(context)"),
-            )
-        }
-    }
 
     /**
      * Slices [source] between two delimiters, failing when either is missing.

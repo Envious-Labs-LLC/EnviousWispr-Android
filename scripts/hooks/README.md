@@ -4,6 +4,12 @@
 `scripts/` so git can see them; the wiring that arms them cannot be tracked the same way. This file is that
 wiring in a form git does keep, so a fresh clone can restore it.
 
+The block below is therefore a second copy of a live file, which is normally a defect. It stays because
+deleting it would leave a fresh clone with four scripts and no way to arm them, and the alternative —
+tracking `.claude/` in a public repository — is a founder decision, not a cleanup. What makes the copy
+safe is that it is CHECKED: `test-hooks.sh` parses this block and the live `.claude/settings.json` and
+fails when they disagree, so the two cannot drift apart quietly. Edit either one and run that script.
+
 ```json
 "hooks": {
   "PreToolUse": [
@@ -24,7 +30,7 @@ wiring in a form git does keep, so a fresh clone can restore it.
 | Guard | Event | Denies | Silent when |
 |---|---|---|---|
 | `check-protected-paths.py` | Edit/Write/MultiEdit | a ship-path edit while on `main` | on a branch, or editing a local-only path |
-| `command-safety.py` | Bash | a ship-path commit or an index-bypassing flag on `main`; a shell write into a ship path on `main` | on a branch, or any other command |
+| `command-safety.py` | Bash | a ship-path commit, an index-bypassing flag, or an explicit `-- <pathspec>` on `main`; a shell write into a ship path on `main` | on a branch, or any other command |
 | `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, or a valid lane | every file that is not a plan |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
 

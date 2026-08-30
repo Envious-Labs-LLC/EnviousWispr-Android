@@ -225,15 +225,16 @@ owns them, and it can legitimately say a test should not exist.
 - Modules touched, and modules deliberately NOT touched. The negative space matters.
 - Exact revert steps.
 
-## 13. Ship criteria
+## 13. Ship criteria specific to THIS change
 
-- [ ] `scripts/measure-tests.sh` green with a real non-zero count
-- [ ] `./gradlew :app:assembleDebug` exit 0
-- [ ] Hardware UAT performed, or a named skip with its reason
-- [ ] Codex to an explicit all-clear where the review gate applies, with a confirming re-run
-- [ ] Every `PAR-###` row claimed is evidenced
-- [ ] Knowledge and rules updated in place, not appended to
-- [ ] Committed and pushed
+The shared completion contract is owned by `.claude/rules/workflow-process.md` RULE: definition-of-done,
+and the per-lane evidence by FACT: lanes in the same file. Do not restate either here. A copied checklist
+is a second answer to a question that already has one, and it is the copy that goes stale.
+
+List only what is true of this change and nothing else:
+
+- [ ] <the observable result, in the words a user would use>
+- [ ] <the specific surface, device, or app it was confirmed in>
 
 ## 14. Open questions
 

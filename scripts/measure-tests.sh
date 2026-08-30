@@ -51,8 +51,14 @@ for path in glob.glob(os.path.join(results, "*.xml")):
         continue
     header = m.group(0)
     def attr(name):
+        # A missing attribute silently becoming 0 is the plausible-value trap: the run still prints a
+        # well-formed count, and the count is about a file it could not read.
         got = re.search(name + r'="(\d+)"', header)
-        return int(got.group(1)) if got else 0
+        if not got:
+            print(f"MEASUREMENT FAILED: {path} has no {name!r} attribute on its <testsuite>.",
+                  file=sys.stderr)
+            sys.exit(2)
+        return int(got.group(1))
     suites += 1
     tests += attr("tests"); failures += attr("failures")
     errors += attr("errors"); skipped += attr("skipped")
@@ -61,6 +67,10 @@ for path in glob.glob(os.path.join(results, "*.xml")):
 
 if suites == 0:
     print("MEASUREMENT FAILED: result directory exists but contains no suite XML.", file=sys.stderr)
+    sys.exit(2)
+if tests == 0:
+    # `tests=0 failures=0` reads as a clean run and is a run that asserted nothing.
+    print("MEASUREMENT FAILED: suites were written but they contain no tests.", file=sys.stderr)
     sys.exit(2)
 
 print(f"tests={tests} suites={suites} failures={failures} errors={errors} skipped={skipped}")

@@ -9,18 +9,23 @@ evasion. A cooperative agent emits the DIRECT shape; it never emits `sh -c '...'
 because those are MORE effort. **Do not build an evasion-proof parser.** Matching the direct shapes is the
 whole requirement, and anything beyond it is cost with no threat behind it.
 
-TWO JOBS.
+TWO JOBS, AND NEITHER IS A GUARANTEE. An earlier draft of this file called job 1 "the GUARANTEE" and said
+it "is the only place that can be complete". That was a false enforcement claim, which is the most
+expensive kind of comment: it retires the reader's check instead of failing it. `git commit` is one of
+several ways to write history — `git merge`, `git cherry-pick`, `git rebase --continue`, `git am` and a
+user-defined alias all reach it without passing this parser — and even inside `git commit` the parse is a
+best-effort match on the direct forms. Both jobs below are best effort. The BRANCH is the protection; this
+raises the cost of the accidental shape.
 
-1. THE COMMIT GATE, which is the GUARANTEE. Every author — this assistant, a shell heredoc, Codex — must
-   pass through `git commit` to reach history, so this is the only place that can be complete. On `main`,
-   a commit whose staged set touches a ship path is denied, as is any index-bypassing flag (`-a`, `-am`,
-   a pathspec), because those change what gets committed without it appearing in the index.
+1. THE DIRECT COMMIT CHECK. On `main`, three shapes are denied: an index-bypassing flag (`-a`, `-am`),
+   an explicit pathspec after `--`, and a staged set that touches a ship path. The first two matter
+   because they change what gets committed WITHOUT it appearing in `git diff --cached`, so the staged-set
+   check cannot see what it would be approving.
 
-2. THE WRITE SHAPES, which are BEST EFFORT. Measured 2026-08-30: every file written during the session
-   that designed this guard went through a Bash heredoc, including the design document itself. An
-   Edit/Write matcher would have watched that happen and said nothing. So `> path`, `>> path`, `tee path`
-   and `sed -i` into a ship path on `main` are denied here. This will never be complete — the set of ways
-   to write a file is open — and it does not need to be, because job 1 is.
+2. THE WRITE SHAPES. Measured 2026-08-30: every file written during the session that designed this guard
+   went through a Bash heredoc, including the design document itself. An Edit/Write matcher would have
+   watched that happen and said nothing. So `> path`, `>> path`, `tee path` and `sed -i` into a ship path
+   on `main` are denied here. The set of ways to write a file is open, so this will never be complete.
 
 Exits 0 silently to allow; emits a deny and exits 0 to block. Fails OPEN on its own error: a broken guard
 must not block every command.
@@ -79,6 +84,18 @@ def check_commit(tokens: list[str], command: str) -> None:
             f"  git checkout -b <type>/<issue>-<slug>"
         )
 
+    # `git commit -- <path>` commits the WORKING TREE content of those paths, staged or not, so the
+    # staged-set check below is reading the wrong thing entirely and would report an empty index.
+    after = tokens[tokens.index("commit") + 1:]
+    if "--" in after and after[after.index("--") + 1:]:
+        paths = [p for p in after[after.index("--") + 1:] if is_ship_path(p)]
+        if paths:
+            deny(
+                f"BLOCKED: `git commit -- {' '.join(paths)}` on `main` commits working-tree content "
+                f"without it passing through the index, so the staged-set check below cannot see it.\n\n"
+                f"  git checkout -b <type>/<issue>-<slug>"
+            )
+
     ship = [p for p in staged() if is_ship_path(p)]
     if ship:
         listed = "\n".join(f"    {p}" for p in ship[:8])
@@ -92,14 +109,26 @@ def check_commit(tokens: list[str], command: str) -> None:
         )
 
 
-# `> p`, `>> p`, `tee p`, `tee -a p`, `sed -i ... p`: the direct shapes, per the threat model.
-REDIRECT = re.compile(r">>?\s*([^\s|;&>]+)")
+def redirect_targets(command: str) -> set[str]:
+    """`> p` and `>> p` as SHELL SYNTAX, never as characters inside a quoted string.
+
+    A regex over the raw command text cannot tell the two apart, so `printf 'see > app/src/Foo.kt'` —
+    ordinary correct work — was denied as a write to a ship path. A guard that fires on correct work is
+    worse than no guard, because it trains the reader to route around it.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return set()
+    return {tokens[i + 1] for i, tok in enumerate(tokens[:-1]) if tok in (">", ">>")}
 
 
 def check_writes(tokens: list[str], command: str) -> None:
     if branch() != "main":
         return
-    targets = set(REDIRECT.findall(command))
+    targets = redirect_targets(command)
     for i, tok in enumerate(tokens):
         if tok == "tee":
             targets.update(t for t in tokens[i + 1:] if not t.startswith("-"))

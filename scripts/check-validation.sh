@@ -4,11 +4,17 @@
 # validate-pr.sh scaffolds a run; this asserts it is real. Separate scripts on purpose: a scaffolder that
 # judged its own output would be marking its own homework.
 #
-# It asserts: run.json parses and carries schema_version 1; head_sha matches the CURRENT HEAD, so a run
-# cannot be reused across commits; declared_lane is one of the four exact-case names; declared_lane is
-# among detected_lanes; more than one detected lane requires is_mixed_pr; and every artifact each detected
-# lane requires exists and is NON-EMPTY. An empty artifact is the silent-empty trap: it looks like evidence
-# and carries none.
+# It asserts: run.json parses, carries schema_version 1, and carries EVERY field this script reads, each
+# with the right TYPE; head_sha matches the CURRENT HEAD, so a run cannot be reused across commits;
+# declared_lane and every detected lane is one of the four exact-case names; declared_lane is among
+# detected_lanes; more than one detected lane requires is_mixed_pr; every artifact each detected lane
+# requires exists and is not BLANK; and every skipped obligation carries a written reason on its own line.
+#
+# Three of those exist because the earlier version passed without them, and each failure looked like a
+# pass rather than an error. A blank-but-nonzero artifact satisfied a size check. `"detected_lanes":
+# "Code"` is truthy, so it survived, and iterating a string yields four characters that require no
+# artifact at all — a clean PASS having verified nothing. And a skip-note was satisfied by the obligation
+# id appearing ANYWHERE in the file, including inside a different obligation'"'"'s reason.
 #
 #   scripts/check-validation.sh .validation/runs/<id>
 #   scripts/check-validation.sh .validation/runs/<id> --strict   # promote WARN to FAIL
@@ -22,7 +28,7 @@ RUN="${1:-}"; STRICT=0; [ "${2:-}" = "--strict" ] && STRICT=1
 [ -n "$RUN" ] && [ -d "$RUN" ] || { echo "FAIL: no such run directory: ${RUN:-<none>}" >&2; exit 2; }
 
 exec python3 - "$RUN" "$STRICT" "$(git rev-parse HEAD)" <<'PY'
-import json, os, sys
+import json, os, re, sys
 
 run, strict, head = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
 fails, warns = [], []
@@ -55,11 +61,34 @@ if data.get("head_sha") != head:
     fails.append(f"head_sha {str(data.get('head_sha'))[:12]} is not the current HEAD {head[:12]} — "
                  f"this run describes different code")
 
+# Every field this verifier reads must be PRESENT and the right TYPE before any check consumes it.
+# A missing list defaults to empty and a check over nothing passes; a string where a list belongs is
+# worse, because `for lane in "Code"` iterates four characters, matches no required artifact, and
+# reports PASS. Absence and wrong-shape both have to fail here, before the first read.
+REQUIRED_FIELDS = ("schema_version", "head_sha", "branch", "declared_lane", "detected_lanes",
+                   "changed_files", "is_mixed_pr", "obligations_satisfied", "obligations_skipped")
+for field in REQUIRED_FIELDS:
+    if field not in data:
+        fails.append(f"run.json is missing required field {field!r}")
+
 declared = data.get("declared_lane")
 if declared not in LANES:
     fails.append(f"unknown declared_lane: {declared!r}. Exactly one of {sorted(LANES)}")
 
-detected = data.get("detected_lanes") or []
+detected = data.get("detected_lanes")
+if not isinstance(detected, list) or not detected:
+    fails.append(f"detected_lanes must be a non-empty JSON array, got {type(detected).__name__}")
+    detected = []
+else:
+    for lane in detected:
+        if lane not in LANES:
+            fails.append(f"unknown detected lane: {lane!r}. Exactly one of {sorted(LANES)}")
+
+for field in ("obligations_satisfied", "obligations_skipped"):
+    if not isinstance(data.get(field, []), list):
+        fails.append(f"{field} must be a JSON array, got {type(data.get(field)).__name__}")
+        data[field] = []
+
 if declared and declared not in detected:
     fails.append(f"declared_lane {declared!r} is not among detected_lanes {detected}")
 if len(detected) > 1 and not data.get("is_mixed_pr"):
@@ -78,8 +107,9 @@ for lane in detected:
         full = os.path.join(run, artifact)
         if not os.path.exists(full):
             fails.append(f"{lane}: required artifact {artifact} is missing")
-        elif os.path.getsize(full) == 0:
-            fails.append(f"{lane}: required artifact {artifact} exists but is EMPTY, which is not evidence")
+        elif not open(full, "rb").read().strip():
+            fails.append(f"{lane}: required artifact {artifact} exists but is BLANK, which is not "
+                         f"evidence. Size alone cannot see this: a file of spaces passes a size check")
 
 skipped = data.get("obligations_skipped", [])
 note = os.path.join(run, "skip-note.txt")
@@ -90,8 +120,11 @@ if skipped:
     else:
         body = open(note).read()
         for name in skipped:
-            if name not in body:
-                fails.append(f"obligation {name!r} is skipped but not named in skip-note.txt")
+            # `name in body` is satisfied by the word appearing anywhere, including inside another
+            # obligation's reason. Anchor it: the id starts a line and a reason follows it.
+            if not re.search(rf"(?m)^{re.escape(name)}:\s+\S.*$", body):
+                fails.append(f"obligation {name!r} is skipped without a reason. Write a line in "
+                             f"skip-note.txt of the form `{name}: <why it does not apply>`")
 
 for line in fails:
     print(f"FAIL: {line}")

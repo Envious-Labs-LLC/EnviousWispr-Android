@@ -10,8 +10,12 @@ THE FOUR CHECKS
 
 1. PRIOR CONTEXT (Gate 0). A plan may not be written until prior context has been read and posted. Prose
    posted in chat is NOT MECHANICALLY OBSERVABLE, so this is sentinel-armed exactly as macOS does it:
-   summarise prior context, `touch /tmp/.ew-android-issue-<N>-context-read`, then write. One-shot, 30
-   minute expiry.
+   summarise prior context, `touch /tmp/.ew-android-issue-<N>-context-read`, then write.
+   **The sentinel is issue-scoped and reusable for 30 minutes, not one-shot.** Nothing removes it, so any
+   plan file naming the same issue passes while it is fresh, and it is not evidence of WHICH plan body was
+   reviewed. Calling it one-shot would be a claim the code does not keep. Making it truly one-shot needs a
+   PostToolUse hook to remove it after the write SUCCEEDS; removing it here would spend the attestation
+   before knowing whether the write happened, and a denial would then cost the session its own gate.
    **It preserves the draft on denial.** macOS does this and it is required, not incidental: a gate that
    destroys work teaches its own bypass, and the next session will route around it rather than attest.
 
@@ -24,7 +28,8 @@ THE FOUR CHECKS
 
 4. CONSOLIDATION. A plan over a size threshold names what it consolidates, or says none.
 
-Exits 0 silently for any file that is not a plan. Fails OPEN on its own error.
+Exits 0 silently for any file that is not a plan. On malformed or unreadable input it emits NO permission
+decision, which the harness treats as no objection.
 """
 
 import json
@@ -36,6 +41,36 @@ import time
 SENTINEL_TTL = 30 * 60
 LANES = ["Code", "Benchmark", "CI/workflow", "Docs/dev-tooling"]
 PLAN = re.compile(r"docs/feature-requests/(issue-(\d+)|plan)-[\w.-]+\.md$")
+
+
+def resulting_document(tool_input: dict, full_path: str) -> str:
+    """The document as it will EXIST after this call, never the fragment the call carries.
+
+    Write hands over the whole file in `content`. Edit and MultiEdit hand over pieces, and judging a piece
+    denies ordinary work: replacing one typo in a finished plan yields a `new_string` with no rubric and
+    no lane, so checks 2-4 all fire on a plan that satisfies every one of them. Returns "" whenever the
+    result cannot be reconstructed exactly, because a guess is a worse input to a gate than no input.
+    """
+    if isinstance(tool_input.get("content"), str):
+        return tool_input["content"]
+    try:
+        body = open(full_path, encoding="utf-8").read()
+    except OSError:
+        return ""
+    edits = tool_input.get("edits")
+    if not isinstance(edits, list):
+        old, new = tool_input.get("old_string"), tool_input.get("new_string")
+        if not isinstance(old, str) or not isinstance(new, str):
+            return ""
+        edits = [{"old_string": old, "new_string": new}]
+    for edit in edits:
+        if not isinstance(edit, dict):
+            return ""
+        old, new = edit.get("old_string"), edit.get("new_string")
+        if not isinstance(old, str) or not isinstance(new, str) or body.count(old) != 1:
+            return ""
+        body = body.replace(old, new, 1)
+    return body
 
 
 def deny(reason: str) -> None:
@@ -59,14 +94,15 @@ def main() -> int:
     if not match:
         return 0  # not a plan file: silent, which is every other write in the repository
 
-    body = tool_input.get("content") or tool_input.get("new_string") or ""
+    full_path = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    body = resulting_document(tool_input, full_path)
     if not body:
-        return 0  # an edit we cannot read is not a plan we can judge
+        return 0  # an edit we cannot reconstruct is not a plan we can judge
 
     issue = match.group(2)
 
     # --- 1. Prior context
-    if issue and not os.path.exists(path):  # only a NEW plan; edits to an existing one are not Gate 0
+    if issue and not os.path.exists(full_path):  # only a NEW plan; edits to an existing one are not Gate 0
         sentinel = f"/tmp/.ew-android-issue-{issue}-context-read"
         fresh = os.path.exists(sentinel) and (time.time() - os.path.getmtime(sentinel)) < SENTINEL_TTL
         if not fresh:
@@ -74,8 +110,11 @@ def main() -> int:
             try:
                 with open(recovery, "w") as handle:
                     handle.write(body)
-                saved = (f"\n\nDRAFT PRESERVED at {recovery} ({len(body)} chars). Do NOT regenerate it:\n"
-                         f"  touch {sentinel} && cp {recovery} '{path}' && rm {recovery}")
+                # Never suggest `cp` into place: that reaches the plan path without passing checks 2-4,
+                # so a gate that preserves work would also be teaching the way around itself.
+                saved = (f"\n\nDRAFT PRESERVED at {recovery} ({len(body)} chars). Do NOT regenerate it.\n"
+                         f"  touch {sentinel}\n"
+                         f"Then re-issue the SAME Write call, so every remaining plan gate still runs.")
             except OSError:
                 saved = ""
             deny(

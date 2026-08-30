@@ -3,8 +3,23 @@
 Two guards asking this question separately is two answers to one question, which is the failure this whole
 enforcement port exists to prevent. Import it; never re-spell it.
 
+WHAT IT ACTUALLY COVERS, stated so the name does not overclaim. "Ship path" is the repository's own term
+(`.claude/rules/workflow-process.md`, and every deny message here), and the set is wider than the files
+that literally reach a user: it also holds unit and instrumented tests, debug-only sources under
+`app/src/`, Room test schemas, and `.github/`. All of those are branch work; none of them ship. The
+predicate answers "does editing this belong on a branch", never "does this reach a phone".
+
 `.github/` is included although it does not exist yet: this is a PREFIX match, so it starts protecting the
 directory the day issue #13 creates it, with no edit here.
+
+TWO BUILD INPUTS ARE DELIBERATELY OUTSIDE IT, and the reason is that git already holds the line.
+`app/libs/` and `local.properties` are both required to build and both gitignored, so no author can commit
+them and there is nothing for a branch rule to protect. Do not read this predicate as covering every input
+that affects a build; it covers every input that can enter HISTORY.
+
+`accelerator-benchmark/` is also outside it, and that is a rule, not an omission. FACT: lanes gives the
+benchmark its own non-gating lane precisely because it is an experiment whose build failure is not an app
+defect. Adding it here would force branch discipline on work the process deliberately does not gate.
 """
 
 import re
@@ -21,7 +36,8 @@ SHIP_PATH = re.compile(
     r"|gradlew\.bat$"
     r"|llama-android/"
     r"|third_party/"            # submodule contents
-    r"|\.gitmodules$"           # the submodule pointer
+    r"|\.gitmodules$"           # submodule configuration; `third_party/` above matches the gitlink
+    r"|\.gitignore$"            # decides which build inputs and receipts can enter history at all
     r"|\.github/"
     r")"
 )

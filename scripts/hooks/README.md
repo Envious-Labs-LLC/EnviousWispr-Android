@@ -78,12 +78,23 @@ setting now cover more than three hooks and two settings did.
 
 **The hard half of that hook is what it must NOT refuse**, because it fires inside `clone`, `fetch` and
 `pull`, and a version that refused work arriving from the remote would make the repository unusable while
-looking exactly like protection. Three things pass without inspection. A commit already reachable from `main`'s CONFIGURED UPSTREAM —
-resolved with `for-each-ref`, never a hard-coded `origin`, which refused a legitimate pull in any checkout
-whose remote is named otherwise, and falling back to a remote's DEFAULT BRANCH once `main` is deleted,
-because deleting a branch deletes its upstream configuration too. Not to any remote-tracking ref: "has
-been pushed somewhere" is not "has been reviewed into main", and a local ship branch pushed to
-`origin/feature` would otherwise have authorised recreating `main` at its tip. A move BACKWARD, which is how a mistake
+looking exactly like protection. Three things pass without inspection. A commit already reachable from `main`'s CONFIGURED UPSTREAM,
+resolved with `for-each-ref` and never a hard-coded `origin` — that refused a legitimate pull in any
+checkout whose remote is named otherwise.
+
+**Once `main` is deleted its upstream configuration goes with it, and two fallbacks were tried before the
+guess was removed.** Any remote-tracking ref treats a pushed feature branch as reviewed. A remote's
+DEFAULT BRANCH looks tighter and is not: in a fork workflow `origin` is your own fork and its default
+branch is `main`, so pushing unreviewed work there would have authorised recreating `main` at it. Nothing
+in git says which remote is canonical once the branch config is gone, so nothing is guessed. One optional
+setting says it, and it survives the branch because it is not tied to it:
+
+```bash
+git config workflow.mainUpstream refs/remotes/upstream/main   # only if you need it
+```
+
+Without it, recreating a deleted `main` is judged rather than trusted. That refuses a rare operation with
+a clear message; the alternative was a standing hole reachable by pushing to your own fork. A move BACKWARD, which is how a mistake
 gets undone. And a new commit with the SAME TREE AND THE SAME PARENTS as the current one, which is
 `git commit --amend -m "reword"` and changes no file and no earlier commit.
 

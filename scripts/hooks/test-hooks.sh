@@ -340,7 +340,8 @@ if gitc commit -q -m docs >/dev/null 2>&1; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a docs-only commit on main" "allow"
 else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "a docs-only commit on main"; fi
 # AND IT FAILS CLOSED. Unlike the PreToolUse guards, a broken check here must not answer "yes": it is the
-# only thing between a ship path and `main`, and it runs once, on one commit.
+# check that cannot judge a commit must not approve it, and it runs once, on one commit. The ref hook
+# behind it fails OPEN for the opposite reason: it runs inside `fetch` and `pull`.
 mv "$HOOKREPO/scripts/hooks/ship_paths.py" "$HOOKREPO/ship_paths.hidden" || exit 2
 printf 'broken classifier\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
 gitc add -A >/dev/null 2>&1 || exit 2
@@ -462,7 +463,7 @@ fi
 git -C "$REMOTE_W/c" checkout -q -f main >/dev/null 2>&1 || exit 2
 git -C "$REMOTE_W/c" reset -q --hard "$DV_BEFORE" >/dev/null 2>&1 || exit 2
 
-# A MERGE COMMIT's own conflict resolution. `git log --name-only` shows nothing for a merge without `-m`,
+# A MERGE COMMIT's own conflict resolution. `git log --name-only` shows nothing at all for a merge, and `--cc`
 # so a resolution that edits a ship path only in the merge commit was invisible even though both sides
 # touched nothing but docs.
 git -C "$REMOTE_W/c" checkout -q -b sideA >/dev/null 2>&1 || exit 2
@@ -564,14 +565,23 @@ if git -C "$REMOTE_W/c" branch main refs/remotes/upstream/feature >/dev/null 2>&
 else
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating main at a PUSHED feature branch" "deny"
 fi
-# The allow half: recreating it at the remote's DEFAULT branch. `for-each-ref` cannot answer once the
-# branch is gone, and `git branch -D` deletes `branch.main.*` too, so the answer comes from the remote
-# HEAD symref.
+# THE FORK CASE, which is why a remote's default branch is not trusted either. In a fork workflow
+# `origin` is the user's OWN fork and its default branch is `main`, so pushing unreviewed ship work there
+# and recreating local `main` at it must not be authorised by the fact that a remote calls it `main`.
+# With nothing durable to trust, the creation is judged.
 UPSTREAM_TIP=$(git -C "$REMOTE_W/c" rev-parse refs/remotes/upstream/main) || exit 2
 if git -C "$REMOTE_W/c" branch main "$UPSTREAM_TIP" >/dev/null 2>&1; then
-    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating a deleted main at its upstream" "allow"
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "recreating main with no trusted upstream set"
+    git -C "$REMOTE_W/c" branch -q -D main >/dev/null 2>&1
 else
-    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "recreating a deleted main at its upstream"
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating main with no trusted upstream set" "deny"
+fi
+# And the allow half: ONE optional setting, not tied to the branch, so it survives `git branch -D main`.
+git -C "$REMOTE_W/c" config workflow.mainUpstream refs/remotes/upstream/main || exit 2
+if git -C "$REMOTE_W/c" branch main "$UPSTREAM_TIP" >/dev/null 2>&1; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating main with workflow.mainUpstream set" "allow"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "recreating main with workflow.mainUpstream set"
 fi
 # And the discriminator still holds: LOCAL ship-path work cannot ride the same route.
 git -C "$REMOTE_W/b" checkout -q -b localwork >/dev/null 2>&1 || exit 2

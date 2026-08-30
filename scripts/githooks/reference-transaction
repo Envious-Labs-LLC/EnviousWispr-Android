@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # reference-transaction — refuse to MOVE `main` onto local ship-path work.
 #
-# It fires on `fetch` and `pull` in an armed checkout, and on `clone` only once a clone has been armed —
-# an ordinary clone runs no hook of ours, because the setting is local and does not exist yet.
+# It fires on `fetch` and `pull` in an armed checkout. An ordinary clone runs no hook of ours at all,
+# because `core.hooksPath` is local configuration that does not exist until after the clone.
 #
 # WHY A REF HOOK AND NOT ANOTHER COMMIT HOOK. `pre-commit`, `pre-merge-commit` and `pre-applypatch` all
 # fire on an EVENT THAT CREATES A COMMIT. Measured 2026-08-30: `git merge --ff-only`, `git pull --ff-only`,
@@ -16,8 +16,8 @@
 #
 # WHAT IT MUST NOT BREAK, which is the harder half. This hook fires on `fetch` and `pull` in an armed
 # checkout. THREE things are allowed without inspection, and the list is short on purpose:
-#   · the new commit is already reachable from `main`'s CONFIGURED UPSTREAM, or from a remote's DEFAULT
-#     BRANCH when `main` has been deleted and its configuration with it -> a fetch or pull of work
+#   · the new commit is already reachable from `main`'s CONFIGURED UPSTREAM, or from `workflow.mainUpstream`
+#     when `main` has been deleted and its configuration with it -> a fetch or pull of work
 #     that reached the remote, which means it went through a branch and the review that gates one.
 #     Resolved with `for-each-ref '%(upstream)'`, never hard-coded: a first version tested
 #     `refs/remotes/origin/main` and refused a legitimate pull in any checkout whose remote is named
@@ -78,18 +78,25 @@ while read -r _OLD NEW REF; do
     # read from anywhere. Recreating it at reviewed remote history is ordinary and was refused for the
     # upstream's own ship-path content.
     #
-    # ANY remote-tracking ref is the wrong fallback, and it is the tempting one. "Has been pushed
-    # somewhere" is not "has been reviewed into main": a local ship branch pushed to `origin/feature` is
-    # on a remote-tracking ref, so deleting `main` and recreating it at that tip would have been allowed.
-    # Only a remote's DEFAULT BRANCH stands in for the upstream, which is the thing review gates.
+    # TWO FALLBACKS WERE TRIED AND BOTH GUESSED. Any remote-tracking ref treats a pushed feature branch
+    # as reviewed. A remote's DEFAULT BRANCH looks tighter and is not: in a fork workflow `origin` is the
+    # user's own fork, its default branch is `main`, and pushing unreviewed ship work there would have
+    # authorised recreating local `main` at it. Neither knows which remote is canonical, because nothing
+    # in git says so once `branch.main.*` is gone.
+    #
+    # So the guess is removed. There is ONE optional setting for a checkout that needs this, and it is
+    # durable because it is not tied to the branch:
+    #
+    #   git config workflow.mainUpstream refs/remotes/upstream/main
+    #
+    # With no such setting, a creation is JUDGED rather than trusted. That refuses recreating a deleted
+    # `main` even at reviewed history — a rare operation with a clear message — and the alternative was a
+    # standing hole reachable by pushing to your own fork.
     if [ -z "$UPSTREAM" ]; then
-        for HEADREF in $(git for-each-ref --format='%(symref)' 'refs/remotes/*/HEAD' 2>/dev/null); do
-            [ -n "$HEADREF" ] || continue
-            if git merge-base --is-ancestor "$NEW" "$HEADREF" 2>/dev/null; then
-                UPSTREAM="$HEADREF"
-                break
-            fi
-        done
+        TRUSTED=$(git config --get workflow.mainUpstream 2>/dev/null) || TRUSTED=""
+        if [ -n "$TRUSTED" ] && git rev-parse --verify --quiet "$TRUSTED" >/dev/null 2>&1; then
+            UPSTREAM="$TRUSTED"
+        fi
     fi
     BASE="$CURRENT"
     if [ -n "$UPSTREAM" ] && git rev-parse --verify --quiet "$UPSTREAM" >/dev/null 2>&1; then

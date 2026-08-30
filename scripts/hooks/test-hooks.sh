@@ -78,7 +78,10 @@ SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan file under a FIXED name would overwrite and then delete a real file of that name. The suite
 # cleans up after itself, so it must only ever create something nothing else owns.
 EDITPLAN=$(mktemp docs/feature-requests/issue-9902-2026-01-01-control-XXXXXX.md) || exit 2
-trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; rm -f "$STDERR" "$EDITPLAN"; rm -rf scripts/.digest-control-* "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md' EXIT
+DIG_DIR=""; NOHOOKS=""
+# Only the exact paths THIS run reserved. A `scripts/.digest-control-*` glob would take a concurrent
+# session's directory with it.
+trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; rm -f "$STDERR" "$EDITPLAN" "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md; [ -n "$DIG_DIR" ] && rm -rf "$DIG_DIR"; [ -n "$NOHOOKS" ] && rm -rf "$NOHOOKS"' EXIT
 
 # Every setup step is checked. A half-built repository makes controls fail for a reason that has nothing
 # to do with the guards, which is the slowest kind of red to read.
@@ -220,8 +223,9 @@ gitc reset -q --hard HEAD >/dev/null 2>&1
 if gitc commit -q --amend -m "reworded" >/dev/null 2>&1; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git commit --amend, message only" "allow"
 else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "git commit --amend, message only"; fi
-# A MERGE uses `pre-merge-commit`, a different event. Without the delegating hook beside pre-commit, a
-# merge onto `main` carrying a ship path passed unexamined.
+# A MERGE COMMIT raises a different event from `pre-commit`, so this went unexamined until the ref hook
+# existed. A delegating `pre-merge-commit` was written for it and later deleted: `reference-transaction`
+# sees the ref move whatever event produced it.
 gitc checkout -q -b side >/dev/null 2>&1 || exit 2
 printf 'on the side\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
 gitc commit -q -am side >/dev/null 2>&1 || exit 2
@@ -233,8 +237,8 @@ if gitc merge --no-ff -m merge side >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a merge carrying a ship path"
 else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a merge carrying a ship path" "deny"; fi
 gitc merge --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1
-# The allow half for the merge hook. Without it, `pre-merge-commit` had two deny controls and no proof it
-# ever lets an ordinary merge through, which is the half that decides whether a guard survives contact.
+# The allow half for a merge. Two deny controls and no proof an ordinary merge goes through is the half
+# that decides whether a guard survives contact.
 gitc checkout -q -b docmerge >/dev/null 2>&1 || exit 2
 : > "$HOOKREPO/docs/merged.md" || exit 2
 gitc add -A >/dev/null 2>&1 || exit 2; gitc commit -q -m "docs on a branch" >/dev/null 2>&1 || exit 2
@@ -305,8 +309,9 @@ else FAIL=$((FAIL+1)); printf '  FAIL  %-58s it never reached a real ref move\n'
 mv "$HOOKREPO/rt.hidden" "$HOOKREPO/scripts/githooks/reference-transaction" || exit 2
 restore_main || exit 2
 
-# `git am` raises `pre-applypatch`, a THIRD event. Installing that hook is not evidence it runs, so this
-# builds a real patch on a branch and applies it to `main`.
+# `git am` raises a third event again, and a `pre-applypatch` hook written for it was also deleted once
+# the ref hook existed. Installing a hook is never evidence it runs, so this builds a real patch on a
+# branch and applies it to `main`.
 gitc checkout -q -b patchside >/dev/null 2>&1 || exit 2
 printf 'via a patch\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
 gitc commit -q -am "patch" >/dev/null 2>&1 || exit 2
@@ -394,6 +399,52 @@ printf 'third upstream change\n' > "$REMOTE_W/a/app/src/main/Foo.kt" || exit 2
 ga commit -q -am "third" >/dev/null 2>&1 || exit 2
 ga push -q origin main >/dev/null 2>&1 || exit 2
 refallow "pulling from a remote NOT called origin" "$REMOTE_W/c" refs/heads/main pull --ff-only
+# `git pull --rebase` REPLAYS local commits on top of the upstream, so the upstream sits INSIDE the new
+# history and `NEW` is not reachable from it. Judging from the old `main` would count the upstream's own
+# ship-path changes as local and refuse an ordinary pull. Both directions, because the fix has to keep
+# refusing the local half.
+printf 'fourth upstream ship change\n' > "$REMOTE_W/a/app/src/main/Foo.kt" || exit 2
+ga commit -q -am fourth >/dev/null 2>&1 || exit 2
+ga push -q origin main >/dev/null 2>&1 || exit 2
+: > "$REMOTE_W/b/docs/local-notes.md" || exit 2
+git -C "$REMOTE_W/b" add -A >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/b" -c user.email=t@t -c user.name=t commit -q -m "local docs" >/dev/null 2>&1 || exit 2
+refallow "pull --rebase, upstream ship plus local docs" "$REMOTE_W/b" refs/heads/main pull --rebase
+# The same shape with LOCAL ship work must still be refused. It is committed with hooks pointed at an
+# empty directory, because pre-commit would stop it earlier and this control is about the REF hook.
+NOHOOKS_B=$(mktemp -d) || exit 2
+printf 'fifth upstream\n' > "$REMOTE_W/a/app/src/main/Foo.kt" || exit 2
+ga commit -q -am fifth >/dev/null 2>&1 || exit 2
+ga push -q origin main >/dev/null 2>&1 || exit 2
+printf 'local ship work\n' > "$REMOTE_W/b/app/src/main/Bar.kt" || exit 2
+git -C "$REMOTE_W/b" -c core.hooksPath="$NOHOOKS_B" add -A >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/b" -c core.hooksPath="$NOHOOKS_B" -c user.email=t@t -c user.name=t \
+    commit -q -m "local ship" >/dev/null 2>&1 || exit 2
+RB_BEFORE=$(git -C "$REMOTE_W/b" rev-parse main) || exit 2
+git -C "$REMOTE_W/b" -c user.email=t@t -c user.name=t pull --rebase >/dev/null 2>&1
+if [ "$(git -C "$REMOTE_W/b" rev-parse main)" = "$RB_BEFORE" ]; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "pull --rebase, upstream ship plus local SHIP" "deny"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "pull --rebase, upstream ship plus local SHIP"
+fi
+git -C "$REMOTE_W/b" rebase --abort >/dev/null 2>&1
+rm -rf "$NOHOOKS_B"
+# A branch that changes a ship path and then REVERTS it has no endpoint difference at all, so a hook
+# diffing two endpoints let both of those commits into main's history.
+git -C "$REMOTE_W/c" checkout -q -b revertside >/dev/null 2>&1 || exit 2
+ORIG=$(cat "$REMOTE_W/c/app/src/main/Foo.kt") || exit 2
+printf 'temporarily changed\n' > "$REMOTE_W/c/app/src/main/Foo.kt" || exit 2
+git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent -c user.email=t@t -c user.name=t commit -q -am change >/dev/null 2>&1 || exit 2
+printf '%s\n' "$ORIG" > "$REMOTE_W/c/app/src/main/Foo.kt" || exit 2
+git -C "$REMOTE_W/c" -c core.hooksPath=/nonexistent -c user.email=t@t -c user.name=t commit -q -am revert >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" checkout -q main >/dev/null 2>&1 || exit 2
+RV_BEFORE=$(git -C "$REMOTE_W/c" rev-parse main) || exit 2
+git -C "$REMOTE_W/c" merge --ff-only revertside >/dev/null 2>&1
+if [ "$(git -C "$REMOTE_W/c" rev-parse main)" = "$RV_BEFORE" ]; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a branch that changes a ship path and reverts it" "deny"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a branch that changes a ship path and reverts it"
+fi
 # And a `main` deleted and recreated at local ship work is judged, not waved through as a clone.
 git -C "$REMOTE_W/c" checkout -q -b recreate >/dev/null 2>&1 || exit 2
 printf 'recreated local\n' > "$REMOTE_W/c/app/src/main/Baz.kt" || exit 2

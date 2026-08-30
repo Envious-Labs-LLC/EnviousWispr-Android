@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # reference-transaction — refuse to MOVE `main` onto local ship-path work.
 #
+# It fires on `fetch` and `pull` in an armed checkout, and on `clone` only once a clone has been armed —
+# an ordinary clone runs no hook of ours, because the setting is local and does not exist yet.
+#
 # WHY A REF HOOK AND NOT ANOTHER COMMIT HOOK. `pre-commit`, `pre-merge-commit` and `pre-applypatch` all
 # fire on an EVENT THAT CREATES A COMMIT. Measured 2026-08-30: `git merge --ff-only`, `git pull --ff-only`,
 # `git reset --hard <branch>`, `git checkout -B main <commit>` and `git update-ref refs/heads/main` create
@@ -52,8 +55,9 @@ cd "$ROOT" || exit 0
 REFUSE=0
 while read -r _OLD NEW REF; do
     [ "$REF" = "refs/heads/main" ] || continue
-    # A 40- or 64-character hex OID and nothing else: `ref:refs/heads/main` is a symbolic update, and an
-    # all-zero NEW is a deletion.
+    # Lowercase hex with at least one non-zero digit: `ref:refs/heads/main` is a symbolic update, and an
+    # all-zero NEW is a deletion. Length is not checked, because sha1 and sha256 repositories differ and
+    # anything that gets past this is handed to `rev-parse` anyway.
     case "$NEW" in
         *[!0-9a-f]* | "") continue ;;
         *[!0]*) : ;;
@@ -66,22 +70,45 @@ while read -r _OLD NEW REF; do
     # Reviewed work arriving from the remote. The upstream is whatever THIS branch is configured to
     # track, not a hard-coded `origin`.
     UPSTREAM=$(git for-each-ref --format='%(upstream)' refs/heads/main 2>/dev/null) || UPSTREAM=""
+    BASE="$CURRENT"
     if [ -n "$UPSTREAM" ] && git rev-parse --verify --quiet "$UPSTREAM" >/dev/null 2>&1; then
+        # At or behind the upstream: nothing local is being added.
         git merge-base --is-ancestor "$NEW" "$UPSTREAM" 2>/dev/null && continue
+        # UPSTREAM SITS INSIDE THE NEW HISTORY, which is what `git pull --rebase` produces: reviewed
+        # upstream work with local commits replayed on top. Judging from CURRENT would count the
+        # upstream's own ship-path changes as local and refuse an ordinary pull. Judge from the upstream,
+        # so only the local portion is inspected.
+        if git merge-base --is-ancestor "$UPSTREAM" "$NEW" 2>/dev/null; then
+            BASE="$UPSTREAM"
+        fi
     fi
 
     # ONLY a genuine backward move. Forward and divergent both fall through to be judged.
     if [ -n "$CURRENT" ]; then
         git merge-base --is-ancestor "$NEW" "$CURRENT" 2>/dev/null && continue
+
+        # A DIVERGENT move whose resulting TREE is identical to the current one is a history rewrite that
+        # changes no file: `git commit --amend -m "reword"` is the everyday case, and refusing it was a
+        # false positive found by a control. It is narrow on purpose, and the two conditions have to hold
+        # together. A FORWARD move with an identical end tree is NOT this — a branch that changes a ship
+        # path and then reverts it has exactly that shape, and both of its commits do enter main's
+        # history, so it falls through and is judged.
+        if ! git merge-base --is-ancestor "$CURRENT" "$NEW" 2>/dev/null; then
+            CURRENT_TREE=$(git rev-parse --verify --quiet "$CURRENT^{tree}") || CURRENT_TREE=""
+            NEW_TREE=$(git rev-parse --verify --quiet "$NEW^{tree}") || NEW_TREE=""
+            if [ -n "$CURRENT_TREE" ] && [ "$CURRENT_TREE" = "$NEW_TREE" ]; then
+                continue
+            fi
+        fi
     fi
 
-    # A creation is judged against the empty tree, so recreating a deleted `main` at local ship-path work
-    # is inspected rather than waved through.
-    if [ -n "$CURRENT" ]; then BASE="$CURRENT"; else
-        BASE=$(git hash-object -t tree /dev/null 2>/dev/null) || continue
-    fi
-
-    CHANGED=$(git diff --name-only --no-renames "$BASE" "$NEW" 2>/dev/null) || continue
+    # EVERY PATH IN EVERY COMMIT BEING ADDED, not the difference between two endpoints. A branch that
+    # changes a ship path and then reverts it has no endpoint difference at all, and moving `main` onto it
+    # puts both of those commits into main's history. The promise this hook makes is about the commits,
+    # so the enumeration has to be about the commits too.
+    if [ -n "$BASE" ]; then RANGE="$BASE..$NEW"; else RANGE="$NEW"; fi
+    CHANGED=$(git log --root --format= --name-only --no-renames --diff-filter=ACDMRT "$RANGE" 2>/dev/null) \
+        || continue
     [ -n "$CHANGED" ] || continue
 
     SHIP=$(printf '%s\n' "$CHANGED" | python3 -c '
@@ -96,7 +123,7 @@ for line in sys.stdin:
     [ -n "$SHIP" ] || continue
 
     COUNT=$(printf '%s\n' "$SHIP" | wc -l | tr -d ' ')
-    echo "BLOCKED: moving \`main\` onto $COUNT ship-path file(s) that are not on \`origin/main\`." >&2
+    echo "BLOCKED: moving \`main\` onto $COUNT ship-path file(s) that are not on its upstream." >&2
     printf '%s\n' "$SHIP" | head -8 | sed 's/^/    /' >&2
     [ "$COUNT" -gt 8 ] && echo "    ... and $((COUNT - 8)) more" >&2
     echo >&2

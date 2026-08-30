@@ -50,7 +50,7 @@ absent, and the suite says so rather than passing quietly. Edit either one and r
 | `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer | every file that is not a plan, and any edit whose result it cannot reconstruct |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
 | `../githooks/pre-commit` | git's pre-commit | any commit whose staged set adds, changes, renames or DELETES a ship path, on `main` | on a branch, or a commit touching nothing shipped |
-| `../githooks/reference-transaction` | every update to `refs/heads/main` | moving `main` forward onto ship-path commits that are not on `origin/main` | a clone, a fetch, a pull, a reset backwards, or a move carrying nothing shipped |
+| `../githooks/reference-transaction` | every update to `refs/heads/main` | any move of `main` onto ship-path commits that are not on its configured upstream | a fetch, a pull (including `--rebase`), a reset backwards, or a move carrying nothing shipped |
 
 ## The two things worth knowing before changing any of them
 
@@ -93,8 +93,9 @@ allows the move. It fails open on its own errors, unlike `pre-commit`, because i
 PreToolUse matcher on Edit/Write sees the assistant's file tools and nothing else — not a shell heredoc,
 not `tee`, not another process. Measured 2026-08-30: every file written by the session that designed
 these guards went through a Bash heredoc, including the design document. The ways to write a file are
-open-ended, so that half will never be complete. It does not need to be: every write must reach history
-through a commit, and that is where the check is now.
+open-ended, so that half will never be complete. It does not need to be: to reach `main` a write has to
+move that ref, and `reference-transaction` is on it — which is the whole reason the check is there rather
+than only on the commit.
 
 **There is no adversary.** The only actor is Claude, often several instances at once. These enforce workflow
 etiquette so cooperative agents do not corrupt `main`. The failure to prevent is a path-of-least-resistance

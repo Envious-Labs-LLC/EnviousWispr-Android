@@ -7,9 +7,10 @@ another form it got wrong — an option value that looked like a flag, `--dry-ru
 pathspec, `-S` swallowing `-a`, `git -C.`, `env FOO=1 git`, a bare `&`, a newline splitting two lines.
 Those were not eight defects. They were one: git's option grammar and the shell's grammar are not ours,
 and a private parser for either has no last divergence. `scripts/githooks/pre-commit` asks git instead, at
-the moment the staged set actually exists, which covers `-a`, a pathspec, `--pathspec-from-file`,
-`--interactive`, `--amend`, an alias, `git merge`, `git cherry-pick`, `git rebase --continue` and
-`git am` by construction — including the forms nobody has thought of yet.
+the moment the staged set actually exists, which covers `-a`, an explicit pathspec, a bare pathspec,
+`--pathspec-from-file`, `--interactive`, `--amend` and a user alias identically. Separate
+`pre-merge-commit` and `pre-applypatch` hooks delegate to it, because git raises different events for a
+merge and for `git am`; replayed `git rebase` commits raise none of them and are a documented gap.
 
 THREAT MODEL, carried over from macOS `git_target.py` because it BOUNDS THE WORK. The only actor here is
 Claude, often five or more concurrent instances, and THERE IS NO ADVERSARY. These gates enforce workflow

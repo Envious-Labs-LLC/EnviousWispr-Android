@@ -78,7 +78,7 @@ SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan file under a FIXED name would overwrite and then delete a real file of that name. The suite
 # cleans up after itself, so it must only ever create something nothing else owns.
 EDITPLAN=$(mktemp docs/feature-requests/issue-9902-2026-01-01-control-XXXXXX.md) || exit 2
-trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; rm -f "$STDERR" "$EDITPLAN" scripts/.digest-control-*.tmp "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md' EXIT
+trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; rm -f "$STDERR" "$EDITPLAN"; rm -rf scripts/.digest-control-* "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md' EXIT
 
 # Every setup step is checked. A half-built repository makes controls fail for a reason that has nothing
 # to do with the guards, which is the slowest kind of red to read.
@@ -164,6 +164,20 @@ commit_case() {  # commit_case <name> <allow|deny> <git args...>
     if [ "$got" = "$want" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$name" "$got"
     else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted %s, got %s\n' "$name" "$want" "$got"; fi
 }
+# THE CONTROL ON THE CONTROLS, and it is permanent because a probe run once by hand is not a control.
+# While the ship fixture was untracked, `git commit -a` failed for having NOTHING TO COMMIT and four
+# controls read as `deny` while proving nothing about the hook. The pair below is what makes that
+# impossible to repeat: the same commit must SUCCEED with the hook unarmed and FAIL once it is armed.
+printf 'unarmed %s\n' "$RANDOM" > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
+git -C "$HOOKREPO" config --unset core.hooksPath || exit 2
+if gitc commit -q -am unarmed >/dev/null 2>&1; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "the same commit, hook deliberately unarmed" "allow"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s it never reached a real commit\n' "the same commit, hook unarmed"
+fi
+gitc reset -q --hard HEAD >/dev/null 2>&1
+git -C "$HOOKREPO" config core.hooksPath scripts/githooks || exit 2
+
 commit_case "git commit -am"                   deny commit -am wip
 commit_case "git commit -a -m, separated"      deny commit -a -m wip
 commit_case "an explicit -- pathspec"          deny commit -m wip -- app/src/main/Foo.kt
@@ -201,6 +215,17 @@ if gitc merge --no-ff -m merge side >/dev/null 2>&1; then
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "a merge carrying a ship path"
 else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a merge carrying a ship path" "deny"; fi
 gitc merge --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1
+# `git am` raises `pre-applypatch`, a THIRD event. Installing that hook is not evidence it runs, so this
+# builds a real patch on a branch and applies it to `main`.
+gitc checkout -q -b patchside >/dev/null 2>&1
+printf 'via a patch\n' > "$HOOKREPO/app/src/main/Foo.kt"; gitc commit -q -am "patch" >/dev/null 2>&1
+PATCHDIR="$HOOKREPO/.patches"
+gitc format-patch -1 -o "$PATCHDIR" >/dev/null 2>&1 || exit 2
+gitc checkout -q main >/dev/null 2>&1
+if gitc am "$PATCHDIR"/*.patch >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "git am applying a ship path"
+else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "git am applying a ship path" "deny"; fi
+gitc am --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1
 # The direction that matters more: a commit touching nothing shipped must go straight through.
 : > "$HOOKREPO/docs/two.md"; gitc add -A >/dev/null 2>&1
 if gitc commit -q -m docs >/dev/null 2>&1; then
@@ -311,7 +336,13 @@ else
     else FAIL=$((FAIL+1)); echo "  FAIL  $DIRTY dirty and $AHEAD unpushed, reported nothing"; fi
 fi
 echo "change-digest.sh — the fingerprint a validation receipt is pinned to"
-digest() { scripts/change-digest.sh 2>/dev/null; }
+# Every digest invocation is checked. Comparing two EMPTY strings reports "same", so a script that had
+# stopped working entirely would pass the two controls that assert sameness.
+digest() {
+    local out; out=$(scripts/change-digest.sh 2>/dev/null) || { echo "DIGEST-FAILED-$RANDOM"; return; }
+    [ -n "$out" ] || { echo "DIGEST-EMPTY-$RANDOM"; return; }
+    printf '%s' "$out"
+}
 check() {  # check <name> <same|differs> <before> <after>
     local got="differs"; [ "$3" = "$4" ] && got="same"
     if [ "$got" = "$2" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$1" "$got"
@@ -320,9 +351,12 @@ check() {  # check <name> <same|differs> <before> <after>
 # A FIXED path in the real working tree would overwrite and then delete a real file of that name, and
 # every mutation below is checked, because a `git add` that silently failed would make the control that
 # matters most — "staging does not move it" — pass without staging anything.
-# `-u` gives an unused NAME without creating the file. Creating it first put an empty probe into the
-# baseline, so "removing it returns to the baseline" compared against a tree that already had it.
-DIG_PROBE=$(mktemp -u scripts/.digest-control-XXXXXX.tmp) || exit 2
+# A DIRECTORY reserved by mktemp, with the probe inside it. `mktemp -u` reserved nothing, so another
+# process could take the name first; creating the file instead put an empty probe INTO the baseline, and
+# then "removing it returns to the baseline" compared against a tree that already contained it. A
+# reserved directory that is empty at baseline avoids both.
+DIG_DIR=$(mktemp -d "scripts/.digest-control-XXXXXX") || exit 2
+DIG_PROBE="$DIG_DIR/probe"
 BASE_DIGEST=$(digest)
 check "the same tree twice"                    same    "$BASE_DIGEST" "$(digest)"
 printf 'probe\n' > "$DIG_PROBE" || exit 2
@@ -336,7 +370,7 @@ chmod +x "$DIG_PROBE" || exit 2
 check "the executable bit moves it"            differs "$UNTRACKED_DIGEST" "$(digest)"
 # Staging a DELETION was the other half of the same defect, so it gets the same control.
 git rm -q --cached -f "$DIG_PROBE" >/dev/null 2>&1 || exit 2
-rm -f "$DIG_PROBE"
+rm -f "$DIG_PROBE" || exit 2
 check "removing it returns to the baseline"    same    "$BASE_DIGEST" "$(digest)"
 # The real object database must not grow. `git add -A` writes a blob per file and `write-tree` writes the
 # trees; sent to the real store they would be unreachable garbage after every validation run.

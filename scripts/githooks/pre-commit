@@ -21,8 +21,8 @@
 # tracked; git does not arm them. test-hooks.sh asserts this checkout is armed, so an unarmed clone is a
 # red control rather than a quiet absence.
 #
-# `--no-verify` skips this, as it skips every git hook. That is GR-NEVER-WEAKEN-GUARDRAILS, not a hole to
-# parse around: the Bash guard denies that token.
+# `--no-verify` skips this, as it skips the applicable verification hooks. That is
+# GR-NEVER-WEAKEN-GUARDRAILS, not a hole to parse around: the Bash guard denies that token.
 #
 # EXIT: 0 allow · 1 this commit is refused · 2 the check itself broke.
 # It FAILS CLOSED, unlike the PreToolUse guards, and the difference is deliberate. A broken PreToolUse hook

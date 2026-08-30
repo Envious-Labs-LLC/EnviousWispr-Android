@@ -33,10 +33,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
 
 fail() { echo "digest could not be computed: $1" >&2; exit 2; }
 
+# The trap is installed BEFORE either path exists. Installing it after both `mktemp`s meant a failure of
+# the SECOND one exited through `fail` with no trap yet, leaving the first behind — a leak reachable only
+# on an error path, which is where a cleanup is least likely to be watched.
+INDEX=""; OBJECTS=""
+trap 'rm -f "$INDEX"; [ -n "$OBJECTS" ] && rm -rf "$OBJECTS"' EXIT
 INDEX=$(mktemp)      || fail "no scratch index"
 OBJECTS=$(mktemp -d) || fail "no scratch object directory"
-trap 'rm -f "$INDEX"; rm -rf "$OBJECTS"' EXIT
-rm -f "$INDEX"   # read-tree needs the file ABSENT, not empty
+rm -f "$INDEX"       || fail "could not prepare the scratch index"   # read-tree needs it ABSENT, not empty
 
 # THE OBJECTS ARE THROWAWAY TOO, and this is easy to miss because the digest is correct without it.
 # `git add -A` writes a blob for every file and `git write-tree` writes the trees. Sent to the real object

@@ -106,10 +106,10 @@ The allow halves matter most: an always-firing guard looks like protection while
 skim past it.
 
 **The commit check is exercised by RUNNING COMMITS, not by feeding strings to a parser.** The suite builds
-a second throwaway repository with `core.hooksPath` set and commits into it seven ways — `-am`, a
-separated `-a -m`, an explicit `--` pathspec, a bare positional pathspec, `--amend` with a ship path
-staged, `--amend` with only a message, and a docs-only commit that must go through. While this check was
-a parser, each of those was a separate defect found in a separate round. They are one code path now.
+a second throwaway repository and drives real git operations through it in both directions, including a
+paired run with the hook deliberately unarmed so a control cannot pass without the hook. Read the
+`githooks/pre-commit` section of `test-hooks.sh` for the current population; a count copied here is a
+number with nothing linking it to the file.
 
 ## What a fresh clone will NOT have
 

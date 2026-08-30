@@ -49,3 +49,4 @@ docs/internal/
 # Temp
 .temp/
 .git-private-archive/
+.validation/

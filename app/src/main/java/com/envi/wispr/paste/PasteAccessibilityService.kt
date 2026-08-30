@@ -83,6 +83,11 @@ class PasteAccessibilityService : AccessibilityService() {
         var ownedClipboardFingerprint: ClipboardFingerprint? = null,
         var clipboardPayload: String? = null,
         var verification: AccessibilityInsertionRules.Verification? = null,
+        // Why the last verification attempt said no, in SHAPES only: lengths and caret
+        // positions, never text (`kotlin-patterns.md` RULE: no-content-in-diagnostics). A
+        // give-up that names only its attempt count cannot tell an editor that never
+        // received the words from one that received them and will not report a caret.
+        var lastVerifyMiss: String? = null,
     )
 
     private data class SmartInsertionContext(
@@ -539,7 +544,8 @@ class PasteAccessibilityService : AccessibilityService() {
                     Log.w(
                         TAG,
                         if (unverified) {
-                            "Editor action could not be verified after ${pending.attempts} attempts; clipboard only"
+                            "Editor action could not be verified after ${pending.attempts} attempts; " +
+                                "clipboard only (${pending.lastVerifyMiss ?: "no attempt recorded"})"
                         } else {
                             "Original editor did not return after ${pending.attempts} attempts; clipboard only"
                         },
@@ -603,24 +609,7 @@ class PasteAccessibilityService : AccessibilityService() {
                     Log.d(TAG, "Reacquired the pinned editor after its node became stale")
                 }
                 pending.verification?.let { verification ->
-                    val verified = AccessibilityInsertionRules.isVerified(
-                            verification,
-                            AccessibilityInsertionRules.observableEditorText(
-                                node.text,
-                                node.isShowingHintText,
-                            ),
-                            node.textSelectionStart,
-                            node.textSelectionEnd,
-                        )
-                    return if (verified) {
-                        if (verification.action == AccessibilityInsertionRules.Action.SET_TEXT) {
-                            InsertResult.SET_TEXT
-                        } else {
-                            InsertResult.PASTED
-                        }
-                    } else {
-                        InsertResult.RETRY
-                    }
+                    return verificationResult(node, pending, verification)
                 }
                 return insertIntoNode(node, pending)
             }
@@ -833,25 +822,54 @@ class PasteAccessibilityService : AccessibilityService() {
         pending: PendingInsertion,
     ): InsertResult {
         val verification = pending.verification ?: return InsertResult.RETRY
-        if (!node.refresh()) return InsertResult.RETRY
-        return if (AccessibilityInsertionRules.isVerified(
-                verification,
-                AccessibilityInsertionRules.observableEditorText(
-                    node.text,
-                    node.isShowingHintText,
-                ),
-                node.textSelectionStart,
-                node.textSelectionEnd,
-            )
-        ) {
-            if (verification.action == AccessibilityInsertionRules.Action.SET_TEXT) {
+        if (!node.refresh()) {
+            pending.lastVerifyMiss = "node-refresh-failed"
+            return InsertResult.RETRY
+        }
+        return verificationResult(node, pending, verification)
+    }
+
+    /**
+     * The ONE place an accepted action is judged against the editor.
+     *
+     * Both the immediate post-action check and every retry inside `performInsertion` asked this
+     * question with their own copy of the comparison. Two copies of one decision diverge, and here
+     * they already had: instrumenting one of them showed a single attempt while twenty more were
+     * being judged silently by the other (`code-design-rules.md`
+     * RULE: port-proven-patterns-wholesale).
+     *
+     * The miss is recorded in SHAPES only, never text
+     * (`kotlin-patterns.md` RULE: no-content-in-diagnostics). An attempt count on its own cannot
+     * tell an editor that never received the words from one that received them and will not say so.
+     */
+    private fun verificationResult(
+        node: AccessibilityNodeInfo,
+        pending: PendingInsertion,
+        verification: AccessibilityInsertionRules.Verification,
+    ): InsertResult {
+        val actual = AccessibilityInsertionRules.observableEditorText(
+            node.text,
+            node.isShowingHintText,
+        )
+        val caretStart = node.textSelectionStart
+        val caretEnd = node.textSelectionEnd
+        if (AccessibilityInsertionRules.isVerified(verification, actual, caretStart, caretEnd)) {
+            return if (verification.action == AccessibilityInsertionRules.Action.SET_TEXT) {
                 InsertResult.SET_TEXT
             } else {
                 InsertResult.PASTED
             }
-        } else {
-            InsertResult.RETRY
         }
+        pending.lastVerifyMiss = buildString {
+            append("action=").append(verification.action)
+            append(" textMatched=").append(actual == verification.expectedText)
+            append(" actualLen=").append(actual.length)
+            append(" expectedLen=").append(verification.expectedText?.length ?: -1)
+            append(" caret=").append(caretStart).append('/').append(caretEnd)
+            append(" expectedCaret=").append(verification.expectedCaret ?: -1)
+        }
+        Log.i(TAG, "verify miss #${pending.attempts}: ${pending.lastVerifyMiss}")
+        return InsertResult.RETRY
     }
 
     private fun isSensitive(node: AccessibilityNodeInfo): Boolean {

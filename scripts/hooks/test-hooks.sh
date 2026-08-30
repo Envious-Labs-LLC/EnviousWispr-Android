@@ -51,8 +51,11 @@ sys.exit(0 if decision == "deny" else 1)
     fi
 }
 
-# assert <name> <deny|allow> <hook> <json>          — run against this checkout, on whatever branch it is
+# assert <name> <deny|allow> <hook> <json>          — run against this checkout, wherever it happens to be
 assert()      { assert_at "$HOOKS" "$@"; }
+# assert_branch <name> <deny|allow> <hook> <json>   — run against a throwaway repository that is ON A
+# BRANCH, so the answer does not depend on where this checkout is standing
+assert_branch() { assert_at "$ON_BRANCH" "$@"; }
 # assert_main <name> <deny|allow> <hook> <json>     — run against the throwaway repository that is on main
 assert_main() { assert_at "$ON_MAIN" "$@"; }
 
@@ -70,18 +73,51 @@ echo
 # repository whose current branch really is `main`, copy the guards into it, and run them there. Both
 # guards derive their repository root from their own `__file__`, so the copy reads the throwaway repo and
 # the SHIPPED BYTES are what gets exercised — no source modification anywhere.
+# NOTHING IS ALLOCATED BEFORE THE TRAP THAT REMOVES IT. Two earlier versions fixed this one resource at
+# a time — first the scratch index in change-digest.sh, then the plan file here — and each left the
+# resources allocated on the lines either side of it. The ordering is a property of the BLOCK, so every
+# name is declared empty first, the cleanup is armed once, and allocation happens after. A `[ -n ... ]`
+# guard on each means an interruption between any two lines removes exactly what exists.
+# EVERY `mktemp` IN THIS FILE, enumerated with `grep mktemp` rather than from the block I happened to be
+# editing. The previous version registered the six in this block and left four allocated hundreds of
+# lines later, each removed only on its own success path — so an interruption before that line leaked it.
+MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
+HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
+SENTINEL=/tmp/.ew-android-issue-9901-context-read
+
+cleanup() {
+    [ -n "$MAINREPO" ]   && rm -rf "$MAINREPO" "$MAINREPO.git"
+    [ -n "$BRANCHREPO" ] && rm -rf "$BRANCHREPO"
+    [ -n "$HOOKREPO" ]   && rm -rf "$HOOKREPO"
+    [ -n "$REMOTE_W" ]   && rm -rf "$REMOTE_W"
+    [ -n "$DIG_REPO" ]   && rm -rf "$DIG_REPO"
+    # NEVER a `scripts/.digest-control-*` glob here: it would take a concurrent run's directory too.
+    [ -n "$DIG_DIR" ]    && rm -rf "$DIG_DIR"
+    [ -n "$NOHOOKS" ]    && rm -rf "$NOHOOKS"
+    [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
+    [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
+    [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
+    rm -f "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md
+    return 0
+}
+trap cleanup EXIT
+
 MAINREPO=$(mktemp -d) || exit 2
 # Deliberately OUTSIDE $MAINREPO: session-end-check.sh is asserted against that repository being CLEAN,
 # and a stray file inside it would make the clean control impossible to reach.
 STDERR=$(mktemp) || exit 2
-SENTINEL=/tmp/.ew-android-issue-9901-context-read
-# A plan file under a FIXED name would overwrite and then delete a real file of that name. The suite
-# cleans up after itself, so it must only ever create something nothing else owns.
-EDITPLAN=$(mktemp docs/feature-requests/issue-9902-2026-01-01-control-XXXXXX.md) || exit 2
-DIG_DIR=""; NOHOOKS=""
-# Only the exact paths THIS run reserved. A `scripts/.digest-control-*` glob would take a concurrent
-# session's directory with it.
-trap 'rm -rf "$MAINREPO" "$MAINREPO.git"; rm -f "$STDERR" "$EDITPLAN" "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md; [ -n "$DIG_DIR" ] && rm -rf "$DIG_DIR"; [ -n "$NOHOOKS" ] && rm -rf "$NOHOOKS"' EXIT
+
+# A plan file under a FIXED name would overwrite and then delete a real file of that name, so it must
+# only ever create something nothing else owns.
+#
+# NOT `mktemp`, and the reason is a defect this suite left in the working tree: BSD mktemp requires the
+# X's at the END of the template, and the plan-gate regex requires the name to end in `.md`. Given
+# `...-XXXXXX.md` it created a file called exactly that, and an early exit left a literal `XXXXXX` file
+# behind.
+EDITPLAN_CANDIDATE="docs/feature-requests/issue-9902-2026-01-01-control-$$-$RANDOM.md"
+[ -e "$EDITPLAN_CANDIDATE" ] && exit 2
+EDITPLAN="$EDITPLAN_CANDIDATE"
+: > "$EDITPLAN" || exit 2
 
 # Every setup step is checked. A half-built repository makes controls fail for a reason that has nothing
 # to do with the guards, which is the slowest kind of red to read.
@@ -92,8 +128,21 @@ cp "$HOOKS"/*.py "$HOOKS"/session-end-check.sh "$MAINREPO/scripts/hooks/" || exi
 git -C "$MAINREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base || exit 2
 ON_MAIN="$MAINREPO/scripts/hooks"
 
+# THE ALLOW HALF NEEDS ITS OWN REPOSITORY TOO, and the reason is a defect this suite caught on the day
+# the branch merged. `assert` ran against THIS checkout, so "a ship-path edit on a branch is allowed"
+# passed only while the checkout happened to be on a branch — and went red the moment the work landed on
+# `main`. A control whose answer depends on where you are standing is not a control.
+BRANCHREPO=$(mktemp -d) || exit 2
+git init -q -b main "$BRANCHREPO" || exit 2
+mkdir -p "$BRANCHREPO/scripts/hooks" "$BRANCHREPO/app/src/main" || exit 2
+cp "$HOOKS"/*.py "$BRANCHREPO/scripts/hooks/" || exit 2
+git -C "$BRANCHREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base || exit 2
+git -C "$BRANCHREPO" checkout -q -b work || exit 2
+[ "$(git -C "$BRANCHREPO" rev-parse --abbrev-ref HEAD)" = "work" ] || exit 2
+ON_BRANCH="$BRANCHREPO/scripts/hooks"
+
 echo "check-protected-paths.py — edit time"
-assert "ship-path edit on a branch"            allow check-protected-paths.py '{"tool_input":{"file_path":"app/src/main/Foo.kt"}}'
+assert_branch "ship-path edit on a branch"     allow check-protected-paths.py '{"tool_input":{"file_path":"app/src/main/Foo.kt"}}'
 assert_main "ship-path edit on main"           deny  check-protected-paths.py '{"tool_input":{"file_path":"app/src/main/Foo.kt"}}'
 assert_main "Room schema on main"              deny  check-protected-paths.py '{"tool_input":{"file_path":"app/schemas/1.json"}}'
 assert_main "submodule pointer on main"        deny  check-protected-paths.py '{"tool_input":{"file_path":".gitmodules"}}'
@@ -103,7 +152,7 @@ assert_main "the benchmark is not a ship path" allow check-protected-paths.py '{
 echo
 
 echo "command-safety.py — the shell writes, which no git hook can see"
-assert "an ordinary read command"              allow command-safety.py '{"tool_input":{"command":"git status --short"}}'
+assert_branch "an ordinary read command"       allow command-safety.py '{"tool_input":{"command":"git status --short"}}'
 assert_main "an ordinary read command"         allow command-safety.py '{"tool_input":{"command":"git status --short"}}'
 assert_main "heredoc into a ship path on main" deny  command-safety.py '{"tool_input":{"command":"cat > app/src/main/Foo.kt <<EOF"}}'
 assert_main "append into a ship path on main"  deny  command-safety.py '{"tool_input":{"command":"echo x >> app/src/main/Foo.kt"}}'
@@ -120,9 +169,9 @@ assert_main "a later pipeline stage"           allow command-safety.py '{"tool_i
 assert_main "printing the word tee"            allow command-safety.py '{"tool_input":{"command":"printf %s tee app/src/main/Foo.kt"}}'
 assert_main "a newline inside quotes"          allow command-safety.py '{"tool_input":{"command":"printf \"a\nb\" app/src/main/Foo.kt"}}'
 # `--no-verify` is denied on EVERY branch, because skipping a hook is never the fix for what it says.
-assert "--no-verify on a branch"               deny  command-safety.py '{"tool_input":{"command":"git commit --no-verify -m x"}}'
+assert_branch "--no-verify on a branch"        deny  command-safety.py '{"tool_input":{"command":"git commit --no-verify -m x"}}'
 assert_main "--no-verify on main"              deny  command-safety.py '{"tool_input":{"command":"git commit --no-verify -m x"}}'
-assert "an ordinary commit on a branch"        allow command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
+assert_branch "an ordinary commit on a branch" allow command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
 echo
 
 # THE COMMIT CHECK IS A REAL GIT HOOK NOW, so it is exercised by RUNNING COMMITS rather than by feeding
@@ -632,6 +681,36 @@ echo
 # is the only thing a fresh clone can restore the wiring from. A copy nothing compares is how the two
 # drift apart silently, so compare them here. The README says this check exists; that sentence is only
 # true while this block is.
+# THE MISTAKE MADE IMPOSSIBLE TO MISS, rather than a fourth reminder. Three review rounds found the same
+# unregistered-resource defect, the last one four allocations away from the block being edited. This
+# reads the file itself: every `NAME=$(mktemp ...)` must appear inside `cleanup()`, so adding a
+# temporary resource without registering it goes red instead of leaking on the next interrupted run.
+echo "the suite's own temporaries — all registered for cleanup"
+if python3 - <<'PY'
+import re, sys
+s = open("scripts/hooks/test-hooks.sh", encoding="utf-8").read()
+# The allocator pattern accepts the ordinary variants, not just the one spelling used today: a quoted
+# substitution, `local`/`export`/`readonly`, spacing around `=`, and `command mktemp`.
+allocated = set(re.findall(
+    r'^(?:export |readonly |local )?([A-Za-z_]\w*)\s*=\s*"?\$\(\s*(?:command\s+)?mktemp\b', s, re.M))
+body = re.search(r'^cleanup\(\) \{(.*?)^\}', s, re.S | re.M)
+if not body:
+    print("  cleanup() not found"); sys.exit(1)
+# A NAME APPEARING IN cleanup() IS NOT A REMOVAL. A comment mentioning it, or a `: "$NAME"`, satisfied a
+# search for the name and removed nothing — the check would have been green while the resource leaked.
+# `rm -f` is not accepted either: it does nothing at all to a directory, so a `mktemp -d` paired with it
+# was another green that leaked. The requirement is a guarded RECURSIVE removal.
+removed = {name for name in allocated if re.search(
+    rf'^\s*\[ -n "\${name}" \]\s*&&\s*rm -(?:rf|fr) "\${name}"(?:\s|$)', body.group(1), re.M)}
+missing = sorted(allocated - removed)
+if missing:
+    print("  never removed on an interrupted run:", ", ".join(missing)); sys.exit(1)
+sys.exit(0 if allocated else 1)
+PY
+then PASS=$((PASS+1)); echo "  ok    every mktemp in this file is registered in cleanup()"
+else FAIL=$((FAIL+1)); echo "  FAIL  a temporary resource is not registered in cleanup()"; fi
+echo
+
 echo "registration mirror — README against the live settings"
 if [ -f .claude/settings.json ]; then
     if python3 - <<'PY'

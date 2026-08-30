@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# reference-transaction — refuse to MOVE `main` onto local ship-path work.
+#
+# It fires on `fetch` and `pull` in an armed checkout. An ordinary clone runs no hook of ours at all,
+# because `core.hooksPath` is local configuration that does not exist until after the clone.
+#
+# WHY A REF HOOK AND NOT ANOTHER COMMIT HOOK. `pre-commit`, `pre-merge-commit` and `pre-applypatch` all
+# fire on an EVENT THAT CREATES A COMMIT. Measured 2026-08-30: `git merge --ff-only`, `git pull --ff-only`,
+# `git reset --hard <branch>`, `git checkout -B main <commit>` and `git update-ref refs/heads/main` create
+# no commit, so none of the three runs and `main` moves onto ship-path work unexamined. `git rebase` is the
+# same shape. Guarding the events was guarding a proxy; what needs guarding is the REF.
+#
+# THE OLD VALUE GIT HANDS US IS OFTEN ZEROS, and a first version trusted it. `checkout -B` and
+# `update-ref` both report `0000...` as the old OID, so a hook that read it treated a MOVE as a creation
+# and allowed it. The current value is read from the ref itself instead.
+#
+# WHAT IT MUST NOT BREAK, which is the harder half. This hook fires on `fetch` and `pull` in an armed
+# checkout. THREE things are allowed without inspection, and the list is short on purpose:
+#   · the new commit is already reachable from `main`'s CONFIGURED UPSTREAM, or from `workflow.mainUpstream`
+#     when `main` has been deleted and its configuration with it -> a fetch or pull of work
+#     that reached the remote, which means it went through a branch and the review that gates one.
+#     Resolved with `for-each-ref '%(upstream)'`, never hard-coded: a first version tested
+#     `refs/remotes/origin/main` and refused a legitimate pull in any checkout whose remote is named
+#     anything else.
+#   · the move is BACKWARD, meaning the new commit is an ancestor of the current one. That is how a
+#     mistake gets undone.
+#   · the new commit has the SAME TREE AND THE SAME PARENTS as the current one — an amend of exactly one
+#     commit, changing no file and no earlier history. Tree equality alone is not enough; see below.
+#
+# EVERYTHING ELSE IS JUDGED, and getting this wrong was the defect worth naming. A first version asked
+# whether CURRENT is an ancestor of NEW and allowed the operation when it was not — reading "not forward"
+# as "backward". Not forward also means DIVERGENT, which is exactly the shape a rebase produces, and a
+# reset or `checkout -B` onto a divergent local branch has it too. All three took the allow branch while
+# a comment three lines up claimed rebase was covered. The test is reversed now: only a genuine backward
+# move is allowed, and forward and divergent are both inspected.
+#
+# A MISSING `main` IS NOT AUTOMATICALLY A CLONE. This hook is not armed during an ordinary clone — the
+# setting is local and the clone has not been configured yet — so a creation reaching this code is
+# happening in a repository that already had the hook. Deleting `main` and recreating it at local
+# ship-path work is a real route, so a creation is diffed against the EMPTY TREE and judged like any
+# other move.
+#
+# ARMED BY `git config core.hooksPath scripts/githooks`, the same setting as the others.
+# `--no-verify` does NOT skip this one; git offers no such bypass for a reference transaction.
+#
+# EXIT: 0 allow · 1 refuse the whole transaction. It fails OPEN on its own error, unlike pre-commit, and
+# the reason is the blast radius: this hook runs inside `fetch`, `pull` and every other armed ref
+# transaction, so a broken version
+# that failed closed would make the repository unusable rather than protect one branch. The commit hooks
+# are the ones that fail closed; this is the backstop behind them.
+
+set -uo pipefail
+[ "${1:-}" = "prepared" ] || exit 0
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$ROOT" || exit 0
+[ -r "scripts/hooks/ship_paths.py" ] || exit 0
+
+REFUSE=0
+while read -r _OLD NEW REF; do
+    [ "$REF" = "refs/heads/main" ] || continue
+    # Lowercase hex with at least one non-zero digit: `ref:refs/heads/main` is a symbolic update, and an
+    # all-zero NEW is a deletion. Length is not checked, because sha1 and sha256 repositories differ and
+    # anything that gets past this is handed to `rev-parse` anyway.
+    case "$NEW" in
+        *[!0-9a-f]* | "") continue ;;
+        *[!0]*) : ;;
+        *) continue ;;
+    esac
+
+    CURRENT=$(git rev-parse --verify --quiet refs/heads/main) || CURRENT=""
+    [ "$CURRENT" != "$NEW" ] || continue     # not a move at all
+
+    # Reviewed work arriving from the remote. The upstream is whatever THIS branch is configured to
+    # track, not a hard-coded `origin`.
+    UPSTREAM=$(git for-each-ref --format='%(upstream)' refs/heads/main 2>/dev/null) || UPSTREAM=""
+    # `for-each-ref` can only answer about a branch that EXISTS, and `git branch -D main` deletes the
+    # `branch.main.*` configuration along with the ref — so once `main` is gone there is no upstream to
+    # read from anywhere. Recreating it at reviewed remote history is ordinary and was refused for the
+    # upstream's own ship-path content.
+    #
+    # TWO FALLBACKS WERE TRIED AND BOTH GUESSED. Any remote-tracking ref treats a pushed feature branch
+    # as reviewed. A remote's DEFAULT BRANCH looks tighter and is not: in a fork workflow `origin` is the
+    # user's own fork, its default branch is `main`, and pushing unreviewed ship work there would have
+    # authorised recreating local `main` at it. Neither knows which remote is canonical, because nothing
+    # in git says so once `branch.main.*` is gone.
+    #
+    # So the guess is removed. There is ONE optional setting for a checkout that needs this, and it is
+    # durable because it is not tied to the branch:
+    #
+    #   git config workflow.mainUpstream refs/remotes/upstream/main
+    #
+    # With no such setting, a creation is JUDGED rather than trusted. That refuses recreating a deleted
+    # `main` even at reviewed history — a rare operation with a clear message — and the alternative was a
+    # standing hole reachable by pushing to your own fork.
+    if [ -z "$UPSTREAM" ]; then
+        TRUSTED=$(git config --get workflow.mainUpstream 2>/dev/null) || TRUSTED=""
+        if [ -n "$TRUSTED" ] && git rev-parse --verify --quiet "$TRUSTED" >/dev/null 2>&1; then
+            UPSTREAM="$TRUSTED"
+        fi
+    fi
+    BASE="$CURRENT"
+    if [ -n "$UPSTREAM" ] && git rev-parse --verify --quiet "$UPSTREAM" >/dev/null 2>&1; then
+        # At or behind the upstream: nothing local is being added.
+        git merge-base --is-ancestor "$NEW" "$UPSTREAM" 2>/dev/null && continue
+        # UPSTREAM SITS INSIDE THE NEW HISTORY, which is what `git pull --rebase` produces: reviewed
+        # upstream work with local commits replayed on top. Judging from CURRENT would count the
+        # upstream's own ship-path changes as local and refuse an ordinary pull. Judge from the upstream,
+        # so only the local portion is inspected.
+        if git merge-base --is-ancestor "$UPSTREAM" "$NEW" 2>/dev/null; then
+            BASE="$UPSTREAM"
+        fi
+    fi
+
+    # ONLY a genuine backward move. Forward and divergent both fall through to be judged.
+    if [ -n "$CURRENT" ]; then
+        git merge-base --is-ancestor "$NEW" "$CURRENT" 2>/dev/null && continue
+
+        # AMENDING THE CURRENT COMMIT, and nothing wider. `git commit --amend -m "reword"` produces a
+        # commit with the SAME TREE and the SAME PARENTS as the one it replaces, so not one file and not
+        # one earlier commit changes. Refusing it was a false positive a control found.
+        #
+        # Tree equality ALONE is far too broad, and this is the trap: a divergent history can change a
+        # ship path, revert it, and end at a tree identical to the current one while carrying both of
+        # those commits. Requiring the parent list to match as well pins the exception to a rewrite of
+        # exactly one commit — the only shape where "no file and no history changed" is actually true.
+        CURRENT_TREE=$(git rev-parse --verify --quiet "$CURRENT^{tree}") || CURRENT_TREE=""
+        NEW_TREE=$(git rev-parse --verify --quiet "$NEW^{tree}") || NEW_TREE=""
+        CURRENT_PARENTS=$(git show -s --format='%P' "$CURRENT" 2>/dev/null) || CURRENT_PARENTS="x"
+        NEW_PARENTS=$(git show -s --format='%P' "$NEW" 2>/dev/null) || NEW_PARENTS="y"
+        if [ -n "$CURRENT_TREE" ] && [ "$CURRENT_TREE" = "$NEW_TREE" ] &&
+           [ "$CURRENT_PARENTS" = "$NEW_PARENTS" ]; then
+            continue
+        fi
+    fi
+
+    # EVERY PATH IN EVERY COMMIT BEING ADDED, not the difference between two endpoints. A branch that
+    # changes a ship path and then reverts it has no endpoint difference at all, and moving `main` onto it
+    # puts both of those commits into main's history. The promise this hook makes is about the commits,
+    # so the enumeration has to be about the commits too.
+    if [ -n "$BASE" ]; then RANGE="$BASE..$NEW"; else RANGE="$NEW"; fi
+    # `--cc`, the COMBINED diff, so a merge commit's own resolution is visible without its inherited
+    # content being counted as new. Plain `git log --name-only` shows nothing at all for a merge, and a
+    # resolution that adds a ship path lives exactly there. But `-m`, the obvious fix, reports the merge
+    # against EACH parent separately — so merging reviewed upstream ship work into a local docs branch
+    # listed every upstream ship path as though it were local, and refused an ordinary merge. A combined
+    # diff reports only what differs from ALL parents, which is the resolution itself.
+    CHANGED=$(git log --root --cc --format= --name-only --no-renames --diff-filter=ACDMRT "$RANGE" \
+        2>/dev/null) || continue
+    [ -n "$CHANGED" ] || continue
+
+    SHIP=$(printf '%s\n' "$CHANGED" | python3 -c '
+import sys, os
+sys.path.insert(0, os.path.join("scripts", "hooks"))
+from ship_paths import is_ship_path
+for line in sys.stdin:
+    path = line.strip()
+    if path and is_ship_path(path):
+        print(path)
+' 2>/dev/null) || continue
+    [ -n "$SHIP" ] || continue
+
+    # UNIQUE FILES. The enumeration walks commits, so one file touched in ten of them appeared ten times
+    # and the message said "10 ship-path file(s)" about one file.
+    SHIP=$(printf '%s\n' "$SHIP" | sort -u)
+    COUNT=$(printf '%s\n' "$SHIP" | wc -l | tr -d ' ')
+    echo "BLOCKED: moving \`main\` onto $COUNT ship-path file(s) that are not on its upstream." >&2
+    printf '%s\n' "$SHIP" | head -8 | sed 's/^/    /' >&2
+    [ "$COUNT" -gt 8 ] && echo "    ... and $((COUNT - 8)) more" >&2
+    echo >&2
+    echo "This is the ref-level backstop. It sees every way \`main\` can move, including a fast-forward," >&2
+    echo "a reset, a checkout -B and an update-ref, which create no commit at all, and a rebase, whose" >&2
+    echo "replayed commits never reach pre-commit. Ship-path work reaches \`main\` through a branch and" >&2
+    echo "its review, per" >&2
+    echo ".claude/rules/workflow-process.md RULE: ten-step-shape." >&2
+    REFUSE=1
+done
+exit "$REFUSE"

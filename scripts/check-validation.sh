@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# check-validation.sh — the verifier for a Phase 3 run directory. THIS is the thing that fails closed.
+#
+# validate-pr.sh scaffolds a run; this asserts it is real. Separate scripts on purpose: a scaffolder that
+# judged its own output would be marking its own homework.
+#
+# It asserts: run.json parses, carries schema_version 1, and carries EVERY field this script reads, each
+# with the right TYPE; head_sha matches the CURRENT HEAD and change_digest matches the CURRENT WORKING
+# TREE, so a run can be reused across neither a commit nor an uncommitted edit;
+# declared_lane and every detected lane is one of the four exact-case names; declared_lane is among
+# detected_lanes; more than one detected lane requires is_mixed_pr; every artifact each detected lane
+# requires exists and is not BLANK; and every skipped obligation carries a written reason on its own line.
+#
+# Three of those exist because the earlier version passed without them, and each failure looked like a
+# pass rather than an error. A blank-but-nonzero artifact satisfied a size check. `"detected_lanes":
+# "Code"` is truthy, so it survived, and iterating a string yields four characters that require no
+# artifact at all — a clean PASS having verified nothing. And a skip-note was satisfied by the obligation
+# id appearing ANYWHERE in the file, including inside a different obligation'"'"'s reason.
+#
+#   scripts/check-validation.sh .validation/runs/<id>
+#   scripts/check-validation.sh .validation/runs/<id> --strict   # promote WARN to FAIL
+#
+# Exit: 0 PASS · 1 WARN (advisory) · 2 FAIL.
+
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
+
+RUN="${1:-}"; STRICT=0; [ "${2:-}" = "--strict" ] && STRICT=1
+[ -n "$RUN" ] && [ -d "$RUN" ] || { echo "FAIL: no such run directory: ${RUN:-<none>}" >&2; exit 2; }
+
+DIGEST=$(scripts/change-digest.sh) || DIGEST=""
+exec python3 - "$RUN" "$STRICT" "$(git rev-parse HEAD)" "$DIGEST" <<'PY'
+import json, os, re, sys
+
+run, strict, head, digest = sys.argv[1], sys.argv[2] == "1", sys.argv[3], sys.argv[4]
+fails, warns = [], []
+
+LANES = {"Code", "Benchmark", "CI/workflow", "Docs/dev-tooling"}
+OBLIGATIONS = {"tests", "codex-review", "hardware-uat", "benchmark-assemble", "workflow-run", "cited-symbols"}
+REQUIRED = {
+    "Code": ["unit-tests.xml", "codex-review.md"],
+    "Benchmark": ["benchmark-assemble.log"],
+    "CI/workflow": ["workflow-run.txt"],
+    "Docs/dev-tooling": ["cited-symbols.txt"],
+}
+
+path = os.path.join(run, "run.json")
+if not os.path.exists(path):
+    print("FAIL: run.json is missing, so there is nothing to verify", file=sys.stderr)
+    sys.exit(2)
+try:
+    data = json.load(open(path))
+except json.JSONDecodeError as exc:
+    print(f"FAIL: run.json does not parse: {exc}", file=sys.stderr)
+    sys.exit(2)
+if not isinstance(data, dict):
+    print(f"FAIL: run.json must be a JSON object, got {type(data).__name__}", file=sys.stderr)
+    sys.exit(2)
+
+if data.get("schema_version") != 1:
+    fails.append(f"schema_version is {data.get('schema_version')!r}, expected 1")
+
+# A run pinned to another commit is evidence about other code. This is the check that stops a stale run
+# being re-presented after a COMMIT, which is the same class as a cached test count.
+if data.get("head_sha") != head:
+    fails.append(f"head_sha {str(data.get('head_sha'))[:12]} is not the current HEAD {head[:12]} — "
+                 f"this run describes different code")
+
+# And this is the half head_sha cannot see. Phase 3 runs BEFORE the commit, deliberately, so an
+# uncommitted edit changes what was validated without moving HEAD at all. Without the digest a run
+# directory stayed current while its subject was rewritten underneath it.
+if not digest:
+    # A FAILURE, never a warning. The header calls this script the thing that fails closed, and a run
+    # whose subject cannot be identified is exactly the case it exists to refuse — "PASS with 1 warning"
+    # would have been the most confident-looking wrong answer here.
+    fails.append("the change digest could not be computed, so this run cannot be shown to describe the "
+                 "current working tree")
+elif data.get("change_digest") != digest:
+    fails.append(f"change_digest {str(data.get('change_digest'))[:12]} is not the working tree's "
+                 f"{digest[:12]} — the code changed after this run was recorded")
+
+# Every field this verifier reads must be PRESENT and the right TYPE before any check consumes it, and
+# all three failures below LOOKED LIKE A PASS rather than an error. A missing list defaulted to empty and
+# a check over nothing passed. A string where a list belongs is worse: `for lane in "Code"` iterates four
+# characters, matches no required artifact, and reports PASS having verified nothing. A well-formed value
+# of the wrong type is worse again, because `"is_mixed_pr": "false"` is a truthy string and the
+# mixed-lane check read it as yes. `type(...) is not` rather than isinstance, because bool is a subclass
+# of int and `"schema_version": true` must not satisfy an int.
+EXPECTED_TYPES = {
+    "schema_version": int, "head_sha": str, "base_sha": str, "change_digest": str,
+    "branch": str, "declared_lane": str,
+    "detected_lanes": list, "changed_files": list, "is_mixed_pr": bool,
+    "obligations_satisfied": list, "obligations_skipped": list,
+}
+for field, expected in EXPECTED_TYPES.items():
+    if field not in data:
+        fails.append(f"run.json is missing required field {field!r}")
+    elif type(data[field]) is not expected:
+        fails.append(f"{field} must be {expected.__name__}, got {type(data[field]).__name__}")
+
+for field in ("detected_lanes", "changed_files", "obligations_satisfied", "obligations_skipped"):
+    if isinstance(data.get(field), list) and not all(isinstance(v, str) for v in data[field]):
+        fails.append(f"{field} must contain only strings")
+
+
+
+def strings(field):
+    """The field's value when it is a list of strings, and an empty list otherwise.
+
+    RECORDING a type failure is not SURVIVING one. Every check below is written for strings, so
+    `"declared_lane": []` reached `[] not in LANES` and raised `TypeError: unhashable type: 'list'`, and
+    a dict inside an obligation list did the same at set construction. A verifier that dies with a
+    traceback has not returned a verdict, and its exit status then means something different from every
+    other failure it can report. No check below that CONSUMES A COLLECTION reads an unsanitized value;
+    the scalar reads that remain are `is_mixed_pr`, coerced to a bool here, and the original values
+    quoted back in error messages, which is the one place the raw input is the point.
+    """
+    value = data.get(field)
+    return value if isinstance(value, list) and all(isinstance(v, str) for v in value) else []
+
+
+declared = data.get("declared_lane")
+if not isinstance(declared, str):
+    declared = ""
+if declared not in LANES:
+    fails.append(f"unknown declared_lane: {data.get('declared_lane')!r}. Exactly one of {sorted(LANES)}")
+
+detected = strings("detected_lanes")
+if not detected:
+    fails.append(f"detected_lanes must be a non-empty JSON array of lane names, got "
+                 f"{data.get('detected_lanes')!r}")
+for lane in detected:
+    if lane not in LANES:
+        fails.append(f"unknown detected lane: {lane!r}. Exactly one of {sorted(LANES)}")
+
+satisfied = strings("obligations_satisfied")
+skipped = strings("obligations_skipped")
+
+if declared and declared not in detected:
+    fails.append(f"declared_lane {declared!r} is not among detected_lanes {detected}")
+mixed = data.get("is_mixed_pr") is True  # a truthy string must not answer this
+if len(detected) > 1 and not mixed:
+    (fails if strict else warns).append(f"{len(detected)} lanes detected but is_mixed_pr is false")
+
+for name in satisfied + skipped:
+    if name not in OBLIGATIONS:
+        fails.append(f"unknown obligation id: {name!r}. Exactly one of {sorted(OBLIGATIONS)}")
+
+overlap = set(satisfied) & set(skipped)
+if overlap:
+    fails.append(f"obligation both satisfied and skipped: {sorted(overlap)}")
+
+for lane in detected:
+    for artifact in REQUIRED.get(lane, []):
+        full = os.path.join(run, artifact)
+        if not os.path.exists(full):
+            fails.append(f"{lane}: required artifact {artifact} is missing")
+        elif not open(full, "rb").read().strip():
+            fails.append(f"{lane}: required artifact {artifact} exists but is BLANK, which is not "
+                         f"evidence. Size alone cannot see this: a file of spaces passes a size check")
+
+note = os.path.join(run, "skip-note.txt")
+if skipped:
+    if not os.path.exists(note) or os.path.getsize(note) == 0:
+        fails.append(f"{len(skipped)} obligation(s) skipped with no skip-note.txt. A skip without a "
+                     f"reason is an omission wearing a label")
+    else:
+        body = open(note).read()
+        for name in skipped:
+            # `name in body` is satisfied by the word appearing anywhere, including inside another
+            # obligation's reason. Anchor it: the id starts a line and a reason follows it.
+            if not re.search(rf"(?m)^{re.escape(name)}:\s+\S.*$", body):
+                fails.append(f"obligation {name!r} is skipped without a reason. Write a line in "
+                             f"skip-note.txt of the form `{name}: <why it does not apply>`")
+
+for line in fails:
+    print(f"FAIL: {line}")
+for line in warns:
+    print(f"WARN: {line}")
+
+if fails:
+    print(f"\n{len(fails)} failure(s). This run does not stand as evidence.")
+    sys.exit(2)
+if warns:
+    print(f"\nPASS with {len(warns)} warning(s).")
+    sys.exit(1)
+print(f"PASS: {run} is complete for lanes {detected}")
+sys.exit(0)
+PY

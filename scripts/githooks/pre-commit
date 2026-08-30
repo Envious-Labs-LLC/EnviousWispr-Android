@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# pre-commit — refuse a commit that puts a ship path onto `main`.
+#
+# ASK GIT; DO NOT MODEL GIT. This replaces a commit check that lived in the Bash PreToolUse hook and tried
+# to PREDICT, from the text of a command, whether a commit was about to happen and what it would contain.
+# Five review rounds each found another form that parser got wrong: an option value that looked like a
+# flag, `--dry-run`, a bare positional pathspec, `-S` swallowing `-a`, `git -C.`, `env FOO=1 git`, a bare
+# `&`, a newline. Those were not eight defects. They were one — git's option grammar is not ours.
+#
+# Git runs THIS at the moment the answer exists, so `git diff --cached` is the real staged set rather than
+# a guess at one. `git commit -a`, an explicit `--` pathspec, a bare positional pathspec,
+# `--pathspec-from-file`, `--interactive`, `--amend` and a user alias all arrive here identically.
+#
+# THIS FILE IS NOT THE COMPLETE CHECK, AND IT IS NOT TRYING TO BE. It fires on an event that creates a
+# commit, so a merge, `git am`, a rebase, a fast-forward, a reset and an `update-ref` all move `main`
+# without it running. Three earlier rounds tried to cover those by adding more commit-event hooks —
+# `pre-merge-commit`, `pre-applypatch`, a `--no-ff` merge setting — and each round found the next event
+# that creates no commit. `reference-transaction` beside this file guards the REF instead, which is the
+# thing all of them were proxies for. Both of those hooks and that setting were deleted once it existed.
+#
+# So why keep this file at all: it refuses BEFORE the commit object is written and it names the staged
+# files, which is the clearer error on the route a session actually takes every day. The ref hook is the
+# backstop; this is the good message on the common path.
+#
+# ARMED BY ONE local setting, which every clone must run because the hook FILES are tracked and git does
+# not arm them:
+#
+#   git config core.hooksPath scripts/githooks
+#
+# It used to take two, the second forcing a merge commit so a fast-forward could not slip past. The ref
+# hook makes that unnecessary: it sees the fast-forward itself. test-hooks.sh asserts this checkout is
+# armed, so an unarmed clone is a red control rather than a quiet absence.
+#
+# `--no-verify` skips this, as it skips the applicable verification hooks. That is
+# GR-NEVER-WEAKEN-GUARDRAILS, not a hole to parse around: the Bash guard denies that token.
+#
+# EXIT: 0 allow · 1 this commit is refused · 2 the check itself broke.
+# It FAILS CLOSED, unlike the PreToolUse guards, and the difference is deliberate. A broken PreToolUse hook
+# that blocked every command would stop all work, so those fail open. This one runs at a single moment, on
+# one commit, and refusing a commit it cannot judge costs nothing but a retry. `reference-transaction`
+# behind it fails OPEN for the opposite reason: it runs inside `fetch` and `pull`, where failing closed
+# would break the repository rather than protect one branch.
+
+set -uo pipefail
+
+fail() { echo "pre-commit check FAILED: $1" >&2; echo "This is not an approval. Fix the check." >&2; exit 2; }
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || fail "could not resolve the repository root"
+cd "$ROOT" || fail "could not enter the repository root"
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || fail "could not resolve the branch"
+[ "$BRANCH" = "main" ] || exit 0                  # the branch IS the protection
+
+# `D` for a DELETION, which `ACMRT` omitted — removing a ship path from `main` is a ship-path commit.
+# `--no-renames` so a rename is reported as both its old and new path, and a ship path renamed to a docs
+# path cannot disappear into a single destination entry.
+STAGED=$(git diff --cached --name-only --no-renames --diff-filter=ACDMRT) || fail "could not read the staged set"
+[ -n "$STAGED" ] || exit 0
+
+SHIP=$(printf '%s\n' "$STAGED" | python3 -c '
+import sys, os
+sys.path.insert(0, os.path.join("scripts", "hooks"))
+from ship_paths import is_ship_path
+for line in sys.stdin:
+    path = line.strip()
+    if path and is_ship_path(path):
+        print(path)
+') || fail "could not classify the staged paths against scripts/hooks/ship_paths.py"
+[ -n "$SHIP" ] || exit 0
+
+COUNT=$(printf '%s\n' "$SHIP" | wc -l | tr -d ' ')
+echo "BLOCKED: committing $COUNT ship-path file(s) on \`main\`." >&2
+printf '%s\n' "$SHIP" | head -8 | sed 's/^/    /' >&2
+[ "$COUNT" -gt 8 ] && echo "    ... and $((COUNT - 8)) more" >&2
+cat >&2 <<'MSG'
+
+Ship-path work goes on a branch, per .claude/rules/workflow-process.md RULE: ten-step-shape.
+Measured 2026-08-29: a Codex-cleared change to the insertion path sat in 23 uncommitted files
+on `main` for six hours with that rule in context.
+
+  git checkout -b <type>/<issue>-<slug>   # your staged set follows you
+MSG
+exit 1

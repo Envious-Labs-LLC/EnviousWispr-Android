@@ -11,14 +11,28 @@
 # `update-ref` both report `0000...` as the old OID, so a hook that read it treated a MOVE as a creation
 # and allowed it. The current value is read from the ref itself instead.
 #
-# WHAT IT MUST NOT BREAK, which is the harder half. This hook fires during `clone` and `fetch` and `pull`.
-#   · `main` does not exist yet -> a clone creating it. Allow: nothing local is being smuggled.
-#   · the new commit is already reachable from `origin/main` -> a pull or fast-forward of reviewed work.
-#     Allow. That is the discriminator: work that reached the remote went through the branch and the
-#     review; work that has not is local.
-#   · the move is not forward -> a reset BACK, which is how a mistake gets undone. Allow.
-# Only a forward move of `main` onto commits that are NOT on `origin/main` is judged, and only its
-# ship-path content is refused.
+# WHAT IT MUST NOT BREAK, which is the harder half. This hook fires during `clone`, `fetch` and `pull`.
+# Exactly two things are allowed without inspection, and the list is short on purpose:
+#   · the new commit is already reachable from `main`'s CONFIGURED UPSTREAM -> a fetch or pull of work
+#     that reached the remote, which means it went through a branch and the review that gates one.
+#     Resolved with `for-each-ref '%(upstream)'`, never hard-coded: a first version tested
+#     `refs/remotes/origin/main` and refused a legitimate pull in any checkout whose remote is named
+#     anything else.
+#   · the move is BACKWARD, meaning the new commit is an ancestor of the current one. That is how a
+#     mistake gets undone.
+#
+# EVERYTHING ELSE IS JUDGED, and getting this wrong was the defect worth naming. A first version asked
+# whether CURRENT is an ancestor of NEW and allowed the operation when it was not — reading "not forward"
+# as "backward". Not forward also means DIVERGENT, which is exactly the shape a rebase produces, and a
+# reset or `checkout -B` onto a divergent local branch has it too. All three took the allow branch while
+# a comment three lines up claimed rebase was covered. The test is reversed now: only a genuine backward
+# move is allowed, and forward and divergent are both inspected.
+#
+# A MISSING `main` IS NOT AUTOMATICALLY A CLONE. This hook is not armed during an ordinary clone — the
+# setting is local and the clone has not been configured yet — so a creation reaching this code is
+# happening in a repository that already had the hook. Deleting `main` and recreating it at local
+# ship-path work is a real route, so a creation is diffed against the EMPTY TREE and judged like any
+# other move.
 #
 # ARMED BY `git config core.hooksPath scripts/githooks`, the same setting as the others.
 # `--no-verify` does NOT skip this one; git offers no such bypass for a reference transaction.
@@ -47,17 +61,27 @@ while read -r _OLD NEW REF; do
     esac
 
     CURRENT=$(git rev-parse --verify --quiet refs/heads/main) || CURRENT=""
-    [ -n "$CURRENT" ] || continue            # main is being created: a clone, not a local move
     [ "$CURRENT" != "$NEW" ] || continue     # not a move at all
 
-    git merge-base --is-ancestor "$CURRENT" "$NEW" 2>/dev/null || continue   # a reset back: allow
-
-    # Already on the remote means it went through a branch and the review that gates one.
-    if git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
-        git merge-base --is-ancestor "$NEW" refs/remotes/origin/main 2>/dev/null && continue
+    # Reviewed work arriving from the remote. The upstream is whatever THIS branch is configured to
+    # track, not a hard-coded `origin`.
+    UPSTREAM=$(git for-each-ref --format='%(upstream)' refs/heads/main 2>/dev/null) || UPSTREAM=""
+    if [ -n "$UPSTREAM" ] && git rev-parse --verify --quiet "$UPSTREAM" >/dev/null 2>&1; then
+        git merge-base --is-ancestor "$NEW" "$UPSTREAM" 2>/dev/null && continue
     fi
 
-    CHANGED=$(git diff --name-only --no-renames "$CURRENT" "$NEW" 2>/dev/null) || continue
+    # ONLY a genuine backward move. Forward and divergent both fall through to be judged.
+    if [ -n "$CURRENT" ]; then
+        git merge-base --is-ancestor "$NEW" "$CURRENT" 2>/dev/null && continue
+    fi
+
+    # A creation is judged against the empty tree, so recreating a deleted `main` at local ship-path work
+    # is inspected rather than waved through.
+    if [ -n "$CURRENT" ]; then BASE="$CURRENT"; else
+        BASE=$(git hash-object -t tree /dev/null 2>/dev/null) || continue
+    fi
+
+    CHANGED=$(git diff --name-only --no-renames "$BASE" "$NEW" 2>/dev/null) || continue
     [ -n "$CHANGED" ] || continue
 
     SHIP=$(printf '%s\n' "$CHANGED" | python3 -c '

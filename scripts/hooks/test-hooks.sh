@@ -145,6 +145,19 @@ git init -q -b main "$HOOKREPO" || exit 2
 cp "$HOOKS/ship_paths.py" "$HOOKREPO/scripts/hooks/" || exit 2
 cp scripts/githooks/pre-commit scripts/githooks/reference-transaction "$HOOKREPO/scripts/githooks/" || exit 2
 gitc() { git -C "$HOOKREPO" -c user.email=t@t -c user.name=t "$@"; }
+# FIXTURE MANAGEMENT, NOT A SEAM IN THE GUARD. Putting `main` back where a control found it is itself a
+# forward ref move onto ship-path content, so the hook refuses it and the suite cannot clean up after
+# itself. This restores with hooks pointed at an empty directory. The shipped hook is untouched: only
+# this harness's own housekeeping bypasses it, and every assertion above runs against the armed repo.
+NOHOOKS=$(mktemp -d) || exit 2
+gitraw() { git -C "$HOOKREPO" -c user.email=t@t -c user.name=t -c core.hooksPath="$NOHOOKS" "$@"; }
+restore_main() {
+    gitraw rebase --abort >/dev/null 2>&1; gitraw merge --abort >/dev/null 2>&1
+    gitraw am --abort >/dev/null 2>&1
+    gitraw checkout -q -f main >/dev/null 2>&1 || return 1
+    gitraw update-ref refs/heads/main "$FF_BEFORE" >/dev/null 2>&1 || return 1
+    gitraw reset -q --hard "$FF_BEFORE" >/dev/null 2>&1 || return 1
+}
 # THE SHIP FIXTURE IS COMMITTED FIRST, and this is the difference between a control that proves the hook
 # refused and one that passes for the wrong reason. While `Foo.kt` was untracked, `git commit -a` had
 # nothing to include and failed because git found NOTHING TO COMMIT — which reads as `deny` and says
@@ -234,26 +247,63 @@ gitc merge --abort >/dev/null 2>&1; gitc reset -q --hard HEAD >/dev/null 2>&1 ||
 # EVERY FORM BELOW CREATES NO COMMIT, so no commit hook of any kind sees it. Each one moved `main` onto
 # ship-path work until `reference-transaction` was added, and each was found in a separate review round
 # while the design was still adding commit-event hooks.
+# TWO BRANCHES WITH DIFFERENT RELATIONSHIPS TO MAIN, and the ORDER matters. `ffside` must be a
+# DESCENDANT so a fast-forward is actually possible; `divergent` must share only an older ancestor. An
+# earlier version built ffside first and then advanced main, which left ffside un-fast-forwardable — so
+# the fast-forward control passed as `deny` because git refused the merge, not because the hook did. The
+# causal pair below is what caught that, which is the whole reason it exists.
+ANCESTOR=$(gitc rev-parse main) || exit 2
+: > "$HOOKREPO/docs/onmain.md" || exit 2
+gitc add -A >/dev/null 2>&1 || exit 2
+gitc commit -q -m onmain >/dev/null 2>&1 || exit 2
+FF_BEFORE=$(gitc rev-parse main) || exit 2
+
 gitc checkout -q -b ffside >/dev/null 2>&1 || exit 2
 printf 'fast forward\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
 gitc commit -q -am ff >/dev/null 2>&1 || exit 2
+
+gitc checkout -q -b divergent "$ANCESTOR" >/dev/null 2>&1 || exit 2
+printf 'divergent\n' > "$HOOKREPO/app/src/main/Foo.kt" || exit 2
+gitc commit -q -am divergent >/dev/null 2>&1 || exit 2
 gitc checkout -q main >/dev/null 2>&1 || exit 2
-FF_BEFORE=$(gitc rev-parse main) || exit 2
+# Prove the two relationships are what the controls below assume, rather than assuming them.
+gitc merge-base --is-ancestor "$FF_BEFORE" ffside || exit 2
+gitc merge-base --is-ancestor "$FF_BEFORE" divergent && exit 2
+
 refmove_case() {  # refmove_case <name> <git args...>
     local name="$1"; shift
+    # The baseline must be true BEFORE the case, or a stale ref makes "it did not move" meaningless.
+    [ "$(gitc rev-parse main)" = "$FF_BEFORE" ] || exit 2
     local got="deny"
-    if gitc "$@" >/dev/null 2>&1 && [ "$(gitc rev-parse main)" != "$FF_BEFORE" ]; then got="allow"; fi
-    gitc merge --abort >/dev/null 2>&1; gitc am --abort >/dev/null 2>&1
-    gitc checkout -q main >/dev/null 2>&1
-    gitc update-ref refs/heads/main "$FF_BEFORE" >/dev/null 2>&1
-    gitc reset -q --hard "$FF_BEFORE" >/dev/null 2>&1
+    gitc "$@" >/dev/null 2>&1
+    [ "$(gitc rev-parse main)" = "$FF_BEFORE" ] || got="allow"
+    restore_main || exit 2
     if [ "$got" = "deny" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$name" "deny"
     else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "$name"; fi
 }
 refmove_case "a fast-forward merge"            merge --ff-only ffside
-refmove_case "git reset --hard onto a branch"  reset --hard ffside
+refmove_case "git reset --hard onto a descendant" reset --hard ffside
 refmove_case "git checkout -B main"            checkout -B main ffside
 refmove_case "git update-ref refs/heads/main"  update-ref refs/heads/main ffside
+# The three DIVERGENT shapes, which the reversed ancestry test used to wave through.
+refmove_case "git rebase onto a ship branch"   rebase divergent
+refmove_case "git reset --hard onto a divergent branch" reset --hard divergent
+refmove_case "git checkout -B main, divergent" checkout -B main divergent
+# A move BACKWARD is how a mistake is undone and must stay allowed.
+ROOT_COMMIT=$(gitc rev-list --max-parents=0 main | tail -1) || exit 2
+if gitc reset --hard "$ROOT_COMMIT" >/dev/null 2>&1 && [ "$(gitc rev-parse main)" = "$ROOT_COMMIT" ]; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "resetting main backwards" "allow"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "resetting main backwards"; fi
+restore_main || exit 2
+# THE CAUSAL PAIR for the ref hook, the same shape the commit hook already has. Without it every deny
+# above could be a command that simply failed.
+mv "$HOOKREPO/scripts/githooks/reference-transaction" "$HOOKREPO/rt.hidden" || exit 2
+gitc merge --ff-only ffside >/dev/null 2>&1
+if [ "$(gitc rev-parse main)" != "$FF_BEFORE" ]; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "the same fast-forward with the ref hook removed" "allow"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s it never reached a real ref move\n' "the same fast-forward, hook removed"; fi
+mv "$HOOKREPO/rt.hidden" "$HOOKREPO/scripts/githooks/reference-transaction" || exit 2
+restore_main || exit 2
 
 # `git am` raises `pre-applypatch`, a THIRD event. Installing that hook is not evidence it runs, so this
 # builds a real patch on a branch and applies it to `main`.
@@ -310,25 +360,51 @@ ga commit -q -m "base carrying ship paths" >/dev/null 2>&1 || exit 2
 ga remote add origin "$REMOTE_W/origin.git" || exit 2
 ga push -q -u origin main >/dev/null 2>&1 || exit 2
 
-refallow() {  # refallow <name> <dir> <git args...>
-    local name="$1" dir="$2"; shift 2
-    if git -C "$dir" -c user.email=t@t -c user.name=t "$@" >/dev/null 2>&1; then
+refallow() {  # refallow <name> <dir> <ref-to-watch> <git args...>
+    local name="$1" dir="$2" watch="$3"; shift 3
+    local before after
+    before=$(git -C "$dir" rev-parse --verify --quiet "$watch" || echo none)
+    git -C "$dir" -c user.email=t@t -c user.name=t "$@" >/dev/null 2>&1
+    after=$(git -C "$dir" rev-parse --verify --quiet "$watch" || echo none)
+    # Exit status alone proves nothing: a command that did nothing also exits 0.
+    if [ "$before" != "$after" ]; then
         PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$name" "allow"
     else
-        FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "$name"
+        FAIL=$((FAIL+1)); printf '  FAIL  %-58s the ref did not move\n' "$name"
     fi
 }
+# A SMOKE TEST, not a hook control: an ordinary clone is not armed, because the setting is local and does
+# not exist until after the clone. It is here because a clone that broke would be the loudest failure.
 if git clone -q "$REMOTE_W/origin.git" "$REMOTE_W/b" >/dev/null 2>&1; then
-    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "cloning a repo whose main carries ship paths" "allow"
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "cloning the repository at all (smoke test)" "ok"
 else
-    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted allow, got deny\n' "cloning a repo whose main carries ship paths"
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s the clone itself failed\n' "cloning the repository"
 fi
 git -C "$REMOTE_W/b" config core.hooksPath scripts/githooks || exit 2
 printf 'shipped again\n' > "$REMOTE_W/a/app/src/main/Foo.kt" || exit 2
 ga commit -q -am "upstream ship change" >/dev/null 2>&1 || exit 2
 ga push -q origin main >/dev/null 2>&1 || exit 2
-refallow "fetching upstream ship-path work"    "$REMOTE_W/b" fetch
-refallow "pulling it into main"                "$REMOTE_W/b" pull --ff-only
+refallow "fetching upstream ship-path work"    "$REMOTE_W/b" refs/remotes/origin/main fetch
+refallow "pulling it into main"                "$REMOTE_W/b" refs/heads/main pull --ff-only
+# The remote does not have to be called `origin`. A first version tested `refs/remotes/origin/main` by
+# name and refused a legitimate pull in any checkout whose remote is named anything else.
+git clone -q --origin upstream "$REMOTE_W/origin.git" "$REMOTE_W/c" >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" config core.hooksPath scripts/githooks || exit 2
+printf 'third upstream change\n' > "$REMOTE_W/a/app/src/main/Foo.kt" || exit 2
+ga commit -q -am "third" >/dev/null 2>&1 || exit 2
+ga push -q origin main >/dev/null 2>&1 || exit 2
+refallow "pulling from a remote NOT called origin" "$REMOTE_W/c" refs/heads/main pull --ff-only
+# And a `main` deleted and recreated at local ship work is judged, not waved through as a clone.
+git -C "$REMOTE_W/c" checkout -q -b recreate >/dev/null 2>&1 || exit 2
+printf 'recreated local\n' > "$REMOTE_W/c/app/src/main/Baz.kt" || exit 2
+git -C "$REMOTE_W/c" add -A >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" -c user.email=t@t -c user.name=t commit -q -m recreate >/dev/null 2>&1 || exit 2
+git -C "$REMOTE_W/c" branch -q -D main >/dev/null 2>&1 || exit 2
+if git -C "$REMOTE_W/c" branch main recreate >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted deny, got allow\n' "recreating a deleted main at local ship work"
+else
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "recreating a deleted main at local ship work" "deny"
+fi
 # And the discriminator still holds: LOCAL ship-path work cannot ride the same route.
 git -C "$REMOTE_W/b" checkout -q -b localwork >/dev/null 2>&1 || exit 2
 printf 'local only\n' > "$REMOTE_W/b/app/src/main/Bar.kt" || exit 2

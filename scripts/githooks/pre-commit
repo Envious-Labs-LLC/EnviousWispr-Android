@@ -16,7 +16,7 @@
 # without it running. Three earlier rounds tried to cover those by adding more commit-event hooks —
 # `pre-merge-commit`, `pre-applypatch`, a `--no-ff` merge setting — and each round found the next event
 # that creates no commit. `reference-transaction` beside this file guards the REF instead, which is the
-# thing all of them were proxies for, and it subsumes every one of them.
+# thing all of them were proxies for. Both of those hooks and that setting were deleted once it existed.
 #
 # So why keep this file at all: it refuses BEFORE the commit object is written and it names the staged
 # files, which is the clearer error on the route a session actually takes every day. The ref hook is the

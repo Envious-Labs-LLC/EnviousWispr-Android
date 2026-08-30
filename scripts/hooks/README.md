@@ -8,14 +8,11 @@ One setting. The hook FILES are tracked; git does not arm them, so run this once
 git config core.hooksPath scripts/githooks
 ```
 
-`test-hooks.sh` asserts this checkout is armed, so forgetting it is a red control rather than a silent
-absence.
+That one setting arms both git hooks. `test-hooks.sh` asserts this checkout has it, so forgetting it is a
+red control rather than a silent absence.
 
-`test-hooks.sh` asserts this checkout is armed, so forgetting it is a red control rather than a silent
-absence.
-
-The second is the `.claude/settings.json` block below, which has to be restored by hand for the reason
-that follows.
+The PreToolUse and SessionEnd guards are armed separately, by the `.claude/settings.json` block below,
+which has to be restored by hand for the reason that follows.
 
 **Registration for the PreToolUse and SessionEnd guards lives in `.claude/settings.json`, which this
 repository GITIGNORES.** The scripts are here in
@@ -71,22 +68,26 @@ ask `git write-tree` instead of describing what git would record.
 rather than a guess at one. `-a`, an explicit `--` pathspec, a bare positional pathspec,
 `--pathspec-from-file`, `--interactive`, `--amend` and a user alias all arrive there identically.
 
-**Then the same lesson repeated one level out, and it took three rounds to see.** Every commit hook fires
-on an event that CREATES A COMMIT, and a merge, `git am`, a rebase, a fast-forward, a
-`git reset --hard <branch>`, a `git checkout -B main` and a `git update-ref` all move `main` without
-creating one. The answer was not more commit-event hooks — two of those were written and then deleted,
-along with a `--no-ff` merge setting — but `githooks/reference-transaction`, which guards the REF that
-all of them were proxies for.
+**Then the same lesson repeated one level out, and it took three rounds to see.** `pre-commit` fires on
+one git event. A merge, `git am` and a rebase raise DIFFERENT events or none, and a fast-forward, a
+`git reset --hard <branch>`, a `git checkout -B main` and a `git update-ref` create no commit at all —
+every one of them moves `main` without `pre-commit` running. The answer was not more commit-event hooks:
+two of those were written and then deleted, along with a `--no-ff` merge setting, because
+`githooks/reference-transaction` guards the REF that all of them were proxies for. Two hooks and one
+setting now cover more than three hooks and two settings did.
 
 **The hard half of that hook is what it must NOT refuse**, because it fires inside `clone`, `fetch` and
-`pull`. A commit already reachable from `origin/main` went through a branch and its review, so it is
-allowed; a move backwards is how a mistake gets undone, so that is allowed; and `main` not existing yet
-is a clone. Only a forward move onto commits that are NOT on the remote is judged. Controls assert a
-clone, a fetch and a pull of upstream ship-path work all succeed, and that local ship-path work still
-cannot ride the same route. They exist because the claim was
-checked against git's own hook templates rather than assumed; without them a merge onto `main` carrying a
-ship path passed unexamined. **`git rebase` runs no pre-commit hook for its replayed commits at all.**
-That is a real gap and it is stated rather than papered over.
+`pull`, and a version that refused work arriving from the remote would make the repository unusable while
+looking exactly like protection. Two things pass without inspection: a commit already reachable from
+`main`'s CONFIGURED UPSTREAM — resolved with `for-each-ref`, never a hard-coded `origin`, which refused a
+legitimate pull in any checkout whose remote is named otherwise — and a move BACKWARD, which is how a
+mistake gets undone. Everything else is judged, including a divergent move: reading "not forward" as
+"backward" let a rebase and a reset onto a divergent branch straight through, with a comment three lines
+above claiming rebase was covered.
+
+**One accepted gap:** where history is shallow or incomplete, an ancestry test cannot answer and the hook
+allows the move. It fails open on its own errors, unlike `pre-commit`, because it runs inside `clone` and
+`fetch` and a broken version failing closed would break the repository rather than protect one branch.
 
 **The edit-time and write-shape layers are still best effort, and the branch is still the protection.** A
 PreToolUse matcher on Edit/Write sees the assistant's file tools and nothing else — not a shell heredoc,

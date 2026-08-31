@@ -82,11 +82,13 @@ echo
 # editing. The previous version registered the six in this block and left four allocated hundreds of
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
+GATE_EXP=""; GATE_PAY=""
 HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan basename long enough that its recovery path exceeds the 255-byte filename limit, so the
 # preservation write fails for a real reason rather than a simulated one.
 LONGNAME="issue-9902-$(python3 -c 'print("n"*240)').md"
+SCOPE=$(python3 -c "import hashlib,os;print(hashlib.sha256(os.getcwd().encode()).hexdigest()[:12])")
 
 cleanup() {
     [ -n "$MAINREPO" ]   && rm -rf "$MAINREPO" "$MAINREPO.git"
@@ -100,9 +102,11 @@ cleanup() {
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
+    [ -n "$GATE_EXP" ]   && rm -rf "$GATE_EXP"   # -rf for every mktemp resource, as the check requires
+    [ -n "$GATE_PAY" ]   && rm -rf "$GATE_PAY"
     # Named in full, never globbed: a `/tmp/.ew-android-*` glob would take a concurrent run's draft.
     rm -f "$SENTINEL" \
-        /tmp/.ew-android-issue-9901-2026-01-01-control.md.blocked-draft.md
+        "/tmp/.ew-android-$SCOPE-issue-9901-2026-01-01-control.md.blocked-draft.md"
     # $LONGNAME's draft path is deliberately too long to exist, so removing it only prints an
     # error at exit. Its absence is the assertion, not something to clean up.
     return 0
@@ -685,7 +689,12 @@ rm -f "$SENTINEL"
 echo
 
 echo "check-plan-gates.py — one denial carries every failure, and never costs the draft"
-DRAFT="/tmp/.ew-android-$(basename "$PLAN").blocked-draft.md"
+# The hook scopes each rescue copy to the author, so two sessions denied on the same plan filename
+# cannot truncate each other. With no session id in the payload it falls back to the working
+# directory, which is also what keeps two concurrent runs of this suite apart.
+DRAFT="/tmp/.ew-android-$SCOPE-$(basename "$PLAN").blocked-draft.md"
+GATE_EXP=$(mktemp) || exit 2
+GATE_PAY=$(mktemp) || exit 2
 rm -f "$SENTINEL" "$DRAFT"
 
 # reason_of <hook> <json> — the denial text itself. Empty for anything that is not a deny, so a hook that
@@ -741,20 +750,19 @@ rm -f "$DRAFT"
 python3 -c "
 import json, sys
 body = 'User Rubric: N/A — internal only\n**Lane:** Code\n' + 'x '*2200 + '\n\n\n'
-open('/tmp/.ew-gate-expected', 'w', encoding='utf-8').write(body)
-sys.stdout.write(json.dumps({'tool_input':{'file_path':'$PLAN','content':body}}))" > /tmp/.ew-gate-payload
-"$HOOKS/check-plan-gates.py" < /tmp/.ew-gate-payload >/dev/null 2>&1
-if cmp -s /tmp/.ew-gate-expected "$DRAFT"; then
+open('$GATE_EXP', 'w', encoding='utf-8').write(body)
+sys.stdout.write(json.dumps({'tool_input':{'file_path':'$PLAN','content':body}}))" > "$GATE_PAY"
+"$HOOKS/check-plan-gates.py" < "$GATE_PAY" >/dev/null 2>&1
+if cmp -s "$GATE_EXP" "$DRAFT"; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...byte-identical, trailing newlines kept" "same"
 else
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...byte-identical, trailing newlines kept" "differs"
 fi
-rm -f /tmp/.ew-gate-expected /tmp/.ew-gate-payload
 
 # An Edit is preserved as the WHOLE resulting plan, never as the fragment the call carried. A fragment
 # saved under a plan's name is what invites someone to paste it over a finished document.
 printf 'User Rubric: N/A — internal only\n**Lane:** Code\n\nteh body.\n' > "$EDITPLAN"
-EDRAFT="/tmp/.ew-android-$(basename "$EDITPLAN").blocked-draft.md"
+EDRAFT="/tmp/.ew-android-$SCOPE-$(basename "$EDITPLAN").blocked-draft.md"
 rm -f "$EDRAFT"
 python3 -c "
 import json; print(json.dumps({'tool_input':{'file_path':'$EDITPLAN','old_string':'User Rubric: N/A — internal only\n','new_string':''}}))" \
@@ -782,6 +790,27 @@ R=$(reason_of check-plan-gates.py "$(python3 -c "
 import json; print(json.dumps({'tool_input':{'file_path':'$LONGPLAN','content':'x'*4100}}))")")
 mentions "an unwritable rescue path admits it"      "$R" "DRAFT NOT PRESERVED"   yes
 mentions "  ...and never claims preservation"       "$R" "DRAFT PRESERVED"       no
+
+# Two authors denied on the SAME plan filename must not truncate each other's rescue copy. Plan names
+# carry an issue number, a date and a slug, so two sessions replanning one issue on one day collide
+# exactly, and the loser loses the text this whole mechanism exists to keep.
+rm -f "$DRAFT"
+ALICE=$(python3 -c "
+import json; print(json.dumps({'session_id':'alice','tool_input':{'file_path':'$PLAN','content':'ALICE-BODY '+'x'*4100}}))")
+BOB=$(python3 -c "
+import json; print(json.dumps({'session_id':'bob','tool_input':{'file_path':'$PLAN','content':'BOB-BODY '+'x'*4100}}))")
+payload "$ALICE" | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
+payload "$BOB"   | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
+A=$(python3 -c "import hashlib;print(hashlib.sha256(b'alice').hexdigest()[:12])")
+B=$(python3 -c "import hashlib;print(hashlib.sha256(b'bob').hexdigest()[:12])")
+ADRAFT="/tmp/.ew-android-$A-$(basename "$PLAN").blocked-draft.md"
+BDRAFT="/tmp/.ew-android-$B-$(basename "$PLAN").blocked-draft.md"
+if grep -q 'ALICE-BODY' "$ADRAFT" 2>/dev/null && grep -q 'BOB-BODY' "$BDRAFT" 2>/dev/null; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a second author does not truncate the first draft" "both kept"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "a second author does not truncate the first draft" "one was lost"
+fi
+rm -f "$ADRAFT" "$BDRAFT"
 rm -f "$SENTINEL" "$DRAFT"
 echo
 

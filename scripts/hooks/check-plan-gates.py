@@ -41,6 +41,8 @@ Exits 0 silently for any file that is not a plan. On malformed or unreadable inp
 decision, which the harness treats as no objection.
 """
 
+import glob
+import hashlib
 import json
 import os
 import re
@@ -48,6 +50,7 @@ import sys
 import time
 
 SENTINEL_TTL = 30 * 60
+DRAFT_TTL = 7 * 24 * 60 * 60
 LANES = ["Code", "Benchmark", "CI/workflow", "Docs/dev-tooling"]
 PLAN = re.compile(r"docs/feature-requests/(issue-(\d+)|plan)-[\w.-]+\.md$")
 
@@ -93,7 +96,44 @@ def deny(reason: str) -> None:
     sys.exit(0)
 
 
-def preserve(body: str, path: str) -> str:
+def draft_scope(payload: dict) -> str:
+    """A short discriminator so two authors denied on the SAME plan filename do not overwrite each other.
+
+    Plan basenames carry an issue number, a date and a slug, so two sessions replanning one issue on one
+    day collide exactly. Without this the second denial truncates the first author's rescue copy, which
+    is the one failure this whole function exists to prevent.
+
+    The session id is the right key because it names WHO was denied. Where the payload carries none, the
+    working directory is the next most stable stand-in: two worktrees differ, and two denials from one
+    worktree SHOULD share a file, since the later draft is the same author's newer text.
+    """
+    session = payload.get("session_id")
+    key = session if isinstance(session, str) and session.strip() else os.getcwd()
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def sweep_old_drafts() -> None:
+    """Delete rescue copies old enough that nobody is coming back for them.
+
+    Age-bounded on purpose. Deleting a plan's draft the moment that plan PASSES would be the same defect
+    the sentinel paragraph above rejects: this hook runs BEFORE the write, so a passing call here can
+    still be refused by another hook, and the draft would already be gone. Precise cleanup needs a
+    PostToolUse hook that fires after the write actually succeeds, and none is registered.
+    """
+    cutoff = time.time() - DRAFT_TTL
+    try:
+        entries = glob.glob("/tmp/.ew-android-*.blocked-draft.md")
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if os.path.getmtime(entry) < cutoff:   # never a fresh file, so never a concurrent author's
+                os.unlink(entry)
+        except OSError:
+            pass
+
+
+def preserve(body: str, path: str, scope: str) -> str:
     """Write the resulting document aside, and report honestly whether that worked.
 
     Called on EVERY denial, not only Gate 0's. A gate that destroys work teaches its own bypass. The
@@ -104,7 +144,8 @@ def preserve(body: str, path: str) -> str:
     a whole plan rather than as the fragment the call carried. A fragment saved under a plan's name is the
     shape that invites someone to paste it over a finished document.
     """
-    recovery = f"/tmp/.ew-android-{os.path.basename(path)}.blocked-draft.md"
+    sweep_old_drafts()
+    recovery = f"/tmp/.ew-android-{scope}-{os.path.basename(path)}.blocked-draft.md"
     try:
         with open(recovery, "w", encoding="utf-8") as handle:
             handle.write(body)
@@ -201,7 +242,7 @@ def main() -> int:
         f"BLOCKED: {len(problems)} plan {plural} refused this write. Every gate ran, so this is the "
         f"COMPLETE list. Fix all of it in one pass, then re-issue once.\n\n"
         f"{numbered}\n\n"
-        f"{preserve(body, path)}"
+        f"{preserve(body, path, draft_scope(payload))}"
     )
     return 0
 

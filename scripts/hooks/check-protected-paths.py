@@ -59,7 +59,11 @@ def main() -> int:
     try:
         branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                                 cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    except OSError:
+    except Exception:
+        # NOT just OSError: `text=True` DECODES git's output, and a branch name carrying bytes
+        # the locale cannot decode raises UnicodeDecodeError, which would escape `main`, print a
+        # traceback, exit 1 with no decision, and let the edit through — the guard disarmed by the
+        # thing it uses to decide. Same class as the plan gate's write and read paths.
         return 0
     if branch != "main":
         return 0  # the branch IS the protection

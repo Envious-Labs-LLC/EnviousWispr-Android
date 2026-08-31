@@ -190,8 +190,8 @@ class VoicePipelineDeviceTest {
     }
 
     /**
-     * PRODUCT OUTCOME. When this fails, every dictation from the Quick Settings tile, the Home
-     * button, onboarding practice and the side button pressed outside a text field ends in a
+     * PRODUCT OUTCOME. When this fails, every dictation from the Quick Settings tile, the app's
+     * microphone button, onboarding practice and the side button pressed outside a text field ends in a
      * failure haptic, a long toast and a shade notification saying auto-paste did not reach the
      * field. Four of the five entry points cannot pin a target, so that is ordinary use of the
      * product being reported as broken.
@@ -302,7 +302,7 @@ class VoicePipelineDeviceTest {
         assertEquals(
             "A dictation with no field to insert into left something in the shade: $titles. There " +
                 "was no field, the clipboard is the designed destination, and this is what every " +
-                "tile and Home-button dictation does.",
+                "tile dictation and every in-app microphone-button dictation does.",
             emptyList<String>(),
             ourNotifications.map { "id=${'$'}{it.id}" },
         )

@@ -14,8 +14,8 @@ import com.envi.wispr.paste.InsertionHandoff
  * **WHY ONE LINE, AND WHY NO HAPTIC AND NO SHADE NOTIFICATION.** macOS is the reference product and
  * it shows a single delivery pill, `Copied. Press ⌘V to paste`, for every clipboard-only outcome,
  * with no buzz, nothing durable, and nothing about delivery in History. Its only louder case is a
- * first Accessibility denial carrying a Grant action, which on Android is the Home card and the
- * Settings row rather than an interruption. This branch shipped a buzz, a long toast, a shade
+ * first Accessibility denial carrying a Grant action, which on Android is the Permissions page's
+ * setup card and its auto-paste row rather than an interruption. This branch shipped a buzz, a long toast, a shade
  * notification that outlived the dictation and a red History label, which is four announcements of
  * one ordinary event. Query the contract rather than re-deciding it:
  * `sqlite3 -line ~/.claude/knowledge/enviouswispr/catalog.db "SELECT surface, exact_text FROM
@@ -111,8 +111,8 @@ object InsertionOutcomeMessages {
      * 1. **No fault on PERMITTED_NOT_RUNNING.** The service is legitimately unbound during the
      *    normal connect window at every cold start, and this notification is built at the START of
      *    a session, before the handoff exists. Announcing a broken feature there is the mistake
-     *    [autoPasteWasExpectedToWork] exists to stop, one surface earlier. The Home card
-     *    downgrades on the same state for the same reason. A dictation that genuinely finds no
+     *    [autoPasteWasExpectedToWork] exists to stop, one surface earlier. The Permissions page's
+     *    setup card downgrades on the same state for the same reason. A dictation that genuinely finds no
      *    service is told so afterwards, when it is a measured outcome rather than a guess.
      * 2. **No destination without the user's own clipboard setting.** `autoCopyToClipboard`, not
      *    the accessibility permission, decides whether the clipboard is where the words land. With
@@ -173,8 +173,8 @@ object InsertionOutcomeMessages {
  * a feature the user never connected.
  *
  * Then the handoff, which says whether there was ever a field in play. Four of the five entry points
- * cannot pin one: the tile, the Home button, onboarding practice and the side button pressed outside
- * an editor. For all four the clipboard is the DESIGNED destination and the dictation worked, so
+ * cannot pin one: the tile, the app's microphone button, onboarding practice and the side button
+ * pressed outside an editor. For all four the clipboard is the DESIGNED destination and the dictation worked, so
  * speaking there reports an event that is not news, on the ordinary use of the product.
  *
  * This is not the whole decision. Words that missed the destination this dictation aimed at are

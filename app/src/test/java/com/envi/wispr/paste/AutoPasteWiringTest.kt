@@ -267,13 +267,21 @@ class AutoPasteWiringTest {
      * The five are enumerated because they are a closed population: every place in the app that
      * tells a user whether auto-paste will work. Each row names the surface and the exact text that
      * ties it to the COMBINED answer rather than to the permission.
+     *
+     * Three of them moved from the deleted Home screen onto the Permissions page (#47). The names
+     * below changed; not one evidence literal did, which is what makes the move checkable.
      */
     @Test
     fun noReadinessSurfaceReportsThePermissionAsIfItWereLiveness() {
-        val source = read("ui/AppShell.kt")
+        // Both files are read because the surfaces live in two of them since #47: the Permissions
+        // page in `ui/SettingsPages.kt`, onboarding step 4 in `ui/AppShell.kt`. `read` throws on a
+        // missing or empty file, so renaming one fails loudly rather than shrinking the haystack.
+        val shell = read("ui/AppShell.kt")
+        val pages = read("ui/SettingsPages.kt")
+        val source = shell + "\n" + pages
         assertFalse(
-            "AppShell reads the permission fact directly, so a surface can report a crashed " +
-                "service as Ready",
+            "A readiness screen reads the permission fact directly, so a surface can report a " +
+                "crashed service as Ready",
             source.contains("accessibilityPermitted"),
         )
         // The Insert chip is checked inside its OWN block. Its evidence line also appears on the
@@ -282,17 +290,17 @@ class AutoPasteWiringTest {
         val insertChip = slice(source, "label = \"Insert\",", ")")
         val surfaces = listOf(
             Triple(
-                "the Settings auto-paste row",
+                "the Permissions page auto-paste row",
                 "AutoPasteAvailability.LIVE -> \"Ready for right-button dictation\"",
                 source,
             ),
             Triple(
-                "the Home 'not connected' card",
+                "the Permissions page 'not connected' card",
                 "autoPaste == AutoPasteAvailability.PERMITTED_NOT_RUNNING",
                 source,
             ),
             Triple(
-                "the Home card's status dot and its screen-reader label",
+                "the Permissions card's status dot and its screen-reader label",
                 "StatusDot(ready = false, description = autoPaste.statusDescription())",
                 source,
             ),

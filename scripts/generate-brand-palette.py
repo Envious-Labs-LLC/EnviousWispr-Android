@@ -3,7 +3,11 @@
 
 `design-language.md` RULE: derive-the-android-palette-from-the-seed-never-hand-pick-tones says to
 generate the palette with the Material colour utilities and check the result against the brand, rather
-than hand-writing colour roles by hand. This is that generator. Its output is pasted into
+than hand-writing colour roles. This is that generator.
+
+MOST roles are generated. The PRIMARY ACCENTS and the NEUTRAL GROUND are deliberate macOS overrides,
+each with its reasoning below, and each caught by the founder looking at the built app rather than by
+a check. Do not read this file as "everything comes from the seed". Its output is pasted into
 `app/src/main/java/com/envi/wispr/ui/theme/EnviousWisprTheme.kt`; this script is the receipt for how
 those numbers were reached, so a future session can re-derive them instead of trusting them.
 
@@ -24,10 +28,14 @@ five variants, Vibrant is the one that lands nearest the brand and nearest the m
 
 WHY THE GROUND IS NOT GENERATED. Vibrant's neutral ramp is a saturated purple-black, #180429 in dark.
 macOS ships a near-neutral dark that the founder tuned by eye, and that is what the product looks like.
-So the chromatic roles come from the seed and the ground comes from macOS
-`Sources/EnviousWisprAppKit/Views/Settings/SettingsDesignTokens.swift`. That is a deliberate departure
-from a generated scheme, which is why every text-on-surface pair is re-checked below: a hand-placed
-ground is exactly the thing that silently breaks Material's contrast guarantees.
+So the ground comes from macOS `Sources/EnviousWisprAppKit/Views/Settings/SettingsDesignTokens.swift`.
+That is a deliberate departure from a generated scheme, which is why every text-on-surface pair is
+re-checked below: a hand-placed ground is exactly the thing that silently breaks Material's contrast
+guarantees.
+
+The accent is the SECOND departure and it has its own reasoning beside `MACOS_ACCENT`. Read the two
+together: what is left coming from the seed is the containers, the secondary and tertiary ramps, the
+error ramp, and the outlines.
 
 Exit: 0 every pair meets its bar · 1 at least one pair is below it, which is not a palette to ship.
 """
@@ -52,6 +60,32 @@ MACOS_GROUND = {
              "text": "#ECE9F4", "text2": "#AAA2BF"},
     "light": {"page": "#F8F5FF", "section": "#FFFFFF", "sidebar": "#E8E2F5", "window": "#DDD5EE",
               "text": "#0F0A1A", "text2": "#4A3D60"},
+}
+
+# THE ACCENT IS NOT GENERATED EITHER, AND THIS IS THE SECOND THING THE FOUNDER CAUGHT BY EYE.
+#
+# Generated Vibrant gave #6F33D5 light and #BD9DFF dark. Neither is the brand purple, and the dark one
+# is paler than anything macOS ships. Founder, 2026-08-31, looking at the built app: "the purple feels
+# different". It was.
+#
+# macOS keeps TWO purples and Material has one slot for them, which is the whole difficulty:
+#
+#   stAccent       #7c3aed / #a78bfa   text, icons, outlines
+#   stAccentSolid  #7c3aed / #8b46f0   FILLED surfaces carrying white content
+#
+# and its comment records why, from a founder decision on 2026-07-03: the desaturated lavender is for
+# text and outlines only, because "as a fill under white it reads washed-out".
+#
+# Material's `primary` does both jobs at once, so one value cannot serve both. Measured on the dark
+# ground #131019: #a78bfa reads 6.92 as an icon but only 2.72 under white; #8b46f0 reads 4.96 under
+# white but only 3.79 as an icon, which is under the bar for the text buttons that use it.
+#
+# So `primary` takes the TEXT-AND-ICON value, because that is most of the purple on screen: the
+# microphone, the drawer group headings, every text button. The handful of filled brand surfaces take
+# BRAND_SOLID, emitted separately below.
+MACOS_ACCENT = {
+    "dark": {"accent": "#A78BFA", "on_accent": "#3C0089", "solid": "#8B46F0", "on_solid": "#FFFFFF"},
+    "light": {"accent": "#7C3AED", "on_accent": "#FFFFFF", "solid": "#7C3AED", "on_solid": "#FFFFFF"},
 }
 
 GENERATED_ROLES = [
@@ -141,7 +175,10 @@ def contrast(a: int, b: int) -> float:
 
 def build(dark: bool) -> dict[str, int]:
     ground = MACOS_GROUND["dark" if dark else "light"]
+    accent = MACOS_ACCENT["dark" if dark else "light"]
     scheme = {role: generated(role, dark) for role in GENERATED_ROLES}
+    scheme["primary"] = opaque(accent["accent"])
+    scheme["onPrimary"] = opaque(accent["on_accent"])
     scheme["background"] = opaque(ground["page"])
     scheme["surface"] = opaque(ground["page"])
     scheme["onBackground"] = opaque(ground["text"])
@@ -167,7 +204,19 @@ def main() -> int:
         print(f"\n// ---- {'DARK' if dark else 'LIGHT'} ----")
         for role in EMIT_ORDER:
             print(f"    {role} = Color(0x{scheme[role] & 0xFFFFFFFF:08X}),")
+        solid = MACOS_ACCENT["dark" if dark else "light"]
+        print(f"    // BrandSolid, for a FILLED brand surface under white content")
+        print(f"    brandSolid = Color(0x{opaque(solid['solid']) & 0xFFFFFFFF:08X}),")
+        print(f"    onBrandSolid = Color(0x{opaque(solid['on_solid']) & 0xFFFFFFFF:08X}),")
         print("  contrast:")
+        # The solid pair is checked here rather than in CONTRAST_PAIRS because it is not a scheme role.
+        solid_ratio = contrast(opaque(solid["solid"]), opaque(solid["on_solid"]))
+        solid_ok = solid_ratio >= 4.5
+        failures += 0 if solid_ok else 1
+        print(
+            f"    {'onBrandSolid / brandSolid':<42} {solid_ratio:5.2f}  bar 4.5  "
+            f"{'OK' if solid_ok else 'FAIL'}   {solid['on_solid']} on {solid['solid']}"
+        )
         for foreground, background, bar in CONTRAST_PAIRS:
             ratio = contrast(scheme[foreground], scheme[background])
             ok = ratio >= bar

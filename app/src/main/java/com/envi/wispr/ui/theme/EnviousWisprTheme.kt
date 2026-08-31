@@ -2,6 +2,8 @@ package com.envi.wispr.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
@@ -10,6 +12,8 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -38,28 +42,38 @@ private val BrandFontFamily = FontFamily(
 /**
  * The brand palette.
  *
- * Every chromatic role is GENERATED from the brand seed `#7c3aed` with the Material colour utilities,
+ * MOST chromatic roles are GENERATED from the brand seed `#7c3aed` with the Material colour utilities,
  * `SchemeVibrant`, which is the variant that keeps the seed's chroma; the default `SchemeTonalSpot`
  * desaturates it to `#675788`, a grey-purple, which is the "looks like a Material sample" complaint in
- * issue #40. Regenerate rather than hand-editing a value:
+ * issue #40.
+ *
+ * **`primary` and `onPrimary` are NOT generated, and neither is the neutral ground.** Both are macOS
+ * values, and both were caught by the founder's eye rather than by a check: generated Vibrant gave
+ * `#6F33D5` light and `#BD9DFF` dark, and his verdict on the built app was "the purple feels
+ * different". See [BrandFill] for why macOS keeps two accents where Material has one slot.
+ *
+ * Regenerate rather than hand-editing a value:
  *
  * ```
  * pip install materialyoucolor
  * python scripts/generate-brand-palette.py
  * ```
  *
- * The NEUTRAL GROUND is the exception and it is taken from macOS
- * `Sources/EnviousWisprAppKit/Views/Settings/SettingsDesignTokens.swift`, because that is the one part
- * of the palette the founder has already tuned by eye on a shipping product, and the generated ground
- * is a saturated purple-black rather than the near-neutral dark macOS uses. The generator prints the
- * contrast ratio of every text-on-surface pair afterwards, which is the check
+ * THE NEUTRAL GROUND IS THE SECOND EXCEPTION, alongside the accents above, and it is taken from the
+ * same macOS file `Sources/EnviousWisprAppKit/Views/Settings/SettingsDesignTokens.swift`, because the
+ * generated ground is a saturated purple-black rather than the near-neutral dark macOS uses.
+ *
+ * So: the accents and the ground come from macOS, and what is still generated from the seed is the
+ * containers, the secondary and tertiary ramps, the error ramp, and the outlines.
+ *
+ * The generator prints the contrast ratio of every text-on-surface pair afterwards, which is the check
  * `design-language.md` RULE: derive-the-android-palette-from-the-seed-never-hand-pick-tones asks for.
- * The generator exits non-zero when any checked pair is below its bar, so run it rather than trusting
- * a number written here.
+ * It exits non-zero when any checked pair is below its bar, so run it rather than trusting a number
+ * written here.
  */
 private val EnviousLightColors = lightColorScheme(
-    primary = Color(0xFF6F33D5),
-    onPrimary = Color(0xFFF8F0FF),
+    primary = Color(0xFF7C3AED),
+    onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFFB28CFF),
     onPrimaryContainer = Color(0xFF2E006C),
     secondary = Color(0xFF7742A6),
@@ -94,7 +108,7 @@ private val EnviousLightColors = lightColorScheme(
 )
 
 private val EnviousDarkColors = darkColorScheme(
-    primary = Color(0xFFBD9DFF),
+    primary = Color(0xFFA78BFA),
     onPrimary = Color(0xFF3C0089),
     primaryContainer = Color(0xFFB28CFF),
     onPrimaryContainer = Color(0xFF2E006C),
@@ -213,6 +227,42 @@ private val EnviousTypography: Typography = Typography().let { base ->
     )
 }
 
+/**
+ * The solid brand purple, for a FILLED surface carrying white content.
+ *
+ * macOS keeps two accents and Material has one slot for them. `stAccent` is for text, icons and
+ * outlines; `stAccentSolid` is for filled surfaces, and its comment records the founder decision of
+ * 2026-07-03 behind the split: the desaturated lavender "as a fill under white reads washed-out".
+ *
+ * `MaterialTheme.colorScheme.primary` takes the text-and-icon value, because that is most of the purple
+ * on screen. This is the other half, and it is deliberately NOT a `ColorScheme` role, because Material
+ * has no role that means "the brand's own fill" and inventing one inside `ColorScheme` would have every
+ * component that reads that role start using it too.
+ *
+ * When the user turns Galaxy colours on, this follows the dynamic scheme instead: they asked for their
+ * wallpaper's colours, and a brand-purple button in the middle of a wallpaper-derived screen is the
+ * inconsistency they would notice.
+ */
+private data class BrandFill(val container: Color, val content: Color)
+
+// No default. `Color.Unspecified` was one, and it is a PLAUSIBLE default rather than a sentinel: a
+// button outside the theme would render invisible rather than fail, which is the shape
+// `validation-discipline.md` warns about under plausible-value traps. Reading this without the theme
+// is a programming error, so it throws.
+private val LocalBrandFill = staticCompositionLocalOf<BrandFill> {
+    error("LocalBrandFill must be provided by EnviousWisprTheme")
+}
+
+/** Colours for a primary action button, so a filled brand surface never renders as a pale lavender. */
+@Composable
+internal fun brandButtonColors(): ButtonColors {
+    val fill = LocalBrandFill.current
+    return ButtonDefaults.buttonColors(
+        containerColor = fill.container,
+        contentColor = fill.content,
+    )
+}
+
 @Composable
 internal fun EnviousWisprTheme(
     dynamicColor: Boolean = false,
@@ -220,21 +270,25 @@ internal fun EnviousWisprTheme(
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
+    val usingDynamic = dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && darkTheme -> {
-            dynamicDarkColorScheme(context)
-        }
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            dynamicLightColorScheme(context)
-        }
+        usingDynamic && darkTheme -> dynamicDarkColorScheme(context)
+        usingDynamic -> dynamicLightColorScheme(context)
         darkTheme -> EnviousDarkColors
         else -> EnviousLightColors
     }
+    val brandFill = when {
+        usingDynamic -> BrandFill(colorScheme.primary, colorScheme.onPrimary)
+        darkTheme -> BrandFill(Color(0xFF8B46F0), Color(0xFFFFFFFF))
+        else -> BrandFill(Color(0xFF7C3AED), Color(0xFFFFFFFF))
+    }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = EnviousTypography,
-        shapes = EnviousShapes,
-        content = content,
-    )
+    CompositionLocalProvider(LocalBrandFill provides brandFill) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = EnviousTypography,
+            shapes = EnviousShapes,
+            content = content,
+        )
+    }
 }

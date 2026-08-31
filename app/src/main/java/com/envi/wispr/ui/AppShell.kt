@@ -56,6 +56,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedButton
@@ -97,6 +98,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.envi.wispr.BuildConfig
+import com.envi.wispr.ui.theme.brandButtonColors
 import com.envi.wispr.about.ReleaseNotes
 import com.envi.wispr.polish.S1Config
 import com.envi.wispr.models.ModelDeliveryWorker
@@ -446,6 +448,19 @@ private fun AppScaffold(
                             onClick = { onSelectDestination(item) },
                             icon = { DestinationIcon(item, item == destination) },
                             label = { Text(item.label) },
+                            // The LABEL only. Material tints it with `secondary`, a DIFFERENT purple
+                            // from the accent every other tinted thing uses, and on the one bar
+                            // always on screen two near-identical purples read as a mistake rather
+                            // than a hierarchy. Measured before this change: #C38BF5 on the label
+                            // against #A78BFA on the microphone and the drawer headings.
+                            //
+                            // `selectedIconColor` is deliberately NOT set here, because it would do
+                            // nothing: `DestinationIcon` is a `Canvas` that picks its own colour
+                            // from `onSecondaryContainer`, so the glyph never reads this value.
+                            // Measured after: the glyph is #E5C4FF on the #612B8F pill.
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                            ),
                         )
                     }
                 }
@@ -853,7 +868,7 @@ private fun DictionaryScreen(
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Button(onClick = { showNewEditor = true }) { Text("Add term") }
+            Button(onClick = { showNewEditor = true }, colors = brandButtonColors()) { Text("Add term") }
             OutlinedButton(onClick = { importFile.launch(arrayOf("application/json", "text/plain")) }) {
                 Text("Import file")
             }
@@ -1106,7 +1121,7 @@ private fun CustomTermEditorDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
         confirmButton = {
-            Button(onClick = {
+            Button(colors = brandButtonColors(), onClick = {
                 val normalizedSpelling = spelling.trim()
                 val savedAliases = CustomTermAuthoring.includePendingAlias(aliases, newAlias)
                 when {
@@ -1155,7 +1170,11 @@ private fun VocabularyImportDialog(onDismiss: () -> Unit, onImport: (String) -> 
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
         confirmButton = {
-            Button(onClick = { if (input.isNotBlank()) onImport(input) }, enabled = input.isNotBlank()) {
+            Button(
+                onClick = { if (input.isNotBlank()) onImport(input) },
+                enabled = input.isNotBlank(),
+                colors = brandButtonColors(),
+            ) {
                 Text("Import")
             }
         },
@@ -1365,6 +1384,7 @@ private fun OnboardingScreen(
                     },
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(vertical = 15.dp),
+                    colors = brandButtonColors(),
                 ) { Text(if (safeStep == steps.lastIndex) "Open EnviousWispr" else "Continue") }
             }
         }
@@ -1423,6 +1443,7 @@ private fun SetupStepAction(
             onClick = onPractice,
             modifier = Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(vertical = 16.dp),
+            colors = brandButtonColors(),
         ) {
             MicrophoneGlyph(Modifier.size(22.dp))
             Spacer(Modifier.width(10.dp))

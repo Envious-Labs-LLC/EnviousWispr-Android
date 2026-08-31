@@ -32,6 +32,7 @@ import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.polish.S1Config
+import com.envi.wispr.ui.theme.brandButtonColors
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderConfiguration
@@ -217,6 +218,7 @@ internal fun PolishScreen(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
+                colors = brandButtonColors(),
                 onClick = {
                     if (mode != PolishMode.PROVIDER) {
                         onSetMode(mode)

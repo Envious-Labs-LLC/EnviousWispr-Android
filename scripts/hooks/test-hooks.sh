@@ -811,6 +811,22 @@ else
     FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "a second author does not truncate the first draft" "one was lost"
 fi
 rm -f "$ADRAFT" "$BDRAFT"
+
+# The expiry has to run somewhere a normal session actually reaches. Sweeping only from inside the
+# preserve path meant it ran on denials alone, so after the last denial a draft stayed forever and the
+# constant named a bound nothing enforced. A PASSING write is the common case, so it sweeps there.
+STALE="/tmp/.ew-android-deadbeefdead-issue-9903-2026-01-01-old.md.blocked-draft.md"
+FRESH="/tmp/.ew-android-deadbeefdead-issue-9904-2026-01-01-new.md.blocked-draft.md"
+printf 'ancient plan text\n' > "$STALE"; printf 'somebody else is mid-retry\n' > "$FRESH"
+touch -t "$(python3 -c "
+import time; print(time.strftime('%Y%m%d%H%M', time.localtime(time.time() - 8*24*3600)))")" "$STALE"
+assert "a passing plan write still runs"          allow check-plan-gates.py "$CLEAN"
+if [ ! -e "$STALE" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...and sweeps a week-old draft" "gone"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and sweeps a week-old draft" "still there"; fi
+# The half that would make the sweep dangerous: it must never take a draft somebody is coming back for.
+if [ -e "$FRESH" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...and leaves a fresh one alone" "kept"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and leaves a fresh one alone" "deleted"; fi
+rm -f "$STALE" "$FRESH"
 rm -f "$SENTINEL" "$DRAFT"
 echo
 

@@ -50,7 +50,7 @@ import sys
 import time
 
 SENTINEL_TTL = 30 * 60
-DRAFT_TTL = 7 * 24 * 60 * 60
+DRAFT_STALE_AFTER = 7 * 24 * 60 * 60
 LANES = ["Code", "Benchmark", "CI/workflow", "Docs/dev-tooling"]
 PLAN = re.compile(r"docs/feature-requests/(issue-(\d+)|plan)-[\w.-]+\.md$")
 
@@ -115,12 +115,18 @@ def draft_scope(payload: dict) -> str:
 def sweep_old_drafts() -> None:
     """Delete rescue copies old enough that nobody is coming back for them.
 
-    Age-bounded on purpose. Deleting a plan's draft the moment that plan PASSES would be the same defect
-    the sentinel paragraph above rejects: this hook runs BEFORE the write, so a passing call here can
-    still be refused by another hook, and the draft would already be gone. Precise cleanup needs a
-    PostToolUse hook that fires after the write actually succeeds, and none is registered.
+    OPPORTUNISTIC, and the name says so rather than promising a lifetime. This runs on every invocation
+    of the hook against a plan file, refused or not, so an ordinary passing plan write clears what earlier
+    refusals left. It is NOT a timer: if nobody writes a plan for a month, a draft sits for a month. An
+    earlier version swept only from inside `preserve`, which runs on denials alone, so the constant named
+    a bound that nothing enforced.
+
+    Deleting a plan's own draft the moment that plan PASSES is a different thing and is deliberately not
+    done: this hook runs BEFORE the write, so a call that passes here can still be refused by another
+    hook, and the draft would already be gone. That needs a PostToolUse hook firing after the write
+    actually succeeds, and none is registered.
     """
-    cutoff = time.time() - DRAFT_TTL
+    cutoff = time.time() - DRAFT_STALE_AFTER
     try:
         entries = glob.glob("/tmp/.ew-android-*.blocked-draft.md")
     except OSError:
@@ -144,7 +150,6 @@ def preserve(body: str, path: str, scope: str) -> str:
     a whole plan rather than as the fragment the call carried. A fragment saved under a plan's name is the
     shape that invites someone to paste it over a finished document.
     """
-    sweep_old_drafts()
     recovery = f"/tmp/.ew-android-{scope}-{os.path.basename(path)}.blocked-draft.md"
     try:
         with open(recovery, "w", encoding="utf-8") as handle:
@@ -178,6 +183,7 @@ def main() -> int:
         return 0  # an edit we cannot reconstruct is not a plan we can judge
 
     issue = match.group(2)
+    sweep_old_drafts()   # every invocation, so a PASSING write clears what earlier refusals left behind
 
     # EVERY gate is evaluated before anything is refused, and all failures are reported together.
     # Refusing at the FIRST failure costs the author one full re-send of the document per gate, because

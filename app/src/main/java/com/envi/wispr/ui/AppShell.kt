@@ -1172,11 +1172,19 @@ internal fun SettingsGroup(title: String, content: @Composable ColumnScope.() ->
     }
 }
 
+/**
+ * A row carrying one switch.
+ *
+ * [enabled] exists for a setting the phone itself cannot honour. A switch that stores a value nothing
+ * reads is worse than an absent one, because it looks like it worked. The row keeps its title and says
+ * why in its subtitle instead.
+ */
 @Composable
 internal fun SettingsToggleRow(
     title: String,
     subtitle: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     Row(
@@ -1184,6 +1192,7 @@ internal fun SettingsToggleRow(
             .fillMaxWidth()
             .toggleable(
                 value = checked,
+                enabled = enabled,
                 role = Role.Switch,
                 onValueChange = onCheckedChange,
             )
@@ -1195,7 +1204,7 @@ internal fun SettingsToggleRow(
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(checked = checked, onCheckedChange = null)
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }
 

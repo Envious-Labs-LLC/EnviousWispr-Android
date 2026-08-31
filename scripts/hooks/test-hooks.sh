@@ -840,13 +840,13 @@ STAGE_B=$(mktemp) || exit 2
 STAGE_A=$(mktemp) || exit 2
 printf 'ORIGINAL VICTIM CONTENT\n' > "$VICTIM"
 rm -f "$DRAFT"; ln -s "$VICTIM" "$DRAFT"
-# Snapshot BEFORE and AFTER rather than counting the shared directory. A bare count of
-# /tmp/.ew-android-staging-* is nonzero whenever ANOTHER hook run is between its mkstemp and its
-# replace, or an interrupted earlier run left one behind, so it fails this suite for something no part
-# of this suite did. The same shared-namespace mistake this commit fixes in the hook.
-ls /tmp/.ew-android-staging-* 2>/dev/null | sort > "$STAGE_B"
+# The staging file carries the same scope as the draft, so this looks ONLY at files the tested
+# invocation could have made. A count over the whole shared prefix was wrong twice over: it is nonzero
+# whenever any other run is between its mkstemp and its replace, and a before/after delta is no better,
+# because the delta names files created during the WINDOW rather than files created by this call.
+ls /tmp/.ew-android-staging-"$SCOPE"-* 2>/dev/null | sort > "$STAGE_B"
 payload "$ONEBAD" | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
-ls /tmp/.ew-android-staging-* 2>/dev/null | sort > "$STAGE_A"
+ls /tmp/.ew-android-staging-"$SCOPE"-* 2>/dev/null | sort > "$STAGE_A"
 if grep -q 'ORIGINAL VICTIM CONTENT' "$VICTIM"; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a symlink at the rescue path is not followed" "intact"
 else
@@ -858,6 +858,32 @@ check "  ...and the draft is not world-readable" "$MODE" "600"
 LEFT=$(comm -13 "$STAGE_B" "$STAGE_A" | wc -l | tr -d ' ')
 check "  ...and no staging file is left behind" "$LEFT" "0"
 rm -f "$DRAFT" "$VICTIM"
+
+# A crash while trying to SAVE the author's work must never disarm the gate. Content carrying a lone
+# surrogate is valid JSON and is not encodable as UTF-8, so the write raised UnicodeEncodeError, which
+# no OSError clause caught: the hook exited 1 with no permission decision, the harness let the write
+# through, and a staging file stayed behind. Every gate was bypassed by one character.
+rm -f /tmp/.ew-android-staging-"$SCOPE"-* 2>/dev/null
+SURR=$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$PLAN','content':'\ud800'+'s'*4100}}))")
+assert "content that cannot be encoded still denies" deny check-plan-gates.py "$SURR"
+R=$(reason_of check-plan-gates.py "$SURR")
+mentions "  ...and admits the draft was not saved"  "$R" "DRAFT NOT PRESERVED" yes
+# The failure text must not echo the document back: repr of a UnicodeEncodeError carries the whole
+# offending string, which would re-send the plan this change exists to stop re-sending.
+if [ "${#R}" -lt 3000 ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...without echoing the plan back" "${#R} chars"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...without echoing the plan back" "${#R} chars"; fi
+SLEFT=$(ls /tmp/.ew-android-staging-"$SCOPE"-* 2>/dev/null | wc -l | tr -d ' ')
+check "  ...and leaves no staging file behind" "$SLEFT" "0"
+
+# The SAME disarm at the site that runs BEFORE the one above. A plan file holding a byte that is not
+# valid UTF-8 raised out of the file READ, so an ordinary edit to it exited 1 with no decision and every
+# gate was skipped. Two sites carried this class; fixing only the one a reviewer named would have left
+# this one, which no test reached.
+printf 'User Rubric: N/A \377\376 bad bytes\n' > "$EDITPLAN"
+assert "a plan file with undecodable bytes"        allow check-plan-gates.py "$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$EDITPLAN','old_string':'bad','new_string':'worse'}}))")"
+printf 'User Rubric: N/A — internal only\n**Lane:** Code\n' > "$EDITPLAN"
 rm -f "$SENTINEL" "$DRAFT"
 echo
 

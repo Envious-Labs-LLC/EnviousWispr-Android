@@ -72,7 +72,11 @@ def resulting_document(tool_input: dict, full_path: str) -> str | None:
         return tool_input["content"]
     try:
         body = open(full_path, encoding="utf-8").read()
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError: a plan file holding a byte that is not valid UTF-8 used
+        # to raise straight past `main`, printing a traceback and exiting 1 with NO decision, which the
+        # harness reads as no objection — the same disarm the preservation write had, at the site that
+        # runs BEFORE it. Reconstruction genuinely failed here, and `None` is already that answer.
         return None
     edits = tool_input.get("edits")
     if not isinstance(edits, list):
@@ -159,20 +163,30 @@ def preserve(body: str, path: str, scope: str) -> str:
     #     rather than followed — a plain open(..., "w") wrote straight THROUGH such a symlink and
     #     overwrote whatever it pointed at, demonstrated against this hook before the fix;
     #   the move is atomic, so a reader never sees a half-written draft the way truncate-in-place allows.
+    # EVERY failure in here is caught, including ones that are not OSError. Preservation is best effort
+    # and the gate is not: an exception escaping this function reaches main, prints a traceback, exits 1
+    # with NO permission decision, and the harness lets the write through — so a crash while trying to
+    # save the author's work DISARMS the gate it was helping. Measured: a payload whose content carries
+    # a lone surrogate ("\ud800") raises UnicodeEncodeError from `handle.write`, which no OSError clause
+    # catches, and that input walked past all four gates while leaving a staging file behind.
+    # The staging name carries `scope` so a concurrent invocation's file is distinguishable from this
+    # one's; a bare shared prefix cannot be told apart by any observer, including our own suite.
+    staging = None
     try:
-        fd, staging = tempfile.mkstemp(prefix=".ew-android-staging-", dir="/tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(body)
-            os.replace(staging, recovery)
-        except OSError:
+        fd, staging = tempfile.mkstemp(prefix=f".ew-android-staging-{scope}-", dir="/tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        os.replace(staging, recovery)
+    except Exception as exc:   # noqa: BLE001 — deliberately broad; see the paragraph above
+        if staging is not None:
             try:
-                os.unlink(staging)   # never leave the staging file behind on a failed move
+                os.unlink(staging)   # never leave the staging file behind on a failed write or move
             except OSError:
                 pass
-            raise
-    except OSError as exc:
-        return f"DRAFT NOT PRESERVED: could not write {recovery}: {exc}. Do not claim it was saved."
+        # `{exc}` not `{exc!r}`: the repr of a UnicodeEncodeError carries the ENTIRE offending string,
+        # which would echo the whole plan back into the denial — the one cost this change exists to cut.
+        return (f"DRAFT NOT PRESERVED: could not write {recovery}: "
+                f"{type(exc).__name__}: {exc}. Do not claim it was saved.")
     # Never suggest `cp` into place: that reaches the plan path without passing these gates, so a gate
     # that preserves work would also be teaching the way around itself.
     return (f"DRAFT PRESERVED at {recovery} ({len(body)} chars). Do NOT regenerate it from memory: read "

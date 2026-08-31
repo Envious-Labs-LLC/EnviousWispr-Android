@@ -44,10 +44,13 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -61,6 +64,7 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -660,6 +664,59 @@ private fun BackGlyph() {
     }
 }
 
+/** The magnifying glass on the vocabulary search field. */
+@Composable
+private fun SearchGlyph() {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(20.dp)) {
+        val stroke = 2.dp.toPx()
+        val radius = size.minDimension * 0.30f
+        val center = Offset(size.width * 0.42f, size.height * 0.42f)
+        drawCircle(color, radius, center, style = Stroke(width = stroke))
+        drawLine(
+            color,
+            Offset(center.x + radius * 0.72f, center.y + radius * 0.72f),
+            Offset(size.width * 0.86f, size.height * 0.86f),
+            stroke,
+            StrokeCap.Round,
+        )
+    }
+}
+
+/** The plus mark on the "add term" floating button. */
+@Composable
+private fun PlusGlyph(color: Color) {
+    Canvas(Modifier.size(24.dp)) {
+        val stroke = 2.4.dp.toPx()
+        drawLine(
+            color,
+            Offset(size.width * 0.5f, size.height * 0.22f),
+            Offset(size.width * 0.5f, size.height * 0.78f),
+            stroke,
+            StrokeCap.Round,
+        )
+        drawLine(
+            color,
+            Offset(size.width * 0.22f, size.height * 0.5f),
+            Offset(size.width * 0.78f, size.height * 0.5f),
+            stroke,
+            StrokeCap.Round,
+        )
+    }
+}
+
+/** The vertical three-dot "more options" mark on a term row. */
+@Composable
+private fun KebabGlyph() {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(20.dp)) {
+        val radius = size.minDimension * 0.07f
+        listOf(0.22f, 0.5f, 0.78f).forEach { y ->
+            drawCircle(color, radius, Offset(size.width * 0.5f, size.height * y))
+        }
+    }
+}
+
 /**
  * The body of every screen and page.
  *
@@ -697,6 +754,50 @@ internal fun ScreenContainer(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
                 content = content,
             )
+        }
+    }
+}
+
+/** One term in the flat, divided vocabulary list: spelling, alias count, and an overflow menu. */
+@Composable
+private fun DictionaryTermRow(
+    record: CustomTermRecord,
+    selected: Boolean,
+    onSelectedChange: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val term = record.term
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Checkbox(checked = selected, onCheckedChange = onSelectedChange)
+        Text(
+            term.spelling,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.weight(1f),
+        )
+        if (term.aliases.isNotEmpty()) {
+            Text(
+                if (term.aliases.size == 1) "1 alias" else "${term.aliases.size} aliases",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Box {
+            IconButton(
+                onClick = { menuExpanded = true },
+                modifier = Modifier.semantics { contentDescription = "More options for ${term.spelling}" },
+            ) { KebabGlyph() }
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(text = { Text("Edit") }, onClick = { menuExpanded = false; onEdit() })
+                DropdownMenuItem(text = { Text("Delete") }, onClick = { menuExpanded = false; onDelete() })
+            }
         }
     }
 }
@@ -742,137 +843,124 @@ private fun DictionaryScreen(
     var deleteTarget by remember { mutableStateOf<CustomTermRecord?>(null) }
     var confirmBulkDelete by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
-    ScreenContainer(
-        subtitle = "Improve recognition with your own words: names, aliases, products, and exact spelling.",
-    ) {
-        Card {
-            SettingsToggleRow(
-                title = "Use custom vocabulary",
-                subtitle = if (enabled) "Applied to new dictations" else "Saved terms are currently ignored",
-                checked = enabled,
-                onCheckedChange = onEnabledChange,
-            )
-        }
-        OutlinedTextField(
-            value = search,
-            onValueChange = onSearchChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Search spelling or alias") },
-            singleLine = true,
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+    Box(modifier = Modifier.fillMaxSize()) {
+        ScreenContainer(
+            subtitle = "Improve recognition with your own words: names, aliases, products, and exact spelling.",
         ) {
-            Button(onClick = { showNewEditor = true }, colors = brandButtonColors()) { Text("Add term") }
-            OutlinedButton(onClick = { importFile.launch(arrayOf("application/json", "text/plain")) }) {
-                Text("Import file")
+            Card {
+                SettingsToggleRow(
+                    title = "Use custom vocabulary",
+                    subtitle = if (enabled) "Applied to new dictations" else "Saved terms are currently ignored",
+                    checked = enabled,
+                    onCheckedChange = onEnabledChange,
+                )
             }
-            OutlinedButton(onClick = { showImport = true }) { Text("Paste import") }
-            OutlinedButton(
-                onClick = {
-                    val exported = VocabularyTransfer.export(allTerms.map(CustomTermRecord::term))
-                    val copied = runCatching {
-                        context.getSystemService(ClipboardManager::class.java)
-                            ?.setPrimaryClip(ClipData.newPlainText("EnviousWispr vocabulary", exported))
-                            ?: error("Clipboard unavailable")
-                    }.isSuccess
-                    // Vocabulary JSON is now on the clipboard, so any standing claim that a
-                    // dictation is waiting there to be pasted is false.
-                    if (copied) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = { importFile.launch(arrayOf("application/json", "text/plain")) }) {
+                    Text("Import file")
+                }
+                OutlinedButton(onClick = { showImport = true }) { Text("Paste import") }
+                OutlinedButton(
+                    onClick = {
+                        val exported = VocabularyTransfer.export(allTerms.map(CustomTermRecord::term))
+                        val copied = runCatching {
+                            context.getSystemService(ClipboardManager::class.java)
+                                ?.setPrimaryClip(ClipData.newPlainText("EnviousWispr vocabulary", exported))
+                                ?: error("Clipboard unavailable")
+                        }.isSuccess
+                        // Vocabulary JSON is now on the clipboard, so any standing claim that a
+                        // dictation is waiting there to be pasted is false.
+                        if (copied) {
+                        }
+                        Toast.makeText(
+                            context,
+                            if (copied) "Vocabulary copied" else "Unable to export vocabulary",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    },
+                ) { Text("Export") }
+                if (selectedIds.isNotEmpty()) {
+                    OutlinedButton(onClick = { confirmBulkDelete = true }) {
+                        Text("Delete ${selectedIds.size}")
                     }
-                    Toast.makeText(
-                        context,
-                        if (copied) "Vocabulary copied" else "Unable to export vocabulary",
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                },
-            ) { Text("Export") }
-            if (selectedIds.isNotEmpty()) {
-                OutlinedButton(onClick = { confirmBulkDelete = true }) {
-                    Text("Delete ${selectedIds.size}")
                 }
             }
-        }
-        if (message.isNotBlank()) {
-            Text(message, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-        }
-        error?.let {
-            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-        }
-        if (terms.isEmpty()) {
-            ElevatedCard {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        if (search.isBlank()) "No custom terms yet" else "No matching terms",
-                        style = MaterialTheme.typography.titleLarge,
-                    )
-                    Text(
-                        "Add a preferred spelling and optional aliases.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            OutlinedTextField(
+                value = search,
+                onValueChange = onSearchChange,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search your words") },
+                leadingIcon = { SearchGlyph() },
+                singleLine = true,
+                shape = MaterialTheme.shapes.medium,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f),
+                    unfocusedContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                ),
+            )
+            if (message.isNotBlank()) {
+                Text(message, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             }
-        } else {
-            terms.forEach { record ->
-                val term = record.term
+            error?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+            }
+            if (terms.isEmpty()) {
                 ElevatedCard {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                            .padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Checkbox(
-                                checked = record.id in selectedIds,
-                                onCheckedChange = { checked ->
+                        Text(
+                            if (search.isBlank()) "No custom terms yet" else "No matching terms",
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                        Text(
+                            "Add a preferred spelling and optional aliases.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                Card {
+                    Column {
+                        terms.forEachIndexed { index, record ->
+                            DictionaryTermRow(
+                                record = record,
+                                selected = record.id in selectedIds,
+                                onSelectedChange = { checked ->
                                     selectedIds = if (checked) selectedIds + record.id
                                     else selectedIds - record.id
                                 },
+                                onEdit = { editTarget = record },
+                                onDelete = { deleteTarget = record },
                             )
-                            Column(Modifier.weight(1f)) {
-                                Text(term.spelling, style = MaterialTheme.typography.titleMedium)
-                                val details = buildList {
-                                    if (term.aliases.isNotEmpty()) add("${term.aliases.size} aliases")
-                                    if (term.usageCount > 0) add("used ${term.usageCount} times")
-                                }.joinToString(" · ")
-                                if (details.isNotBlank()) {
-                                    Text(
-                                        details,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                TextButton(onClick = { editTarget = record }) { Text("Edit") }
-                                TextButton(onClick = { deleteTarget = record }) { Text("Delete") }
-                            }
-                        }
-                        if (term.aliases.isNotEmpty()) {
-                            Text(
-                                "Aliases: ${term.aliases.joinToString()}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            if (index < terms.lastIndex) HorizontalDivider()
                         }
                     }
                 }
             }
+            Spacer(Modifier.height(72.dp))
         }
+        val fabColors = brandButtonColors()
+        FloatingActionButton(
+            onClick = { showNewEditor = true },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(20.dp)
+                .semantics { contentDescription = "Add custom term" },
+            containerColor = fabColors.containerColor,
+            contentColor = fabColors.contentColor,
+        ) { PlusGlyph(fabColors.contentColor) }
     }
 
     if (showNewEditor || editTarget != null) {

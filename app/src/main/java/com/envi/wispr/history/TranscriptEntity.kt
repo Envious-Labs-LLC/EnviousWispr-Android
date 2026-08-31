@@ -29,6 +29,12 @@ data class TranscriptEntity(
         const val STATUS_DRAFT = "draft"
         const val STATUS_PROCESSING = "processing"
         const val STATUS_COMPLETED = "completed"
+        /**
+         * Historical only. Nothing writes either value: a dictation that produced no words has its
+         * draft row deleted by `DictationSessionService.discardDraft`, so it never reaches History.
+         * They survive as the target of `TranscriptDao.deleteWordlessRows`, which removes the rows
+         * an older build left on a phone.
+         */
         const val STATUS_NO_SPEECH = "no_speech"
         const val STATUS_CANCELED = "canceled"
         const val STATUS_ASR_ERROR = "asr_error"

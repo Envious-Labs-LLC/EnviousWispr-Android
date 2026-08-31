@@ -55,7 +55,7 @@ class PolishService : Service() {
                 spokenPunctuation = spokenPunctuation,
             )
             if (raw.isBlank()) {
-                callback?.onResult(raw, "No speech", 0)
+                callback?.onResult(raw, PolishEngineLabels.NO_SPEECH, 0)
                 return
             }
 
@@ -92,12 +92,12 @@ class PolishService : Service() {
                         DebugLogger.warn(TAG, "Provider polish unavailable: ${failure.name}")
                     }
                     val engine = when {
-                        mode == PolishMode.OFF -> "Polish off"
+                        mode == PolishMode.OFF -> PolishEngineLabels.OFF
                         pipeline.usedModel && mode == PolishMode.PROVIDER ->
                             selectedProvider!!.provider.capabilities().displayName
                         pipeline.usedModel ->
                             "${S1Config.MODEL_NAME} by ${S1Config.MODEL_CREATOR} (${s1Runtime.activeComputeUnit.uppercase()})"
-                        else -> "Deterministic fallback"
+                        else -> PolishEngineLabels.DETERMINISTIC
                     }
                     val latency = SystemClock.elapsedRealtime() - started
                     DebugLogger.log(TAG, "polish_done")
@@ -107,7 +107,7 @@ class PolishService : Service() {
                     DebugLogger.error(TAG, "Polish failed")
                     callback?.onResult(
                         PolishPipeline.run(preparedRaw, cleanupOptions).text,
-                        "Deterministic fallback",
+                        PolishEngineLabels.DETERMINISTIC,
                         SystemClock.elapsedRealtime() - started
                     )
                 } finally {

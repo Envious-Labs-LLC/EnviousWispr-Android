@@ -5,11 +5,14 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
+import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
 import android.text.InputType
@@ -20,19 +23,25 @@ import android.widget.Toast
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.history.TranscriptEntity
-import com.envi.wispr.insertion.InsertionText
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
+import com.envi.wispr.insertion.ClipboardOutcome
+import com.envi.wispr.insertion.FallbackAnnouncement
+import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.insertion.InsertionText
+import com.envi.wispr.insertion.ServiceFallbackReason
+import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import java.util.concurrent.FutureTask
-import java.util.concurrent.TimeUnit
 import java.util.UUID
 
 class PasteAccessibilityService : AccessibilityService() {
@@ -74,6 +83,11 @@ class PasteAccessibilityService : AccessibilityService() {
         var ownedClipboardFingerprint: ClipboardFingerprint? = null,
         var clipboardPayload: String? = null,
         var verification: AccessibilityInsertionRules.Verification? = null,
+        // Why the last verification attempt said no, in SHAPES only: lengths and caret
+        // positions, never text (`kotlin-patterns.md` RULE: no-content-in-diagnostics). A
+        // give-up that names only its attempt count cannot tell an editor that never
+        // received the words from one that received them and will not report a caret.
+        var lastVerifyMiss: String? = null,
     )
 
     private data class SmartInsertionContext(
@@ -85,14 +99,38 @@ class PasteAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "PasteService"
         private const val INSERTION_TIMEOUT_MS = 2_500L
+        private const val MAIN_CALL_TIMEOUT_MS = 1_000L
         private const val RETRY_INTERVAL_MS = 125L
+        private const val LIFECYCLE_PREFERENCES = "paste_service_lifecycle"
+        private const val KEY_STOP_WAS_CLEAN = "stop_was_clean"
+        private val STOP_MARKER_LOCK = Any()
         private const val BASE_EVENT_TYPES = AccessibilityEvent.TYPE_VIEW_FOCUSED or
             AccessibilityEvent.TYPE_VIEW_CLICKED or
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
 
+        // The one liveness answer. The insertion path reads the field and the UI collects the flow,
+        // both written by publishBinding alone so they cannot report different health.
         @Volatile
-        var instance: PasteAccessibilityService? = null
-            private set
+        private var instance: PasteAccessibilityService? = null
+
+        private val boundState = MutableStateFlow(false)
+
+        // onServiceConnected can fire more than once for one process. Report the previous stop only
+        // on the first, so a reconnect cannot invent an unclean stop that did not happen.
+        @Volatile
+        private var previousStopReported = false
+
+        /**
+         * Whether a service instance is bound right now. Pushed from the lifecycle callbacks, so
+         * readers pay nothing at idle (`architecture-rules.md` RULE: no-idle-cost). The Android
+         * setting string cannot answer this: it still names a service that has crashed.
+         */
+        val isBound: StateFlow<Boolean> = boundState.asStateFlow()
+
+        private fun publishBinding(service: PasteAccessibilityService?) {
+            instance = service
+            boundState.value = service != null
+        }
 
         /**
          * Starts an event-assisted insertion attempt. The dictated text remains on the
@@ -103,20 +141,28 @@ class PasteAccessibilityService : AccessibilityService() {
             text: String,
             previousClipboard: ClipData? = null,
             policy: ClipboardInsertionPolicy = ClipboardInsertionPolicy(),
-        ): Boolean {
+        ): InsertionHandoff {
             val service = instance ?: run {
                 Log.w(TAG, "Accessibility service is not running; clipboard only")
-                return false
+                return InsertionHandoff.SERVICE_NOT_RUNNING
             }
-            return service.callOnMain(false) {
+            return service.callOnMain(InsertionHandoff.SERVICE_DID_NOT_ANSWER) {
                 service.requestInsertion(transcriptId, text, previousClipboard, policy)
             }
         }
 
-        /** Pins the editor active before the windowless dictation launcher exits. */
-        fun pinTargetForDictation(): Boolean {
-            val service = instance ?: return false
-            return service.callOnMain(false) { service.pinTarget() }
+        /**
+         * Pins the editor active before the windowless dictation launcher exits.
+         *
+         * The answer is [DictationTargetPin] rather than a Boolean because the session has to
+         * carry WHY nothing was pinned all the way to the announcement. See
+         * [InsertionJudgement.handoffToJudge].
+         */
+        fun pinTargetForDictation(): DictationTargetPin {
+            val service = instance ?: return DictationTargetPin.SERVICE_NOT_RUNNING
+            return service.callOnMain(DictationTargetPin.SERVICE_DID_NOT_ANSWER) {
+                service.pinTarget()
+            }
         }
 
         fun releasePinnedTarget() {
@@ -125,15 +171,14 @@ class PasteAccessibilityService : AccessibilityService() {
                 if (service.pendingInsertion == null) service.clearPinnedTarget()
             }
         }
-
-        @Deprecated("Pass the transcript ID so insertion outcome can be persisted")
-        fun pasteWhenTargetReturns(
-            text: String,
-            previousClipboard: ClipData? = null,
-        ): Boolean = pasteWhenTargetReturns(0L, text, previousClipboard)
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val mainCall = MainThreadHandoff(
+        onLooperThread = { Looper.myLooper() == Looper.getMainLooper() },
+        post = { runnable -> mainHandler.post(runnable) },
+        startTimeoutMs = MAIN_CALL_TIMEOUT_MS,
+    )
     private val historyScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val transcriptRepository by lazy {
         TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao())
@@ -151,11 +196,15 @@ class PasteAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        instance = this
+        publishBinding(this)
         configureEventMode(includeContentChanges = false)
         recordingOverlay?.stop()
         recordingOverlay = RecordingAccessibilityOverlay(this).also { it.start() }
         Log.i(TAG, "Accessibility insertion service connected")
+        // Disk, and this is the connect path of the heart. Liveness is already published above, so
+        // a dictation arriving in this window would otherwise pin a target while a synchronous
+        // SharedPreferences load held the main thread and before the event mask was installed.
+        historyScope.launch { reportPreviousStop() }
     }
 
     private fun configureEventMode(includeContentChanges: Boolean) {
@@ -185,14 +234,11 @@ class PasteAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {
         Log.w(TAG, "Accessibility insertion service interrupted")
         RecordingOverlayState.hide()
+        // The words were accepted against a pinned field and are not going to reach it. This used
+        // to copy them and say nothing, which is issue #16's silence reached from the one direction
+        // where the service dies holding the text.
         pendingInsertion?.let { pending ->
-            val copied = keepTranscriptOnClipboard(pending)
-            finalizeInsertion(
-                pending,
-                TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
-                if (copied) "copy_only_interrupted" else "insertion_failed",
-                interrupted = true,
-            )
+            recordAndAnnounce(ServiceFallbackReason.SERVICE_INTERRUPTED, pending)
         }
         pendingInsertion = null
         clearPinnedTarget()
@@ -200,20 +246,31 @@ class PasteAccessibilityService : AccessibilityService() {
         retryScheduled = false
     }
 
+    /**
+     * Fires before `onDestroy` when the user turns the service off, so the signal is never late.
+     * Only this instance may retract its own publication: nulling unconditionally would let an
+     * outgoing instance kill a replacement Android had already connected.
+     */
+    override fun onUnbind(intent: Intent?): Boolean {
+        if (instance === this) publishBinding(null)
+        markStopWasClean()
+        return super.onUnbind(intent)
+    }
+
     override fun onDestroy() {
+        // Retract the publication FIRST. Teardown below blocks this thread draining Room, and a
+        // reader during that window would otherwise see a healthy binding on a dying service.
+        if (instance === this) publishBinding(null)
         RecordingOverlayState.hide()
         recordingOverlay?.stop()
         recordingOverlay = null
         mainHandler.removeCallbacks(retryRunnable)
         retryScheduled = false
+        // Announced BEFORE the blocking Room drain below, for the reason spelled out on
+        // recordAndAnnounce: what survives this teardown is the durable notification, and it only
+        // survives if it is handed to the system while this process is still alive.
         pendingInsertion?.let { pending ->
-            val copied = keepTranscriptOnClipboard(pending)
-            finalizeInsertion(
-                pending,
-                TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
-                if (copied) "copy_only_service_destroyed" else "insertion_failed",
-                true,
-            )
+            recordAndAnnounce(ServiceFallbackReason.SERVICE_DESTROYED, pending)
         }
         pendingInsertion = null
         runBlocking(Dispatchers.IO) {
@@ -222,8 +279,60 @@ class PasteAccessibilityService : AccessibilityService() {
         historyScope.cancel()
         clearPinnedTarget()
         clearTarget()
-        instance = null
+        // LAST, after the blocking Room drain above. Marking clean before it would record a system
+        // kill that lands during the drain as an orderly stop, which is the case the marker exists
+        // to catch.
+        markStopWasClean()
         super.onDestroy()
+    }
+
+    private fun lifecyclePreferences() =
+        getSharedPreferences(LIFECYCLE_PREFERENCES, Context.MODE_PRIVATE)
+
+    /**
+     * Names an unclean stop once per process, then re-arms the marker for the next stop.
+     *
+     * Nothing else in the app records why this service went away, and it shares the default
+     * process, so its death is the app's death. Content-free by construction: one Boolean, no text,
+     * no package names.
+     */
+    private fun reportPreviousStop() {
+        runCatching {
+            // READ once per process: the marker answers how the PREVIOUS process died, so a second
+            // connect inside this one must not re-read our own armed value and invent a crash.
+            if (!previousStopReported) {
+                previousStopReported = true
+                if (!lifecyclePreferences().getBoolean(KEY_STOP_WAS_CLEAN, true)) {
+                    Log.i(TAG, "Reconnected after an unclean stop")
+                }
+            }
+            // ARM on EVERY connect. Turning the service off and on again is the recovery the Home
+            // card asks for, and it writes a clean stop; leaving the marker disarmed after that
+            // would silence the crash most likely to follow, which is the one this exists to name.
+            writeStopMarker(clean = false)
+        }.onFailure { error -> Log.w(TAG, "Unable to read the previous stop marker: ${error.message}") }
+    }
+
+    private fun markStopWasClean() = writeStopMarker(clean = true)
+
+    /**
+     * The only writer, because the two writes race: arming runs off the connect path so a service
+     * that unbinds seconds later would otherwise have its clean stop overwritten by a stale arm and
+     * be reported as a crash. `onUnbind` retracts the publication BEFORE marking clean, so an arm
+     * that loses the lock sees a stale `instance` and declines, and one that wins is overwritten by
+     * the clean write that follows it.
+     */
+    private fun writeStopMarker(clean: Boolean) {
+        synchronized(STOP_MARKER_LOCK) {
+            if (!clean && instance !== this) return
+            // A replacement has already published, so the marker is ITS arm now. An outgoing
+            // instance finishing its teardown must not report the live service's stop as clean:
+            // that is the same stuck-at-true marker MIN-1 named, reached from the other side.
+            if (clean && instance != null) return
+            runCatching {
+                lifecyclePreferences().edit().putBoolean(KEY_STOP_WAS_CLEAN, clean).apply()
+            }.onFailure { error -> Log.w(TAG, "Unable to record the stop marker: ${error.message}") }
+        }
     }
 
     private fun rememberEditableTarget(event: AccessibilityEvent) {
@@ -263,10 +372,20 @@ class PasteAccessibilityService : AccessibilityService() {
         text: String,
         previousClipboard: ClipData?,
         policy: ClipboardInsertionPolicy,
-    ): Boolean {
-        if (text.isBlank() || pinnedTarget == null || pendingInsertion != null) {
-            Log.w(TAG, "Insertion already pending or no pinned target; refusing replacement")
-            return false
+    ): InsertionHandoff {
+        // Three separate refusals. Merging them into one answer is what made a crashed service and
+        // a back-to-back dictation indistinguishable from the log and from the History row.
+        if (text.isBlank()) {
+            Log.w(TAG, "Nothing to insert; clipboard only")
+            return InsertionHandoff.EMPTY_TEXT
+        }
+        if (pendingInsertion != null) {
+            Log.w(TAG, "An insertion is already pending; refusing replacement")
+            return InsertionHandoff.INSERTION_ALREADY_PENDING
+        }
+        if (pinnedTarget == null) {
+            Log.w(TAG, "No editor was pinned for this dictation; clipboard only")
+            return InsertionHandoff.NO_PINNED_TARGET
         }
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         mainHandler.removeCallbacks(retryRunnable)
@@ -287,13 +406,25 @@ class PasteAccessibilityService : AccessibilityService() {
         configureEventMode(includeContentChanges = true)
         Log.i(TAG, "Insertion requested; waiting for the original editor")
         tryPendingInsertion()
-        return true
+        return InsertionHandoff.SCHEDULED
     }
 
-    private fun pinTarget(): Boolean {
-        if (pendingInsertion != null) return false
+    /**
+     * Pins the editor this dictation should return to, and NAMES its own outcome.
+     *
+     * A Boolean here was read by the caller as "no editor was focused", which is only one of the two
+     * ways this declines. Refusing while an insertion is still pending is a dictation started on top
+     * of another one, and the words of the second are the ones at risk; classifying it as the
+     * ordinary no-editor case suppressed the only sentence that user would have seen. The type is
+     * the fix rather than a second matcher at the call site: a new exit here has to say which it is
+     * (`workflow-process.md` RULE: enumerate-from-the-producer-not-from-the-findings).
+     */
+    private fun pinTarget(): DictationTargetPin {
+        if (pendingInsertion != null) return DictationTargetPin.INSERTION_BUSY
         pinnedTarget?.let { existing ->
-            if (existing.node.refresh() && isSafeFocusedEditor(existing.node)) return true
+            if (existing.node.refresh() && isSafeFocusedEditor(existing.node)) {
+                return DictationTargetPin.PINNED
+            }
             clearPinnedTarget()
         }
 
@@ -303,7 +434,7 @@ class PasteAccessibilityService : AccessibilityService() {
             target = findFocusedEditableTarget()
             lastTarget = target
         }
-        target ?: return false
+        target ?: return DictationTargetPin.NO_TARGET
         pinnedTarget = TargetToken(
             node = AccessibilityNodeInfo.obtain(target.node),
             packageName = target.packageName,
@@ -312,7 +443,7 @@ class PasteAccessibilityService : AccessibilityService() {
             viewId = target.viewId,
         )
         Log.i(TAG, "Pinned original editor package=${target.packageName} window=${target.windowId}")
-        return true
+        return DictationTargetPin.PINNED
     }
 
     private fun findFocusedEditableTarget(): TargetSnapshot? {
@@ -365,12 +496,22 @@ class PasteAccessibilityService : AccessibilityService() {
         node.isEditable && node.isFocused && node.isVisibleToUser &&
             node.packageName?.toString().orEmpty().let { it.isNotBlank() && it != packageName }
 
-    private fun <T> callOnMain(fallback: T, action: () -> T): T {
-        if (Looper.myLooper() == Looper.getMainLooper()) return action()
-        val task = FutureTask(action)
-        mainHandler.post(task)
-        return runCatching { task.get(1, TimeUnit.SECONDS) }.getOrDefault(fallback)
-    }
+    /**
+     * Hands work to this service's main thread. The claim, the single deadline and the reason
+     * there is no second one all live in [MainThreadHandoff], where they can be raced by a test.
+     *
+     * The three actions are [pinTarget], [clearPinnedTarget] and [requestInsertion], and only the
+     * first two are in-memory work. [requestInsertion] attempts the insertion inline through
+     * [tryPendingInsertion], so it makes accessibility calls into another process and can reach
+     * [recordAndAnnounce], which writes the clipboard, shows a Toast and posts a notification.
+     * That is why the wait after the body has claimed the work is bounded BY THE BODY rather than
+     * by a clock: against a frozen target app it lasts as long as the framework's own node
+     * timeouts. Read [MainThreadHandoff] for why waiting through that is the right trade.
+     *
+     * The bound on a new action is therefore "cannot block indefinitely", not "returns instantly":
+     * no file read, no database call, no network call, and no lock a caller of this may hold.
+     */
+    private fun <T> callOnMain(fallback: T, action: () -> T): T = mainCall.call(fallback, action)
 
     private fun tryPendingInsertion() {
         val pending = pendingInsertion ?: return
@@ -393,14 +534,7 @@ class PasteAccessibilityService : AccessibilityService() {
                 pendingInsertion = null
                 clearPinnedTarget()
                 configureEventMode(includeContentChanges = false)
-                val copied = keepTranscriptOnClipboard(pending)
-                finalizeInsertion(
-                    pending,
-                    TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
-                    if (copied) "copy_only_sensitive" else "insertion_failed",
-                    true,
-                )
-                showCopyOnlyMessage("Protected field. Transcript copied for manual paste.")
+                recordAndAnnounce(ServiceFallbackReason.SENSITIVE_FIELD, pending)
             }
             InsertResult.RETRY -> {
                 if (SystemClock.elapsedRealtime() < pending.deadlineMs) {
@@ -410,7 +544,8 @@ class PasteAccessibilityService : AccessibilityService() {
                     Log.w(
                         TAG,
                         if (unverified) {
-                            "Editor action could not be verified after ${pending.attempts} attempts; clipboard only"
+                            "Editor action could not be verified after ${pending.attempts} attempts; " +
+                                "clipboard only (${pending.lastVerifyMiss ?: "no attempt recorded"})"
                         } else {
                             "Original editor did not return after ${pending.attempts} attempts; clipboard only"
                         },
@@ -418,19 +553,13 @@ class PasteAccessibilityService : AccessibilityService() {
                     pendingInsertion = null
                     clearPinnedTarget()
                     configureEventMode(includeContentChanges = false)
-                    val copied = keepTranscriptOnClipboard(pending)
-                    finalizeInsertion(
-                        pending,
-                        TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
-                        if (copied && unverified) "copy_only_unverified" else if (copied) "copy_only" else "insertion_failed",
-                        true,
-                    )
-                    showCopyOnlyMessage(
-                        if (unverified) {
-                            "Automatic insertion could not be verified. Transcript copied."
+                    recordAndAnnounce(
+                        reason = if (unverified) {
+                            ServiceFallbackReason.UNVERIFIED
                         } else {
-                            "Original field unavailable. Transcript copied. Tap Paste."
+                            ServiceFallbackReason.TARGET_NEVER_RETURNED
                         },
+                        pending = pending,
                     )
                 }
             }
@@ -439,9 +568,7 @@ class PasteAccessibilityService : AccessibilityService() {
                 pendingInsertion = null
                 clearPinnedTarget()
                 configureEventMode(includeContentChanges = false)
-                val copied = keepTranscriptOnClipboard(pending)
-                finalizeInsertion(pending, TranscriptEntity.STATUS_INSERTION_INTERRUPTED, if (copied) "copy_only" else "insertion_failed", true)
-                showCopyOnlyMessage("Automatic insertion unavailable. Transcript copied. Tap Paste.")
+                recordAndAnnounce(ServiceFallbackReason.NO_INSERTION_ACTION, pending)
             }
         }
     }
@@ -482,24 +609,7 @@ class PasteAccessibilityService : AccessibilityService() {
                     Log.d(TAG, "Reacquired the pinned editor after its node became stale")
                 }
                 pending.verification?.let { verification ->
-                    val verified = AccessibilityInsertionRules.isVerified(
-                            verification,
-                            AccessibilityInsertionRules.observableEditorText(
-                                node.text,
-                                node.isShowingHintText,
-                            ),
-                            node.textSelectionStart,
-                            node.textSelectionEnd,
-                        )
-                    return if (verified) {
-                        if (verification.action == AccessibilityInsertionRules.Action.SET_TEXT) {
-                            InsertResult.SET_TEXT
-                        } else {
-                            InsertResult.PASTED
-                        }
-                    } else {
-                        InsertResult.RETRY
-                    }
+                    return verificationResult(node, pending, verification)
                 }
                 return insertIntoNode(node, pending)
             }
@@ -712,25 +822,54 @@ class PasteAccessibilityService : AccessibilityService() {
         pending: PendingInsertion,
     ): InsertResult {
         val verification = pending.verification ?: return InsertResult.RETRY
-        if (!node.refresh()) return InsertResult.RETRY
-        return if (AccessibilityInsertionRules.isVerified(
-                verification,
-                AccessibilityInsertionRules.observableEditorText(
-                    node.text,
-                    node.isShowingHintText,
-                ),
-                node.textSelectionStart,
-                node.textSelectionEnd,
-            )
-        ) {
-            if (verification.action == AccessibilityInsertionRules.Action.SET_TEXT) {
+        if (!node.refresh()) {
+            pending.lastVerifyMiss = "node-refresh-failed"
+            return InsertResult.RETRY
+        }
+        return verificationResult(node, pending, verification)
+    }
+
+    /**
+     * The ONE place an accepted action is judged against the editor.
+     *
+     * Both the immediate post-action check and every retry inside `performInsertion` asked this
+     * question with their own copy of the comparison. Two copies of one decision diverge, and here
+     * they already had: instrumenting one of them showed a single attempt while twenty more were
+     * being judged silently by the other (`code-design-rules.md`
+     * RULE: port-proven-patterns-wholesale).
+     *
+     * The miss is recorded in SHAPES only, never text
+     * (`kotlin-patterns.md` RULE: no-content-in-diagnostics). An attempt count on its own cannot
+     * tell an editor that never received the words from one that received them and will not say so.
+     */
+    private fun verificationResult(
+        node: AccessibilityNodeInfo,
+        pending: PendingInsertion,
+        verification: AccessibilityInsertionRules.Verification,
+    ): InsertResult {
+        val actual = AccessibilityInsertionRules.observableEditorText(
+            node.text,
+            node.isShowingHintText,
+        )
+        val caretStart = node.textSelectionStart
+        val caretEnd = node.textSelectionEnd
+        if (AccessibilityInsertionRules.isVerified(verification, actual, caretStart, caretEnd)) {
+            return if (verification.action == AccessibilityInsertionRules.Action.SET_TEXT) {
                 InsertResult.SET_TEXT
             } else {
                 InsertResult.PASTED
             }
-        } else {
-            InsertResult.RETRY
         }
+        pending.lastVerifyMiss = buildString {
+            append("action=").append(verification.action)
+            append(" textMatched=").append(actual == verification.expectedText)
+            append(" actualLen=").append(actual.length)
+            append(" expectedLen=").append(verification.expectedText?.length ?: -1)
+            append(" caret=").append(caretStart).append('/').append(caretEnd)
+            append(" expectedCaret=").append(verification.expectedCaret ?: -1)
+        }
+        Log.i(TAG, "verify miss #${pending.attempts}: ${pending.lastVerifyMiss}")
+        return InsertResult.RETRY
     }
 
     private fun isSensitive(node: AccessibilityNodeInfo): Boolean {
@@ -765,13 +904,23 @@ class PasteAccessibilityService : AccessibilityService() {
             return
         }
 
-        val previous = pending.previousClipboard
-        if (previous == null) {
-            clipboard.clearPrimaryClip()
-        } else {
-            clipboard.setPrimaryClip(previous)
-        }
-        Log.i(TAG, "Previous clipboard restored after successful insertion")
+        // The clip being restored came from another app and can carry a URI this process has no
+        // grant for. Every other clipboard write in this file is already guarded; this one runs on
+        // the SUCCESS path, where a throw would kill the shared process right after a dictation the
+        // user believes worked.
+        runCatching {
+            val previous = pending.previousClipboard
+            if (previous == null) {
+                clipboard.clearPrimaryClip()
+            } else {
+                clipboard.setPrimaryClip(previous)
+            }
+        }.fold(
+            onSuccess = { Log.i(TAG, "Previous clipboard restored after successful insertion") },
+            onFailure = { error ->
+                Log.w(TAG, "Previous clipboard could not be restored: ${error.message}")
+            },
+        )
     }
 
     private fun keepTranscriptOnClipboard(pending: PendingInsertion): Boolean {
@@ -822,9 +971,55 @@ class PasteAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun showCopyOnlyMessage(message: String) {
-        performResultHaptic(success = false)
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    /**
+     * Keeps the transcript, records the outcome, and says where the words went. One function,
+     * because all three used to be composed separately for one event, and now the ONLY way this
+     * service reaches the clipboard with words it failed to insert.
+     *
+     * There is deliberately no way to pass a sentence or a History value in. The call sites each
+     * handed in a toast literal saying "Transcript copied" beside a notification computed from the
+     * clipboard write's real result, so a failed copy had the two surfaces stating opposite facts
+     * in the same second, and the History row lost the unverified hedge on that same branch. All
+     * three surfaces now come from one `(reason, clipboard)` pair, and
+     * `insertion/FallbackAnnouncement` is the only type either user-facing surface can be built
+     * from.
+     *
+     * A toast is gone in seconds and this route is taken when the user has switched apps or put
+     * the phone down, so the durable notification is not optional here either.
+     *
+     * **What the two teardown reasons can honestly deliver, and the limit that comes with one calm
+     * line.** `onInterrupt` runs on a live service and the toast is delivered normally. `onDestroy`
+     * runs while this instance is being torn down and the toast is queued into a window this process
+     * still has to draw, so a destroy followed immediately by a process kill can drop it. The durable
+     * notification that used to cover that case is gone deliberately: macOS posts nothing durable for
+     * a clipboard fallback, and the words are on the clipboard and in History either way, so what is
+     * lost is the sentence rather than the transcript. This still runs before `onDestroy`'s blocking
+     * Room drain rather than after it, which is what gives the toast its best chance.
+     * A low-memory kill that never calls `onDestroy` at all delivers nothing, and nothing here can
+     * change that: the row is recovered as `INSERTION_INTERRUPTED` by
+     * `TranscriptDao.recoverStaleReadyRows` on the next start, which is the sentence that claims no
+     * destination it cannot know.
+     */
+    private fun recordAndAnnounce(reason: ServiceFallbackReason, pending: PendingInsertion) {
+        // Every route here attempts the copy, so there is no NOT_ATTEMPTED case: the transcript is
+        // put on the clipboard as part of the insertion itself.
+        val clipboard = if (keepTranscriptOnClipboard(pending)) {
+            ClipboardOutcome.COPIED
+        } else {
+            ClipboardOutcome.WRITE_FAILED
+        }
+        finalizeInsertion(
+            pending,
+            TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+            InsertionResults.forServiceFallback(reason, clipboard),
+            true,
+        )
+        val announcement = FallbackAnnouncement.serviceFallbackAnnouncement(
+            reason = reason,
+            clipboard = clipboard,
+            savedInHistory = pending.transcriptId > 0L,
+        )
+        Toast.makeText(this, announcement.line, Toast.LENGTH_LONG).show()
     }
 
     private fun performResultHaptic(success: Boolean) {
@@ -836,12 +1031,22 @@ class PasteAccessibilityService : AccessibilityService() {
         ) {
             return
         }
-        val vibrator = getSystemService(VibratorManager::class.java).defaultVibrator
-        val effect = if (success) {
-            VibrationEffect.EFFECT_TICK
-        } else {
-            VibrationEffect.EFFECT_DOUBLE_CLICK
-        }
-        vibrator.vibrate(VibrationEffect.createPredefined(effect))
+        // VibratorManager is API 31 and minSdk is 30, so the unguarded call throws on the oldest
+        // supported phone. This runs on the accessibility service's main thread, where an uncaught
+        // throw kills the shared default process and takes auto-paste down with it.
+        runCatching {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                getSystemService(VibratorManager::class.java)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Vibrator::class.java)
+            } ?: return
+            val effect = if (success) {
+                VibrationEffect.EFFECT_TICK
+            } else {
+                VibrationEffect.EFFECT_DOUBLE_CLICK
+            }
+            vibrator.vibrate(VibrationEffect.createPredefined(effect))
+        }.onFailure { error -> Log.w(TAG, "Result haptic unavailable: ${error.message}") }
     }
 }

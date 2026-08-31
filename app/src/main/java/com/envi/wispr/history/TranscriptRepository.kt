@@ -19,6 +19,12 @@ class TranscriptRepository(private val dao: TranscriptDao, private val clock: ()
 
     suspend fun deleteAll() = dao.deleteAll()
 
+    /** Removes one row outright. The session owner's exit for a dictation with no words in it. */
+    suspend fun discard(id: Long) = dao.deleteById(id)
+
+    /** One-time cleanup of no-speech and cancelled rows written before they stopped being saved. */
+    suspend fun pruneWordlessRows() = dao.deleteWordlessRows()
+
     suspend fun updateStatus(id: Long, status: String, interrupted: Boolean = false, insertionResult: String? = null) =
         dao.updateStatus(id, status, clock(), interrupted, insertionResult)
 

@@ -81,7 +81,7 @@ The initial Android proof targets one offline speech engine, one offline polish 
 | PAR-045 | Preserve dictated meaning and never silently drop text | Output validation and fallback to the last successful stage |
 | PAR-046 | Protect against hallucinated or structurally unsafe polish output | Safety classifier, retry policy, and raw-text fallback |
 
-## 6. Your Words and vocabulary
+## 6. Dictionary and vocabulary
 
 | ID | Required user outcome | Android expression |
 |---|---|---|

@@ -8,11 +8,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.VibrationEffect
+import android.os.Vibrator
 import android.os.VibratorManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.envi.wispr.asr.IAsrCallback
@@ -28,9 +31,19 @@ import com.envi.wispr.history.HistoryPublicationPolicy
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
+import com.envi.wispr.insertion.ClipboardOutcome
+import com.envi.wispr.insertion.FallbackAnnouncement
+import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.paste.AccessibilityPermission
+import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.paste.AutoPasteReadiness
+import com.envi.wispr.paste.DictationTargetPin
+import com.envi.wispr.paste.InsertionHandoff
+import com.envi.wispr.paste.InsertionJudgement
 import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
+import com.envi.wispr.polish.PolishEngineLabels
 import com.envi.wispr.polish.PolishService
 import com.envi.wispr.polish.RegexPolisher
 import com.envi.wispr.settings.AppPreferences
@@ -109,6 +122,11 @@ class DictationSessionService : Service() {
     private var asrBound = false
     private var polishBound = false
     private var rawTranscript = ""
+    // What the START of this dictation saw when it tried to pin an editor. Read at the end,
+    // by which time the service may have been replaced. NO_TARGET until a session begins, so
+    // a value that outlived its session can only ever suppress an announcement, never invent
+    // one.
+    @Volatile private var targetPinAtStart = DictationTargetPin.NO_TARGET
     private var recordingStartedAtMs = 0L
     @Volatile private var recordingDurationMs = 0L
     private var draftCreation: Deferred<Long>? = null
@@ -116,7 +134,14 @@ class DictationSessionService : Service() {
     @Volatile private var structuredTerms: List<CustomTerm> = emptyList()
     @Volatile private var vocabularyEnabled = true
     @Volatile private var cleanupOptions = CleanupOptions()
-    @Volatile private var clipboardPolicy = ClipboardInsertionPolicy()
+    /**
+     * Null until `AppPreferences` delivers the user's real values, which on a cold start is AFTER
+     * the listening notification is built. A `ClipboardInsertionPolicy()` stand-in here reads as a
+     * decided answer and its auto-copy default is `true`, so the notification promised the
+     * clipboard to a user who had turned auto-copy off and whose words went to History only
+     * (`validation-discipline.md` FACT: silent-empty-traps, plausible-value traps).
+     */
+    @Volatile private var clipboardPolicy: ClipboardInsertionPolicy? = null
     @Volatile private var sessionPreferences = SessionPreferences()
     private val cleanupPreferencesReady = CompletableDeferred<Unit>()
     private val structuredTermsReady = CompletableDeferred<Unit>()
@@ -263,7 +288,10 @@ class DictationSessionService : Service() {
     private fun beginSession() {
         if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return
         promoteToForeground(processing = false)
-        PasteAccessibilityService.pinTargetForDictation()
+        // Kept for the whole session. Android may rebind the accessibility service while the user
+        // is still speaking, so the state insertion finds minutes later cannot say whether this
+        // dictation ever had a field to aim at (`InsertionJudgement.handoffToJudge`).
+        targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()
         publicationStarted.set(false)
         teardownStarted.set(false)
         draftId.set(0L)
@@ -296,7 +324,9 @@ class DictationSessionService : Service() {
                     vocabularyEnabled = vocabularyEnabled,
                     terms = termsSnapshot,
                     matcher = matcher,
-                    clipboard = clipboardPolicy,
+                    // Non-null by construction: cleanupPreferencesReady, awaited above, is
+                    // completed only after the line that writes this field.
+                    clipboard = clipboardPolicy ?: ClipboardInsertionPolicy(),
                 )
                 bindPipelineServices()
             }
@@ -351,7 +381,7 @@ class DictationSessionService : Service() {
                         createdAtMs = System.currentTimeMillis(),
                         durationMs = 0L,
                         speechEngine = "Parakeet",
-                        polishEngine = "",
+                        polishEngine = PolishEngineLabels.NOT_RECORDED,
                         polishLatencyMs = 0L,
                         insertionResult = "pending",
                         status = TranscriptEntity.STATUS_DRAFT,
@@ -360,7 +390,7 @@ class DictationSessionService : Service() {
             }
             DictationSurfaceState.update(this, DictationSurfaceState.Phase.LISTENING)
             RecordingOverlayState.show()
-            vibrate(confirm = true)
+            vibrate(HapticCue.SESSION_TRANSITION)
             DebugLogger.log(TAG, "Recording started")
             startPolling()
         } catch (error: Exception) {
@@ -390,7 +420,7 @@ class DictationSessionService : Service() {
                     if (!service.isCapturing && state.get() == SessionState.RECORDING) {
                         if (service.terminalReason == AudioCaptureService.TERMINAL_REASON_ERROR) {
                             DebugLogger.error(TAG, "Audio capture ended with a terminal failure")
-                            markDraftInterrupted()
+                            discardDraft()
                             showError("Microphone capture stopped unexpectedly. Try again.")
                         } else {
                             stopAndTranscribe()
@@ -410,7 +440,7 @@ class DictationSessionService : Service() {
         RecordingOverlayState.hide()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.PROCESSING)
         promoteToForeground(processing = true)
-        vibrate(confirm = true)
+        vibrate(HapticCue.SESSION_TRANSITION)
         DebugLogger.log(TAG, "Stopping recording and starting transcription")
 
         Thread({
@@ -420,7 +450,7 @@ class DictationSessionService : Service() {
                 audioReady = runCatching { audioService?.waitForFileReady(2_000L) == true }.getOrDefault(false)
                 if (!audioReady) {
                     stopAudioCaptureService()
-                    markDraftInterrupted()
+                    discardDraft()
                     showError("Audio capture did not finish safely. Try again.")
                     return@Thread
                 }
@@ -477,7 +507,7 @@ class DictationSessionService : Service() {
     private fun polishAndPublish(rawText: String) {
         rawTranscript = rawText
         if (rawText.isBlank()) {
-            updateDraftStatus(TranscriptEntity.STATUS_NO_SPEECH, insertionResult = "no_speech")
+            discardDraft()
             PasteAccessibilityService.releasePinnedTarget()
             finishSession()
             return
@@ -540,7 +570,7 @@ class DictationSessionService : Service() {
             return
         }
         val finalText = text.ifBlank { rawTranscript }
-        val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) "Raw fallback" else engine
+        val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine
         DebugLogger.log(TAG, "Polish result received ($finalEngine, ${latencyMs}ms, chars=${finalText.length})")
         if (finalText.isBlank()) {
             finishSession()
@@ -576,42 +606,65 @@ class DictationSessionService : Service() {
                 persistedId = persistedId,
                 persistenceSucceeded = saveResult.isSuccess,
             )
-            val scheduled = if (route == HistoryPublicationPolicy.Route.AUTO_INSERT) {
-                PasteAccessibilityService.pasteWhenTargetReturns(
-                    persistedId,
-                    finalText,
-                    policy = sessionPreferences.clipboard,
-                )
-            } else {
-                false
-            }
-            if (!scheduled) {
+            // Corrected once, here, so the announcement, the History row and the log all read the
+            // same handoff. Deriving it twice is how the two surfaces started disagreeing.
+            val handoff = InsertionJudgement.handoffToJudge(
+                startPin = targetPinAtStart,
+                insertionHandoff = if (route == HistoryPublicationPolicy.Route.AUTO_INSERT) {
+                    PasteAccessibilityService.pasteWhenTargetReturns(
+                        persistedId,
+                        finalText,
+                        policy = sessionPreferences.clipboard,
+                    )
+                } else {
+                    InsertionHandoff.HISTORY_NOT_DURABLE
+                },
+            )
+            if (handoff != InsertionHandoff.SCHEDULED) {
                 PasteAccessibilityService.releasePinnedTarget()
                 val mustPreventDataLoss = persistedId <= 0L
-                if (sessionPreferences.clipboard.autoCopyToClipboard || mustPreventDataLoss) {
-                    val clipboard = getSystemService(ClipboardManager::class.java)
-                    keepOnClipboard(clipboard, persistedId, finalText)
-                } else {
-                    keepInHistoryOnly(persistedId)
-                    mainHandler.post {
-                        Toast.makeText(
-                            this@DictationSessionService,
-                            "Automatic insertion unavailable. Transcript saved in History.",
-                            Toast.LENGTH_LONG,
-                        ).show()
+                // Three outcomes, not two. A copy that was never attempted is the user's own
+                // auto-copy setting and History is then the destination; a copy that was attempted
+                // and failed is a fault whatever else was true.
+                val clipboard =
+                    if (sessionPreferences.clipboard.autoCopyToClipboard || mustPreventDataLoss) {
+                        if (
+                            keepOnClipboard(
+                                getSystemService(ClipboardManager::class.java),
+                                persistedId,
+                                finalText,
+                            )
+                        ) {
+                            ClipboardOutcome.COPIED
+                        } else {
+                            ClipboardOutcome.WRITE_FAILED
+                        }
+                    } else {
+                        keepInHistoryOnly(persistedId)
+                        ClipboardOutcome.NOT_ATTEMPTED
                     }
-                }
+                // Nothing was handed to the accessibility service on this branch, so it will never
+                // speak: the announcement has to originate here
+                // (`architecture-rules.md` RULE: insertion-fails-safe-never-silently). The routes
+                // where the service DID accept the text and then failed announce themselves, in
+                // PasteAccessibilityService.recordAndAnnounce.
+                announceInsertionFallback(
+                    handoff = handoff,
+                    clipboard = clipboard,
+                    savedInHistory = persistedId > 0L,
+                )
             }
             DebugLogger.log(
                 TAG,
                 when {
-                    scheduled -> "Auto-insert handed to accessibility target tracker"
+                    handoff == InsertionHandoff.SCHEDULED ->
+                        "Auto-insert handed to accessibility target tracker"
                     route == HistoryPublicationPolicy.Route.COPY_ONLY ->
                         "History persistence unavailable; transcript kept on clipboard only"
                     sessionPreferences.clipboard.autoCopyToClipboard || persistedId <= 0L ->
                         "Accessibility unavailable; transcript kept on clipboard"
                     else -> "Accessibility unavailable; transcript retained in History"
-                },
+                } + " (handoff=$handoff)",
             )
             DebugLogger.log(TAG, DebugLogger.pipelineSummary())
             finishSession()
@@ -634,27 +687,65 @@ class DictationSessionService : Service() {
         )
     }
 
+    /** @return whether the words actually reached the clipboard, which the copy depends on. */
     private suspend fun keepOnClipboard(
         clipboard: ClipboardManager,
         transcriptId: Long,
         text: String,
-    ) {
+    ): Boolean {
         val copied = runCatching {
             clipboard.setPrimaryClip(ClipData.newPlainText("EnviousWispr", text))
         }.isSuccess
-        if (transcriptId <= 0L) return
+        if (transcriptId <= 0L) return copied
 
         runCatching {
             transcriptRepository.finalizeInsertionOutcome(
                 transcriptId,
                 TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
-                if (copied) "clipboard" else "insertion_failed",
+                if (copied) InsertionResults.CLIPBOARD else InsertionResults.INSERTION_FAILED,
                 interrupted = true,
             )
         }.onFailure { error ->
             DebugLogger.warn(TAG, "Unable to finalize clipboard-only history: ${error.message}")
         }
+        return copied
     }
+
+    /**
+     * Tells the user where their words went, in one calm line and nothing else.
+     *
+     * Whether to speak at all is `FallbackAnnouncement`'s decision, not this method's: a user
+     * who never granted the permission is in clipboard-only mode by choice and gets nothing. What
+     * it says is a measured destination and never an inferred fault, which is why there is no
+     * failure haptic and nothing left in the shade: this is an ordinary outcome of a working
+     * product, not an error.
+     */
+    private fun announceInsertionFallback(
+        handoff: InsertionHandoff,
+        clipboard: ClipboardOutcome,
+        savedInHistory: Boolean,
+    ) {
+        val announcement = FallbackAnnouncement.fallbackAnnouncement(
+            autoPaste = autoPasteAvailability(),
+            handoff = handoff,
+            clipboard = clipboard,
+            savedInHistory = savedInHistory,
+        ) ?: return
+        mainHandler.post {
+            Toast.makeText(this, announcement.line, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /**
+     * Liveness is a volatile read. The permission half is a `Settings.Secure` lookup, which the
+     * platform serves from a per-process cache after the first call. Read only when a session
+     * starts and when a dictation falls back, never at idle (`architecture-rules.md`
+     * RULE: no-idle-cost). The setting alone cannot answer this: it still names a crashed service.
+     */
+    private fun autoPasteAvailability(): AutoPasteAvailability = AutoPasteReadiness.evaluate(
+        permittedInSettings = AccessibilityPermission.isGranted(this),
+        serviceBound = PasteAccessibilityService.isBound.value,
+    )
 
     private suspend fun keepInHistoryOnly(transcriptId: Long) {
         if (transcriptId <= 0L) return
@@ -662,7 +753,7 @@ class DictationSessionService : Service() {
             transcriptRepository.finalizeInsertionOutcome(
                 transcriptId,
                 TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
-                "history_only",
+                InsertionResults.HISTORY_ONLY,
                 interrupted = true,
             )
         }.onFailure { error ->
@@ -675,7 +766,7 @@ class DictationSessionService : Service() {
         RecordingOverlayState.hide()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
-        vibrate(confirm = false)
+        vibrate(HapticCue.SESSION_CANCELED)
         serviceScope.launch {
             val ready = runCatching {
                 audioService?.stopCapture()
@@ -683,11 +774,11 @@ class DictationSessionService : Service() {
             }.getOrDefault(false)
             if (!ready) {
                 stopAudioCaptureService()
-                markDraftInterrupted()
+                discardDraft()
                 showError("Audio capture did not finish safely. Try again.")
                 return@launch
             }
-            setDraftStatus(TranscriptEntity.STATUS_CANCELED, insertionResult = "canceled")
+            discardDraft()
             deleteCapturedAudio(runCatching { audioService?.audioFilePath }.getOrNull())
             stopAudioCaptureService()
             finishSession()
@@ -698,7 +789,7 @@ class DictationSessionService : Service() {
         if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
-        vibrate(confirm = false)
+        vibrate(HapticCue.SESSION_CANCELED)
         finishSession()
     }
 
@@ -708,14 +799,14 @@ class DictationSessionService : Service() {
         RecordingOverlayState.hide()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
-        vibrate(confirm = false)
+        vibrate(HapticCue.FAILURE)
         mainHandler.post { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
         stopAudioCaptureService()
         finishSession()
     }
 
     private fun handleServiceFailure(message: String) {
-        if (state.get() == SessionState.RECORDING) markDraftInterrupted()
+        if (state.get() == SessionState.RECORDING) discardDraft()
         showError(message)
     }
 
@@ -739,7 +830,15 @@ class DictationSessionService : Service() {
         val notification = if (processing) {
             DictationNotificationController.processing(this)
         } else {
-            DictationNotificationController.listening(this)
+            DictationNotificationController.listening(
+                context = this,
+                autoPaste = autoPasteAvailability(),
+                // The live field, not the session snapshot: this runs before `beginSession`
+                // freezes one, and it is the field that snapshot is taken from. It is null on a
+                // cold start, which is the state the notification has to be able to say nothing
+                // about rather than guess at.
+                clipboard = clipboardPolicy,
+            )
         }
         startForeground(
             DictationNotificationController.NOTIFICATION_ID,
@@ -779,8 +878,47 @@ class DictationSessionService : Service() {
         if (id > 0L) transcriptRepository.updateStatus(id, status, interrupted, insertionResult)
     }
 
-    private fun markDraftInterrupted() {
-        updateDraftStatus(TranscriptEntity.STATUS_INTERRUPTED, interrupted = true)
+    /**
+     * A dictation that produced no words leaves nothing behind.
+     *
+     * The draft row is created the moment recording starts, so that a session killed mid-flight is
+     * still recoverable. Every caller here reaches a terminal state with no transcript WORDS — the
+     * microphone heard nothing, or the session ended before transcription could produce any — so
+     * that row has never held a word and never will, and keeping it turns History into a list the
+     * user has to scroll past to reach their own dictations (founder, 2026-08-31: "we shouldn't log
+     * 'no speech' logs -> that's a waste of history space"; issue #19 says the same about
+     * cancelling).
+     *
+     * **The line is whether the outcome was already ACCOUNTED FOR while the app was alive**, and it
+     * is reached three different ways here. A failure the app survived shows the user a message: a
+     * terminal capture failure, a capture that would not close before transcription, a service
+     * failure while recording, and a cancel whose audio did not close cleanly. A successful cancel
+     * shows no message and does not need one — the user pressed cancel, and the haptic and the
+     * overlay closing acknowledge it. Nothing heard is silent on purpose, and leaves nothing behind
+     * for the same reason: hearing nothing is not an event worth reporting twice. In all three, a
+     * blank History card adds nothing.
+     *
+     * The two writers of `STATUS_INTERRUPTED` that REMAIN are the opposite case, and both keep their
+     * row: this service's own `onDestroy` teardown, and `TranscriptDao.recoverStaleDrafts` on the
+     * next start. Both run when the app was killed with a dictation live, so nobody told the user
+     * anything and the row is the only signal that words were lost. That is why the prune leaves
+     * `interrupted` rows alone.
+     *
+     * The id is cleared after the delete. That does not make a late write impossible — `setDraftStatus`
+     * can still resolve the completed `draftCreation` to the old id — it makes one harmless: the
+     * `UPDATE` matches zero rows and cannot bring the draft back.
+     */
+    private fun discardDraft() {
+        val discard = serviceScope.launch(start = CoroutineStart.LAZY) {
+            val id = draftId.get().takeIf { it > 0L }
+                ?: runCatching { draftCreation?.await() ?: 0L }.getOrDefault(0L)
+            if (id > 0L) {
+                transcriptRepository.discard(id)
+                draftId.set(0L)
+            }
+        }
+        pendingHistoryUpdates += discard
+        discard.start()
     }
 
     private fun stopAudioCaptureService() {
@@ -800,16 +938,50 @@ class DictationSessionService : Service() {
         polishService = null
     }
 
-    private fun vibrate(confirm: Boolean) {
+    /**
+     * The cues this service fires, and whether each one is the user's to switch off.
+     *
+     * The gate belongs to the CUE, not to `vibrate`, because the two kinds answer to different
+     * settings. `Settings.System.HAPTIC_FEEDBACK_ENABLED` governs touch and long-press feedback,
+     * so honouring it for a RESULT cue is parity with `PasteAccessibilityService.performResultHaptic`.
+     * A session cue is not feedback on a touch: on the side-button path there is no window, the
+     * user's eyes are on another app's text field, and the buzz is the only signal that recording
+     * started or stopped. Gating those on the touch-feedback switch silences the whole product for
+     * a user who turned off keyboard clicks.
+     */
+    private enum class HapticCue(
+        val durationMs: Long,
+        val amplitude: Int,
+        val honoursSystemHapticSetting: Boolean,
+    ) {
+        /** Recording started, or stopped for transcription. The only cue on a windowless path. */
+        SESSION_TRANSITION(28L, 120, honoursSystemHapticSetting = false),
+
+        /** The user cancelled. Also a windowless acknowledgement, with the heavier waveform. */
+        SESSION_CANCELED(45L, 180, honoursSystemHapticSetting = false),
+
+        /** A result cue: the dictation did not land. Parity with performResultHaptic. */
+        FAILURE(45L, 180, honoursSystemHapticSetting = true),
+    }
+
+    private fun vibrate(cue: HapticCue) {
+        if (cue.honoursSystemHapticSetting &&
+            Settings.System.getInt(contentResolver, Settings.System.HAPTIC_FEEDBACK_ENABLED, 1) != 1
+        ) {
+            return
+        }
         runCatching {
-            val vibrator = getSystemService(VibratorManager::class.java).defaultVibrator
+            // VibratorManager is API 31 against minSdk 30. Guarded here as well as in
+            // PasteAccessibilityService.performResultHaptic: the runCatching only degrades to no
+            // haptics at all on the oldest supported phone, which is a silent loss of every cue.
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                getSystemService(VibratorManager::class.java)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Vibrator::class.java)
+            } ?: return
             if (vibrator.hasVibrator()) {
-                vibrator.vibrate(
-                    VibrationEffect.createOneShot(
-                        if (confirm) 28L else 45L,
-                        if (confirm) 120 else 180,
-                    ),
-                )
+                vibrator.vibrate(VibrationEffect.createOneShot(cue.durationMs, cue.amplitude))
             }
         }
     }

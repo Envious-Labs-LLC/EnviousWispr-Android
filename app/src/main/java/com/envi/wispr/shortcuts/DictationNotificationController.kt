@@ -8,17 +8,31 @@ import android.content.Context
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.envi.wispr.R
+import com.envi.wispr.insertion.ClipboardInsertionPolicy
+import com.envi.wispr.insertion.InsertionOutcomeMessages
+import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.ui.DictationSessionService
 
 object DictationNotificationController {
     private const val CHANNEL_ID = "active_dictation"
     const val NOTIFICATION_ID = 1001
 
-    fun listening(context: Context): Notification {
+    /**
+     * @param clipboard the user's frozen clipboard settings, or null when they have not been read
+     * yet. Null is not a detail: on a cold start this notification is built before `AppPreferences`
+     * has delivered anything, and a stand-in whose auto-copy default is `true` promised the
+     * clipboard to users who had turned auto-copy off. The type carries the third state so the
+     * sentence cannot be written from a value nobody decided.
+     */
+    fun listening(
+        context: Context,
+        autoPaste: AutoPasteAvailability,
+        clipboard: ClipboardInsertionPolicy?,
+    ): Notification {
         return build(
             context = context,
             title = "EnviousWispr is listening",
-            detail = "Speak naturally. Stop or cancel at any time.",
+            detail = InsertionOutcomeMessages.listeningDetail(autoPaste, clipboard),
             includeActions = true,
         )
     }

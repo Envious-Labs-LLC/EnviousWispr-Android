@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.envi.wispr.paste.InsertionHandoff
 import com.envi.wispr.paste.PasteAccessibilityService
 
 /** Debug-only, silent UAT hook for verifying auto-paste against the previously focused field. */
@@ -33,13 +34,13 @@ class PasteProbeActivity : Activity() {
         val text = intent.getStringExtra("text") ?: "EnviousWispr auto-insert proof"
         val previousClipboard = clipboard.primaryClip
         finish()
-        val scheduled = PasteAccessibilityService.pasteWhenTargetReturns(text, previousClipboard)
-        if (!scheduled) {
+        val handoff = PasteAccessibilityService.pasteWhenTargetReturns(0L, text, previousClipboard)
+        if (handoff != InsertionHandoff.SCHEDULED) {
             clipboard.setPrimaryClip(ClipData.newPlainText("EnviousWispr", text))
         }
         Log.i(
             "PasteProbe",
-            "scheduled=$scheduled",
+            "handoff=$handoff",
         )
     }
 }

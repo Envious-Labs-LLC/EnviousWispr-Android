@@ -1,15 +1,16 @@
 package com.envi.wispr.ui
 
 import android.Manifest
-import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.envi.wispr.paste.AccessibilityPermission
+import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.paste.AutoPasteReadiness
 import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -51,7 +53,7 @@ data class ProviderSettingsUiState(
 data class AppReadiness(
     val microphoneGranted: Boolean = false,
     val notificationsGranted: Boolean = false,
-    val accessibilityEnabled: Boolean = false,
+    val accessibilityPermitted: Boolean = false,
     val speechModelReady: Boolean = false,
     val polishModelReady: Boolean = false,
 ) {
@@ -72,6 +74,7 @@ data class EnviousWisprUiState(
     val customTermSearch: String = "",
     val customTermMessage: String = "",
     val customTermError: String? = null,
+    val autoPaste: AutoPasteAvailability = AutoPasteReadiness.initial,
     val history: List<TranscriptEntity> = emptyList(),
     val historyTotalCount: Int = 0,
     val historySearch: String = "",
@@ -127,8 +130,26 @@ class EnviousWisprViewModel(
         )
     }
 
-    private val uiStateWithHistory = combine(baseUiState, history) { base, transcripts ->
-        base.copy(history = transcripts, historyTotalCount = transcripts.size)
+    // Derived, never stored. AppReadiness is a snapshot written wholesale from the Settings screen,
+    // so a liveness field inside it would go stale between pushes; combining here gives the answer
+    // exactly one producer and no second home (`architecture-rules.md` RULE: own-state-locally).
+    // Assigned directly, with no operator after it: AutoPasteReadiness.observe owns the join, and
+    // projecting its answer back down here would put the permission fact in charge again.
+    private val autoPaste = AutoPasteReadiness.observe(
+        permittedInSettings = readiness.map { it.accessibilityPermitted },
+        serviceBound = PasteAccessibilityService.isBound,
+    )
+
+    private val uiStateWithHistory = combine(
+        baseUiState,
+        history,
+        autoPaste,
+    ) { base, transcripts, autoPasteStatus ->
+        base.copy(
+            history = transcripts,
+            historyTotalCount = transcripts.size,
+            autoPaste = autoPasteStatus,
+        )
     }
 
     val uiState: StateFlow<EnviousWisprUiState> = combine(
@@ -156,7 +177,14 @@ class EnviousWisprViewModel(
 
     init {
         viewModelScope.launch {
-            runCatching { repository.recoverStaleOpenRows(clock()) }
+            runCatching {
+                repository.recoverStaleOpenRows(clock())
+                // Rows an older build saved for a dictation with no words in them. Swept here rather
+                // than left for the user to delete, because they are the reason History could not be
+                // scanned. Nothing writes them any more, so on a phone that has run this once it
+                // deletes nothing.
+                repository.pruneWordlessRows()
+            }
                 .onFailure { error -> historyError.value = error.message ?: error::class.simpleName }
         }
         viewModelScope.launch {
@@ -415,16 +443,14 @@ class EnviousWisprViewModel(
     }
 }
 
+/**
+ * Reads the facts Android will only answer when asked. Auto-paste LIVENESS is not one of them: the
+ * setting string still names a service that has crashed, and so do `AccessibilityManager.isEnabled`
+ * and `getEnabledAccessibilityServiceList`, which project the same setting. Liveness is pushed by
+ * `PasteAccessibilityService.isBound`, and the two are combined in the view model.
+ */
 fun readAppReadiness(context: Context): AppReadiness {
-    val accessibilityComponent = ComponentName(context, PasteAccessibilityService::class.java)
-        .flattenToString()
-    val enabledAccessibilityServices = Settings.Secure.getString(
-        context.contentResolver,
-        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-    ).orEmpty()
-    val accessibilityEnabled = enabledAccessibilityServices
-        .split(':')
-        .any { it.equals(accessibilityComponent, ignoreCase = true) }
+    val accessibilityPermitted = AccessibilityPermission.isGranted(context)
 
     val speechModelReady = ModelStorage.isReady(context, ModelManifest.parakeet)
 
@@ -438,7 +464,7 @@ fun readAppReadiness(context: Context): AppReadiness {
                 context,
                 Manifest.permission.POST_NOTIFICATIONS,
             ) == PackageManager.PERMISSION_GRANTED,
-        accessibilityEnabled = accessibilityEnabled,
+        accessibilityPermitted = accessibilityPermitted,
         speechModelReady = speechModelReady,
         polishModelReady = ModelStorage.isReady(context, ModelManifest.s1),
     )

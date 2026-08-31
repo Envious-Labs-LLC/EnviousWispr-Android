@@ -82,7 +82,7 @@ echo
 # editing. The previous version registered the six in this block and left four allocated hundreds of
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
-GATE_EXP=""; GATE_PAY=""; VICTIM=""
+GATE_EXP=""; GATE_PAY=""; VICTIM=""; STAGE_B=""; STAGE_A=""
 HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan basename long enough that its recovery path exceeds the 255-byte filename limit, so the
@@ -105,6 +105,8 @@ cleanup() {
     [ -n "$GATE_EXP" ]   && rm -rf "$GATE_EXP"   # -rf for every mktemp resource, as the check requires
     [ -n "$GATE_PAY" ]   && rm -rf "$GATE_PAY"
     [ -n "$VICTIM" ]     && rm -rf "$VICTIM"
+    [ -n "$STAGE_B" ]    && rm -rf "$STAGE_B"
+    [ -n "$STAGE_A" ]    && rm -rf "$STAGE_A"
     # Named in full, never globbed: a `/tmp/.ew-android-*` glob would take a concurrent run's draft.
     rm -f "$SENTINEL" \
         "/tmp/.ew-android-$SCOPE-issue-9901-2026-01-01-control.md.blocked-draft.md"
@@ -834,9 +836,17 @@ rm -f "$STALE" "$FRESH"
 # that was demonstrated against this hook before the staging-file rewrite. The draft is also a whole
 # internal plan, so it has no business being world-readable.
 VICTIM=$(mktemp) || exit 2
+STAGE_B=$(mktemp) || exit 2
+STAGE_A=$(mktemp) || exit 2
 printf 'ORIGINAL VICTIM CONTENT\n' > "$VICTIM"
 rm -f "$DRAFT"; ln -s "$VICTIM" "$DRAFT"
+# Snapshot BEFORE and AFTER rather than counting the shared directory. A bare count of
+# /tmp/.ew-android-staging-* is nonzero whenever ANOTHER hook run is between its mkstemp and its
+# replace, or an interrupted earlier run left one behind, so it fails this suite for something no part
+# of this suite did. The same shared-namespace mistake this commit fixes in the hook.
+ls /tmp/.ew-android-staging-* 2>/dev/null | sort > "$STAGE_B"
 payload "$ONEBAD" | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
+ls /tmp/.ew-android-staging-* 2>/dev/null | sort > "$STAGE_A"
 if grep -q 'ORIGINAL VICTIM CONTENT' "$VICTIM"; then
     PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a symlink at the rescue path is not followed" "intact"
 else
@@ -844,8 +854,8 @@ else
 fi
 MODE=$(stat -f "%Lp" "$DRAFT" 2>/dev/null)
 check "  ...and the draft is not world-readable" "$MODE" "600"
-# A failed move must not leave its staging file behind in the shared directory.
-LEFT=$(ls /tmp/.ew-android-staging-* 2>/dev/null | wc -l | tr -d ' ')
+# A failed move must not leave its staging file behind. Only files THIS call added count.
+LEFT=$(comm -13 "$STAGE_B" "$STAGE_A" | wc -l | tr -d ' ')
 check "  ...and no staging file is left behind" "$LEFT" "0"
 rm -f "$DRAFT" "$VICTIM"
 rm -f "$SENTINEL" "$DRAFT"

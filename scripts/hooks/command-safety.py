@@ -169,6 +169,75 @@ def check_no_verify(segments: list[list[str]]) -> None:
             )
 
 
+def check_connected_android_test(segments: list[list[str]]) -> None:
+    """Gradle's connected-test tasks UNINSTALL the app, and the phone is the founder's daily driver.
+
+    Measured twice, 2026-08-30 and 2026-08-31: one `./gradlew :app:connectedDebugAndroidTest` removed the
+    app, both models, the dictation history, the custom words, and the accessibility, microphone and
+    notification permissions granted by hand. Restoring it is 1.1 GB over the wire. Both times the rule
+    saying so was already written in `.claude/knowledge/device-testing.md`, which is how we know a
+    knowledge file is not the control.
+
+    An EMULATOR target is allowed and needs no argument: there is nothing on it to lose. That is what
+    makes this a road rather than a wall — the correct command is the one that still runs.
+    """
+    for segment in segments:
+        found = executable(segment)
+        if found is None:
+            continue
+        name, args = found
+        # `bash ./gradlew ...` runs the same destructive task while presenting `bash` as the command.
+        # Unwrapping one interpreter is not option grammar; it is the same executable one level down.
+        #
+        # Take the script as the FIRST non-flag and keep everything after it in order. Filtering all
+        # flags out instead dropped Gradle's own, so `bash ./gradlew --dry-run :app:connected…` — which
+        # executes nothing — was denied. `bash -c "<script>"` is NOT unwrapped: the command is one
+        # string argument, and picking it apart is the grammar this file refuses to own.
+        if name in ("bash", "sh", "zsh"):
+            wrapper = next((i for i, arg in enumerate(args) if not arg.startswith("-")), None)
+            if wrapper is None:
+                continue
+            name, args = os.path.basename(args[wrapper]), args[wrapper + 1:]
+        if name not in ("gradlew", "gradle", "gradlew.bat"):
+            continue
+        # `--dry-run` prints the task graph and executes nothing, so it cannot uninstall. A bare token
+        # test, deliberately: it can produce a false ALLOW only for a command that runs nothing.
+        if any(arg in ("--dry-run", "-m") for arg in args):
+            continue
+        # `:app:connectedDebugAndroidTest`, `connectedAndroidTest` and `connectedCheck` all run the
+        # instrumented suite and all uninstall. Read the task after the last colon so a `-P` flag whose
+        # VALUE happens to contain the word is not a task.
+        #
+        # KNOWN AND ACCEPTED FALSE POSITIVE: `./gradlew help --task connectedDebugAndroidTest`, where
+        # the task name is an option's VALUE and nothing runs. Telling an option from its value is the
+        # grammar this file deleted 150 lines of, and review proposed reintroducing it as a list of
+        # value-taking flags. That list's failure direction is a MISS, and a miss here wipes the
+        # founder's phone while a false denial costs one retype. The cheaper side is to deny and name
+        # it, exactly as `--no-verify` on a commit MESSAGE is named above.
+        if not any(arg.rsplit(":", 1)[-1].lower().startswith("connected") for arg in args):
+            continue
+        serial = next((tok.split("=", 1)[1] for tok in segment
+                       if tok.startswith("ANDROID_SERIAL=")), "")
+        if serial.startswith("emulator-"):
+            continue
+        deny(
+            "BLOCKED: a Gradle connected-test task uninstalls the app when it finishes, and uninstalling "
+            "takes app-private storage with it — both models, the dictation history, the custom words, "
+            "and the permissions granted by hand. Measured on the S26 on 2026-08-30 and again on "
+            "2026-08-31; restoring it is 1.1 GB over the wire.\n\n"
+            "Run the same tests with `am instrument`, which does not uninstall:\n\n"
+            "  ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest\n"
+            "  $ADB -s $D install -r app/build/outputs/apk/debug/app-debug.apk\n"
+            "  $ADB -s $D install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk\n"
+            "  $ADB -s $D shell 'am instrument -w -e class <fully.qualified.TestClass> "
+            "com.envi.wispr.test/androidx.test.runner.AndroidJUnitRunner'\n\n"
+            "Owner: .claude/knowledge/device-testing.md RULE: "
+            "drive-the-instrumented-tests-with-am-instrument-not-gradle.\n\n"
+            "On a throwaway emulator there is nothing to lose, so that target is allowed:\n\n"
+            "  ANDROID_SERIAL=emulator-5554 ./gradlew :app:connectedDebugAndroidTest"
+        )
+
+
 def check_writes(tokens: list[str], segments: list[list[str]]) -> None:
     if branch() != "main":
         return  # the branch IS the protection
@@ -210,6 +279,7 @@ def main() -> int:
         return 0  # fail open
 
     check_no_verify(segments)
+    check_connected_android_test(segments)
     check_writes(tokens, segments)
     return 0
 

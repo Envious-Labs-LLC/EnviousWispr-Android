@@ -174,6 +174,32 @@ assert_main "--no-verify on main"              deny  command-safety.py '{"tool_i
 assert_branch "an ordinary commit on a branch" allow command-safety.py '{"tool_input":{"command":"git commit -m x"}}'
 echo
 
+# A Gradle connected-test task UNINSTALLS the app, which takes both models, the history, the custom words
+# and the hand-granted permissions with it. Measured on the S26 2026-08-30 and again 2026-08-31.
+# Denied on EVERY branch: the branch is not the protection here, the phone is.
+assert_branch "connected test, default target"  deny  command-safety.py '{"tool_input":{"command":"./gradlew :app:connectedDebugAndroidTest"}}'
+assert_main   "connected test on main"          deny  command-safety.py '{"tool_input":{"command":"./gradlew :app:connectedDebugAndroidTest"}}'
+assert_branch "the unqualified task name"       deny  command-safety.py '{"tool_input":{"command":"./gradlew connectedAndroidTest"}}'
+assert_branch "connectedCheck runs them too"    deny  command-safety.py '{"tool_input":{"command":"./gradlew :app:connectedCheck"}}'
+assert_branch "with a runner argument"          deny  command-safety.py '{"tool_input":{"command":"./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.envi.wispr.history.TranscriptRepositoryTest"}}'
+assert_branch "aimed at the founder phone"      deny  command-safety.py '{"tool_input":{"command":"ANDROID_SERIAL=100.94.206.47:5555 ./gradlew :app:connectedDebugAndroidTest"}}'
+assert_branch "hidden behind a && "             deny  command-safety.py '{"tool_input":{"command":"./gradlew :app:assembleDebug && ./gradlew :app:connectedDebugAndroidTest"}}'
+# The guard is a ROAD, not a wall: on a throwaway emulator there is nothing to lose, so it still runs.
+assert_branch "the emulator target is allowed"  allow command-safety.py '{"tool_input":{"command":"ANDROID_SERIAL=emulator-5554 ./gradlew :app:connectedDebugAndroidTest"}}'
+# Controls in the allow direction, because a guard that fires on correct work trains the reader past it.
+assert_branch "the ordinary unit-test gate"     allow command-safety.py '{"tool_input":{"command":"./gradlew :app:testDebugUnitTest"}}'
+assert_branch "assembling the test APK"         allow command-safety.py '{"tool_input":{"command":"./gradlew :app:assembleDebugAndroidTest"}}'
+assert_branch "am instrument, the way to run"   allow command-safety.py '{"tool_input":{"command":"adb shell am instrument -w -e class com.envi.wispr.history.TranscriptRepositoryTest com.envi.wispr.test/androidx.test.runner.AndroidJUnitRunner"}}'
+assert_branch "printing the task name"          allow command-safety.py '{"tool_input":{"command":"printf %s connectedAndroidTest"}}'
+assert_branch "wrapped in bash"                 deny  command-safety.py '{"tool_input":{"command":"bash ./gradlew :app:connectedDebugAndroidTest"}}'
+assert_branch "wrapped in sh -c is still bash"  deny  command-safety.py '{"tool_input":{"command":"sh ./gradlew connectedAndroidTest"}}'
+assert_branch "--dry-run executes nothing"      allow command-safety.py '{"tool_input":{"command":"./gradlew --dry-run :app:connectedDebugAndroidTest"}}'
+assert_branch "a wrapper keeps gradle's flags"  allow command-safety.py '{"tool_input":{"command":"bash ./gradlew --dry-run :app:connectedDebugAndroidTest"}}'
+# NAMED FALSE POSITIVE, asserted so it is a decision and not a surprise: `help --task <name>` runs
+# nothing, and denying it is the cheap side of a trade whose other side is a wiped phone.
+assert_branch "help --task is denied, named"    deny  command-safety.py '{"tool_input":{"command":"./gradlew help --task connectedDebugAndroidTest"}}'
+echo
+
 # THE COMMIT CHECK IS A REAL GIT HOOK NOW, so it is exercised by RUNNING COMMITS rather than by feeding
 # command strings to a parser. Every form below was a separate defect while this was a parser. Here they
 # are one code path, because git computes the staged set before it calls the hook.

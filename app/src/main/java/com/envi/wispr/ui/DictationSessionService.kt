@@ -43,6 +43,7 @@ import com.envi.wispr.paste.InsertionJudgement
 import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
+import com.envi.wispr.polish.PolishEngineLabels
 import com.envi.wispr.polish.PolishService
 import com.envi.wispr.polish.RegexPolisher
 import com.envi.wispr.settings.AppPreferences
@@ -380,7 +381,7 @@ class DictationSessionService : Service() {
                         createdAtMs = System.currentTimeMillis(),
                         durationMs = 0L,
                         speechEngine = "Parakeet",
-                        polishEngine = "",
+                        polishEngine = PolishEngineLabels.NOT_RECORDED,
                         polishLatencyMs = 0L,
                         insertionResult = "pending",
                         status = TranscriptEntity.STATUS_DRAFT,
@@ -419,7 +420,7 @@ class DictationSessionService : Service() {
                     if (!service.isCapturing && state.get() == SessionState.RECORDING) {
                         if (service.terminalReason == AudioCaptureService.TERMINAL_REASON_ERROR) {
                             DebugLogger.error(TAG, "Audio capture ended with a terminal failure")
-                            markDraftInterrupted()
+                            discardDraft()
                             showError("Microphone capture stopped unexpectedly. Try again.")
                         } else {
                             stopAndTranscribe()
@@ -449,7 +450,7 @@ class DictationSessionService : Service() {
                 audioReady = runCatching { audioService?.waitForFileReady(2_000L) == true }.getOrDefault(false)
                 if (!audioReady) {
                     stopAudioCaptureService()
-                    markDraftInterrupted()
+                    discardDraft()
                     showError("Audio capture did not finish safely. Try again.")
                     return@Thread
                 }
@@ -506,7 +507,7 @@ class DictationSessionService : Service() {
     private fun polishAndPublish(rawText: String) {
         rawTranscript = rawText
         if (rawText.isBlank()) {
-            updateDraftStatus(TranscriptEntity.STATUS_NO_SPEECH, insertionResult = "no_speech")
+            discardDraft()
             PasteAccessibilityService.releasePinnedTarget()
             finishSession()
             return
@@ -569,7 +570,7 @@ class DictationSessionService : Service() {
             return
         }
         val finalText = text.ifBlank { rawTranscript }
-        val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) "Raw fallback" else engine
+        val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine
         DebugLogger.log(TAG, "Polish result received ($finalEngine, ${latencyMs}ms, chars=${finalText.length})")
         if (finalText.isBlank()) {
             finishSession()
@@ -773,11 +774,11 @@ class DictationSessionService : Service() {
             }.getOrDefault(false)
             if (!ready) {
                 stopAudioCaptureService()
-                markDraftInterrupted()
+                discardDraft()
                 showError("Audio capture did not finish safely. Try again.")
                 return@launch
             }
-            setDraftStatus(TranscriptEntity.STATUS_CANCELED, insertionResult = "canceled")
+            discardDraft()
             deleteCapturedAudio(runCatching { audioService?.audioFilePath }.getOrNull())
             stopAudioCaptureService()
             finishSession()
@@ -805,7 +806,7 @@ class DictationSessionService : Service() {
     }
 
     private fun handleServiceFailure(message: String) {
-        if (state.get() == SessionState.RECORDING) markDraftInterrupted()
+        if (state.get() == SessionState.RECORDING) discardDraft()
         showError(message)
     }
 
@@ -877,8 +878,47 @@ class DictationSessionService : Service() {
         if (id > 0L) transcriptRepository.updateStatus(id, status, interrupted, insertionResult)
     }
 
-    private fun markDraftInterrupted() {
-        updateDraftStatus(TranscriptEntity.STATUS_INTERRUPTED, interrupted = true)
+    /**
+     * A dictation that produced no words leaves nothing behind.
+     *
+     * The draft row is created the moment recording starts, so that a session killed mid-flight is
+     * still recoverable. Every caller here reaches a terminal state with no transcript WORDS — the
+     * microphone heard nothing, or the session ended before transcription could produce any — so
+     * that row has never held a word and never will, and keeping it turns History into a list the
+     * user has to scroll past to reach their own dictations (founder, 2026-08-31: "we shouldn't log
+     * 'no speech' logs -> that's a waste of history space"; issue #19 says the same about
+     * cancelling).
+     *
+     * **The line is whether the outcome was already ACCOUNTED FOR while the app was alive**, and it
+     * is reached three different ways here. A failure the app survived shows the user a message: a
+     * terminal capture failure, a capture that would not close before transcription, a service
+     * failure while recording, and a cancel whose audio did not close cleanly. A successful cancel
+     * shows no message and does not need one — the user pressed cancel, and the haptic and the
+     * overlay closing acknowledge it. Nothing heard is silent on purpose, and leaves nothing behind
+     * for the same reason: hearing nothing is not an event worth reporting twice. In all three, a
+     * blank History card adds nothing.
+     *
+     * The two writers of `STATUS_INTERRUPTED` that REMAIN are the opposite case, and both keep their
+     * row: this service's own `onDestroy` teardown, and `TranscriptDao.recoverStaleDrafts` on the
+     * next start. Both run when the app was killed with a dictation live, so nobody told the user
+     * anything and the row is the only signal that words were lost. That is why the prune leaves
+     * `interrupted` rows alone.
+     *
+     * The id is cleared after the delete. That does not make a late write impossible — `setDraftStatus`
+     * can still resolve the completed `draftCreation` to the old id — it makes one harmless: the
+     * `UPDATE` matches zero rows and cannot bring the draft back.
+     */
+    private fun discardDraft() {
+        val discard = serviceScope.launch(start = CoroutineStart.LAZY) {
+            val id = draftId.get().takeIf { it > 0L }
+                ?: runCatching { draftCreation?.await() ?: 0L }.getOrDefault(0L)
+            if (id > 0L) {
+                transcriptRepository.discard(id)
+                draftId.set(0L)
+            }
+        }
+        pendingHistoryUpdates += discard
+        discard.start()
     }
 
     private fun stopAudioCaptureService() {

@@ -25,6 +25,22 @@ interface TranscriptDao {
     @Query("DELETE FROM transcripts")
     suspend fun deleteAll()
 
+    @Query("DELETE FROM transcripts WHERE id = :id")
+    suspend fun deleteById(id: Long): Int
+
+    /**
+     * Removes rows written by an older build for a dictation that produced no words.
+     *
+     * Nothing writes either status any more — the session owner deletes its own draft instead — so
+     * this exists for the rows already on a phone. It matches on STATUS alone rather than on empty
+     * text, because a draft row in flight is also textless and is not finished being written.
+     */
+    @Query(
+        "DELETE FROM transcripts WHERE status IN " +
+            "('${TranscriptEntity.STATUS_NO_SPEECH}', '${TranscriptEntity.STATUS_CANCELED}')",
+    )
+    suspend fun deleteWordlessRows(): Int
+
     @Query(
         "UPDATE transcripts SET status = :status, stateChangedAtMs = :stateChangedAtMs, " +
             "insertionResult = COALESCE(:insertionResult, insertionResult), " +

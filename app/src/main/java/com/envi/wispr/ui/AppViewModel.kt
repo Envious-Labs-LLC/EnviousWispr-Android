@@ -177,7 +177,14 @@ class EnviousWisprViewModel(
 
     init {
         viewModelScope.launch {
-            runCatching { repository.recoverStaleOpenRows(clock()) }
+            runCatching {
+                repository.recoverStaleOpenRows(clock())
+                // Rows an older build saved for a dictation with no words in them. Swept here rather
+                // than left for the user to delete, because they are the reason History could not be
+                // scanned. Nothing writes them any more, so on a phone that has run this once it
+                // deletes nothing.
+                repository.pruneWordlessRows()
+            }
                 .onFailure { error -> historyError.value = error.message ?: error::class.simpleName }
         }
         viewModelScope.launch {

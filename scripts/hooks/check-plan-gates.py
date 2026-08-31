@@ -18,10 +18,9 @@ THE FOUR CHECKS
    reviewed. Calling it one-shot would be a claim the code does not keep. Making it truly one-shot needs a
    PostToolUse hook to remove it after the write SUCCEEDS; removing it here would spend the attestation
    before knowing whether the write happened, and a denial would then cost the session its own gate.
-   **It TRIES to preserve the draft on denial**, and says so in the denial either way. macOS does this and
-   it is required, not incidental: a gate that destroys work teaches its own bypass, and the next session
-   will route around it rather than attest. The write can fail — `/tmp` full or read-only — and a denial
-   that claimed a recovery copy it never made would be worse than one that admits it.
+   Draft preservation is no longer Gate 0's business; `preserve` runs on every denial and says so in the
+   denial either way. The write can fail — `/tmp` full or read-only — and a denial that claimed a recovery
+   copy it never made would be worse than one that admits it.
 
 2. USER RUBRIC (Gate 0.5). Every plan carries the rubric or `User Rubric: N/A — <reason>`. **Structural
    completeness only.** Whether the reason is honest is a job for grounded review; a hook cannot infer
@@ -31,6 +30,12 @@ THE FOUR CHECKS
    spelling, so a lane it will later reject must not pass here.
 
 4. CONSOLIDATION. A plan over a size threshold names what it consolidates, or says none.
+
+ALL FOUR RUN BEFORE ANYTHING IS REFUSED, and one denial carries every failure. Refusing at the first
+failure is what makes a plan expensive: a file that does not exist yet can only be created by sending the
+whole document again, so each gate that stays silent until the next attempt costs one more full re-send.
+Measured on the #47 plan (2026-08-31): 28,847 characters sent three times, the middle one byte-identical
+to the first, because Gate 0 and Consolidation reported one at a time.
 
 Exits 0 silently for any file that is not a plan. On malformed or unreadable input it emits NO permission
 decision, which the harness treats as no objection.
@@ -88,6 +93,30 @@ def deny(reason: str) -> None:
     sys.exit(0)
 
 
+def preserve(body: str, path: str) -> str:
+    """Write the resulting document aside, and report honestly whether that worked.
+
+    Called on EVERY denial, not only Gate 0's. A gate that destroys work teaches its own bypass. The
+    author's text also survives in the session transcript, so this is insurance against the transcript
+    being compacted between the denial and the retry, not the primary copy.
+
+    The body written here is the RESULTING document from `resulting_document`, so an Edit is preserved as
+    a whole plan rather than as the fragment the call carried. A fragment saved under a plan's name is the
+    shape that invites someone to paste it over a finished document.
+    """
+    recovery = f"/tmp/.ew-android-{os.path.basename(path)}.blocked-draft.md"
+    try:
+        with open(recovery, "w", encoding="utf-8") as handle:
+            handle.write(body)
+    except OSError as exc:
+        return f"DRAFT NOT PRESERVED: could not write {recovery}: {exc}. Do not claim it was saved."
+    # Never suggest `cp` into place: that reaches the plan path without passing these gates, so a gate
+    # that preserves work would also be teaching the way around itself.
+    return (f"DRAFT PRESERVED at {recovery} ({len(body)} chars). Do NOT regenerate it from memory: read "
+            f"that file, fix it there, then re-issue the SAME call so every gate runs again. Never cp or "
+            f"mv it over {path}.")
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -109,60 +138,71 @@ def main() -> int:
 
     issue = match.group(2)
 
+    # EVERY gate is evaluated before anything is refused, and all failures are reported together.
+    # Refusing at the FIRST failure costs the author one full re-send of the document per gate, because
+    # a file that does not exist yet can only be created by sending the whole thing again. Measured on
+    # the #47 plan (2026-08-31): a 28,847-character plan was sent three times — refused by Gate 0, sent
+    # again byte-identical, refused by Consolidation, sent a third time with both fixed. Two of those
+    # three sends bought nothing. Order is preserved so the numbering reads as a checklist.
+    problems: list[str] = []
+
     # --- 1. Prior context
+    sentinel = f"/tmp/.ew-android-issue-{issue}-context-read" if issue else ""
     if issue and not os.path.exists(full_path):  # only a NEW plan; edits to an existing one are not Gate 0
-        sentinel = f"/tmp/.ew-android-issue-{issue}-context-read"
         fresh = os.path.exists(sentinel) and (time.time() - os.path.getmtime(sentinel)) < SENTINEL_TTL
         if not fresh:
-            recovery = f"/tmp/.ew-android-issue-{issue}-pending-plan.md"
-            try:
-                with open(recovery, "w") as handle:
-                    handle.write(body)
-                # Never suggest `cp` into place: that reaches the plan path without passing checks 2-4,
-                # so a gate that preserves work would also be teaching the way around itself.
-                saved = (f"\n\nDRAFT PRESERVED at {recovery} ({len(body)} chars). Do NOT regenerate it.\n"
-                         f"  touch {sentinel}\n"
-                         f"Then re-issue the SAME Write call, so every remaining plan gate still runs.")
-            except OSError as exc:
-                saved = f"\n\nDRAFT NOT PRESERVED: could not write {recovery}: {exc}"
-            deny(
-                f"BLOCKED: Gate 0 has not been attested for issue #{issue}.\n\n"
+            problems.append(
+                f"Gate 0 — prior context has not been attested for issue #{issue}.\n"
                 f"Read the issue AND .claude/knowledge/session-log.md, plus the PAR rows and the owning "
-                f"knowledge file, then post `Prior context for #{issue}: ...` in chat.\n\n"
+                f"knowledge file, then post `Prior context for #{issue}: ...` in chat.\n"
                 f"Prose in chat is not mechanically observable, so attest it:\n"
                 f"  touch {sentinel}      # issue-scoped, reusable for 30 minutes"
-                f"{saved}"
             )
 
     # --- 2. User Rubric, structural only
     has_rubric = re.search(r"User Rubric:\s*N/A\s*[-—]\s*\S", body) or "## Preface — User Rubric" in body
     if not has_rubric:
-        deny(
-            "BLOCKED: the plan carries no User Rubric and no reasoned N/A.\n\n"
-            "Every plan answers the rubric against a named persona, or states\n"
-            "  User Rubric: N/A — <specific internal-only reason>\n\n"
+        problems.append(
+            "User Rubric — the plan carries neither the rubric nor a reasoned N/A.\n"
+            "Answer it against a named persona, or state\n"
+            "  User Rubric: N/A — <specific internal-only reason>\n"
             "A bare `N/A` is not an answer. This check is structural only: whether the reason is honest "
             "is for grounded review, because a hook cannot infer user-visibility and a pipeline change "
             "reaches the user without touching any screen."
         )
 
-    # --- 3. Lane
+    # --- 3. Lane. The two branches are mutually exclusive, so at most one lane problem is reported.
     declared = re.search(r"\*\*Lane:\*\*\s*`?([A-Za-z/-]+)`?", body)
     if not declared:
-        deny("BLOCKED: the plan declares no lane.\n\nWrite the lane token first on the line:\n"
-             f"  **Lane:** {' | '.join(LANES)}")
-    if declared.group(1).strip() not in LANES:
-        deny(f"BLOCKED: unknown lane {declared.group(1)!r}.\n\n"
-             f"check-validation.sh dispatches on the exact spelling, so a lane it will later reject must "
-             f"not pass here. One of: {', '.join(LANES)}. `Mixed` is not a lane; declare a primary lane "
-             f"and add `mixed_pr: true` on its own line.")
+        problems.append("Lane — the plan declares none.\nWrite the lane token first on the line:\n"
+                        f"  **Lane:** {' | '.join(LANES)}")
+    elif declared.group(1).strip() not in LANES:
+        problems.append(
+            f"Lane — unknown spelling {declared.group(1)!r}.\n"
+            f"check-validation.sh dispatches on the exact spelling, so a lane it will later reject must "
+            f"not pass here. One of: {', '.join(LANES)}. `Mixed` is not a lane; declare a primary lane "
+            f"and add `mixed_pr: true` on its own line."
+        )
 
     # --- 4. Consolidation, only once a plan is big enough for the question to mean anything
     if len(body) > 4000 and not re.search(r"(?i)consolidat", body):
-        deny("BLOCKED: this plan is long enough to be consolidating something and does not say what.\n\n"
-             "Name the dominant root, its one owner, and the consolidation sites — or write "
-             "`Consolidation: none` and say why.")
+        problems.append(
+            "Consolidation — this plan is long enough to be consolidating something and does not say "
+            "what.\nName the dominant root, its one owner, and the consolidation sites, or write "
+            "`Consolidation: none` and say why."
+        )
 
+    if not problems:
+        return 0
+
+    numbered = "\n\n".join(f"{n}. {text}" for n, text in enumerate(problems, 1))
+    plural = "gate" if len(problems) == 1 else "gates"
+    deny(
+        f"BLOCKED: {len(problems)} plan {plural} refused this write. Every gate ran, so this is the "
+        f"COMPLETE list. Fix all of it in one pass, then re-issue once.\n\n"
+        f"{numbered}\n\n"
+        f"{preserve(body, path)}"
+    )
     return 0
 
 

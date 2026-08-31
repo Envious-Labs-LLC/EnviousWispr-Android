@@ -84,6 +84,9 @@ echo
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
 HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
+# A plan basename long enough that its recovery path exceeds the 255-byte filename limit, so the
+# preservation write fails for a real reason rather than a simulated one.
+LONGNAME="issue-9902-$(python3 -c 'print("n"*240)').md"
 
 cleanup() {
     [ -n "$MAINREPO" ]   && rm -rf "$MAINREPO" "$MAINREPO.git"
@@ -97,7 +100,11 @@ cleanup() {
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
-    rm -f "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md
+    # Named in full, never globbed: a `/tmp/.ew-android-*` glob would take a concurrent run's draft.
+    rm -f "$SENTINEL" \
+        /tmp/.ew-android-issue-9901-2026-01-01-control.md.blocked-draft.md
+    # $LONGNAME's draft path is deliberately too long to exist, so removing it only prints an
+    # error at exit. Its absence is the assertion, not something to clean up.
     return 0
 }
 trap cleanup EXIT
@@ -674,8 +681,110 @@ assert "edit leaving a plan incomplete"        deny  check-plan-gates.py "$(pyth
 import json; print(json.dumps({'tool_input':{'file_path':'$EDITPLAN','old_string':'no rubric here','new_string':'still no rubric'}}))")"
 # An empty Write is an exactly-known document, not a failure to reconstruct one. The gates must judge it.
 assert "an empty plan is still judged"         deny  check-plan-gates.py "{\"tool_input\":{\"file_path\":\"$PLAN\",\"content\":\"\"}}"
-rm -f "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md
+rm -f "$SENTINEL"
 echo
+
+echo "check-plan-gates.py — one denial carries every failure, and never costs the draft"
+DRAFT="/tmp/.ew-android-$(basename "$PLAN").blocked-draft.md"
+rm -f "$SENTINEL" "$DRAFT"
+
+# reason_of <hook> <json> — the denial text itself. Empty for anything that is not a deny, so a hook that
+# starts allowing cannot pass a content assertion by accident.
+reason_of() {
+    payload "$2" | "$HOOKS/$1" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    out = json.load(sys.stdin)["hookSpecificOutput"]
+    print(out["permissionDecisionReason"] if out.get("permissionDecision") == "deny" else "")
+except Exception:
+    print("")
+'
+}
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$1" "$2"
+    else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted %s, got %s\n' "$1" "$3" "$2"; fi
+}
+mentions() {  # mentions <name> <haystack> <needle> <yes|no>
+    case "$2" in *"$3"*) got=yes;; *) got=no;; esac
+    check "$1" "$got" "$4"
+}
+
+# The measured case. A new plan with no attestation, no rubric, no lane, and over the consolidation
+# threshold fails FOUR gates. Refusing at the first one is what made the #47 plan cost three full sends
+# of the same 28,847 characters; the middle send was byte-identical to the first and bought nothing.
+FOURBAD=$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$PLAN','content':'x'*4100}}))")
+R=$(reason_of check-plan-gates.py "$FOURBAD")
+mentions "four failures are counted in one denial"  "$R" "BLOCKED: 4 plan gates" yes
+mentions "  ...and Gate 0 is named"                 "$R" "Gate 0"                yes
+mentions "  ...and the rubric is named"             "$R" "User Rubric"           yes
+mentions "  ...and the lane is named"               "$R" "Lane"                  yes
+mentions "  ...and consolidation is named"          "$R" "Consolidation"         yes
+
+# The gate that refused the #47 plan is not Gate 0, and it is the one that preserved nothing.
+touch "$SENTINEL"
+rm -f "$DRAFT"
+ONEBAD=$(python3 -c "
+import json
+body = 'User Rubric: N/A — internal only\n**Lane:** Code\n' + 'x '*2200
+print(json.dumps({'tool_input':{'file_path':'$PLAN','content':body}}))")
+R=$(reason_of check-plan-gates.py "$ONEBAD")
+mentions "a lone consolidation failure says so"     "$R" "BLOCKED: 1 plan gate " yes
+mentions "  ...and reports the draft was preserved" "$R" "DRAFT PRESERVED"       yes
+mentions "  ...and refuses to teach cp into place"  "$R" "Never cp or mv"        yes
+if [ -f "$DRAFT" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...and the draft is really on disk" "exists"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and the draft is really on disk" "missing"; fi
+
+# Byte-for-byte, trailing newlines included. A shell `$(...)` capture drops them, which is how a rescue
+# copy can differ from what the author wrote while every other assertion still passes.
+rm -f "$DRAFT"
+python3 -c "
+import json, sys
+body = 'User Rubric: N/A — internal only\n**Lane:** Code\n' + 'x '*2200 + '\n\n\n'
+open('/tmp/.ew-gate-expected', 'w', encoding='utf-8').write(body)
+sys.stdout.write(json.dumps({'tool_input':{'file_path':'$PLAN','content':body}}))" > /tmp/.ew-gate-payload
+"$HOOKS/check-plan-gates.py" < /tmp/.ew-gate-payload >/dev/null 2>&1
+if cmp -s /tmp/.ew-gate-expected "$DRAFT"; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...byte-identical, trailing newlines kept" "same"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...byte-identical, trailing newlines kept" "differs"
+fi
+rm -f /tmp/.ew-gate-expected /tmp/.ew-gate-payload
+
+# An Edit is preserved as the WHOLE resulting plan, never as the fragment the call carried. A fragment
+# saved under a plan's name is what invites someone to paste it over a finished document.
+printf 'User Rubric: N/A — internal only\n**Lane:** Code\n\nteh body.\n' > "$EDITPLAN"
+EDRAFT="/tmp/.ew-android-$(basename "$EDITPLAN").blocked-draft.md"
+rm -f "$EDRAFT"
+python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$EDITPLAN','old_string':'User Rubric: N/A — internal only\n','new_string':''}}))" \
+  | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
+if [ -f "$EDRAFT" ] && grep -q '^\*\*Lane:\*\* Code' "$EDRAFT" && grep -q 'teh body' "$EDRAFT"; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "an edit preserves the whole document" "whole"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "an edit preserves the whole document" "fragment or missing"
+fi
+rm -f "$EDRAFT"
+
+# The half that matters more: a plan that PASSES must leave nothing behind. A preserver that always fires
+# looks like insurance while quietly littering /tmp with copies of finished plans.
+rm -f "$DRAFT"
+CLEAN=$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$PLAN','content':'User Rubric: N/A — internal only\n**Lane:** Code\n'}}))")
+assert "a passing plan is allowed"              allow check-plan-gates.py "$CLEAN"
+if [ -f "$DRAFT" ]; then FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and writes no draft" "wrote one"
+else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...and writes no draft" "none"; fi
+
+# A denial that CLAIMED a rescue copy it never made would be worse than one that admits it. Forced with a
+# real unwritable path, not a stubbed function.
+LONGPLAN="docs/feature-requests/$LONGNAME"
+R=$(reason_of check-plan-gates.py "$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$LONGPLAN','content':'x'*4100}}))")")
+mentions "an unwritable rescue path admits it"      "$R" "DRAFT NOT PRESERVED"   yes
+mentions "  ...and never claims preservation"       "$R" "DRAFT PRESERVED"       no
+rm -f "$SENTINEL" "$DRAFT"
+echo
+
 
 # The README carries a copy of the live hook registration, because `.claude/` is gitignored and that copy
 # is the only thing a fresh clone can restore the wiring from. A copy nothing compares is how the two

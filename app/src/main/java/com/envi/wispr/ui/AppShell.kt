@@ -108,7 +108,6 @@ import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.models.modelUiState
 import com.envi.wispr.history.TranscriptEntity
-import com.envi.wispr.insertion.InsertionOutcomeMessages
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.providers.PolishMode
@@ -256,6 +255,10 @@ internal fun EnviousWisprApp(
     val destination = AppDestination.entries.firstOrNull { it.name == destinationName }
         ?: AppDestination.History
     var settingsPageName by rememberSaveable { mutableStateOf<String?>(null) }
+    // The one History card that is open, held here rather than inside the row so that scrolling it
+    // out of the list, or leaving History for another tab, does not close it. Null is "all closed",
+    // and holding ONE id is what makes "only one open at a time" true by construction.
+    var expandedTranscriptId by rememberSaveable { mutableStateOf<Long?>(null) }
     val settingsPage = settingsPageName?.let { saved ->
         SettingsPage.entries.firstOrNull { it.name == saved }
     }
@@ -303,6 +306,8 @@ internal fun EnviousWisprApp(
                             totalCount = uiState.historyTotalCount,
                             search = uiState.historySearch,
                             error = uiState.historyError,
+                            expandedId = expandedTranscriptId,
+                            onExpandedChange = { expandedTranscriptId = it },
                             onSearchChange = onHistorySearchChange,
                             onKeep = onKeepHistory,
                             onDelete = onDeleteHistory,
@@ -694,113 +699,6 @@ internal fun ScreenContainer(
             )
         }
     }
-}
-
-@Composable
-private fun HistoryScreen(
-    transcripts: List<TranscriptEntity>,
-    totalCount: Int,
-    search: String,
-    error: String?,
-    onSearchChange: (String) -> Unit,
-    onKeep: (TranscriptEntity) -> Unit,
-    onDelete: (TranscriptEntity) -> Unit,
-    onDeleteAll: () -> Unit,
-) {
-    var confirmDeleteAll by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf<TranscriptEntity?>(null) }
-    val context = LocalContext.current
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        item {
-            Text(
-                "Your past dictations, searchable and ready to reuse.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().widthIn(max = 900.dp),
-            )
-        }
-        item {
-            OutlinedTextField(value = search, onValueChange = onSearchChange, modifier = Modifier.fillMaxWidth().widthIn(max = 900.dp), label = { Text("Search history") }, singleLine = true)
-        }
-        if (error != null) {
-            item { Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth().widthIn(max = 900.dp)) }
-        }
-        if (transcripts.isEmpty()) {
-            item {
-                ElevatedCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(if (search.isBlank()) "No dictations yet" else "No matching dictations", style = MaterialTheme.typography.titleLarge)
-                        Text("Completed dictations stay on this phone.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        } else {
-            item {
-                Row(Modifier.fillMaxWidth().widthIn(max = 900.dp), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = { confirmDeleteAll = true }) { Text("Delete all") }
-                }
-            }
-            items(transcripts, key = { it.id }) { transcript ->
-                ElevatedCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // Empty for every delivery outcome, because where one dictation's words
-                        // went is a fact about one moment while this row is read for weeks. What
-                        // survives is a genuine transcript failure. Owner:
-                        // `InsertionOutcomeMessages.historyStatusLine`.
-                        val statusLine = InsertionOutcomeMessages.historyStatusLine(transcript.status)
-                        if (statusLine.isNotEmpty()) {
-                            Text(
-                                statusLine,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                        }
-                        Text("Final", style = MaterialTheme.typography.labelMedium)
-                        Text(
-                            transcript.finalText.ifBlank { "No finalized text yet" },
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                        Text("Original", style = MaterialTheme.typography.labelMedium)
-                        Text(transcript.originalText, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(transcript.createdAtMs))} · ${transcript.speechEngine}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = {
-                                val copied = runCatching {
-                                    context.getSystemService(ClipboardManager::class.java)
-                                        ?.setPrimaryClip(ClipData.newPlainText("EnviousWispr", transcript.finalText))
-                                        ?: error("Clipboard unavailable")
-                                }.isSuccess
-                                // This row now owns the clipboard, so the standing "press and hold,
-                                // then tap Paste" claim about an earlier dictation is false. The app
-                                // made this replacement itself and knows it succeeded, which is the
-                                // only reason it can be retracted at all.
-                                if (copied) {
-                                }
-                                Toast.makeText(context, if (copied) "Copied" else "Unable to copy", Toast.LENGTH_SHORT).show()
-                            }) { Text("Copy") }
-                            TextButton(onClick = { onKeep(transcript) }) { Text(if (transcript.kept) "Unkeep" else "Keep") }
-                            TextButton(onClick = { confirmDelete = transcript }) { Text("Delete") }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    confirmDelete?.let { transcript ->
-        AlertDialog(
-            onDismissRequest = { confirmDelete = null },
-            title = { Text("Delete this dictation?") },
-            text = { Text("This removes it from local history.") },
-            confirmButton = { TextButton(onClick = { confirmDelete = null; onDelete(transcript) }) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
-        )
-    }
-    if (confirmDeleteAll) AlertDialog(onDismissRequest = { confirmDeleteAll = false }, title = { Text("Delete all history?") }, text = { Text("This permanently removes all $totalCount saved dictations from this phone.") }, confirmButton = { TextButton(onClick = { confirmDeleteAll = false; onDeleteAll() }) { Text("Delete all") } }, dismissButton = { TextButton(onClick = { confirmDeleteAll = false }) { Text("Cancel") } })
 }
 
 @Composable

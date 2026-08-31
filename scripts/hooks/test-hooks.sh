@@ -82,7 +82,7 @@ echo
 # editing. The previous version registered the six in this block and left four allocated hundreds of
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
-GATE_EXP=""; GATE_PAY=""
+GATE_EXP=""; GATE_PAY=""; VICTIM=""
 HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan basename long enough that its recovery path exceeds the 255-byte filename limit, so the
@@ -104,6 +104,7 @@ cleanup() {
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
     [ -n "$GATE_EXP" ]   && rm -rf "$GATE_EXP"   # -rf for every mktemp resource, as the check requires
     [ -n "$GATE_PAY" ]   && rm -rf "$GATE_PAY"
+    [ -n "$VICTIM" ]     && rm -rf "$VICTIM"
     # Named in full, never globbed: a `/tmp/.ew-android-*` glob would take a concurrent run's draft.
     rm -f "$SENTINEL" \
         "/tmp/.ew-android-$SCOPE-issue-9901-2026-01-01-control.md.blocked-draft.md"
@@ -827,6 +828,26 @@ else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and sweeps a week-old d
 if [ -e "$FRESH" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...and leaves a fresh one alone" "kept"
 else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and leaves a fresh one alone" "deleted"; fi
 rm -f "$STALE" "$FRESH"
+
+# /tmp is world-writable, so the rescue path is a predictable name anyone can occupy first. A plain
+# open(path,"w") writes straight THROUGH a symlink sitting there and overwrites whatever it points at;
+# that was demonstrated against this hook before the staging-file rewrite. The draft is also a whole
+# internal plan, so it has no business being world-readable.
+VICTIM=$(mktemp) || exit 2
+printf 'ORIGINAL VICTIM CONTENT\n' > "$VICTIM"
+rm -f "$DRAFT"; ln -s "$VICTIM" "$DRAFT"
+payload "$ONEBAD" | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
+if grep -q 'ORIGINAL VICTIM CONTENT' "$VICTIM"; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a symlink at the rescue path is not followed" "intact"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "a symlink at the rescue path is not followed" "overwritten"
+fi
+MODE=$(stat -f "%Lp" "$DRAFT" 2>/dev/null)
+check "  ...and the draft is not world-readable" "$MODE" "600"
+# A failed move must not leave its staging file behind in the shared directory.
+LEFT=$(ls /tmp/.ew-android-staging-* 2>/dev/null | wc -l | tr -d ' ')
+check "  ...and no staging file is left behind" "$LEFT" "0"
+rm -f "$DRAFT" "$VICTIM"
 rm -f "$SENTINEL" "$DRAFT"
 echo
 

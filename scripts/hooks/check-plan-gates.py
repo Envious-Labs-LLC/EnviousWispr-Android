@@ -47,6 +47,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 
 SENTINEL_TTL = 30 * 60
@@ -151,9 +152,25 @@ def preserve(body: str, path: str, scope: str) -> str:
     shape that invites someone to paste it over a finished document.
     """
     recovery = f"/tmp/.ew-android-{scope}-{os.path.basename(path)}.blocked-draft.md"
+    # Written to a private temporary file and MOVED into place, which closes three properties of a
+    # predictable path in a world-writable directory in one move, rather than one guard each:
+    #   mkstemp creates 0600, so the plan is not world-readable the way a plain open() left it at 0644;
+    #   os.replace swaps the DIRECTORY ENTRY, so a symlink already sitting at `recovery` is replaced
+    #     rather than followed — a plain open(..., "w") wrote straight THROUGH such a symlink and
+    #     overwrote whatever it pointed at, demonstrated against this hook before the fix;
+    #   the move is atomic, so a reader never sees a half-written draft the way truncate-in-place allows.
     try:
-        with open(recovery, "w", encoding="utf-8") as handle:
-            handle.write(body)
+        fd, staging = tempfile.mkstemp(prefix=".ew-android-staging-", dir="/tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(body)
+            os.replace(staging, recovery)
+        except OSError:
+            try:
+                os.unlink(staging)   # never leave the staging file behind on a failed move
+            except OSError:
+                pass
+            raise
     except OSError as exc:
         return f"DRAFT NOT PRESERVED: could not write {recovery}: {exc}. Do not claim it was saved."
     # Never suggest `cp` into place: that reaches the plan path without passing these gates, so a gate

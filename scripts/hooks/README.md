@@ -47,7 +47,7 @@ absent, and the suite says so rather than passing quietly. Edit either one and r
 |---|---|---|---|
 | `check-protected-paths.py` | Edit/Write/MultiEdit | a ship-path edit while on `main` | on a branch, or editing a local-only path |
 | `command-safety.py` | Bash | a recognised shell write into a ship path on `main`; `--no-verify` on any branch | on a branch, or any other command |
-| `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer | every file that is not a plan, and any edit whose result it cannot reconstruct |
+| `check-plan-gates.py` | Edit/Write/MultiEdit | a plan file missing its prior-context attestation, its User Rubric, a valid lane, or — past a size threshold — a consolidation answer. All four run before anything is refused, so one denial lists every failure and preserves the draft | every file that is not a plan, and any edit whose result it cannot reconstruct |
 | `session-end-check.sh` | SessionEnd | nothing, it reports | the tree is clean and nothing is unpushed |
 | `../githooks/pre-commit` | git's pre-commit | any commit whose staged set adds, changes, renames or DELETES a ship path, on `main` | on a branch, or a commit touching nothing shipped |
 | `../githooks/reference-transaction` | every update to `refs/heads/main` | any move — forward OR divergent — onto ship-path commits that are not on the upstream | a reviewed upstream fetch or pull, including `--rebase` with no local ship commits; a reset backwards; an amend of the current commit; a move carrying nothing shipped |

@@ -18,10 +18,9 @@ THE FOUR CHECKS
    reviewed. Calling it one-shot would be a claim the code does not keep. Making it truly one-shot needs a
    PostToolUse hook to remove it after the write SUCCEEDS; removing it here would spend the attestation
    before knowing whether the write happened, and a denial would then cost the session its own gate.
-   **It TRIES to preserve the draft on denial**, and says so in the denial either way. macOS does this and
-   it is required, not incidental: a gate that destroys work teaches its own bypass, and the next session
-   will route around it rather than attest. The write can fail — `/tmp` full or read-only — and a denial
-   that claimed a recovery copy it never made would be worse than one that admits it.
+   Draft preservation is no longer Gate 0's business; `preserve` runs on every denial and says so in the
+   denial either way. The write can fail — `/tmp` full or read-only — and a denial that claimed a recovery
+   copy it never made would be worse than one that admits it.
 
 2. USER RUBRIC (Gate 0.5). Every plan carries the rubric or `User Rubric: N/A — <reason>`. **Structural
    completeness only.** Whether the reason is honest is a job for grounded review; a hook cannot infer
@@ -32,17 +31,27 @@ THE FOUR CHECKS
 
 4. CONSOLIDATION. A plan over a size threshold names what it consolidates, or says none.
 
+ALL FOUR RUN BEFORE ANYTHING IS REFUSED, and one denial carries every failure. Refusing at the first
+failure is what makes a plan expensive: a file that does not exist yet can only be created by sending the
+whole document again, so each gate that stays silent until the next attempt costs one more full re-send.
+Measured on the #47 plan (2026-08-31): 28,847 characters sent three times, the middle one byte-identical
+to the first, because Gate 0 and Consolidation reported one at a time.
+
 Exits 0 silently for any file that is not a plan. On malformed or unreadable input it emits NO permission
 decision, which the harness treats as no objection.
 """
 
+import glob
+import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 
 SENTINEL_TTL = 30 * 60
+DRAFT_STALE_AFTER = 7 * 24 * 60 * 60
 LANES = ["Code", "Benchmark", "CI/workflow", "Docs/dev-tooling"]
 PLAN = re.compile(r"docs/feature-requests/(issue-(\d+)|plan)-[\w.-]+\.md$")
 
@@ -63,7 +72,11 @@ def resulting_document(tool_input: dict, full_path: str) -> str | None:
         return tool_input["content"]
     try:
         body = open(full_path, encoding="utf-8").read()
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError: a plan file holding a byte that is not valid UTF-8 used
+        # to raise straight past `main`, printing a traceback and exiting 1 with NO decision, which the
+        # harness reads as no objection — the same disarm the preservation write had, at the site that
+        # runs BEFORE it. Reconstruction genuinely failed here, and `None` is already that answer.
         return None
     edits = tool_input.get("edits")
     if not isinstance(edits, list):
@@ -88,6 +101,99 @@ def deny(reason: str) -> None:
     sys.exit(0)
 
 
+def draft_scope(payload: dict) -> str:
+    """A short discriminator so two authors denied on the SAME plan filename do not overwrite each other.
+
+    Plan basenames carry an issue number, a date and a slug, so two sessions replanning one issue on one
+    day collide exactly. Without this the second denial truncates the first author's rescue copy, which
+    is the one failure this whole function exists to prevent.
+
+    The session id is the right key because it names WHO was denied. Where the payload carries none, the
+    working directory is the next most stable stand-in: two worktrees differ, and two denials from one
+    worktree SHOULD share a file, since the later draft is the same author's newer text.
+    """
+    session = payload.get("session_id")
+    key = session if isinstance(session, str) and session.strip() else os.getcwd()
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def sweep_old_drafts() -> None:
+    """Delete rescue copies old enough that nobody is coming back for them.
+
+    OPPORTUNISTIC, and the name says so rather than promising a lifetime. This runs on every invocation
+    of the hook against a plan file, refused or not, so an ordinary passing plan write clears what earlier
+    refusals left. It is NOT a timer: if nobody writes a plan for a month, a draft sits for a month. An
+    earlier version swept only from inside `preserve`, which runs on denials alone, so the constant named
+    a bound that nothing enforced.
+
+    Deleting a plan's own draft the moment that plan PASSES is a different thing and is deliberately not
+    done: this hook runs BEFORE the write, so a call that passes here can still be refused by another
+    hook, and the draft would already be gone. That needs a PostToolUse hook firing after the write
+    actually succeeds, and none is registered.
+    """
+    cutoff = time.time() - DRAFT_STALE_AFTER
+    try:
+        entries = glob.glob("/tmp/.ew-android-*.blocked-draft.md")
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if os.path.getmtime(entry) < cutoff:   # never a fresh file, so never a concurrent author's
+                os.unlink(entry)
+        except OSError:
+            pass
+
+
+def preserve(body: str, path: str, scope: str) -> str:
+    """Write the resulting document aside, and report honestly whether that worked.
+
+    Called on EVERY denial, not only Gate 0's. A gate that destroys work teaches its own bypass. The
+    author's text also survives in the session transcript, so this is insurance against the transcript
+    being compacted between the denial and the retry, not the primary copy.
+
+    The body written here is the RESULTING document from `resulting_document`, so an Edit is preserved as
+    a whole plan rather than as the fragment the call carried. A fragment saved under a plan's name is the
+    shape that invites someone to paste it over a finished document.
+    """
+    recovery = f"/tmp/.ew-android-{scope}-{os.path.basename(path)}.blocked-draft.md"
+    # Written to a private temporary file and MOVED into place, which closes three properties of a
+    # predictable path in a world-writable directory in one move, rather than one guard each:
+    #   mkstemp creates 0600, so the plan is not world-readable the way a plain open() left it at 0644;
+    #   os.replace swaps the DIRECTORY ENTRY, so a symlink already sitting at `recovery` is replaced
+    #     rather than followed — a plain open(..., "w") wrote straight THROUGH such a symlink and
+    #     overwrote whatever it pointed at, demonstrated against this hook before the fix;
+    #   the move is atomic, so a reader never sees a half-written draft the way truncate-in-place allows.
+    # EVERY failure in here is caught, including ones that are not OSError. Preservation is best effort
+    # and the gate is not: an exception escaping this function reaches main, prints a traceback, exits 1
+    # with NO permission decision, and the harness lets the write through — so a crash while trying to
+    # save the author's work DISARMS the gate it was helping. Measured: a payload whose content carries
+    # a lone surrogate ("\ud800") raises UnicodeEncodeError from `handle.write`, which no OSError clause
+    # catches, and that input walked past all four gates while leaving a staging file behind.
+    # The staging name carries `scope` so a concurrent invocation's file is distinguishable from this
+    # one's; a bare shared prefix cannot be told apart by any observer, including our own suite.
+    staging = None
+    try:
+        fd, staging = tempfile.mkstemp(prefix=f".ew-android-staging-{scope}-", dir="/tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        os.replace(staging, recovery)
+    except Exception as exc:   # noqa: BLE001 — deliberately broad; see the paragraph above
+        if staging is not None:
+            try:
+                os.unlink(staging)   # never leave the staging file behind on a failed write or move
+            except OSError:
+                pass
+        # `{exc}` not `{exc!r}`: the repr of a UnicodeEncodeError carries the ENTIRE offending string,
+        # which would echo the whole plan back into the denial — the one cost this change exists to cut.
+        return (f"DRAFT NOT PRESERVED: could not write {recovery}: "
+                f"{type(exc).__name__}: {exc}. Do not claim it was saved.")
+    # Never suggest `cp` into place: that reaches the plan path without passing these gates, so a gate
+    # that preserves work would also be teaching the way around itself.
+    return (f"DRAFT PRESERVED at {recovery} ({len(body)} chars). Do NOT regenerate it from memory: read "
+            f"that file, fix it there, then re-issue the SAME call so every gate runs again. Never cp or "
+            f"mv it over {path}.")
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -108,61 +214,73 @@ def main() -> int:
         return 0  # an edit we cannot reconstruct is not a plan we can judge
 
     issue = match.group(2)
+    sweep_old_drafts()   # every invocation, so a PASSING write clears what earlier refusals left behind
+
+    # EVERY gate is evaluated before anything is refused, and all failures are reported together.
+    # Refusing at the FIRST failure costs the author one full re-send of the document per gate, because
+    # a file that does not exist yet can only be created by sending the whole thing again. Measured on
+    # the #47 plan (2026-08-31): a 28,847-character plan was sent three times — refused by Gate 0, sent
+    # again byte-identical, refused by Consolidation, sent a third time with both fixed. Two of those
+    # three sends bought nothing. Order is preserved so the numbering reads as a checklist.
+    problems: list[str] = []
 
     # --- 1. Prior context
+    sentinel = f"/tmp/.ew-android-issue-{issue}-context-read" if issue else ""
     if issue and not os.path.exists(full_path):  # only a NEW plan; edits to an existing one are not Gate 0
-        sentinel = f"/tmp/.ew-android-issue-{issue}-context-read"
         fresh = os.path.exists(sentinel) and (time.time() - os.path.getmtime(sentinel)) < SENTINEL_TTL
         if not fresh:
-            recovery = f"/tmp/.ew-android-issue-{issue}-pending-plan.md"
-            try:
-                with open(recovery, "w") as handle:
-                    handle.write(body)
-                # Never suggest `cp` into place: that reaches the plan path without passing checks 2-4,
-                # so a gate that preserves work would also be teaching the way around itself.
-                saved = (f"\n\nDRAFT PRESERVED at {recovery} ({len(body)} chars). Do NOT regenerate it.\n"
-                         f"  touch {sentinel}\n"
-                         f"Then re-issue the SAME Write call, so every remaining plan gate still runs.")
-            except OSError as exc:
-                saved = f"\n\nDRAFT NOT PRESERVED: could not write {recovery}: {exc}"
-            deny(
-                f"BLOCKED: Gate 0 has not been attested for issue #{issue}.\n\n"
+            problems.append(
+                f"Gate 0 — prior context has not been attested for issue #{issue}.\n"
                 f"Read the issue AND .claude/knowledge/session-log.md, plus the PAR rows and the owning "
-                f"knowledge file, then post `Prior context for #{issue}: ...` in chat.\n\n"
+                f"knowledge file, then post `Prior context for #{issue}: ...` in chat.\n"
                 f"Prose in chat is not mechanically observable, so attest it:\n"
                 f"  touch {sentinel}      # issue-scoped, reusable for 30 minutes"
-                f"{saved}"
             )
 
     # --- 2. User Rubric, structural only
     has_rubric = re.search(r"User Rubric:\s*N/A\s*[-—]\s*\S", body) or "## Preface — User Rubric" in body
     if not has_rubric:
-        deny(
-            "BLOCKED: the plan carries no User Rubric and no reasoned N/A.\n\n"
-            "Every plan answers the rubric against a named persona, or states\n"
-            "  User Rubric: N/A — <specific internal-only reason>\n\n"
+        problems.append(
+            "User Rubric — the plan carries neither the rubric nor a reasoned N/A.\n"
+            "Answer it against a named persona, or state\n"
+            "  User Rubric: N/A — <specific internal-only reason>\n"
             "A bare `N/A` is not an answer. This check is structural only: whether the reason is honest "
             "is for grounded review, because a hook cannot infer user-visibility and a pipeline change "
             "reaches the user without touching any screen."
         )
 
-    # --- 3. Lane
+    # --- 3. Lane. The two branches are mutually exclusive, so at most one lane problem is reported.
     declared = re.search(r"\*\*Lane:\*\*\s*`?([A-Za-z/-]+)`?", body)
     if not declared:
-        deny("BLOCKED: the plan declares no lane.\n\nWrite the lane token first on the line:\n"
-             f"  **Lane:** {' | '.join(LANES)}")
-    if declared.group(1).strip() not in LANES:
-        deny(f"BLOCKED: unknown lane {declared.group(1)!r}.\n\n"
-             f"check-validation.sh dispatches on the exact spelling, so a lane it will later reject must "
-             f"not pass here. One of: {', '.join(LANES)}. `Mixed` is not a lane; declare a primary lane "
-             f"and add `mixed_pr: true` on its own line.")
+        problems.append("Lane — the plan declares none.\nWrite the lane token first on the line:\n"
+                        f"  **Lane:** {' | '.join(LANES)}")
+    elif declared.group(1).strip() not in LANES:
+        problems.append(
+            f"Lane — unknown spelling {declared.group(1)!r}.\n"
+            f"check-validation.sh dispatches on the exact spelling, so a lane it will later reject must "
+            f"not pass here. One of: {', '.join(LANES)}. `Mixed` is not a lane; declare a primary lane "
+            f"and add `mixed_pr: true` on its own line."
+        )
 
     # --- 4. Consolidation, only once a plan is big enough for the question to mean anything
     if len(body) > 4000 and not re.search(r"(?i)consolidat", body):
-        deny("BLOCKED: this plan is long enough to be consolidating something and does not say what.\n\n"
-             "Name the dominant root, its one owner, and the consolidation sites — or write "
-             "`Consolidation: none` and say why.")
+        problems.append(
+            "Consolidation — this plan is long enough to be consolidating something and does not say "
+            "what.\nName the dominant root, its one owner, and the consolidation sites, or write "
+            "`Consolidation: none` and say why."
+        )
 
+    if not problems:
+        return 0
+
+    numbered = "\n\n".join(f"{n}. {text}" for n, text in enumerate(problems, 1))
+    plural = "gate" if len(problems) == 1 else "gates"
+    deny(
+        f"BLOCKED: {len(problems)} plan {plural} refused this write. Every gate ran, so this is the "
+        f"COMPLETE list. Fix all of it in one pass, then re-issue once.\n\n"
+        f"{numbered}\n\n"
+        f"{preserve(body, path, draft_scope(payload))}"
+    )
     return 0
 
 

@@ -82,8 +82,13 @@ echo
 # editing. The previous version registered the six in this block and left four allocated hundreds of
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
+GATE_EXP=""; GATE_PAY=""; VICTIM=""; STAGE_B=""; STAGE_A=""
 HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
+# A plan basename long enough that its recovery path exceeds the 255-byte filename limit, so the
+# preservation write fails for a real reason rather than a simulated one.
+LONGNAME="issue-9902-$(python3 -c 'print("n"*240)').md"
+SCOPE=$(python3 -c "import hashlib,os;print(hashlib.sha256(os.getcwd().encode()).hexdigest()[:12])")
 
 cleanup() {
     [ -n "$MAINREPO" ]   && rm -rf "$MAINREPO" "$MAINREPO.git"
@@ -97,7 +102,16 @@ cleanup() {
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
-    rm -f "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md
+    [ -n "$GATE_EXP" ]   && rm -rf "$GATE_EXP"   # -rf for every mktemp resource, as the check requires
+    [ -n "$GATE_PAY" ]   && rm -rf "$GATE_PAY"
+    [ -n "$VICTIM" ]     && rm -rf "$VICTIM"
+    [ -n "$STAGE_B" ]    && rm -rf "$STAGE_B"
+    [ -n "$STAGE_A" ]    && rm -rf "$STAGE_A"
+    # Named in full, never globbed: a `/tmp/.ew-android-*` glob would take a concurrent run's draft.
+    rm -f "$SENTINEL" \
+        "/tmp/.ew-android-$SCOPE-issue-9901-2026-01-01-control.md.blocked-draft.md"
+    # $LONGNAME's draft path is deliberately too long to exist, so removing it only prints an
+    # error at exit. Its absence is the assertion, not something to clean up.
     return 0
 }
 trap cleanup EXIT
@@ -674,8 +688,205 @@ assert "edit leaving a plan incomplete"        deny  check-plan-gates.py "$(pyth
 import json; print(json.dumps({'tool_input':{'file_path':'$EDITPLAN','old_string':'no rubric here','new_string':'still no rubric'}}))")"
 # An empty Write is an exactly-known document, not a failure to reconstruct one. The gates must judge it.
 assert "an empty plan is still judged"         deny  check-plan-gates.py "{\"tool_input\":{\"file_path\":\"$PLAN\",\"content\":\"\"}}"
-rm -f "$SENTINEL" /tmp/.ew-android-issue-9901-pending-plan.md
+rm -f "$SENTINEL"
 echo
+
+echo "check-plan-gates.py — one denial carries every failure, and never costs the draft"
+# The hook scopes each rescue copy to the author, so two sessions denied on the same plan filename
+# cannot truncate each other. With no session id in the payload it falls back to the working
+# directory, which is also what keeps two concurrent runs of this suite apart.
+DRAFT="/tmp/.ew-android-$SCOPE-$(basename "$PLAN").blocked-draft.md"
+GATE_EXP=$(mktemp) || exit 2
+GATE_PAY=$(mktemp) || exit 2
+rm -f "$SENTINEL" "$DRAFT"
+
+# reason_of <hook> <json> — the denial text itself. Empty for anything that is not a deny, so a hook that
+# starts allowing cannot pass a content assertion by accident.
+reason_of() {
+    payload "$2" | "$HOOKS/$1" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    out = json.load(sys.stdin)["hookSpecificOutput"]
+    print(out["permissionDecisionReason"] if out.get("permissionDecision") == "deny" else "")
+except Exception:
+    print("")
+'
+}
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "$1" "$2"
+    else FAIL=$((FAIL+1)); printf '  FAIL  %-58s wanted %s, got %s\n' "$1" "$3" "$2"; fi
+}
+mentions() {  # mentions <name> <haystack> <needle> <yes|no>
+    case "$2" in *"$3"*) got=yes;; *) got=no;; esac
+    check "$1" "$got" "$4"
+}
+
+# The measured case. A new plan with no attestation, no rubric, no lane, and over the consolidation
+# threshold fails FOUR gates. Refusing at the first one is what made the #47 plan cost three full sends
+# of the same 28,847 characters; the middle send was byte-identical to the first and bought nothing.
+FOURBAD=$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$PLAN','content':'x'*4100}}))")
+R=$(reason_of check-plan-gates.py "$FOURBAD")
+mentions "four failures are counted in one denial"  "$R" "BLOCKED: 4 plan gates" yes
+mentions "  ...and Gate 0 is named"                 "$R" "Gate 0"                yes
+mentions "  ...and the rubric is named"             "$R" "User Rubric"           yes
+mentions "  ...and the lane is named"               "$R" "Lane"                  yes
+mentions "  ...and consolidation is named"          "$R" "Consolidation"         yes
+
+# The gate that refused the #47 plan is not Gate 0, and it is the one that preserved nothing.
+touch "$SENTINEL"
+rm -f "$DRAFT"
+ONEBAD=$(python3 -c "
+import json
+body = 'User Rubric: N/A — internal only\n**Lane:** Code\n' + 'x '*2200
+print(json.dumps({'tool_input':{'file_path':'$PLAN','content':body}}))")
+R=$(reason_of check-plan-gates.py "$ONEBAD")
+mentions "a lone consolidation failure says so"     "$R" "BLOCKED: 1 plan gate " yes
+mentions "  ...and reports the draft was preserved" "$R" "DRAFT PRESERVED"       yes
+mentions "  ...and refuses to teach cp into place"  "$R" "Never cp or mv"        yes
+if [ -f "$DRAFT" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...and the draft is really on disk" "exists"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and the draft is really on disk" "missing"; fi
+
+# Byte-for-byte, trailing newlines included. A shell `$(...)` capture drops them, which is how a rescue
+# copy can differ from what the author wrote while every other assertion still passes.
+rm -f "$DRAFT"
+python3 -c "
+import json, sys
+body = 'User Rubric: N/A — internal only\n**Lane:** Code\n' + 'x '*2200 + '\n\n\n'
+open('$GATE_EXP', 'w', encoding='utf-8').write(body)
+sys.stdout.write(json.dumps({'tool_input':{'file_path':'$PLAN','content':body}}))" > "$GATE_PAY"
+"$HOOKS/check-plan-gates.py" < "$GATE_PAY" >/dev/null 2>&1
+if cmp -s "$GATE_EXP" "$DRAFT"; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...byte-identical, trailing newlines kept" "same"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...byte-identical, trailing newlines kept" "differs"
+fi
+
+# An Edit is preserved as the WHOLE resulting plan, never as the fragment the call carried. A fragment
+# saved under a plan's name is what invites someone to paste it over a finished document.
+printf 'User Rubric: N/A — internal only\n**Lane:** Code\n\nteh body.\n' > "$EDITPLAN"
+EDRAFT="/tmp/.ew-android-$SCOPE-$(basename "$EDITPLAN").blocked-draft.md"
+rm -f "$EDRAFT"
+python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$EDITPLAN','old_string':'User Rubric: N/A — internal only\n','new_string':''}}))" \
+  | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
+if [ -f "$EDRAFT" ] && grep -q '^\*\*Lane:\*\* Code' "$EDRAFT" && grep -q 'teh body' "$EDRAFT"; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "an edit preserves the whole document" "whole"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "an edit preserves the whole document" "fragment or missing"
+fi
+rm -f "$EDRAFT"
+
+# The half that matters more: a plan that PASSES must leave nothing behind. A preserver that always fires
+# looks like insurance while quietly littering /tmp with copies of finished plans.
+rm -f "$DRAFT"
+CLEAN=$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$PLAN','content':'User Rubric: N/A — internal only\n**Lane:** Code\n'}}))")
+assert "a passing plan is allowed"              allow check-plan-gates.py "$CLEAN"
+if [ -f "$DRAFT" ]; then FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and writes no draft" "wrote one"
+else PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...and writes no draft" "none"; fi
+
+# A denial that CLAIMED a rescue copy it never made would be worse than one that admits it. Forced with a
+# real unwritable path, not a stubbed function.
+LONGPLAN="docs/feature-requests/$LONGNAME"
+R=$(reason_of check-plan-gates.py "$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$LONGPLAN','content':'x'*4100}}))")")
+mentions "an unwritable rescue path admits it"      "$R" "DRAFT NOT PRESERVED"   yes
+mentions "  ...and never claims preservation"       "$R" "DRAFT PRESERVED"       no
+
+# Two authors denied on the SAME plan filename must not truncate each other's rescue copy. Plan names
+# carry an issue number, a date and a slug, so two sessions replanning one issue on one day collide
+# exactly, and the loser loses the text this whole mechanism exists to keep.
+rm -f "$DRAFT"
+ALICE=$(python3 -c "
+import json; print(json.dumps({'session_id':'alice','tool_input':{'file_path':'$PLAN','content':'ALICE-BODY '+'x'*4100}}))")
+BOB=$(python3 -c "
+import json; print(json.dumps({'session_id':'bob','tool_input':{'file_path':'$PLAN','content':'BOB-BODY '+'x'*4100}}))")
+payload "$ALICE" | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
+payload "$BOB"   | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
+A=$(python3 -c "import hashlib;print(hashlib.sha256(b'alice').hexdigest()[:12])")
+B=$(python3 -c "import hashlib;print(hashlib.sha256(b'bob').hexdigest()[:12])")
+ADRAFT="/tmp/.ew-android-$A-$(basename "$PLAN").blocked-draft.md"
+BDRAFT="/tmp/.ew-android-$B-$(basename "$PLAN").blocked-draft.md"
+if grep -q 'ALICE-BODY' "$ADRAFT" 2>/dev/null && grep -q 'BOB-BODY' "$BDRAFT" 2>/dev/null; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a second author does not truncate the first draft" "both kept"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "a second author does not truncate the first draft" "one was lost"
+fi
+rm -f "$ADRAFT" "$BDRAFT"
+
+# The expiry has to run somewhere a normal session actually reaches. Sweeping only from inside the
+# preserve path meant it ran on denials alone, so after the last denial a draft stayed forever and the
+# constant named a bound nothing enforced. A PASSING write is the common case, so it sweeps there.
+STALE="/tmp/.ew-android-deadbeefdead-issue-9903-2026-01-01-old.md.blocked-draft.md"
+FRESH="/tmp/.ew-android-deadbeefdead-issue-9904-2026-01-01-new.md.blocked-draft.md"
+printf 'ancient plan text\n' > "$STALE"; printf 'somebody else is mid-retry\n' > "$FRESH"
+touch -t "$(python3 -c "
+import time; print(time.strftime('%Y%m%d%H%M', time.localtime(time.time() - 8*24*3600)))")" "$STALE"
+assert "a passing plan write still runs"          allow check-plan-gates.py "$CLEAN"
+if [ ! -e "$STALE" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...and sweeps a week-old draft" "gone"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and sweeps a week-old draft" "still there"; fi
+# The half that would make the sweep dangerous: it must never take a draft somebody is coming back for.
+if [ -e "$FRESH" ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...and leaves a fresh one alone" "kept"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...and leaves a fresh one alone" "deleted"; fi
+rm -f "$STALE" "$FRESH"
+
+# /tmp is world-writable, so the rescue path is a predictable name anyone can occupy first. A plain
+# open(path,"w") writes straight THROUGH a symlink sitting there and overwrites whatever it points at;
+# that was demonstrated against this hook before the staging-file rewrite. The draft is also a whole
+# internal plan, so it has no business being world-readable.
+VICTIM=$(mktemp) || exit 2
+STAGE_B=$(mktemp) || exit 2
+STAGE_A=$(mktemp) || exit 2
+printf 'ORIGINAL VICTIM CONTENT\n' > "$VICTIM"
+rm -f "$DRAFT"; ln -s "$VICTIM" "$DRAFT"
+# The staging file carries the same scope as the draft, so this looks ONLY at files the tested
+# invocation could have made. A count over the whole shared prefix was wrong twice over: it is nonzero
+# whenever any other run is between its mkstemp and its replace, and a before/after delta is no better,
+# because the delta names files created during the WINDOW rather than files created by this call.
+ls /tmp/.ew-android-staging-"$SCOPE"-* 2>/dev/null | sort > "$STAGE_B"
+payload "$ONEBAD" | "$HOOKS/check-plan-gates.py" >/dev/null 2>&1
+ls /tmp/.ew-android-staging-"$SCOPE"-* 2>/dev/null | sort > "$STAGE_A"
+if grep -q 'ORIGINAL VICTIM CONTENT' "$VICTIM"; then
+    PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "a symlink at the rescue path is not followed" "intact"
+else
+    FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "a symlink at the rescue path is not followed" "overwritten"
+fi
+MODE=$(stat -f "%Lp" "$DRAFT" 2>/dev/null)
+check "  ...and the draft is not world-readable" "$MODE" "600"
+# A failed move must not leave its staging file behind. Only files THIS call added count.
+LEFT=$(comm -13 "$STAGE_B" "$STAGE_A" | wc -l | tr -d ' ')
+check "  ...and no staging file is left behind" "$LEFT" "0"
+rm -f "$DRAFT" "$VICTIM"
+
+# A crash while trying to SAVE the author's work must never disarm the gate. Content carrying a lone
+# surrogate is valid JSON and is not encodable as UTF-8, so the write raised UnicodeEncodeError, which
+# no OSError clause caught: the hook exited 1 with no permission decision, the harness let the write
+# through, and a staging file stayed behind. Every gate was bypassed by one character.
+rm -f /tmp/.ew-android-staging-"$SCOPE"-* 2>/dev/null
+SURR=$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$PLAN','content':'\ud800'+'s'*4100}}))")
+assert "content that cannot be encoded still denies" deny check-plan-gates.py "$SURR"
+R=$(reason_of check-plan-gates.py "$SURR")
+mentions "  ...and admits the draft was not saved"  "$R" "DRAFT NOT PRESERVED" yes
+# The failure text must not echo the document back: repr of a UnicodeEncodeError carries the whole
+# offending string, which would re-send the plan this change exists to stop re-sending.
+if [ "${#R}" -lt 3000 ]; then PASS=$((PASS+1)); printf '  ok    %-58s %s\n' "  ...without echoing the plan back" "${#R} chars"
+else FAIL=$((FAIL+1)); printf '  FAIL  %-58s %s\n' "  ...without echoing the plan back" "${#R} chars"; fi
+SLEFT=$(ls /tmp/.ew-android-staging-"$SCOPE"-* 2>/dev/null | wc -l | tr -d ' ')
+check "  ...and leaves no staging file behind" "$SLEFT" "0"
+
+# The SAME disarm at the site that runs BEFORE the one above. A plan file holding a byte that is not
+# valid UTF-8 raised out of the file READ, so an ordinary edit to it exited 1 with no decision and every
+# gate was skipped. Two sites carried this class; fixing only the one a reviewer named would have left
+# this one, which no test reached.
+printf 'User Rubric: N/A \377\376 bad bytes\n' > "$EDITPLAN"
+assert "a plan file with undecodable bytes"        allow check-plan-gates.py "$(python3 -c "
+import json; print(json.dumps({'tool_input':{'file_path':'$EDITPLAN','old_string':'bad','new_string':'worse'}}))")"
+printf 'User Rubric: N/A — internal only\n**Lane:** Code\n' > "$EDITPLAN"
+rm -f "$SENTINEL" "$DRAFT"
+echo
+
 
 # The README carries a copy of the live hook registration, because `.claude/` is gitignored and that copy
 # is the only thing a fresh clone can restore the wiring from. A copy nothing compares is how the two

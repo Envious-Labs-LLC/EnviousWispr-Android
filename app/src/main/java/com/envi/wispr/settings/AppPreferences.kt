@@ -19,7 +19,10 @@ data class AppPreferencesState(
     val onboardingStep: Int = 0,
     val onboardingComplete: Boolean = false,
     val onboardingDismissed: Boolean = false,
-    val dynamicColorEnabled: Boolean = true,
+    // OFF by default, so what a user sees out of the box is EnviousWispr rather than their wallpaper.
+    // The two defaults have to agree: this one is what the UI renders before DataStore has delivered,
+    // and `mapState` is what it settles on. They disagreed once and the app flashed the wrong theme.
+    val dynamicColorEnabled: Boolean = false,
     val vocabularyEnabled: Boolean = true,
     val fillerRemovalEnabled: Boolean = true,
     val emojiFormatterEnabled: Boolean = true,
@@ -60,7 +63,7 @@ class AppPreferences(context: Context) {
         onboardingStep = preferences[Keys.ONBOARDING_STEP] ?: 0,
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
         onboardingDismissed = preferences[Keys.ONBOARDING_DISMISSED] ?: false,
-        dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: true,
+        dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: false,
         vocabularyEnabled = preferences[Keys.VOCABULARY_ENABLED] ?: true,
         fillerRemovalEnabled = preferences[Keys.FILLER_REMOVAL] ?: true,
         emojiFormatterEnabled = preferences[Keys.EMOJI_FORMATTER] ?: true,

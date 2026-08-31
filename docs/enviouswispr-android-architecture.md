@@ -95,7 +95,7 @@ com.envi.wispr
     shell/             edge-to-edge adaptive app shell
     home/              readiness and primary record action
     history/           adaptive list/detail history
-    words/             Your Words and packs
+    words/             Dictionary terms and packs
     models/            ASR and polish setup
     settings/          focused settings destinations
     onboarding/        resumable setup and practice dictation
@@ -193,19 +193,18 @@ The UI reports Downloading, Paused, Verifying, Ready, Update available, Repair n
 
 ## App UI
 
-The main app becomes a single edge-to-edge `ComponentActivity` with Navigation 3 and `NavigationSuiteScaffold`.
+The main app is a single edge-to-edge `ComponentActivity` holding a `ModalNavigationDrawer` around a `Scaffold` with a top app bar and a bottom navigation bar. Shipped 2026-08-31 for issue #47.
 
-Compact windows use a bottom navigation bar. Expanded windows use a navigation rail. History uses an adaptive list/detail layout when space permits. The primary destinations are:
+The four tabs in the bottom bar are:
 
-1. Home
-2. History
-3. Your Words
-4. Models and AI
-5. Settings
+1. History
+2. Dictionary
+3. Transcription
+4. AI Polish
 
-Home shows one primary record action, current engine/provider, readiness, recent result, and actionable setup problems. It is not a settings dump.
+There is no Home destination. A hamburger in the top left opens a drawer holding every settings page, each of which opens full screen with a back control and the system back gesture. A microphone button in the top bar starts a dictation from inside the app; the side button remains the primary entry point.
 
-Settings contains focused screens for Appearance, Transcription, Live Preview, Microphone, Sounds, Controls, AI Polish, Clipboard and Insertion, Permissions, Privacy, Diagnostics, About, What's New, and Updates.
+The drawer holds What's New, Appearance, Microphone, Sounds, Clipboard, Permissions and Open Source Licenses, grouped as macOS `SettingsGroup` groups them. Live Preview, Controls, Privacy, Diagnostics and Updates are macOS pages with no Android surface yet, so they have no row.
 
 ### Material 3 Expressive rules
 
@@ -235,7 +234,7 @@ Each slice must leave the current spoken POC usable.
 2. Native entry: Samsung side-button app shortcut, coordinator, overlay migration, accessibility target tracking, guarded insertion, tile and notification.
 3. Audio: foreground service, routing, pre-roll, warm policy, VAD, interruptions and cues.
 4. ASR: adapter registry, second engine, language system, streaming, model lifecycle.
-5. Text: deterministic cleanup, structured Your Words, contacts, import/export, Quick Add and packs.
+5. Text: deterministic cleanup, structured Dictionary terms, contacts, import/export, Quick Add and packs.
 6. Polish: local model lifecycle, cloud/self-hosted providers, secrets, prompts and safety.
 7. Product: live preview, history, recovery, diagnostics, privacy, onboarding, What's New and updates.
 8. Critic: every parity ID, every target class, orientations/themes/accessibility, idle/repeat/long battery and memory.

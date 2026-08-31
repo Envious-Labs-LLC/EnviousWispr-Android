@@ -4,8 +4,8 @@ package com.envi.wispr.paste
  * What happened when a dictation tried to pin the editor it was started from.
  *
  * Five values, not the Boolean this replaced, because `false` folded three different situations
- * into the one for which having no target is the design. The tile, the Home button, onboarding
- * practice and the side button pressed outside an editor all fail to pin against a perfectly live
+ * into the one for which having no target is the design. The tile, the app's microphone button,
+ * onboarding practice and the side button pressed outside an editor all fail to pin against a live
  * service, and for all of them the clipboard is the destination the product intends. A side button
  * pressed INSIDE an editor while the service is dead fails to pin for a completely different
  * reason, which is issue #16; and a dictation started on top of one still being inserted fails for

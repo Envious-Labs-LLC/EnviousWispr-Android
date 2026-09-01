@@ -58,6 +58,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.ui.theme.brandButtonColors
@@ -648,7 +649,16 @@ private fun ImportPickerRow(
 ) {
     val rowModifier = Modifier
         .fillMaxWidth()
-        .let { base -> if (onClick != null) base.clickable(onClick = onClick) else base.alpha(0.45f) }
+        .let { base ->
+            if (onClick != null) {
+                base.clickable(onClick = onClick)
+            } else {
+                base.alpha(0.45f).semantics(mergeDescendants = true) {
+                    contentDescription = if (subtitle != null) "$label, $subtitle" else label
+                    disabled()
+                }
+            }
+        }
         .padding(horizontal = 4.dp, vertical = 12.dp)
     Row(
         modifier = rowModifier,

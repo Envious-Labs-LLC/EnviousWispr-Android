@@ -6,12 +6,14 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -22,10 +24,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -37,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -48,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -70,6 +76,9 @@ import com.envi.wispr.vocabulary.VocabularyTransfer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** Tighter than the default button padding, so Add/Import/Export fit without horizontal scrolling. */
+private val pillPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
 
 /** The magnifying glass on the vocabulary search field. */
 @Composable
@@ -170,6 +179,17 @@ private fun ClipboardGlyph() {
             cornerRadius = CornerRadius(size.width * 0.04f),
             style = Stroke(width = stroke),
         )
+    }
+}
+
+/** A right-pointing chevron, for a tappable picker card. */
+@Composable
+private fun ChevronGlyph() {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(16.dp)) {
+        val stroke = 1.8.dp.toPx()
+        drawLine(color, Offset(size.width * 0.35f, size.height * 0.2f), Offset(size.width * 0.68f, size.height * 0.5f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(size.width * 0.68f, size.height * 0.5f), Offset(size.width * 0.35f, size.height * 0.8f), stroke, StrokeCap.Round)
     }
 }
 
@@ -329,17 +349,18 @@ internal fun DictionaryScreen(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedButton(onClick = { showNewEditor = true }) {
+                OutlinedButton(onClick = { showNewEditor = true }, contentPadding = pillPadding) {
                     PlusGlyph()
-                    Spacer(Modifier.width(6.dp))
-                    Text("Add")
+                    Spacer(Modifier.width(4.dp))
+                    Text("Add", style = MaterialTheme.typography.labelMedium)
                 }
-                OutlinedButton(onClick = { showImportPicker = true }) {
+                OutlinedButton(onClick = { showImportPicker = true }, contentPadding = pillPadding) {
                     UploadGlyph()
-                    Spacer(Modifier.width(6.dp))
-                    Text("Import")
+                    Spacer(Modifier.width(4.dp))
+                    Text("Import", style = MaterialTheme.typography.labelMedium)
                 }
                 OutlinedButton(
+                    contentPadding = pillPadding,
                     onClick = {
                         val exported = VocabularyTransfer.export(allTerms.map(CustomTermRecord::term))
                         val copied = runCatching {
@@ -359,8 +380,8 @@ internal fun DictionaryScreen(
                     },
                 ) {
                     DownloadGlyph()
-                    Spacer(Modifier.width(6.dp))
-                    Text("Export")
+                    Spacer(Modifier.width(4.dp))
+                    Text("Export", style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -616,21 +637,24 @@ private fun ImportPickerDialog(
         onDismissRequest = onDismiss,
         title = { Text("Import") },
         text = {
-            Column {
-                ImportPickerRow(
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ImportPickerCard(
                     glyph = { ClipboardGlyph() },
-                    label = "Paste Words",
+                    title = "Paste Words",
+                    description = "Paste an EnviousWispr export or one word per line.",
                     onClick = onPasteWords,
                 )
-                ImportPickerRow(
+                ImportPickerCard(
                     glyph = { UploadGlyph() },
-                    label = "Open a file",
+                    title = "Open a file",
+                    description = "Choose a .txt list or an EnviousWispr .json export.",
                     onClick = onOpenFile,
                 )
-                ImportPickerRow(
+                ImportPickerCard(
                     glyph = { AppGlyph() },
-                    label = "From another app",
-                    subtitle = "Coming soon",
+                    title = "From another app",
+                    description = "Bring words in from another dictation app.",
+                    badge = "Coming soon",
                     onClick = null,
                 )
             }
@@ -641,35 +665,65 @@ private fun ImportPickerDialog(
 }
 
 @Composable
-private fun ImportPickerRow(
+private fun ImportPickerCard(
     glyph: @Composable () -> Unit,
-    label: String,
+    title: String,
+    description: String,
     onClick: (() -> Unit)?,
-    subtitle: String? = null,
+    badge: String? = null,
 ) {
-    val rowModifier = Modifier
+    val cardModifier = Modifier
         .fillMaxWidth()
         .let { base ->
             if (onClick != null) {
                 base.clickable(onClick = onClick)
             } else {
-                base.alpha(0.45f).semantics(mergeDescendants = true) {
-                    contentDescription = if (subtitle != null) "$label, $subtitle" else label
+                base.alpha(0.55f).semantics(mergeDescendants = true) {
+                    contentDescription = if (badge != null) "$title, $badge" else title
                     disabled()
                 }
             }
         }
-        .padding(horizontal = 4.dp, vertical = 8.dp)
-    Row(
-        modifier = rowModifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    Card(
+        modifier = cardModifier,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
+        ),
     ) {
-        glyph()
-        Column {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
-            if (subtitle != null) {
-                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center,
+            ) { glyph() }
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (badge != null) {
+                    Surface(
+                        modifier = Modifier.padding(top = 4.dp),
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(
+                            badge,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (onClick != null) {
+                ChevronGlyph()
             }
         }
     }

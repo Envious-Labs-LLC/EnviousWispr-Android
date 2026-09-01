@@ -195,6 +195,9 @@ class DictationSessionService : Service() {
     private val polishConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             polishService = IPolishService.Stub.asInterface(binder)
+            // Warm at connect, measured and decided (#72): every later moment ends with the same two
+            // models resident, because the speech model stays loaded after it transcribes, and costs the
+            // user 0.9 to 3.1 s of wait. `architecture-rules.md` RULE: isolate-limbs carries the numbers.
             runCatching { polishService?.warmUpWithPolicy(sessionPreferences.policy) }
             DebugLogger.log(TAG, "Polish service connected")
         }

@@ -710,6 +710,7 @@ internal fun SettingsToggleRow(
     subtitle: String,
     checked: Boolean,
     enabled: Boolean = true,
+    icon: (@Composable () -> Unit)? = null,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     Row(
@@ -725,6 +726,7 @@ internal fun SettingsToggleRow(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        icon?.invoke()
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -21,6 +21,12 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
+/**
+ * Product Outcome: what crosses the process boundary is what the engine acts on. The cleanup
+ * switches and the policy both ride on the request; the engine reads no preference of its own, so
+ * a stored mode the engine process may have cached cannot override the policy the session sent.
+ * Needs no model, so it runs on the emulator as well as the phone.
+ */
 @RunWith(AndroidJUnit4::class)
 class PolishServiceCleanupOptionsDeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
@@ -44,10 +50,12 @@ class PolishServiceCleanupOptionsDeviceTest {
     }
 
     @Before
-    fun bindWithPolishDisabled() {
+    fun bindWithAStoredModeTheEngineMustIgnore() {
         repository = ProviderConfigurationRepository(context)
         originalMode = repository.loadMode()
-        repository.setMode(PolishMode.OFF)
+        // The stored mode says "This phone". Every request below sends Off. The engine must act on
+        // the request, which is the whole contract of issue #69.
+        repository.setMode(PolishMode.OFFLINE_S1)
         assertTrue(
             context.bindService(Intent(context, PolishService::class.java), connection, Context.BIND_AUTO_CREATE),
         )
@@ -60,30 +68,73 @@ class PolishServiceCleanupOptionsDeviceTest {
         repository.setMode(originalMode)
     }
 
-    @Test
-    fun allDisabledCleanupOptionsCrossTheProcessBoundary() {
+    private fun polishOff(requestId: Long, text: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean): PolishOutcome {
         val completed = CountDownLatch(1)
-        var result = ""
-
-        service?.polish(
-            "um keep thumbs up emoji comma literal",
-            false,
-            false,
-            false,
+        var outcome: PolishOutcome? = null
+        service?.polishRequest(
+            requestId,
+            text,
+            removeFillers,
+            spokenEmoji,
+            spokenPunctuation,
+            PolishPolicy.Off,
             object : IPolishCallback.Stub() {
-                override fun onResult(text: String?, engine: String?, latencyMs: Long) {
-                    result = text.orEmpty()
+                override fun onOutcome(delivered: PolishOutcome?) {
+                    outcome = delivered
                     completed.countDown()
                 }
 
-                override fun onError(message: String?) {
-                    completed.countDown()
-                }
+                override fun onResult(text: String?, engine: String?, latencyMs: Long) = Unit
+
+                override fun onError(message: String?) = Unit
             },
         )
-
         assertTrue("Polish callback timed out", completed.await(10, TimeUnit.SECONDS))
-        assertEquals("um keep thumbs up emoji comma literal", result)
+        return checkNotNull(outcome) { "no outcome delivered" }
+    }
+
+    @Test
+    fun allDisabledCleanupOptionsCrossTheProcessBoundary() {
+        val outcome = polishOff(11L, "um keep thumbs up emoji comma literal", false, false, false)
+        assertEquals("um keep thumbs up emoji comma literal", outcome.text)
+        assertEquals(11L, outcome.requestId)
+    }
+
+    @Test
+    fun thePolicyOnTheRequestBeatsTheModeStoredInPreferences() {
+        val outcome = polishOff(12L, "hello world", true, true, false)
+        assertEquals(PolishReason.OFF, outcome.reason)
+        assertEquals(PolishEngineLabels.OFF, outcome.engine)
+        assertEquals("hello world", outcome.text)
+    }
+
+    @Test
+    fun aCloudPolicyWithNoSelectionFailsOpenToTheDeterministicText() {
+        val completed = CountDownLatch(1)
+        var outcome: PolishOutcome? = null
+        service?.polishRequest(
+            13L,
+            "um hello world",
+            true,
+            true,
+            false,
+            PolishPolicy.CloudUnconfigured,
+            object : IPolishCallback.Stub() {
+                override fun onOutcome(delivered: PolishOutcome?) {
+                    outcome = delivered
+                    completed.countDown()
+                }
+
+                override fun onResult(text: String?, engine: String?, latencyMs: Long) = Unit
+
+                override fun onError(message: String?) = Unit
+            },
+        )
+        assertTrue("Polish callback timed out", completed.await(10, TimeUnit.SECONDS))
+        val delivered = checkNotNull(outcome)
+        assertEquals(PolishReason.CLOUD_NOT_CONFIGURED, delivered.reason)
+        assertEquals(PolishEngineLabels.DETERMINISTIC, delivered.engine)
+        assertEquals("hello world", delivered.text)
     }
 
     @Test
@@ -100,28 +151,7 @@ class PolishServiceCleanupOptionsDeviceTest {
             )
         }
         try {
-            val completed = CountDownLatch(1)
-            var result = ""
-
-            service?.polish(
-                alias,
-                false,
-                false,
-                false,
-                object : IPolishCallback.Stub() {
-                    override fun onResult(text: String?, engine: String?, latencyMs: Long) {
-                        result = text.orEmpty()
-                        completed.countDown()
-                    }
-
-                    override fun onError(message: String?) {
-                        completed.countDown()
-                    }
-                },
-            )
-
-            assertTrue("Polish callback timed out", completed.await(10, TimeUnit.SECONDS))
-            assertEquals(alias, result)
+            assertEquals(alias, polishOff(14L, alias, false, false, false).text)
         } finally {
             runBlocking { terms.delete(record.id) }
         }

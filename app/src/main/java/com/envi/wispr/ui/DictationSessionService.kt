@@ -22,7 +22,6 @@ import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.IAudioCaptureService
-import com.envi.wispr.cleanup.DeterministicCleanup
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.TextSafety
 import com.envi.wispr.debug.DebugLogger
@@ -44,8 +43,12 @@ import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
 import com.envi.wispr.polish.PolishEngineLabels
+import com.envi.wispr.polish.PolishFallback
+import com.envi.wispr.polish.PolishOutcome
+import com.envi.wispr.polish.PolishPolicy
+import com.envi.wispr.polish.PolishReason
 import com.envi.wispr.polish.PolishService
-import com.envi.wispr.polish.RegexPolisher
+import com.envi.wispr.providers.ProviderConfigurationRepository
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.settings.cleanupOptions
 import com.envi.wispr.settings.clipboardInsertionPolicy
@@ -103,10 +106,13 @@ class DictationSessionService : Service() {
         val terms: List<CustomTerm> = emptyList(),
         val matcher: StructuredTermRestorer.Matcher = StructuredTermRestorer.compile(emptyList()),
         val clipboard: ClipboardInsertionPolicy = ClipboardInsertionPolicy(),
+        /** Latched once per session; a settings change applies from the next session (issue #69). */
+        val policy: PolishPolicy = PolishPolicy.Off,
     )
 
     private val state = AtomicReference(SessionState.IDLE)
     private val publicationStarted = AtomicBoolean(false)
+    private val polishLedger = PolishRequestLedger()
     private val teardownStarted = AtomicBoolean(false)
     private val draftId = AtomicLong(0L)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -148,6 +154,7 @@ class DictationSessionService : Service() {
         TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao())
     }
     private val customTermRepository by lazy { CustomTermRepository(applicationContext) }
+    private val providerConfiguration by lazy { ProviderConfigurationRepository(applicationContext) }
 
     private val audioConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -176,11 +183,7 @@ class DictationSessionService : Service() {
             DebugLogger.warn(TAG, "Speech service disconnected")
             if (state.get() == SessionState.PROCESSING) {
                 if (rawTranscript.isNotBlank()) {
-                    publishResult(
-                        regexFallback(rawTranscript, sessionPreferences),
-                        "Regex fallback",
-                        0,
-                    )
+                    publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
                 } else if (publicationStarted.compareAndSet(false, true)) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                     showError("Speech service stopped before transcription finished")
@@ -192,7 +195,7 @@ class DictationSessionService : Service() {
     private val polishConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             polishService = IPolishService.Stub.asInterface(binder)
-            runCatching { polishService?.warmUp() }
+            runCatching { polishService?.warmUpWithPolicy(sessionPreferences.policy) }
             DebugLogger.log(TAG, "Polish service connected")
         }
 
@@ -201,11 +204,7 @@ class DictationSessionService : Service() {
             DebugLogger.warn(TAG, "Polish service disconnected")
             if (state.get() == SessionState.PROCESSING) {
                 if (rawTranscript.isNotBlank()) {
-                    publishResult(
-                        regexFallback(rawTranscript, sessionPreferences),
-                        "Regex fallback",
-                        0,
-                    )
+                    publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
                 } else if (publicationStarted.compareAndSet(false, true)) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                     showError("Polish service stopped before cleanup finished")
@@ -314,6 +313,7 @@ class DictationSessionService : Service() {
             val matcher = withContext(Dispatchers.Default) {
                 StructuredTermRestorer.compile(termsSnapshot)
             }
+            val policy = withContext(Dispatchers.IO) { providerConfiguration.loadPolicy() }
             withContext(Dispatchers.Main.immediate) {
                 if (state.get() != SessionState.STARTING) return@withContext
                 sessionPreferences = SessionPreferences(
@@ -323,6 +323,7 @@ class DictationSessionService : Service() {
                     // Non-null by construction: cleanupPreferencesReady, awaited above, is
                     // completed only after the line that writes this field.
                     clipboard = clipboardPolicy ?: ClipboardInsertionPolicy(),
+                    policy = policy,
                 )
                 bindPipelineServices()
             }
@@ -513,45 +514,97 @@ class DictationSessionService : Service() {
             val preparedRaw = restoreTakeVocabulary(rawText, takePreferences)
             val service = polishService
             if (service == null) {
-                publishResult(regexFallback(rawText, takePreferences), "Regex fallback", 0)
+                publishFallback(rawText, takePreferences, PolishReason.SERVICE_UNAVAILABLE)
                 return@launch
             }
+            val requestId = polishLedger.open()
             try {
-                service.polish(
+                service.polishRequest(
+                    requestId,
                     preparedRaw,
                     takePreferences.cleanup.removeFillers,
                     takePreferences.cleanup.spokenEmoji,
                     takePreferences.cleanup.spokenPunctuation,
+                    takePreferences.policy,
                     object : IPolishCallback.Stub() {
-                        override fun onResult(text: String?, engine: String?, latencyMs: Long) {
+                        override fun onOutcome(outcome: PolishOutcome?) {
+                            // This callback belongs to ONE request and the engine answers it once, so an
+                            // empty or misnamed outcome is the only answer this request will get: fail
+                            // open now rather than leave the session in Processing forever.
+                            if (outcome == null || outcome.requestId != requestId) {
+                                if (polishLedger.accepts(requestId)) {
+                                    DebugLogger.warn(TAG, "Invalid polish outcome for request $requestId")
+                                    publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                                }
+                                return
+                            }
+                            if (!polishLedger.accepts(outcome.requestId)) {
+                                DebugLogger.warn(
+                                    TAG,
+                                    "Ignoring polish outcome for request ${outcome.requestId}: not the open request (reason=${outcome.reason})",
+                                )
+                                return
+                            }
+                            DebugLogger.log(TAG, "Polish outcome ${outcome.requestId}: reason=${outcome.reason} status=${outcome.statusCode}")
                             publishResult(
-                                restoreTakeVocabulary(text.orEmpty(), takePreferences),
-                                engine.orEmpty(),
-                                latencyMs,
+                                restoreTakeVocabulary(outcome.text, takePreferences),
+                                outcome.engine,
+                                outcome.latencyMs,
                             )
                         }
 
+                        // v1 answers are never produced for a v2 request. If one ever arrives it is an
+                        // engine defect, and the session still fails open to the deterministic text.
+                        override fun onResult(text: String?, engine: String?, latencyMs: Long) {
+                            if (polishLedger.accepts(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                        }
+
                         override fun onError(message: String?) {
-                            DebugLogger.error(TAG, "Polish failed")
-                            publishResult(regexFallback(rawText, takePreferences), "Regex fallback", 0)
+                            if (polishLedger.accepts(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
                         }
                     },
                 )
             } catch (error: Exception) {
                 DebugLogger.error(TAG, "Unable to call polish service", error)
-                publishResult(regexFallback(rawText, takePreferences), "Regex fallback", 0)
+                if (polishLedger.accepts(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
             }
         }
     }
 
-    private fun regexFallback(
+    /**
+     * The session owner's own fallback, published under the deterministic label with the reason
+     * logged by name. Closes the ledger and cancels the open request first, so a late engine outcome
+     * cannot be accepted after it and an abandoned cloud call does not run on.
+     */
+    private fun publishFallback(rawText: String, takePreferences: SessionPreferences, reason: PolishReason) {
+        cancelOpenPolishRequest()
+        DebugLogger.warn(TAG, "Polish fell back on the session owner: reason=$reason")
+        publishResult(deterministicFallback(rawText, takePreferences), PolishEngineLabels.DETERMINISTIC, 0)
+    }
+
+    /**
+     * The same deterministic pipeline the engine runs with polish off, so the text a user gets
+     * cannot depend on which side failed (issue #69; the regex polisher that used to run here
+     * capitalised sentences and appended a period the engine never did).
+     */
+    private fun deterministicFallback(
         rawText: String,
         takePreferences: SessionPreferences,
     ): String {
         val prepared = restoreTakeVocabulary(rawText, takePreferences)
-        val cleaned = DeterministicCleanup.apply(prepared, takePreferences.cleanup).text
-        val preferred = RegexPolisher.polish(cleaned, removeFillers = takePreferences.cleanup.removeFillers)
-        return restoreTakeVocabulary(preferred, takePreferences)
+        val cleaned = PolishFallback.deterministic(prepared, takePreferences.cleanup)
+        return restoreTakeVocabulary(cleaned, takePreferences)
+    }
+
+    /**
+     * Closes the ledger and cancels exactly the request that was open, if any. Called as every
+     * terminal transition BEGINS, before the wait for pending History work, and again from
+     * `unbindPipelineServices` as an idempotent backstop.
+     */
+    private fun cancelOpenPolishRequest() {
+        val requestId = polishLedger.close() ?: return
+        runCatching { polishService?.cancel(requestId) }
+            .onFailure { error -> DebugLogger.warn(TAG, "Unable to cancel polish request $requestId: ${error.message}") }
     }
 
     private fun restoreTakeVocabulary(text: String, preferences: SessionPreferences): String {
@@ -791,6 +844,7 @@ class DictationSessionService : Service() {
     private fun showError(message: String) {
         if (state.getAndSet(SessionState.ERROR) == SessionState.ERROR) return
         publicationStarted.set(true)
+        cancelOpenPolishRequest()
         RecordingOverlayState.hide()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
@@ -807,6 +861,7 @@ class DictationSessionService : Service() {
 
     private fun finishSession() {
         if (state.getAndSet(SessionState.FINISHING) == SessionState.FINISHING) return
+        cancelOpenPolishRequest()
         RecordingOverlayState.hide()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         val historyUpdates = synchronized(pendingHistoryUpdates) { pendingHistoryUpdates.toList() }
@@ -922,6 +977,7 @@ class DictationSessionService : Service() {
     }
 
     private fun unbindPipelineServices() {
+        cancelOpenPolishRequest()
         if (audioBound) runCatching { unbindService(audioConnection) }
         if (asrBound) runCatching { unbindService(asrConnection) }
         if (polishBound) runCatching { unbindService(polishConnection) }
@@ -984,6 +1040,7 @@ class DictationSessionService : Service() {
     override fun onDestroy() {
         RecordingOverlayState.hide()
         publicationStarted.set(true)
+        cancelOpenPolishRequest()
         val destroyedState = state.get()
         val sessionWasOpen = destroyedState == SessionState.STARTING ||
             destroyedState == SessionState.RECORDING ||

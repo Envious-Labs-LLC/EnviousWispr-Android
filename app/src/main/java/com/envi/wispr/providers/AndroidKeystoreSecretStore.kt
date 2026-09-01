@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import java.util.Base64
@@ -18,18 +19,35 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
     // All instances in the process share the same file and Keystore alias.
     private val lock = processLock
 
-    override fun put(provider: Provider, secret: String) = synchronized(lock) {
+    /**
+     * Two locks, because two things read this file: every instance in THIS process (the monitor) and the
+     * `:polish` process, which reads the key at request time while the main process may be replacing it
+     * (the file lock). Without the second, a write's temp file could be deleted by the other process's
+     * `recoverFiles` mid-save, failing the save or leaving the engine without a key (#69 code review).
+     */
+    private inline fun <T> withStorageLock(action: () -> T): T = synchronized(lock) {
+        RandomAccessFile(lockFile(), "rw").channel.use { channel ->
+            val fileLock = channel.lock()
+            try {
+                action()
+            } finally {
+                fileLock.release()
+            }
+        }
+    }
+
+    override fun put(provider: Provider, secret: String) = withStorageLock {
         require(secret.isNotBlank()) { "secret must not be blank" }
         val values = readAll().toMutableMap()
         values[provider.name] = encrypt(provider, secret)
         writeAll(values)
     }
 
-    override fun get(provider: Provider): String? = synchronized(lock) {
+    override fun get(provider: Provider): String? = withStorageLock {
         readAll()[provider.name]?.let { decrypt(provider, it) }
     }
 
-    override fun remove(provider: Provider) = synchronized(lock) {
+    override fun remove(provider: Provider) = withStorageLock {
         val values = readAll().toMutableMap()
         if (values.remove(provider.name) != null) {
             if (values.isEmpty()) {
@@ -95,6 +113,9 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
     }
 
     private fun temporaryFile() = File(file.parentFile, "${file.name}.tmp")
+
+    /** Never deleted with the storage files: a lock file that vanishes mid-lock is no lock. */
+    private fun lockFile() = File(file.parentFile, "${file.name}.lock")
 
     private fun backupFile() = File(file.parentFile, "${file.name}.bak")
 

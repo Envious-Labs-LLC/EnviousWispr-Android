@@ -1,6 +1,6 @@
 # Issue #69 — Polish engine contract: policy on every request, one typed outcome, cancel — 2026-09-01
 
-GitHub issue: `#69`. Tier: REFACTOR (AIDL surface). Status: APPROVED.
+GitHub issue: `#69`. Tier: REFACTOR (AIDL surface). Status: SHIPPED.
 
 Phase 1 of [`plan-2026-09-01-ai-polish-refinement-roadmap.md`](plan-2026-09-01-ai-polish-refinement-roadmap.md).
 Every later phase depends on this one.
@@ -88,7 +88,7 @@ every request (`IPolishService.aidl:6-12`, `DictationSessionService.kt:519-525`)
 **Four contract gaps on the same interface**, all from the runtime audit (scratchpad `polish-runtime-audit.md`,
 2026-09-01) and the Codex consult (`roadmap-consult-output.txt.last`):
 
-1. No request identity. `IPolishCallback.onResult(text, engine, latencyMs)` (`IPolishCallback.aidl:4`)
+1. No request identity. `IPolishCallback.onResult(text, engine, latencyMs)` (`IPolishCallback.aidl:7` after this change; line 4 before it)
    cannot say which request it answers, so a late result from an abandoned session and the current result
    are indistinguishable. `onError` (`:5`) has no producer; the client handler at
    `DictationSessionService.kt:534-537` is unreachable.
@@ -99,8 +99,8 @@ every request (`IPolishService.aidl:6-12`, `DictationSessionService.kt:519-525`)
    before the work is queued, so a second call overwrites the in-flight token; `onDestroy` (`:150`) cancels
    only the newest. The interface has no cancel method (`IPolishService.aidl:5-16`).
 4. Two fallback owners. The engine's deterministic result is `PolishPipeline.run` (`PolishService.kt:72`,
-   `:78`, `:109`); the session owner's is `regexFallback` (`DictationSessionService.kt:547-554`), which runs
-   `DeterministicCleanup` and then `RegexPolisher`, and capitalises sentences and appends a terminal period
+   `:78`, `:109`); the session owner's is `regexFallback` (removed) (`DictationSessionService.kt:547-554`), which runs
+   `DeterministicCleanup` and then `RegexPolisher` (removed), and capitalises sentences and appends a terminal period
    (`RegexPolisher.kt:29-36`). The same dictation therefore ends differently depending on which side failed,
    and the label written to History is the literal `"Regex fallback"` at five sites
    (`DictationSessionService.kt:181`, `:206`, `:516`, `:536`, `:542`), which
@@ -115,16 +115,16 @@ every request (`IPolishService.aidl:6-12`, `DictationSessionService.kt:519-525`)
 - G2. The engine reads no preference. Verified by grep: `ProviderConfigurationRepository` has no reference
   under `app/src/main/java/com/envi/wispr/polish/`.
 - G3. Every outcome names its request; an outcome for a request that is not current is discarded before
-  publication. Verified by `PolishRequestLedgerTest` (proposed).
+  publication. Verified by `PolishRequestLedgerTest`.
 - G4. At most one `onOutcome` per request leaves the engine, through one gated v2 delivery site per request;
   the retained v1 compatibility path separately delivers a deterministic `onResult`. Verified by
   `PolishOnceDeliveryTest` and by reading the v2 site.
 - G5. `cancel(requestId)` exists, cancels a cloud request in flight, is called by the session owner on every
   early end, and every outstanding token is cancelled when the engine is destroyed.
 - G6. One fallback owner: the session owner's fallback text equals the engine's deterministic text for the
-  same input and options. Verified by `DeterministicFallbackTest` (proposed) against a literal.
+  same input and options. Verified by `DeterministicFallbackTest` against a literal.
 - G7. The reason set is closed and every producer path maps to a member; `ProviderFailureKind` maps
-  exhaustively. Verified by `PolishReasonTest` (proposed).
+  exhaustively. Verified by `PolishReasonTest`.
 
 ### 2.2 Non-goals
 
@@ -132,7 +132,7 @@ every request (`IPolishService.aidl:6-12`, `DictationSessionService.kt:519-525`)
 - Which models are resident and when S1 loads relative to ASR: phase 2. `warmUp` keeps firing at connect.
 - History or the completion surface rendering the reason: phase 4. The reason is logged by name only here.
 - Splitting `HTTP_ERROR` by status into user reasons: phase 4 and phase 7. The status is carried, not read.
-- The cloud client cleanups of phase 5, with one exception stated in §3: `UNSUPPORTED_PROVIDER` is deleted
+- The cloud client cleanups of phase 5, with one exception stated in §3: `UNSUPPORTED_PROVIDER` (removed) is deleted
   here because the exhaustive `when` this plan adds would otherwise carry an arm nothing can reach.
 - The AI Polish screen: phase 6. No UI file changes.
 - A settings change applying to a session already in progress. The contract is: latched at session start,
@@ -187,8 +187,8 @@ literal `"Regex fallback"`.
 | Request identity across the binder | none | `/usr/bin/grep -rn -i "requestId\|request id\|generationId\|sessionId" app/src/main/java/com/envi/wispr/polish app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt` → no hits |
 | Engine-side once-delivery | none | the retry at `PolishService.kt:108` is the negative evidence |
 
-`new authority proposed`: `PolishPolicy` (proposed), `PolishOutcome` (proposed), `PolishReason` (proposed),
-`PipelineOutcome` (proposed), and a request ledger on the session owner, `PolishRequestLedger` (proposed).
+`new authority proposed`: `PolishPolicy`, `PolishOutcome`, `PolishReason`,
+`PipelineOutcome`, and a request ledger on the session owner, `PolishRequestLedger`.
 
 ### 3. Read prior attempts and live direction
 
@@ -215,11 +215,11 @@ literal `"Regex fallback"`.
 | Session start ↔ settings write | none: engine reads at call time | policy latched in `beginSession` beside `SessionPreferences`; a later write applies to the next session |
 | Bind ↔ first request | `onCreate` may load S1 before the client's policy exists | `onCreate` loads nothing; `warmUpWithPolicy(policy)` at connect decides |
 | Process reuse across sessions | measured stale | each session's requests carry their own snapshot |
-| Live service ↔ dead service | `onServiceDisconnected` publishes the regex fallback | same path, deterministic pipeline, reason `SERVICE_DIED` (proposed) |
+| Live service ↔ dead service | `onServiceDisconnected` publishes the regex fallback | same path, deterministic pipeline, reason `SERVICE_DIED` |
 | Current request ↔ stale completion | indistinguishable | request id checked before publication |
-| Cancel ↔ completion | no cancel | `cancel(requestId)` cancels the token; a cloud call aborts (`ProviderPolishClient.kt:145-148`); a local generation cannot be interrupted (`S1GenieXRuntime.kt:92-98`), so its outcome arrives late with reason `CANCELLED` or `POLISHED` (proposed) and is discarded by id. The window on the engine's compute is phase 3's; the window on the user's text is closed here |
+| Cancel ↔ completion | no cancel | `cancel(requestId)` cancels the token; a cloud call aborts (`ProviderPolishClient.kt:145-148`); a local generation cannot be interrupted (`S1GenieXRuntime.kt:92-98`), so its outcome arrives late with reason `CANCELLED` or `POLISHED` and is discarded by id. The window on the engine's compute is phase 3's; the window on the user's text is closed here |
 | Engine `onDestroy` ↔ queued work | cancels one token | cancels every token, then closes the runtime on the worker |
-| Session owner `onDestroy` (`DictationSessionService.kt:984`) | sets `publicationStarted` | also calls `cancelOpenPolishRequest()` as it begins |
+| Session owner `onDestroy` (`DictationSessionService.kt:1033`) | sets `publicationStarted` | also calls `cancelOpenPolishRequest()` as it begins |
 | Key changed mid-session | engine reads the key per call | unchanged: the engine reads the key per call from the Keystore-backed file, which is not cached per process; a key is a credential, not policy |
 
 ### 5. Prove the high-risk premises
@@ -239,19 +239,19 @@ literal `"Regex fallback"`.
 
 ### 3.1 The policy snapshot
 
-`PolishPolicy` (proposed), a sealed hierarchy in `polish/`, hand-written Parcelable (no parcelize plugin in
+`PolishPolicy`, a sealed hierarchy in `polish/`, hand-written Parcelable (no parcelize plugin in
 `app/build.gradle.kts:1-6`; no Parcelable exists in the app today):
 
 - `Off`
-- `LocalS1` (proposed)
+- `LocalS1`
 - `Cloud(provider: Provider, model: String, endpoint: String?, protocol: SelfHostedProtocol)`
-- `CloudUnconfigured` (proposed): the user chose a provider mode but no valid selection exists
+- `CloudUnconfigured`: the user chose a provider mode but no valid selection exists
   (`ProviderConfigurationRepository.load` returned null).
 
-Built in the main process by `ProviderConfigurationRepository.loadPolicy()` (proposed): ONE read of the
+Built in the main process by `ProviderConfigurationRepository.loadPolicy()`: ONE read of the
 preference map (`SharedPreferences.getAll()` (external), which copies the map under the preference lock, so
 a commit between two `getString` calls cannot produce a policy assembled from two states), decoded by a pure
-`PolishPolicy.from(values)` (proposed) that the JVM tests exercise, with the credential never read; any
+`PolishPolicy.from(values)` that the JVM tests exercise, with the credential never read; any
 read or decoding failure returns `Off`. The API key is NOT in the snapshot: the engine asks `SecretStore.get(provider)` at request
 time, which reads the encrypted file each call. The parent `CREATOR` (external) writes a one-byte tag then the fields;
 `writeToParcel` (external) and `createFromParcel` (external) sit side by side in one file so the order cannot drift apart.
@@ -275,8 +275,8 @@ interface IPolishCallback {
 }
 ```
 
-`polishRequest` (proposed), `warmUpWithPolicy` (proposed), `cancel`, `isLocalModelReady` (proposed) and
-`localModelStatus` (proposed) are APPENDED. `isReady` and `getStatus` answered a policy question the engine
+`polishRequest`, `warmUpWithPolicy`, `cancel`, `isLocalModelReady` and
+`localModelStatus` are APPENDED. `isReady` and `getStatus` answered a policy question the engine
 no longer knows; the only readiness the engine owns is its model. `cancel` is `oneway` (external) so a terminal
 transition never blocks on the engine.
 
@@ -284,43 +284,43 @@ transition never blocks on the engine.
 twice, §14.1): `polish` runs the deterministic pipeline and answers `onResult` with the `DETERMINISTIC`
 label; `warmUp` is a no-op; `isReady` and `getStatus` delegate to the local-model answers. Every production
 and test caller migrates to the appended methods in this change, so nothing in this repository calls v1
-after it; their removal is its own interface-version migration, filed as a follow-up issue when this ships.
+after it; their removal is its own interface-version migration, filed as #70.
 The client-side `onError` stays implemented as a deterministic fallback with reason `CALL_FAILED`.
 
 ### 3.3 The outcome
 
-`PolishOutcome` (proposed), a Parcelable data class: `requestId: Long`, `text: String`, `engine: String`
+`PolishOutcome`, a Parcelable data class: `requestId: Long`, `text: String`, `engine: String`
 (the History label, unchanged vocabulary), `reason: PolishReason`, `statusCode: Int` (0 when none),
 `latencyMs: Long`.
 
-`PolishReason` (proposed), an enum, closed, one member per producer path:
+`PolishReason`, an enum, closed, one member per producer path:
 
 | Member | Produced by |
 |---|---|
 | `POLISHED` | pipeline `usedModel` |
 | `OFF` | policy `Off` |
 | `NO_SPEECH` | blank raw text (`PolishService.kt:57-60` today) |
-| `EMPTY_AFTER_CLEANUP` (proposed) | pipeline: cleaned text blank (`PolishPipeline.kt:16`) |
-| `CLEANUP_RECOVERED` (proposed) | pipeline: `DeterministicCleanup` returned the original (`PolishPipeline.kt:15`) |
-| `LOCAL_NOT_READY` (proposed) | policy `LocalS1`, model not loaded (`PolishService.kt:74`) |
-| `LOCAL_FAILED` (proposed) | S1 returned an `ERROR:` result or threw (`PolishService.kt:198-201`) |
-| `OUTPUT_REJECTED` (proposed) | model text blank after `</think>` or unsafe (`PolishService.kt:203-208`, `PolishPipeline.kt:18-20`) |
-| `CLOUD_NOT_CONFIGURED` (proposed) | policy `CloudUnconfigured`, or `ProviderFailureKind.INVALID_CONFIGURATION` |
+| `EMPTY_AFTER_CLEANUP` | pipeline: cleaned text blank (`PolishPipeline.kt:16`) |
+| `CLEANUP_RECOVERED` | pipeline: `DeterministicCleanup` returned the original (`PolishPipeline.kt:15`) |
+| `LOCAL_NOT_READY` | policy `LocalS1`, model not loaded (`PolishService.kt:74`) |
+| `LOCAL_FAILED` | S1 returned an `ERROR:` result or threw (`PolishService.kt:198-201`) |
+| `OUTPUT_REJECTED` | model text blank after `</think>` or unsafe (`PolishService.kt:203-208`, `PolishPipeline.kt:18-20`) |
+| `CLOUD_NOT_CONFIGURED` | policy `CloudUnconfigured`, or `ProviderFailureKind.INVALID_CONFIGURATION` |
 | `NO_API_KEY` | `ProviderFailureKind.NO_API_KEY` |
 | `NETWORK` | `ProviderFailureKind.NETWORK` |
 | `TIMEOUT` | `ProviderFailureKind.TIMEOUT` |
 | `CANCELLED` | `ProviderFailureKind.CANCELLED`, or a queued request whose token was cancelled before it ran |
 | `HTTP_ERROR` | `ProviderFailureKind.HTTP_ERROR`, status carried |
 | `MALFORMED_RESPONSE`, `RESPONSE_TOO_LARGE`, `REDIRECT_REJECTED` | the same-named kinds |
-| `UNEXPECTED` (proposed) | the engine's catch |
-| `SERVICE_UNAVAILABLE` (proposed), `SERVICE_DIED`, `CALL_FAILED` (proposed) | session-owner side only: never bound, disconnected mid-polish, binder call threw |
+| `UNEXPECTED` | the engine's catch |
+| `SERVICE_UNAVAILABLE`, `SERVICE_DIED`, `CALL_FAILED` | session-owner side only: never bound, disconnected mid-polish, binder call threw |
 
 The mapping from `ProviderFailureKind` is an exhaustive `when` with no `else`
 (`kotlin-patterns.md` RULE: exhaustive-when-no-else), which is why `UNSUPPORTED_PROVIDER` is deleted here.
 
-`PipelineOutcome` (proposed), an enum on `PolishPipelineResult`, lets the engine map without guessing:
-`CLEANUP_RECOVERED`, `EMPTY_AFTER_CLEANUP`, `NO_MODEL` (proposed), `MODEL_DECLINED` (proposed) (lambda returned null or threw),
-`MODEL_REJECTED` (proposed) (safety), `MODEL_ACCEPTED` (proposed). `usedModel` and `recovered` stay for the existing consumers.
+`PipelineOutcome`, an enum on `PolishPipelineResult`, lets the engine map without guessing:
+`CLEANUP_RECOVERED`, `EMPTY_AFTER_CLEANUP`, `NO_MODEL`, `MODEL_DECLINED` (lambda returned null or threw),
+`MODEL_REJECTED` (safety), `MODEL_ACCEPTED`. `usedModel` and `recovered` stay for the existing consumers.
 Each model adapter records a typed attempt reason before returning to `PolishPipeline`: a local exception
 or an `ERROR:` result → `LOCAL_FAILED`; a provider failure → its exhaustively mapped reason and status; a
 successful call whose output is blank or unsafe → `OUTPUT_REJECTED`. `MODEL_DECLINED` or `MODEL_REJECTED`
@@ -328,11 +328,11 @@ with no recorded failure maps to `OUTPUT_REJECTED`, never to an inferred cloud k
 
 ### 3.4 Engine internals
 
-- `PolishRequestRegistry` (proposed), a pure class the engine owns: a `ConcurrentHashMap` (external) from
+- `PolishRequestRegistry`, a pure class the engine owns: a `ConcurrentHashMap` (external) from
   request id to `ProviderCancellation`, registered with `putIfAbsent` (external) (a colliding id is refused and the
   request answers `UNEXPECTED` rather than sharing a token) and removed with `remove(requestId, token)` so
   an older request's `finally` cannot remove a newer token; `cancel(requestId)` cancels and removes exactly
-  that token, is a no-op on an unknown or delivered id, and `cancelAll()` (proposed) is what `onDestroy` calls before
+  that token, is a no-op on an unknown or delivered id, and `cancelAll()` is what `onDestroy` calls before
   queuing `s1Runtime.close()` and shutting the executor down, as today (`PolishService.kt:149-157`). The
   worker checks the token before starting and answers `CANCELLED` for a request cancelled while queued.
 - One gated v2 `onOutcome` delivery site per request (the retained v1 path separately delivers a deterministic `onResult`): the registry's per-request once-gate (an `AtomicBoolean` (external) created with the
@@ -351,19 +351,19 @@ with no recorded failure maps to `OUTPUT_REJECTED`, never to an inferred cloud k
   `Dispatchers.IO` through `ProviderConfigurationRepository(applicationContext).loadPolicy()` after the
   existing awaits (`DictationSessionService.kt:300-304`), latched at `:319-326`.
 - `onServiceConnected` calls `warmUpWithPolicy(sessionPreferences.policy)`; v1 `warmUp()` stays declared and is a no-op.
-- `PolishRequestIdSource` (proposed), process-wide: an `AtomicLong` (external) seeded from elapsed realtime
+- `PolishRequestIdSource`, process-wide: an `AtomicLong` (external) seeded from elapsed realtime
   that returns `max(previous + 1, clock)` atomically, so two session-owner instances sharing one engine
   process, or two calls in one clock tick, never receive the same id. The clock is injected for JVM tests.
-- `PolishRequestLedger` (proposed), a small pure class over that source: `open(): Long` mints and holds the
+- `PolishRequestLedger`, a small pure class over that source: `open(): Long` mints and holds the
   open id; `accepts(id): Boolean` compare-and-swaps exactly that id to null, so it is true once;
-  `close(): Long?` atomically swaps the open id to null and returns it. The callback's `onOutcome` (proposed)
+  `close(): Long?` atomically swaps the open id to null and returns it. The callback's `onOutcome`
   asks the ledger before `publishResult`; a rejected outcome is logged by id and reason name and dropped. The
   ledger is what makes `publicationStarted` a second guard rather than the only one.
-- `deterministicFallback(raw, take)` (proposed) replaces `regexFallback`: `PolishPipeline.run(restored,
+- `deterministicFallback(raw, take)` replaces `regexFallback`: `PolishPipeline.run(restored,
   take.cleanup).text` then `restoreTakeVocabulary`, published under `PolishEngineLabels.DETERMINISTIC` with a
-  logged reason. `RegexPolisher` and `RegexPolisherTest` are deleted; the replacement test is
+  logged reason. `RegexPolisher` and `RegexPolisherTest` (removed) are deleted; the replacement test is
   `DeterministicFallbackTest`.
-- `cancelOpenPolishRequest()` (proposed): `ledger.close()` first, then `cancel(id)` for the returned id
+- `cancelOpenPolishRequest()`: `ledger.close()` first, then `cancel(id)` for the returned id
   inside `runCatching`, so cancel versus outcome is first-wins on the ledger. `finishSession` (`:808`),
   `showError` (`:791`) and `onDestroy` (`:984`) call it as the terminal transition BEGINS, before the wait for
   pending History work (`:812-816`) that would otherwise delay the cancel; `unbindPipelineServices`
@@ -430,7 +430,7 @@ Async edge cases (`code-design-rules.md` RULE: async-edge-case-enumeration):
 | Interrupted | session owner dies mid-request | engine's later delivery throws into `runCatching`; no retry; token removed in `finally` |
 | Deleted | provider removed between sessions | next session's snapshot is `Off` or `LocalS1` (`clearSelection` forces `OFFLINE_S1`) |
 | Mutated | provider metadata or mode changes during a session | the immutable policy stays in force until the next session, by contract |
-| Mutated | the selected provider's key is replaced or removed during a session | the request observes the credential at polish time because the key is deliberately outside the snapshot (`ProviderConfigurationRepository.kt:40`, `:100-104`); a missing key returns `NO_API_KEY` |
+| Mutated | the selected provider's key is replaced or removed during a session | the request observes the credential at polish time because the key is deliberately outside the snapshot (`ProviderConfigurationRepository.kt:36`, `:93-109`); a missing key returns `NO_API_KEY` |
 | Concurrent | two `polish` calls queued (a second session before the first's unbind completes) | each has its own id and token; the first's outcome reaches the first session owner's closed ledger and is dropped |
 | Concurrent | a second `DictationSessionService` instance while the same `:polish` process survives | request ids come from the process-wide `PolishRequestIdSource`: one `AtomicLong` returns `max(previous + 1, clock)` atomically, so a new instance's first id cannot collide with an old instance's token in the engine-wide map; raw `SystemClock.elapsedRealtimeNanos()` (external) is never used as identity |
 | Concurrent | `cancel` races `onOutcome` | the ledger is first-wins: `close()` runs before the remote `cancel` call, so an outcome cannot be accepted while cancellation is in progress; an outcome accepted first makes the later `cancel` a no-op on the engine |
@@ -491,7 +491,7 @@ sentence and the macOS reason copy are phase 4's.
 
 | Field | Signal | Reader |
 |---|---|---|
-| `PolishOutcome.requestId` (proposed) | identity: equals the ledger's open id or the outcome is dropped | session owner |
+| `PolishOutcome.requestId` | identity: equals the ledger's open id or the outcome is dropped | session owner |
 | `PolishOutcome.statusCode` | `0` means absent; any other value is the provider's HTTP status | phase 4 and 7; logged here |
 | `PolishOutcome.text` blank | `publishResult` keeps its existing rule: blank text publishes the raw transcript under `RAW_FALLBACK` (`DictationSessionService.kt:567-568`) | `publishResult` |
 | `PolishOutcome.engine` | the History label vocabulary of `PolishEngineLabels` or an engine display name | Room, History |
@@ -510,22 +510,22 @@ sentence and the macOS reason copy are phase 4's.
 
 - `app/src/main/aidl/com/envi/wispr/polish/IPolishService.aidl`, `IPolishCallback.aidl`: the §3.2 surface;
   new `PolishPolicy.aidl` and `PolishOutcome.aidl` parcelable declarations.
-- `app/src/main/java/com/envi/wispr/polish/PolishPolicy.kt` (proposed), `PolishOutcome.kt` (proposed),
-  `PolishReason.kt` (proposed): the types, with `PolishReason.from(ProviderFailureKind)` (proposed).
+- `app/src/main/java/com/envi/wispr/polish/PolishPolicy.kt`, `PolishOutcome.kt`,
+  `PolishReason.kt`: the types, with `PolishReason.from(ProviderFailureKind)`.
 - `app/src/main/java/com/envi/wispr/polish/PolishService.kt`: §3.4.
 - `app/src/main/java/com/envi/wispr/polish/RegexPolisher.kt`: deleted.
 - `app/src/main/java/com/envi/wispr/cleanup/PolishPipeline.kt`: `PipelineOutcome`.
 - `app/src/main/java/com/envi/wispr/providers/ProviderConfigurationRepository.kt`: `loadPolicy()`.
 - `app/src/main/java/com/envi/wispr/providers/ProviderPolishClient.kt`: delete `UNSUPPORTED_PROVIDER`.
 - `app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt`: §3.5.
-- `app/src/main/java/com/envi/wispr/polish/PolishRequestRegistry.kt` (proposed) and `PolishRequestIdSource.kt` (proposed); `app/src/main/java/com/envi/wispr/ui/PolishRequestLedger.kt` (proposed).
-- `app/src/test/java/com/envi/wispr/polish/`: `PolishPolicyTest` (proposed), `PolishReasonTest`,
+- `app/src/main/java/com/envi/wispr/polish/PolishRequestRegistry.kt` and `PolishRequestIdSource.kt`; `app/src/main/java/com/envi/wispr/ui/PolishRequestLedger.kt`.
+- `app/src/test/java/com/envi/wispr/polish/`: `PolishPolicyTest`, `PolishReasonTest`,
   `DeterministicFallbackTest`, `PolishOnceDeliveryTest`, `PolishRequestRegistryTest`; `RegexPolisherTest`
   deleted. `app/src/test/java/com/envi/wispr/ui/PolishRequestLedgerTest.kt`. One new case in
   `app/src/androidTest/java/com/envi/wispr/providers/ProviderConfigurationRepositoryTest.kt`.
 - `app/src/androidTest/...`: the three device tests migrated.
 - `.claude/knowledge/architecture.md` FACT: processes-and-their-contract: "cloud polish calls" move from
-  main to `:polish`, which is where they already run (`PolishService.kt:81`); FACT: the-text-pipeline gains
+  main to `:polish`, which is where they already run (`PolishService.kt:185`); FACT: the-text-pipeline gains
   the policy sentence. `.claude/knowledge/polish-engines.md`: one FACT for the contract. No `AGENTS.md`
   exists in this repository. `.claude/rules/architecture-rules.md` RULE: aidl-is-append-only gains one
   sentence naming the instrumentation APK as the separately installed client the rule protects.
@@ -561,8 +561,8 @@ sentence and the macOS reason copy are phase 4's.
 | Test | Class | Proves | Revert that turns it red |
 |---|---|---|---|
 | `PolishRequestLedgerTest` | Product Outcome | wrong id rejected, the open id accepted once, close-versus-accept first-wins, and two ledgers given the same clock reading receive distinct ids | use raw clock values, remove the id compare-and-swap, or split read from close |
-| `PolishOnceDeliveryTest` (proposed) | Product Outcome | two delivery attempts for one request invoke the callback once, including when the first callback throws | remove the per-request gate or recreate it per call |
-| `PolishRequestRegistryTest` (proposed) | Product Outcome | queued, running, delivered, repeated-cancel, unknown-id and cancel-all states cancel only the exact token and remove only that token | overwrite on register, unconditional remove, or skip cancel-all |
+| `PolishOnceDeliveryTest` | Product Outcome | two delivery attempts for one request invoke the callback once, including when the first callback throws | remove the per-request gate or recreate it per call |
+| `PolishRequestRegistryTest` | Product Outcome | queued, running, delivered, repeated-cancel, unknown-id and cancel-all states cancel only the exact token and remove only that token | overwrite on register, unconditional remove, or skip cancel-all |
 | `DeterministicFallbackTest` | Product Outcome | the production `deterministicFallback` and the engine's `Off` path both return the literal `"hello world"` for `"hello world"` with default options (`RegexPolisher` would add a capital and a period) | restore `RegexPolisher` or bypass the shared helper |
 | `PolishPolicyTest` | Drift Guard | every mode × {no values, valid values} maps exactly, `PROVIDER` with no valid selection giving `CloudUnconfigured` | return `Cloud` on a null selection |
 | `ProviderConfigurationRepositoryTest` (existing `androidTest` rig, new case) | Product Outcome | one stored preference snapshot produces the exact policy, and an unreadable store produces `Off` | assemble the policy from separate reads or bypass `loadPolicy` |
@@ -581,12 +581,13 @@ sentence and the macOS reason copy are phase 4's.
 
 ## 13. Ship criteria specific to THIS change
 
-- [ ] With the engine process kept alive across a mode change, the next dictation runs the new mode on the
-      same pid (hardware recipe, all three modes, one run, no app kill).
+- [x] With the engine process kept alive across a mode change, the next dictation runs the new mode on the
+      same pid (hardware recipe steps 1-2 on the S26 Ultra: pid 7964 before and after, `S1-mini loaded` on it;
+      steps 3-4 with real speech left for the founder's felt-experience pass).
 - [ ] No preference read remains under `polish/`; `RegexPolisher` and the `"Regex fallback"` literal are gone.
-- [ ] Six JVM tests green with their reverts performed once and seen red; the new `ProviderConfigurationRepositoryTest` case compiles; suite count reported.
-- [ ] Codex explicit all-clear on this plan (coverage round, then grounded rounds) and on the code, with a
-      confirming re-run; the §14 tension adjudicated and its answer recorded here.
+- [x] Six JVM tests green with their reverts performed once and seen red (receipts in the session scratchpad); the new `ProviderConfigurationRepositoryTest` case ran green on the emulator; suite: 273 tests, 40 suites, 0 failures.
+- [x] Codex explicit all-clear on this plan (six rounds) and on the code (two rounds, CLEAN on the confirming
+      re-run); the §14 tension adjudicated and its answer recorded here.
 
 ## 14. Open questions
 
@@ -600,7 +601,7 @@ sentence and the macOS reason copy are phase 4's.
    them. Production client and service migrate atomically; installed instrumentation clients are separately
    versioned binaries, so the v1 transactions stay declared and safely implemented, the replacements are
    appended, every current caller migrates, and v1 is removed only through an explicit interface-version
-   migration, filed as its own issue at ship time. Kept transactions with a live compatibility contract are
+   migration, filed as #70. Kept transactions with a live compatibility contract are
    not the forwarding shim `GR-MIGRATION-COMPLETE` forbids.
 2. **`RegexPolisher` removal.** Coverage round confirmed: the fallback uses the shared deterministic pipeline
    exactly, and `RegexPolisher` is deleted because its extra capitalisation and punctuation made the failure
@@ -643,6 +644,12 @@ existing is merged into another owner.
   phrasings, one ledger sentence, the consolidation count) replaced.
 - **Confirming round 6, same session:** all CLOSED. **PROCEED-AS-PLANNED.** Gate 2 posted to the founder under
   the standing instruction to run the roadmap end to end (2026-09-01 evening); build started.
+- **Code review round 1:** four defects, all adopted: `publishFallback` discarded the open id before cancelling
+  (an abandoned cloud call ran on); a null or misnamed outcome for the open request left the session in
+  Processing forever; `load()` no longer validated the stored key; the secret-store file had no cross-process
+  lock. Two test gaps closed: a wiring guard that the session owner calls the shared fallback, and the
+  unreadable-store branch extracted as `readPolicy` and staged on the JVM. **Round 2: CLEAN.**
+- **Shipped 2026-09-01.** The v1 transactions' removal is #70.
 
 ## Checklist for the plan author
 

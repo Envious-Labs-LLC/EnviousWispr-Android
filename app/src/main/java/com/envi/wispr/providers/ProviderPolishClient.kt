@@ -42,7 +42,6 @@ data class ProviderPolishRequest(
 enum class ProviderFailureKind {
     NO_API_KEY,
     INVALID_CONFIGURATION,
-    UNSUPPORTED_PROVIDER,
     NETWORK,
     TIMEOUT,
     CANCELLED,

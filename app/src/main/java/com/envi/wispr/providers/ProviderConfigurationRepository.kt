@@ -2,6 +2,7 @@ package com.envi.wispr.providers
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.envi.wispr.polish.PolishPolicy
 
 /** Explicit polish policy persisted independently from the selected provider credentials. */
 enum class PolishMode {
@@ -24,33 +25,35 @@ class ProviderConfigurationRepository(
         Context.MODE_PRIVATE,
     )
 
-    fun loadMode(): PolishMode = preferences.getString(KEY_MODE, null)?.let { name ->
-        runCatching { PolishMode.valueOf(name) }.getOrDefault(PolishMode.OFFLINE_S1)
-    } ?: PolishMode.OFFLINE_S1
+    fun loadMode(): PolishMode = decodeMode(preferences.all)
 
     fun load(): SelectedProviderConfiguration? {
-        val provider = preferences.getString(KEY_PROVIDER, null)?.let { name ->
-            runCatching { Provider.valueOf(name) }.getOrNull()
-        } ?: return null
-        val model = preferences.getString(KEY_MODEL, null).orEmpty()
-        val endpoint = preferences.getString(KEY_ENDPOINT, null)
-        val protocol = preferences.getString(KEY_PROTOCOL, null)?.let { name ->
-            runCatching { SelfHostedProtocol.valueOf(name) }.getOrDefault(SelfHostedProtocol.OPENAI_COMPATIBLE)
-        } ?: SelfHostedProtocol.OPENAI_COMPATIBLE
-        val apiKey = runCatching { secrets.get(provider) }.getOrNull()
-        val validation = ProviderConfigurationValidator.validate(ProviderConfiguration(provider, endpoint), apiKey)
-        if ((validation is ValidationResult.Invalid && validation.reason != ValidationReason.API_KEY_REQUIRED) ||
-            model.isBlank() || model.length > MAX_MODEL_CHARS || model.any(Char::isISOControl)) {
+        val selection = decodeSelection(preferences.all) ?: return null
+        val apiKey = runCatching { secrets.get(selection.provider) }.getOrNull()
+        // The stored key is validated too: a key carrying a control character is not a usable selection,
+        // which is the acceptance this method has always had.
+        val validation = ProviderConfigurationValidator.validate(
+            ProviderConfiguration(selection.provider, selection.endpoint),
+            apiKey,
+        )
+        if (validation is ValidationResult.Invalid && validation.reason != ValidationReason.API_KEY_REQUIRED) {
             return null
         }
         return SelectedProviderConfiguration(
-            provider = provider,
-            model = model,
-            endpoint = endpoint,
+            provider = selection.provider,
+            model = selection.model,
+            endpoint = selection.endpoint,
             apiKey = apiKey,
-            selfHostedProtocol = protocol,
+            selfHostedProtocol = selection.protocol,
         )
     }
+
+    /**
+     * The policy snapshot a dictation session carries to the engine (`PolishPolicy`). ONE read of the
+     * preference map, so a commit landing between two reads cannot assemble a policy from two states,
+     * and the credential is never read here. A store that cannot be read yields [PolishPolicy.Off].
+     */
+    fun loadPolicy(): PolishPolicy = readPolicy { preferences.all }
 
     /** Saves metadata and the optional key without ever putting the key in preferences. */
     fun saveProvider(
@@ -116,6 +119,49 @@ class ProviderConfigurationRepository(
     }
 
     companion object {
+        /** The failure branch of [loadPolicy], separated so the JVM can stage a store that cannot be read. */
+        internal fun readPolicy(readSnapshot: () -> Map<String, *>): PolishPolicy =
+            runCatching { decodePolicy(readSnapshot()) }.getOrDefault(PolishPolicy.Off)
+
+        /**
+         * Pure decoding of one preference snapshot into the policy. Mirrors [decodeMode] and
+         * [decodeSelection] exactly, so the screen and the engine can never disagree about what a
+         * stored value means. Unit-tested on the JVM; the repository wraps it with the real store.
+         */
+        fun decodePolicy(values: Map<String, *>): PolishPolicy = when (decodeMode(values)) {
+            PolishMode.OFF -> PolishPolicy.Off
+            PolishMode.OFFLINE_S1 -> PolishPolicy.LocalS1
+            PolishMode.PROVIDER -> decodeSelection(values)?.let { selection ->
+                PolishPolicy.Cloud(selection.provider, selection.model, selection.endpoint, selection.protocol)
+            } ?: PolishPolicy.CloudUnconfigured
+        }
+
+        /** An absent or unparseable mode reads as the offline default, as it always has. */
+        fun decodeMode(values: Map<String, *>): PolishMode = (values[KEY_MODE] as? String)?.let { name ->
+            runCatching { PolishMode.valueOf(name) }.getOrDefault(PolishMode.OFFLINE_S1)
+        } ?: PolishMode.OFFLINE_S1
+
+        /**
+         * The stored selection when it is usable, or null. Validated with no key, tolerating only the
+         * key-required refusal, which is the same acceptance [load] applies with the key present.
+         */
+        fun decodeSelection(values: Map<String, *>): StoredSelection? {
+            val provider = (values[KEY_PROVIDER] as? String)?.let { name ->
+                runCatching { Provider.valueOf(name) }.getOrNull()
+            } ?: return null
+            val model = (values[KEY_MODEL] as? String).orEmpty()
+            val endpoint = values[KEY_ENDPOINT] as? String
+            val protocol = (values[KEY_PROTOCOL] as? String)?.let { name ->
+                runCatching { SelfHostedProtocol.valueOf(name) }.getOrDefault(SelfHostedProtocol.OPENAI_COMPATIBLE)
+            } ?: SelfHostedProtocol.OPENAI_COMPATIBLE
+            val validation = ProviderConfigurationValidator.validate(ProviderConfiguration(provider, endpoint), null)
+            if ((validation is ValidationResult.Invalid && validation.reason != ValidationReason.API_KEY_REQUIRED) ||
+                model.isBlank() || model.length > MAX_MODEL_CHARS || model.any(Char::isISOControl)) {
+                return null
+            }
+            return StoredSelection(provider, model, endpoint, protocol)
+        }
+
         private const val PREFERENCES = "envious_wispr_provider_configuration"
         private const val KEY_MODE = "mode"
         private const val KEY_PROVIDER = "provider"
@@ -125,6 +171,14 @@ class ProviderConfigurationRepository(
         private const val MAX_MODEL_CHARS = 256
     }
 }
+
+/** The credential-free part of a stored selection: what [ProviderConfigurationRepository.decodeSelection] can read. */
+data class StoredSelection(
+    val provider: Provider,
+    val model: String,
+    val endpoint: String?,
+    val protocol: SelfHostedProtocol,
+)
 
 data class SelectedProviderConfiguration(
     val provider: Provider,

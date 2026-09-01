@@ -3,6 +3,7 @@ package com.envi.wispr.providers
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.envi.wispr.polish.PolishPolicy
 import java.util.concurrent.ConcurrentHashMap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -94,6 +95,30 @@ class ProviderConfigurationRepositoryTest {
         assertNull(repository.load())
         assertEquals(PolishMode.OFFLINE_S1, repository.loadMode())
         assertNull(secrets.get(Provider.OPENAI))
+    }
+
+    /**
+     * Product Outcome: when this fails, the mode the user picked is not the mode the engine runs,
+     * because the session owner's policy snapshot disagrees with what the screen saved. The
+     * unreadable-store branch is `readPolicy`, staged on the JVM in `PolishPolicyTest`.
+     */
+    @Test fun loadPolicyReadsTheStoredSnapshotWithoutTheKey() {
+        assertEquals(PolishPolicy.LocalS1, repository.loadPolicy())
+
+        repository.setMode(PolishMode.OFF)
+        assertEquals(PolishPolicy.Off, repository.loadPolicy())
+
+        repository.setMode(PolishMode.PROVIDER)
+        assertEquals(PolishPolicy.CloudUnconfigured, repository.loadPolicy())
+
+        repository.save(Provider.OPENAI, "gpt-test", apiKey = "openai-secret")
+        assertEquals(
+            PolishPolicy.Cloud(Provider.OPENAI, "gpt-test", null, SelfHostedProtocol.OPENAI_COMPATIBLE),
+            repository.loadPolicy(),
+        )
+
+        repository.clearSelection()
+        assertEquals(PolishPolicy.LocalS1, repository.loadPolicy())
     }
 
     private class MemorySecrets : SecretStore {

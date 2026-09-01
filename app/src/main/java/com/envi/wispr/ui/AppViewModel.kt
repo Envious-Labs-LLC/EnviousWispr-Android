@@ -36,6 +36,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 data class ProviderSettingsUiState(
     val loading: Boolean = true,
@@ -102,6 +105,11 @@ class EnviousWisprViewModel(
     private val historySearch = MutableStateFlow("")
     private val historyError = MutableStateFlow<String?>(null)
     private val providerSettings = MutableStateFlow(ProviderSettingsUiState())
+    // AI Polish now commits mode and provider changes immediately on tap rather than behind a single
+    // Apply button (`ui/PolishScreen.kt`), so two writes launched in quick succession (Off, then This
+    // phone) can otherwise race on `Dispatchers.IO` and persist whichever finishes last rather than
+    // whichever was tapped last. This serializes every provider-settings write to launch order.
+    private val providerSettingsMutex = Mutex()
 
     private val history = repository.transcripts
     private val customTerms = customTermRepository.observe()
@@ -196,7 +204,17 @@ class EnviousWisprViewModel(
                     customTermError.value = failure.message ?: "Could not migrate existing custom terms"
                 }
         }
-        viewModelScope.launch(Dispatchers.IO) { refreshProviderSettings() }
+        // Routed through the same mutex as every write, not called bare: without this, the initial
+        // load and a fast user-triggered write race with no ordering between them at all, and if the
+        // initial load's own read happened before the write but its publish lands after, it can
+        // revert `providerSettings.value` to the pre-write snapshot — a real bug caught in code
+        // review, 2026-09-01, distinct from (and found right after) the ordering fix inside
+        // `updateProviderSettings` itself.
+        viewModelScope.launch {
+            providerSettingsMutex.withLock {
+                withContext(Dispatchers.IO) { refreshProviderSettings() }
+            }
+        }
     }
 
     fun updateHistorySearch(value: String) { historySearch.value = value }
@@ -403,16 +421,26 @@ class EnviousWisprViewModel(
 
     private fun updateProviderSettings(operation: () -> String) {
         providerSettings.value = providerSettings.value.copy(message = "", error = null)
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching(operation).fold(
-                onSuccess = { message -> refreshProviderSettings(message = message) },
-                onFailure = { failure ->
-                    refreshProviderSettings(
-                        error = failure.message?.takeIf(String::isNotBlank)
-                            ?: "Could not update AI Polish settings",
+        // Launching straight onto `Dispatchers.IO` would let two calls reach `withLock` in whichever
+        // order the multithreaded IO pool happens to schedule them, not the order they were tapped —
+        // a real bug caught in code review, 2026-09-01. `viewModelScope`'s default dispatcher is
+        // `Main.immediate`, and every caller here is itself a Main-thread UI callback, so acquiring
+        // the lock on the DEFAULT dispatcher first preserves tap order; only the blocking work inside
+        // the lock moves to IO.
+        viewModelScope.launch {
+            providerSettingsMutex.withLock {
+                withContext(Dispatchers.IO) {
+                    runCatching(operation).fold(
+                        onSuccess = { message -> refreshProviderSettings(message = message) },
+                        onFailure = { failure ->
+                            refreshProviderSettings(
+                                error = failure.message?.takeIf(String::isNotBlank)
+                                    ?: "Could not update AI Polish settings",
+                            )
+                        },
                     )
-                },
-            )
+                }
+            }
         }
     }
 

@@ -35,6 +35,21 @@ class ProviderPolishClientTest {
         assertEquals(ProviderPolishResult.Success("clean result"), result)
     }
 
+    @Test fun openAiResponsesSkipsALeadingReasoningItemAndParsesTheMessageAfterIt() = withServer(
+        // Regression for a real bug caught in code review: OpenAI's Responses API can place a
+        // `reasoning` item before the assistant's own `message` item for a reasoning-capable model.
+        // Reading a fixed `output[0]` breaks the moment that happens; this fixture reproduces it.
+        response = "{\"output\":[" +
+            "{\"type\":\"reasoning\",\"summary\":[]}," +
+            "{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"clean result\"}]}" +
+            "]}",
+    ) { endpoint ->
+        val result = client(endpoint).polish(
+            ProviderPolishRequest(Provider.OPENAI, "gpt-5-mini", "line 1\nline 2", "openai-test-key"),
+        )
+        assertEquals(ProviderPolishResult.Success("clean result"), result)
+    }
+
     @Test fun geminiRequestUsesGoogleHeaderAndParsesCandidate() = withServer(
         response = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"gemini result\"}]}}]}",
         inspect = { request ->

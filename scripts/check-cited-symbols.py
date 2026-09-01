@@ -40,8 +40,9 @@ A PLAN NAMES THINGS THAT DO NOT EXIST YET, and that is not an invented symbol. T
 the plan before the code, so a plan-only commit cites the classes and functions it proposes. Mark such a
 name `Name` (proposed) on at least one mention in the added lines and every mention of it is skipped; mark a
 name defined outside the configured roots — a framework API, a file on the phone — `Name` (external) the
-same way. The mark is a CLAIM about status, read by the next reviewer, so it is wrong to put on a name the
-plan asserts already exists. When the plan moves to SHIPPED, delete the (proposed) marks and re-run: the
+same way; mark a name this change DELETES `Name` (removed), so a plan that describes the code it replaced
+still reads honestly after the code is gone. Each mark is a CLAIM about status, read by the next reviewer,
+so it is wrong to put on a name the plan asserts already exists. When the plan moves to SHIPPED, delete the (proposed) marks and re-run: the
 names then resolve against the code or they were renamed during the build and the plan is stale.
 
 Exit: 0 clean (or, with --detect-only, there is something to check) · 1 unresolved citations found
@@ -140,11 +141,11 @@ def citations(lines: list[str]) -> tuple[set[str], set[tuple[str, int]]]:
     """
     symbols: set[str] = set()
     locations: set[tuple[str, int]] = set()
-    # A name the diff marks (proposed) or (external) is a status claim, not an existence claim; see the
-    # module docstring. Collected over the whole diff first, so the mark on one mention covers the rest.
+    # A name the diff marks (proposed), (external) or (removed) is a status claim, not an existence claim;
+    # see the module docstring. Collected over the whole diff first, so the mark on one mention covers the rest.
     marked: set[str] = set()
     for line in lines:
-        for token in re.findall(r"`([^`\n]+)`\s*\((?:proposed|external)\)", line):
+        for token in re.findall(r"`([^`\n]+)`\s*\((?:proposed|external|removed)\)", line):
             marked.add(token.strip().split("(")[0].split(".")[-1])
     for line in lines:
         for token in re.findall(r"`([^`\n]+)`", line):

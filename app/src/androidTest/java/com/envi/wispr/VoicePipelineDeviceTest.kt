@@ -21,6 +21,8 @@ import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
+import com.envi.wispr.polish.PolishOutcome
+import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.PolishService
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.vocabulary.BuiltinVocabulary
@@ -92,12 +94,12 @@ class VoicePipelineDeviceTest {
         assertTrue("ASR service did not connect", asrConnected.await(15, TimeUnit.SECONDS))
         assertTrue("Polish service did not connect", polishConnected.await(15, TimeUnit.SECONDS))
 
-        polishService?.warmUp()
+        polishService?.warmUpWithPolicy(PolishPolicy.LocalS1)
         val deadline = System.currentTimeMillis() + 30_000
-        while (polishService?.isReady != true && System.currentTimeMillis() < deadline) {
+        while (polishService?.isLocalModelReady != true && System.currentTimeMillis() < deadline) {
             Thread.sleep(250)
         }
-        assertTrue("S1-mini did not become ready: ${polishService?.status}", polishService?.isReady == true)
+        assertTrue("S1-mini did not become ready: ${polishService?.localModelStatus()}", polishService?.isLocalModelReady == true)
     }
 
     @After
@@ -134,17 +136,17 @@ class VoicePipelineDeviceTest {
         var polishedText = ""
         var engine = ""
         var latencyMs = -1L
-        polishService?.polish(matcher.restore(rawText), true, true, false, object : IPolishCallback.Stub() {
-            override fun onResult(text: String?, usedEngine: String?, measuredLatencyMs: Long) {
-                polishedText = matcher.restore(text.orEmpty())
-                engine = usedEngine.orEmpty()
-                latencyMs = measuredLatencyMs
+        polishService?.polishRequest(1L, matcher.restore(rawText), true, true, false, PolishPolicy.LocalS1, object : IPolishCallback.Stub() {
+            override fun onOutcome(outcome: PolishOutcome?) {
+                polishedText = matcher.restore(outcome?.text.orEmpty())
+                engine = outcome?.engine.orEmpty()
+                latencyMs = outcome?.latencyMs ?: -1L
                 polishFinished.countDown()
             }
 
-            override fun onError(message: String?) {
-                polishFinished.countDown()
-            }
+            override fun onResult(text: String?, usedEngine: String?, measuredLatencyMs: Long) = Unit
+
+            override fun onError(message: String?) = Unit
         })
         assertTrue("Polish callback timed out", polishFinished.await(30, TimeUnit.SECONDS))
         assertTrue("Unexpected engine: $engine", engine.startsWith("S1-mini by Superwhisper"))

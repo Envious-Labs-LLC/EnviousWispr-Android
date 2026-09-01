@@ -11,6 +11,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -18,6 +19,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
+/** Product Outcome: the shipped local model on the real runtime polishes a dictation through the v2 binder surface. */
 @RunWith(AndroidJUnit4::class)
 class PolishServiceDeviceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
@@ -46,13 +48,13 @@ class PolishServiceDeviceTest {
             Context.BIND_AUTO_CREATE
         )
         assertTrue("PolishService did not connect", connected.await(10, TimeUnit.SECONDS))
-        service?.warmUp()
+        service?.warmUpWithPolicy(PolishPolicy.LocalS1)
 
         val deadline = System.currentTimeMillis() + 30_000
-        while (service?.isReady != true && System.currentTimeMillis() < deadline) {
+        while (service?.isLocalModelReady != true && System.currentTimeMillis() < deadline) {
             Thread.sleep(250)
         }
-        assertTrue("S1-mini did not become ready: ${service?.status}", service?.isReady == true)
+        assertTrue("S1-mini did not become ready: ${service?.localModelStatus()}", service?.isLocalModelReady == true)
     }
 
     @After
@@ -63,34 +65,34 @@ class PolishServiceDeviceTest {
     @Test
     fun s1PolishesTextOnNpu() {
         val completed = CountDownLatch(1)
-        var result: String? = null
-        var engine: String? = null
-        var latencyMs = -1L
+        var outcome: PolishOutcome? = null
 
-        service?.polish(
+        service?.polishRequest(
+            1L,
             "um enviouswispr works with saurabh and it is really really useful",
             true,
             true,
             false,
+            PolishPolicy.LocalS1,
             object : IPolishCallback.Stub() {
-                override fun onResult(text: String?, usedEngine: String?, measuredLatencyMs: Long) {
-                    result = text
-                    engine = usedEngine
-                    latencyMs = measuredLatencyMs
+                override fun onOutcome(delivered: PolishOutcome?) {
+                    outcome = delivered
                     completed.countDown()
                 }
 
-                override fun onError(message: String?) {
-                    completed.countDown()
-                }
+                override fun onResult(text: String?, usedEngine: String?, measuredLatencyMs: Long) = Unit
+
+                override fun onError(message: String?) = Unit
             }
         )
 
         assertTrue("Polish callback timed out", completed.await(30, TimeUnit.SECONDS))
-        assertNotNull(result)
-        assertTrue("Unexpected engine: $engine", engine?.startsWith("S1-mini by Superwhisper") == true)
-        assertFalse("Filler was not removed: $result", result!!.lowercase().startsWith("um "))
-        assertTrue("Expected the proven NPU backend, got: $engine", engine?.endsWith("(NPU)") == true)
-        Log.i("S1DeviceTest", "engine=$engine latencyMs=$latencyMs chars=${result!!.length}")
+        val result = assertNotNull(outcome).let { outcome!! }
+        assertEquals(1L, result.requestId)
+        assertEquals(PolishReason.POLISHED, result.reason)
+        assertTrue("Unexpected engine: ${result.engine}", result.engine.startsWith("S1-mini by Superwhisper"))
+        assertFalse("Filler was not removed: ${result.text}", result.text.lowercase().startsWith("um "))
+        assertTrue("Expected the proven NPU backend, got: ${result.engine}", result.engine.endsWith("(NPU)"))
+        Log.i("S1DeviceTest", "engine=${result.engine} latencyMs=${result.latencyMs} chars=${result.text.length}")
     }
 }

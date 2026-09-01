@@ -157,16 +157,16 @@ and the local-model page become a third `Screen` variant and reuse that chrome.
 - Full-screen page with back arrow and no bottom bar: `SettingsPage` + `AppScaffold` already do this for
   seven drawer pages. Reused, not duplicated.
 - Modal bottom sheet: `/usr/bin/grep -rln "ModalBottomSheet" app/src/main/java` returns nothing. Compose BOM
-  `2026.02.01` (`app/build.gradle.kts:71`) ships `androidx.compose.material3.ModalBottomSheet`. Platform
+  `2026.02.01` (`app/build.gradle.kts:71`) ships `androidx.compose.material3.ModalBottomSheet` (external). Platform
   primitive, not a new authority.
 - Snackbar: `/usr/bin/grep -rln "Snackbar" app/src/main/java` returns nothing. `Scaffold(snackbarHost = ...)`
-  is the platform primitive; one `SnackbarHostState` hoisted in `EnviousWisprApp`.
+  is the platform primitive; one `SnackbarHostState` (external) hoisted in `EnviousWisprApp`.
 - Card with icon tile, title, description, chevron: `DictionaryScreen.kt:668-731` `ImportPickerCard` is the
   house style (44 dp tile, `RoundedCornerShape(12.dp)`, primary at 15% alpha). The polish cards follow the
   same measurements; the composable itself is private to Dictionary and carries no radio, so the polish
   card is its own composable with the same tokens rather than a widened shared one.
 - Radio semantics on a card: `Modifier.selectable(selected, role = Role.RadioButton)` plus a
-  `RadioButton` glyph; the platform owns the TalkBack contract.
+  `RadioButton` (external) glyph; the platform owns the TalkBack contract.
 
 ### 3. Read prior attempts and live direction
 
@@ -185,8 +185,8 @@ and the local-model page become a third `Screen` variant and reuse that chrome.
 
 ### 4. Name the lifecycle, trust and process boundaries a naive design would miss
 
-- **`:polish` reads the preference file on every call.** Adding `last_on_mode` in the same file is invisible
-  to it. `turnOn()` writes `mode` through the same `commit()` path as `setMode`, so the next polish call
+- **`:polish` reads the preference file on every call.** Adding `last_on_mode` (proposed) in the same file is invisible
+  to it. `turnOn()` (proposed) writes `mode` through the same `commit()` path as `setMode`, so the next polish call
   sees the restored mode exactly as it sees a mode tap today.
 - **Setup page across a configuration change.** The key draft is plain `remember` and dies (by design,
   unchanged). The model draft is `rememberSaveable` (non-secret). The page identity itself is saved as a
@@ -194,7 +194,7 @@ and the local-model page become a third `Screen` variant and reuse that chrome.
 - **Save then process death before the write lands.** `updateProviderSettings` runs in `viewModelScope`;
   process death loses the queued write and the user returns to the tab showing the old state, which is the
   truth. Nothing on the tab claims otherwise because the tab has no draft.
-- **Turn on when the last mode was a provider that is gone.** `polishModeWhenTurnedOn` (pure) returns
+- **Turn on when the last mode was a provider that is gone.** `polishModeWhenTurnedOn` (proposed) (pure) returns
   `OFFLINE_S1` unless `lastOnMode == PROVIDER && load() != null`. `setPolishMode`'s existing refusal of
   `PROVIDER` with no configuration is therefore never reached from the switch.
 - **Phone card tap when the model is not Ready.** The radio is disabled unless `s1State.label == "Ready"`
@@ -218,8 +218,8 @@ and the local-model page become a third `Screen` variant and reuse that chrome.
   → nothing. A failed provider write is silent today; §7 fixes that.
 - **Claim: `ModelUiState.label` has a closed vocabulary.** `models/ModelDeliveryUi.kt:14-80` produces exactly:
   Paused, Verifying, Queued, Downloading, Ready, Cancelled, Update failed, Failed, Update available,
-  Checking, Repair needed, Missing. §3's `phoneCard` maps all twelve by label and `action` together, and
-  `PolishCardStateTest` enumerates all twelve, so a thirteenth label added later fails a test rather than
+  Checking, Repair needed, Missing. §3's `phoneCard` (proposed) maps all twelve by label and `action` together, and
+  `PolishCardStateTest` (proposed) enumerates all twelve, so a thirteenth label added later fails a test rather than
   falling into a default branch silently.
 - **Claim: SharedPreferences across processes is already how `mode` works.** `PolishService.onCreate`
   (`PolishService.kt:141-145`) constructs its own repository over the same file. No change in risk.
@@ -231,19 +231,19 @@ and the local-model page become a third `Screen` variant and reuse that chrome.
 
 ### The tab (`ui/PolishScreen.kt`, rewritten)
 
-Inputs: `settings: ProviderSettingsUiState`, `s1State: ModelUiState`. Callbacks: `onTurnOn`, `onSetMode`,
-`onOpenProviderSetup(Provider)`, `onOpenLocalModel`, `onDownloadModel`, `onClearProvider`. Local state:
+Inputs: `settings: ProviderSettingsUiState`, `s1State: ModelUiState`. Callbacks: `onTurnOn` (proposed), `onSetMode`,
+`onOpenProviderSetup(Provider)`, `onOpenLocalModel` (proposed), `onDownloadModel` (proposed), `onClearProvider`. Local state:
 `showPicker: Boolean` (`rememberSaveable`). The loading gate from #66 stays as the first line.
 
 1. **Switch card.** Sparkle tile, `AI Polish`, `Turns rough speech into ready-to-send text.`, `Switch`
    checked when `settings.mode != OFF`. On → `onTurnOn()`. Off → `onSetMode(OFF)`.
 2. **Off:** one line, `AI Polish is off. Basic cleanup still runs.`, `bodyMedium`, `onSurfaceVariant`.
-3. **On:** eyebrow `WHERE POLISH RUNS`, then two `EngineCard`s inside `AnimatedContent`
-   (`animateContentSize`; whether it honours the system animator scale is checked on the phone during UAT
+3. **On:** eyebrow `WHERE POLISH RUNS`, then two `EngineCard` (proposed)s inside `AnimatedContent`
+   (`animateContentSize` (external); whether it honours the system animator scale is checked on the phone during UAT
    with Developer options animator scale set to off, not assumed).
    - `EngineCard(selected, enabled, tile, title, status, statusColour, privacyLine, action, onSelect)`:
      `Card` with a 1 dp `primary` border when selected, `selectable(role = RadioButton)` on the whole card,
-     `RadioButton` at the trailing edge, the route glyph (`RouteGlyph`, a Canvas row of coloured dots and a
+     `RadioButton` at the trailing edge, the route glyph (`RouteGlyph` (proposed), a Canvas row of coloured dots and a
      sparkle) only when selected, a divider, the privacy line with a shield glyph, a divider, the action row
      with a chevron.
    - Phone card, from pure `phoneCard(s1State, settings)`: title `On this phone`; status `S1-mini · Ready`
@@ -261,16 +261,16 @@ Inputs: `settings: ProviderSettingsUiState`, `s1State: ModelUiState`. Callbacks:
 5. **Snackbar.** `LaunchedEffect(settings.writeSequence)` shows `settings.message` when non-blank.
    `settings.error`, when non-null, renders as a line under the cards in the error colour.
 
-### The picker (`ProviderPickerSheet`, same file)
+### The picker (`ProviderPickerSheet` (proposed), same file)
 
-`ModalBottomSheet` with `rememberModalBottomSheetState`, drag handle, title `Choose a provider`, line `Your
+`ModalBottomSheet` with `rememberModalBottomSheetState` (external), drag handle, title `Choose a provider`, line `Your
 words are sent only when this mode is used.`, one `selectable` row per `CloudProviders` entry with the
 provider glyph, name, `Use your API key`, a `RadioButton` (checked iff `settings.configured &&
 settings.provider == it`) and a chevron. Tap → dismiss, then `onOpenProviderSetup(it)`. `Cancel` text button.
 
 ### The setup page (`ui/ProviderSetupPage.kt`, new)
 
-Inputs: `provider`, `settings`, `onSave(Provider, model, apiKey?)`, `onClear`, `onDone`. Title `Set up
+Inputs: `provider`, `settings`, `onSave(Provider, model, apiKey?)`, `onClear` (proposed), `onDone`. Title `Set up
 <Provider>` for a new setup, `Edit <Provider>` when `settings.configured && settings.provider == provider`.
 Body is a `Column` with a weighted scrolling section and a pinned bottom `Button` inside
 `Modifier.imePadding().navigationBarsPadding()`:
@@ -291,7 +291,7 @@ Body is a `Column` with a weighted scrolling section and a pinned bottom `Button
   `onDone()`.
 - Back (arrow or system) → `onDone()`, discarding the key draft.
 
-### The local-model page (`LocalModelPage`, in `PolishScreen.kt`)
+### The local-model page (`LocalModelPage` (proposed), in `PolishScreen.kt`)
 
 Title `S1-mini`. Renders the existing `ModelCard` with the action wiring lifted verbatim from
 `PolishScreen.kt:618-640`. This is where Pause, Resume, Retry, Repair, Update and Remove live; the tab
@@ -302,7 +302,7 @@ shows none of them.
 - `internal sealed interface PolishSubpage { data class ProviderSetup(val provider: Provider); data object
   LocalModel }` with pure `toSaved(): String` / `fromSaved(String): PolishSubpage?` (`setup:OPENAI`,
   `model`; unknown → null, so a stale saved string falls back to the tab).
-- `Screen` gains `data class Polish(val page: PolishSubpage)`. `polishPageName` is a `rememberSaveable`
+- `Screen` gains `data class Polish(val page: PolishSubpage)`. `polishPageName` (proposed) is a `rememberSaveable`
   string beside `settingsPageName`; opening a drawer page clears it and vice versa, so at most one page is
   open. `BackHandler(enabled = settingsPage != null || polishPage != null)`.
 - `AppScaffold` takes `page: PageChrome?` (`title`) instead of `settingsPage: SettingsPage?`; both page
@@ -351,15 +351,15 @@ layer that already turns these enums into what a user sees.
 
 ## 4. Contract deltas
 
-- **`ProviderConfigurationRepository`:** new `turnOn()`, `loadLastOnMode()`; `setMode`, `saveProvider`,
+- **`ProviderConfigurationRepository`:** new `turnOn()`, `loadLastOnMode()` (proposed); `setMode`, `saveProvider`,
   `clearSelection` additionally maintain `last_on_mode`. To `PolishService` nothing changes: it reads
   `mode` only. To `AppViewModel`: one new entry point.
-- **`ProviderSettingsUiState.writeSequence`:** "how many provider-settings writes have completed since the
+- **`ProviderSettingsUiState.writeSequence` (proposed):** "how many provider-settings writes have completed since the
   view model was created." Consumers: the tab's snackbar effect only.
-- **`AppViewModel.turnPolishOn()`:** "make polish on, using the last engine, or the phone if that engine is
+- **`AppViewModel.turnPolishOn()` (proposed):** "make polish on, using the last engine, or the phone if that engine is
   gone." Never fails the `PROVIDER`-without-config check.
 - **`PolishScreen` signature:** loses `onRefreshReadiness` and `onSaveProvider`; gains `onTurnOn`,
-  `onOpenProviderSetup`, `onOpenLocalModel`, `onDownloadModel`, `snackbarHostState`. `KeyRung`,
+  `onOpenProviderSetup` (proposed), `onOpenLocalModel`, `onDownloadModel`, `snackbarHostState` (proposed). `KeyRung`,
   `initialKeyRung`, `cloudReactivatesImmediately` are deleted. `CloudProviders` and `savedModelFor` stay.
 - **`Screen`:** third variant `Polish(PolishSubpage)`. The `when` over it is exhaustive with no `else`.
 - **`AppScaffold`:** `settingsPage: SettingsPage?` → `page: PageChrome?`. One call site.
@@ -376,7 +376,7 @@ layer that already turns these enums into what a user sees.
 | 6 | Setup Save | validator ∈ {Valid, Invalid(API_KEY_REQUIRED), Invalid(control chars)}; endpoint reasons unreachable because endpoint is always null here | Valid → `saveProvider` (forces `PROVIDER`, writes `last_on_mode`) then pop; Invalid → inline message, stay |
 | 7 | Setup Back | key draft, model draft | key dropped, model draft dropped with the page |
 | 8 | Setup Remove | 1 write: `clearSelection` → `OFFLINE_S1` | pop; tab shows phone selected |
-| 9 | Rotation on the tab | `showPicker` (saveable) | picker reopens; nothing else is local |
+| 9 | Rotation on the tab | `showPicker` (proposed) (saveable) | picker reopens; nothing else is local |
 | 10 | Rotation on the setup page | page id (saveable), model draft (saveable), key (not) | same page, model kept, key blank |
 | 11 | Drawer page opened while a polish page is open | `settingsPageName`, `polishPageName` | opening one clears the other |
 | 12 | Cold start with `mode` = `OFFLINE_S1` and model Missing | tab | phone card selected, `Model needed`, `Download model` |
@@ -435,19 +435,19 @@ no-dashes-in-user-facing-text (no dashes in any new string).
 
 ## 10. File-by-file changes
 
-- `app/src/main/java/com/envi/wispr/providers/ProviderConfigurationRepository.kt`: `KEY_LAST_ON_MODE`,
+- `app/src/main/java/com/envi/wispr/providers/ProviderConfigurationRepository.kt`: `KEY_LAST_ON_MODE` (proposed),
   `loadLastOnMode`, `turnOn`, writes in `setMode`/`saveProvider`/`clearSelection`, top-level
   `polishModeWhenTurnedOn`.
 - `app/src/main/java/com/envi/wispr/ui/AppViewModel.kt`: `turnPolishOn`, `writeSequence`, message strings.
-- `app/src/main/java/com/envi/wispr/ui/AppShell.kt`: `PolishSubpage`, `Screen.Polish`, `polishPageName`,
-  `PageChrome`, `AppScaffold.page`, `SnackbarHost`, `PolishScreen` wiring, `ProviderSetupPage` and
+- `app/src/main/java/com/envi/wispr/ui/AppShell.kt`: `PolishSubpage` (proposed), `Screen.Polish`, `polishPageName`,
+  `PageChrome` (proposed), `AppScaffold.page`, `SnackbarHost` (external), `PolishScreen` wiring, `ProviderSetupPage` (proposed) and
   `LocalModelPage` rendering, `BackHandler`.
 - `app/src/main/java/com/envi/wispr/ui/PolishScreen.kt`: rewrite: loading gate, switch, cards, sheet,
   info card, `LocalModelPage`, `RouteGlyph`, `EngineCard`. Delete `KeyRung`, `initialKeyRung`,
   `cloudReactivatesImmediately`, `resetLocalStateAfterClear`, the inline catalog.
 - `app/src/main/java/com/envi/wispr/ui/PolishStatusChip.kt`: reword the comment at line 74 that names the
   deleted `initialKeyRung`; no logic change.
-- `app/src/main/java/com/envi/wispr/ui/PolishCardState.kt` (new): `PhoneCardState`, `ProviderCardState`,
+- `app/src/main/java/com/envi/wispr/ui/PolishCardState.kt` (new): `PhoneCardState` (proposed), `ProviderCardState` (proposed),
   `phoneCard(s1State, settings)`, `providerCard(settings)`, pure.
 - `app/src/main/java/com/envi/wispr/ui/ProviderSetupPage.kt` (new): the setup page; `ScoreDots` and the
   catalog list move here; `userMessage()` moves here.
@@ -463,14 +463,14 @@ no-dashes-in-user-facing-text (no dashes in any new string).
 
 ## 11. Testing
 
-1. **Class.** `PolishModeWhenTurnedOnTest`: product outcome; when it fails the user flips the switch on and
+1. **Class.** `PolishModeWhenTurnedOnTest` (proposed): product outcome; when it fails the user flips the switch on and
    lands on the wrong engine or on a provider that no longer exists. `PolishCardStateTest`: product outcome;
    when it fails the phone card lets the user select a model that is not there, or the provider card says
-   Configured with no key. `PolishSubpageTest`: drift guard on the saved-string round trip; when it fails a
+   Configured with no key. `PolishSubpageTest` (proposed): drift guard on the saved-string round trip; when it fails a
    rotation on the setup page drops the user back to the tab.
-2. **Revert that turns it red.** Return `lastOnMode` unconditionally from `polishModeWhenTurnedOn` → the
+2. **Revert that turns it red.** Return `lastOnMode` (proposed) unconditionally from `polishModeWhenTurnedOn` → the
    "provider gone" case goes red. Enable the phone radio for every label → the Missing case goes red. Make
-   `fromSaved` return `LocalModel` for unknown strings → the garbage case goes red. Each revert is performed
+   `fromSaved` (proposed) return `LocalModel` (proposed) for unknown strings → the garbage case goes red. Each revert is performed
    once during the build and restored.
 3. **Not tested.** Compose layout, the sheet, the snackbar and the pinned button: no Compose test rig exists
    (#48); covered by the hardware pass.
@@ -479,7 +479,7 @@ no-dashes-in-user-facing-text (no dashes in any new string).
 
 - **Subsystem:** limb (polish), plus one dictation per mode to prove the heart still inserts.
 - **Recipe:** `device-testing.md` RULE: use-appium-to-read-the-screen-not-screenshots for driving; back up
-  `envious_wispr_provider_configuration.xml` and `enviouswispr_settings.preferences_pb` before the run.
+  `envious_wispr_provider_configuration.xml` and `enviouswispr_settings.preferences_pb` (external) before the run.
 - **Expected observation:** the Preface narrative, read from the page source (text and `checked` state of
   the radios), the badge text, and the History row's polish line after each dictation into Messages.
 - **Phone state to restore:** provider removed, mode back to what the backup holds, preferences files

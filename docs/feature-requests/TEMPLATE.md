@@ -8,6 +8,12 @@ GitHub issue: `#<number>`. Tier: <SMALL | MEDIUM | LARGE | REFACTOR>. Status: <D
 > **Post.** After Gate 2 approval, `gh issue comment <N>` with the plan link. That comment is the audit trail
 > a future session uses to skip straight to sign-off.
 >
+> **Cite what exists in backticks; mark what does not.** `scripts/check-cited-symbols.py` checks every
+> backticked name against the tree. A name this plan PROPOSES is written `Name` (proposed) on its first
+> mention; a framework API or a file on the phone is `Name` (external). Both marks are status claims the
+> reviewer reads, so never put one on a name the plan asserts already exists. Delete the (proposed) marks
+> when the plan moves to SHIPPED and re-run the check.
+>
 > **Sections 4-9 are MANDATORY for every change, whatever the tier.** Answering them is how you discover the
 > real tier; skipping them lets a bias toward SMALL through unchecked. For a genuinely small change each one
 > can be a single sentence. **The discipline is answering every section, not filling every section at

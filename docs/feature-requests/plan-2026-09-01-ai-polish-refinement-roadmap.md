@@ -111,7 +111,7 @@ is no shared mutable policy field.
 
 **Binder surface (append-only, `architecture-rules.md` RULE: aidl-is-append-only).** Append to
 `IPolishService`: a polish method that takes the cleanup flags, the policy fields, a request id and the
-callback; a warm-up that takes the mode; `cancel(requestId)`. Append to `IPolishCallback`: `onOutcome`
+callback; a warm-up that takes the mode; `cancel(requestId)`. Append to `IPolishCallback`: `onOutcome` (proposed)
 carrying request id, final text, engine label, a reason code, an HTTP status when present, and latency.
 The old `polish`, `warmUp`, `onResult` and `onError` stay declared. Both ends ship in one APK, so once the
 session owner moves to the new methods nothing binds the old ones; whether they are deleted in the same
@@ -172,7 +172,7 @@ One SMALL pull request each, in any order after phase 1, each with the test that
 
 Already planned: `docs/feature-requests/issue-67-2026-09-01-ai-polish-switch-and-cards.md`. Before its
 grounded review it is updated to depend on phases 1 and 4 and to carry, explicitly, the coverage-round
-findings: snackbar replay after recreation, migration when `last_on_mode` is absent, restoring a provider
+findings: snackbar replay after recreation, migration when `last_on_mode` (proposed) is absent, restoring a provider
 whose key is missing, form loss on storage failure, and showing one provider's setup while another is
 active. Semantic model health (#64) lands here because the card state reads it.
 

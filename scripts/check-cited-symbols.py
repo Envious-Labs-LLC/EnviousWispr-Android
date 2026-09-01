@@ -36,6 +36,14 @@ when the real number was 1, from four defects, and EVERY defect failed the same 
 WORKING reference as broken. A checker whose errors all point one way reads as strict rather than as wrong.
 The first run here measures the TOOL, not the repository.
 
+A PLAN NAMES THINGS THAT DO NOT EXIST YET, and that is not an invented symbol. The ten-step process writes
+the plan before the code, so a plan-only commit cites the classes and functions it proposes. Mark such a
+name `Name` (proposed) on at least one mention in the added lines and every mention of it is skipped; mark a
+name defined outside the configured roots — a framework API, a file on the phone — `Name` (external) the
+same way. The mark is a CLAIM about status, read by the next reviewer, so it is wrong to put on a name the
+plan asserts already exists. When the plan moves to SHIPPED, delete the (proposed) marks and re-run: the
+names then resolve against the code or they were renamed during the build and the plan is stale.
+
 Exit: 0 clean (or, with --detect-only, there is something to check) · 1 unresolved citations found
       (or, with --detect-only, nothing to check) · 2 the check could not run, which is not a pass.
 """
@@ -132,6 +140,12 @@ def citations(lines: list[str]) -> tuple[set[str], set[tuple[str, int]]]:
     """
     symbols: set[str] = set()
     locations: set[tuple[str, int]] = set()
+    # A name the diff marks (proposed) or (external) is a status claim, not an existence claim; see the
+    # module docstring. Collected over the whole diff first, so the mark on one mention covers the rest.
+    marked: set[str] = set()
+    for line in lines:
+        for token in re.findall(r"`([^`\n]+)`\s*\((?:proposed|external)\)", line):
+            marked.add(token.strip().split("(")[0].split(".")[-1])
     for line in lines:
         for token in re.findall(r"`([^`\n]+)`", line):
             token = token.strip()
@@ -145,7 +159,7 @@ def citations(lines: list[str]) -> tuple[set[str], set[tuple[str, int]]]:
             if not identifier:
                 continue
             name = token.split("(")[0].split(".")[-1]
-            if name in NOT_A_SYMBOL or len(name) < MIN_LENGTH:
+            if name in NOT_A_SYMBOL or len(name) < MIN_LENGTH or name in marked:
                 continue
             symbols.add(name)
     return symbols, locations
@@ -203,7 +217,23 @@ def main() -> int:
             unresolved.append(f"  UNRESOLVED  `{name}` does not appear in any configured source root")
 
     for filename, lineno in sorted(locations):
-        matches = [p for p in corpus if p.endswith("/" + filename) or os.path.basename(p) == os.path.basename(filename)]
+        # A citation carrying a directory is matched on that path first; a bare filename falls back to the
+        # basename. The first version matched the basename unconditionally, so `app/build.gradle.kts:71`
+        # was reported AMBIGUOUS against every module's build file — a working reference read as broken.
+        # A path that exists from the repository root IS the file named, whether or not it sits under a
+        # configured root; `app/build.gradle.kts` is outside every root and was resolved against the
+        # llama.cpp example's file of the same name, then reported TOO SHORT.
+        exact = os.path.join(ROOT, filename)
+        if os.path.isfile(exact):
+            try:
+                corpus.setdefault(exact, open(exact, encoding="utf-8", errors="replace").read())
+            except OSError:
+                pass
+            matches = [exact]
+        else:
+            matches = [p for p in corpus if p.endswith("/" + filename)]
+        if not matches:
+            matches = [p for p in corpus if os.path.basename(p) == os.path.basename(filename)]
         if not matches:
             unresolved.append(f"  NO SUCH FILE  `{filename}:{lineno}`")
             continue

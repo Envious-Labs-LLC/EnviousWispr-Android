@@ -49,7 +49,7 @@ Let someone turn AI Polish on, choose where it runs, understand the privacy cons
 
 - Return to the main screen after Save.
 - Show the provider, model ID, and `Configured`.
-- Say `Configured`, not `Connected`, because saving validates the configuration but does not prove a live network connection.
+- Say "Configured", not "Connected", because saving validates the configuration but does not prove a live network connection.
 - Show `Text is sent using your key` or the self-hosted endpoint equivalent.
 - `Edit provider` returns to the focused setup subpage.
 

@@ -3,11 +3,22 @@
 No GitHub issue. Tier: SMALL. Status: APPROVED — Codex plan review PROCEED-AS-PLANNED, round 3, 2026-08-31.
 
 **Post-approval addendum, 2026-09-01:** during hardware UAT the founder asked for two cosmetic changes,
-both reviewed by Codex against the built diff rather than re-running plan review, since neither changes
-behaviour, state, or the file touched: (1) the Add/Import/Export button row uses tighter padding so it
-never needs horizontal scrolling; (2) §3's plain-text picker rows became icon-tile cards with a
-description line and a trailing chevron, matching a reference screenshot the founder supplied, with the
-disabled "From another app" card keeping its merged TalkBack semantics unchanged.
+both reviewed by Codex against the built diff (three rounds total) rather than re-running plan review,
+since neither changes behaviour, state, or the file touched. §3 below describes what was originally
+approved; this is what actually shipped.
+
+1. **Button row:** a new `pillPadding` (`PaddingValues(horizontal = 12.dp, vertical = 6.dp)`) applied via
+   `contentPadding` on each `OutlinedButton`, plus `labelMedium` text, so Add/Import/Export usually fit on
+   a shorter phone without needing the row's existing `horizontalScroll` fallback — that fallback still
+   exists for a narrower screen or larger system text, it is just less likely to be needed.
+2. **`ImportPickerDialog`'s three rows became cards** (`ImportPickerRow` renamed `ImportPickerCard`),
+   matching a reference screenshot the founder supplied: each is a `Card` with a tinted rounded icon tile,
+   a bold title, a description line (e.g. "Paste an EnviousWispr export or one word per line."), and a
+   trailing `ChevronGlyph` for the two live rows. The disabled "From another app" card drops the chevron,
+   shows "Coming soon" as a small pill `Surface`, and keeps the exact accessibility fix from round 2 (no
+   `Modifier.clickable` at all, `Modifier.semantics(mergeDescendants = true) { contentDescription = "...";
+   disabled() }`) — now applied to the whole `Card` instead of a plain `Row`. Alpha on the disabled card
+   moved from `0.45f` to `0.55f` for better contrast against the new card background.
 
 > Founder request, in chat, 2026-08-31: collapse the four button-row pills to three (Add, Import, Export).
 > "Import" opens a picker with three choices — Paste Words, Open a file, From another app — each leading to

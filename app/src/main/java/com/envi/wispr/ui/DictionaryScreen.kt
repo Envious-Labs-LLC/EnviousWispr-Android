@@ -77,7 +77,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Tighter than the default button padding, so Add/Import/Export fit without horizontal scrolling. */
+/** Tighter than the default button padding, so Add/Import/Export usually fit without the row's horizontal-scroll fallback. */
 private val pillPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
 
 /** The magnifying glass on the vocabulary search field. */
@@ -133,7 +133,7 @@ private fun KebabGlyph() {
     }
 }
 
-/** An arrow rising out of a tray, for the "Import" button and the "Open a file" picker row. */
+/** An arrow rising out of a tray, for the "Import" button and the "Open a file" picker card. */
 @Composable
 private fun UploadGlyph() {
     val color = MaterialTheme.colorScheme.primary
@@ -159,7 +159,7 @@ private fun DownloadGlyph() {
     }
 }
 
-/** A clipboard outline, for the "Paste Words" picker row. */
+/** A clipboard outline, for the "Paste Words" picker card. */
 @Composable
 private fun ClipboardGlyph() {
     val color = MaterialTheme.colorScheme.primary
@@ -193,7 +193,7 @@ private fun ChevronGlyph() {
     }
 }
 
-/** A rounded-square grid, for the disabled "From another app" row. */
+/** A rounded-square grid, for the disabled "From another app" card. */
 @Composable
 private fun AppGlyph(color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
     Canvas(Modifier.size(18.dp)) {

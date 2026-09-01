@@ -2,6 +2,13 @@
 
 No GitHub issue. Tier: SMALL. Status: APPROVED — Codex plan review PROCEED-AS-PLANNED, round 3, 2026-08-31.
 
+**Post-approval addendum, 2026-09-01:** during hardware UAT the founder asked for two cosmetic changes,
+both reviewed by Codex against the built diff rather than re-running plan review, since neither changes
+behaviour, state, or the file touched: (1) the Add/Import/Export button row uses tighter padding so it
+never needs horizontal scrolling; (2) §3's plain-text picker rows became icon-tile cards with a
+description line and a trailing chevron, matching a reference screenshot the founder supplied, with the
+disabled "From another app" card keeping its merged TalkBack semantics unchanged.
+
 > Founder request, in chat, 2026-08-31: collapse the four button-row pills to three (Add, Import, Export).
 > "Import" opens a picker with three choices — Paste Words, Open a file, From another app — each leading to
 > its own next step. The first two already work today and should keep working; the third does not exist

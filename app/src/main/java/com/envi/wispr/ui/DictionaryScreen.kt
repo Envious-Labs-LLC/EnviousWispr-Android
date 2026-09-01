@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,6 +59,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -232,13 +234,20 @@ private fun DictionaryTermRow(
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val term = record.term
+    // Outside selection mode a tap does nothing, so it must not claim clickable semantics: a
+    // no-op click still draws a ripple and makes TalkBack announce "double tap to activate" for
+    // an activation that has no result. Long-press alone, via pointerInput, carries neither.
+    val rowGestures = if (selectionMode) {
+        Modifier.combinedClickable(onClick = onToggleSelected, onLongClick = onLongPress)
+    } else {
+        Modifier.pointerInput(record.id) {
+            detectTapGestures(onLongPress = { onLongPress() })
+        }
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(
-                onClick = { if (selectionMode) onToggleSelected() },
-                onLongClick = onLongPress,
-            )
+            .then(rowGestures)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),

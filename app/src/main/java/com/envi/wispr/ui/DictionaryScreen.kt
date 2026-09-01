@@ -7,9 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -61,6 +60,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -217,11 +217,10 @@ private fun BookGlyphBadge() {
 /**
  * One term in the flat, divided vocabulary list: spelling, alias count, and an overflow menu.
  *
- * Tap toggles selection while [selectionMode] is active; a long press starts selection from any
- * row, matching the platform's own "select several, act once" pattern rather than an always-on
- * checkbox column the founder's mockup does not show.
+ * Tap toggles selection while [selectionMode] is active; a long press, or "Select" in the
+ * overflow menu, starts selection from any row, matching the platform's own "select several, act
+ * once" pattern rather than an always-on checkbox column the founder's mockup does not show.
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DictionaryTermRow(
     record: CustomTermRecord,
@@ -237,8 +236,13 @@ private fun DictionaryTermRow(
     // Outside selection mode a tap does nothing, so it must not claim clickable semantics: a
     // no-op click still draws a ripple and makes TalkBack announce "double tap to activate" for
     // an activation that has no result. Long-press alone, via pointerInput, carries neither.
+    //
+    // In selection mode the toggle semantics live on the ROW via `toggleable`, the same pattern
+    // `SettingsToggleRow` uses for its Switch: the Checkbox passes `onCheckedChange = null` so it
+    // does not also register as its own focusable node, which would otherwise give TalkBack two
+    // adjacent stops — the row and the checkbox — for one action.
     val rowGestures = if (selectionMode) {
-        Modifier.combinedClickable(onClick = onToggleSelected, onLongClick = onLongPress)
+        Modifier.toggleable(value = selected, role = Role.Checkbox, onValueChange = { onToggleSelected() })
     } else {
         Modifier.pointerInput(record.id) {
             detectTapGestures(onLongPress = { onLongPress() })
@@ -253,7 +257,7 @@ private fun DictionaryTermRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (selectionMode) {
-            Checkbox(checked = selected, onCheckedChange = { onToggleSelected() })
+            Checkbox(checked = selected, onCheckedChange = null)
         }
         Column(Modifier.weight(1f)) {
             Text(term.spelling, style = MaterialTheme.typography.titleMedium)

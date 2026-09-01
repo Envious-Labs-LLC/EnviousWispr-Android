@@ -11,8 +11,8 @@ approved; this is what actually shipped.
    `contentPadding` on each `OutlinedButton`, plus `labelMedium` text, so Add/Import/Export usually fit on
    a shorter phone without needing the row's existing `horizontalScroll` fallback — that fallback still
    exists for a narrower screen or larger system text, it is just less likely to be needed.
-2. **`ImportPickerDialog`'s three rows became cards** (`ImportPickerRow` renamed `ImportPickerCard`),
-   matching a reference screenshot the founder supplied: each is a `Card` with a tinted rounded icon tile,
+2. **`ImportPickerDialog`'s three rows became cards**, now rendered by `ImportPickerCard`, matching a
+   reference screenshot the founder supplied: each is a `Card` with a tinted rounded icon tile,
    a bold title, a description line (e.g. "Paste an EnviousWispr export or one word per line."), and a
    trailing `ChevronGlyph` for the two live rows. The disabled "From another app" card drops the chevron,
    shows "Coming soon" as a small pill `Surface`, and keeps the exact accessibility fix from round 2 (no

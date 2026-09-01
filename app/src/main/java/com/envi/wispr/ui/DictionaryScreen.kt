@@ -616,7 +616,7 @@ private fun ImportPickerDialog(
         onDismissRequest = onDismiss,
         title = { Text("Import") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column {
                 ImportPickerRow(
                     glyph = { ClipboardGlyph() },
                     label = "Paste Words",
@@ -659,7 +659,7 @@ private fun ImportPickerRow(
                 }
             }
         }
-        .padding(horizontal = 4.dp, vertical = 12.dp)
+        .padding(horizontal = 4.dp, vertical = 8.dp)
     Row(
         modifier = rowModifier,
         verticalAlignment = Alignment.CenterVertically,
@@ -667,9 +667,9 @@ private fun ImportPickerRow(
     ) {
         glyph()
         Column {
-            Text(label, style = MaterialTheme.typography.bodyLarge)
+            Text(label, style = MaterialTheme.typography.bodyMedium)
             if (subtitle != null) {
-                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

@@ -190,7 +190,6 @@ internal fun EnviousWisprApp(
     onDeleteCustomTerm: (CustomTermRecord) -> Unit,
     onBulkDeleteCustomTerms: (Set<Long>) -> Unit,
     onImportCustomTerms: (String) -> Unit,
-    onVocabularyEnabledChanged: (Boolean) -> Unit,
     onFillerRemovalChanged: (Boolean) -> Unit,
     onEmojiFormatterChanged: (Boolean) -> Unit,
     onSpokenPunctuationChanged: (Boolean) -> Unit,
@@ -305,14 +304,12 @@ internal fun EnviousWisprApp(
                             search = uiState.customTermSearch,
                             message = uiState.customTermMessage,
                             error = uiState.customTermError,
-                            enabled = uiState.preferences.vocabularyEnabled,
                             onSearchChange = onCustomTermSearchChange,
                             onAdd = onAddCustomTerm,
                             onEdit = onEditCustomTerm,
                             onDelete = onDeleteCustomTerm,
                             onBulkDelete = onBulkDeleteCustomTerms,
                             onImport = onImportCustomTerms,
-                            onEnabledChange = onVocabularyEnabledChanged,
                         )
                         AppDestination.Transcription -> TranscriptionScreen(
                             readiness = uiState.readiness,
@@ -651,11 +648,12 @@ private fun BackGlyph() {
  *
  * The title is not repeated here: the top app bar already carries it, and printing it twice was the
  * first thing to look wrong when the bar arrived. [subtitle] is the one line of orientation macOS puts
- * under each page's title.
+ * under each page's title; null skips that line and the space it would take, for a screen dense enough
+ * not to need one.
  */
 @Composable
 internal fun ScreenContainer(
-    subtitle: String,
+    subtitle: String? = null,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -665,15 +663,17 @@ internal fun ScreenContainer(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        item {
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 900.dp),
-            )
+        if (subtitle != null) {
+            item {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 900.dp),
+                )
+            }
         }
         item {
             Column(

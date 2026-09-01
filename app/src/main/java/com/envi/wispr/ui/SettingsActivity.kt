@@ -83,7 +83,6 @@ class SettingsActivity : ComponentActivity() {
                     onDeleteCustomTerm = viewModel::deleteCustomTerm,
                     onBulkDeleteCustomTerms = viewModel::bulkDeleteCustomTerms,
                     onImportCustomTerms = viewModel::importCustomTerms,
-                    onVocabularyEnabledChanged = viewModel::setVocabularyEnabled,
                     onFillerRemovalChanged = viewModel::setFillerRemovalEnabled,
                     onEmojiFormatterChanged = viewModel::setEmojiFormatterEnabled,
                     onSpokenPunctuationChanged = viewModel::setSpokenPunctuationEnabled,

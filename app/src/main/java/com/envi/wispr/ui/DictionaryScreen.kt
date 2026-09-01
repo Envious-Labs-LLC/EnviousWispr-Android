@@ -5,9 +5,7 @@ import android.content.ClipboardManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -23,7 +21,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -49,14 +46,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -176,44 +170,6 @@ private fun ClipboardGlyph() {
     }
 }
 
-/** An open book, for the custom-vocabulary toggle. */
-@Composable
-private fun BookGlyph() {
-    val color = MaterialTheme.colorScheme.primary
-    Canvas(Modifier.size(20.dp)) {
-        val stroke = 1.7.dp.toPx()
-        val left = Path().apply {
-            moveTo(size.width * 0.5f, size.height * 0.28f)
-            lineTo(size.width * 0.22f, size.height * 0.36f)
-            lineTo(size.width * 0.22f, size.height * 0.76f)
-            lineTo(size.width * 0.5f, size.height * 0.68f)
-        }
-        val right = Path().apply {
-            moveTo(size.width * 0.5f, size.height * 0.28f)
-            lineTo(size.width * 0.78f, size.height * 0.36f)
-            lineTo(size.width * 0.78f, size.height * 0.76f)
-            lineTo(size.width * 0.5f, size.height * 0.68f)
-        }
-        drawPath(left, color, style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        drawPath(right, color, style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        drawLine(color, Offset(size.width * 0.5f, size.height * 0.26f), Offset(size.width * 0.5f, size.height * 0.70f), stroke, StrokeCap.Round)
-    }
-}
-
-/** The small bordered square the [BookGlyph] sits in on the toggle row. */
-@Composable
-private fun BookGlyphBadge() {
-    Box(
-        modifier = Modifier
-            .size(40.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .border(BorderStroke(1.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(10.dp)),
-        contentAlignment = Alignment.Center,
-    ) {
-        BookGlyph()
-    }
-}
-
 /**
  * One term in the flat, divided vocabulary list: spelling, alias count, and an overflow menu.
  *
@@ -292,14 +248,12 @@ internal fun DictionaryScreen(
     search: String,
     message: String,
     error: String?,
-    enabled: Boolean,
     onSearchChange: (String) -> Unit,
     onAdd: (CustomTerm) -> Unit,
     onEdit: (CustomTermRecord, CustomTerm) -> Unit,
     onDelete: (CustomTermRecord) -> Unit,
     onBulkDelete: (Set<Long>) -> Unit,
     onImport: (String) -> Unit,
-    onEnabledChange: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -327,18 +281,7 @@ internal fun DictionaryScreen(
     var confirmBulkDelete by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
     val selectionMode = selectedIds.isNotEmpty()
-    ScreenContainer(
-        subtitle = "Improve recognition with your own words: names, aliases, products, and exact spelling.",
-    ) {
-        Card {
-            SettingsToggleRow(
-                title = "Use custom vocabulary",
-                subtitle = if (enabled) "Applied to new dictations" else "Saved terms are currently ignored",
-                checked = enabled,
-                icon = { BookGlyphBadge() },
-                onCheckedChange = onEnabledChange,
-            )
-        }
+    ScreenContainer {
         if (selectionMode) {
             Row(
                 modifier = Modifier.fillMaxWidth(),

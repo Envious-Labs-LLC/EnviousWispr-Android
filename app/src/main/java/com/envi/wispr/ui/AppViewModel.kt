@@ -317,12 +317,6 @@ class EnviousWisprViewModel(
         }
     }
 
-    fun setVocabularyEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            appPreferences.setVocabularyEnabled(enabled)
-        }
-    }
-
     fun setFillerRemovalEnabled(enabled: Boolean) {
         viewModelScope.launch {
             appPreferences.setFillerRemovalEnabled(enabled)

@@ -100,7 +100,6 @@ class DictationSessionService : Service() {
 
     private data class SessionPreferences(
         val cleanup: CleanupOptions = CleanupOptions(),
-        val vocabularyEnabled: Boolean = true,
         val terms: List<CustomTerm> = emptyList(),
         val matcher: StructuredTermRestorer.Matcher = StructuredTermRestorer.compile(emptyList()),
         val clipboard: ClipboardInsertionPolicy = ClipboardInsertionPolicy(),
@@ -132,7 +131,6 @@ class DictationSessionService : Service() {
     private var draftCreation: Deferred<Long>? = null
     private var lastElapsedSecond = -1
     @Volatile private var structuredTerms: List<CustomTerm> = emptyList()
-    @Volatile private var vocabularyEnabled = true
     @Volatile private var cleanupOptions = CleanupOptions()
     /**
      * Null until `AppPreferences` delivers the user's real values, which on a cold start is AFTER
@@ -244,7 +242,6 @@ class DictationSessionService : Service() {
         serviceScope.launch {
             try {
                 AppPreferences(applicationContext).authoritativeState.collect { preferences ->
-                    vocabularyEnabled = preferences.vocabularyEnabled
                     cleanupOptions = preferences.cleanupOptions()
                     clipboardPolicy = preferences.clipboardInsertionPolicy()
                     cleanupPreferencesReady.complete(Unit)
@@ -321,7 +318,6 @@ class DictationSessionService : Service() {
                 if (state.get() != SessionState.STARTING) return@withContext
                 sessionPreferences = SessionPreferences(
                     cleanup = cleanupOptions,
-                    vocabularyEnabled = vocabularyEnabled,
                     terms = termsSnapshot,
                     matcher = matcher,
                     // Non-null by construction: cleanupPreferencesReady, awaited above, is
@@ -559,7 +555,6 @@ class DictationSessionService : Service() {
     }
 
     private fun restoreTakeVocabulary(text: String, preferences: SessionPreferences): String {
-        if (!preferences.vocabularyEnabled) return text
         val restored = preferences.matcher.restore(text)
         return if (TextSafety.isSafe(text, restored)) restored else text
     }

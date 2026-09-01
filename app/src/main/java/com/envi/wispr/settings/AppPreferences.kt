@@ -23,7 +23,6 @@ data class AppPreferencesState(
     // The two defaults have to agree: this one is what the UI renders before DataStore has delivered,
     // and `mapState` is what it settles on. They disagreed once and the app flashed the wrong theme.
     val dynamicColorEnabled: Boolean = false,
-    val vocabularyEnabled: Boolean = true,
     val fillerRemovalEnabled: Boolean = true,
     val emojiFormatterEnabled: Boolean = true,
     val spokenPunctuationEnabled: Boolean = false,
@@ -64,7 +63,6 @@ class AppPreferences(context: Context) {
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
         onboardingDismissed = preferences[Keys.ONBOARDING_DISMISSED] ?: false,
         dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: false,
-        vocabularyEnabled = preferences[Keys.VOCABULARY_ENABLED] ?: true,
         fillerRemovalEnabled = preferences[Keys.FILLER_REMOVAL] ?: true,
         emojiFormatterEnabled = preferences[Keys.EMOJI_FORMATTER] ?: true,
         spokenPunctuationEnabled = preferences[Keys.SPOKEN_PUNCTUATION] ?: false,
@@ -105,12 +103,6 @@ class AppPreferences(context: Context) {
         }
     }
 
-    suspend fun setVocabularyEnabled(enabled: Boolean) {
-        dataStore.edit { preferences ->
-            preferences[Keys.VOCABULARY_ENABLED] = enabled
-        }
-    }
-
     suspend fun setFillerRemovalEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[Keys.FILLER_REMOVAL] = enabled
@@ -146,7 +138,6 @@ class AppPreferences(context: Context) {
         val ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         val ONBOARDING_DISMISSED = booleanPreferencesKey("onboarding_dismissed")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
-        val VOCABULARY_ENABLED = booleanPreferencesKey("vocabulary_enabled")
         val FILLER_REMOVAL = booleanPreferencesKey("filler_removal_enabled")
         val EMOJI_FORMATTER = booleanPreferencesKey("emoji_formatter_enabled")
         val SPOKEN_PUNCTUATION = booleanPreferencesKey("spoken_punctuation_enabled")

@@ -5,7 +5,10 @@ import android.content.ClipboardManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,12 +16,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -28,7 +33,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,11 +49,18 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -82,22 +93,22 @@ private fun SearchGlyph() {
     }
 }
 
-/** The plus mark on the "add term" floating button. */
+/** The plus mark on the "Add" button. */
 @Composable
-private fun PlusGlyph(color: Color) {
-    Canvas(Modifier.size(24.dp)) {
-        val stroke = 2.4.dp.toPx()
+private fun PlusGlyph(color: Color = MaterialTheme.colorScheme.primary) {
+    Canvas(Modifier.size(18.dp)) {
+        val stroke = 2.2.dp.toPx()
         drawLine(
             color,
-            Offset(size.width * 0.5f, size.height * 0.22f),
-            Offset(size.width * 0.5f, size.height * 0.78f),
+            Offset(size.width * 0.5f, size.height * 0.18f),
+            Offset(size.width * 0.5f, size.height * 0.82f),
             stroke,
             StrokeCap.Round,
         )
         drawLine(
             color,
-            Offset(size.width * 0.22f, size.height * 0.5f),
-            Offset(size.width * 0.78f, size.height * 0.5f),
+            Offset(size.width * 0.18f, size.height * 0.5f),
+            Offset(size.width * 0.82f, size.height * 0.5f),
             stroke,
             StrokeCap.Round,
         )
@@ -116,45 +127,159 @@ private fun KebabGlyph() {
     }
 }
 
-/** One term in the flat, divided vocabulary list: spelling, alias count, and an overflow menu. */
+/** An arrow rising out of a tray, for "Import file". */
+@Composable
+private fun UploadGlyph() {
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(Modifier.size(18.dp)) {
+        val stroke = 1.8.dp.toPx()
+        drawLine(color, Offset(size.width * 0.5f, size.height * 0.78f), Offset(size.width * 0.5f, size.height * 0.22f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(size.width * 0.5f, size.height * 0.22f), Offset(size.width * 0.28f, size.height * 0.46f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(size.width * 0.5f, size.height * 0.22f), Offset(size.width * 0.72f, size.height * 0.46f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(size.width * 0.2f, size.height * 0.92f), Offset(size.width * 0.8f, size.height * 0.92f), stroke, StrokeCap.Round)
+    }
+}
+
+/** An arrow dropping into a tray, for "Export". */
+@Composable
+private fun DownloadGlyph() {
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(Modifier.size(18.dp)) {
+        val stroke = 1.8.dp.toPx()
+        drawLine(color, Offset(size.width * 0.5f, size.height * 0.18f), Offset(size.width * 0.5f, size.height * 0.72f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(size.width * 0.5f, size.height * 0.72f), Offset(size.width * 0.28f, size.height * 0.48f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(size.width * 0.5f, size.height * 0.72f), Offset(size.width * 0.72f, size.height * 0.48f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(size.width * 0.2f, size.height * 0.92f), Offset(size.width * 0.8f, size.height * 0.92f), stroke, StrokeCap.Round)
+    }
+}
+
+/** A clipboard outline, for "Paste import". */
+@Composable
+private fun ClipboardGlyph() {
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(Modifier.size(18.dp)) {
+        val stroke = 1.7.dp.toPx()
+        drawRoundRect(
+            color,
+            topLeft = Offset(size.width * 0.20f, size.height * 0.16f),
+            size = Size(size.width * 0.60f, size.height * 0.76f),
+            cornerRadius = CornerRadius(size.width * 0.08f),
+            style = Stroke(width = stroke),
+        )
+        drawRoundRect(
+            color,
+            topLeft = Offset(size.width * 0.38f, size.height * 0.08f),
+            size = Size(size.width * 0.24f, size.height * 0.16f),
+            cornerRadius = CornerRadius(size.width * 0.04f),
+            style = Stroke(width = stroke),
+        )
+    }
+}
+
+/** An open book, for the custom-vocabulary toggle. */
+@Composable
+private fun BookGlyph() {
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(Modifier.size(20.dp)) {
+        val stroke = 1.7.dp.toPx()
+        val left = Path().apply {
+            moveTo(size.width * 0.5f, size.height * 0.28f)
+            lineTo(size.width * 0.22f, size.height * 0.36f)
+            lineTo(size.width * 0.22f, size.height * 0.76f)
+            lineTo(size.width * 0.5f, size.height * 0.68f)
+        }
+        val right = Path().apply {
+            moveTo(size.width * 0.5f, size.height * 0.28f)
+            lineTo(size.width * 0.78f, size.height * 0.36f)
+            lineTo(size.width * 0.78f, size.height * 0.76f)
+            lineTo(size.width * 0.5f, size.height * 0.68f)
+        }
+        drawPath(left, color, style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawPath(right, color, style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawLine(color, Offset(size.width * 0.5f, size.height * 0.26f), Offset(size.width * 0.5f, size.height * 0.70f), stroke, StrokeCap.Round)
+    }
+}
+
+/** The small bordered square the [BookGlyph] sits in on the toggle row. */
+@Composable
+private fun BookGlyphBadge() {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .border(BorderStroke(1.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(10.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        BookGlyph()
+    }
+}
+
+/**
+ * One term in the flat, divided vocabulary list: spelling, alias count, and an overflow menu.
+ *
+ * Tap toggles selection while [selectionMode] is active; a long press, or "Select" in the
+ * overflow menu, starts selection from any row, matching the platform's own "select several, act
+ * once" pattern rather than an always-on checkbox column the founder's mockup does not show.
+ */
 @Composable
 private fun DictionaryTermRow(
     record: CustomTermRecord,
+    selectionMode: Boolean,
     selected: Boolean,
-    onSelectedChange: (Boolean) -> Unit,
+    onToggleSelected: () -> Unit,
+    onLongPress: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val term = record.term
+    // Outside selection mode a tap does nothing, so it must not claim clickable semantics: a
+    // no-op click still draws a ripple and makes TalkBack announce "double tap to activate" for
+    // an activation that has no result. Long-press alone, via pointerInput, carries neither.
+    //
+    // In selection mode the toggle semantics live on the ROW via `toggleable`, the same pattern
+    // `SettingsToggleRow` uses for its Switch: the Checkbox passes `onCheckedChange = null` so it
+    // does not also register as its own focusable node, which would otherwise give TalkBack two
+    // adjacent stops — the row and the checkbox — for one action.
+    val rowGestures = if (selectionMode) {
+        Modifier.toggleable(value = selected, role = Role.Checkbox, onValueChange = { onToggleSelected() })
+    } else {
+        Modifier.pointerInput(record.id) {
+            detectTapGestures(onLongPress = { onLongPress() })
+        }
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 12.dp),
+            .then(rowGestures)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Checkbox(checked = selected, onCheckedChange = onSelectedChange)
-        Text(
-            term.spelling,
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f),
-        )
-        if (term.aliases.isNotEmpty()) {
-            Text(
-                if (term.aliases.size == 1) "1 alias" else "${term.aliases.size} aliases",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-            )
+        if (selectionMode) {
+            Checkbox(checked = selected, onCheckedChange = null)
         }
-        Box {
-            IconButton(
-                onClick = { menuExpanded = true },
-                modifier = Modifier.semantics { contentDescription = "More options for ${term.spelling}" },
-            ) { KebabGlyph() }
-            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                DropdownMenuItem(text = { Text("Edit") }, onClick = { menuExpanded = false; onEdit() })
-                DropdownMenuItem(text = { Text("Delete") }, onClick = { menuExpanded = false; onDelete() })
+        Column(Modifier.weight(1f)) {
+            Text(term.spelling, style = MaterialTheme.typography.titleMedium)
+            if (term.aliases.isNotEmpty()) {
+                Text(
+                    if (term.aliases.size == 1) "1 alias" else "${term.aliases.size} aliases",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+        if (!selectionMode) {
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.semantics { contentDescription = "More options for ${term.spelling}" },
+                ) { KebabGlyph() }
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(text = { Text("Edit") }, onClick = { menuExpanded = false; onEdit() })
+                    DropdownMenuItem(text = { Text("Select") }, onClick = { menuExpanded = false; onLongPress() })
+                    DropdownMenuItem(text = { Text("Delete") }, onClick = { menuExpanded = false; onDelete() })
+                }
             }
         }
     }
@@ -201,28 +326,55 @@ internal fun DictionaryScreen(
     var deleteTarget by remember { mutableStateOf<CustomTermRecord?>(null) }
     var confirmBulkDelete by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
-    Box(modifier = Modifier.fillMaxSize()) {
-        ScreenContainer(
-            subtitle = "Improve recognition with your own words: names, aliases, products, and exact spelling.",
-        ) {
-            Card {
-                SettingsToggleRow(
-                    title = "Use custom vocabulary",
-                    subtitle = if (enabled) "Applied to new dictations" else "Saved terms are currently ignored",
-                    checked = enabled,
-                    onCheckedChange = onEnabledChange,
+    val selectionMode = selectedIds.isNotEmpty()
+    ScreenContainer(
+        subtitle = "Improve recognition with your own words: names, aliases, products, and exact spelling.",
+    ) {
+        Card {
+            SettingsToggleRow(
+                title = "Use custom vocabulary",
+                subtitle = if (enabled) "Applied to new dictations" else "Saved terms are currently ignored",
+                checked = enabled,
+                icon = { BookGlyphBadge() },
+                onCheckedChange = onEnabledChange,
+            )
+        }
+        if (selectionMode) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "${selectedIds.size} selected",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f),
                 )
+                TextButton(onClick = { selectedIds = emptySet() }) { Text("Cancel") }
+                OutlinedButton(onClick = { confirmBulkDelete = true }) { Text("Delete") }
             }
+        } else {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                OutlinedButton(onClick = { showNewEditor = true }) {
+                    PlusGlyph()
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add")
+                }
                 OutlinedButton(onClick = { importFile.launch(arrayOf("application/json", "text/plain")) }) {
+                    UploadGlyph()
+                    Spacer(Modifier.width(6.dp))
                     Text("Import file")
                 }
-                OutlinedButton(onClick = { showImport = true }) { Text("Paste import") }
+                OutlinedButton(onClick = { showImport = true }) {
+                    ClipboardGlyph()
+                    Spacer(Modifier.width(6.dp))
+                    Text("Paste import")
+                }
                 OutlinedButton(
                     onClick = {
                         val exported = VocabularyTransfer.export(allTerms.map(CustomTermRecord::term))
@@ -241,84 +393,74 @@ internal fun DictionaryScreen(
                             Toast.LENGTH_SHORT,
                         ).show()
                     },
-                ) { Text("Export") }
-                if (selectedIds.isNotEmpty()) {
-                    OutlinedButton(onClick = { confirmBulkDelete = true }) {
-                        Text("Delete ${selectedIds.size}")
-                    }
+                ) {
+                    DownloadGlyph()
+                    Spacer(Modifier.width(6.dp))
+                    Text("Export")
                 }
             }
-            OutlinedTextField(
-                value = search,
-                onValueChange = onSearchChange,
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Search your words") },
-                leadingIcon = { SearchGlyph() },
-                singleLine = true,
-                shape = MaterialTheme.shapes.medium,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f),
-                    unfocusedContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
-                ),
-            )
-            if (message.isNotBlank()) {
-                Text(message, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            }
-            error?.let {
-                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-            }
-            if (terms.isEmpty()) {
-                ElevatedCard {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(28.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            if (search.isBlank()) "No custom terms yet" else "No matching terms",
-                            style = MaterialTheme.typography.titleLarge,
-                        )
-                        Text(
-                            "Add a preferred spelling and optional aliases.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            } else {
-                Card {
-                    Column {
-                        terms.forEachIndexed { index, record ->
-                            DictionaryTermRow(
-                                record = record,
-                                selected = record.id in selectedIds,
-                                onSelectedChange = { checked ->
-                                    selectedIds = if (checked) selectedIds + record.id
-                                    else selectedIds - record.id
-                                },
-                                onEdit = { editTarget = record },
-                                onDelete = { deleteTarget = record },
-                            )
-                            if (index < terms.lastIndex) HorizontalDivider()
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.height(72.dp))
         }
-        val fabColors = brandButtonColors()
-        FloatingActionButton(
-            onClick = { showNewEditor = true },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(20.dp)
-                .semantics { contentDescription = "Add custom term" },
-            containerColor = fabColors.containerColor,
-            contentColor = fabColors.contentColor,
-        ) { PlusGlyph(fabColors.contentColor) }
+        OutlinedTextField(
+            value = search,
+            onValueChange = onSearchChange,
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Search your words") },
+            leadingIcon = { SearchGlyph() },
+            singleLine = true,
+            shape = MaterialTheme.shapes.medium,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f),
+                unfocusedContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+            ),
+        )
+        if (message.isNotBlank()) {
+            Text(message, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        }
+        error?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+        }
+        if (terms.isEmpty()) {
+            ElevatedCard {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        if (search.isBlank()) "No custom terms yet" else "No matching terms",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    Text(
+                        "Add a preferred spelling and optional aliases.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            Card {
+                Column {
+                    terms.forEachIndexed { index, record ->
+                        DictionaryTermRow(
+                            record = record,
+                            selectionMode = selectionMode,
+                            selected = record.id in selectedIds,
+                            onToggleSelected = {
+                                selectedIds = if (record.id in selectedIds) selectedIds - record.id
+                                else selectedIds + record.id
+                            },
+                            onLongPress = { selectedIds = selectedIds + record.id },
+                            onEdit = { editTarget = record },
+                            onDelete = { deleteTarget = record },
+                        )
+                        if (index < terms.lastIndex) HorizontalDivider()
+                    }
+                }
+            }
+        }
     }
 
     if (showNewEditor || editTarget != null) {

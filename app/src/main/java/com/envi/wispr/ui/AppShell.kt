@@ -1,8 +1,6 @@
 package com.envi.wispr.ui
 
 import android.view.HapticFeedbackConstants
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -10,7 +8,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,17 +34,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.activity.compose.BackHandler
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -60,7 +54,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -120,17 +114,9 @@ import com.envi.wispr.providers.ValidationResult
 import com.envi.wispr.providers.capabilities
 import com.envi.wispr.providers.disclosure
 import com.envi.wispr.vocabulary.CustomTerm
-import com.envi.wispr.vocabulary.CustomTermAuthoring
 import com.envi.wispr.vocabulary.CustomTermRecord
-import com.envi.wispr.vocabulary.MatchStrictness
-import com.envi.wispr.vocabulary.VocabularyTransfer
 import androidx.compose.ui.platform.LocalContext
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.widget.Toast
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * The four tabs in the bottom bar, and nothing else.
@@ -699,384 +685,6 @@ internal fun ScreenContainer(
             )
         }
     }
-}
-
-@Composable
-private fun DictionaryScreen(
-    terms: List<CustomTermRecord>,
-    allTerms: List<CustomTermRecord>,
-    search: String,
-    message: String,
-    error: String?,
-    enabled: Boolean,
-    onSearchChange: (String) -> Unit,
-    onAdd: (CustomTerm) -> Unit,
-    onEdit: (CustomTermRecord, CustomTerm) -> Unit,
-    onDelete: (CustomTermRecord) -> Unit,
-    onBulkDelete: (Set<Long>) -> Unit,
-    onImport: (String) -> Unit,
-    onEnabledChange: (Boolean) -> Unit,
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val importFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val imported = runCatching {
-                withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.use { stream ->
-                        val bytes = stream.readNBytes(2_000_001)
-                        require(bytes.size <= 2_000_000) { "That vocabulary file is too large." }
-                        bytes.toString(Charsets.UTF_8)
-                    } ?: error("That vocabulary file could not be opened.")
-                }
-            }
-            imported.onSuccess(onImport).onFailure { failure ->
-                Toast.makeText(context, failure.message ?: "Unable to read vocabulary", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-    var selectedIds by remember { mutableStateOf(emptySet<Long>()) }
-    var showNewEditor by remember { mutableStateOf(false) }
-    var editTarget by remember { mutableStateOf<CustomTermRecord?>(null) }
-    var deleteTarget by remember { mutableStateOf<CustomTermRecord?>(null) }
-    var confirmBulkDelete by remember { mutableStateOf(false) }
-    var showImport by remember { mutableStateOf(false) }
-    ScreenContainer(
-        subtitle = "Improve recognition with your own words: names, aliases, products, and exact spelling.",
-    ) {
-        Card {
-            SettingsToggleRow(
-                title = "Use custom vocabulary",
-                subtitle = if (enabled) "Applied to new dictations" else "Saved terms are currently ignored",
-                checked = enabled,
-                onCheckedChange = onEnabledChange,
-            )
-        }
-        OutlinedTextField(
-            value = search,
-            onValueChange = onSearchChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Search spelling or alias") },
-            singleLine = true,
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(onClick = { showNewEditor = true }, colors = brandButtonColors()) { Text("Add term") }
-            OutlinedButton(onClick = { importFile.launch(arrayOf("application/json", "text/plain")) }) {
-                Text("Import file")
-            }
-            OutlinedButton(onClick = { showImport = true }) { Text("Paste import") }
-            OutlinedButton(
-                onClick = {
-                    val exported = VocabularyTransfer.export(allTerms.map(CustomTermRecord::term))
-                    val copied = runCatching {
-                        context.getSystemService(ClipboardManager::class.java)
-                            ?.setPrimaryClip(ClipData.newPlainText("EnviousWispr vocabulary", exported))
-                            ?: error("Clipboard unavailable")
-                    }.isSuccess
-                    // Vocabulary JSON is now on the clipboard, so any standing claim that a
-                    // dictation is waiting there to be pasted is false.
-                    if (copied) {
-                    }
-                    Toast.makeText(
-                        context,
-                        if (copied) "Vocabulary copied" else "Unable to export vocabulary",
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                },
-            ) { Text("Export") }
-            if (selectedIds.isNotEmpty()) {
-                OutlinedButton(onClick = { confirmBulkDelete = true }) {
-                    Text("Delete ${selectedIds.size}")
-                }
-            }
-        }
-        if (message.isNotBlank()) {
-            Text(message, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-        }
-        error?.let {
-            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-        }
-        if (terms.isEmpty()) {
-            ElevatedCard {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        if (search.isBlank()) "No custom terms yet" else "No matching terms",
-                        style = MaterialTheme.typography.titleLarge,
-                    )
-                    Text(
-                        "Add a preferred spelling and optional aliases.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        } else {
-            terms.forEach { record ->
-                val term = record.term
-                ElevatedCard {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Checkbox(
-                                checked = record.id in selectedIds,
-                                onCheckedChange = { checked ->
-                                    selectedIds = if (checked) selectedIds + record.id
-                                    else selectedIds - record.id
-                                },
-                            )
-                            Column(Modifier.weight(1f)) {
-                                Text(term.spelling, style = MaterialTheme.typography.titleMedium)
-                                val details = buildList {
-                                    if (term.aliases.isNotEmpty()) add("${term.aliases.size} aliases")
-                                    if (term.usageCount > 0) add("used ${term.usageCount} times")
-                                }.joinToString(" · ")
-                                if (details.isNotBlank()) {
-                                    Text(
-                                        details,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                TextButton(onClick = { editTarget = record }) { Text("Edit") }
-                                TextButton(onClick = { deleteTarget = record }) { Text("Delete") }
-                            }
-                        }
-                        if (term.aliases.isNotEmpty()) {
-                            Text(
-                                "Aliases: ${term.aliases.joinToString()}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (showNewEditor || editTarget != null) {
-        CustomTermEditorDialog(
-            record = editTarget,
-            onDismiss = {
-                showNewEditor = false
-                editTarget = null
-            },
-            onSave = { term ->
-                editTarget?.let { onEdit(it, term) } ?: onAdd(term)
-                showNewEditor = false
-                editTarget = null
-            },
-        )
-    }
-    deleteTarget?.let { record ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("Delete ${record.term.spelling}?") },
-            text = { Text("This removes the term and its aliases from this phone.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    selectedIds -= record.id
-                    onDelete(record)
-                    deleteTarget = null
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } },
-        )
-    }
-    if (confirmBulkDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmBulkDelete = false },
-            title = { Text("Delete ${selectedIds.size} custom terms?") },
-            text = { Text("This permanently removes the selected terms from this phone.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    onBulkDelete(selectedIds)
-                    selectedIds = emptySet()
-                    confirmBulkDelete = false
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { confirmBulkDelete = false }) { Text("Cancel") } },
-        )
-    }
-    if (showImport) {
-        VocabularyImportDialog(
-            onDismiss = { showImport = false },
-            onImport = {
-                onImport(it)
-                showImport = false
-            },
-        )
-    }
-}
-
-@Composable
-private fun CustomTermEditorDialog(
-    record: CustomTermRecord?,
-    onDismiss: () -> Unit,
-    onSave: (CustomTerm) -> Unit,
-) {
-    val existing = record?.term
-    var spelling by remember(record?.id) { mutableStateOf(existing?.spelling.orEmpty()) }
-    var aliases by remember(record?.id) { mutableStateOf(existing?.aliases.orEmpty()) }
-    var newAlias by remember(record?.id) { mutableStateOf("") }
-    var matchStrictness by remember(record?.id) {
-        mutableStateOf(MatchStrictness.from(existing?.minSimilarityOverride))
-    }
-    var error by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (record == null) "Add custom term" else "Edit custom term") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.72f)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                OutlinedTextField(
-                    value = spelling,
-                    onValueChange = { spelling = it; error = null },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Preferred spelling") },
-                    singleLine = true,
-                )
-                Text("What EnviousWispr might hear", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "Add each misspelling or alternate phrase that should become the preferred spelling.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                aliases.forEachIndexed { index, alias ->
-                    ElevatedCard {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(alias, modifier = Modifier.weight(1f))
-                            TextButton(onClick = { aliases = aliases.toMutableList().also { it.removeAt(index) } }) {
-                                Text("Remove")
-                            }
-                        }
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedTextField(
-                        value = newAlias,
-                        onValueChange = { newAlias = it },
-                        modifier = Modifier.weight(1f),
-                        label = { Text("Misspelling or alias") },
-                        singleLine = true,
-                    )
-                    OutlinedButton(
-                        onClick = {
-                            val updated = CustomTermAuthoring.includePendingAlias(aliases, newAlias)
-                            if (updated !== aliases) {
-                                aliases = updated
-                                newAlias = ""
-                            }
-                        },
-                        enabled = newAlias.isNotBlank(),
-                    ) { Text("Add") }
-                }
-                Text("Match strictness", style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MatchStrictness.entries.forEach { strictness ->
-                        FilterChip(
-                            selected = matchStrictness == strictness,
-                            onClick = { matchStrictness = strictness },
-                            label = { Text(strictness.name.lowercase().replaceFirstChar(Char::uppercase)) },
-                        )
-                    }
-                }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        confirmButton = {
-            Button(colors = brandButtonColors(), onClick = {
-                val normalizedSpelling = spelling.trim()
-                val savedAliases = CustomTermAuthoring.includePendingAlias(aliases, newAlias)
-                when {
-                    normalizedSpelling.isEmpty() -> error = "Enter a preferred spelling."
-                    normalizedSpelling.length > 200 -> error = "Preferred spelling must be 200 characters or fewer."
-                    else -> onSave(
-                        CustomTerm(
-                            spelling = normalizedSpelling,
-                            aliases = savedAliases,
-                            category = existing?.category,
-                            priority = existing?.priority ?: 0,
-                            forceReplace = existing?.forceReplace ?: false,
-                            caseSensitive = existing?.caseSensitive ?: false,
-                            minSimilarityOverride = matchStrictness.thresholdOverride,
-                            usageCount = existing?.usageCount ?: 0,
-                            imported = existing?.imported ?: false,
-                        ),
-                    )
-                }
-            }) { Text("Save") }
-        },
-    )
-}
-
-@Composable
-private fun VocabularyImportDialog(onDismiss: () -> Unit, onImport: (String) -> Unit) {
-    var input by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Import vocabulary") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    "Paste an EnviousWispr vocabulary export or one spelling per line.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { input = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(240.dp),
-                    label = { Text("Vocabulary data") },
-                )
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        confirmButton = {
-            Button(
-                onClick = { if (input.isNotBlank()) onImport(input) },
-                enabled = input.isNotBlank(),
-                colors = brandButtonColors(),
-            ) {
-                Text("Import")
-            }
-        },
-    )
 }
 
 @Composable

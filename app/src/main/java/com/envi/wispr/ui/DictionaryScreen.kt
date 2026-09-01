@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +47,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -121,7 +123,7 @@ private fun KebabGlyph() {
     }
 }
 
-/** An arrow rising out of a tray, for "Import file". */
+/** An arrow rising out of a tray, for the "Import" button and the "Open a file" picker row. */
 @Composable
 private fun UploadGlyph() {
     val color = MaterialTheme.colorScheme.primary
@@ -147,7 +149,7 @@ private fun DownloadGlyph() {
     }
 }
 
-/** A clipboard outline, for "Paste import". */
+/** A clipboard outline, for the "Paste Words" picker row. */
 @Composable
 private fun ClipboardGlyph() {
     val color = MaterialTheme.colorScheme.primary
@@ -167,6 +169,28 @@ private fun ClipboardGlyph() {
             cornerRadius = CornerRadius(size.width * 0.04f),
             style = Stroke(width = stroke),
         )
+    }
+}
+
+/** A rounded-square grid, for the disabled "From another app" row. */
+@Composable
+private fun AppGlyph(color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+    Canvas(Modifier.size(18.dp)) {
+        val stroke = 1.7.dp.toPx()
+        val cell = size.width * 0.32f
+        val gap = size.width * 0.10f
+        val start = (size.width - (cell * 2 + gap)) / 2f
+        listOf(0, 1).forEach { row ->
+            listOf(0, 1).forEach { col ->
+                drawRoundRect(
+                    color,
+                    topLeft = Offset(start + col * (cell + gap), start + row * (cell + gap)),
+                    size = Size(cell, cell),
+                    cornerRadius = CornerRadius(cell * 0.22f),
+                    style = Stroke(width = stroke),
+                )
+            }
+        }
     }
 }
 
@@ -280,6 +304,7 @@ internal fun DictionaryScreen(
     var deleteTarget by remember { mutableStateOf<CustomTermRecord?>(null) }
     var confirmBulkDelete by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
+    var showImportPicker by remember { mutableStateOf(false) }
     val selectionMode = selectedIds.isNotEmpty()
     ScreenContainer {
         if (selectionMode) {
@@ -308,15 +333,10 @@ internal fun DictionaryScreen(
                     Spacer(Modifier.width(6.dp))
                     Text("Add")
                 }
-                OutlinedButton(onClick = { importFile.launch(arrayOf("application/json", "text/plain")) }) {
+                OutlinedButton(onClick = { showImportPicker = true }) {
                     UploadGlyph()
                     Spacer(Modifier.width(6.dp))
-                    Text("Import file")
-                }
-                OutlinedButton(onClick = { showImport = true }) {
-                    ClipboardGlyph()
-                    Spacer(Modifier.width(6.dp))
-                    Text("Paste import")
+                    Text("Import")
                 }
                 OutlinedButton(
                     onClick = {
@@ -459,6 +479,16 @@ internal fun DictionaryScreen(
             },
         )
     }
+    if (showImportPicker) {
+        ImportPickerDialog(
+            onDismiss = { showImportPicker = false },
+            onPasteWords = { showImportPicker = false; showImport = true },
+            onOpenFile = {
+                showImportPicker = false
+                importFile.launch(arrayOf("application/json", "text/plain"))
+            },
+        )
+    }
 }
 
 @Composable
@@ -573,6 +603,66 @@ private fun CustomTermEditorDialog(
             }) { Text("Save") }
         },
     )
+}
+
+@Composable
+private fun ImportPickerDialog(
+    onDismiss: () -> Unit,
+    onPasteWords: () -> Unit,
+    onOpenFile: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                ImportPickerRow(
+                    glyph = { ClipboardGlyph() },
+                    label = "Paste Words",
+                    onClick = onPasteWords,
+                )
+                ImportPickerRow(
+                    glyph = { UploadGlyph() },
+                    label = "Open a file",
+                    onClick = onOpenFile,
+                )
+                ImportPickerRow(
+                    glyph = { AppGlyph() },
+                    label = "From another app",
+                    subtitle = "Coming soon",
+                    onClick = null,
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ImportPickerRow(
+    glyph: @Composable () -> Unit,
+    label: String,
+    onClick: (() -> Unit)?,
+    subtitle: String? = null,
+) {
+    val rowModifier = Modifier
+        .fillMaxWidth()
+        .let { base -> if (onClick != null) base.clickable(onClick = onClick) else base.alpha(0.45f) }
+        .padding(horizontal = 4.dp, vertical = 12.dp)
+    Row(
+        modifier = rowModifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        glyph()
+        Column {
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+            if (subtitle != null) {
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
 }
 
 @Composable

@@ -6,11 +6,14 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -21,10 +24,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -36,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,6 +52,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -56,6 +64,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.ui.theme.brandButtonColors
@@ -67,6 +76,9 @@ import com.envi.wispr.vocabulary.VocabularyTransfer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** Tighter than the default button padding, so Add/Import/Export usually fit without the row's horizontal-scroll fallback. */
+private val pillPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
 
 /** The magnifying glass on the vocabulary search field. */
 @Composable
@@ -121,7 +133,7 @@ private fun KebabGlyph() {
     }
 }
 
-/** An arrow rising out of a tray, for "Import file". */
+/** An arrow rising out of a tray, for the "Import" button and the "Open a file" picker card. */
 @Composable
 private fun UploadGlyph() {
     val color = MaterialTheme.colorScheme.primary
@@ -147,7 +159,7 @@ private fun DownloadGlyph() {
     }
 }
 
-/** A clipboard outline, for "Paste import". */
+/** A clipboard outline, for the "Paste Words" picker card. */
 @Composable
 private fun ClipboardGlyph() {
     val color = MaterialTheme.colorScheme.primary
@@ -167,6 +179,39 @@ private fun ClipboardGlyph() {
             cornerRadius = CornerRadius(size.width * 0.04f),
             style = Stroke(width = stroke),
         )
+    }
+}
+
+/** A right-pointing chevron, for a tappable picker card. */
+@Composable
+private fun ChevronGlyph() {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(16.dp)) {
+        val stroke = 1.8.dp.toPx()
+        drawLine(color, Offset(size.width * 0.35f, size.height * 0.2f), Offset(size.width * 0.68f, size.height * 0.5f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(size.width * 0.68f, size.height * 0.5f), Offset(size.width * 0.35f, size.height * 0.8f), stroke, StrokeCap.Round)
+    }
+}
+
+/** A rounded-square grid, for the disabled "From another app" card. */
+@Composable
+private fun AppGlyph(color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+    Canvas(Modifier.size(18.dp)) {
+        val stroke = 1.7.dp.toPx()
+        val cell = size.width * 0.32f
+        val gap = size.width * 0.10f
+        val start = (size.width - (cell * 2 + gap)) / 2f
+        listOf(0, 1).forEach { row ->
+            listOf(0, 1).forEach { col ->
+                drawRoundRect(
+                    color,
+                    topLeft = Offset(start + col * (cell + gap), start + row * (cell + gap)),
+                    size = Size(cell, cell),
+                    cornerRadius = CornerRadius(cell * 0.22f),
+                    style = Stroke(width = stroke),
+                )
+            }
+        }
     }
 }
 
@@ -280,6 +325,7 @@ internal fun DictionaryScreen(
     var deleteTarget by remember { mutableStateOf<CustomTermRecord?>(null) }
     var confirmBulkDelete by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
+    var showImportPicker by remember { mutableStateOf(false) }
     val selectionMode = selectedIds.isNotEmpty()
     ScreenContainer {
         if (selectionMode) {
@@ -303,22 +349,18 @@ internal fun DictionaryScreen(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedButton(onClick = { showNewEditor = true }) {
+                OutlinedButton(onClick = { showNewEditor = true }, contentPadding = pillPadding) {
                     PlusGlyph()
-                    Spacer(Modifier.width(6.dp))
-                    Text("Add")
+                    Spacer(Modifier.width(4.dp))
+                    Text("Add", style = MaterialTheme.typography.labelMedium)
                 }
-                OutlinedButton(onClick = { importFile.launch(arrayOf("application/json", "text/plain")) }) {
+                OutlinedButton(onClick = { showImportPicker = true }, contentPadding = pillPadding) {
                     UploadGlyph()
-                    Spacer(Modifier.width(6.dp))
-                    Text("Import file")
-                }
-                OutlinedButton(onClick = { showImport = true }) {
-                    ClipboardGlyph()
-                    Spacer(Modifier.width(6.dp))
-                    Text("Paste import")
+                    Spacer(Modifier.width(4.dp))
+                    Text("Import", style = MaterialTheme.typography.labelMedium)
                 }
                 OutlinedButton(
+                    contentPadding = pillPadding,
                     onClick = {
                         val exported = VocabularyTransfer.export(allTerms.map(CustomTermRecord::term))
                         val copied = runCatching {
@@ -338,8 +380,8 @@ internal fun DictionaryScreen(
                     },
                 ) {
                     DownloadGlyph()
-                    Spacer(Modifier.width(6.dp))
-                    Text("Export")
+                    Spacer(Modifier.width(4.dp))
+                    Text("Export", style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -459,6 +501,16 @@ internal fun DictionaryScreen(
             },
         )
     }
+    if (showImportPicker) {
+        ImportPickerDialog(
+            onDismiss = { showImportPicker = false },
+            onPasteWords = { showImportPicker = false; showImport = true },
+            onOpenFile = {
+                showImportPicker = false
+                importFile.launch(arrayOf("application/json", "text/plain"))
+            },
+        )
+    }
 }
 
 @Composable
@@ -573,6 +625,108 @@ private fun CustomTermEditorDialog(
             }) { Text("Save") }
         },
     )
+}
+
+@Composable
+private fun ImportPickerDialog(
+    onDismiss: () -> Unit,
+    onPasteWords: () -> Unit,
+    onOpenFile: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ImportPickerCard(
+                    glyph = { ClipboardGlyph() },
+                    title = "Paste Words",
+                    description = "Paste an EnviousWispr export or one word per line.",
+                    onClick = onPasteWords,
+                )
+                ImportPickerCard(
+                    glyph = { UploadGlyph() },
+                    title = "Open a file",
+                    description = "Choose a .txt list or an EnviousWispr .json export.",
+                    onClick = onOpenFile,
+                )
+                ImportPickerCard(
+                    glyph = { AppGlyph() },
+                    title = "From another app",
+                    description = "Bring words in from another dictation app.",
+                    badge = "Coming soon",
+                    onClick = null,
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ImportPickerCard(
+    glyph: @Composable () -> Unit,
+    title: String,
+    description: String,
+    onClick: (() -> Unit)?,
+    badge: String? = null,
+) {
+    val cardModifier = Modifier
+        .fillMaxWidth()
+        .let { base ->
+            if (onClick != null) {
+                base.clickable(onClick = onClick)
+            } else {
+                base.alpha(0.55f).semantics(mergeDescendants = true) {
+                    contentDescription = if (badge != null) "$title, $badge" else title
+                    disabled()
+                }
+            }
+        }
+    Card(
+        modifier = cardModifier,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center,
+            ) { glyph() }
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (badge != null) {
+                    Surface(
+                        modifier = Modifier.padding(top = 4.dp),
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(
+                            badge,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (onClick != null) {
+                ChevronGlyph()
+            }
+        }
+    }
 }
 
 @Composable

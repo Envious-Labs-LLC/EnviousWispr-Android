@@ -1,6 +1,7 @@
 # AI Polish refinement roadmap — 2026-09-01
 
-Status: DRAFT. Founder framing (2026-09-01): "treat this as refactor-style work, not just a visual
+Status: DRAFT, revised after one Codex architecture consult (scratchpad `roadmap-consult-output.txt.last`,
+session `01a05e59`). Founder framing (2026-09-01): "treat this as refactor-style work, not just a visual
 improvement ... fixing the architecture, fixing the experience, fixing the UI." This document is the
 program. Each phase below becomes one issue, one plan under `docs/feature-requests/`, and one pull request,
 run through the ten-step process in `.claude/rules/workflow-process.md`.
@@ -11,15 +12,16 @@ User Rubric: N/A — a roadmap document; every phase carries its own rubric in i
 
 **Consolidation:** the dominant root across every phase is "what polish is running and what it did", which
 today has three homes that disagree: the preference file the app writes, the copy of it a live `:polish`
-process loaded at its own start, and the screen's own draft. The program collapses them to one owner (the
-main process pushes policy into the engine, the screen renders saved state only, the engine reports one
-typed outcome).
+process loaded at its own start, and the screen's own draft. The program collapses them to one owner: the
+main process latches the policy per session and sends it with every request; the engine holds no copy of
+settings at all; one typed outcome comes back; the screen renders saved state only.
 
 ## 0. What the audit found
 
 Sources: two read-only audits of the engine and the cloud path (scratchpad `polish-runtime-audit.md`,
 `cloud-polish-audit.md`, every claim below re-checked against the file and line named), the cross-platform
-catalog, the macOS knowledge corpus, the open issues, and two measurements on the S26 Ultra today.
+catalog, the macOS knowledge corpus, the open issues, two measurements on the S26 Ultra today, and the
+Codex consult.
 
 ### Measured on the phone
 
@@ -32,28 +34,33 @@ catalog, the macOS knowledge corpus, the open issues, and two measurements on th
    instance created once per process (`ProviderConfigurationRepository.kt:22-25`), and Android's
    `SharedPreferences` does not reload across processes. The cleanup options already travel the right way,
    as booleans on every `polish()` call (`DictationSessionService.kt:519-524`).
-2. **S1-mini is loaded at bind and destroyed a few seconds after unbind.** The engine process lives only as
-   long as the session's binding (`DictationSessionService.kt:351-353`, `:924-935`); `onDestroy` closes the
-   runtime (`PolishService.kt:152`). Every `This phone` dictation pays the model load, measured at 1843 ms
-   on the GPU path today. Both heavy models are resident together for the whole session, which
-   `.claude/rules/architecture-rules.md:82-84` names as not a supported state.
+2. **S1-mini loads twice-triggered and dies with the binding.** The first load decision is in
+   `PolishService.onCreate` (`PolishService.kt:141-145`), before any binder command; `warmUp()` on connect is
+   the second trigger (`DictationSessionService.kt:192-196`). The engine process lives only as long as the
+   session's binding (`:351-353`, `:924-935`) and `onDestroy` closes the runtime (`PolishService.kt:152`), so
+   every `This phone` dictation pays the load, measured at 1843 ms on the GPU path. Both heavy models are
+   resident together for the whole session, which `.claude/rules/architecture-rules.md:82-84` names as not
+   a supported state.
 
 ### Read in the code
 
 3. **A local polish has no deadline and cannot be cancelled.** `PolishService.polishWithS1`
    (`PolishService.kt:191-210`) calls `S1GenieXRuntime.generate` (`S1GenieXRuntime.kt:65`) with no budget
-   and no cancellation token. The session owner has no watchdog on the callback either
+   and no cancellation token. The session owner has no watchdog on the callback
    (`DictationSessionService.kt:503-546`). A wedged generation leaves a dictation at "processing" forever.
-   `architecture-rules.md:79-80`: every limb has a deadline.
-4. **A polish failure is invisible.** `ProviderPolishResult.Failure` carries a status code
-   (`ProviderPolishClient.kt:59-62`); `PolishService.kt:84` keeps only the kind and `:92` logs it; the
-   engine label becomes `DETERMINISTIC` (`:100`), which History renders as "Cleaned up on this phone". A
-   revoked key and a healthy offline run look the same. Android has none of the sixteen macOS completion
-   warnings, and not the locked sentence "Polish failed. Using raw text." (catalog decision 2026-07-15).
-   `IPolishCallback.onError` has no producer.
+   `architecture-rules.md:79-80`: every limb has a deadline. There is no binder method to cancel a polish
+   (`IPolishService.aidl:5-15`); destroying the service is the only route.
+4. **A polish failure is invisible, and the fallback has two owners.** `ProviderPolishResult.Failure`
+   carries a status code (`ProviderPolishClient.kt:59-62`); `PolishService.kt:84` keeps only the kind, `:92`
+   logs it, and the engine label becomes `DETERMINISTIC` (`:100`), which History renders as "Cleaned up on
+   this phone". A revoked key and a healthy offline run look the same. The session owner's own fallback
+   runs `DeterministicCleanup` plus `RegexPolisher` (`DictationSessionService.kt:547-554`) while the engine
+   runs `PolishPipeline` (`PolishService.kt:71-89`); nothing keeps those two results the same.
+   `IPolishCallback.onError` has no producer. The callback carries no request identity, so a late result
+   from an older request cannot be told apart from the current one.
 5. **Engine housekeeping defects.** A second `polish()` overwrites the in-flight call's cancellation token
-   (`PolishService.kt:62-63`); a throwing `onResult` is retried in the catch (`:105-112`); `selectedProvider!!`
-   (`:97`); the caught exception is dropped from the log (`:107`).
+   (`PolishService.kt:62-63`); a throwing `onResult` is retried in the catch (`:105-112`);
+   `selectedProvider!!` (`:97`); the caught exception is dropped from the log (`:107`).
 6. **Cloud client defects.** `readResponse` can dereference a null error stream and report an empty-bodied
    401 as `NETWORK` (`ProviderPolishClient.kt:320-322`); a key survives a provider switch with no surface to
    remove it (`ProviderConfigurationRepository.kt:74-82`, `:100-104`); `UNSUPPORTED_PROVIDER` has no
@@ -76,80 +83,116 @@ log; vendor logging silenced before SDK init); key storage (never blank, never i
 
 ## 1. The phases
 
-Order is by dependency and by what the founder feels first. Each phase leaves the app usable on the phone.
+Order is by dependency, per the consult: contract first, then structural safety, then the residency
+decision because it changes the latency population every budget is measured against, then the measured
+watchdog, then what the user sees, then the screen. Each phase leaves the app usable on the phone.
 
 | # | Phase | Closes | Tier | Depends on |
 |---|---|---|---|---|
-| 1 | **Engine truth.** The main process owns polish policy and pushes it into the engine on every bind. | new issue (measured defect 1) | REFACTOR (AIDL append) | none |
-| 2 | **Engine safety.** Local polish deadline and cancellation; client-side watchdog; callback delivered at most once; per-call cancellation; `onError` produced or deleted; exception logged. | new issue (findings 3, 5) | LARGE (heart) | 1 |
-| 3 | **Polish outcome reaches the user.** One typed outcome crosses the binder (engine, failure reason, status); History names the reason; the completion surface shows the locked sentence and the macOS reason set where Android can tell them apart. Cloud client fixes from finding 6. | #18 (polish rows), new issue (finding 4, 6) | LARGE | 1, 2 |
-| 4 | **The AI Polish screen.** Master switch, two engine cards, picker sheet, setup page, remember-last-mode; the tab renders saved state only; semantic model health. | #67, #53, #64 | MEDIUM | 1, 3 |
-| 5 | **Live key check.** Check calls the provider's model-list endpoint; status-aware reasons shared with phase 3. Optional next step: live model list (`ai-model-discovery`). | #61 | MEDIUM | 3, 4 |
-| 6 | **Model residency.** One heavy model at a time, or a measured decision to keep both on this phone; an unload schedule; the development model visible and removable. | #37, #21, finding 2 | LARGE | 2 |
-| 7 | **Polish quality parity.** Short-transcript guard, retry policy, non-English handling, the broader hallucination guard set, app-name and custom-word context for cloud prompts. | #2, #4, #3 | MEDIUM each | 3 |
+| 1 | **Engine contract.** Policy travels with every request; one typed outcome with request identity comes back; a cancel method exists; the engine holds no settings. | new issue (findings 1, 4 contract half, 5) | REFACTOR (AIDL append) | none |
+| 2 | **Residency decision.** Measure serial versus overlapping residency end to end; record the supported state in the architecture rule; implement serial loading if the measurement says so. | finding 2, #37 | LARGE | 1 |
+| 3 | **Engine safety, measured.** Local deadline that abandons a wedged generation and restarts the engine process; client watchdog with a budget measured after phase 2; user cancel reaches the engine. | new issue (finding 3) | LARGE, heart | 1, 2 |
+| 4 | **Outcome to the user.** History names the reason; the completion surface shows the locked sentence and the reason set; one fallback owner. | #18 (polish rows), new issue (finding 4 user half) | MEDIUM | 1 |
+| 5 | **Cloud client cleanups.** Null error stream, orphaned key, dead enum member, dead `defaultModel`, fence check, Claude `max_tokens`, self-hosted body. Each its own SMALL pull request. | new issue (finding 6) | SMALL each | 1 |
+| 6 | **The AI Polish screen.** Master switch, two engine cards, picker sheet, setup page, remember-last-mode; the tab renders saved state only; semantic model health. | #67, #53, #64 | MEDIUM | 1, 4 |
+| 7 | **Live key check.** Check calls the provider's model-list endpoint; status-aware reasons shared with phase 4. Optional next: live model list. | #61 | MEDIUM | 4, 6 |
+| 8 | **Polish quality parity.** Short-transcript guard, retry policy, non-English handling, broader hallucination guards, app-name and custom-word context for cloud prompts. | #2, #4, #3 | MEDIUM each | 4 |
 
-### Phase 1 — Engine truth
+### Phase 1 — Engine contract
 
-Append `applyPolicy(String mode, String provider, String model, String endpoint, String protocol)` to
-`IPolishService` (append-only per `architecture-rules.md` RULE: aidl-is-append-only). `DictationSessionService`
-calls it in `onServiceConnected` before `warmUp()`, reading `ProviderConfigurationRepository` in the main
-process. `PolishService` keeps the last applied policy in a volatile field and reads it in `polish`,
-`isReady`, `getStatus` and `warmUp`; the API key is still fetched from the Keystore by provider name at
-polish time, which is process-safe. At process start the field is seeded from the preference file, which is
-correct at that instant, so a caller that never applies a policy behaves exactly as today. Hardware oracle:
-the measurement in finding 1 repeated, expecting `S1-mini loaded` on the same pid after a mode switch.
+**Policy contract.** The main process latches the polish policy (mode, provider, model, endpoint,
+protocol) into the session at bind time, beside `sessionPreferences` (`DictationSessionService.kt:511-524`
+is the precedent), and sends it with every polish request and with warm-up. A settings change during a
+session applies from the next session; that is the stated contract, not an accident. The engine never
+reads the preference file: `PolishService.onCreate` stops calling `ensureModelLoaded` from a preference
+read, and `ProviderConfigurationRepository` leaves the engine except as the Keystore accessor for the key,
+which is process-safe. Each request carries one immutable policy snapshot captured when it enters; there
+is no shared mutable policy field.
 
-### Phase 2 — Engine safety
+**Binder surface (append-only, `architecture-rules.md` RULE: aidl-is-append-only).** Append to
+`IPolishService`: a polish method that takes the cleanup flags, the policy fields, a request id and the
+callback; a warm-up that takes the mode; `cancel(requestId)`. Append to `IPolishCallback`: `onOutcome`
+carrying request id, final text, engine label, a reason code, an HTTP status when present, and latency.
+The old `polish`, `warmUp`, `onResult` and `onError` stay declared. Both ends ship in one APK, so once the
+session owner moves to the new methods nothing binds the old ones; whether they are deleted in the same
+change (`GR-MIGRATION-COMPLETE`, no shims) or in the next (`aidl-is-append-only`, keep until nothing binds)
+is a rules tension the phase plan puts to Codex with this reading attached: delete in the same change,
+because no installed binary can ever hold the other side of this interface.
 
-`polishWithS1` takes the call's `ProviderCancellation` and a wall-clock budget; `S1GenieXRuntime.generate`
-checks the token between streamed tokens. `DictationSessionService.polishAndPublish` posts a delayed
-deterministic publish that the existing `publicationStarted` guard discards if the real callback lands
-first. `PolishService` delivers the callback at most once, keys cancellation per call, cancels every
-outstanding token in `onDestroy`, and either produces `onError` or removes it from the interface. Budget
-values are measured on the phone, never guessed (`validation-discipline.md` RULE:
+**Delivery.** At most one callback per request, guarded on the engine side; per-request cancellation
+tokens, all cancelled in `onDestroy`; the caught exception passed to the log; `selectedProvider!!` removed
+by returning the provider from the `when`. The session owner discards any outcome whose request id is not
+the current one. `onError` is retired by the same migration rather than given a producer.
+
+**One fallback owner.** The session owner's fallback (`DictationSessionService.kt:547-554`) calls the same
+`PolishPipeline.run` the engine calls, with the same options, so a fallback result cannot drift from the
+engine's deterministic result. Both are in the shared `cleanup/` package already.
+
+Hardware oracle: the measurement in finding 1 repeated, expecting `S1-mini loaded` on the same pid after a
+mode switch, plus a dictation in each mode with the History row naming the engine.
+
+### Phase 2 — Residency decision
+
+The written rules do not conflict: stage 1 optimises the felt experience and does not waive the more
+specific architecture rule, and "by default" leaves room for a supported, capability-based exception that
+does not exist merely because both models fit in one observed session. This is an architecture decision,
+not a founder decision. The measurement that settles it, on the S26 Ultra with ordinary apps open: repeated
+end-to-end sessions in both shapes (serial: S1 loads when ASR delivers; overlapping: today), recording time
+to inserted text, p50 and p95 model-load and polish latency, peak and steady process memory, available
+memory margin, low-memory kills, thermal state, and recovery. If overlapping is safe, the rule records the
+S26 exception with the numbers; if not, `warmUp` is deferred until ASR delivers. The unload schedule (#37)
+and the development-model surface (#21) follow in the same phase.
+
+### Phase 3 — Engine safety, measured
+
+A local deadline whose expiry is honest: a wedged native generation cannot be interrupted
+(`S1GenieXRuntime.kt:92-98` checks nothing while waiting for the next token), so on expiry the engine
+reports a timeout outcome, marks its runtime poisoned, and asks the OS to end its own process after the
+outcome is delivered, so the next session starts clean. The session owner's watchdog publishes the
+deterministic fallback with a timeout reason and calls `cancel(requestId)`; `publicationStarted` guards the
+publication, the cancel call guards the engine. User cancel during processing calls `cancel(requestId)`.
+Budgets are measured after phase 2, never guessed (`validation-discipline.md` RULE:
 measure-with-the-real-tool-never-a-simulation).
 
-### Phase 3 — Polish outcome reaches the user
+### Phase 4 — Outcome to the user
 
-A `PolishOutcome` crosses the binder: engine label, a reason enum (mapped from `ProviderFailureKind` plus
-status: rejected key, denied, rate limited, out of credits, outage, model unavailable, blocked, truncated,
-too long, unreachable, timed out, no output, configuration, local not ready, unexpected), and latency.
 `PolishEngineLabels` grows the reason vocabulary History renders. The completion surface shows "Polish
-failed. Using raw text." (locked sentence) with the reason line from the macOS set. Where Android cannot
-tell two macOS cases apart, the plan says so and maps to the nearest honest sentence rather than inventing
-one. Also in this phase: the null error stream, the orphaned key on provider switch, the dead enum member,
-the dead `defaultModel`, the code-fence check, Claude `max_tokens`.
+failed. Using raw text." (catalog decision 2026-07-15, product-wide; "raw" there means not AI-polished, the
+same deterministic pre-polish text macOS keeps) followed by a reason line from the macOS set. Where Android
+cannot tell two macOS cases apart, the plan maps to the nearest honest sentence and says so. The reason
+enum (rejected key, denied, rate limited, out of credits, outage, model unavailable, blocked, truncated,
+too long, unreachable, timed out, no output, configuration, local not ready, cancelled, unexpected) is
+derived from `ProviderFailureKind` plus status in one place.
 
-### Phase 4 — The AI Polish screen
+### Phase 5 — Cloud client cleanups
 
-Already planned: `docs/feature-requests/issue-67-2026-09-01-ai-polish-switch-and-cards.md`. It is updated
-to depend on phases 1 and 3 (the card status and the badge read the typed outcome and semantic model
-health from #64 instead of display strings) and to fold the coverage-round findings.
+One SMALL pull request each, in any order after phase 1, each with the test that turns red on revert.
 
-### Phase 5 — Live key check
+### Phase 6 — The AI Polish screen
 
-`GET /v1/models` (OpenAI), `GET /v1beta/models` (Gemini), `GET /v1/models` (Claude) with the same auth
-headers the client already sets; no user content. 200 valid, 401 rejected, 403 denied, 429 not a verdict,
-network or timeout unknown. Needs a method field on the request plan and a probe response format. The model
-list those endpoints return is the natural next step for `ai-model-discovery`, not part of #61.
+Already planned: `docs/feature-requests/issue-67-2026-09-01-ai-polish-switch-and-cards.md`. Before its
+grounded review it is updated to depend on phases 1 and 4 and to carry, explicitly, the coverage-round
+findings: snackbar replay after recreation, migration when `last_on_mode` is absent, restoring a provider
+whose key is missing, form loss on storage failure, and showing one provider's setup while another is
+active. Semantic model health (#64) lands here because the card state reads it.
 
-### Phase 6 — Model residency
+### Phase 7 — Live key check
 
-Decision to ground with Codex before planning: defer S1 warm-up until ASR delivers (serial loads add the
-measured 1843 ms to every dictation) versus keep both resident on this phone by a written decision with the
-measured memory (`:asr` 917 MB, `:polish` 393 MB, issue #37). The rule says one; the felt experience on
-the founder's phone says both fit. Then the unload schedule (#37) and the development model surface (#21).
+`GET /v1/models` (OpenAI), `GET /v1beta/models` (Gemini), `GET /v1/models` (Claude) with the auth headers
+the client already sets; no user content. 200 valid, 401 rejected, 403 denied, 429 not a verdict, network
+or timeout unknown. Needs a method field on the request plan and a probe response format. The model list
+those endpoints return is the natural next step for `ai-model-discovery`, not part of #61.
 
-### Phase 7 — Polish quality parity
+### Phase 8 — Polish quality parity
 
 Each item is its own SMALL or MEDIUM plan against the macOS knowledge corpus
-(`~/Developer/EnviousWispr/.claude/knowledge/llm-contract.md`, `polish-prompt-architecture.md`).
+(`~/Developer/EnviousLabs/EnviousWispr/.claude/knowledge/llm-contract.md`, `polish-prompt-architecture.md`).
 
 ## 2. Founder decisions needed
 
-None to start phases 1 through 5; the rules and the catalog decisions answer them. Phase 6 carries one
-product trade (latency versus memory) that is put to Codex first and to the founder only if Codex reads the
-rules as conflicting.
+None. The rules, the catalog decisions and the consult answer every fork in phases 1 through 8; where two
+rules pull apart (append-only versus no shims, in phase 1) the phase plan puts it to Codex with a reading
+attached.
 
 ## 3. Not in this program
 

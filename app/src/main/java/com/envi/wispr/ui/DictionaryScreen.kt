@@ -273,6 +273,7 @@ private fun DictionaryTermRow(
                 ) { KebabGlyph() }
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
                     DropdownMenuItem(text = { Text("Edit") }, onClick = { menuExpanded = false; onEdit() })
+                    DropdownMenuItem(text = { Text("Select") }, onClick = { menuExpanded = false; onLongPress() })
                     DropdownMenuItem(text = { Text("Delete") }, onClick = { menuExpanded = false; onDelete() })
                 }
             }

@@ -256,6 +256,21 @@ internal fun EnviousWisprApp(
     // app rather than being swallowed by a handler with nothing to close.
     BackHandler(enabled = settingsPage != null) { settingsPageName = null }
 
+    // Computed only while the Polish tab is showing, so every other tab pays no WorkManager query.
+    // Both the app-bar badge and PolishScreen's body read this one value, never a second computation
+    // of the same fact — see architecture-rules.md RULE: own-state-locally.
+    val polishS1State = if (destination == AppDestination.Polish) {
+        val s1Work by WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.downloadWorkName(ModelManifest.s1))
+            .collectAsStateWithLifecycle(emptyList())
+        val s1Adoption by WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.adoptionWorkName(ModelManifest.s1))
+            .collectAsStateWithLifecycle(emptyList())
+        workUiState(preferredModelWork(s1Work, s1Adoption), uiState.readiness.polishModelReady, ModelManifest.s1, context)
+    } else {
+        ModelUiState(label = "")
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -278,6 +293,14 @@ internal fun EnviousWisprApp(
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 onStartDictation()
             },
+            // `uiState.providerSettings` starts at its placeholder default (mode = OFFLINE_S1) and only
+            // becomes real once the ViewModel's async initial load lands (`loading` flips to false) —
+            // showing the badge before then would name a mode that may not be what is actually saved,
+            // contradicting its own persisted-state contract (real bug caught in code review,
+            // 2026-09-01, the badge-side twin of the same gate `PolishScreen` uses for its own body).
+            topBarBadge = if (destination == AppDestination.Polish && !uiState.providerSettings.loading) {
+                { PolishStatusBadge(polishStatusChip(uiState.providerSettings, polishS1State)) }
+            } else null,
         ) { contentModifier ->
             AnimatedContent(
                 targetState = settingsPage?.let(Screen::Page) ?: Screen.Tab(destination),
@@ -324,7 +347,7 @@ internal fun EnviousWisprApp(
                         )
                         AppDestination.Polish -> PolishScreen(
                             settings = uiState.providerSettings,
-                            readiness = uiState.readiness,
+                            s1State = polishS1State,
                             onRefreshReadiness = onRefreshReadiness,
                             onSetMode = onSetPolishMode,
                             onSaveProvider = onSaveProviderSettings,
@@ -381,7 +404,8 @@ private sealed interface Screen {
  * bottom bar, which is present only while a tab is showing.
  *
  * [content] receives the modifier carrying the scaffold's insets, so no screen adds its own status-bar
- * padding and no screen can forget it.
+ * padding and no screen can forget it. [topBarBadge], when non-null, renders before the mic button on
+ * whichever destination supplies it; every other destination omits it and sees no change.
  */
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -392,6 +416,7 @@ private fun AppScaffold(
     onBack: () -> Unit,
     onSelectDestination: (AppDestination) -> Unit,
     onStartDictation: () -> Unit,
+    topBarBadge: (@Composable () -> Unit)? = null,
     content: @Composable (Modifier) -> Unit,
 ) {
     Scaffold(
@@ -414,6 +439,7 @@ private fun AppScaffold(
                 },
                 actions = {
                     if (settingsPage == null) {
+                        topBarBadge?.invoke()
                         IconButton(
                             onClick = onStartDictation,
                             modifier = Modifier.semantics {

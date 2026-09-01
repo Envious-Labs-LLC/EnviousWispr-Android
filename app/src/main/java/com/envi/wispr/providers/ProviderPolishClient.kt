@@ -344,7 +344,7 @@ class ProviderPolishClient(
             return ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
         }
         val text = when (format) {
-            ResponseFormat.OPENAI_RESPONSES -> root.firstTextAt("output", 0, "content")
+            ResponseFormat.OPENAI_RESPONSES -> root.firstMessageTextAt("output")
             ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "message", "content")
             ResponseFormat.GEMINI -> root.firstTextAt("candidates", 0, "content", "parts")
             ResponseFormat.CLAUDE -> root.firstTextAt("content")
@@ -474,6 +474,25 @@ private fun Any?.firstTextAt(vararg path: Any): String? =
         ?.asSequence()
         ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
         ?.firstOrNull { it.isNotEmpty() }
+
+/**
+ * OpenAI's Responses API `output` array holds typed items — `message`, `reasoning`, tool and
+ * function calls among them — and a reasoning model can place a `reasoning` item before the
+ * assistant's own `message` item. Reading a fixed index (`output[0]`) breaks the moment that
+ * happens, silently, as `MALFORMED_RESPONSE`. This instead finds the first item whose `type` is
+ * either absent (accepted for backward compatibility with a minimal payload shape) or exactly
+ * `"message"`, skipping any other typed item ahead of it — matching OpenAI's own migration
+ * guidance to iterate items by type rather than assume position (found and fixed in code review
+ * on issue #62, 2026-09-01; full parser gap tracked separately as #65 for the remaining formats
+ * this file does not touch here).
+ */
+private fun Any?.firstMessageTextAt(vararg path: Any): String? =
+    (valueAt(*path) as? List<*>)
+        ?.asSequence()
+        ?.filterIsInstance<Map<*, *>>()
+        ?.firstOrNull { item -> (item["type"] as? String)?.let { it == "message" } ?: true }
+        ?.get("content")
+        .firstTextAt()
 
 private class JsonParser(private val input: String) {
     private var index = 0

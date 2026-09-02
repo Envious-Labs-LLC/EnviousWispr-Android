@@ -51,7 +51,9 @@ ids["CLAUDE"] = sorted(m["id"] for m in rows("CLAUDE", d, "data"))
 d = get("GEMINI", "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {"x-goog-api-key": os.environ["GEMINI_API_KEY"]})
 ids["GEMINI"] = sorted(m["name"].replace("models/", "") for m in rows("GEMINI", d, "models"))
 
-SNAP = re.compile(r"-(\d{4})-?(\d{2})-?(\d{2})$")
+# Same two shapes ModelNotes.SNAPSHOT accepts, held in step by the same backreference: two independent
+# optional hyphens also matched `-2025-1001`, which no vendor ships.
+SNAP = re.compile(r"-(\d{4})(-?)(\d{2})\2(\d{2})$")
 for prov, lst in ids.items():
     print(f"\n== {prov}: {len(lst)} ids ==")
     dated = [i for i in lst if SNAP.search(i)]

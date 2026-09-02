@@ -134,7 +134,7 @@ object ModelNotes {
      */
     internal fun withoutSnapshot(id: String): String? {
         val match = SNAPSHOT.find(id) ?: return null
-        val (year, month, day) = match.destructured
+        val (year, _, month, day) = match.destructured
         // A real calendar date, parsed, never hand-rolled ranges: separate month and day checks accept
         // 2025-02-31 and a non-leap 2025-02-29 (code-design-rules RULE:
         // parse-structured-input-dont-regex-and-iterate). An id ending in impossible digits is not a
@@ -144,6 +144,13 @@ object ModelNotes {
         return id.substring(0, match.range.first)
     }
 
-    /** `-YYYYMMDD` or `-YYYY-MM-DD` at the END of an id, and only there. */
-    private val SNAPSHOT = Regex("-(\\d{4})-?(\\d{2})-?(\\d{2})$")
+    /**
+     * `-YYYYMMDD` or `-YYYY-MM-DD` at the END of an id, and only there.
+     *
+     * The backreference is what limits it to those TWO shapes. Two independent optional hyphens also
+     * accepted `-2025-1001` and `-202510-01`, which no vendor ships and which would have handed an id
+     * another model's notes and ranking (review round 5). Matching the separator against itself keeps the
+     * two documented spellings and refuses every mixture, without a second pattern to keep in step.
+     */
+    private val SNAPSHOT = Regex("-(\\d{4})(-?)(\\d{2})\\2(\\d{2})$")
 }

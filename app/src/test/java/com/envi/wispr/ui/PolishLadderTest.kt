@@ -297,6 +297,12 @@ class PolishLadderTest {
         assertNull(ModelNotes.withoutSnapshot("model-19991001"))
         // A date anywhere but the end is not a snapshot suffix.
         assertNull(ModelNotes.withoutSnapshot("gpt-20240806-preview"))
+        // MIXED SEPARATORS are not a shape any vendor ships, and accepting one would hand the id another
+        // model's notes and ranking (review round 5). Both spellings are all-or-nothing.
+        assertNull(ModelNotes.withoutSnapshot("model-2025-1001"))
+        assertNull(ModelNotes.withoutSnapshot("model-202510-01"))
+        assertNull(ModelNotes.withoutSnapshot("model-2025-10-1"))
+        assertNull(ModelNotes.withoutSnapshot("model-202510011"))
         // The point of all of it: the dated id finds its row, so it carries notes and dots.
         assertEquals(
             ModelNotes.forId(Provider.CLAUDE, "claude-haiku-4-5"),

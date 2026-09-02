@@ -120,6 +120,17 @@ object ModelNotes {
      * `claude-fable-5-1` and `gemini-2.5-flash` must survive untouched. Both vendor spellings are handled,
      * and nothing else is guessed at — an unrecognised id keeps missing, which is visible, rather than
      * being trimmed until it accidentally matches.
+     *
+     * Measured across all three of the founder's live keys, 2026-09-02, by listing every id each returns:
+     * OpenAI 43 of 130 dated, Claude 3 of 11, Gemini 0 of 54. Regenerate that with
+     * `scripts/model-id-shapes.py`, never from memory.
+     *
+     * **KNOWN LIMIT, stated because the same measurement found it: OpenAI also ships a FOUR-digit `MMDD`
+     * snapshot** — `gpt-3.5-turbo-0125`, `gpt-4-0613` — and this deliberately does not strip it. Four
+     * digits cannot be told from a version (`-001` and `-002` are Google version suffixes on the same
+     * list), and every base id behind those belongs to a model generation the catalogue does not carry, so
+     * stripping them would buy nothing and risk matching the wrong row. It reopens if a `MMDD` model ever
+     * needs a note.
      */
     internal fun withoutSnapshot(id: String): String? {
         val match = SNAPSHOT.find(id) ?: return null

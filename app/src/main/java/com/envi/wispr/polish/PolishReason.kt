@@ -22,6 +22,9 @@ enum class PolishReason {
     NETWORK,
     TIMEOUT,
     CANCELLED,
+
+    /** The engine's own deadline on a local generation fired; the engine process is ending. */
+    LOCAL_TIMEOUT,
     HTTP_ERROR,
     MALFORMED_RESPONSE,
     RESPONSE_TOO_LARGE,
@@ -36,6 +39,9 @@ enum class PolishReason {
 
     /** Session-owner side only: the binder call itself threw. */
     CALL_FAILED,
+
+    /** Session-owner side only: the engine never answered within the policy's budget. */
+    WATCHDOG_TIMEOUT,
     ;
 
     companion object {

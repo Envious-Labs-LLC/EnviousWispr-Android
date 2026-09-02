@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Single owner for S1 inference. PolishService serializes every call onto one worker thread. */
 internal class S1GenieXRuntime(private val context: Context) {
@@ -62,10 +63,16 @@ internal class S1GenieXRuntime(private val context: Context) {
         throw IllegalStateException("No S1 compute backend could load", lastFailure)
     }
 
-    fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int): String {
+    /**
+     * @return the generated text, or null when [timeoutMs] expired first. The timeout is COOPERATIVE: it
+     * cancels the collecting coroutine at a suspension point and cannot prove the native generation
+     * stopped, so the caller treats null exactly like a hard expiry and never reuses this runtime (#75).
+     */
+    fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int, timeoutMs: Long): String? {
         val active = checkNotNull(llm) { "S1 runtime is not loaded" }
         val output = StringBuilder()
-        runBlocking {
+        val completed = runBlocking {
+          withTimeoutOrNull(timeoutMs) {
             check(active.reset() == 0) { "S1 context reset failed" }
             val formatted = active.applyChatTemplate(
                 messages = arrayOf(
@@ -96,8 +103,10 @@ internal class S1GenieXRuntime(private val context: Context) {
                     is LlmStreamResult.Error -> throw result.throwable
                 }
             }
+            true
+          }
         }
-        return output.toString()
+        return if (completed == true) output.toString() else null
     }
 
     fun close() {

@@ -19,9 +19,9 @@ class PolishRequestLedgerTest {
     @Test fun acceptsOnlyTheOpenRequestAndOnlyOnce() {
         val ledger = ledger()
         val open = ledger.open()
-        assertFalse("a stale id must be refused", ledger.accepts(open + 1))
-        assertTrue(ledger.accepts(open))
-        assertFalse("the same id must not be accepted twice", ledger.accepts(open))
+        assertFalse("a stale id must be refused", ledger.claim(open + 1))
+        assertTrue(ledger.claim(open))
+        assertFalse("the same id must not be accepted twice", ledger.claim(open))
     }
 
     @Test fun openingAgainRetiresThePreviousRequest() {
@@ -29,22 +29,22 @@ class PolishRequestLedgerTest {
         val first = ledger.open()
         val second = ledger.open()
         assertNotEquals(first, second)
-        assertFalse(ledger.accepts(first))
-        assertTrue(ledger.accepts(second))
+        assertFalse(ledger.claim(first))
+        assertTrue(ledger.claim(second))
     }
 
     @Test fun closeReturnsTheOpenIdAndAnOutcomeArrivingAfterwardsIsRefused() {
         val ledger = ledger()
         val open = ledger.open()
         assertEquals(open, ledger.close())
-        assertFalse("close won, so the outcome loses", ledger.accepts(open))
+        assertFalse("close won, so the outcome loses", ledger.claim(open))
         assertNull("nothing left to cancel", ledger.close())
     }
 
     @Test fun anOutcomeAcceptedFirstLeavesNothingForCloseToCancel() {
         val ledger = ledger()
         val open = ledger.open()
-        assertTrue(ledger.accepts(open))
+        assertTrue(ledger.claim(open))
         assertNull(ledger.close())
     }
 

@@ -39,6 +39,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -286,6 +292,7 @@ private fun CloudRungs(
                 enabled = !saving,
                 visualTransformation = PasswordVisualTransformation(),
             )
+            GetKeyLink(displayed)
             if (replacing) {
                 TextButton(onClick = { replacing = false; apiKey = ""; checkSequence = null; onClearKeyError() }, enabled = !saving) { Text("Keep current key") }
             }
@@ -474,6 +481,43 @@ private fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
         onPause = { ModelDeliveryWorker.pause(context, ModelManifest.s1) },
         onResume = { ModelDeliveryWorker.resume(context, ModelManifest.s1) },
     )
+}
+
+/**
+ * The way out of a key field for someone who has no key (#97).
+ *
+ * A real link, not a styled button: `LinkAnnotation.Url` gives it link semantics, so TalkBack announces it
+ * as a link rather than as text, and the whole string is one focus target.
+ *
+ * The intent is fired here rather than left to the default handler, so a device that cannot open a browser
+ * declines quietly instead of throwing `ActivityNotFoundException` out of a click. The user is not left
+ * with nothing: the domain is IN the visible text, so it can be read and typed. That is the accepted
+ * limit rather than a closed window, and it is why the domain is shown at all.
+ */
+@Composable
+private fun GetKeyLink(provider: Provider) {
+    val portal = keyPortal(provider) ?: return
+    val context = LocalContext.current
+    val style = SpanStyle(
+        color = MaterialTheme.colorScheme.primary,
+        textDecoration = TextDecoration.Underline,
+    )
+    val text = buildAnnotatedString {
+        val link = LinkAnnotation.Url(
+            url = portal.url,
+            styles = TextLinkStyles(style = style),
+        ) {
+            val uri = android.net.Uri.parse((it as LinkAnnotation.Url).url)
+            runCatching {
+                context.startActivity(
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        }
+        withLink(link) { append("Get your key at ${portal.domain}") }
+    }
+    Text(text, style = MaterialTheme.typography.bodySmall)
 }
 
 private fun keyPlaceholder(provider: Provider): String = when (provider) {

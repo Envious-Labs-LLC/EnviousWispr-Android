@@ -144,7 +144,21 @@ class PolishLadderTest {
         assertEquals(484_219_808L, bytes)
         val facts = PolishLadder.s1Facts()
         assertEquals(listOf("Superwhisper", formatModelBytes(bytes), "Offline"), facts)
-        assertTrue(facts[1], facts[1].matches(Regex("""461[.,]8 MB""")))
+        assertTrue(facts[1], facts[1].matches(Regex("""484[.,]2 MB""")))
+    }
+
+    /**
+     * The unit is the claim. Android's own Formatter and the Play listing both divide by 1000, so a
+     * binary divisor under a decimal label would print a number 5% smaller than every other size on the
+     * phone. Each row sits just above a boundary, because a threshold is where a divisor swap shows.
+     */
+    @Test fun sizesAreInTheDecimalUnitsTheRestOfThePhoneUses() {
+        assertTrue(formatModelBytes(484_219_808L), formatModelBytes(484_219_808L).matches(Regex("""484[.,]2 MB""")))
+        assertTrue(formatModelBytes(1_000_000_000L), formatModelBytes(1_000_000_000L).matches(Regex("""1[.,]0 GB""")))
+        assertTrue(formatModelBytes(1_000_000L), formatModelBytes(1_000_000L).matches(Regex("""1[.,]0 MB""")))
+        assertEquals("999 KB", formatModelBytes(999_999L))
+        // The binary divisor this replaced would have printed 461.8 MB, 0.9 GB and 0.9 MB for the first
+        // three, so every row above changes if anyone puts 1024 back.
     }
 
     /**

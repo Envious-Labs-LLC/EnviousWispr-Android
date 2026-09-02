@@ -157,10 +157,23 @@ internal fun ModelWorkReadinessObserver(onRefreshReadiness: () -> Unit) {
     }
 }
 
+/**
+ * A download size in the units the rest of the phone uses.
+ *
+ * DECIMAL, not binary, and the unit is the whole point of the function. Android's own
+ * `Formatter.formatFileSize` and the Play Store listing both divide by 1000, so a model shown as
+ * `484.2 MB` here is the same number the user reads on the store page and in Settings. Dividing by 1024
+ * and still writing MB reported S1-mini as `461.8 MB`, which is its size in MiB and understates the space
+ * it takes by 22 MB against every other number on the phone.
+ *
+ * The platform function is not used because it needs a `Context` and cannot be reached from a JVM unit
+ * test; `PolishLadderTest` pins this one's convention instead. It formats in the DEFAULT locale, so a
+ * German phone reads `484,2 MB`, which is correct and is why no test asserts an English literal.
+ */
 internal fun formatModelBytes(bytes: Long): String = when {
-    bytes >= 1_024L * 1_024L * 1_024L -> "%.1f GB".format(bytes / (1_024.0 * 1_024.0 * 1_024.0))
-    bytes >= 1_024L * 1_024L -> "%.1f MB".format(bytes / (1_024.0 * 1_024.0))
-    else -> "${bytes / 1_024L} KB"
+    bytes >= 1_000_000_000L -> "%.1f GB".format(bytes / 1_000_000_000.0)
+    bytes >= 1_000_000L -> "%.1f MB".format(bytes / 1_000_000.0)
+    else -> "${bytes / 1_000L} KB"
 }
 
 /**

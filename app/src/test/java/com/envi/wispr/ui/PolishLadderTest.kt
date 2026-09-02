@@ -207,12 +207,68 @@ class PolishLadderTest {
         assertEquals(1, stale.count { it.tag == "Recommended" })
     }
 
-    @Test fun aCatalogueWithoutThePreferredModelStillRecommendsExactlyOne() {
+    /**
+     * Product Outcome. Renamed and re-aimed: it asserted CHEAPEST-of-class, which was my rule rather than
+     * the founder's. His two actual choices both say newest — he picked Gemini 3.8 Flash the day it
+     * launched over cheaper older flashes, and asked for "the cheapest Flash model NOW" (#99, #103).
+     *
+     * Cheapest-first also had a second, worse effect: a model we hold no row for scores as the most
+     * EXPENSIVE thing on the list, so on the founder's OpenAI key the badge sat on `gpt-4.1-mini` from
+     * April 2025 while `gpt-5-mini` from that August went unbadged. What this row still protects is
+     * unchanged: exactly one badge, decided deterministically, and never on a model the probe could not
+     * reach.
+     */
+    @Test fun theNewestModelOfTheSmallTierIsTheOneRecommended() {
         val noPreferred = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro")
             .map { model(it, ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended(it)) }
-        // Cheapest of the class wins. Both 2.5 flashes sit at cost 1 and speed 3, so the tie goes to the
-        // more accurate one, which is the full flash rather than the lite.
-        assertEquals("gemini-2.5-flash", ModelListPresentation.recommendedPick(Provider.GEMINI, noPreferred))
+        // 2.5-flash-lite is 2026-07-22 and 2.5-flash is 2026-06-17, so the lite leads. The pro is not in
+        // the small tier at all and can never be picked, however new it is.
+        assertEquals("gemini-2.5-flash-lite", ModelListPresentation.recommendedPick(Provider.GEMINI, noPreferred))
+
+        // NEWER DOES NOT BEAT VETTED, and this is the case that taught it (#103 review round 3). His
+        // OpenAI key's newest models are `gpt-5-mini` and `gpt-5-nano` from 2025-08-05 and we hold no row
+        // for either, because both are on OpenAI's deprecations list for 2026-10-23. The badge auto-saves,
+        // so picking one would have quietly stopped his polish working seven weeks later. `gpt-4.1-mini`
+        // is older, catalogued, and not going anywhere.
+        val day = 24 * 60 * 60 * 1000L
+        val hisOpenAi = listOf(
+            model("gpt-4.1-mini", ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_183 * day),
+            model("gpt-5-nano", ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_305 * day),
+            model("gpt-5-mini", ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_305 * day),
+        )
+        assertEquals("gpt-4.1-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, hisOpenAi))
+        assertEquals("gpt-4.1-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, hisOpenAi.reversed()))
+
+        // A key that can reach NO row of ours still gets a badge, because a recommendation we cannot vouch
+        // for beats none at all on a key we have never seen. Newest wins there, and the same-day tie falls
+        // to the id so the answer is stable rather than input order.
+        val nothingCatalogued = hisOpenAi.filter { it.id.startsWith("gpt-5") }
+        assertEquals("gpt-5-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, nothingCatalogued))
+        assertEquals("gpt-5-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, nothingCatalogued.reversed()))
+
+        // The founder's hand-picked shortlist still wins a SAME-DAY tie, which is the only place it may.
+        val sameDay = listOf("gemini-3.8-flash", "gemini-3.9-unknown")
+            .map { model(it, ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_700 * day) }
+        assertEquals("gemini-3.8-flash", ModelListPresentation.recommendedPick(Provider.GEMINI, sameDay))
+
+        // A SHORTLISTED MODEL QUALIFIES EVEN OUTSIDE THE TIER WORDS, and this is live rather than
+        // hypothetical: measured 2026-09-02, the founder's key returns `gpt-5.6-luna`, OpenAI's cheap and
+        // fast model at that generation, whose name carries no tier word at all because OpenAI moved to
+        // codenames. A tier-only filter could never badge it, so the badge fell to an older mini.
+        val withLuna = listOf(
+            model("gpt-4.1-mini", ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_183 * day),
+            model("gpt-5.6-luna", ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended("gpt-5.6-luna"))
+                .copy(releasedAt = 20_600 * day),
+        )
+        assertFalse("luna carries no tier word", ModelListRules.isRecommended("gpt-5.6-luna"))
+        assertEquals("gpt-5.6-luna", ModelListPresentation.recommendedPick(Provider.OPENAI, withLuna))
+
+        // A model with no date at all never beats one that has a date, however it sorts by id.
+        val undated = listOf(
+            model("gemini-aaa-flash", ModelAccess.AVAILABLE, recommended = true),
+            model("gemini-2.5-flash", ModelAccess.AVAILABLE, recommended = true),
+        )
+        assertEquals("gemini-2.5-flash", ModelListPresentation.recommendedPick(Provider.GEMINI, undated))
 
         // Nothing reachable means no badge at all, rather than badging something the probe could not reach.
         val unreachable = listOf(model("gemini-3.8-flash", ModelAccess.UNVERIFIED, recommended = true))
@@ -223,6 +279,50 @@ class PolishLadderTest {
             assertTrue("$provider has no preferred model", ModelNotes.preferred(provider).isNotEmpty())
         }
         assertTrue(ModelNotes.preferred(Provider.SELF_HOSTED_POLISH).isEmpty())
+    }
+
+    /**
+     * Product Outcome (#103). Anthropic returns `claude-haiku-4-5-20251001` where its documentation says
+     * `claude-haiku-4-5`, so every note, every dot and every shortlist entry missed silently. Measured on
+     * the founder's key 2026-09-02: all 11 of his Claude ids carry a dated suffix.
+     *
+     * Swept in every meaning-changing class, because a normaliser that trims too much is worse than one
+     * that trims nothing: it makes an id match a row that is not about it
+     * (`code-design-rules.md` RULE: matcher-set-adversarial-tests).
+     */
+    @Test fun aDatedModelSnapshotFindsTheRowItIsASnapshotOf() {
+        // Both vendor spellings, and only at the END.
+        assertEquals("claude-haiku-4-5", ModelNotes.withoutSnapshot("claude-haiku-4-5-20251001"))
+        assertEquals("gpt-4o", ModelNotes.withoutSnapshot("gpt-4o-2024-08-06"))
+        // A version that merely ENDS in digits is not a date and must survive untouched, or a real model
+        // would inherit another model's notes.
+        assertNull(ModelNotes.withoutSnapshot("claude-fable-5-1"))
+        assertNull(ModelNotes.withoutSnapshot("gemini-2.5-flash"))
+        assertNull(ModelNotes.withoutSnapshot("gpt-4.1-mini"))
+        // Eight digits that are not a date, so the shape alone is not enough.
+        assertNull(ModelNotes.withoutSnapshot("model-99999999"))
+        assertNull(ModelNotes.withoutSnapshot("model-20251301"))
+        assertNull(ModelNotes.withoutSnapshot("model-20250231"))
+        assertNull(ModelNotes.withoutSnapshot("model-20250229"))
+        assertEquals("model", ModelNotes.withoutSnapshot("model-20240229"))
+        assertNull(ModelNotes.withoutSnapshot("model-20251032"))
+        assertNull(ModelNotes.withoutSnapshot("model-19991001"))
+        // A date anywhere but the end is not a snapshot suffix.
+        assertNull(ModelNotes.withoutSnapshot("gpt-20240806-preview"))
+        // MIXED SEPARATORS are not a shape any vendor ships, and accepting one would hand the id another
+        // model's notes and ranking (review round 5). Both spellings are all-or-nothing.
+        assertNull(ModelNotes.withoutSnapshot("model-2025-1001"))
+        assertNull(ModelNotes.withoutSnapshot("model-202510-01"))
+        assertNull(ModelNotes.withoutSnapshot("model-2025-10-1"))
+        assertNull(ModelNotes.withoutSnapshot("model-202510011"))
+        // The point of all of it: the dated id finds its row, so it carries notes and dots.
+        assertEquals(
+            ModelNotes.forId(Provider.CLAUDE, "claude-haiku-4-5"),
+            ModelNotes.forId(Provider.CLAUDE, "claude-haiku-4-5-20251001"),
+        )
+        assertNotNull(ModelNotes.forId(Provider.CLAUDE, "claude-haiku-4-5-20251001"))
+        // And an id that is a snapshot of nothing we know still returns nothing, rather than the nearest row.
+        assertNull(ModelNotes.forId(Provider.CLAUDE, "claude-unknown-9-20251001"))
     }
 
     @Test fun aKeyWithNoUsableModelWaitsForATypedId() {

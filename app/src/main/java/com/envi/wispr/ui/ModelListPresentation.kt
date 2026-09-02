@@ -48,22 +48,58 @@ object ModelListPresentation {
      * recommending nothing. Before this, `gemini-omni-1.1-flash` was badged while unverified.
      */
     fun recommendedPick(provider: Provider, models: List<DiscoveredModel>): String? {
-        val available = models.filter { it.access == ModelAccess.AVAILABLE }
-        if (available.isEmpty()) return null
-        ModelNotes.preferred(provider).firstOrNull { id -> available.any { it.id == id } }?.let { return it }
-        return available
-            .filter { it.recommended }
-            .minWithOrNull(
-                compareBy(
-                    { ModelNotes.forId(provider, it.id)?.cost ?: Int.MAX_VALUE },
-                    { -(ModelNotes.forId(provider, it.id)?.speed ?: 0) },
-                    // Accuracy breaks the tie before the id does, so two models at the same price and speed
-                    // are separated by which writes better rather than by which sorts earlier. The id is
-                    // the last resort and exists only to keep the answer stable, never to decide it.
-                    { -(ModelNotes.forId(provider, it.id)?.accuracy ?: 0) },
-                    { it.id },
-                ),
-            )?.id
+        // WHAT MAY WEAR THE BADGE: the vendors' own small-and-fast tier, PLUS anything we shortlisted by
+        // name. `ModelListRules.isRecommended` carries the tier on every row from the words `mini`, `nano`,
+        // `flash` and `haiku` minus the disqualifiers, which is the founder's rule in his words — "what is
+        // the cheapest Flash model now" — and the one matcher here whose members a vendor publishes rather
+        // than us predicting them.
+        //
+        // The union is not optional. Those words are the tier NAMES of one generation, and OpenAI's newest
+        // cheap-and-fast model is `gpt-5.6-luna`, which contains none of them; on the tier filter alone it
+        // could never be badged even though it leads `ModelNotes.preferred(OPENAI)` (review round 6). A
+        // model we named by hand is one we already chose to offer, so naming it IS the qualification.
+        val preferred = ModelNotes.preferred(provider)
+        fun rank(id: String): Int {
+            val index = preferred.indexOfFirst { it == id || it == ModelNotes.withoutSnapshot(id) }
+            return if (index < 0) preferred.size else index
+        }
+        val candidates = models.filter {
+            it.access == ModelAccess.AVAILABLE && (it.recommended || rank(it.id) < preferred.size)
+        }
+        if (candidates.isEmpty()) return null
+        return candidates.minWithOrNull(
+            compareBy(
+                // A MODEL WE HAVE A ROW FOR COMES FIRST, and this is a safety rule rather than a taste one
+                // (#103 review round 3). The badge auto-saves through `PolishLadder.defaultModel`, so it
+                // must not name a model that stops working. The catalogue is where a model was checked
+                // against the vendor's own deprecations list, and nothing a provider serves says a word
+                // about retirement: OpenAI still LISTS and still ANSWERS `gpt-5-mini` and `gpt-5-nano`,
+                // both scheduled to shut down 2026-10-23, so a rule that trusted the live list alone would
+                // have picked one seven weeks before it dies. `ModelNotesTest` holds the list of what has
+                // been checked out.
+                //
+                // A key that can reach none of our rows still gets a badge from the rows below, because a
+                // recommendation we cannot vouch for beats no recommendation at all on a key we have never
+                // seen.
+                { ModelNotes.forId(provider, it.id) == null },
+                // NEWEST FIRST within that, because that is the recommendation and everything below only
+                // breaks ties. Leading with `preferred` instead made a hand-written id beat any model, and
+                // leading with COST had the same effect by a second route, because a model we have no row
+                // for scores worse than one we do.
+                { it.releasedAt == null && ModelNotes.forId(provider, it.id)?.released == null },
+                { -(releaseDateOf(provider, it) ?: 0L) },
+                // Same day: the founder's own shortlist decides, then the measures, then the id. He picked
+                // Gemini 3.8 Flash by hand and that choice is kept, as a tie-break rather than an override.
+                { rank(it.id) },
+                { ModelNotes.forId(provider, it.id)?.cost ?: Int.MAX_VALUE },
+                { -(ModelNotes.forId(provider, it.id)?.speed ?: 0) },
+                // Accuracy breaks the tie before the id does, so two models at the same price and speed
+                // are separated by which writes better rather than by which sorts earlier. The id is
+                // the last resort and exists only to keep the answer stable, never to decide it.
+                { -(ModelNotes.forId(provider, it.id)?.accuracy ?: 0) },
+                { it.id },
+            ),
+        )?.id
     }
 
     /**

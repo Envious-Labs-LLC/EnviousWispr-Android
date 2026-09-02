@@ -103,6 +103,54 @@ object ModelNotes {
      */
     val all: List<CatalogModel> get() = Provider.entries.flatMap(::forProvider)
 
-    fun forId(provider: Provider, id: String): CatalogModel? =
-        forProvider(provider).firstOrNull { it.name == id }
+    fun forId(provider: Provider, id: String): CatalogModel? {
+        val rows = forProvider(provider)
+        return rows.firstOrNull { it.name == id } ?: withoutSnapshot(id)?.let { base -> rows.firstOrNull { it.name == base } }
+    }
+
+    /**
+     * The id with a trailing DATED SNAPSHOT removed, or null when there is none (#103).
+     *
+     * Anthropic ships `claude-haiku-4-5-20251001` where its documentation says `claude-haiku-4-5`, and
+     * OpenAI ships `gpt-4o-2024-08-06`. Every one of those was a silent miss: no note, no dots, and not
+     * matched by [preferred], so a hand-written catalogue that is CORRECT still describes nothing the key
+     * actually returns. Measured on the founder's key 2026-09-02: all 11 Claude ids carry a suffix.
+     *
+     * A DATE is checked, not merely digits, because a model id may legitimately end in a number:
+     * `claude-fable-5-1` and `gemini-2.5-flash` must survive untouched. Both vendor spellings are handled,
+     * and nothing else is guessed at — an unrecognised id keeps missing, which is visible, rather than
+     * being trimmed until it accidentally matches.
+     *
+     * Measured across all three of the founder's live keys, 2026-09-02, by listing every id each returns:
+     * OpenAI 43 of 130 dated, Claude 3 of 11, Gemini 0 of 54. Regenerate that with
+     * `scripts/model-id-shapes.py`, never from memory.
+     *
+     * **KNOWN LIMIT, stated because the same measurement found it: OpenAI also ships a FOUR-digit `MMDD`
+     * snapshot** — `gpt-3.5-turbo-0125`, `gpt-4-0613` — and this deliberately does not strip it. Four
+     * digits cannot be told from a version (`-001` and `-002` are Google version suffixes on the same
+     * list), and every base id behind those belongs to a model generation the catalogue does not carry, so
+     * stripping them would buy nothing and risk matching the wrong row. It reopens if a `MMDD` model ever
+     * needs a note.
+     */
+    internal fun withoutSnapshot(id: String): String? {
+        val match = SNAPSHOT.find(id) ?: return null
+        val (year, _, month, day) = match.destructured
+        // A real calendar date, parsed, never hand-rolled ranges: separate month and day checks accept
+        // 2025-02-31 and a non-leap 2025-02-29 (code-design-rules RULE:
+        // parse-structured-input-dont-regex-and-iterate). An id ending in impossible digits is not a
+        // snapshot, and trimming it would hand it another model's notes and ranking.
+        val parsed = runCatching { java.time.LocalDate.of(year.toInt(), month.toInt(), day.toInt()) }.getOrNull() ?: return null
+        if (parsed.year !in 2000..2099) return null
+        return id.substring(0, match.range.first)
+    }
+
+    /**
+     * `-YYYYMMDD` or `-YYYY-MM-DD` at the END of an id, and only there.
+     *
+     * The backreference is what limits it to those TWO shapes. Two independent optional hyphens also
+     * accepted `-2025-1001` and `-202510-01`, which no vendor ships and which would have handed an id
+     * another model's notes and ranking (review round 5). Matching the separator against itself keeps the
+     * two documented spellings and refuses every mixture, without a second pattern to keep in step.
+     */
+    private val SNAPSHOT = Regex("-(\\d{4})(-?)(\\d{2})\\2(\\d{2})$")
 }

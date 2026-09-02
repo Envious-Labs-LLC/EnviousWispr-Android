@@ -103,10 +103,16 @@ object ModelListPresentation {
         }
         // Rated sorts: within each access group the rated ids first, ordered by their dots; unrated ids after.
         val sorted = when (sort) {
-            // The one badged row leads, because a recommendation nobody scrolls to is not one: measured on
-            // the founder's phone 2026-09-02, the pick sat fifth and the list opened with no badge in
-            // sight (#99). The rest keep discovery's order; the other three sorts each mean something
-            // specific and are left to say it.
+            // The one badged row leads the LIVE rows, because a recommendation nobody scrolls to is not
+            // one: measured on the founder's phone 2026-09-02, the pick sat fifth and the list opened
+            // with no badge in sight (#99). The rest keep discovery's order; the other three sorts each
+            // mean something specific and are left to say it.
+            //
+            // One row still comes above it, deliberately: the pinned notice added below when the SAVED
+            // model is missing from the refreshed catalogue. That row is not a suggestion, it is the news
+            // that the model this user is currently polishing with has gone, and they need to read that
+            // before being offered a replacement. `theRecommendedRowLeadsTheLiveRowsButNotTheStaleNotice`
+            // pins the order so it stays a decision rather than an accident of list concatenation.
             ModelSort.SUGGESTED -> filtered.sortedBy { if (it.id == pick) 0 else 1 }
             ModelSort.CHEAPEST -> filtered.sortedWith(compareBy({ ModelListRules.accessRank(it.access) }, { it.cost == null }, { it.cost ?: 0 }, { -(it.speed ?: 0) }))
             ModelSort.FASTEST -> filtered.sortedWith(compareBy({ ModelListRules.accessRank(it.access) }, { it.speed == null }, { -(it.speed ?: 0) }, { it.cost ?: 0 }))

@@ -120,6 +120,8 @@ class PolishLadderTest {
         // And it LEADS the suggested list. Measured on the founder's phone before this: the pick sat fifth
         // and the list opened with no badge on screen at all, which is a recommendation nobody finds.
         assertEquals("gemini-3.8-flash", rows.first().id)
+        // The badge is on a row the user can actually choose.
+        assertTrue(rows.first().selectable)
 
         // And the key starts on that same model, so the badge and the choice cannot disagree.
         assertEquals("gemini-3.8-flash", PolishLadder.defaultModel(Provider.GEMINI, founderGeminiCatalogue))
@@ -129,6 +131,32 @@ class PolishLadderTest {
      * Product Outcome. A key that returns none of the preferred ids must still get ONE recommendation
      * rather than none; a user on another tier or region is the case a pinned id cannot serve.
      */
+    /**
+     * Product Outcome. Exactly one row is allowed above the recommendation, and only when the user's SAVED
+     * model has vanished from the refreshed catalogue. That row is not a suggestion, it is the news that
+     * the model they are polishing with has gone, and it has to be read before a replacement is offered.
+     *
+     * Without this the ordering is whatever list concatenation happens to produce, which is how a
+     * deliberate choice becomes an accident nobody can see.
+     */
+    @Test fun theRecommendedRowLeadsTheLiveRowsButNotTheStaleNotice() {
+        val catalogue = listOf("gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-pro")
+            .map { model(it, ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended(it)) }
+
+        // Saved model still in the list: nothing is pinned, so the recommendation is first outright.
+        val present = ModelListPresentation.present(Provider.GEMINI, catalogue, "", ModelSort.SUGGESTED, "gemini-2.5-flash")
+        assertEquals("gemini-3.8-flash", present.first().id)
+
+        // Saved model gone from the catalogue: the notice leads, the recommendation is immediately under it.
+        val stale = ModelListPresentation.present(Provider.GEMINI, catalogue, "", ModelSort.SUGGESTED, "gemini-9-retired")
+        assertEquals("gemini-9-retired", stale[0].id)
+        assertTrue("the leading row is the current-model notice", stale[0].current)
+        assertEquals("gemini-3.8-flash", stale[1].id)
+        assertEquals("Recommended", stale[1].tag)
+        // And still exactly one badge, which the extra row must not have duplicated.
+        assertEquals(1, stale.count { it.tag == "Recommended" })
+    }
+
     @Test fun aCatalogueWithoutThePreferredModelStillRecommendsExactlyOne() {
         val noPreferred = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro")
             .map { model(it, ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended(it)) }

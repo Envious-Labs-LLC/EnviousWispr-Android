@@ -88,8 +88,15 @@ object PolishLadder {
      * falls back to the saved provider only while `configured` is true, so after the clear a user who
      * reached the connected row without ever tapping a tile has nothing displayed and rung 3 vanishes.
      *
-     * Null for a self-hosted removal, which is correct rather than a gap: `SELF_HOSTED_POLISH` is not in
-     * [CloudProviders] and has no tile to return to, so the row is left unselected on the Cloud rung.
+     * **It answers about the TILE, never about what was removed**, and those come apart at the self-hosted
+     * card: that card is drawn from `settings` alone, so it is still on screen after the user taps a cloud
+     * tile, and Remove on it can be pressed with Gemini open below. Keeping Gemini is the right answer
+     * there for the same reason the whole fix exists, that the tab must not lose the user's place; the
+     * self-hosted card simply disappears from above a key field they were already filling in.
+     *
+     * Null only when there is no cloud tile to keep, which is a stale or absent browse rather than a
+     * self-hosted removal. The caller assigns that null rather than skipping it, so a browse naming a
+     * provider no longer in [CloudProviders] is cleared instead of left behind.
      */
     fun browsedAfterRemove(displayed: Provider?): Provider? = displayed?.takeIf { it in CloudProviders }
 

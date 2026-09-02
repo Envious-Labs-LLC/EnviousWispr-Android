@@ -124,7 +124,7 @@ internal fun PolishScreen(
         // write too: nothing was cleared, so the mode is still PROVIDER and both values agree with it.
         if (kind == WriteKind.REMOVE) {
             cloudSetup = true
-            PolishLadder.browsedAfterRemove(displayed)?.let { browsedName = it.name }
+            browsedName = PolishLadder.browsedAfterRemove(displayed)?.name
         }
         writeError = null; errorKind = null
         targetKindName = kind.name

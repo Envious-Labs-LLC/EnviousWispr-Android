@@ -142,12 +142,30 @@ class PolishLadderTest {
         // And rung 3 is the empty field, not the connected row, because nothing is stored any more.
         assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.GEMINI, afterRemove, replacing = false))
 
-        // Self-hosted has no tile to return to, so the row is left unselected rather than pointing at a
-        // provider the user never chose. Null here is the answer, not a gap.
-        assertNull(PolishLadder.browsedAfterRemove(Provider.SELF_HOSTED_POLISH))
+        // Nothing browsed and nothing saved leaves nothing to keep, and the caller assigns that null so a
+        // stale browse is cleared rather than left behind.
         assertNull(PolishLadder.browsedAfterRemove(null))
+        assertNull(PolishLadder.browsedAfterRemove(Provider.SELF_HOSTED_POLISH))
         // Every cloud tile survives its own removal; the rule is not about Gemini.
         CloudProviders.forEach { assertEquals(it, PolishLadder.browsedAfterRemove(it)) }
+    }
+
+    /**
+     * Product Outcome. The self-hosted card is drawn from `settings` alone, so it stays on screen after the
+     * user taps a cloud tile: Remove on that card is reachable with Gemini's key field already open below
+     * it. The tab keeps Gemini, because losing the tile the user is standing on is the defect #94 exists to
+     * fix, and it does not matter that the thing removed was something else.
+     */
+    @Test fun removingSelfHostedKeepsTheCloudTileTheUserWasBrowsing() {
+        val browsingGeminiOverSelfHosted = ProviderSettingsUiState(
+            mode = PolishMode.PROVIDER,
+            provider = Provider.SELF_HOSTED_POLISH,
+            configured = true,
+        )
+        // The tile the user tapped wins over the saved provider, which is what puts the two out of step.
+        val displayed = PolishLadder.displayedProvider(Provider.GEMINI, browsingGeminiOverSelfHosted)
+        assertEquals(Provider.GEMINI, displayed)
+        assertEquals(Provider.GEMINI, PolishLadder.browsedAfterRemove(displayed))
     }
 
     @Test fun theS1LineIsExhaustiveOverHealth() {

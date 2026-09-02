@@ -251,6 +251,18 @@ class PolishLadderTest {
             .map { model(it, ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_700 * day) }
         assertEquals("gemini-3.8-flash", ModelListPresentation.recommendedPick(Provider.GEMINI, sameDay))
 
+        // A SHORTLISTED MODEL QUALIFIES EVEN OUTSIDE THE TIER WORDS, and this is live rather than
+        // hypothetical: measured 2026-09-02, the founder's key returns `gpt-5.6-luna`, OpenAI's cheap and
+        // fast model at that generation, whose name carries no tier word at all because OpenAI moved to
+        // codenames. A tier-only filter could never badge it, so the badge fell to an older mini.
+        val withLuna = listOf(
+            model("gpt-4.1-mini", ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_183 * day),
+            model("gpt-5.6-luna", ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended("gpt-5.6-luna"))
+                .copy(releasedAt = 20_600 * day),
+        )
+        assertFalse("luna carries no tier word", ModelListRules.isRecommended("gpt-5.6-luna"))
+        assertEquals("gpt-5.6-luna", ModelListPresentation.recommendedPick(Provider.OPENAI, withLuna))
+
         // A model with no date at all never beats one that has a date, however it sorts by id.
         val undated = listOf(
             model("gemini-aaa-flash", ModelAccess.AVAILABLE, recommended = true),

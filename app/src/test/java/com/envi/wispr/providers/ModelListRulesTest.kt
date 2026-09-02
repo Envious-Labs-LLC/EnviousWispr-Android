@@ -157,4 +157,33 @@ class ModelListRulesTest {
         assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 400))
         assertEquals(ProbeOutcome.Access(ModelAccess.UNVERIFIED), a(Provider.OPENAI, null, null))
     }
+    /**
+     * Product Outcome. The tier words classify an id we have NEVER SEEN, on a key we have never seen, so
+     * they are swept against what the three live keys actually return (measured 2026-09-02, regenerate with
+     * `scripts/model-id-shapes.py`). When this fails, a specialised model is offered as a good cleanup
+     * choice, or a genuinely cheap one is not.
+     */
+    @Test fun theTierWordsClassifyWhatTheLiveKeysActuallyReturn() {
+        // The small tier of each vendor, as their lists spell it today.
+        listOf("gpt-4.1-mini", "gpt-5.4-nano", "gemini-3.8-flash", "gemini-3.5-flash-lite",
+               "gemini-flash-lite-latest", "claude-haiku-4-5-20251001")
+            .forEach { assertTrue(it, ModelListRules.isRecommended(it)) }
+
+        // OpenAI's 5.6 generation dropped tier words for CODENAMES, which is why the badge no longer rests
+        // on this set: none of these can be classified here, and `luna` is the cheap one.
+        listOf("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
+            .forEach { assertFalse(it, ModelListRules.isRecommended(it)) }
+
+        // The big tiers, which must never be badged.
+        listOf("gpt-5.4-pro", "gpt-5.5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5",
+               "gemini-2.5-pro", "gemini-3.1-pro-preview")
+            .forEach { assertFalse(it, ModelListRules.isRecommended(it)) }
+
+        // Specialised variants that carry a tier word and would polish badly. `omni` is the one the
+        // 2026-09-02 sweep added: both omni models are flash-named and were being called good.
+        listOf("gemini-omni-1.1-flash", "gemini-omni-flash-preview", "gemini-2.5-flash-image",
+               "gemini-3.1-flash-tts-preview", "gpt-4o-mini-transcribe", "gpt-4o-mini-tts",
+               "gpt-4o-mini-search-preview", "gpt-5.1-codex-mini", "nano-banana-pro-preview")
+            .forEach { assertFalse(it, ModelListRules.isRecommended(it)) }
+    }
 }

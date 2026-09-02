@@ -48,17 +48,25 @@ object ModelListPresentation {
      * recommending nothing. Before this, `gemini-omni-1.1-flash` was badged while unverified.
      */
     fun recommendedPick(provider: Provider, models: List<DiscoveredModel>): String? {
-        // The class is `ModelListRules.isRecommended`, already carried on every row: the vendors' own
-        // small-and-fast tier words, `mini`, `nano`, `flash` and `haiku`, minus the disqualifiers. That is
-        // the founder's rule in his words — "what is the cheapest Flash model now" — and it is the one
-        // matcher here whose members a vendor publishes rather than us predicting them.
-        val candidates = models.filter { it.access == ModelAccess.AVAILABLE && it.recommended }
-        if (candidates.isEmpty()) return null
+        // WHAT MAY WEAR THE BADGE: the vendors' own small-and-fast tier, PLUS anything we shortlisted by
+        // name. `ModelListRules.isRecommended` carries the tier on every row from the words `mini`, `nano`,
+        // `flash` and `haiku` minus the disqualifiers, which is the founder's rule in his words — "what is
+        // the cheapest Flash model now" — and the one matcher here whose members a vendor publishes rather
+        // than us predicting them.
+        //
+        // The union is not optional. Those words are the tier NAMES of one generation, and OpenAI's newest
+        // cheap-and-fast model is `gpt-5.6-luna`, which contains none of them; on the tier filter alone it
+        // could never be badged even though it leads `ModelNotes.preferred(OPENAI)` (review round 6). A
+        // model we named by hand is one we already chose to offer, so naming it IS the qualification.
         val preferred = ModelNotes.preferred(provider)
         fun rank(id: String): Int {
             val index = preferred.indexOfFirst { it == id || it == ModelNotes.withoutSnapshot(id) }
             return if (index < 0) preferred.size else index
         }
+        val candidates = models.filter {
+            it.access == ModelAccess.AVAILABLE && (it.recommended || rank(it.id) < preferred.size)
+        }
+        if (candidates.isEmpty()) return null
         return candidates.minWithOrNull(
             compareBy(
                 // A MODEL WE HAVE A ROW FOR COMES FIRST, and this is a safety rule rather than a taste one

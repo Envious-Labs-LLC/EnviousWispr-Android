@@ -70,9 +70,37 @@ object ModelListRules {
      */
     private val openAiChatCompletionsOnly = setOf("o1-mini", "o1-preview")
 
-    private val recommendedTokens = setOf("mini", "nano", "flash", "haiku")
+    /**
+     * THE TIER WORDS, AND THIS IS NOW A FALLBACK RATHER THAN THE RULE.
+     *
+     * Ported from macOS `AIPolishModelClassifier`, whose own comment records a live validation against the
+     * OpenAI and Gemini APIs on **2026-05-04**. Re-validated here against all three of the founder's live
+     * keys on **2026-09-02** with `scripts/model-id-shapes.py`, and the four months had broken it.
+     *
+     * **What broke it is not a missing word, it is that OpenAI stopped using tier words.** Its small tier
+     * was `mini` and `nano` through the 4.x and 5.0 to 5.5 generations, and at 5.6 it became CODENAMES:
+     * `gpt-5.6-luna` is the cheap and fast one, `terra` the middle, `sol` the large. No token can classify
+     * those, and adding `luna` would only work until the next generation renames again.
+     *
+     * So the badge no longer rests on this set. `ModelListPresentation.recommendedPick` takes the tier
+     * words OR anything named in `ModelNotes.preferred`, and the curated catalogue is what carries a model
+     * we have actually vetted — including whether it is being retired, which no provider's list ever says.
+     * This set is what classifies an id we have never seen, on a key we have never seen.
+     *
+     * Re-validate on contact rather than on a schedule, and when a generation renames, the answer is a
+     * catalogue row, never a longer list of names here.
+     */
+    private val recommendedTokens = setOf("mini", "nano", "flash", "haiku", "lite")
+
+    /**
+     * Specialised variants that would polish badly. `omni` was added from the 2026-09-02 sweep:
+     * `gemini-omni-1.1-flash` and `gemini-omni-flash-preview` carry `flash` and were classified as good
+     * cleanup models. They answer a real polish request with HTTP 400, so the probe already refused them,
+     * but a classifier that is wrong and rescued downstream is still wrong.
+     */
     private val disqualifierTokens = setOf(
         "realtime", "audio", "native", "live", "tts", "image", "search", "transcribe", "banana", "codex",
+        "omni",
     )
 
     /** Keeps the rows that can polish text, deduplicated by id, each id valid for a polish request. */

@@ -11,6 +11,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelManifest
@@ -162,16 +164,25 @@ object PolishLadder {
     )
 
     /**
-     * S1-mini on the same 1-3 cost/speed/accuracy scale as the cloud model rows, so the two rungs are read
-     * against each other rather than each in its own units.
+     * S1-mini's row on the SAME hand-written 1-3 scale as every cloud model, so the two rungs are read
+     * against each other rather than each in its own units. Its sibling is `ModelNotes.CatalogModel`,
+     * whose own KDoc calls the whole set DECORATION: no dot anywhere in this app is a benchmark result,
+     * and a reader who believes this one is calibrated would believe the same of the thirty beside it.
      *
-     * Cost 1 is definitional: the model is free, and the scale's lowest bucket is the cheapest one it has.
-     * Speed 3 is measured: 0.65 s on a short take and 2.5 to 3.5 s on a long one, with no network round
-     * trip (`.claude/knowledge/polish-engines.md` FACT: residency-measured-2026-09-01).
-     * **Accuracy 2 is a founder judgement, not a measurement.** No head-to-head run against the cloud
-     * models exists; the reasoning is that S1-mini is trained for this one job and beats the 1 bucket the
-     * oldest general chat models sit in, while a model this small does not reach the 3 bucket. Replace the
-     * value if a comparison is ever run, and say here what it measured.
+     * Anchored where the cloud rows are anchored, and no further:
+     * - **Cost 1** on the same pricing axis `ModelNotes` uses. The model is free, which is below the
+     *   cheapest metered model on that list, so it belongs in the lowest bucket the scale has.
+     * - **Speed 3** is the one value here with a measurement behind it: 0.65 s on a short take, 2.5 to
+     *   3.5 s on a long one, and no network round trip
+     *   (`.claude/knowledge/polish-engines.md` FACT: residency-measured-2026-09-01).
+     * - **Accuracy 2 is an editorial judgement**, exactly as every cloud accuracy dot is. S1-mini is
+     *   trained for this one job, so it clears the bucket the oldest general chat models sit in, and it
+     *   is too small to reach the top. Replace it if a head-to-head is ever run, and say here what ran.
+     *
+     * `PolishLadderTest` asserts the RANGE across this row and every `ModelNotes` row, because a value
+     * outside 1-3 renders a meter that is all-empty or never-full. It does not freeze the values: a
+     * frozen constant asserts only that nobody edited it (`../rules/testing-philosophy.md`
+     * RULE: every-test-declares-which-of-four-things-it-protects).
      */
     internal val S1_SCORES: ModelScores = ModelScores(cost = 1, speed = 3, accuracy = 2)
 }
@@ -226,10 +237,21 @@ internal fun ProviderTile(provider: Provider, size: androidx.compose.ui.unit.Dp 
     }
 }
 
-/** Three dots, filled up to [value] on a 1-3 scale, read against the C/S/A legend. */
+/**
+ * Three dots, filled up to [value] on a 1-3 scale, read against the C/S/A legend.
+ *
+ * [label] is required rather than optional because the dots are undecorated boxes: without a description
+ * TalkBack reaches this meter and announces nothing at all, and the letter beside it is a separate node
+ * that says "C" without a value. Making the label a parameter means a new meter cannot be added silently
+ * mute, which is what the cloud rows were before this was moved down here.
+ */
 @Composable
-internal fun ScoreDots(value: Int) {
-    Column(verticalArrangement = Arrangement.spacedBy(3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+internal fun ScoreDots(label: String, value: Int) {
+    Column(
+        modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "$label, $value of 3" },
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         for (level in 3 downTo 1) {
             Box(
                 modifier = Modifier

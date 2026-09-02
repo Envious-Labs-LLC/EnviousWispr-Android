@@ -422,7 +422,7 @@ private fun ModelRung(
                         }
                     }
                     if (row.cost != null && row.speed != null && row.accuracy != null) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { ScoreDots(row.cost); ScoreDots(row.speed); ScoreDots(row.accuracy) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { ScoreDots("Cost", row.cost); ScoreDots("Speed", row.speed); ScoreDots("Accuracy", row.accuracy) }
                     }
                 }
             }

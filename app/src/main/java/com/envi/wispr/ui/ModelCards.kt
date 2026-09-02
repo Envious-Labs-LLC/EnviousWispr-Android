@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -157,12 +158,22 @@ internal fun formatModelBytes(bytes: Long): String = when {
     else -> "${bytes / 1_024L} KB"
 }
 
-/** One labelled meter, the same dots the cloud model rows use, so the legend is the word under it. */
+/**
+ * One labelled meter, the same dots the cloud model rows use, so the legend is the word under it.
+ *
+ * The visible word is cleared from the semantics tree because `ScoreDots` already announces "Cost, 1 of
+ * 3"; left alone the two nodes make TalkBack read the word twice.
+ */
 @Composable
 private fun ScoreColumn(label: String, value: Int) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        ScoreDots(value)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ScoreDots(label, value)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.clearAndSetSemantics {},
+        )
     }
 }
 

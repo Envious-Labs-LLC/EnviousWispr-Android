@@ -147,12 +147,21 @@ class PolishLadderTest {
         assertTrue(facts[1], facts[1].matches(Regex("""461[.,]8 MB""")))
     }
 
-    @Test fun theS1ScoresSitOnTheSameOneToThreeScaleAsTheCloudRows() {
-        val scores = PolishLadder.S1_SCORES
-        listOf(scores.cost, scores.speed, scores.accuracy).forEach { assertTrue(it in 1..3) }
-        assertEquals("free is the cheapest bucket the scale has", 1, scores.cost)
-        assertEquals("on-device, with no network round trip", 3, scores.speed)
-        assertEquals("a founder judgement recorded beside the value, not a measurement", 2, scores.accuracy)
+    /**
+     * Drift Guard, not product coverage. Every dot in this app is hand-written decoration, so no test can
+     * say a value is RIGHT. What it can say is that every value renders: `ScoreDots` fills levels 3 down
+     * to 1, so a 0 draws an empty meter and a 4 draws one that never fills, and both look like a working
+     * meter reporting something false. The sweep runs over the producer — the S1 row and every
+     * `ModelNotes` row together — rather than over the row this change happened to add.
+     */
+    @Test fun everyScoreInTheAppRendersAsAMeter() {
+        val rows = ModelNotes.all
+        assertTrue("an empty sweep is not a pass; the catalog had ${rows.size} rows", rows.size > 20)
+        val scores = rows.map { Triple(it.name, listOf(it.cost, it.speed, it.accuracy), "catalog") } +
+            listOf(Triple("S1-mini", with(PolishLadder.S1_SCORES) { listOf(cost, speed, accuracy) }, "on-phone"))
+        scores.forEach { (name, values, source) ->
+            values.forEach { assertTrue("$source row $name has $it, outside 1..3", it in 1..3) }
+        }
     }
 
     @Test fun writeOutcomeWaitsCompletesOrFails() {

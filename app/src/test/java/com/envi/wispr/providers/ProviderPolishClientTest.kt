@@ -887,6 +887,79 @@ class ProviderPolishClientTest {
     }
 
     /**
+     * Product Outcome, measured 2026-09-02 against live OpenAI and Gemini keys.
+     *
+     * A model that spent the whole probe cap reasoning gets ONE retry that asks it not to. `gpt-5-nano`
+     * burns the entire cap at 64, 128 and 256 tokens, so no cap alone reaches it, and it and `gpt-5-mini`
+     * are the two newest models the founder's key can reach (#103). Asked not to reason, both answer.
+     *
+     * **The retry may only improve a verdict.** The suppression is refused outright by models that cannot
+     * honour it — `reasoning.effort` by every OpenAI model that does not reason, `thinkingBudget: 0` by
+     * `gemini-2.5-pro` — so a retry that fails must leave the first answer standing. When this fails, a
+     * working model is either hidden or, worse, condemned by a request it never asked for.
+     */
+    @Test fun aModelThatSpentTheProbeCapThinkingIsAskedOnceMoreNotTo() {
+        val thinking = "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}"
+        val answered = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"Hello there\"}]}]}"
+        val silent = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"\"}]}]}"
+        val refusedParameter = "{\"error\":{\"message\":\"Unsupported parameter: 'reasoning.effort'\"}}"
+        // The retry is told apart from the first ask by the suppression it carries, exactly as the real
+        // provider sees it.
+        fun isRetry(body: String) = body.contains("\"reasoning\"")
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-reasoner", "gpt-stubborn", "gpt-plain", "gpt-mute", "gpt-denied")
+            else when (probedModel(request)) {
+                // Refused by its STATUS, and its empty body reads as inconclusive. The verdict is already
+                // made, so there is nothing a retry could add and none is spent.
+                "gpt-denied" -> 403 to "{}"
+
+                // Thinks on the first ask, answers when told not to.
+                "gpt-reasoner" -> if (isRetry(request.body)) 200 to answered else 200 to thinking
+                // Thinks on the first ask, and REFUSES the suppression. This is the shape that must not be
+                // turned into a refusal by the retry itself.
+                "gpt-stubborn" -> if (isRetry(request.body)) 400 to refusedParameter else 200 to thinking
+                // Finished and wrote nothing: refused on the first ask, and never retried.
+                "gpt-mute" -> 200 to silent
+                else -> 200 to answered
+            }
+        }).use { server ->
+            val models = (discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed)
+                .models.associate { it.id to it.access }
+            assertEquals(ModelAccess.AVAILABLE, models["gpt-reasoner"])
+            assertEquals(ModelAccess.UNVERIFIED, models["gpt-stubborn"])
+            assertEquals(ModelAccess.AVAILABLE, models["gpt-plain"])
+            assertEquals(ModelAccess.UNAVAILABLE, models["gpt-mute"])
+            assertEquals(ModelAccess.UNAVAILABLE, models["gpt-denied"])
+
+            // Only a model that told us nothing costs a second request; the other two are asked once.
+            val asks = server.requests.filter { it.path.startsWith("/probe") }.groupBy { probedModel(it) }
+            assertEquals(2, asks["gpt-reasoner"]?.size)
+            assertEquals(2, asks["gpt-stubborn"]?.size)
+            assertEquals(1, asks["gpt-plain"]?.size)
+            assertEquals(1, asks["gpt-mute"]?.size)
+            assertEquals(1, asks["gpt-denied"]?.size)
+            // The retry really does carry the suppression and more room, or it is the same ask twice.
+            val retry = asks["gpt-reasoner"]!!.single { isRetry(it.body) }.body
+            assertTrue(retry, retry.contains("\"effort\":\"minimal\""))
+            assertTrue(retry, retry.contains("\"max_output_tokens\":${ProviderPolishClient.PROBE_RETRY_OUTPUT_TOKENS}"))
+        }
+    }
+
+    /** Claude opts in to thinking and this request does not, so there is nothing to suppress and no retry. */
+    @Test fun claudeIsNeverAskedTwiceBecauseItWasNeverAskedToThink() {
+        val thinking = "{\"stop_reason\":\"max_tokens\",\"content\":[]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to "{\"data\":[{\"id\":\"claude-quiet\"}],\"has_more\":false}"
+            else 200 to thinking
+        }).use { server ->
+            val models = (discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed)
+                .models.associate { it.id to it.access }
+            assertEquals(ModelAccess.UNVERIFIED, models["claude-quiet"])
+            assertEquals(1, server.requests.count { it.path.startsWith("/probe") })
+        }
+    }
+
+    /**
      * Product Outcome. The probe budget stops at MAX_PROBES, so which models get checked decides which
      * ones the list can offer and which one wears the Recommended badge. Spending it in provider order
      * left the untested tail arbitrary: his key lists 69 OpenAI models and only 40 are probed.

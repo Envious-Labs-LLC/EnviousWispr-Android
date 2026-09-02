@@ -192,7 +192,7 @@ class ProviderPolishClient(
         if (cancellation.isCancelled) return ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
 
         val plan = try {
-            requestPlan(request)
+            requestPlan(request, probe = null)
         } catch (_: RuntimeException) {
             null
         } ?: return ProviderPolishResult.Failure(ProviderFailureKind.INVALID_CONFIGURATION)
@@ -461,22 +461,60 @@ class ProviderPolishClient(
         -> PolishFailure.BAD_REQUEST
     }
 
-    /** One probe: the polish request's own plan with the fixed word "Hi" and a tiny output cap. */
+    /** How a probe asks. The retry exists only because a reasoning model can spend the whole cap thinking. */
+    private enum class ProbeStyle {
+        /** The cheap first ask: the provider's own defaults and a tiny output cap. */
+        DEFAULT,
+
+        /** The one retry: ask the model not to reason, and leave room for the answer itself. */
+        NO_REASONING,
+    }
+
+    /** One attempt's verdict, with the reading that produced it so the caller can tell WHY it is unverified. */
+    private class ProbeAttempt(val outcome: ProbeOutcome, val reply: ModelListRules.ProbeReply?)
+
+    /**
+     * One probe: the polish request's own plan with the fixed word "Hi" and a tiny output cap, and ONE
+     * retry when that cap told us nothing.
+     *
+     * **The retry can only IMPROVE a verdict, never worsen one**, which is what makes it safe to send a
+     * request some models refuse outright. Both suppressions are rejected with HTTP 400 by models that
+     * cannot honour them — `reasoning.effort` on every OpenAI model that does not reason, `thinkingBudget:
+     * 0` on `gemini-2.5-pro` — and a 400 on the retry simply leaves the first answer standing.
+     *
+     * Why it is needed at all, measured 2026-09-02 against live keys: `gpt-5-nano` spends the ENTIRE output
+     * cap on reasoning at 64, 128 and 256 tokens, so no cap alone reaches it, and `gpt-5-mini` and
+     * `gpt-5-nano` are the two newest models the founder's key can reach (#103). Asked not to reason, both
+     * answer in about 30 tokens.
+     */
     private fun probe(provider: Provider, model: String, apiKey: String, remainingMs: Int): ProbeOutcome {
-        val plan = requestPlan(ProviderPolishRequest(provider, model, PROBE_TEXT, apiKey), probe = true)
+        val first = probeOnce(provider, model, apiKey, remainingMs, ProbeStyle.DEFAULT)
             ?: return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
-        if (remainingMs <= 0) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
+        // The retry is earned by the VERDICT, not by the reading. Gating on the reading alone spent a
+        // second request on every model whose STATUS had already decided it — a 403 carries an empty body,
+        // which reads as inconclusive while the model is plainly refused (caught by
+        // `discoveryListsFiltersProbesRecommendsAndSorts`, which counts probes).
+        val undecided = first.outcome is ProbeOutcome.Access &&
+            (first.outcome as ProbeOutcome.Access).access == ModelAccess.UNVERIFIED &&
+            first.reply == ModelListRules.ProbeReply.INCONCLUSIVE
+        if (!undecided) return first.outcome
+        val retry = probeOnce(provider, model, apiKey, remainingMs, ProbeStyle.NO_REASONING) ?: return first.outcome
+        return if (retry.reply == ModelListRules.ProbeReply.TEXT) retry.outcome else first.outcome
+    }
+
+    /** One request to one model. Null when this provider has no plan for this style, so there is nothing to ask. */
+    private fun probeOnce(provider: Provider, model: String, apiKey: String, remainingMs: Int, style: ProbeStyle): ProbeAttempt? {
+        val plan = requestPlan(ProviderPolishRequest(provider, model, PROBE_TEXT, apiKey), probe = style) ?: return null
+        if (remainingMs <= 0) return null
         val budget = remainingMs.coerceAtMost(probeTimeoutMs.coerceAtLeast(1))
         return when (val transport = run(plan, ProviderCancellation(), budget, connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, budget))) {
             // A transport failure has no body at all; the null status makes this UNVERIFIED before the
-            // reply is ever read.
-            is Transport.Failed -> ModelListRules.probeOutcome(provider, null, null, ModelListRules.ProbeReply.NO_TEXT)
-            is Transport.Response -> ModelListRules.probeOutcome(
-                provider,
-                transport.status,
-                transport.body,
-                probeReply(plan.responseFormat, transport.body),
-            )
+            // reply is ever read, and the null reading stops it earning a retry it cannot use.
+            is Transport.Failed -> ProbeAttempt(ModelListRules.probeOutcome(provider, null, null, ModelListRules.ProbeReply.NO_TEXT), null)
+            is Transport.Response -> {
+                val reply = probeReply(plan.responseFormat, transport.body)
+                ProbeAttempt(ModelListRules.probeOutcome(provider, transport.status, transport.body, reply), reply)
+            }
         }
     }
 
@@ -700,15 +738,25 @@ class ProviderPolishClient(
      * [probe] builds the discovery probe (#84): the same URL and headers, the fixed word "Hi" as the
      * only input, no system instruction, a tiny output cap, and `store:false` kept for OpenAI.
      */
-    private fun requestPlan(request: ProviderPolishRequest, probe: Boolean = false): RequestPlan? {
+    private fun requestPlan(request: ProviderPolishRequest, probe: ProbeStyle?): RequestPlan? {
         val override = endpointOverrides[request.provider]
         return when (request.provider) {
             Provider.OPENAI -> RequestPlan(
                 url = cloudOrOverride(override, OPENAI_URL),
                 headers = authHeaders(request.provider, request.apiKey.orEmpty()),
-                body = if (probe) {
+                body = if (probe != null) {
                     // The Responses API's smallest accepted cap is 16.
-                    "{\"model\":${jsonString(request.model)},\"input\":${jsonString(PROBE_TEXT)},\"max_output_tokens\":$OPENAI_PROBE_OUTPUT_TOKENS,\"store\":false}"
+                    val model = jsonString(request.model)
+                    when (probe) {
+                        ProbeStyle.DEFAULT ->
+                            "{\"model\":$model,\"input\":${jsonString(PROBE_TEXT)},\"max_output_tokens\":$OPENAI_PROBE_OUTPUT_TOKENS,\"store\":false}"
+                        // `reasoning.effort` is REJECTED with 400 by every model that does not reason
+                        // (measured 2026-09-02 on gpt-4.1-mini, gpt-4o-mini and gpt-3.5-turbo), which is
+                        // exactly why it is only ever sent on a retry that cannot make a verdict worse.
+                        ProbeStyle.NO_REASONING ->
+                            "{\"model\":$model,\"input\":${jsonString(PROBE_TEXT)},\"max_output_tokens\":$PROBE_RETRY_OUTPUT_TOKENS," +
+                                "\"reasoning\":{\"effort\":\"minimal\"},\"store\":false}"
+                    }
                 } else {
                     "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"input\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))},\"store\":false}"
                 },
@@ -722,8 +770,18 @@ class ProviderPolishClient(
                 RequestPlan(
                     url = base,
                     headers = authHeaders(request.provider, request.apiKey.orEmpty()),
-                    body = if (probe) {
-                        "{\"contents\":[{\"parts\":[{\"text\":${jsonString(PROBE_TEXT)}}]}],\"generationConfig\":{\"maxOutputTokens\":$PROBE_OUTPUT_TOKENS}}"
+                    body = if (probe != null) {
+                        val text = jsonString(PROBE_TEXT)
+                        when (probe) {
+                            ProbeStyle.DEFAULT ->
+                                "{\"contents\":[{\"parts\":[{\"text\":$text}]}],\"generationConfig\":{\"maxOutputTokens\":$PROBE_OUTPUT_TOKENS}}"
+                            // `thinkingBudget: 0` is REJECTED with 400 by a model that cannot stop thinking
+                            // ("Budget 0 is invalid. This model only works in thinking mode", measured
+                            // 2026-09-02 on gemini-2.5-pro), and frees the cap on one that can.
+                            ProbeStyle.NO_REASONING ->
+                                "{\"contents\":[{\"parts\":[{\"text\":$text}]}],\"generationConfig\":{\"maxOutputTokens\":$PROBE_RETRY_OUTPUT_TOKENS," +
+                                    "\"thinkingConfig\":{\"thinkingBudget\":0}}}"
+                        }
                     } else {
                         "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}]}"
                     },
@@ -733,7 +791,11 @@ class ProviderPolishClient(
             Provider.CLAUDE -> RequestPlan(
                 url = cloudOrOverride(override, CLAUDE_URL),
                 headers = authHeaders(request.provider, request.apiKey.orEmpty()),
-                body = if (probe) {
+                body = if (probe != null) {
+                    // Anthropic's extended thinking is OPT IN and this request does not opt in, so there is
+                    // nothing to suppress and no retry to make: measured 2026-09-02, both models the
+                    // founder's key reaches answer within a 5-token cap.
+                    if (probe == ProbeStyle.NO_REASONING) return null
                     "{\"model\":${jsonString(request.model)},\"max_tokens\":$PROBE_OUTPUT_TOKENS,\"messages\":[{\"role\":\"user\",\"content\":${jsonString(PROBE_TEXT)}}]}"
                 } else {
                     "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}"
@@ -741,7 +803,7 @@ class ProviderPolishClient(
                 responseFormat = ResponseFormat.CLAUDE,
             )
             Provider.SELF_HOSTED_POLISH -> {
-                if (probe) return null
+                if (probe != null) return null
                 val endpoint = request.endpoint ?: return null
                 val path = when (request.selfHostedProtocol) {
                     SelfHostedProtocol.OPENAI_COMPATIBLE -> "/v1/chat/completions"
@@ -1042,6 +1104,13 @@ class ProviderPolishClient(
         const val PROBE_TEXT = "Hi"
         const val PROBE_OUTPUT_TOKENS = 5
         const val OPENAI_PROBE_OUTPUT_TOKENS = 16
+
+        /**
+         * The retry's cap. Measured 2026-09-02: asked not to reason, `gpt-5-mini` answers "Hi" in 27 output
+         * tokens and `gpt-5-nano` in 28, so 16 is not enough room for the ANSWER even once the thinking is
+         * gone. Only models whose first probe told us nothing ever spend this.
+         */
+        const val PROBE_RETRY_OUTPUT_TOKENS = 64
         /** The Mac's retry policy (#4): two retries, 1 s then 3 s, all inside the one polish deadline. */
         const val MAX_RETRIES = 2
         val RETRY_DELAYS_MS: List<Long> = listOf(1_000L, 3_000L)

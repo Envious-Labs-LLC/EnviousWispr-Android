@@ -423,6 +423,11 @@ class ProviderPolishClient(
                     displayName = ModelListRules.displayName(provider, row.id, row.displayName),
                     access = access[row.id] ?: ModelAccess.UNVERIFIED,
                     recommended = ModelListRules.isRecommended(row.id),
+                    // The date the provider sent, carried through rather than re-derived. Dropping it here
+                    // left OpenAI and Claude in discovery order under a header reading "Newest first",
+                    // and the presentation tests could not see it because they injected dates straight
+                    // into DiscoveredModel and never ran this mapping (#101 review round 1).
+                    releasedAt = row.releasedAt,
                 )
             },
         )

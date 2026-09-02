@@ -589,6 +589,55 @@ class ProviderPolishClientTest {
         }
     }
 
+    /**
+     * Product Outcome. When this fails, OpenAI and Claude sit in discovery order under a header that says
+     * "Newest first" (#101).
+     *
+     * It runs the WHOLE path, request to DiscoveredModel, because the presentation tests could not catch
+     * the defect that made this necessary: they handed dates straight to the row builder, so a mapping
+     * that parsed the date and then dropped it was invisible to every one of them.
+     */
+    @Test fun theProvidersReleaseDateSurvivesAllTheWayIntoTheDiscoveredModel() {
+        // OpenAI sends unix SECONDS; everything downstream is millis.
+        val openAi = "{\"data\":[{\"id\":\"gpt-5.6-luna\",\"created\":1756771200},{\"id\":\"gpt-4.1-mini\"}]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAi else 200 to "{}"
+        }).use { server ->
+            val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
+            val luna = result.models.first { it.id == "gpt-5.6-luna" }
+            assertEquals(1756771200L * 1000L, luna.releasedAt)
+            // A row the provider dated nothing for stays null rather than being invented.
+            assertNull(result.models.first { it.id == "gpt-4.1-mini" }.releasedAt)
+        }
+
+        // Anthropic sends ISO 8601.
+        val claude = "{\"data\":[{\"id\":\"claude-haiku-4-5\",\"created_at\":\"2026-08-28T00:00:00Z\"}," +
+            "{\"id\":\"claude-sonnet-5\",\"created_at\":\"not-a-date\"}],\"has_more\":false}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to claude else 200 to "{}"
+        }).use { server ->
+            val result = discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed
+            assertEquals(
+                java.time.Instant.parse("2026-08-28T00:00:00Z").toEpochMilli(),
+                result.models.first { it.id == "claude-haiku-4-5" }.releasedAt,
+            )
+            // Unparseable is null, never a guess: a wrong date reorders the list and nobody can see why.
+            assertNull(result.models.first { it.id == "claude-sonnet-5" }.releasedAt)
+        }
+
+        // Gemini publishes no date at all, measured 2026-09-02, so every row arrives undated and the order
+        // comes from ui/ModelNotes instead. This is the control that makes the two assertions above mean
+        // something rather than passing by accident.
+        val gemini = "{\"models\":[{\"name\":\"models/gemini-3.8-flash\",\"displayName\":\"Gemini 3.8 Flash\"," +
+            "\"supportedGenerationMethods\":[\"generateContent\"]}]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to gemini else 200 to "{}"
+        }).use { server ->
+            val result = discoverer(server, Provider.GEMINI).discoverModels(Provider.GEMINI, "AIza") as ProviderDiscovery.Listed
+            assertNull(result.models.single().releasedAt)
+        }
+    }
+
     @Test fun claudeFollowsPaginationAndStopsOnARepeatedCursor() {
         val page1 = "{\"data\":[{\"id\":\"claude-sonnet-5\",\"display_name\":\"Claude Sonnet 5\"}],\"has_more\":true,\"last_id\":\"c1\"}"
         val page2 = "{\"data\":[{\"id\":\"claude-haiku-4-5\",\"display_name\":\"Claude Haiku 4.5\"}],\"has_more\":true,\"last_id\":\"c1\"}"

@@ -32,3 +32,14 @@ private fun unverifiedReason(failure: PolishFailure, providerName: String): Stri
     PolishFailure.LOCAL_NOT_READY,
     -> "an unexpected reply"
 }
+
+/**
+ * The line under the key field when Check (#84) did not list models: the same classification as Save's,
+ * without "Nothing was saved", because Check never tried to save.
+ */
+internal fun discoveryLine(verdict: ProviderKeyCheck, providerName: String): String? = when (verdict) {
+    ProviderKeyCheck.Accepted, ProviderKeyCheck.NotApplicable -> null
+    is ProviderKeyCheck.Rejected -> "$providerName rejected this key."
+    is ProviderKeyCheck.Denied -> "$providerName denied access for this key. Check your billing or API access."
+    is ProviderKeyCheck.Unverified -> "Couldn't check the key with $providerName: ${unverifiedReason(verdict.failure, providerName)}."
+}

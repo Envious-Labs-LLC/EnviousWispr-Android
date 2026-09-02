@@ -202,8 +202,12 @@ internal fun EnviousWisprApp(
     onDynamicColorChanged: (Boolean) -> Unit,
     onTurnPolishOn: () -> Unit,
     onSetPolishMode: (PolishMode) -> Unit,
-    onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol) -> Int,
+    onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol, Int?) -> Int,
     onClearProviderSettings: (ProviderWriteOrigin) -> Int,
+    providerDiscovery: ProviderDiscoveryUiState,
+    onCheckKey: (Provider, String?) -> Int,
+    onKeyDraftChanged: (Provider) -> Unit,
+    onLoadCachedModels: (Provider) -> Unit,
     onHistorySearchChange: (String) -> Unit,
     onKeepHistory: (TranscriptEntity) -> Unit,
     onDeleteHistory: (TranscriptEntity) -> Unit,
@@ -387,10 +391,14 @@ internal fun EnviousWisprApp(
                         is PolishSubpage.ProviderSetup -> ProviderSetupPage(
                             provider = page.provider,
                             settings = uiState.providerSettings,
-                            onSave = { provider, model, apiKey ->
-                                onSaveProviderSettings(provider, model, null, apiKey, SelfHostedProtocol.OPENAI_COMPATIBLE)
+                            discovery = providerDiscovery,
+                            onSave = { provider, model, apiKey, discoverySequence ->
+                                onSaveProviderSettings(provider, model, null, apiKey, SelfHostedProtocol.OPENAI_COMPATIBLE, discoverySequence)
                             },
                             onClear = { onClearProviderSettings(ProviderWriteOrigin.SETUP_PAGE) },
+                            onCheckKey = onCheckKey,
+                            onKeyDraftChanged = onKeyDraftChanged,
+                            onLoadCachedModels = onLoadCachedModels,
                             onDone = closePages,
                         )
                         PolishSubpage.LocalModel -> LocalModelPage(s1State = polishS1State, onRefreshReadiness = onRefreshReadiness)

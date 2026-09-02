@@ -20,6 +20,15 @@ import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderConfigurationRepository
 import com.envi.wispr.providers.ProviderKeyRefusedException
+import com.envi.wispr.providers.DiscoveredModel
+import com.envi.wispr.providers.ModelListCache
+import com.envi.wispr.providers.ModelListRules
+import com.envi.wispr.providers.ProviderDiscovery
+import com.envi.wispr.providers.ProviderKeyCheck
+import com.envi.wispr.providers.ProviderModelDiscoverer
+import com.envi.wispr.providers.ProviderPolishClient
+import com.envi.wispr.polish.PolishFailure
+import kotlinx.coroutines.flow.asStateFlow
 import com.envi.wispr.providers.SelfHostedProtocol
 import com.envi.wispr.providers.capabilities
 import com.envi.wispr.settings.AppPreferences
@@ -60,6 +69,21 @@ data class ProviderSettingsUiState(
 
 /** Which surface asked for a provider-settings write (#67). */
 enum class ProviderWriteOrigin { TAB, SETUP_PAGE }
+
+/** The setup page's live model list (#84): one provider at a time, one sequence, one phase. */
+data class ProviderDiscoveryUiState(
+    val provider: Provider? = null,
+    val sequence: Int = 0,
+    val phase: Phase = Phase.IDLE,
+    val models: List<DiscoveredModel> = emptyList(),
+    val fetchedAt: Long? = null,
+    val fromCache: Boolean = false,
+    /** True when the list describes the STORED credential (a cache read or a stored-key Check). */
+    val usedStoredKey: Boolean = false,
+    val line: String? = null,
+) {
+    enum class Phase { IDLE, CHECKING, LISTED, FAILED }
+}
 
 data class AppReadiness(
     val microphoneGranted: Boolean = false,
@@ -105,7 +129,21 @@ class EnviousWisprViewModel(
     private val providerRepository: ProviderConfigurationRepository,
     private val appContext: Context,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** The live model list (#84): the discoverer and the per-provider cache, both replaceable by a test. */
+    private val discoverer: ProviderModelDiscoverer = ProviderPolishClient(),
+    private val modelCache: ModelListCache = ModelListCache(appContext),
 ) : ViewModel() {
+    private val providerDiscoveryState = MutableStateFlow(ProviderDiscoveryUiState())
+    /** The setup page's live model list; separate from [uiState] because it is per page, not per app. */
+    val providerDiscovery: StateFlow<ProviderDiscoveryUiState> = providerDiscoveryState.asStateFlow()
+
+    // Discovery's own counters, allocated and compared on Main (never the write sequence, never the
+    // settings mutex): only the latest discovery per provider may touch the UI or the cache (#84).
+    private var nextDiscoverySequence = 0
+    private val latestDiscoveryByProvider = HashMap<Provider, Int>()
+    /** A draft-key result waits here per provider, under its sequence, until a Save carrying that sequence succeeds. */
+    private val draftResults = HashMap<Provider, Pair<Int, ProviderDiscovery.Listed>>()
+
     private val readiness = MutableStateFlow(AppReadiness())
     private val customTermSearch = MutableStateFlow("")
     private val customTermMessage = MutableStateFlow("")
@@ -395,21 +433,176 @@ class EnviousWisprViewModel(
         endpoint: String?,
         apiKey: String?,
         selfHostedProtocol: SelfHostedProtocol,
-    ): Int = updateProviderSettings(ProviderWriteOrigin.SETUP_PAGE) {
-        providerRepository.saveProvider(
-            provider = provider,
-            model = model.trim(),
-            endpoint = endpoint?.trim()?.takeIf(String::isNotEmpty),
-            apiKey = apiKey?.takeIf(String::isNotBlank),
-            selfHostedProtocol = selfHostedProtocol,
-        )
-        "${provider.capabilities().displayName} saved"
+        /** The Check the page ran on this same key draft, so its list can become the cache on success (#84). */
+        discoverySequence: Int? = null,
+    ): Int {
+        val suppliedKey = !apiKey.isNullOrBlank()
+        return updateProviderSettings(
+            ProviderWriteOrigin.SETUP_PAGE,
+            // Awaited BEFORE the completed write is published, so a page that pops and reopens reads the
+            // promoted or cleared cache, never the stale one.
+            afterWrite = { succeeded ->
+                when (ProviderDiscoveryApplyPolicy.afterSave(succeeded, suppliedKey, discoverySequence, draftResults[provider]?.first)) {
+                    ProviderDiscoveryApplyPolicy.CacheAction.PROMOTE -> {
+                        val listed = draftResults.remove(provider)?.second
+                        if (listed != null) {
+                            withContext(Dispatchers.IO) { modelCache.write(provider, ModelListCache.Entry(listed.fetchedAt, listed.models)) }
+                            if (providerDiscoveryState.value.provider == provider) {
+                                providerDiscoveryState.value = providerDiscoveryState.value.copy(usedStoredKey = true)
+                            }
+                        }
+                    }
+                    ProviderDiscoveryApplyPolicy.CacheAction.CLEAR -> {
+                        draftResults.remove(provider)
+                        withContext(Dispatchers.IO) { modelCache.clear(provider) }
+                        if (providerDiscoveryState.value.provider == provider) providerDiscoveryState.value = ProviderDiscoveryUiState(provider = provider)
+                    }
+                    ProviderDiscoveryApplyPolicy.CacheAction.NONE -> Unit
+                }
+            },
+        ) {
+            providerRepository.saveProvider(
+                provider = provider,
+                model = model.trim(),
+                endpoint = endpoint?.trim()?.takeIf(String::isNotEmpty),
+                apiKey = apiKey?.takeIf(String::isNotBlank),
+                selfHostedProtocol = selfHostedProtocol,
+            )
+            "${provider.capabilities().displayName} saved"
+        }
     }
 
     /** Remove, from the setup page or the self-hosted card. Returns the request sequence. */
-    fun clearProviderSettings(origin: ProviderWriteOrigin = ProviderWriteOrigin.SETUP_PAGE): Int = updateProviderSettings(origin) {
-        providerRepository.clearSelection()
-        "Provider removed"
+    fun clearProviderSettings(origin: ProviderWriteOrigin = ProviderWriteOrigin.SETUP_PAGE): Int {
+        // The provider is captured BEFORE the selection is cleared, so its cache can be cleared after (#84).
+        val removed = providerSettings.value.takeIf { it.configured }?.provider
+        return updateProviderSettings(
+            origin,
+            afterWrite = { succeeded ->
+                if (succeeded && removed != null) {
+                    draftResults.remove(removed)
+                    withContext(Dispatchers.IO) { modelCache.clear(removed) }
+                    if (providerDiscoveryState.value.provider == removed) providerDiscoveryState.value = ProviderDiscoveryUiState(provider = removed)
+                }
+            },
+        ) {
+            providerRepository.clearSelection()
+            "Provider removed"
+        }
+    }
+
+    /** The page's cached list on open (#84); never replaces a live result already showing for that provider. */
+    fun loadCachedModels(provider: Provider) {
+        // The page that opened is the active one from this moment; another provider's late completion
+        // can no longer touch the state (ProviderDiscoveryApplyPolicy.appliesToActivePage).
+        val current0 = providerDiscoveryState.value
+        if (current0.provider != provider) providerDiscoveryState.value = ProviderDiscoveryUiState(provider = provider)
+        viewModelScope.launch {
+            val entry = withContext(Dispatchers.IO) { modelCache.read(provider) }
+            val current = providerDiscoveryState.value
+            if (current.provider != provider || current.phase != ProviderDiscoveryUiState.Phase.IDLE) return@launch
+            providerDiscoveryState.value = if (entry == null) ProviderDiscoveryUiState(provider = provider) else ProviderDiscoveryUiState(
+                provider = provider,
+                phase = ProviderDiscoveryUiState.Phase.LISTED,
+                models = entry.models,
+                fetchedAt = entry.fetchedAt,
+                fromCache = true,
+                usedStoredKey = true,
+            )
+        }
+    }
+
+    /** The user edited the key: a draft result no longer describes the credential on the page (#84). */
+    fun keyDraftChanged(provider: Provider) {
+        draftResults.remove(provider)
+        val current = providerDiscoveryState.value
+        if (current.provider == provider && !current.usedStoredKey) providerDiscoveryState.value = ProviderDiscoveryUiState(provider = provider)
+    }
+
+    /**
+     * Check on the setup page (#84): the live list for [provider] with the draft key, else the stored one.
+     * Runs on IO outside the settings mutex; the completion applies only if this sequence is still the
+     * latest for the provider. @return the sequence, which the page hands back to Save.
+     */
+    fun discoverModels(provider: Provider, apiKeyDraft: String?): Int {
+        val sequence = ++nextDiscoverySequence
+        latestDiscoveryByProvider[provider] = sequence
+        // The draft is judged RAW first (a control character refuses, never trims away), then trimmed once,
+        // the same rule the repository applies on Save.
+        val draftInvalid = apiKeyDraft?.any(Char::isISOControl) == true
+        val draft = apiKeyDraft?.trim()?.takeIf(String::isNotEmpty)
+        val usingDraft = draft != null || draftInvalid
+        val previous = providerDiscoveryState.value.takeIf { it.provider == provider && !usingDraft }
+        providerDiscoveryState.value = ProviderDiscoveryUiState(
+            provider = provider,
+            sequence = sequence,
+            phase = ProviderDiscoveryUiState.Phase.CHECKING,
+            // A draft-key Check shows nothing of the saved credential while it runs.
+            models = previous?.models.orEmpty(),
+            fetchedAt = previous?.fetchedAt,
+            fromCache = previous?.fromCache == true,
+            usedStoredKey = previous?.usedStoredKey == true,
+        )
+        viewModelScope.launch {
+            val usedStoredKey = !usingDraft
+            val outcome = if (draftInvalid) {
+                ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
+            } else withContext(Dispatchers.IO) {
+                val key = draft ?: providerRepository.load()?.takeIf { it.provider == provider }?.apiKey
+                if (key.isNullOrBlank()) ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
+                else discoverer.discoverModels(provider, key)
+            }
+            val name = provider.capabilities().displayName
+            // The class of defect this closes: a completion judged on state read BEFORE a suspension. There
+            // are three suspensions in this coroutine (the discovery itself, the cache read for the merge,
+            // the cache write), and after EACH the completion re-asks both questions on the state as it is
+            // now: is this still the latest Check for the provider, and is its page still the active one.
+            fun appliesNow() = ProviderDiscoveryApplyPolicy.isLatest(sequence, latestDiscoveryByProvider[provider]) &&
+                ProviderDiscoveryApplyPolicy.appliesToActivePage(provider, providerDiscoveryState.value.provider)
+            when (outcome) {
+                is ProviderDiscovery.Listed -> {
+                    if (outcome.models.isEmpty()) {
+                        // A discovery hiccup, never a reason to drop what the cache holds.
+                        if (appliesNow()) providerDiscoveryState.value = providerDiscoveryState.value.copy(phase = ProviderDiscoveryUiState.Phase.LISTED, line = "No models this key can use for polish.")
+                        return@launch
+                    }
+                    // Only a stored-key discovery borrows the saved credential's cached access.
+                    val merged = if (ProviderDiscoveryApplyPolicy.mergesWithCache(usedStoredKey)) {
+                        val cached = withContext(Dispatchers.IO) { modelCache.read(provider)?.models.orEmpty() }
+                        ModelListRules.sort(ModelListRules.mergeAccess(outcome.models, cached))
+                    } else {
+                        ModelListRules.sort(outcome.models)
+                    }
+                    val listed = ProviderDiscovery.Listed(merged, outcome.fetchedAt)
+                    // A stored-key list is cached even if the user has moved on, but never over a newer
+                    // Check's result for the same provider.
+                    if (ProviderDiscoveryApplyPolicy.isLatest(sequence, latestDiscoveryByProvider[provider]) &&
+                        ProviderDiscoveryApplyPolicy.writesCacheNow(usedStoredKey, true)
+                    ) {
+                        withContext(Dispatchers.IO) { modelCache.write(provider, ModelListCache.Entry(listed.fetchedAt, listed.models)) }
+                    }
+                    if (!appliesNow()) return@launch
+                    if (!usedStoredKey) draftResults[provider] = sequence to listed
+                    providerDiscoveryState.value = ProviderDiscoveryUiState(
+                        provider = provider,
+                        sequence = sequence,
+                        phase = ProviderDiscoveryUiState.Phase.LISTED,
+                        models = merged,
+                        fetchedAt = listed.fetchedAt,
+                        fromCache = false,
+                        usedStoredKey = usedStoredKey,
+                    )
+                }
+                is ProviderDiscovery.Refused -> if (appliesNow()) {
+                    providerDiscoveryState.value = providerDiscoveryState.value.copy(
+                        sequence = sequence,
+                        phase = ProviderDiscoveryUiState.Phase.FAILED,
+                        line = discoveryLine(outcome.verdict, name) ?: "Couldn't check the key with $name.",
+                    )
+                }
+            }
+        }
+        return sequence
     }
 
     private fun refreshProviderSettings(
@@ -440,7 +633,12 @@ class EnviousWisprViewModel(
     /** Allocated before a write is enqueued, so a caller can wait for ITS write and not an older one (#67). */
     private var nextWriteSequence = 0
 
-    private fun updateProviderSettings(origin: ProviderWriteOrigin, operation: () -> String): Int {
+    private fun updateProviderSettings(
+        origin: ProviderWriteOrigin,
+        /** Awaited BEFORE the completed write is published, with whether it succeeded (#84 cache decisions). */
+        afterWrite: suspend (Boolean) -> Unit = {},
+        operation: () -> String,
+    ): Int {
         val sequence = ++nextWriteSequence
         providerSettings.value = providerSettings.value.copy(message = "", error = null)
         // Launching straight onto `Dispatchers.IO` would let two calls reach `withLock` in whichever
@@ -451,8 +649,10 @@ class EnviousWisprViewModel(
         // the lock moves to IO.
         viewModelScope.launch {
             providerSettingsMutex.withLock {
+                val outcome = withContext(Dispatchers.IO) { runCatching(operation) }
+                afterWrite(outcome.isSuccess)
                 withContext(Dispatchers.IO) {
-                    runCatching(operation).fold(
+                    outcome.fold(
                         onSuccess = { message -> refreshProviderSettings(message = message, sequence = sequence, origin = origin) },
                         // A refused key check (#61) names its verdict from the verdict and the provider,
                         // never from exception text; every other failure gets one calm sentence, because

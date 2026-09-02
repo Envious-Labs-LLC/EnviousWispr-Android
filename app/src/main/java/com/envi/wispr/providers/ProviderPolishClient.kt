@@ -1,6 +1,7 @@
 package com.envi.wispr.providers
 
 import com.envi.wispr.debug.DebugLogger
+import com.envi.wispr.polish.PolishFailure
 
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -150,7 +151,12 @@ class ProviderPolishClient(
     private val overallTimeoutMs: Int = DEFAULT_OVERALL_TIMEOUT_MS,
     /** Test-only endpoint overrides allow local HttpServer coverage without changing cloud origins. */
     private val endpointOverrides: Map<Provider, String> = emptyMap(),
-) {
+    /** Test-only overrides for the key-check (model-list) endpoints, the same shape as [endpointOverrides]. */
+    private val keyCheckOverrides: Map<Provider, String> = emptyMap(),
+    /** Where the content-free diagnostics go; a JVM test passes no-ops so android.util.Log is never touched. */
+    private val logInfo: (String) -> Unit = { DebugLogger.log(TAG, it) },
+    private val logWarn: (String) -> Unit = { DebugLogger.warn(TAG, it) },
+) : ProviderKeyChecker {
     fun polish(
         request: ProviderPolishRequest,
         cancellation: ProviderCancellation = ProviderCancellation(),
@@ -185,116 +191,213 @@ class ProviderPolishClient(
         if (effectiveConnectTimeoutMs <= 0 || effectiveReadTimeoutMs <= 0 || effectiveOverallTimeoutMs <= 0) {
             return ProviderPolishResult.Failure(ProviderFailureKind.INVALID_CONFIGURATION)
         }
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(effectiveOverallTimeoutMs.toLong())
+        return when (val transport = run(plan, cancellation, effectiveOverallTimeoutMs, effectiveConnectTimeoutMs, effectiveReadTimeoutMs)) {
+            is Transport.Failed -> ProviderPolishResult.Failure(transport.kind, transport.status)
+            is Transport.Response -> if (transport.status >= 400) {
+                // The error body is classified HERE into a closed signal and goes no further (#77).
+                ProviderPolishResult.Failure(
+                    ProviderFailureKind.HTTP_ERROR,
+                    transport.status,
+                    ProviderErrorSignal.classify(request.provider, transport.status, transport.body),
+                )
+            } else {
+                parseResponse(plan.responseFormat, transport.body)
+            }
+        }
+    }
+
+    /**
+     * Asks the provider's model-list endpoint whether [apiKey] works (#61): a GET with the same auth
+     * headers the polish request uses, no body, no user content. Every transport failure is a verdict
+     * of "unverified", never "rejected": only a status the provider actually sent can reject a key.
+     */
+    override fun check(provider: Provider, apiKey: String): ProviderKeyCheck {
+        val url = when (provider) {
+            Provider.OPENAI -> cloudOrOverride(keyCheckOverrides[provider], OPENAI_MODELS_URL)
+            Provider.GEMINI -> cloudOrOverride(keyCheckOverrides[provider], GEMINI_MODELS_URL)
+            Provider.CLAUDE -> cloudOrOverride(keyCheckOverrides[provider], CLAUDE_MODELS_URL)
+            Provider.SELF_HOSTED_POLISH -> return ProviderKeyCheck.NotApplicable
+        }
+        if (apiKey.isBlank() || apiKey.any(Char::isISOControl)) {
+            return ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST)
+        }
+        val plan = RequestPlan(url, authHeaders(provider, apiKey), body = null, responseFormat = ResponseFormat.NONE, method = "GET")
+        // The constructor's timeouts still apply (a test shortens them); the check never waits past macOS's 15 s.
+        val verdict = when (
+            val transport = run(
+                plan,
+                ProviderCancellation(),
+                overallTimeoutMs.coerceIn(1, KEY_CHECK_TIMEOUT_MS),
+                connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS),
+                readTimeoutMs.coerceIn(1, KEY_CHECK_TIMEOUT_MS),
+            )
+        ) {
+            is Transport.Failed -> ProviderKeyCheck.Unverified(
+                when (transport.kind) {
+                    ProviderFailureKind.NETWORK -> PolishFailure.UNREACHABLE
+                    ProviderFailureKind.TIMEOUT -> PolishFailure.TIMED_OUT
+                    ProviderFailureKind.NO_API_KEY,
+                    ProviderFailureKind.INVALID_CONFIGURATION,
+                    ProviderFailureKind.CANCELLED,
+                    ProviderFailureKind.HTTP_ERROR,
+                    ProviderFailureKind.MALFORMED_RESPONSE,
+                    ProviderFailureKind.RESPONSE_TOO_LARGE,
+                    ProviderFailureKind.REDIRECT_REJECTED,
+                    -> PolishFailure.BAD_REQUEST
+                },
+                transport.status,
+            )
+            is Transport.Response -> classifyKeyCheck(provider, transport.status, transport.body)
+        }
+        // Provider, status and verdict only: never the key, never the body.
+        logInfo("Key check: $provider status=${keyCheckStatus(verdict)} verdict=${verdict::class.simpleName}")
+        return verdict
+    }
+
+    private fun keyCheckStatus(verdict: ProviderKeyCheck): Int? = when (verdict) {
+        ProviderKeyCheck.Accepted -> 200
+        ProviderKeyCheck.NotApplicable -> null
+        is ProviderKeyCheck.Rejected -> verdict.status
+        is ProviderKeyCheck.Denied -> verdict.status
+        is ProviderKeyCheck.Unverified -> verdict.status
+    }
+
+    private fun classifyKeyCheck(provider: Provider, status: Int, body: String): ProviderKeyCheck = when {
+        status == 200 -> if (hasModelList(provider, body)) ProviderKeyCheck.Accepted else ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, status)
+        status in 201..299 -> ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, status)
+        status == 401 -> ProviderKeyCheck.Rejected(status)
+        // Gemini answers a wrong key on this endpoint with 403 (the macOS reference maps it the same way).
+        status == 403 -> if (provider == Provider.GEMINI) ProviderKeyCheck.Rejected(status) else ProviderKeyCheck.Denied(status)
+        status == 400 && ProviderErrorSignal.classify(provider, status, body) == ProviderErrorSignal.KEY_REJECTED -> ProviderKeyCheck.Rejected(status)
+        status == 429 -> ProviderKeyCheck.Unverified(if (provider == Provider.GEMINI) PolishFailure.RATE_OR_QUOTA else PolishFailure.RATE_LIMITED, status)
+        status in 500..599 -> ProviderKeyCheck.Unverified(PolishFailure.PROVIDER_ERROR, status)
+        status in 400..499 -> ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, status)
+        else -> ProviderKeyCheck.Unverified(PolishFailure.UNEXPECTED, status)
+    }
+
+    /** A 200 counts only when the body is the provider's own list envelope, so a captive portal cannot accept a key. */
+    private fun hasModelList(provider: Provider, body: String): Boolean {
+        val root = try {
+            JsonParser(body).parse()
+        } catch (_: IllegalArgumentException) {
+            return false
+        } catch (_: StackOverflowError) {
+            return false
+        }
+        val field = when (provider) {
+            Provider.OPENAI, Provider.CLAUDE -> "data"
+            Provider.GEMINI -> "models"
+            Provider.SELF_HOSTED_POLISH -> return false
+        }
+        return (root as? Map<*, *>)?.get(field) is List<*>
+    }
+
+    /** The executor, the overall deadline and the cancel hook, shared by the polish request and the key check. */
+    private fun run(
+        plan: RequestPlan,
+        cancellation: ProviderCancellation,
+        overallTimeoutMs: Int,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+    ): Transport {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(overallTimeoutMs.toLong())
         val activeConnection = ActiveConnection()
-        val future: Future<ProviderPolishResult> = REQUEST_EXECUTOR.submit<ProviderPolishResult> {
-            executeRequest(request.provider, plan, cancellation, deadline, activeConnection, effectiveConnectTimeoutMs, effectiveReadTimeoutMs)
+        val future: Future<Transport> = REQUEST_EXECUTOR.submit<Transport> {
+            executeRequest(plan, cancellation, deadline, activeConnection, connectTimeoutMs, readTimeoutMs)
         }
         val cancelRegistration = cancellation.onCancel {
             activeConnection.disconnect()
             future.cancel(true)
         }
         return try {
-            future.get(effectiveOverallTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            future.get(overallTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
             activeConnection.disconnect()
             future.cancel(true)
-            ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
+            Transport.Failed(ProviderFailureKind.TIMEOUT)
         } catch (_: CancellationException) {
-            if (cancellation.isCancelled) ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
-            else ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
+            if (cancellation.isCancelled) Transport.Failed(ProviderFailureKind.CANCELLED)
+            else Transport.Failed(ProviderFailureKind.TIMEOUT)
         } catch (_: InterruptedException) {
             activeConnection.disconnect()
             future.cancel(true)
             Thread.currentThread().interrupt()
-            ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
+            Transport.Failed(ProviderFailureKind.CANCELLED)
         } catch (failure: ExecutionException) {
-            DebugLogger.warn(TAG, "Cloud request failed: ${failure.cause?.javaClass?.simpleName ?: failure.javaClass.simpleName}")
-            if (cancellation.isCancelled) ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
-            else ProviderPolishResult.Failure(ProviderFailureKind.NETWORK)
+            logWarn("Cloud request failed: ${failure.cause?.javaClass?.simpleName ?: failure.javaClass.simpleName}")
+            if (cancellation.isCancelled) Transport.Failed(ProviderFailureKind.CANCELLED)
+            else Transport.Failed(ProviderFailureKind.NETWORK)
         } finally {
             cancelRegistration.close()
             activeConnection.disconnect()
         }
     }
 
+    /**
+     * One connection: the status the provider sent with its body, or the failure that stopped the read.
+     * A read failure on an error status keeps that status beside its kind, so a caller can never mistake
+     * an unread 401 for a verdict (#61).
+     */
     private fun executeRequest(
-        provider: Provider,
         plan: RequestPlan,
         cancellation: ProviderCancellation,
         deadline: Long,
         activeConnection: ActiveConnection,
         connectTimeoutMs: Int,
         readTimeoutMs: Int,
-    ): ProviderPolishResult {
+    ): Transport {
         var connection: HttpURLConnection? = null
+        // The status the provider already sent, kept beside any failure that follows it (#61).
+        var observedStatus: Int? = null
         return try {
             ensureActive(cancellation, deadline)
             val remainingMs = remainingMillis(deadline)
             if (remainingMs <= 0) {
-                ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
+                Transport.Failed(ProviderFailureKind.TIMEOUT)
             } else {
                 connection = (plan.url.toURL().openConnection() as? HttpURLConnection)
-                    ?: return ProviderPolishResult.Failure(ProviderFailureKind.NETWORK)
+                    ?: return Transport.Failed(ProviderFailureKind.NETWORK)
                 activeConnection.set(connection)
+                val body = plan.body?.toByteArray(StandardCharsets.UTF_8)
                 connection.apply {
                     instanceFollowRedirects = false
                     useCaches = false
-                    requestMethod = "POST"
-                    doOutput = true
+                    requestMethod = plan.method
+                    doOutput = body != null
                     connectTimeout = minTimeout(connectTimeoutMs, remainingMs)
                     readTimeout = minTimeout(readTimeoutMs, remainingMs)
-                    setRequestProperty("Content-Type", "application/json")
+                    if (body != null) setRequestProperty("Content-Type", "application/json")
                     plan.headers.forEach { (name, value) -> setRequestProperty(name, value) }
                 }
-                val body = plan.body.toByteArray(StandardCharsets.UTF_8)
-                if (body.size > MAX_REQUEST_BYTES) {
-                    ProviderPolishResult.Failure(ProviderFailureKind.INVALID_CONFIGURATION)
+                if (body != null && body.size > MAX_REQUEST_BYTES) {
+                    Transport.Failed(ProviderFailureKind.INVALID_CONFIGURATION)
                 } else {
-                    connection.outputStream.use { it.write(body) }
+                    if (body != null) connection.outputStream.use { it.write(body) }
                     ensureActive(cancellation, deadline)
-                    val status = connection.responseCode
+                    val status = connection.responseCode.also { observedStatus = it }
                     if (status in 300..399) {
-                        ProviderPolishResult.Failure(ProviderFailureKind.REDIRECT_REJECTED, status)
-                    } else if (status >= 400) {
-                        // The error body is read to completion and classified HERE into a closed signal;
-                        // a read failure keeps its own kind with the status (#77).
-                        when (val response = readResponse(connection, status, cancellation, deadline)) {
-                            is ResponseRead.Failure -> ProviderPolishResult.Failure(response.kind, status)
-                            is ResponseRead.Success -> ProviderPolishResult.Failure(
-                                ProviderFailureKind.HTTP_ERROR,
-                                status,
-                                ProviderErrorSignal.classify(provider, status, response.body),
-                            )
-                        }
+                        Transport.Failed(ProviderFailureKind.REDIRECT_REJECTED, status)
                     } else {
-                        val response = readResponse(connection, status, cancellation, deadline)
-                        if (response is ResponseRead.Failure) {
-                            ProviderPolishResult.Failure(response.kind, status)
-                        } else {
-                            parseResponse(plan.responseFormat, (response as ResponseRead.Success).body)
+                        when (val response = readResponse(connection, status, cancellation, deadline)) {
+                            is ResponseRead.Failure -> Transport.Failed(response.kind, status)
+                            is ResponseRead.Success -> Transport.Response(status, response.body)
                         }
                     }
                 }
             }
         } catch (_: ProviderCancelledException) {
-            ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
+            Transport.Failed(ProviderFailureKind.CANCELLED, observedStatus)
         } catch (_: ProviderTimedOutException) {
-            ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
+            Transport.Failed(ProviderFailureKind.TIMEOUT, observedStatus)
         } catch (_: SocketTimeoutException) {
-            if (cancellation.isCancelled) ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
-            else ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
+            Transport.Failed(if (cancellation.isCancelled) ProviderFailureKind.CANCELLED else ProviderFailureKind.TIMEOUT, observedStatus)
         } catch (failure: IOException) {
             // Shape only, never content: the exception class names the layer that refused (#77).
-            DebugLogger.warn(TAG, "Cloud request failed: ${failure.javaClass.simpleName}")
-            if (cancellation.isCancelled) ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
-            else if (System.nanoTime() >= deadline) ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
-            else ProviderPolishResult.Failure(ProviderFailureKind.NETWORK)
+            logWarn("Cloud request failed: ${failure.javaClass.simpleName}")
+            Transport.Failed(failureKindAfter(cancellation, deadline), observedStatus)
         } catch (failure: RuntimeException) {
-            DebugLogger.warn(TAG, "Cloud request failed: ${failure.javaClass.simpleName}")
-            if (cancellation.isCancelled) ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
-            else if (System.nanoTime() >= deadline) ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
-            else ProviderPolishResult.Failure(ProviderFailureKind.NETWORK)
+            logWarn("Cloud request failed: ${failure.javaClass.simpleName}")
+            Transport.Failed(failureKindAfter(cancellation, deadline), observedStatus)
         } finally {
             activeConnection.clear(connection)
             connection?.disconnect()
@@ -306,7 +409,7 @@ class ProviderPolishClient(
         return when (request.provider) {
             Provider.OPENAI -> RequestPlan(
                 url = cloudOrOverride(override, OPENAI_URL),
-                headers = mapOf("Authorization" to "Bearer ${request.apiKey}"),
+                headers = authHeaders(request.provider, request.apiKey.orEmpty()),
                 body = "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"input\":${jsonString(request.prompt)},\"store\":false}",
                 responseFormat = ResponseFormat.OPENAI_RESPONSES,
             )
@@ -314,17 +417,14 @@ class ProviderPolishClient(
                 val base = cloudOrOverride(override, GEMINI_URL_PREFIX + encodePath(request.model) + ":generateContent")
                 RequestPlan(
                     url = base,
-                    headers = mapOf("x-goog-api-key" to request.apiKey.orEmpty()),
+                    headers = authHeaders(request.provider, request.apiKey.orEmpty()),
                     body = "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(request.prompt)}}]}]}",
                     responseFormat = ResponseFormat.GEMINI,
                 )
             }
             Provider.CLAUDE -> RequestPlan(
                 url = cloudOrOverride(override, CLAUDE_URL),
-                headers = mapOf(
-                    "x-api-key" to request.apiKey.orEmpty(),
-                    "anthropic-version" to ANTHROPIC_VERSION,
-                ),
+                headers = authHeaders(request.provider, request.apiKey.orEmpty()),
                 body = "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}]}",
                 responseFormat = ResponseFormat.CLAUDE,
             )
@@ -337,7 +437,7 @@ class ProviderPolishClient(
                 val url = resolveSelfHostedEndpoint(endpoint, path) ?: return null
                 RequestPlan(
                     url = url,
-                    headers = if (request.apiKey.isNullOrEmpty()) emptyMap() else mapOf("Authorization" to "Bearer ${request.apiKey}"),
+                    headers = authHeaders(request.provider, request.apiKey.orEmpty()),
                     // Both protocols take the same chat body; only the path and the answer's shape differ.
                     body = "{\"model\":${jsonString(request.model)},\"messages\":[{\"role\":\"system\",\"content\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)}},{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}],\"stream\":false}",
                     responseFormat = when (request.selfHostedProtocol) {
@@ -347,6 +447,14 @@ class ProviderPolishClient(
                 )
             }
         }
+    }
+
+    /** The one place a cloud provider's auth header is spelled, for the polish request and the key check alike. */
+    private fun authHeaders(provider: Provider, apiKey: String): Map<String, String> = when (provider) {
+        Provider.OPENAI -> mapOf("Authorization" to "Bearer $apiKey")
+        Provider.GEMINI -> mapOf("x-goog-api-key" to apiKey)
+        Provider.CLAUDE -> mapOf("x-api-key" to apiKey, "anthropic-version" to ANTHROPIC_VERSION)
+        Provider.SELF_HOSTED_POLISH -> if (apiKey.isEmpty()) emptyMap() else mapOf("Authorization" to "Bearer $apiKey")
     }
 
     private fun resolveSelfHostedEndpoint(endpoint: String, suffix: String): URI? {
@@ -366,6 +474,12 @@ class ProviderPolishClient(
 
     private fun cloudOrOverride(override: String?, defaultUrl: String): URI {
         return URI(override ?: defaultUrl)
+    }
+
+    private fun failureKindAfter(cancellation: ProviderCancellation, deadline: Long): ProviderFailureKind = when {
+        cancellation.isCancelled -> ProviderFailureKind.CANCELLED
+        System.nanoTime() >= deadline -> ProviderFailureKind.TIMEOUT
+        else -> ProviderFailureKind.NETWORK
     }
 
     private fun readResponse(
@@ -413,6 +527,7 @@ class ProviderPolishClient(
             ResponseFormat.GEMINI -> root.firstTextAt("candidates", 0, "content", "parts")
             ResponseFormat.CLAUDE -> root.firstTextAt("content")
             ResponseFormat.OLLAMA -> root.stringAt("message", "content") ?: root.stringAt("response")
+            ResponseFormat.NONE -> null
         }?.substringAfterLast("</think>")?.trim()
         return if (text == null || text.isEmpty() || !ProviderPolishPrompt.isTranscriptOnly(text)) {
             ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
@@ -471,8 +586,10 @@ class ProviderPolishClient(
     private data class RequestPlan(
         val url: URI,
         val headers: Map<String, String>,
-        val body: String,
+        /** Null sends no body and no Content-Type: the key check's GET. */
+        val body: String?,
         val responseFormat: ResponseFormat,
+        val method: String = "POST",
     ) {
         override fun toString(): String =
             "RequestPlan(url=<redacted>, headers=<redacted>, body=<redacted>, responseFormat=$responseFormat)"
@@ -484,6 +601,14 @@ class ProviderPolishClient(
         GEMINI,
         CLAUDE,
         OLLAMA,
+        /** The key check: the body is judged by [hasModelList], never parsed for text. */
+        NONE,
+    }
+
+    /** What one connection produced, before any parsing: the provider's status with its body, or the failure that stopped the read. */
+    private sealed interface Transport {
+        data class Response(val status: Int, val body: String) : Transport
+        data class Failed(val kind: ProviderFailureKind, val status: Int? = null) : Transport
     }
 
     private sealed interface ResponseRead {
@@ -519,6 +644,12 @@ class ProviderPolishClient(
         const val GEMINI_URL_PREFIX = "https://generativelanguage.googleapis.com/v1beta/models/"
         const val CLAUDE_URL = "https://api.anthropic.com/v1/messages"
         const val ANTHROPIC_VERSION = "2023-06-01"
+        /** The key check's endpoints (#61): free model lists, no user content; the macOS reference uses the same three. */
+        const val OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
+        const val GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+        const val CLAUDE_MODELS_URL = "https://api.anthropic.com/v1/models"
+        /** macOS's discovery timeout; one phone reading is never a calibration, so the reference value is kept. */
+        const val KEY_CHECK_TIMEOUT_MS = 15_000
     }
 }
 

@@ -255,7 +255,7 @@ internal fun ProviderSetupPage(
                 colors = brandButtonColors(),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(if (saving) "Saving" else "Save provider")
+                Text(if (saving) "Checking key" else "Save provider")
             }
         }
     }

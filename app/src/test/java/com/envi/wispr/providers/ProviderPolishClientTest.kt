@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import com.envi.wispr.polish.PolishFailure
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
@@ -270,7 +271,9 @@ class ProviderPolishClientTest {
         val startedAt = System.nanoTime()
         val result = client(endpoint, connect = 2_000, read = 5_000, overall = 250).polish(request(endpoint))
         val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
-        assertEquals(ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT), result)
+        // The socket read timeout (bounded by the overall deadline) and the outer deadline race; whichever
+        // wins, the kind is TIMEOUT. Since #61 the inner path keeps the status it had already seen (200).
+        assertTrue("$result", result is ProviderPolishResult.Failure && result.kind == ProviderFailureKind.TIMEOUT && result.statusCode in setOf(null, 200))
         assertTrue("request exceeded strict overall timeout: ${elapsedMs}ms", elapsedMs < 800)
     }
 
@@ -319,6 +322,100 @@ class ProviderPolishClientTest {
         endpointOverrides = mapOf(provider to endpoint),
     )
 
+    // ---- Key check (#61): a GET to the model-list endpoint with the polish headers, judged by status and envelope.
+
+    private fun checker(base: String, provider: Provider, readTimeoutMs: Int = 2_000) = ProviderPolishClient(
+        connectTimeoutMs = 2_000,
+        readTimeoutMs = readTimeoutMs,
+        overallTimeoutMs = 5_000,
+        keyCheckOverrides = mapOf(provider to base),
+        logInfo = {},
+        logWarn = {},
+    )
+
+    @Test fun keyCheckSendsAGetWithNoBodyAndTheOpenAiBearer() {
+        var seen: TestRequest? = null
+        withServer("{\"data\":[]}", basePath = "/v1/models", inspect = { seen = it }) { base ->
+            assertEquals(ProviderKeyCheck.Accepted, checker(base, Provider.OPENAI).check(Provider.OPENAI, "sk-test"))
+        }
+        assertEquals("GET", seen!!.method)
+        assertEquals("/v1/models", seen!!.path)
+        assertEquals("Bearer sk-test", seen!!.headers["authorization"])
+        assertNull(seen!!.headers["content-type"])
+        assertEquals("", seen!!.body)
+    }
+
+    @Test fun keyCheckUsesTheGeminiAndClaudeHeaders() {
+        var gemini: TestRequest? = null
+        withServer("{\"models\":[{\"name\":\"models/x\"}]}", inspect = { gemini = it }) { base ->
+            assertEquals(ProviderKeyCheck.Accepted, checker(base, Provider.GEMINI).check(Provider.GEMINI, "AIza"))
+        }
+        assertEquals("AIza", gemini!!.headers["x-goog-api-key"])
+        var claude: TestRequest? = null
+        withServer("{\"data\":[]}", inspect = { claude = it }) { base ->
+            assertEquals(ProviderKeyCheck.Accepted, checker(base, Provider.CLAUDE).check(Provider.CLAUDE, "sk-ant"))
+        }
+        assertEquals("sk-ant", claude!!.headers["x-api-key"])
+        assertEquals("2023-06-01", claude!!.headers["anthropic-version"])
+    }
+
+    @Test fun keyCheckAcceptsOnlyTheProvidersListEnvelope() {
+        val badBodies = listOf("{}", "[]", "{\"data\":{}}", "{\"models\":[]}", "{", "\"data\"", "")
+        badBodies.forEach { body ->
+            withServer(body) { base ->
+                assertEquals(body, ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, 200), checker(base, Provider.OPENAI).check(Provider.OPENAI, "k"))
+            }
+        }
+        withServer("", status = 204) { base ->
+            assertEquals(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, 204), checker(base, Provider.OPENAI).check(Provider.OPENAI, "k"))
+        }
+        withServer("{\"data\":[]}") { base ->
+            assertEquals(ProviderKeyCheck.Accepted, checker(base, Provider.OPENAI).check(Provider.OPENAI, "k"))
+        }
+        val oversized = "{\"data\":[\"" + "x".repeat(512 * 1024 + 1024) + "\"]}"
+        withServer(oversized) { base ->
+            val verdict = checker(base, Provider.OPENAI).check(Provider.OPENAI, "k")
+            assertTrue("$verdict", verdict is ProviderKeyCheck.Unverified && verdict.failure == PolishFailure.BAD_REQUEST)
+        }
+    }
+
+    @Test fun keyCheckMapsEveryStatusRow() {
+        fun verdict(provider: Provider, status: Int, body: String = "{}"): ProviderKeyCheck {
+            var result: ProviderKeyCheck? = null
+            withServer(body, status = status) { base -> result = checker(base, provider).check(provider, "k") }
+            return result!!
+        }
+        assertEquals(ProviderKeyCheck.Rejected(401), verdict(Provider.OPENAI, 401))
+        assertEquals(ProviderKeyCheck.Denied(403), verdict(Provider.OPENAI, 403))
+        assertEquals(ProviderKeyCheck.Denied(403), verdict(Provider.CLAUDE, 403))
+        assertEquals(ProviderKeyCheck.Rejected(403), verdict(Provider.GEMINI, 403))
+        assertEquals(ProviderKeyCheck.Rejected(400), verdict(Provider.GEMINI, 400, "{\"error\":{\"status\":\"INVALID_ARGUMENT\",\"details\":[{\"reason\":\"API_KEY_INVALID\"}]}}"))
+        assertEquals(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, 400), verdict(Provider.OPENAI, 400))
+        assertEquals(ProviderKeyCheck.Unverified(PolishFailure.RATE_LIMITED, 429), verdict(Provider.OPENAI, 429))
+        assertEquals(ProviderKeyCheck.Unverified(PolishFailure.RATE_OR_QUOTA, 429), verdict(Provider.GEMINI, 429))
+        assertEquals(ProviderKeyCheck.Unverified(PolishFailure.PROVIDER_ERROR, 503), verdict(Provider.CLAUDE, 503))
+        assertEquals(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, 418), verdict(Provider.OPENAI, 418))
+        assertEquals(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, 302), verdict(Provider.OPENAI, 302))
+    }
+
+    @Test fun keyCheckNeverRejectsOnATransportFailure() {
+        // A 401 whose body stalls past the read timeout is a timeout, not a verdict on the key.
+        withServer("x".repeat(64), status = 401, chunkDelayMs = 3_000) { base ->
+            assertEquals(ProviderKeyCheck.Unverified(PolishFailure.TIMED_OUT, 401), checker(base, Provider.OPENAI, readTimeoutMs = 300).check(Provider.OPENAI, "k"))
+        }
+        // A server that accepts and hangs up before any status line is unreachable.
+        withServer("", closeBeforeStatus = true) { base ->
+            assertEquals(ProviderKeyCheck.Unverified(PolishFailure.UNREACHABLE, null), checker(base, Provider.OPENAI).check(Provider.OPENAI, "k"))
+        }
+    }
+
+    @Test fun keyCheckAsksNothingForSelfHostedOrAnUnusableKey() {
+        val client = ProviderPolishClient(keyCheckOverrides = mapOf(Provider.OPENAI to "http://127.0.0.1:1/never"), logInfo = {}, logWarn = {})
+        assertEquals(ProviderKeyCheck.NotApplicable, client.check(Provider.SELF_HOSTED_POLISH, "anything"))
+        assertEquals(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, null), client.check(Provider.OPENAI, ""))
+        assertEquals(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, null), client.check(Provider.OPENAI, "k\u0007"))
+    }
+
     private fun withServer(
         response: String,
         status: Int = 200,
@@ -326,10 +423,12 @@ class ProviderPolishClientTest {
         basePath: String = "",
         beforeResponse: CountDownLatch? = null,
         chunkDelayMs: Long = 0,
+        /** Read the request, then close without a status line: the shape of a dead upstream (#61). */
+        closeBeforeStatus: Boolean = false,
         inspect: (TestRequest) -> Unit = {},
         block: (String) -> Unit,
     ) {
-        val server = TestServer(status, response, headers, beforeResponse, chunkDelayMs, inspect)
+        val server = TestServer(status, response, headers, beforeResponse, chunkDelayMs, inspect, closeBeforeStatus)
         try {
             block("http://127.0.0.1:${server.port}$basePath")
         } finally {
@@ -351,6 +450,7 @@ class ProviderPolishClientTest {
         private val beforeResponse: CountDownLatch?,
         private val chunkDelayMs: Long,
         private val inspect: (TestRequest) -> Unit,
+        private val closeBeforeStatus: Boolean = false,
     ) : AutoCloseable {
         private val socket = ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())
         private val executor = Executors.newSingleThreadExecutor()
@@ -359,7 +459,8 @@ class ProviderPolishClientTest {
         init {
             executor.submit {
                 try {
-                    socket.accept().use { connection ->
+                    // The JDK client retries once on an EOF before the status line; hang up on the retry too.
+                    repeat(if (closeBeforeStatus) 3 else 1) { socket.accept().use { connection ->
                         val reader = BufferedReader(InputStreamReader(connection.getInputStream(), StandardCharsets.ISO_8859_1))
                         val requestLine = reader.readLine() ?: return@use
                         val parts = requestLine.split(' ', limit = 3)
@@ -380,6 +481,7 @@ class ProviderPolishClientTest {
                             read += count
                         }
                         inspect(TestRequest(parts[0], parts.getOrElse(1) { "" }, headers, String(body, 0, read)))
+                        if (closeBeforeStatus) return@use
                         beforeResponse?.countDown()
                         val bytes = response.toByteArray(StandardCharsets.UTF_8)
                         val writer = PrintWriter(OutputStreamWriter(connection.getOutputStream(), StandardCharsets.ISO_8859_1))
@@ -398,7 +500,7 @@ class ProviderPolishClientTest {
                             connection.getOutputStream().write(bytes)
                         }
                         connection.getOutputStream().flush()
-                    }
+                    } }
                 } catch (_: Exception) {
                     // The client may disconnect intentionally during cancellation tests.
                 }

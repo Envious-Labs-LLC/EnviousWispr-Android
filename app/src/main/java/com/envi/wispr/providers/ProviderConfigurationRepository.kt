@@ -19,14 +19,18 @@ enum class PolishMode {
 class ProviderConfigurationRepository internal constructor(
     private val preferences: SharedPreferences,
     private val secrets: SecretStore,
+    /** Asked before any cloud key is written (#61); the production checker is the cloud client itself. */
+    private val keyCheck: ProviderKeyChecker,
 ) {
-    /** Production: the app's own preference file and the Keystore-backed store. */
+    /** Production: the app's own preference file, the Keystore-backed store and the live key check. */
     constructor(
         context: Context,
         secrets: SecretStore = AndroidKeystoreSecretStore(context.applicationContext),
+        keyCheck: ProviderKeyChecker = ProviderPolishClient(),
     ) : this(
         context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE),
         secrets,
+        keyCheck,
     )
 
     /**
@@ -93,15 +97,33 @@ class ProviderConfigurationRepository internal constructor(
         require(model.isNotBlank() && model.length <= MAX_MODEL_CHARS && model.none(Char::isISOControl)) {
             "invalid provider model"
         }
-        // A blank key means "keep the existing encrypted key" when editing model/endpoint.
-        // Read it only for validation and runtime selection; it never enters preferences or UI.
-        val effectiveApiKey = apiKey?.takeIf(String::isNotBlank)
-            ?: runCatching { secrets.get(provider) }.getOrNull()
+        // A supplied key is judged on its RAW value first (control characters are a refusal, never
+        // trimmed away), then trimmed ONCE; that trimmed value is what gets checked and stored. A blank
+        // key means "keep the existing encrypted key" when editing model/endpoint, and a stored key is
+        // never re-normalised. The key is read only for validation, the check and runtime selection; it
+        // never enters preferences or UI.
+        require(apiKey?.any(Char::isISOControl) != true) { "invalid provider configuration" }
+        val suppliedKey = apiKey?.trim()?.takeIf(String::isNotEmpty)
+        val effectiveApiKey = suppliedKey ?: runCatching { secrets.get(provider) }.getOrNull()
         require(
             ProviderConfigurationValidator.validate(ProviderConfiguration(provider, endpoint), effectiveApiKey)
                 is ValidationResult.Valid,
         ) { "invalid provider configuration" }
-        if (!apiKey.isNullOrBlank()) secrets.put(provider, apiKey)
+        // The live check (#61) runs before the first write, so nothing is stored unless the provider
+        // accepted the key. Self-hosted takes no key and is never asked.
+        if (provider.capabilities().requiresApiKey) {
+            // Only an explicit Accepted writes; NotApplicable is a self-hosted answer and, for a provider
+            // that needs a key, a checker fault, so it refuses like every other non-acceptance.
+            when (val verdict = keyCheck.check(provider, effectiveApiKey.orEmpty())) {
+                ProviderKeyCheck.Accepted -> Unit
+                ProviderKeyCheck.NotApplicable,
+                is ProviderKeyCheck.Rejected,
+                is ProviderKeyCheck.Denied,
+                is ProviderKeyCheck.Unverified,
+                -> throw ProviderKeyRefusedException(provider, verdict)
+            }
+        }
+        if (suppliedKey != null) secrets.put(provider, suppliedKey)
         val values = preferences.edit()
             .putString(KEY_MODE, PolishMode.PROVIDER.name)
             .putString(KEY_LAST_ON_MODE, PolishMode.PROVIDER.name)

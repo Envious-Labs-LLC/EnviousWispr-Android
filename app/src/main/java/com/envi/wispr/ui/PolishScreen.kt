@@ -118,6 +118,14 @@ internal fun PolishScreen(
     // never replace the completion an earlier target is waiting on.
     fun start(kind: WriteKind, write: () -> Int) {
         if (target != null) return
+        // A remove keeps the user where they were standing; the rule and the reason are on
+        // PolishLadder.browsedAfterRemove. Pinned at START rather than on completion, because by the time
+        // the write lands the settings no longer name the provider that was removed. Safe on a FAILED
+        // write too: nothing was cleared, so the mode is still PROVIDER and both values agree with it.
+        if (kind == WriteKind.REMOVE) {
+            cloudSetup = true
+            PolishLadder.browsedAfterRemove(displayed)?.let { browsedName = it.name }
+        }
         writeError = null; errorKind = null
         targetKindName = kind.name
         target = write()

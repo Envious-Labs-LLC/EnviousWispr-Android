@@ -119,6 +119,37 @@ class PolishLadderTest {
         assertTrue("and it fires once that write completes", PolishLadder.saveAtAccept(listed, Provider.OPENAI, 2, false, null, writePending = false))
     }
 
+    /**
+     * Product Outcome. When this fails, the user removes a key and the tab throws them out of the Cloud
+     * rung onto This phone instead of offering an empty key field (#94).
+     *
+     * The two pure decisions are asserted here. The one line a unit test cannot reach is the wiring in
+     * `PolishScreen.start`, which is what sets `cloudSetup` when a remove begins; this asserts what that
+     * flag must then produce, so a change to either rule goes red.
+     */
+    @Test fun removingAKeyStaysInCloudSetupOnTheSameTile() {
+        // The state a remove leaves behind: the repository has reset the mode and dropped the selection.
+        val afterRemove = ProviderSettingsUiState(mode = PolishMode.OFFLINE_S1, configured = false)
+
+        // Without the flag the tab follows the mode out of the rung. This IS the reported bug.
+        assertEquals(RungOne.THIS_PHONE, PolishLadder.rungOne(afterRemove.mode, cloudSetup = false))
+        // With it, the tab holds its place.
+        assertEquals(RungOne.CLOUD, PolishLadder.rungOne(afterRemove.mode, cloudSetup = true))
+
+        // The tile stays selected, so rung 3 still has a subject.
+        assertEquals(Provider.GEMINI, PolishLadder.browsedAfterRemove(Provider.GEMINI))
+        assertEquals(Provider.GEMINI, PolishLadder.displayedProvider(Provider.GEMINI, afterRemove))
+        // And rung 3 is the empty field, not the connected row, because nothing is stored any more.
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.GEMINI, afterRemove, replacing = false))
+
+        // Self-hosted has no tile to return to, so the row is left unselected rather than pointing at a
+        // provider the user never chose. Null here is the answer, not a gap.
+        assertNull(PolishLadder.browsedAfterRemove(Provider.SELF_HOSTED_POLISH))
+        assertNull(PolishLadder.browsedAfterRemove(null))
+        // Every cloud tile survives its own removal; the rule is not about Gemini.
+        CloudProviders.forEach { assertEquals(it, PolishLadder.browsedAfterRemove(it)) }
+    }
+
     @Test fun theS1LineIsExhaustiveOverHealth() {
         fun state(health: ModelHealth, action: ModelUiAction) = ModelUiState("x", health, 0L, 0L, null, action)
         assertNull("a ready model is described by its facts row, not by a sentence repeating it", PolishLadder.s1Line(state(ModelHealth.READY, ModelUiAction.REMOVE)))

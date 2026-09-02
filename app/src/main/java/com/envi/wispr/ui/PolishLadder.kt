@@ -75,6 +75,24 @@ object PolishLadder {
     fun displayedProvider(browsed: Provider?, settings: ProviderSettingsUiState): Provider? =
         browsed ?: settings.provider.takeIf { settings.configured && it in CloudProviders }
 
+    /**
+     * The tile to keep showing when a remove starts (#94).
+     *
+     * **Removing a key is a step BACK inside cloud setup, never a departure from it.**
+     * `ProviderConfigurationRepository.clearSelection` resets the mode to `OFFLINE_S1` along with the key,
+     * and that write is right: cloud polish cannot run without a key, so leaving the mode at `PROVIDER`
+     * would make every later dictation attempt a provider that cannot answer. What was wrong is that the
+     * SCREEN followed the write out of the rung the user was standing in (founder report 2026-09-02).
+     *
+     * Two things have to be pinned for the tab to hold its place, and this is the second: `displayedProvider`
+     * falls back to the saved provider only while `configured` is true, so after the clear a user who
+     * reached the connected row without ever tapping a tile has nothing displayed and rung 3 vanishes.
+     *
+     * Null for a self-hosted removal, which is correct rather than a gap: `SELF_HOSTED_POLISH` is not in
+     * [CloudProviders] and has no tile to return to, so the row is left unselected on the Cloud rung.
+     */
+    fun browsedAfterRemove(displayed: Provider?): Provider? = displayed?.takeIf { it in CloudProviders }
+
     /** Connected only when the DISPLAYED provider is the saved one and its key is in the Keystore. */
     fun keyRung(displayed: Provider, settings: ProviderSettingsUiState, replacing: Boolean): KeyRung = when {
         replacing -> KeyRung.FIELD

@@ -159,11 +159,19 @@ class ProviderPolishClient(
     /** The live model list's bounds (#84); a test shortens them. */
     private val discoveryTimeoutMs: Int = DISCOVERY_TIMEOUT_MS,
     private val probeTimeoutMs: Int = PROBE_TIMEOUT_MS,
+    /** The retry policy's bounds (#4), the Mac's two retries at 1 s then 3 s; a test shortens or disables them. */
+    private val retryDelaysMs: List<Long> = RETRY_DELAYS_MS,
+    private val maxRetries: Int = MAX_RETRIES,
 ) : ProviderKeyChecker, ProviderModelDiscoverer {
     fun polish(
         request: ProviderPolishRequest,
         cancellation: ProviderCancellation = ProviderCancellation(),
     ): ProviderPolishResult {
+        // ONE deadline from entry: validation, prompt assembly, sizing, every delay and every attempt
+        // consume it. Capped at the client's default, which the session watchdog documents as its margin.
+        val budgetMs = overallTimeoutMs.coerceAtMost(DEFAULT_OVERALL_TIMEOUT_MS)
+        if (budgetMs <= 0) return ProviderPolishResult.Failure(ProviderFailureKind.INVALID_CONFIGURATION)
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(budgetMs.toLong())
         if (request.model.isBlank() || request.model.length > MAX_MODEL_CHARS || request.model.any(Char::isISOControl)) {
             return ProviderPolishResult.Failure(ProviderFailureKind.INVALID_CONFIGURATION)
         }
@@ -188,25 +196,73 @@ class ProviderPolishClient(
         } catch (_: RuntimeException) {
             null
         } ?: return ProviderPolishResult.Failure(ProviderFailureKind.INVALID_CONFIGURATION)
-        val effectiveConnectTimeoutMs = connectTimeoutMs.coerceAtMost(MAX_CONNECT_TIMEOUT_MS)
-        val effectiveReadTimeoutMs = readTimeoutMs.coerceAtMost(MAX_READ_TIMEOUT_MS)
-        val effectiveOverallTimeoutMs = overallTimeoutMs.coerceAtMost(MAX_OVERALL_TIMEOUT_MS)
-        if (effectiveConnectTimeoutMs <= 0 || effectiveReadTimeoutMs <= 0 || effectiveOverallTimeoutMs <= 0) {
+        // The assembled body is judged BEFORE the first attempt: the fixed prompt lowers the largest
+        // transcript that fits, and a body over the cap must never cost a network round trip (#4).
+        if ((plan.body?.toByteArray(StandardCharsets.UTF_8)?.size ?: 0) > MAX_REQUEST_BYTES) {
             return ProviderPolishResult.Failure(ProviderFailureKind.INVALID_CONFIGURATION)
         }
-        return when (val transport = run(plan, cancellation, effectiveOverallTimeoutMs, effectiveConnectTimeoutMs, effectiveReadTimeoutMs)) {
-            is Transport.Failed -> ProviderPolishResult.Failure(transport.kind, transport.status)
-            is Transport.Response -> if (transport.status >= 400) {
-                // The error body is classified HERE into a closed signal and goes no further (#77).
-                ProviderPolishResult.Failure(
-                    ProviderFailureKind.HTTP_ERROR,
-                    transport.status,
-                    ProviderErrorSignal.classify(request.provider, transport.status, transport.body),
-                )
-            } else {
-                parseResponse(plan.responseFormat, transport.body)
-            }
+        val effectiveConnectTimeoutMs = connectTimeoutMs.coerceAtMost(MAX_CONNECT_TIMEOUT_MS)
+        val effectiveReadTimeoutMs = readTimeoutMs.coerceAtMost(MAX_READ_TIMEOUT_MS)
+        if (effectiveConnectTimeoutMs <= 0 || effectiveReadTimeoutMs <= 0) {
+            return ProviderPolishResult.Failure(ProviderFailureKind.INVALID_CONFIGURATION)
         }
+        var attempt = 0
+        while (true) {
+            // Cancellation always wins, before and after an attempt, ahead of the deadline and the verdict.
+            if (cancellation.isCancelled) return ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
+            val remaining = remainingMillis(deadline)
+            if (remaining <= 0) return ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
+            val result = attemptOnce(request.provider, plan, cancellation, remaining, effectiveConnectTimeoutMs, effectiveReadTimeoutMs)
+            if (cancellation.isCancelled) return ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
+            if (result !is ProviderPolishResult.Failure) return result
+            if (attempt >= maxRetries || retryDelaysMs.isEmpty() || !ProviderRetryPolicy.isRetryable(result, request.provider)) return result
+            val delay = retryDelaysMs[minOf(attempt, retryDelaysMs.size - 1)].coerceAtLeast(0L)
+            if (remainingMillis(deadline) - delay <= 0) return result
+            logWarn("Cloud retry ${attempt + 1}/$maxRetries after ${delay}ms (kind=${result.kind} status=${result.statusCode})")
+            if (!delayUnlessCancelled(cancellation, delay)) return ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
+            attempt++
+        }
+    }
+
+    /** One physical attempt: the transport result classified as the polish request's outcome. */
+    private fun attemptOnce(
+        provider: Provider,
+        plan: RequestPlan,
+        cancellation: ProviderCancellation,
+        overallTimeoutMs: Int,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+    ): ProviderPolishResult = when (val transport = run(plan, cancellation, overallTimeoutMs, connectTimeoutMs, readTimeoutMs)) {
+        is Transport.Failed -> ProviderPolishResult.Failure(transport.kind, transport.status)
+        is Transport.Response -> if (transport.status >= 400) {
+            // The error body is classified HERE into a closed signal and goes no further (#77).
+            ProviderPolishResult.Failure(
+                ProviderFailureKind.HTTP_ERROR,
+                transport.status,
+                ProviderErrorSignal.classify(provider, transport.status, transport.body),
+            )
+        } else {
+            parseResponse(plan.responseFormat, transport.body)
+        }
+    }
+
+    /**
+     * The retry delay: a latch the cancel hook releases, never a bare sleep, and its registration is
+     * closed like the request's own. @return false when the wait ended by cancellation.
+     */
+    private fun delayUnlessCancelled(cancellation: ProviderCancellation, delayMs: Long): Boolean {
+        if (cancellation.isCancelled) return false
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val registration = cancellation.onCancel { latch.countDown() }
+        try {
+            latch.await(delayMs, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return false
+        } finally {
+            registration.close()
+        }
+        return !cancellation.isCancelled
     }
 
     /**
@@ -613,7 +669,7 @@ class ProviderPolishClient(
                     // The Responses API's smallest accepted cap is 16.
                     "{\"model\":${jsonString(request.model)},\"input\":${jsonString(PROBE_TEXT)},\"max_output_tokens\":$OPENAI_PROBE_OUTPUT_TOKENS,\"store\":false}"
                 } else {
-                    "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"input\":${jsonString(request.prompt)},\"store\":false}"
+                    "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"input\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))},\"store\":false}"
                 },
                 responseFormat = ResponseFormat.OPENAI_RESPONSES,
             )
@@ -628,7 +684,7 @@ class ProviderPolishClient(
                     body = if (probe) {
                         "{\"contents\":[{\"parts\":[{\"text\":${jsonString(PROBE_TEXT)}}]}],\"generationConfig\":{\"maxOutputTokens\":$PROBE_OUTPUT_TOKENS}}"
                     } else {
-                        "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(request.prompt)}}]}]}"
+                        "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}]}"
                     },
                     responseFormat = ResponseFormat.GEMINI,
                 )
@@ -639,7 +695,7 @@ class ProviderPolishClient(
                 body = if (probe) {
                     "{\"model\":${jsonString(request.model)},\"max_tokens\":$PROBE_OUTPUT_TOKENS,\"messages\":[{\"role\":\"user\",\"content\":${jsonString(PROBE_TEXT)}}]}"
                 } else {
-                    "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}]}"
+                    "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}"
                 },
                 responseFormat = ResponseFormat.CLAUDE,
             )
@@ -655,7 +711,7 @@ class ProviderPolishClient(
                     url = url,
                     headers = authHeaders(request.provider, request.apiKey.orEmpty()),
                     // Both protocols take the same chat body; only the path and the answer's shape differ.
-                    body = "{\"model\":${jsonString(request.model)},\"messages\":[{\"role\":\"system\",\"content\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)}},{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}],\"stream\":false}",
+                    body = "{\"model\":${jsonString(request.model)},\"messages\":[{\"role\":\"system\",\"content\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))}},{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}],\"stream\":false}",
                     responseFormat = when (request.selfHostedProtocol) {
                         SelfHostedProtocol.OPENAI_COMPATIBLE -> ResponseFormat.OPENAI_CHAT
                         SelfHostedProtocol.OLLAMA -> ResponseFormat.OLLAMA
@@ -882,6 +938,9 @@ class ProviderPolishClient(
         const val PROBE_TEXT = "Hi"
         const val PROBE_OUTPUT_TOKENS = 5
         const val OPENAI_PROBE_OUTPUT_TOKENS = 16
+        /** The Mac's retry policy (#4): two retries, 1 s then 3 s, all inside the one polish deadline. */
+        const val MAX_RETRIES = 2
+        val RETRY_DELAYS_MS: List<Long> = listOf(1_000L, 3_000L)
     }
 }
 

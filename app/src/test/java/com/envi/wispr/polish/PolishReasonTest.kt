@@ -39,7 +39,7 @@ class PolishReasonTest {
         assertEquals(PolishReason.HTTP_INPUT_TOO_LONG, PolishReason.from(ProviderFailureKind.HTTP_ERROR, ProviderErrorSignal.INPUT_TOO_LONG))
         assertEquals(PolishReason.HTTP_CONTENT_BLOCKED, PolishReason.from(ProviderFailureKind.HTTP_ERROR, ProviderErrorSignal.CONTENT_BLOCKED))
         assertEquals(PolishReason.NETWORK, PolishReason.from(ProviderFailureKind.NETWORK, ProviderErrorSignal.KEY_REJECTED))
-        assertEquals("the persisted names of the #77 members", listOf("HTTP_KEY_REJECTED", "HTTP_OUT_OF_CREDITS", "HTTP_INPUT_TOO_LONG", "HTTP_CONTENT_BLOCKED", "INVALID_CONFIGURATION"), PolishReason.entries.takeLast(5).map { it.name })
+        assertEquals("the persisted names of the #77 and #2 members, appended in order", listOf("HTTP_KEY_REJECTED", "HTTP_OUT_OF_CREDITS", "HTTP_INPUT_TOO_LONG", "HTTP_CONTENT_BLOCKED", "INVALID_CONFIGURATION", "TOO_SHORT"), PolishReason.entries.takeLast(6).map { it.name })
     }
 
     @Test fun offAndUnconfiguredPoliciesNameThemselvesWhateverThePipelineDid() {

@@ -344,7 +344,10 @@ class PolishService : Service() {
             pipeline.usedModel -> "${S1Config.MODEL_NAME} by ${S1Config.MODEL_CREATOR} (${s1Runtime.activeComputeUnit.uppercase()})"
             else -> PolishEngineLabels.DETERMINISTIC
         }
-        if (reason != PolishReason.POLISHED && reason != PolishReason.OFF) {
+        if (pipeline.refusal != null) DebugLogger.warn(TAG, "Polish guard refused: ${pipeline.refusal}")
+        if (reason == PolishReason.TOO_SHORT) {
+            DebugLogger.log(TAG, "Polish bypassed: too short")
+        } else if (reason != PolishReason.POLISHED && reason != PolishReason.OFF) {
             DebugLogger.warn(TAG, "Polish fell back: reason=$reason status=$statusCode")
         }
         return PolishOutcome(requestId, pipeline.text, engine, reason, statusCode, SystemClock.elapsedRealtime() - started)

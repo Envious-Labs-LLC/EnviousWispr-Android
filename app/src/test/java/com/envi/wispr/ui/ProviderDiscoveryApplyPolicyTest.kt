@@ -39,4 +39,9 @@ class ProviderDiscoveryApplyPolicyTest {
         assertEquals(CacheAction.NONE, ProviderDiscoveryApplyPolicy.afterSave(succeeded = true, suppliedKey = false, discoverySequence = 7, draftResultSequence = 7))
         assertEquals(CacheAction.NONE, ProviderDiscoveryApplyPolicy.afterSave(succeeded = false, suppliedKey = true, discoverySequence = 7, draftResultSequence = 7))
     }
+
+    @Test fun aSuppliedKeyClearsTheCacheBeforeTheWrite() {
+        assertTrue(ProviderDiscoveryApplyPolicy.clearsCacheBeforeSave(suppliedKey = true))
+        assertFalse("a model change keeps the cache it will keep using", ProviderDiscoveryApplyPolicy.clearsCacheBeforeSave(suppliedKey = false))
+    }
 }

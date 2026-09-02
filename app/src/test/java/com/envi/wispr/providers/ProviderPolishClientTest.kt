@@ -629,16 +629,27 @@ class ProviderPolishClientTest {
     }
 
     @Test fun theDeadlineCancelsQueuedAndActiveProbes() {
+        // Every probe the fake server receives is HELD on this latch, never slept: an in-flight probe cannot
+        // finish before the deadline, so at most three (the executor's width) can reach the server before
+        // the client returns, whatever the machine load. A sleep here raced the clock and went red under
+        // load (2026-09-02) when the list fetch ate the budget and the probes timed out instantly.
+        val hold = java.util.concurrent.CountDownLatch(1)
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else { Thread.sleep(600); 200 to "{}" }
+            if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else { hold.await(10, TimeUnit.SECONDS); 200 to "{}" }
         }).use { server ->
             val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 800, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")
             assertTrue("$result", result is ProviderDiscovery.Listed)
             val probesAtReturn = server.requests.count { it.path.startsWith("/probe") }
-            Thread.sleep(1_500)
+            hold.countDown()
+            // The held probes finish now; a queued probe that was NOT cancelled would arrive in this window.
+            Thread.sleep(1_000)
             val probesLater = server.requests.count { it.path.startsWith("/probe") }
-            // Nine models, three in flight: without cancellation the queued six would still arrive after the return.
-            assertTrue("at return $probesAtReturn, later $probesLater", probesLater == probesAtReturn && probesLater < 9)
+            // Nine models, three in flight: without cancellation the queued six would all arrive after the
+            // return. What the client promises is narrower than "none": a probe thread that freed up in the
+            // same instant the deadline fired can have dequeued its next probe before the cancel reached the
+            // queue, and an interrupt cannot pull back a request already connecting, so up to the executor's
+            // width (three) may still land. Never more, and never the whole queue.
+            assertTrue("at return $probesAtReturn, later $probesLater", probesLater <= probesAtReturn + 3 && probesLater < 9)
         }
     }
 

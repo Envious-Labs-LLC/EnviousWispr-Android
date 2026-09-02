@@ -38,24 +38,6 @@ class ProviderConfigurationRepository internal constructor(
      * `mode` by every non-Off write, so the two cannot disagree; never `OFF`. Absent or unreadable reads as
      * This phone, which is the safe engine: it never routes text to a provider it cannot prove.
      */
-    fun loadLastOnMode(): PolishMode = decodeLastOnMode(preferences.all)
-
-    /**
-     * Turns polish on where the user left it: the last engine used, or This phone when that engine was a
-     * provider whose configuration is gone. One write, through the same commit as a mode tap.
-     */
-    /**
-     * Turns polish on where it last ran (#67). A remembered provider is usable only with its key still in
-     * the Keystore (self-hosted needs none); otherwise the phone is chosen, matching the provider card's
-     * own radio rule so the switch can never activate a route the card would refuse.
-     */
-    fun turnOn(): PolishMode {
-        val selected = load()
-        val providerUsable = selected != null &&
-            (selected.provider == Provider.SELF_HOSTED_POLISH || !selected.apiKey.isNullOrBlank())
-        return polishModeWhenTurnedOn(loadLastOnMode(), providerUsable).also(::setMode)
-    }
-
     fun loadMode(): PolishMode = decodeMode(preferences.all)
 
     fun load(): SelectedProviderConfiguration? {
@@ -104,7 +86,12 @@ class ProviderConfigurationRepository internal constructor(
         // never enters preferences or UI.
         require(apiKey?.any(Char::isISOControl) != true) { "invalid provider configuration" }
         val suppliedKey = apiKey?.trim()?.takeIf(String::isNotEmpty)
-        val effectiveApiKey = suppliedKey ?: runCatching { secrets.get(provider) }.getOrNull()
+        // The previous credential is read BEFORE anything is written (#81), because the Keystore put below
+        // happens before the preferences commit and a failed commit must give the old key back. For a
+        // supplied key the snapshot is mandatory: an unreadable store aborts here, before any write, rather
+        // than reading as "no previous key" and deleting one during the compensation.
+        val previousKey: String? = if (suppliedKey != null) secrets.get(provider) else runCatching { secrets.get(provider) }.getOrNull()
+        val effectiveApiKey = suppliedKey ?: previousKey
         require(
             ProviderConfigurationValidator.validate(ProviderConfiguration(provider, endpoint), effectiveApiKey)
                 is ValidationResult.Valid,
@@ -126,13 +113,20 @@ class ProviderConfigurationRepository internal constructor(
         if (suppliedKey != null) secrets.put(provider, suppliedKey)
         val values = preferences.edit()
             .putString(KEY_MODE, PolishMode.PROVIDER.name)
-            .putString(KEY_LAST_ON_MODE, PolishMode.PROVIDER.name)
             .putString(KEY_PROVIDER, provider.name)
             .putString(KEY_MODEL, model)
             .putString(KEY_PROTOCOL, selfHostedProtocol.name)
         if (provider == Provider.SELF_HOSTED_POLISH) values.putString(KEY_ENDPOINT, endpoint)
         else values.remove(KEY_ENDPOINT)
-        check(values.commit()) { "could not persist provider configuration" }
+        if (!values.commit()) {
+            // Compensation: the metadata did not change, so the key must not have either. A compensation
+            // that fails is reported as what it is; "nothing changed" would be a lie the UI repeats.
+            if (suppliedKey != null) {
+                val restored = runCatching { if (previousKey != null) secrets.put(provider, previousKey) else secrets.remove(provider) }
+                if (restored.isFailure) throw InconsistentProviderStorageException(provider, restored.exceptionOrNull())
+            }
+            error("could not persist provider configuration")
+        }
     }
 
     /** Compatibility alias for callers that already use the shorter provider-save name. */
@@ -145,9 +139,7 @@ class ProviderConfigurationRepository internal constructor(
     ) = saveProvider(provider, model, endpoint, apiKey, selfHostedProtocol)
 
     fun setMode(mode: PolishMode) {
-        val edit = preferences.edit().putString(KEY_MODE, mode.name)
-        if (mode != PolishMode.OFF) edit.putString(KEY_LAST_ON_MODE, mode.name)
-        check(edit.commit()) {
+        check(preferences.edit().putString(KEY_MODE, mode.name).commit()) {
             "could not persist polish mode"
         }
     }
@@ -160,7 +152,6 @@ class ProviderConfigurationRepository internal constructor(
         check(
             preferences.edit()
                 .putString(KEY_MODE, PolishMode.OFFLINE_S1.name)
-                .putString(KEY_LAST_ON_MODE, PolishMode.OFFLINE_S1.name)
                 .remove(KEY_PROVIDER)
                 .remove(KEY_MODEL)
                 .remove(KEY_ENDPOINT)
@@ -217,13 +208,6 @@ class ProviderConfigurationRepository internal constructor(
 
         private const val PREFERENCES = "envious_wispr_provider_configuration"
         private const val KEY_MODE = "mode"
-        private const val KEY_LAST_ON_MODE = "last_on_mode"
-
-        /** `OFF` is never a last-on mode; an absent or unknown value is This phone. */
-        fun decodeLastOnMode(values: Map<String, *>): PolishMode = (values[KEY_LAST_ON_MODE] as? String)
-            ?.let { name -> PolishMode.entries.firstOrNull { it.name == name } }
-            ?.takeIf { it != PolishMode.OFF }
-            ?: PolishMode.OFFLINE_S1
         private const val KEY_PROVIDER = "provider"
         private const val KEY_MODEL = "model"
         private const val KEY_ENDPOINT = "endpoint"
@@ -258,10 +242,9 @@ data class SelectedProviderConfiguration(
 }
 
 /**
- * Which engine the switch lands on (#67): the last one used, unless it was a provider that no longer has
- * a configuration, in which case This phone. Pure so the six cells are a table in `PolishModeWhenTurnedOnTest`.
+ * A failed save could not put the previous key back (#81): the preferences commit failed after the new key
+ * reached the Keystore, and the compensation failed too. The stored key and the stored metadata may now
+ * disagree, and the only honest repair is to remove the provider and set it up again.
  */
-internal fun polishModeWhenTurnedOn(lastOnMode: PolishMode, providerUsable: Boolean): PolishMode = when (lastOnMode) {
-    PolishMode.PROVIDER -> if (providerUsable) PolishMode.PROVIDER else PolishMode.OFFLINE_S1
-    PolishMode.OFFLINE_S1, PolishMode.OFF -> PolishMode.OFFLINE_S1
-}
+class InconsistentProviderStorageException(val provider: Provider, cause: Throwable?) :
+    IllegalStateException("provider storage is inconsistent for ${provider.name}", cause)

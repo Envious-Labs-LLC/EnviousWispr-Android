@@ -19,6 +19,7 @@ import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderConfigurationRepository
+import com.envi.wispr.providers.InconsistentProviderStorageException
 import com.envi.wispr.providers.ProviderKeyRefusedException
 import com.envi.wispr.providers.DiscoveredModel
 import com.envi.wispr.providers.ModelListCache
@@ -63,12 +64,7 @@ data class ProviderSettingsUiState(
     val error: String? = null,
     /** The request sequence of the LAST COMPLETED write, success or failure; 0 before any write (#67). */
     val writeSequence: Int = 0,
-    /** Who started the write that [writeSequence] names, so each surface renders only its own failures. */
-    val writeOrigin: ProviderWriteOrigin = ProviderWriteOrigin.TAB,
 )
-
-/** Which surface asked for a provider-settings write (#67). */
-enum class ProviderWriteOrigin { TAB, SETUP_PAGE }
 
 /** The setup page's live model list (#84): one provider at a time, one sequence, one phase. */
 data class ProviderDiscoveryUiState(
@@ -412,7 +408,7 @@ class EnviousWisprViewModel(
     }
 
     /** A mode tap on the tab. Returns the request sequence of the write it queued. */
-    fun setPolishMode(mode: PolishMode): Int = updateProviderSettings(ProviderWriteOrigin.TAB) {
+    fun setPolishMode(mode: PolishMode): Int = updateProviderSettings {
         if (mode == PolishMode.PROVIDER && providerRepository.load() == null) {
             error("Save provider settings before selecting provider mode")
         }
@@ -420,13 +416,7 @@ class EnviousWisprViewModel(
         ""
     }
 
-    /** The master switch turned on: the last engine used, or This phone if that engine is gone (#67). */
-    fun turnPolishOn(): Int = updateProviderSettings(ProviderWriteOrigin.TAB) {
-        providerRepository.turnOn()
-        ""
-    }
-
-    /** The setup page's Save. Returns the request sequence the page waits for. */
+    /** The Ladder's save (#81): an accepted key with its starting model, or a model change. Returns the request sequence the tab waits for. */
     fun saveProviderSettings(
         provider: Provider,
         model: String,
@@ -438,9 +428,17 @@ class EnviousWisprViewModel(
     ): Int {
         val suppliedKey = !apiKey.isNullOrBlank()
         return updateProviderSettings(
-            ProviderWriteOrigin.SETUP_PAGE,
-            // Awaited BEFORE the completed write is published, so a page that pops and reopens reads the
-            // promoted or cleared cache, never the stale one.
+            // A supplied key clears the provider's persisted cache BEFORE the write (#81): the commit and the
+            // promotion below are two steps, and a process death between them would otherwise restart with
+            // the old key's cache labelled as the stored key's. Losing a valid old cache on a failed save is
+            // safe; showing an old key's models under a newly stored key is not.
+            beforeWrite = {
+                if (ProviderDiscoveryApplyPolicy.clearsCacheBeforeSave(suppliedKey)) {
+                    withContext(Dispatchers.IO) { modelCache.clear(provider) }
+                }
+            },
+            // Awaited BEFORE the completed write is published, so the tab reads the promoted or cleared
+            // cache, never the stale one.
             afterWrite = { succeeded ->
                 when (ProviderDiscoveryApplyPolicy.afterSave(succeeded, suppliedKey, discoverySequence, draftResults[provider]?.first)) {
                     ProviderDiscoveryApplyPolicy.CacheAction.PROMOTE -> {
@@ -472,12 +470,11 @@ class EnviousWisprViewModel(
         }
     }
 
-    /** Remove, from the setup page or the self-hosted card. Returns the request sequence. */
-    fun clearProviderSettings(origin: ProviderWriteOrigin = ProviderWriteOrigin.SETUP_PAGE): Int {
+    /** Remove, from the Ladder's connected row or the self-hosted card. Returns the request sequence. */
+    fun clearProviderSettings(): Int {
         // The provider is captured BEFORE the selection is cleared, so its cache can be cleared after (#84).
         val removed = providerSettings.value.takeIf { it.configured }?.provider
         return updateProviderSettings(
-            origin,
             afterWrite = { succeeded ->
                 if (succeeded && removed != null) {
                     draftResults.remove(removed)
@@ -609,7 +606,6 @@ class EnviousWisprViewModel(
         message: String = "",
         error: String? = null,
         sequence: Int = providerSettings.value.writeSequence,
-        origin: ProviderWriteOrigin = providerSettings.value.writeOrigin,
     ) {
         val mode = providerRepository.loadMode()
         val selected = providerRepository.load()
@@ -626,7 +622,6 @@ class EnviousWisprViewModel(
             message = message,
             error = error,
             writeSequence = sequence,
-            writeOrigin = origin,
         )
     }
 
@@ -634,7 +629,11 @@ class EnviousWisprViewModel(
     private var nextWriteSequence = 0
 
     private fun updateProviderSettings(
-        origin: ProviderWriteOrigin,
+        /**
+         * Run inside the write mutex and inside the captured outcome, before [operation] (#81): a throw here
+         * means the repository write does not run and this same sequence publishes a failure.
+         */
+        beforeWrite: suspend () -> Unit = {},
         /** Awaited BEFORE the completed write is published, with whether it succeeded (#84 cache decisions). */
         afterWrite: suspend (Boolean) -> Unit = {},
         operation: () -> String,
@@ -649,22 +648,27 @@ class EnviousWisprViewModel(
         // the lock moves to IO.
         viewModelScope.launch {
             providerSettingsMutex.withLock {
-                val outcome = withContext(Dispatchers.IO) { runCatching(operation) }
+                val outcome = runCatching {
+                    beforeWrite()
+                    withContext(Dispatchers.IO) { operation() }
+                }
+                if (outcome.exceptionOrNull() is CancellationException) throw outcome.exceptionOrNull()!!
                 afterWrite(outcome.isSuccess)
                 withContext(Dispatchers.IO) {
                     outcome.fold(
-                        onSuccess = { message -> refreshProviderSettings(message = message, sequence = sequence, origin = origin) },
+                        onSuccess = { message -> refreshProviderSettings(message = message, sequence = sequence) },
                         // A refused key check (#61) names its verdict from the verdict and the provider,
-                        // never from exception text; every other failure gets one calm sentence, because
-                        // the exception text is internal wording ("could not persist provider
-                        // configuration"), never copy for the user.
+                        // never from exception text; a failed key restore (#81) names its own sentence;
+                        // every other failure gets one calm sentence, because the exception text is
+                        // internal wording ("could not persist provider configuration"), never copy.
                         onFailure = { failure ->
                             refreshProviderSettings(
-                                error = (failure as? ProviderKeyRefusedException)?.let { refused ->
-                                    keyCheckLine(refused.verdict, refused.provider.capabilities().displayName)
-                                } ?: "Could not update AI Polish settings",
+                                error = when (failure) {
+                                    is ProviderKeyRefusedException -> keyCheckLine(failure.verdict, failure.provider.capabilities().displayName)
+                                    is InconsistentProviderStorageException -> "Could not restore your saved key. Remove the provider and set it up again."
+                                    else -> "Could not update AI Polish settings"
+                                },
                                 sequence = sequence,
-                                origin = origin,
                             )
                         },
                     )

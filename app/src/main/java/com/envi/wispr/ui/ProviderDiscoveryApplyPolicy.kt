@@ -20,6 +20,13 @@ object ProviderDiscoveryApplyPolicy {
     /** A discovery with the STORED key is cached at once; one with a draft key waits for a matching Save. */
     fun writesCacheNow(usedStoredKey: Boolean, listedNonEmpty: Boolean): Boolean = usedStoredKey && listedNonEmpty
 
+    /**
+     * A save that supplies a key clears the provider's persisted cache BEFORE the write (#81): the commit and
+     * the promotion are two steps, and a process death between them would otherwise restart with the old
+     * key's cache labelled as the stored key's. A model-only save keeps the cache it will keep using.
+     */
+    fun clearsCacheBeforeSave(suppliedKey: Boolean): Boolean = suppliedKey
+
     enum class CacheAction { PROMOTE, CLEAR, NONE }
 
     /**

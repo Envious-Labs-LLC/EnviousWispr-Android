@@ -491,7 +491,18 @@ class ProviderPolishClient(
      * answer in about 30 tokens.
      */
     private fun probe(provider: Provider, model: String, apiKey: String, remainingMs: Int): ProbeOutcome {
-        val first = probeOnce(provider, model, apiKey, remainingMs, ProbeStyle.DEFAULT)
+        // ONE DEADLINE FOR THE WHOLE LOGICAL PROBE, clamped to a single `probeTimeoutMs` and fixed before
+        // the first ask. Both asks then share it by construction, which is why there is no test for the
+        // arithmetic: the two attempts cannot each take a full timeout because there is only one budget to
+        // spend (review round 4).
+        //
+        // What it prevents: handing the retry a fresh budget let one model run for nearly twice the probe
+        // timeout, and with three workers in the pool several slow reasoning models could hold it past the
+        // discovery deadline, leaving later models unverified — the very state this retry exists to clear.
+        val budget = remainingMs.coerceAtMost(probeTimeoutMs.coerceAtLeast(1))
+        if (budget <= 0) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(budget.toLong())
+        val first = probeOnce(provider, model, apiKey, deadline, ProbeStyle.DEFAULT)
             ?: return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
         // ONLY a model that ANSWERED and said nothing useful is worth asking again, and 200 is the whole
         // condition: every other status has already decided the model, and at 200 an inconclusive reading
@@ -503,7 +514,7 @@ class ProviderPolishClient(
         // inconclusive, so the retry doubled traffic during a rate limit or an outage and spent the
         // discovery deadline without testing another model.
         if (first.status != 200 || first.reply != ModelListRules.ProbeReply.INCONCLUSIVE) return first.outcome
-        val retry = probeOnce(provider, model, apiKey, remainingMs, ProbeStyle.NO_REASONING) ?: return first.outcome
+        val retry = probeOnce(provider, model, apiKey, deadline, ProbeStyle.NO_REASONING) ?: return first.outcome
         // A key that stopped working between the two asks is NEWS, and the one thing the retry may report
         // that is not an improvement. It cannot be raised by the suppression being unsupported: neither
         // "Unsupported parameter: 'reasoning.effort'" nor "This model only works in thinking mode" is a
@@ -513,11 +524,17 @@ class ProviderPolishClient(
         return if (retry.reply == ModelListRules.ProbeReply.TEXT) retry.outcome else first.outcome
     }
 
-    /** One request to one model. Null when this provider has no plan for this style, so there is nothing to ask. */
-    private fun probeOnce(provider: Provider, model: String, apiKey: String, remainingMs: Int, style: ProbeStyle): ProbeAttempt? {
+    /**
+     * One request to one model, spending whatever is left of the LOGICAL PROBE's deadline. Null when this
+     * provider has no plan for this style, or when the deadline has already gone, so there is nothing to ask.
+     *
+     * It takes a deadline rather than a duration on purpose: a duration was clamped to `probeTimeoutMs`
+     * here, once per call, so two calls could spend two full timeouts.
+     */
+    private fun probeOnce(provider: Provider, model: String, apiKey: String, deadline: Long, style: ProbeStyle): ProbeAttempt? {
         val plan = requestPlan(ProviderPolishRequest(provider, model, PROBE_TEXT, apiKey), probe = style) ?: return null
-        if (remainingMs <= 0) return null
-        val budget = remainingMs.coerceAtMost(probeTimeoutMs.coerceAtLeast(1))
+        val budget = remainingMillis(deadline)
+        if (budget <= 0) return null
         return when (val transport = run(plan, ProviderCancellation(), budget, connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, budget))) {
             // A transport failure has no body at all; the null status makes this UNVERIFIED before the
             // reply is ever read, and the null reading stops it earning a retry it cannot use.

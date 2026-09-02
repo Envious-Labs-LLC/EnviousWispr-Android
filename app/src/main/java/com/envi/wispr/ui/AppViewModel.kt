@@ -19,6 +19,7 @@ import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderConfigurationRepository
+import com.envi.wispr.providers.ProviderKeyRefusedException
 import com.envi.wispr.providers.SelfHostedProtocol
 import com.envi.wispr.providers.capabilities
 import com.envi.wispr.settings.AppPreferences
@@ -453,11 +454,15 @@ class EnviousWisprViewModel(
                 withContext(Dispatchers.IO) {
                     runCatching(operation).fold(
                         onSuccess = { message -> refreshProviderSettings(message = message, sequence = sequence, origin = origin) },
-                        // One calm sentence for every failure: the exception text is internal wording
-                        // ("could not persist provider configuration"), never copy for the user.
-                        onFailure = {
+                        // A refused key check (#61) names its verdict from the verdict and the provider,
+                        // never from exception text; every other failure gets one calm sentence, because
+                        // the exception text is internal wording ("could not persist provider
+                        // configuration"), never copy for the user.
+                        onFailure = { failure ->
                             refreshProviderSettings(
-                                error = "Could not update AI Polish settings",
+                                error = (failure as? ProviderKeyRefusedException)?.let { refused ->
+                                    keyCheckLine(refused.verdict, refused.provider.capabilities().displayName)
+                                } ?: "Could not update AI Polish settings",
                                 sequence = sequence,
                                 origin = origin,
                             )

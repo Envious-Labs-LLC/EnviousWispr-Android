@@ -16,13 +16,15 @@ import org.junit.runner.RunWith
 class ProviderConfigurationRepositoryTest {
     private lateinit var context: Context
     private lateinit var secrets: MemorySecrets
+    private lateinit var checker: RecordingChecker
     private lateinit var repository: ProviderConfigurationRepository
 
     @Before fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().clear().commit()
         secrets = MemorySecrets()
-        repository = ProviderConfigurationRepository(context, secrets)
+        checker = RecordingChecker()
+        repository = ProviderConfigurationRepository(context, secrets, checker)
     }
 
     @Test fun defaultsToOfflineS1AndPersistsEachExplicitMode() {
@@ -88,12 +90,61 @@ class ProviderConfigurationRepositoryTest {
         val real = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
         real.edit().clear().putString("mode", "OFF").putString("last_on_mode", "PROVIDER").commit()
         val failing = FailingCommitPreferences(real)
-        val fragile = ProviderConfigurationRepository(failing, secrets)
+        val fragile = ProviderConfigurationRepository(failing, secrets, checker)
         val threw = runCatching { fragile.setMode(PolishMode.OFFLINE_S1) }.isFailure
         assertEquals(true, threw)
         assertEquals("OFF", stored("mode")); assertEquals("PROVIDER", stored("last_on_mode"))
         // Both keys were offered to ONE commit; a production that wrote mode alone before failing shows here.
         assertEquals(listOf(setOf("mode", "last_on_mode")), failing.attemptedCommits)
+    }
+
+    // #61: no cloud key is written unless the checker accepted it; the checker sees the key that would be stored.
+
+    @Test fun anAcceptedCheckSavesOnceWithTheKeyTrimmed() {
+        repository.save(Provider.OPENAI, "gpt-test", apiKey = "  sk-spaced  ")
+        assertEquals(listOf(Provider.OPENAI to "sk-spaced"), checker.calls)
+        assertEquals("sk-spaced", repository.load()?.apiKey)
+        assertEquals("gpt-test", repository.load()?.model)
+    }
+
+    @Test fun aRefusedCheckWritesNothing() {
+        val before = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).all.toMap()
+        listOf(
+            ProviderKeyCheck.Rejected(401),
+            ProviderKeyCheck.Denied(403),
+            ProviderKeyCheck.Unverified(com.envi.wispr.polish.PolishFailure.UNREACHABLE),
+            // A "no key to check" answer for a provider that needs one is a checker fault, never a pass.
+            ProviderKeyCheck.NotApplicable,
+        ).forEach { verdict ->
+            checker.verdict = verdict
+            val thrown = runCatching { repository.save(Provider.GEMINI, "gemini-test", apiKey = "AIza") }.exceptionOrNull()
+            assertEquals("$verdict", verdict, (thrown as? ProviderKeyRefusedException)?.verdict)
+            assertEquals("$verdict", before, context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).all.toMap())
+            assertNull("$verdict", secrets.get(Provider.GEMINI))
+        }
+        assertEquals(4, checker.calls.size)
+    }
+
+    @Test fun aBlankDraftChecksTheStoredKey() {
+        repository.save(Provider.CLAUDE, "claude-old", apiKey = "sk-ant-stored")
+        checker.calls.clear()
+        repository.save(Provider.CLAUDE, "claude-new", apiKey = null)
+        assertEquals(listOf(Provider.CLAUDE to "sk-ant-stored"), checker.calls)
+        assertEquals("claude-new", repository.load()?.model)
+        assertEquals("sk-ant-stored", repository.load()?.apiKey)
+    }
+
+    @Test fun aControlCharacterKeyIsRefusedBeforeAnyCheck() {
+        val thrown = runCatching { repository.save(Provider.OPENAI, "gpt-test", apiKey = "sk\u0007bad") }.exceptionOrNull()
+        assertEquals(true, thrown is IllegalArgumentException)
+        assertEquals(emptyList<Pair<Provider, String>>(), checker.calls)
+        assertNull(repository.load())
+    }
+
+    @Test fun selfHostedNeverAsksTheChecker() {
+        repository.save(Provider.SELF_HOSTED_POLISH, "llama3.2", endpoint = "http://localhost:8080/x", apiKey = "local-secret")
+        assertEquals(emptyList<Pair<Provider, String>>(), checker.calls)
+        assertEquals("local-secret", repository.load()?.apiKey)
     }
 
     @Test fun providerModeWithoutSelectionRemainsNotReadyForServiceFallback() {
@@ -179,6 +230,16 @@ class ProviderConfigurationRepositoryTest {
 
         repository.clearSelection()
         assertEquals(PolishPolicy.LocalS1, repository.loadPolicy())
+    }
+
+    /** Records every ask and answers with [verdict]; Accepted by default so the older cases still save. */
+    private class RecordingChecker : ProviderKeyChecker {
+        var verdict: ProviderKeyCheck = ProviderKeyCheck.Accepted
+        val calls = mutableListOf<Pair<Provider, String>>()
+        override fun check(provider: Provider, apiKey: String): ProviderKeyCheck {
+            calls += provider to apiKey
+            return verdict
+        }
     }
 
     private class MemorySecrets : SecretStore {

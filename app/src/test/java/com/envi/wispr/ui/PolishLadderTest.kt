@@ -15,9 +15,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Product Outcome: when this fails the Ladder highlights an engine that is not running, claims a key is
- * connected that is not stored, starts cloud polish with no key, saves the same key twice, starts on a
- * model the key cannot reach, or tells a user their phone model is fine when it is broken.
+ * Product Outcome by default: when one of these fails the Ladder highlights an engine that is not running,
+ * claims a key is connected that is not stored, starts cloud polish with no key, saves the same key twice,
+ * starts on a model the key cannot reach, or tells a user their phone model is fine when it is broken.
+ *
+ * Three tests here are NOT that, and each declares itself so on its own KDoc rather than inheriting a
+ * class it cannot honour: the two remove-navigation tests, which no JVM test can tie to the composable
+ * that consults them, and the score sweep, which guards a rendering range nobody can call correct.
  */
 class PolishLadderTest {
     private val cloudWithKey = ProviderSettingsUiState(loading = false, mode = PolishMode.PROVIDER, provider = Provider.OPENAI, model = "gpt-4.1-mini", configured = true, credentialStored = true)

@@ -161,9 +161,12 @@ object PolishLadder {
      * probe reached, else the first the probe reached, else the first with no verdict, never one the probe
      * refused; null when there is nothing to start with, so nothing is saved and the typed-id path opens.
      */
-    fun defaultModel(models: List<DiscoveredModel>): String? {
+    fun defaultModel(provider: Provider, models: List<DiscoveredModel>): String? {
         val available = models.filter { it.access == ModelAccess.AVAILABLE }
-        return available.firstOrNull { it.recommended }?.id
+        // The model a key STARTS on is the one the list badges Recommended (#99). Before this the two
+        // disagreed: the badge was a class, so the start was merely the first of twelve equally-badged
+        // rows, and a user could be started on a model while a different row wore the badge.
+        return ModelListPresentation.recommendedPick(provider, models)
             ?: available.firstOrNull()?.id
             ?: models.firstOrNull { it.access == ModelAccess.UNVERIFIED }?.id
     }
@@ -178,7 +181,7 @@ object PolishLadder {
             discovery.provider == displayed &&
             discovery.phase == ProviderDiscoveryUiState.Phase.LISTED &&
             discovery.sequence == checkSequence &&
-            defaultModel(discovery.models) == null
+            defaultModel(displayed, discovery.models) == null
 
     /** The repository's own model rule, applied before a typed id is offered for saving. */
     fun typedModelValid(id: String): Boolean {
@@ -206,7 +209,7 @@ object PolishLadder {
         discovery.sequence == checkSequence &&
         !draftBlank &&
         savedForSequence != checkSequence &&
-        defaultModel(discovery.models) != null
+        defaultModel(displayed, discovery.models) != null
 
     /**
      * The sentence under the S1-mini title, or null when a ready model has nothing left to say: the facts

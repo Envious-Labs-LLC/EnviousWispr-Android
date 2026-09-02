@@ -470,8 +470,11 @@ class ProviderPolishClient(
         NO_REASONING,
     }
 
-    /** One attempt's verdict, with the reading that produced it so the caller can tell WHY it is unverified. */
-    private class ProbeAttempt(val outcome: ProbeOutcome, val reply: ModelListRules.ProbeReply?)
+    /**
+     * One attempt's verdict, with the status and the reading that produced it, so the caller can tell WHY
+     * it is unverified: the provider answered and said nothing useful, or it never answered at all.
+     */
+    private class ProbeAttempt(val outcome: ProbeOutcome, val status: Int?, val reply: ModelListRules.ProbeReply?)
 
     /**
      * One probe: the polish request's own plan with the fixed word "Hi" and a tiny output cap, and ONE
@@ -490,15 +493,23 @@ class ProviderPolishClient(
     private fun probe(provider: Provider, model: String, apiKey: String, remainingMs: Int): ProbeOutcome {
         val first = probeOnce(provider, model, apiKey, remainingMs, ProbeStyle.DEFAULT)
             ?: return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
-        // The retry is earned by the VERDICT, not by the reading. Gating on the reading alone spent a
-        // second request on every model whose STATUS had already decided it — a 403 carries an empty body,
-        // which reads as inconclusive while the model is plainly refused (caught by
-        // `discoveryListsFiltersProbesRecommendsAndSorts`, which counts probes).
-        val undecided = first.outcome is ProbeOutcome.Access &&
-            (first.outcome as ProbeOutcome.Access).access == ModelAccess.UNVERIFIED &&
-            first.reply == ModelListRules.ProbeReply.INCONCLUSIVE
-        if (!undecided) return first.outcome
+        // ONLY a model that ANSWERED and said nothing useful is worth asking again, and 200 is the whole
+        // condition: every other status has already decided the model, and at 200 an inconclusive reading
+        // is the only way to reach UNVERIFIED.
+        //
+        // Two ways this went wrong, both found in review. Gating on the reading alone spent a second
+        // request on a 403, whose empty body reads as inconclusive while the model is plainly refused.
+        // Gating on the VERDICT alone still fired on 429 and 5xx, whose error envelopes also read as
+        // inconclusive, so the retry doubled traffic during a rate limit or an outage and spent the
+        // discovery deadline without testing another model.
+        if (first.status != 200 || first.reply != ModelListRules.ProbeReply.INCONCLUSIVE) return first.outcome
         val retry = probeOnce(provider, model, apiKey, remainingMs, ProbeStyle.NO_REASONING) ?: return first.outcome
+        // A key that stopped working between the two asks is NEWS, and the one thing the retry may report
+        // that is not an improvement. It cannot be raised by the suppression being unsupported: neither
+        // "Unsupported parameter: 'reasoning.effort'" nor "This model only works in thinking mode" is a
+        // key marker to `ProviderErrorSignal.classify`, whose OpenAI 400 branch never answers KEY_REJECTED
+        // at all and whose Gemini one requires `API_KEY_INVALID`.
+        if (retry.outcome is ProbeOutcome.KeyRejected) return retry.outcome
         return if (retry.reply == ModelListRules.ProbeReply.TEXT) retry.outcome else first.outcome
     }
 
@@ -510,10 +521,15 @@ class ProviderPolishClient(
         return when (val transport = run(plan, ProviderCancellation(), budget, connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, budget))) {
             // A transport failure has no body at all; the null status makes this UNVERIFIED before the
             // reply is ever read, and the null reading stops it earning a retry it cannot use.
-            is Transport.Failed -> ProbeAttempt(ModelListRules.probeOutcome(provider, null, null, ModelListRules.ProbeReply.NO_TEXT), null)
+            is Transport.Failed ->
+                ProbeAttempt(ModelListRules.probeOutcome(provider, null, null, ModelListRules.ProbeReply.NO_TEXT), null, null)
             is Transport.Response -> {
                 val reply = probeReply(plan.responseFormat, transport.body)
-                ProbeAttempt(ModelListRules.probeOutcome(provider, transport.status, transport.body, reply), reply)
+                ProbeAttempt(
+                    ModelListRules.probeOutcome(provider, transport.status, transport.body, reply),
+                    transport.status,
+                    reply,
+                )
             }
         }
     }

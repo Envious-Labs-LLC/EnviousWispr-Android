@@ -945,6 +945,50 @@ class ProviderPolishClientTest {
         }
     }
 
+    /**
+     * Product Outcome. A provider that is rate limiting us or falling over must not be asked twice as fast.
+     * Its error envelope parses and carries no text, so it READS inconclusive while the status has already
+     * decided the model; only a 200 earns the retry (review round 1 on #106).
+     *
+     * When this fails, discovery doubles its traffic during exactly the outage that caused it, and burns
+     * the deadline that other models needed.
+     */
+    @Test fun aProviderThatIsRateLimitingOrFailingIsNotAskedAgainImmediately() {
+        val rateLimited = "{\"error\":{\"message\":\"Rate limit reached\",\"type\":\"rate_limit_error\"}}"
+        val serverError = "{\"error\":{\"message\":\"The server had an error\"}}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-busy", "gpt-broken")
+            else when (probedModel(request)) {
+                "gpt-busy" -> 429 to rateLimited
+                else -> 503 to serverError
+            }
+        }).use { server ->
+            val models = (discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed)
+                .models.associate { it.id to it.access }
+            assertEquals(ModelAccess.UNVERIFIED, models["gpt-busy"])
+            assertEquals(ModelAccess.UNVERIFIED, models["gpt-broken"])
+            // One ask each. Both bodies parse with no text, so a reading-only rule would have retried both.
+            assertEquals(2, server.requests.count { it.path.startsWith("/probe") })
+        }
+    }
+
+    /**
+     * Product Outcome. A key revoked BETWEEN the two asks is news, and the retry is the only thing that
+     * saw it. Keeping the first answer would leave the whole connection looking merely untested while the
+     * key is dead (review round 1 on #106).
+     */
+    @Test fun aKeyThatDiesBetweenTheTwoAsksIsReportedRatherThanSwallowed() {
+        val thinking = "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-reasoner")
+            else if (request.body.contains("\"reasoning\"")) 401 to "{\"error\":{\"message\":\"Incorrect API key\"}}"
+            else 200 to thinking
+        }).use { server ->
+            val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k")
+            assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), result)
+        }
+    }
+
     /** Claude opts in to thinking and this request does not, so there is nothing to suppress and no retry. */
     @Test fun claudeIsNeverAskedTwiceBecauseItWasNeverAskedToThink() {
         val thinking = "{\"stop_reason\":\"max_tokens\",\"content\":[]}"

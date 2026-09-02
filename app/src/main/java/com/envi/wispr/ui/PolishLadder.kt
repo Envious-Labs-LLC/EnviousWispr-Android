@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
@@ -11,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -169,12 +171,14 @@ object PolishLadder {
      * whose own KDoc calls the whole set DECORATION: no dot anywhere in this app is a benchmark result,
      * and a reader who believes this one is calibrated would believe the same of the thirty beside it.
      *
-     * Anchored where the cloud rows are anchored, and no further:
-     * - **Cost 1** on the same pricing axis `ModelNotes` uses. The model is free, which is below the
-     *   cheapest metered model on that list, so it belongs in the lowest bucket the scale has.
-     * - **Speed 3** is the one value here with a measurement behind it: 0.65 s on a short take, 2.5 to
-     *   3.5 s on a long one, and no network round trip
-     *   (`.claude/knowledge/polish-engines.md` FACT: residency-measured-2026-09-01).
+     * **There is no cost meter, and its absence is the point** (founder, 2026-09-02). The cloud rows need
+     * one because their prices differ from each other; S1-mini is free and cannot become anything else,
+     * so a meter here would spend a line encoding a constant. A meter earns its place by VARYING, and
+     * this one cannot.
+     *
+     * Of the two that remain, only one has a measurement behind it:
+     * - **Speed 3** is measured: 0.65 s on a short take, 2.5 to 3.5 s on a long one, and no network round
+     *   trip (`.claude/knowledge/polish-engines.md` FACT: residency-measured-2026-09-01).
      * - **Accuracy 2 is an editorial judgement**, exactly as every cloud accuracy dot is. S1-mini is
      *   trained for this one job, so it clears the bucket the oldest general chat models sit in, and it
      *   is too small to reach the top. Replace it if a head-to-head is ever run, and say here what ran.
@@ -184,7 +188,7 @@ object PolishLadder {
      * frozen constant asserts only that nobody edited it (`../rules/testing-philosophy.md`
      * RULE: every-test-declares-which-of-four-things-it-protects).
      */
-    internal val S1_SCORES: ModelScores = ModelScores(cost = 1, speed = 3, accuracy = 2)
+    internal val S1_SCORES: ModelScores = ModelScores(speed = 3, accuracy = 2)
 }
 
 /**
@@ -238,30 +242,67 @@ internal fun ProviderTile(provider: Provider, size: androidx.compose.ui.unit.Dp 
 }
 
 /**
- * Three dots, filled up to [value] on a 1-3 scale, read against the C/S/A legend.
+ * What a meter says out loud. ONE owner for both renderers below, because the two draw the same value in
+ * different directions and a description written twice is a description that drifts.
+ */
+internal fun scoreDescription(label: String, value: Int): String = "$label, $value of 3"
+
+/** One dot, filled when the meter has reached [level]. Shared so the two directions cannot diverge. */
+@Composable
+private fun ScoreDot(value: Int, level: Int) {
+    Box(
+        modifier = Modifier
+            .size(6.dp)
+            .background(
+                color = if (value >= level) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                shape = CircleShape,
+            ),
+    )
+}
+
+/**
+ * Three dots stacked, filled from the bottom up to [value]. This is the DENSE form, for the cloud model
+ * list, where thirty rows sit under one C/S/A header and a spelled-out label per row would not fit.
  *
  * [label] is required rather than optional because the dots are undecorated boxes: without a description
- * TalkBack reaches this meter and announces nothing at all, and the letter beside it is a separate node
- * that says "C" without a value. Making the label a parameter means a new meter cannot be added silently
- * mute, which is what the cloud rows were before this was moved down here.
+ * TalkBack reaches this meter and announces nothing at all, and the letter in the header is a separate
+ * node that says "C" without a value. Making the label a parameter means a new meter cannot be added
+ * silently mute, which is what the cloud rows were before this was moved down here.
  */
 @Composable
 internal fun ScoreDots(label: String, value: Int) {
     Column(
-        modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "$label, $value of 3" },
+        modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = scoreDescription(label, value) },
         verticalArrangement = Arrangement.spacedBy(3.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        for (level in 3 downTo 1) {
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .background(
-                        color = if (value >= level) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                        shape = CircleShape,
-                    ),
-            )
-        }
+        for (level in 3 downTo 1) ScoreDot(value, level)
+    }
+}
+
+/**
+ * The same meter written along a line, `Speed: * * o`. This is the SPARSE form, for a card showing two of
+ * them, where the label can be a word instead of a letter and the whole meter costs one line of height
+ * rather than two (founder, 2026-09-02).
+ */
+@Composable
+internal fun ScoreBar(label: String, value: Int) {
+    Row(
+        modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = scoreDescription(label, value) },
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "$label:",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // Cleared because the Row above already announces "Speed, 3 of 3"; merged with the word still
+            // in the tree, TalkBack says the label twice. The stacked renderer carried this guard on its
+            // own label and it was dropped when that composable was replaced, which is how a guard gets
+            // lost: not by being argued away, but by living inside something deleted for another reason.
+            modifier = Modifier.clearAndSetSemantics {},
+        )
+        for (level in 1..3) ScoreDot(value, level)
     }
 }
 

@@ -175,7 +175,7 @@ class PolishLadderTest {
         // the reason names, which is that a sweep over nothing must not read as a pass.
         assertTrue("a sweep over an empty catalog is not a pass", rows.isNotEmpty())
         val scores = rows.map { Triple(it.name, listOf(it.cost, it.speed, it.accuracy), "catalog") } +
-            listOf(Triple("S1-mini", with(PolishLadder.S1_SCORES) { listOf(cost, speed, accuracy) }, "on-phone"))
+            listOf(Triple("S1-mini", with(PolishLadder.S1_SCORES) { listOf(speed, accuracy) }, "on-phone"))
         scores.forEach { (name, values, source) ->
             values.forEach { assertTrue("$source row $name has $it, outside 1..3", it in 1..3) }
         }

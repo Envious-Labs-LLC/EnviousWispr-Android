@@ -156,7 +156,10 @@ class ProviderPolishClient(
     /** Where the content-free diagnostics go; a JVM test passes no-ops so android.util.Log is never touched. */
     private val logInfo: (String) -> Unit = { DebugLogger.log(TAG, it) },
     private val logWarn: (String) -> Unit = { DebugLogger.warn(TAG, it) },
-) : ProviderKeyChecker {
+    /** The live model list's bounds (#84); a test shortens them. */
+    private val discoveryTimeoutMs: Int = DISCOVERY_TIMEOUT_MS,
+    private val probeTimeoutMs: Int = PROBE_TIMEOUT_MS,
+) : ProviderKeyChecker, ProviderModelDiscoverer {
     fun polish(
         request: ProviderPolishRequest,
         cancellation: ProviderCancellation = ProviderCancellation(),
@@ -252,6 +255,198 @@ class ProviderPolishClient(
         // Provider, status and verdict only: never the key, never the body.
         logInfo("Key check: $provider status=${keyCheckStatus(verdict)} verdict=${verdict::class.simpleName}")
         return verdict
+    }
+
+    /**
+     * The live model list (#84), the macOS `discoverModels` shape: the list GET (Claude paginated), the
+     * pure filter, then a five-token probe per model on [PROBE_EXECUTOR] so one request worker always
+     * stays free for a polish request, all under one whole-operation deadline. A probe that answers
+     * about the KEY (401, or a KEY_REJECTED body) refuses the whole discovery; a transport failure never
+     * locks a row. Nothing here carries user content: the list has no body and the probe says "Hi".
+     */
+    override fun discoverModels(provider: Provider, apiKey: String): ProviderDiscovery {
+        val listUrl = when (provider) {
+            Provider.OPENAI -> cloudOrOverride(keyCheckOverrides[provider], OPENAI_MODELS_URL)
+            Provider.GEMINI -> cloudOrOverride(keyCheckOverrides[provider], GEMINI_MODELS_URL)
+            Provider.CLAUDE -> cloudOrOverride(keyCheckOverrides[provider], CLAUDE_MODELS_URL)
+            Provider.SELF_HOSTED_POLISH -> return ProviderDiscovery.Refused(ProviderKeyCheck.NotApplicable)
+        }
+        if (apiKey.isBlank() || apiKey.any(Char::isISOControl)) {
+            return ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
+        }
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(discoveryTimeoutMs.coerceAtLeast(1).toLong())
+        fun remaining(): Int = remainingMillis(deadline)
+
+        // The list, page by page for Claude.
+        val rows = mutableListOf<ListedModel>()
+        var afterId: String? = null
+        val seenCursors = HashSet<String>()
+        var pages = 0
+        while (pages < MAX_LIST_PAGES) {
+            pages++
+            val url = if (provider == Provider.CLAUDE) {
+                URI(listUrl.toString() + (if (listUrl.rawQuery == null) "?" else "&") + "limit=1000" + (afterId?.let { "&after_id=${encodePath(it)}" } ?: ""))
+            } else listUrl
+            val plan = RequestPlan(url, authHeaders(provider, apiKey), body = null, responseFormat = ResponseFormat.NONE, method = "GET")
+            val left = remaining()
+            if (left <= 0) return ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.TIMED_OUT))
+            when (val transport = run(plan, ProviderCancellation(), left.coerceAtMost(KEY_CHECK_TIMEOUT_MS), connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, KEY_CHECK_TIMEOUT_MS))) {
+                is Transport.Failed -> {
+                    if (rows.isNotEmpty()) break // a later page failed: the rows so far are the list
+                    return ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(unverifiedFailure(transport.kind), transport.status))
+                }
+                is Transport.Response -> {
+                    if (transport.status != 200) {
+                        if (rows.isNotEmpty()) break
+                        return when (val verdict = classifyKeyCheck(provider, transport.status, transport.body)) {
+                            ProviderKeyCheck.Accepted -> ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, transport.status))
+                            else -> ProviderDiscovery.Refused(verdict)
+                        }
+                    }
+                    val page = parseModelRows(provider, transport.body)
+                    if (page == null) {
+                        // A malformed LATER page keeps the rows already fetched; a malformed first page is a refusal.
+                        if (rows.isEmpty()) return ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, 200))
+                        logWarn("Discovery: $provider page $pages malformed")
+                        break
+                    }
+                    rows += page.rows
+                    if (provider != Provider.CLAUDE) break
+                    when (val next = ModelListRules.claudePagination(page.hasMore, page.lastId, seenCursors)) {
+                        ModelListRules.Pagination.Stop -> break
+                        ModelListRules.Pagination.Malformed -> { logWarn("Discovery: CLAUDE pagination malformed after $pages page(s)"); break }
+                        is ModelListRules.Pagination.Continue -> { seenCursors += next.afterId; afterId = next.afterId }
+                    }
+                }
+            }
+        }
+        val listed = rows.size
+        val kept = ModelListRules.filter(provider, rows)
+        if (kept.isEmpty()) {
+            logInfo("Discovery: $provider listed=$listed kept=0")
+            return ProviderDiscovery.Listed(emptyList(), System.currentTimeMillis())
+        }
+
+        // The probes, at most MAX_PROBES of them, three in flight, every one bounded by the remaining time.
+        val toProbe = kept.take(MAX_PROBES)
+        val futures = toProbe.map { row ->
+            PROBE_EXECUTOR.submit<ProbeOutcome> { probe(provider, row.id, apiKey, remaining()) }
+        }
+        val access = HashMap<String, ModelAccess>()
+        var cutOff = 0
+        try {
+            futures.forEachIndexed { index, future ->
+                // A probe the deadline cuts off is UNVERIFIED, never locked; the list still comes back.
+                val left = remaining()
+                val outcome = if (left <= 0) null else try {
+                    future.get(left.toLong(), TimeUnit.MILLISECONDS)
+                } catch (_: TimeoutException) {
+                    null
+                }
+                when (outcome) {
+                    null -> cutOff++
+                    is ProbeOutcome.KeyRejected -> {
+                        logInfo("Discovery: $provider probe rejected the key status=${outcome.status}")
+                        return ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(outcome.status))
+                    }
+                    is ProbeOutcome.Access -> access[toProbe[index].id] = outcome.access
+                }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.UNEXPECTED))
+        } catch (_: ExecutionException) {
+            return ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.UNEXPECTED))
+        } finally {
+            futures.forEach { it.cancel(true) }
+        }
+        val models = ModelListRules.sort(
+            kept.map { row ->
+                DiscoveredModel(
+                    id = row.id,
+                    displayName = ModelListRules.displayName(provider, row.id, row.displayName),
+                    access = access[row.id] ?: ModelAccess.UNVERIFIED,
+                    recommended = ModelListRules.isRecommended(row.id),
+                )
+            },
+        )
+        logInfo(
+            "Discovery: $provider listed=$listed kept=${kept.size} probed=${toProbe.size} cutOff=$cutOff " +
+                "available=${models.count { it.access == ModelAccess.AVAILABLE }} unverified=${models.count { it.access == ModelAccess.UNVERIFIED }}",
+        )
+        return ProviderDiscovery.Listed(models, System.currentTimeMillis())
+    }
+
+    private fun unverifiedFailure(kind: ProviderFailureKind): PolishFailure = when (kind) {
+        ProviderFailureKind.NETWORK -> PolishFailure.UNREACHABLE
+        ProviderFailureKind.TIMEOUT -> PolishFailure.TIMED_OUT
+        ProviderFailureKind.NO_API_KEY,
+        ProviderFailureKind.INVALID_CONFIGURATION,
+        ProviderFailureKind.CANCELLED,
+        ProviderFailureKind.HTTP_ERROR,
+        ProviderFailureKind.MALFORMED_RESPONSE,
+        ProviderFailureKind.RESPONSE_TOO_LARGE,
+        ProviderFailureKind.REDIRECT_REJECTED,
+        -> PolishFailure.BAD_REQUEST
+    }
+
+    /** One probe: the polish request's own plan with the fixed word "Hi" and a tiny output cap. */
+    private fun probe(provider: Provider, model: String, apiKey: String, remainingMs: Int): ProbeOutcome {
+        val plan = requestPlan(ProviderPolishRequest(provider, model, PROBE_TEXT, apiKey), probe = true)
+            ?: return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
+        if (remainingMs <= 0) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
+        val budget = remainingMs.coerceAtMost(probeTimeoutMs.coerceAtLeast(1))
+        return when (val transport = run(plan, ProviderCancellation(), budget, connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, budget))) {
+            is Transport.Failed -> ModelListRules.probeOutcome(provider, null, null)
+            is Transport.Response -> ModelListRules.probeOutcome(provider, transport.status, transport.body)
+        }
+    }
+
+    private class ModelPage(val rows: List<ListedModel>, val hasMore: Boolean, val lastId: String?)
+
+    /** The provider's own list shape; null when the body is not that shape. */
+    private fun parseModelRows(provider: Provider, body: String): ModelPage? {
+        val root = try {
+            JsonParser(body).parse()
+        } catch (_: IllegalArgumentException) {
+            return null
+        } catch (_: StackOverflowError) {
+            return null
+        }
+        val map = root as? Map<*, *> ?: return null
+        return when (provider) {
+            Provider.OPENAI -> {
+                val data = map["data"] as? List<*> ?: return null
+                ModelPage(data.mapNotNull { (it as? Map<*, *>)?.get("id") as? String }.map { ListedModel(it, null) }, false, null)
+            }
+            Provider.GEMINI -> {
+                val list = map["models"] as? List<*> ?: return null
+                ModelPage(
+                    list.mapNotNull { entry ->
+                        val row = entry as? Map<*, *> ?: return@mapNotNull null
+                        val name = row["name"] as? String ?: return@mapNotNull null
+                        val methods = row["supportedGenerationMethods"] as? List<*> ?: return@mapNotNull null
+                        if (methods.none { it == "generateContent" }) return@mapNotNull null
+                        ListedModel(name.removePrefix("models/"), row["displayName"] as? String)
+                    },
+                    false,
+                    null,
+                )
+            }
+            Provider.CLAUDE -> {
+                val data = map["data"] as? List<*> ?: return null
+                ModelPage(
+                    data.mapNotNull { entry ->
+                        val row = entry as? Map<*, *> ?: return@mapNotNull null
+                        val id = row["id"] as? String ?: return@mapNotNull null
+                        ListedModel(id, row["display_name"] as? String)
+                    },
+                    map["has_more"] as? Boolean ?: false,
+                    map["last_id"] as? String,
+                )
+            }
+            Provider.SELF_HOSTED_POLISH -> null
+        }
     }
 
     private fun keyCheckStatus(verdict: ProviderKeyCheck): Int? = when (verdict) {
@@ -404,31 +599,52 @@ class ProviderPolishClient(
         }
     }
 
-    private fun requestPlan(request: ProviderPolishRequest): RequestPlan? {
+    /**
+     * [probe] builds the discovery probe (#84): the same URL and headers, the fixed word "Hi" as the
+     * only input, no system instruction, a tiny output cap, and `store:false` kept for OpenAI.
+     */
+    private fun requestPlan(request: ProviderPolishRequest, probe: Boolean = false): RequestPlan? {
         val override = endpointOverrides[request.provider]
         return when (request.provider) {
             Provider.OPENAI -> RequestPlan(
                 url = cloudOrOverride(override, OPENAI_URL),
                 headers = authHeaders(request.provider, request.apiKey.orEmpty()),
-                body = "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"input\":${jsonString(request.prompt)},\"store\":false}",
+                body = if (probe) {
+                    // The Responses API's smallest accepted cap is 16.
+                    "{\"model\":${jsonString(request.model)},\"input\":${jsonString(PROBE_TEXT)},\"max_output_tokens\":$OPENAI_PROBE_OUTPUT_TOKENS,\"store\":false}"
+                } else {
+                    "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"input\":${jsonString(request.prompt)},\"store\":false}"
+                },
                 responseFormat = ResponseFormat.OPENAI_RESPONSES,
             )
             Provider.GEMINI -> {
-                val base = cloudOrOverride(override, GEMINI_URL_PREFIX + encodePath(request.model) + ":generateContent")
+                // Gemini names the model in the PATH, so a test override keeps that shape (the fake server
+                // tells probes apart by it); the real URL is unchanged.
+                val base = if (override != null) URI(override.trimEnd('/') + "/" + encodePath(request.model) + ":generateContent")
+                else URI(GEMINI_URL_PREFIX + encodePath(request.model) + ":generateContent")
                 RequestPlan(
                     url = base,
                     headers = authHeaders(request.provider, request.apiKey.orEmpty()),
-                    body = "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(request.prompt)}}]}]}",
+                    body = if (probe) {
+                        "{\"contents\":[{\"parts\":[{\"text\":${jsonString(PROBE_TEXT)}}]}],\"generationConfig\":{\"maxOutputTokens\":$PROBE_OUTPUT_TOKENS}}"
+                    } else {
+                        "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(request.prompt)}}]}]}"
+                    },
                     responseFormat = ResponseFormat.GEMINI,
                 )
             }
             Provider.CLAUDE -> RequestPlan(
                 url = cloudOrOverride(override, CLAUDE_URL),
                 headers = authHeaders(request.provider, request.apiKey.orEmpty()),
-                body = "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}]}",
+                body = if (probe) {
+                    "{\"model\":${jsonString(request.model)},\"max_tokens\":$PROBE_OUTPUT_TOKENS,\"messages\":[{\"role\":\"user\",\"content\":${jsonString(PROBE_TEXT)}}]}"
+                } else {
+                    "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}]}"
+                },
                 responseFormat = ResponseFormat.CLAUDE,
             )
             Provider.SELF_HOSTED_POLISH -> {
+                if (probe) return null
                 val endpoint = request.endpoint ?: return null
                 val path = when (request.selfHostedProtocol) {
                     SelfHostedProtocol.OPENAI_COMPATIBLE -> "/v1/chat/completions"
@@ -619,11 +835,19 @@ class ProviderPolishClient(
     private class ProviderCancelledException : IOException()
     private class ProviderTimedOutException : IOException()
 
-    private companion object {
+    internal companion object {
         val REQUEST_EXECUTOR: ExecutorService = Executors.newFixedThreadPool(
             4,
             ThreadFactory { runnable ->
                 Thread(runnable, "provider-polish").apply { isDaemon = true }
+            },
+        )
+
+        /** Three probes in flight, each waiting on one request worker, so one of the four stays free for polish (#84). */
+        val PROBE_EXECUTOR: ExecutorService = Executors.newFixedThreadPool(
+            3,
+            ThreadFactory { runnable ->
+                Thread(runnable, "provider-probe").apply { isDaemon = true }
             },
         )
         const val DEFAULT_CONNECT_TIMEOUT_MS = 5_000
@@ -650,6 +874,14 @@ class ProviderPolishClient(
         const val CLAUDE_MODELS_URL = "https://api.anthropic.com/v1/models"
         /** macOS's discovery timeout; one phone reading is never a calibration, so the reference value is kept. */
         const val KEY_CHECK_TIMEOUT_MS = 15_000
+        /** The live model list (#84): one whole-operation deadline (the Mac has none; a phone needs one), a per-probe cap, page and probe counts. */
+        const val DISCOVERY_TIMEOUT_MS = 60_000
+        const val PROBE_TIMEOUT_MS = 10_000
+        const val MAX_LIST_PAGES = 10
+        const val MAX_PROBES = 40
+        const val PROBE_TEXT = "Hi"
+        const val PROBE_OUTPUT_TOKENS = 5
+        const val OPENAI_PROBE_OUTPUT_TOKENS = 16
     }
 }
 

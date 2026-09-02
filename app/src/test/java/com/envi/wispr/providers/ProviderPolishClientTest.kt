@@ -436,6 +436,276 @@ class ProviderPolishClientTest {
         }
     }
 
+    // ---- Discovery (#84): a scripted server serves the list call and every probe on one port, concurrently.
+
+    private class ScriptedServer(
+        /** Answers one request: (status, body). Runs on the connection's own thread. */
+        private val respond: (TestRequest) -> Pair<Int, String>,
+        private val holdMs: Long = 0,
+        private val connections: Int = 64,
+    ) : AutoCloseable {
+        private val socket = ServerSocket(0, 50, java.net.InetAddress.getLoopbackAddress())
+        private val acceptor = Executors.newSingleThreadExecutor()
+        private val handlers = Executors.newCachedThreadPool()
+        val requests = java.util.Collections.synchronizedList(mutableListOf<TestRequest>())
+        private val inFlight = AtomicInteger()
+        val maxInFlight = AtomicInteger()
+        val port: Int get() = socket.localPort
+        val base: String get() = "http://127.0.0.1:$port"
+
+        init {
+            acceptor.submit {
+                repeat(connections) {
+                    val connection = try { socket.accept() } catch (_: Exception) { return@submit }
+                    handlers.submit {
+                        try {
+                            connection.use {
+                                val now = inFlight.incrementAndGet()
+                                maxInFlight.accumulateAndGet(now, ::maxOf)
+                                try {
+                                    val reader = BufferedReader(InputStreamReader(it.getInputStream(), StandardCharsets.ISO_8859_1))
+                                    val requestLine = reader.readLine() ?: return@use
+                                    val parts = requestLine.split(' ', limit = 3)
+                                    val headers = buildMap {
+                                        while (true) {
+                                            val line = reader.readLine() ?: break
+                                            if (line.isEmpty()) break
+                                            val colon = line.indexOf(':')
+                                            if (colon > 0) put(line.substring(0, colon).lowercase(), line.substring(colon + 1).trim())
+                                        }
+                                    }
+                                    val bodyLength = headers["content-length"]?.toIntOrNull() ?: 0
+                                    val body = CharArray(bodyLength)
+                                    var read = 0
+                                    while (read < bodyLength) {
+                                        val count = reader.read(body, read, bodyLength - read)
+                                        if (count < 0) break
+                                        read += count
+                                    }
+                                    val request = TestRequest(parts[0], parts.getOrElse(1) { "" }, headers, String(body, 0, read))
+                                    requests += request
+                                    if (holdMs > 0) Thread.sleep(holdMs)
+                                    val (status, response) = respond(request)
+                                    val bytes = response.toByteArray(StandardCharsets.UTF_8)
+                                    val writer = PrintWriter(OutputStreamWriter(it.getOutputStream(), StandardCharsets.ISO_8859_1))
+                                    writer.print("HTTP/1.1 $status Test\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n")
+                                    writer.flush()
+                                    it.getOutputStream().write(bytes)
+                                    it.getOutputStream().flush()
+                                } finally {
+                                    inFlight.decrementAndGet()
+                                }
+                            }
+                        } catch (_: Exception) {
+                            // A cancelled probe closes its socket mid-write; that is the shape under test.
+                        }
+                    }
+                }
+            }
+        }
+
+        override fun close() {
+            socket.close()
+            acceptor.shutdownNow()
+            handlers.shutdownNow()
+        }
+    }
+
+    private fun discoverer(server: ScriptedServer, provider: Provider, discoveryTimeoutMs: Int = 10_000, probeTimeoutMs: Int = 2_000, readTimeoutMs: Int = 2_000) = ProviderPolishClient(
+        connectTimeoutMs = 2_000,
+        readTimeoutMs = readTimeoutMs,
+        overallTimeoutMs = 5_000,
+        endpointOverrides = mapOf(provider to server.base + "/probe"),
+        keyCheckOverrides = mapOf(provider to server.base + "/models"),
+        logInfo = {},
+        logWarn = {},
+        discoveryTimeoutMs = discoveryTimeoutMs,
+        probeTimeoutMs = probeTimeoutMs,
+    )
+
+    private fun openAiList(vararg ids: String) = "{\"data\":[" + ids.joinToString(",") { "{\"id\":\"$it\",\"object\":\"model\"}" } + "]}"
+    private fun probedModel(request: TestRequest): String = Regex("\"model\":\"([^\"]+)\"").find(request.body)?.groupValues?.get(1) ?: request.path.substringAfterLast('/').substringBefore(':')
+
+    @Test fun discoveryListsFiltersProbesRecommendsAndSorts() {
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-5.6-terra", "gpt-4.1-mini", "gpt-4o-realtime-preview", "o1-mini", "gpt-5.6-terra", "gpt-locked")
+            else when (probedModel(request)) {
+                "gpt-locked" -> 403 to "{}"
+                else -> 200 to "{}"
+            }
+        }).use { server ->
+            val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "sk-test")
+            assertTrue("$result", result is ProviderDiscovery.Listed)
+            val models = (result as ProviderDiscovery.Listed).models
+            assertEquals(listOf("gpt-4.1-mini", "gpt-5.6-terra", "gpt-locked"), models.map { it.id })
+            assertEquals(listOf(ModelAccess.AVAILABLE, ModelAccess.AVAILABLE, ModelAccess.UNAVAILABLE), models.map { it.access })
+            assertEquals(listOf(true, false, false), models.map { it.recommended })
+            assertEquals("Gpt 4.1 Mini", models[0].displayName)
+            val list = server.requests.first { it.path.startsWith("/models") }
+            assertEquals("GET", list.method); assertEquals("", list.body); assertEquals("Bearer sk-test", list.headers["authorization"])
+            val probes = server.requests.filter { it.path.startsWith("/probe") }
+            assertEquals(3, probes.size)
+            probes.forEach { probe ->
+                assertEquals("POST", probe.method)
+                assertTrue(probe.body, probe.body.contains("\"input\":\"Hi\"") && probe.body.contains("\"max_output_tokens\":16") && probe.body.contains("\"store\":false"))
+                assertFalse(probe.body, probe.body.contains("instructions"))
+            }
+        }
+    }
+
+    @Test fun discoveryRunsAtMostThreeProbesAtOnce() {
+        ScriptedServer(
+            { request -> if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else 200 to "{}" },
+            holdMs = 150,
+        ).use { server ->
+            val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k")
+            assertTrue("$result", result is ProviderDiscovery.Listed)
+            assertEquals(9, (result as ProviderDiscovery.Listed).models.size)
+            assertTrue("max in flight ${server.maxInFlight.get()}", server.maxInFlight.get() in 2..3)
+        }
+    }
+
+    @Test fun geminiKeepsGenerateContentRowsAndReadsAQuotaZeroLimitAsLocked() {
+        val list = "{\"models\":[" +
+            "{\"name\":\"models/gemini-3.6-flash\",\"displayName\":\"Gemini 3.6 Flash\",\"supportedGenerationMethods\":[\"generateContent\"]}," +
+            "{\"name\":\"models/gemini-embedding-001\",\"displayName\":\"Embedding\",\"supportedGenerationMethods\":[\"embedContent\"]}," +
+            "{\"name\":\"models/gemini-2.5-pro\",\"displayName\":\"Gemini 2.5 Pro\",\"supportedGenerationMethods\":[\"generateContent\"]}" +
+            "]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to list
+            else if (request.path.contains("gemini-2.5-pro")) 429 to "{\"error\":{\"message\":\"Quota exceeded, limit: 0\"}}"
+            else 429 to "{\"error\":{\"message\":\"Resource exhausted\"}}"
+        }).use { server ->
+            val result = discoverer(server, Provider.GEMINI).discoverModels(Provider.GEMINI, "AIza") as ProviderDiscovery.Listed
+            assertEquals(listOf("gemini-3.6-flash", "gemini-2.5-pro"), result.models.map { it.id })
+            assertEquals(listOf(ModelAccess.AVAILABLE, ModelAccess.UNAVAILABLE), result.models.map { it.access })
+            assertEquals("Gemini 3.6 Flash", result.models[0].displayName)
+            val probe = server.requests.first { it.path.startsWith("/probe") }
+            assertTrue(probe.body, probe.body.contains("\"maxOutputTokens\":5") && !probe.body.contains("systemInstruction"))
+        }
+    }
+
+    @Test fun claudeFollowsPaginationAndStopsOnARepeatedCursor() {
+        val page1 = "{\"data\":[{\"id\":\"claude-sonnet-5\",\"display_name\":\"Claude Sonnet 5\"}],\"has_more\":true,\"last_id\":\"c1\"}"
+        val page2 = "{\"data\":[{\"id\":\"claude-haiku-4-5\",\"display_name\":\"Claude Haiku 4.5\"}],\"has_more\":true,\"last_id\":\"c1\"}"
+        ScriptedServer({ request ->
+            when {
+                request.path.startsWith("/models") && request.path.contains("after_id=c1") -> 200 to page2
+                request.path.startsWith("/models") -> 200 to page1
+                else -> 200 to "{}"
+            }
+        }).use { server ->
+            val result = discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed
+            assertEquals(listOf("claude-haiku-4-5", "claude-sonnet-5"), result.models.map { it.id })
+            val lists = server.requests.filter { it.path.startsWith("/models") }
+            assertEquals(2, lists.size)
+            assertTrue(lists[0].path, lists[0].path.contains("limit=1000"))
+            assertEquals("sk-ant", lists[0].headers["x-api-key"])
+            val probe = server.requests.first { it.path.startsWith("/probe") }
+            assertTrue(probe.body, probe.body.contains("\"max_tokens\":5") && !probe.body.contains("\"system\""))
+        }
+    }
+
+    @Test fun aMalformedLaterClaudePageKeepsAndProbesTheEarlierRows() {
+        val page1 = "{\"data\":[{\"id\":\"claude-sonnet-5\",\"display_name\":\"Claude Sonnet 5\"}],\"has_more\":true,\"last_id\":\"c1\"}"
+        ScriptedServer({ request ->
+            when {
+                request.path.startsWith("/models") && request.path.contains("after_id=c1") -> 200 to "not json at all"
+                request.path.startsWith("/models") -> 200 to page1
+                else -> 200 to "{}"
+            }
+        }).use { server ->
+            val result = discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed
+            assertEquals(listOf("claude-sonnet-5"), result.models.map { it.id })
+            assertEquals(ModelAccess.AVAILABLE, result.models.single().access)
+        }
+        ScriptedServer({ _ -> 200 to "not json at all" }).use { server ->
+            assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, 200)), discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant"))
+        }
+    }
+
+    @Test fun theDeadlineCancelsQueuedAndActiveProbes() {
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else { Thread.sleep(600); 200 to "{}" }
+        }).use { server ->
+            val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 800, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")
+            assertTrue("$result", result is ProviderDiscovery.Listed)
+            val probesAtReturn = server.requests.count { it.path.startsWith("/probe") }
+            Thread.sleep(1_500)
+            val probesLater = server.requests.count { it.path.startsWith("/probe") }
+            // Nine models, three in flight: without cancellation the queued six would still arrive after the return.
+            assertTrue("at return $probesAtReturn, later $probesLater", probesLater == probesAtReturn && probesLater < 9)
+        }
+    }
+
+    @Test fun discoveryRefusesTheWholeListWhenAProbeRejectsTheKey() {
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-a", "gpt-b") else 401 to "{}"
+        }).use { server ->
+            assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k"))
+        }
+        // Gemini says a wrong key with a 400 body on the probe too; the status is carried as the provider sent it.
+        val geminiList = "{\"models\":[{\"name\":\"models/gemini-3.6-flash\",\"displayName\":\"F\",\"supportedGenerationMethods\":[\"generateContent\"]}]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to geminiList else 400 to "{\"error\":{\"details\":[{\"reason\":\"API_KEY_INVALID\"}]}}"
+        }).use { server ->
+            assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(400)), discoverer(server, Provider.GEMINI).discoverModels(Provider.GEMINI, "AIza"))
+        }
+    }
+
+    @Test fun discoveryRefusesOnAListRejectionAndCapsTheProbes() {
+        ScriptedServer({ _ -> 401 to "{}" }).use { server ->
+            assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k"))
+        }
+        val many = Array(ProviderPolishClient.MAX_PROBES + 3) { "gpt-x$it" }
+        ScriptedServer({ request -> if (request.path.startsWith("/models")) 200 to openAiList(*many) else 200 to "{}" }, connections = 128).use { server ->
+            val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
+            assertEquals(many.size, result.models.size)
+            assertEquals(ProviderPolishClient.MAX_PROBES, result.models.count { it.access == ModelAccess.AVAILABLE })
+            assertEquals(3, result.models.count { it.access == ModelAccess.UNVERIFIED })
+            assertEquals(ProviderPolishClient.MAX_PROBES, server.requests.count { it.path.startsWith("/probe") })
+        }
+    }
+
+    @Test fun aProbeTimeoutIsUnverifiedAndTheWholeDeadlineRefusesAsTimedOut() {
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-slow", "gpt-fast") else { if (probedModel(request) == "gpt-slow") Thread.sleep(1_500); 200 to "{}" }
+        }).use { server ->
+            val result = discoverer(server, Provider.OPENAI, probeTimeoutMs = 400, readTimeoutMs = 400).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
+            assertEquals(ModelAccess.AVAILABLE, result.models.first { it.id == "gpt-fast" }.access)
+            assertEquals(ModelAccess.UNVERIFIED, result.models.first { it.id == "gpt-slow" }.access)
+        }
+        // The whole-operation deadline bounds every probe: the ones it cuts off are UNVERIFIED (never locked)
+        // and the list still comes back, inside the deadline plus one probe's grace.
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList(*Array(6) { "gpt-m$it" }) else { Thread.sleep(700); 200 to "{}" }
+        }).use { server ->
+            val started = System.nanoTime()
+            val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 900, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")
+            val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+            assertTrue("$result", result is ProviderDiscovery.Listed)
+            val access = (result as ProviderDiscovery.Listed).models.map { it.access }
+            assertTrue("$access", access.count { it == ModelAccess.UNVERIFIED } >= 1 && access.none { it == ModelAccess.UNAVAILABLE })
+            assertTrue("took ${elapsedMs}ms", elapsedMs < 2_500)
+        }
+        // A deadline already spent before the list call refuses as timed out.
+        ScriptedServer({ _ -> 200 to openAiList("gpt-a") }, holdMs = 400).use { server ->
+            val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 60, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")
+            val verdict = (result as? ProviderDiscovery.Refused)?.verdict
+            assertTrue("$result", verdict is ProviderKeyCheck.Unverified && verdict.failure == PolishFailure.TIMED_OUT)
+        }
+    }
+
+    @Test fun discoveryAsksNothingForSelfHostedAndAnEmptyFilteredListIsListedEmpty() {
+        val client = ProviderPolishClient(keyCheckOverrides = mapOf(Provider.OPENAI to "http://127.0.0.1:1/never"), logInfo = {}, logWarn = {})
+        assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.NotApplicable), client.discoverModels(Provider.SELF_HOSTED_POLISH, "x"))
+        ScriptedServer({ _ -> 200 to openAiList("dall-e-3", "whisper-1") }).use { server ->
+            val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
+            assertEquals(emptyList<DiscoveredModel>(), result.models)
+            assertEquals(0, server.requests.count { it.path.startsWith("/probe") })
+        }
+    }
+
     private data class TestRequest(
         val method: String,
         val path: String,

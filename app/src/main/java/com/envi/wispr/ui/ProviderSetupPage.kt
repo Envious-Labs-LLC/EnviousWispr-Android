@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.envi.wispr.providers.ModelAccess
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderConfiguration
 import com.envi.wispr.providers.ProviderConfigurationValidator
@@ -57,11 +59,19 @@ import com.envi.wispr.ui.theme.brandButtonColors
 internal fun ProviderSetupPage(
     provider: Provider,
     settings: ProviderSettingsUiState,
-    onSave: (Provider, String, String?) -> Int,
+    discovery: ProviderDiscoveryUiState,
+    onSave: (Provider, String, String?, Int?) -> Int,
     onClear: () -> Int,
+    onCheckKey: (Provider, String?) -> Int,
+    onKeyDraftChanged: (Provider) -> Unit,
+    onLoadCachedModels: (Provider) -> Unit,
     onDone: () -> Unit,
 ) {
     val editing = settings.configured && settings.provider == provider
+    // The sequence of the last Check run on the CURRENT key draft; cleared the moment the draft changes,
+    // handed to Save so the listed models can become the cache for the credential just stored (#84).
+    var checkSequence by rememberSaveable { mutableStateOf<Int?>(null) }
+    LaunchedEffect(provider) { onLoadCachedModels(provider) }
     val keyStored = editing && settings.credentialStored
     var apiKey by remember { mutableStateOf("") }
     // The SAVED model stays pinned to the top of the list whatever the draft becomes, so an obsolete saved
@@ -101,7 +111,9 @@ internal fun ProviderSetupPage(
     }
 
     val saving = target != null
-    val canSave = modelDraft.isNotBlank() && (apiKey.isNotBlank() || keyStored) && !saving
+    val discoveryChecking = discovery.provider == provider && discovery.phase == ProviderDiscoveryUiState.Phase.CHECKING
+    // Save waits for a running Check, so the list it would promote exists before the credential is stored.
+    val canSave = modelDraft.isNotBlank() && (apiKey.isNotBlank() || keyStored) && !saving && !discoveryChecking
     val name = provider.capabilities().displayName
 
     fun save() {
@@ -115,7 +127,7 @@ internal fun ProviderSetupPage(
             ValidationResult.Valid -> {
                 localError = null
                 saveError = null
-                target = onSave(provider, normalizedModel, apiKey.takeIf(String::isNotBlank))
+                target = onSave(provider, normalizedModel, apiKey.takeIf(String::isNotBlank), checkSequence)
             }
             is ValidationResult.Invalid -> localError = validation.reason.userMessage()
         }
@@ -147,16 +159,25 @@ internal fun ProviderSetupPage(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            val discoveryForPage = discovery.takeIf { it.provider == provider }
+            val checking = discoveryForPage?.phase == ProviderDiscoveryUiState.Phase.CHECKING
+            val discoveryLine = discoveryForPage?.line?.takeIf { discoveryForPage.phase == ProviderDiscoveryUiState.Phase.FAILED || discoveryForPage.phase == ProviderDiscoveryUiState.Phase.LISTED }
             OutlinedTextField(
                 value = apiKey,
-                onValueChange = { apiKey = it; localError = null; saveError = null },
+                onValueChange = { apiKey = it; localError = null; saveError = null; checkSequence = null; onKeyDraftChanged(provider) },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("API key") },
-                isError = localError != null,
+                isError = localError != null || (discoveryForPage?.phase == ProviderDiscoveryUiState.Phase.FAILED),
                 supportingText = {
                     Text(
-                        localError ?: if (keyStored) "Leave blank to keep your saved key." else "Encrypted in the Android Keystore. Never written to logs.",
+                        localError ?: discoveryLine ?: if (keyStored) "Leave blank to keep your saved key." else "Encrypted in the Android Keystore. Never written to logs.",
                     )
+                },
+                trailingIcon = {
+                    TextButton(
+                        onClick = { localError = null; checkSequence = onCheckKey(provider, apiKey.takeIf(String::isNotBlank)) },
+                        enabled = !saving && !checking && (apiKey.isNotBlank() || keyStored),
+                    ) { Text(if (checking) "Checking" else "Check") }
                 },
                 singleLine = true,
                 enabled = !saving,
@@ -164,8 +185,24 @@ internal fun ProviderSetupPage(
             )
 
             Text("Model", style = MaterialTheme.typography.titleSmall)
-            val filtered = PolishModelCatalog.filterAndSort(provider, query, sort, savedModel)
-            val catalogTotal = PolishModelCatalog.filterAndSort(provider, "", sort, savedModel).size
+            // An edited, unchecked draft hides both the previous draft result and the saved-credential
+            // cache: one credential's access is never shown under another (#84).
+            val draftUnchecked = apiKey.isNotBlank() && checkSequence == null
+            // A draft result shows only while its draft is still in the box: after a rotation the key draft
+            // is gone (never saveable), so the list that described it is hidden until the next Check.
+            val visibleModels = when {
+                draftUnchecked -> emptyList()
+                discoveryForPage == null -> emptyList()
+                // A draft Check in flight, or a result that is not THIS draft's, shows nothing of any credential.
+                apiKey.isNotBlank() && (checking || discoveryForPage.sequence != checkSequence) -> emptyList()
+                apiKey.isBlank() && !discoveryForPage.usedStoredKey -> emptyList()
+                else -> discoveryForPage.models
+            }
+            val filtered = ModelListPresentation.present(provider, visibleModels, query, sort, savedModel)
+            // The count includes the pinned saved row, so the rows on screen and the number agree.
+            val allRows = ModelListPresentation.present(provider, visibleModels, "", sort, savedModel)
+            val countLine = if (visibleModels.isEmpty()) null else ModelListPresentation.countLine(allRows, filtered.count { !it.typed }, query) +
+                (if (discoveryForPage?.fromCache == true && discoveryForPage.fetchedAt != null) " · from ${relativeAge(discoveryForPage.fetchedAt)}" else "")
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -186,7 +223,7 @@ internal fun ProviderSetupPage(
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(
-                    if (query.isNotBlank()) "${filtered.size} of $catalogTotal models" else "$catalogTotal models",
+                    countLine ?: if (checking) "Loading the models this key can use" else "Tap Check to load the models this key can use.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -196,12 +233,14 @@ internal fun ProviderSetupPage(
             }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 filtered.forEach { row ->
-                    val selected = row.name == modelDraft
+                    val selected = row.id == modelDraft
+                    val locked = row.access == ModelAccess.UNAVAILABLE
                     Card(
-                        onClick = { modelDraft = row.name; localError = null },
-                        enabled = !saving,
+                        onClick = { modelDraft = row.id; localError = null },
+                        enabled = !saving && row.selectable,
                         colors = CardDefaults.cardColors(
                             containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                         ),
                     ) {
                         Row(
@@ -210,17 +249,25 @@ internal fun ProviderSetupPage(
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text(row.name, style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        row.id,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = if (locked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                                    )
                                     if (row.tag != null && sort == ModelSort.SUGGESTED) {
                                         Text(row.tag, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                                     }
                                 }
-                                Text(row.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (row.note != null) {
+                                    Text(row.note, style = MaterialTheme.typography.bodySmall, color = if (locked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                ScoreDots(row.cost)
-                                ScoreDots(row.speed)
-                                ScoreDots(row.accuracy)
+                            if (row.cost != null && row.speed != null && row.accuracy != null) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    ScoreDots(row.cost)
+                                    ScoreDots(row.speed)
+                                    ScoreDots(row.accuracy)
+                                }
                             }
                         }
                     }
@@ -301,4 +348,15 @@ internal fun ValidationReason.userMessage(): String = when (this) {
     ValidationReason.ENDPOINT_MUST_NOT_INCLUDE_CREDENTIALS -> "Remove credentials from the server URL."
     ValidationReason.ENDPOINT_MUST_NOT_INCLUDE_FRAGMENT -> "Remove the # fragment from the server URL."
     ValidationReason.ENDPOINT_MUST_NOT_CONTAIN_WHITESPACE -> "Remove spaces from the server URL."
+}
+
+/** "2 minutes ago" for the cache age line; coarse on purpose. */
+internal fun relativeAge(fetchedAt: Long, now: Long = System.currentTimeMillis()): String {
+    val minutes = ((now - fetchedAt) / 60_000L).coerceAtLeast(0)
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "$minutes min ago"
+        minutes < 60 * 24 -> "${minutes / 60} h ago"
+        else -> "${minutes / (60 * 24)} d ago"
+    }
 }

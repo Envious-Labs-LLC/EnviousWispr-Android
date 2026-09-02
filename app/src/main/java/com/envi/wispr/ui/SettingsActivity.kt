@@ -56,6 +56,7 @@ class SettingsActivity : ComponentActivity() {
 
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+            val providerDiscovery by viewModel.providerDiscovery.collectAsStateWithLifecycle()
 
             EnviousWisprTheme(dynamicColor = uiState.preferences.dynamicColorEnabled) {
                 EnviousWisprApp(
@@ -94,6 +95,10 @@ class SettingsActivity : ComponentActivity() {
                     onSetPolishMode = { viewModel.setPolishMode(it) },
                     onSaveProviderSettings = viewModel::saveProviderSettings,
                     onClearProviderSettings = viewModel::clearProviderSettings,
+                    providerDiscovery = providerDiscovery,
+                    onCheckKey = viewModel::discoverModels,
+                    onKeyDraftChanged = viewModel::keyDraftChanged,
+                    onLoadCachedModels = viewModel::loadCachedModels,
                     onHistorySearchChange = viewModel::updateHistorySearch,
                     onKeepHistory = viewModel::setHistoryKept,
                     onDeleteHistory = viewModel::deleteHistory,

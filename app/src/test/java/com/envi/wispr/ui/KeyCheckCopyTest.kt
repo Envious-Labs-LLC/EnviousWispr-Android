@@ -35,6 +35,14 @@ class KeyCheckCopyTest {
         assertEquals("Couldn't check the key with Claude: an unexpected reply. Nothing was saved.", line(PolishFailure.UNEXPECTED))
     }
 
+    @Test fun theCheckLineNeverSaysNothingWasSaved() {
+        assertNull(discoveryLine(ProviderKeyCheck.Accepted, "OpenAI"))
+        assertEquals("Gemini rejected this key.", discoveryLine(ProviderKeyCheck.Rejected(400), "Gemini"))
+        assertEquals("OpenAI denied access for this key. Check your billing or API access.", discoveryLine(ProviderKeyCheck.Denied(403), "OpenAI"))
+        assertEquals("Couldn't check the key with Claude: no connection.", discoveryLine(ProviderKeyCheck.Unverified(PolishFailure.UNREACHABLE), "Claude"))
+        PolishFailure.entries.forEach { org.junit.Assert.assertFalse(discoveryLine(ProviderKeyCheck.Unverified(it), "X")!!.contains("Nothing was saved")) }
+    }
+
     @Test fun noLineCarriesADash() {
         val all = listOf(ProviderKeyCheck.Rejected(401), ProviderKeyCheck.Denied(403)) +
             PolishFailure.entries.map { ProviderKeyCheck.Unverified(it, 0) }

@@ -48,6 +48,9 @@ internal fun savedModelFor(provider: Provider, settings: ProviderSettingsUiState
 
 enum class RungOne { OFF, THIS_PHONE, CLOUD }
 
+/** Where the tab is standing: which rung one shows, and which tile the lower rungs describe. */
+data class SetupNavigation(val cloudSetup: Boolean, val browsedName: String?)
+
 /** What a tap on Cloud does: activate the configured provider, or open the setup rungs without a write. */
 enum class CloudTap { ACTIVATE, SETUP }
 
@@ -99,6 +102,17 @@ object PolishLadder {
      * provider no longer in [CloudProviders] is cleared instead of left behind.
      */
     fun browsedAfterRemove(displayed: Provider?): Provider? = displayed?.takeIf { it in CloudProviders }
+
+    /**
+     * The WHOLE navigation a starting remove must produce, so the tab holds no part of the decision.
+     *
+     * `cloudSetup` lives here rather than as a `true` written at the call site because that flag IS the
+     * bug: `rungOne` sends `OFFLINE_S1` to `THIS_PHONE` without it, and a test that passes the flag in by
+     * hand asserts the fix it is supposed to be checking. Owning both values means a test can state what
+     * a remove produces rather than what it hopes the caller remembered to set.
+     */
+    fun navigationAfterRemove(displayed: Provider?): SetupNavigation =
+        SetupNavigation(cloudSetup = true, browsedName = browsedAfterRemove(displayed)?.name)
 
     /** Connected only when the DISPLAYED provider is the saved one and its key is in the Keystore. */
     fun keyRung(displayed: Provider, settings: ProviderSettingsUiState, replacing: Boolean): KeyRung = when {

@@ -123,8 +123,9 @@ internal fun PolishScreen(
         // the write lands the settings no longer name the provider that was removed. Safe on a FAILED
         // write too: nothing was cleared, so the mode is still PROVIDER and both values agree with it.
         if (kind == WriteKind.REMOVE) {
-            cloudSetup = true
-            browsedName = PolishLadder.browsedAfterRemove(displayed)?.name
+            val nav = PolishLadder.navigationAfterRemove(displayed)
+            cloudSetup = nav.cloudSetup
+            browsedName = nav.browsedName
         }
         writeError = null; errorKind = null
         targetKindName = kind.name

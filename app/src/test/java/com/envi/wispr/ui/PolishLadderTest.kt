@@ -120,12 +120,16 @@ class PolishLadderTest {
     }
 
     /**
-     * Product Outcome. When this fails, the user removes a key and the tab throws them out of the Cloud
-     * rung onto This phone instead of offering an empty key field (#94).
+     * **Drift Guard, NOT product coverage, and the distinction is the point.** A JVM test cannot enter a
+     * composable, so nothing here goes red if `PolishScreen.start` stops calling
+     * `navigationAfterRemove` — the wiring is two assignments with no logic left in them, which is why
+     * the decision was moved out of the tab in the first place. The user-visible transition was verified
+     * instead by running it: a real Gemini key connected on the emulator, Remove pressed, and the tab
+     * observed staying on Cloud with the tile kept (#94). A rig that could assert it automatically does
+     * not exist here; the gap is issue #95, routed rather than faked.
      *
-     * The two pure decisions are asserted here. The one line a unit test cannot reach is the wiring in
-     * `PolishScreen.start`, which is what sets `cloudSetup` when a remove begins; this asserts what that
-     * flag must then produce, so a change to either rule goes red.
+     * What this DOES protect is every part of the decision itself, `cloudSetup` included. An earlier
+     * version passed `cloudSetup = true` in by hand, which asserted the answer it was meant to check.
      */
     @Test fun removingAKeyStaysInCloudSetupOnTheSameTile() {
         // The state a remove leaves behind: the repository has reset the mode and dropped the selection.
@@ -133,28 +137,36 @@ class PolishLadderTest {
 
         // Without the flag the tab follows the mode out of the rung. This IS the reported bug.
         assertEquals(RungOne.THIS_PHONE, PolishLadder.rungOne(afterRemove.mode, cloudSetup = false))
-        // With it, the tab holds its place.
-        assertEquals(RungOne.CLOUD, PolishLadder.rungOne(afterRemove.mode, cloudSetup = true))
 
-        // The tile stays selected, so rung 3 still has a subject.
-        assertEquals(Provider.GEMINI, PolishLadder.browsedAfterRemove(Provider.GEMINI))
-        assertEquals(Provider.GEMINI, PolishLadder.displayedProvider(Provider.GEMINI, afterRemove))
-        // And rung 3 is the empty field, not the connected row, because nothing is stored any more.
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.GEMINI, afterRemove, replacing = false))
+        // The remove decides the flag; the test does not supply it.
+        val nav = PolishLadder.navigationAfterRemove(Provider.GEMINI)
+        assertEquals(RungOne.CLOUD, PolishLadder.rungOne(afterRemove.mode, nav.cloudSetup))
+        assertEquals("GEMINI", nav.browsedName)
+
+        // And the tile it names still has a rung 3 under it: the empty field, not the connected row.
+        val kept = CloudProviders.first { it.name == nav.browsedName }
+        assertEquals(kept, PolishLadder.displayedProvider(kept, afterRemove))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(kept, afterRemove, replacing = false))
 
         // Nothing browsed and nothing saved leaves nothing to keep, and the caller assigns that null so a
         // stale browse is cleared rather than left behind.
-        assertNull(PolishLadder.browsedAfterRemove(null))
-        assertNull(PolishLadder.browsedAfterRemove(Provider.SELF_HOSTED_POLISH))
-        // Every cloud tile survives its own removal; the rule is not about Gemini.
-        CloudProviders.forEach { assertEquals(it, PolishLadder.browsedAfterRemove(it)) }
+        assertNull(PolishLadder.navigationAfterRemove(null).browsedName)
+        assertNull(PolishLadder.navigationAfterRemove(Provider.SELF_HOSTED_POLISH).browsedName)
+        // Every cloud tile survives its own removal; the rule is not about Gemini. Cloud setup is held in
+        // every case, including the ones that keep no tile.
+        CloudProviders.forEach {
+            val each = PolishLadder.navigationAfterRemove(it)
+            assertEquals(it.name, each.browsedName)
+            assertTrue(it.name, each.cloudSetup)
+        }
+        assertTrue("a removal with no tile still holds the rung", PolishLadder.navigationAfterRemove(null).cloudSetup)
     }
 
     /**
-     * Product Outcome. The self-hosted card is drawn from `settings` alone, so it stays on screen after the
-     * user taps a cloud tile: Remove on that card is reachable with Gemini's key field already open below
-     * it. The tab keeps Gemini, because losing the tile the user is standing on is the defect #94 exists to
-     * fix, and it does not matter that the thing removed was something else.
+     * Drift Guard, same limit as the test above. The self-hosted card is drawn from `settings` alone, so it
+     * stays on screen after the user taps a cloud tile: Remove on that card is reachable with Gemini's key
+     * field already open below it. The tab keeps Gemini, because losing the tile the user is standing on is
+     * the defect #94 exists to fix, and it does not matter that the thing removed was something else.
      */
     @Test fun removingSelfHostedKeepsTheCloudTileTheUserWasBrowsing() {
         val browsingGeminiOverSelfHosted = ProviderSettingsUiState(
@@ -165,7 +177,7 @@ class PolishLadderTest {
         // The tile the user tapped wins over the saved provider, which is what puts the two out of step.
         val displayed = PolishLadder.displayedProvider(Provider.GEMINI, browsingGeminiOverSelfHosted)
         assertEquals(Provider.GEMINI, displayed)
-        assertEquals(Provider.GEMINI, PolishLadder.browsedAfterRemove(displayed))
+        assertEquals("GEMINI", PolishLadder.navigationAfterRemove(displayed).browsedName)
     }
 
     @Test fun theS1LineIsExhaustiveOverHealth() {

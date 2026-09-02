@@ -34,6 +34,7 @@ class PolishFailureTest {
             PolishReason.HTTP_CONTENT_BLOCKED to PolishFailure.CONTENT_BLOCKED,
             PolishReason.HTTP_ERROR to PolishFailure.UNEXPECTED,
             PolishReason.INVALID_CONFIGURATION to PolishFailure.BAD_REQUEST,
+            PolishReason.TOO_SHORT to null,
             PolishReason.MALFORMED_RESPONSE to PolishFailure.BAD_REQUEST,
             PolishReason.RESPONSE_TOO_LARGE to PolishFailure.BAD_REQUEST,
             PolishReason.REDIRECT_REJECTED to PolishFailure.BAD_REQUEST,

@@ -78,6 +78,7 @@ enum class PolishFailure(val leadIn: LeadIn) {
                 PolishReason.EMPTY_AFTER_CLEANUP,
                 PolishReason.CLEANUP_RECOVERED,
                 PolishReason.CANCELLED,
+                PolishReason.TOO_SHORT,
                 -> null
                 PolishReason.NO_API_KEY, PolishReason.CLOUD_NOT_CONFIGURED -> KEY_MISSING
                 PolishReason.HTTP_KEY_REJECTED -> KEY_REJECTED

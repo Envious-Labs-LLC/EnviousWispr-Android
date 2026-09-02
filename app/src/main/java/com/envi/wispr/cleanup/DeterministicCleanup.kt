@@ -550,11 +550,52 @@ object TextSafety {
         return allowLargeContraction || input.length < 24 || output.length >= input.length / 4
     }
 
-    fun isSafe(input: String, output: String): Boolean {
-        if (input.isNotBlank() && output.isBlank()) return false
-        if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' }) return false
-        if (output.length > input.length * 3 + 200) return false
-        if (input.length >= 24 && output.length < input.length / 4) return false
-        return true
+    fun isSafe(input: String, output: String): Boolean = refusal(input, output) == null
+
+    /**
+     * Why the model's output is refused, or null when it is accepted. Six checks: the four this app has
+     * always run, plus the Mac's word-count drop and question-to-answer rules
+     * (`LLMPolishStep.validatePolishOutput`); the expansion rule is the Mac's max(3x, 200).
+     */
+    fun refusal(input: String, output: String): String? {
+        if (input.isNotBlank() && output.isBlank()) return "blank output"
+        if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' }) return "control characters"
+        if (output.length > maxOf(input.length * 3, 200)) return "expansion ${output.length}/${input.length} chars"
+        if (input.length >= 24 && output.length < input.length / 4) return "contraction ${output.length}/${input.length} chars"
+        val inputWords = input.split(Regex("\\s+")).count { it.isNotEmpty() }
+        val outputWords = output.split(Regex("\\s+")).count { it.isNotEmpty() }
+        if (inputWords >= 10 && outputWords < (inputWords * 2 + 4) / 5) return "content drop $outputWords/$inputWords words"
+        if (looksLikeQuestion(input) && !looksLikeQuestion(output)) return "question turned into an answer"
+        return null
+    }
+
+    private val leadingFillers = setOf("um", "uh", "so", "like", "well", "okay", "ok")
+    // The Mac's twelve plus the plain auxiliaries it lacked ("was the meeting moved", "had they left"): code round 1.
+    private val auxiliaryStarts = setOf(
+        "am", "is", "are", "was", "were", "do", "does", "did", "has", "have", "had",
+        "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+    )
+    private val whWords = setOf("how", "what", "where", "when", "who", "why")
+    private val whFollowers = setOf("many", "much", "long", "often")
+    private val indirectPreambles = listOf("i was wondering if", "i'm wondering if", "wondering if", "whether we should", "do you know if", "is there a", "are we")
+
+    /** The Mac's conservative question detector: a `?`, or after leading fillers a strong interrogative start. */
+    fun looksLikeQuestion(text: String): Boolean {
+        if (text.contains('?')) return true
+        // Tokens shed every boundary mark, quotes and apostrophes included (an internal apostrophe, "i'm", stays),
+        // so a quoted start still matches.
+        val words = text.lowercase().trim().split(Regex("\\s+"))
+            .map { token -> token.trim { !it.isLetterOrDigit() } }
+            .filter { it.isNotEmpty() }
+            .toMutableList()
+        while (words.isNotEmpty() && words.first() in leadingFillers) words.removeAt(0)
+        val first = words.firstOrNull() ?: return false
+        if (first in auxiliaryStarts) return true
+        if (first in whWords) {
+            val second = words.getOrNull(1) ?: ""
+            if (second in auxiliaryStarts || second in whFollowers) return true
+        }
+        val joined = words.take(5).joinToString(" ")
+        return indirectPreambles.any { joined.startsWith(it) }
     }
 }

@@ -61,24 +61,25 @@ class DeterministicCleanupTest {
 
     @Test fun modelReceivesCleanedText() {
         var seen = ""
+        // Four words or more, so the too-short bypass (#2) lets the model see the cleaned text.
         val result = PolishPipeline.run(
-            "um envious whisper comma",
+            "um envious whisper comma works well today",
             CleanupOptions(spokenPunctuation = true),
         ) { cleaned ->
             seen = cleaned
-            "enviouswispr works"
+            "enviouswispr works well today"
         }
-        assertEquals("enviouswispr works", result.text)
-        assertEquals("envious whisper,", seen)
+        assertEquals("enviouswispr works well today", result.text)
+        assertEquals("envious whisper, works well today", seen)
         assertTrue(result.usedModel)
     }
 
     @Test fun unsafeAndBlankModelOutputRecoverToCleanedText() {
-        val unsafe = PolishPipeline.run("hello world") { "x".repeat(300) }
-        assertEquals("hello world", unsafe.text)
+        val unsafe = PolishPipeline.run("hello world from the model") { "x".repeat(300) }
+        assertEquals("hello world from the model", unsafe.text)
         assertTrue(unsafe.recovered)
-        val blank = PolishPipeline.run("um hello") { " " }
-        assertEquals("hello", blank.text)
+        val blank = PolishPipeline.run("um hello there my friend") { " " }
+        assertEquals("hello there my friend", blank.text)
         assertTrue(blank.recovered)
     }
 

@@ -53,6 +53,9 @@ enum class PolishReason {
 
     /** The cloud client refused the request before sending it: model, endpoint, or size (#77). */
     INVALID_CONFIGURATION,
+
+    /** Three words or fewer (or under ten characters in a script without spaces): no model was asked (#2). */
+    TOO_SHORT,
     ;
 
     companion object {
@@ -93,6 +96,7 @@ enum class PolishReason {
                 PipelineOutcome.CLEANUP_RECOVERED -> CLEANUP_RECOVERED
                 PipelineOutcome.EMPTY_AFTER_CLEANUP -> EMPTY_AFTER_CLEANUP
                 PipelineOutcome.NO_MODEL -> UNEXPECTED
+                PipelineOutcome.TOO_SHORT -> TOO_SHORT
                 PipelineOutcome.MODEL_DECLINED, PipelineOutcome.MODEL_REJECTED -> attempt ?: OUTPUT_REJECTED
             }
         }

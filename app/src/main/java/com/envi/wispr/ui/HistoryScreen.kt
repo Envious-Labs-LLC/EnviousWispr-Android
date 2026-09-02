@@ -195,7 +195,13 @@ private fun HistoryCard(
     // `InsertionOutcomeMessages.historyStatusLine`. It stays on the COLLAPSED card too: a row the
     // list is being scanned for is exactly where a failure must not hide behind a tap.
     val statusLine = InsertionOutcomeMessages.historyStatusLine(transcript.status)
-    val polishLine = PolishEngineLabels.historySummary(transcript.polishEngine, transcript.polishLatencyMs)
+    val polishLine = PolishEngineLabels.historySummary(
+        transcript.polishEngine,
+        transcript.polishLatencyMs,
+        transcript.polishReason,
+        transcript.polishStatus,
+        transcript.polishContext,
+    )
     // The founder's spec asks the open card for full Final AND full Original, so the pair is always
     // present when there is an original to show. A row whose `originalText` is blank has none stored
     // at all — a draft, or a dictation that heard nothing — and a heading over an empty paragraph

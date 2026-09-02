@@ -11,7 +11,7 @@ import com.envi.wispr.vocabulary.CustomTermEntity
 
 @Database(
     entities = [TranscriptEntity::class, CustomTermEntity::class],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class EnviousWisprDatabase : RoomDatabase() {
@@ -28,7 +28,7 @@ abstract class EnviousWisprDatabase : RoomDatabase() {
                     context.applicationContext,
                     EnviousWisprDatabase::class.java,
                     "enviouswispr.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { database -> instance = database }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { database -> instance = database }
             }
         }
 
@@ -76,6 +76,15 @@ abstract class EnviousWisprDatabase : RoomDatabase() {
                 database.execSQL(
                     "ALTER TABLE custom_terms ADD COLUMN minSimilarityOverride REAL",
                 )
+            }
+        }
+
+        /** #77: why the polish ended the way it did, three additive columns with the entity's defaults. */
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE transcripts ADD COLUMN polishReason TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE transcripts ADD COLUMN polishStatus INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE transcripts ADD COLUMN polishContext TEXT NOT NULL DEFAULT ''")
             }
         }
     }

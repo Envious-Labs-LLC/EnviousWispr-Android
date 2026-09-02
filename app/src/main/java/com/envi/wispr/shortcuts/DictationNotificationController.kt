@@ -5,17 +5,24 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.envi.wispr.R
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
 import com.envi.wispr.insertion.InsertionOutcomeMessages
 import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.polish.PolishFailureNotice
 import com.envi.wispr.ui.DictationSessionService
+import com.envi.wispr.ui.SettingsActivity
 
 object DictationNotificationController {
     private const val CHANNEL_ID = "active_dictation"
     const val NOTIFICATION_ID = 1001
+
+    /** A polish that did not do its job (#77): its own channel, silent, and its own id beside the session's. */
+    private const val POLISH_CHANNEL_ID = "polish_problems"
+    const val POLISH_NOTIFICATION_ID = 1003
 
     /**
      * @param clipboard the user's frozen clipboard settings, or null when they have not been read
@@ -50,6 +57,49 @@ object DictationNotificationController {
 
     fun dismiss(context: Context) {
         NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
+    }
+
+    /**
+     * The reason a polish did not do its job, in full (#77). A toast truncates after two lines on this
+     * phone, so the sentence the user has to act on lives here: silent, not ongoing, cleared when tapped,
+     * and tapping opens the app. Posting is best effort: without the notification permission the toast
+     * and the History card still carry the outcome.
+     */
+    fun showPolishNotice(context: Context, notice: PolishFailureNotice) {
+        ensurePolishChannel(context)
+        val open = PendingIntent.getActivity(
+            context,
+            REQUEST_OPEN_APP,
+            Intent(context, SettingsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(context, POLISH_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_wispr_mic)
+            .setContentTitle(notice.title.trimEnd(':'))
+            .setContentText(notice.detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(notice.detail))
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(true)
+            .setContentIntent(open)
+            .build()
+        runCatching { NotificationManagerCompat.from(context).notify(POLISH_NOTIFICATION_ID, notification) }
+    }
+
+    private fun ensurePolishChannel(context: Context) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(
+                POLISH_CHANNEL_ID,
+                "AI Polish problems",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "Why an AI polish did not run, and what to change"
+                setSound(null, null)
+                enableVibration(false)
+            },
+        )
     }
 
     private fun build(
@@ -125,4 +175,5 @@ object DictationNotificationController {
 
     private const val REQUEST_STOP = 11
     private const val REQUEST_CANCEL = 12
+    private const val REQUEST_OPEN_APP = 13
 }

@@ -1,6 +1,7 @@
 package com.envi.wispr.polish
 
 import com.envi.wispr.cleanup.PipelineOutcome
+import com.envi.wispr.providers.ProviderErrorSignal
 import com.envi.wispr.providers.ProviderFailureKind
 
 /**
@@ -42,17 +43,37 @@ enum class PolishReason {
 
     /** Session-owner side only: the engine never answered within the policy's budget. */
     WATCHDOG_TIMEOUT,
+
+    // Body-signalled HTTP failures (#77): the provider's error body named a cause the status alone does
+    // not. Produced by `ProviderErrorSignal` inside the cloud client; the body itself never leaves it.
+    HTTP_KEY_REJECTED,
+    HTTP_OUT_OF_CREDITS,
+    HTTP_INPUT_TOO_LONG,
+    HTTP_CONTENT_BLOCKED,
+
+    /** The cloud client refused the request before sending it: model, endpoint, or size (#77). */
+    INVALID_CONFIGURATION,
     ;
 
     companion object {
-        /** Exhaustive by construction: a new failure kind fails to compile here. */
-        fun from(kind: ProviderFailureKind): PolishReason = when (kind) {
+        /**
+         * Exhaustive by construction: a new failure kind or a new body signal fails to compile here. A
+         * signal only refines `HTTP_ERROR`; on any other kind it is ignored, because the client only sets
+         * one on an HTTP error.
+         */
+        fun from(kind: ProviderFailureKind, signal: ProviderErrorSignal? = null): PolishReason = when (kind) {
             ProviderFailureKind.NO_API_KEY -> NO_API_KEY
-            ProviderFailureKind.INVALID_CONFIGURATION -> CLOUD_NOT_CONFIGURED
+            ProviderFailureKind.INVALID_CONFIGURATION -> INVALID_CONFIGURATION
             ProviderFailureKind.NETWORK -> NETWORK
             ProviderFailureKind.TIMEOUT -> TIMEOUT
             ProviderFailureKind.CANCELLED -> CANCELLED
-            ProviderFailureKind.HTTP_ERROR -> HTTP_ERROR
+            ProviderFailureKind.HTTP_ERROR -> when (signal) {
+                null -> HTTP_ERROR
+                ProviderErrorSignal.KEY_REJECTED -> HTTP_KEY_REJECTED
+                ProviderErrorSignal.OUT_OF_CREDITS -> HTTP_OUT_OF_CREDITS
+                ProviderErrorSignal.INPUT_TOO_LONG -> HTTP_INPUT_TOO_LONG
+                ProviderErrorSignal.CONTENT_BLOCKED -> HTTP_CONTENT_BLOCKED
+            }
             ProviderFailureKind.MALFORMED_RESPONSE -> MALFORMED_RESPONSE
             ProviderFailureKind.RESPONSE_TOO_LARGE -> RESPONSE_TOO_LARGE
             ProviderFailureKind.REDIRECT_REJECTED -> REDIRECT_REJECTED

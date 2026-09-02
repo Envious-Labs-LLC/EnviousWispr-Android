@@ -1,5 +1,7 @@
 package com.envi.wispr.providers
 
+import com.envi.wispr.debug.DebugLogger
+
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -58,7 +60,54 @@ sealed interface ProviderPolishResult {
     data class Failure(
         val kind: ProviderFailureKind,
         val statusCode: Int? = null,
+        /** Set only on `HTTP_ERROR`, from the provider's error body, which itself goes no further. */
+        val signal: ProviderErrorSignal? = null,
     ) : ProviderPolishResult
+}
+
+/**
+ * What a provider's error BODY said beyond its status (#77), as a closed signal so the body, which can
+ * echo the prompt, never leaves this client. The markers are the ones the macOS connectors match.
+ */
+enum class ProviderErrorSignal {
+    KEY_REJECTED,
+    OUT_OF_CREDITS,
+    INPUT_TOO_LONG,
+    CONTENT_BLOCKED,
+    ;
+
+    companion object {
+        /** Exhaustive over [Provider]; a provider with no body markers answers null for every body. */
+        fun classify(provider: Provider, status: Int, body: String): ProviderErrorSignal? = when (provider) {
+            Provider.OPENAI -> when (status) {
+                429 -> if (body.contains("insufficient_quota")) OUT_OF_CREDITS else null
+                400 -> when {
+                    body.contains("context_length_exceeded") -> INPUT_TOO_LONG
+                    body.contains("content_filter") || body.contains("content_policy") -> CONTENT_BLOCKED
+                    else -> null
+                }
+                else -> null
+            }
+            Provider.GEMINI -> when (status) {
+                400 -> when {
+                    body.contains("API_KEY_INVALID") -> KEY_REJECTED
+                    body.contains("exceeds the maximum number of tokens") -> INPUT_TOO_LONG
+                    body.contains("PROHIBITED_CONTENT") || body.contains("blockReason") -> CONTENT_BLOCKED
+                    else -> null
+                }
+                else -> null
+            }
+            Provider.CLAUDE -> when (status) {
+                400 -> when {
+                    body.contains("credit balance") -> OUT_OF_CREDITS
+                    body.contains("prompt is too long") -> INPUT_TOO_LONG
+                    else -> null
+                }
+                else -> null
+            }
+            Provider.SELF_HOSTED_POLISH -> null
+        }
+    }
 }
 
 /** Cancellation is thread-safe and can interrupt a request that is blocked in HttpURLConnection. */
@@ -139,7 +188,7 @@ class ProviderPolishClient(
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(effectiveOverallTimeoutMs.toLong())
         val activeConnection = ActiveConnection()
         val future: Future<ProviderPolishResult> = REQUEST_EXECUTOR.submit<ProviderPolishResult> {
-            executeRequest(plan, cancellation, deadline, activeConnection, effectiveConnectTimeoutMs, effectiveReadTimeoutMs)
+            executeRequest(request.provider, plan, cancellation, deadline, activeConnection, effectiveConnectTimeoutMs, effectiveReadTimeoutMs)
         }
         val cancelRegistration = cancellation.onCancel {
             activeConnection.disconnect()
@@ -159,7 +208,8 @@ class ProviderPolishClient(
             future.cancel(true)
             Thread.currentThread().interrupt()
             ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
-        } catch (_: ExecutionException) {
+        } catch (failure: ExecutionException) {
+            DebugLogger.warn(TAG, "Cloud request failed: ${failure.cause?.javaClass?.simpleName ?: failure.javaClass.simpleName}")
             if (cancellation.isCancelled) ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
             else ProviderPolishResult.Failure(ProviderFailureKind.NETWORK)
         } finally {
@@ -169,6 +219,7 @@ class ProviderPolishClient(
     }
 
     private fun executeRequest(
+        provider: Provider,
         plan: RequestPlan,
         cancellation: ProviderCancellation,
         deadline: Long,
@@ -206,8 +257,16 @@ class ProviderPolishClient(
                     if (status in 300..399) {
                         ProviderPolishResult.Failure(ProviderFailureKind.REDIRECT_REJECTED, status)
                     } else if (status >= 400) {
-                        readResponse(connection, status, cancellation, deadline)
-                        ProviderPolishResult.Failure(ProviderFailureKind.HTTP_ERROR, status)
+                        // The error body is read to completion and classified HERE into a closed signal;
+                        // a read failure keeps its own kind with the status (#77).
+                        when (val response = readResponse(connection, status, cancellation, deadline)) {
+                            is ResponseRead.Failure -> ProviderPolishResult.Failure(response.kind, status)
+                            is ResponseRead.Success -> ProviderPolishResult.Failure(
+                                ProviderFailureKind.HTTP_ERROR,
+                                status,
+                                ProviderErrorSignal.classify(provider, status, response.body),
+                            )
+                        }
                     } else {
                         val response = readResponse(connection, status, cancellation, deadline)
                         if (response is ResponseRead.Failure) {
@@ -225,11 +284,14 @@ class ProviderPolishClient(
         } catch (_: SocketTimeoutException) {
             if (cancellation.isCancelled) ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
             else ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
-        } catch (_: IOException) {
+        } catch (failure: IOException) {
+            // Shape only, never content: the exception class names the layer that refused (#77).
+            DebugLogger.warn(TAG, "Cloud request failed: ${failure.javaClass.simpleName}")
             if (cancellation.isCancelled) ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
             else if (System.nanoTime() >= deadline) ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
             else ProviderPolishResult.Failure(ProviderFailureKind.NETWORK)
-        } catch (_: RuntimeException) {
+        } catch (failure: RuntimeException) {
+            DebugLogger.warn(TAG, "Cloud request failed: ${failure.javaClass.simpleName}")
             if (cancellation.isCancelled) ProviderPolishResult.Failure(ProviderFailureKind.CANCELLED)
             else if (System.nanoTime() >= deadline) ProviderPolishResult.Failure(ProviderFailureKind.TIMEOUT)
             else ProviderPolishResult.Failure(ProviderFailureKind.NETWORK)
@@ -443,6 +505,7 @@ class ProviderPolishClient(
         const val MAX_READ_TIMEOUT_MS = 60_000
         const val MAX_OVERALL_TIMEOUT_MS = 60_000
         const val MAX_REQUEST_BYTES = 256 * 1024
+        private const val TAG = "ProviderPolishClient"
         const val MAX_RESPONSE_BYTES = 512 * 1024
         const val MAX_MODEL_CHARS = 256
         const val MAX_PROMPT_CHARS = 100_000

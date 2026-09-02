@@ -92,4 +92,35 @@ class PolishEngineLabelsTest {
             PolishEngineLabels.historySummary(PolishEngineLabels.RAW_FALLBACK, 40L),
         )
     }
+
+    // #77: a row that stored a failure opens with the sentence the completion surface showed.
+    @Test
+    fun aStoredFailureOpensWithItsSentenceOverTheEngineLine() {
+        val line = PolishEngineLabels.historySummary(PolishEngineLabels.DETERMINISTIC, 12L, "HTTP_ERROR", 401, "cloud:GEMINI")
+        assertEquals(
+            "AI polish failed: Gemini rejected your API key. Check or replace it in Settings.\nCleaned up on this phone in 12 ms",
+            line,
+        )
+    }
+
+    @Test
+    fun aRowFromAnOlderBuildRendersExactlyAsBefore() {
+        assertEquals(
+            PolishEngineLabels.historySummary(PolishEngineLabels.DETERMINISTIC, 12L),
+            PolishEngineLabels.historySummary(PolishEngineLabels.DETERMINISTIC, 12L, "", 0, ""),
+        )
+        assertEquals("Cleaned up on this phone in 12 ms", PolishEngineLabels.historySummary(PolishEngineLabels.DETERMINISTIC, 12L, "", 0, ""))
+    }
+
+    @Test
+    fun anUnknownStoredReasonOrContextSaysNothingAboutAFailure() {
+        assertEquals("Cleaned up on this phone", PolishEngineLabels.historySummary(PolishEngineLabels.DETERMINISTIC, 0L, "RETIRED_REASON", 401, "cloud:GEMINI"))
+        assertEquals("Cleaned up on this phone", PolishEngineLabels.historySummary(PolishEngineLabels.DETERMINISTIC, 0L, "HTTP_ERROR", 401, "legacy-token"))
+        assertEquals("Cleaned up on this phone", PolishEngineLabels.historySummary(PolishEngineLabels.DETERMINISTIC, 0L, "HTTP_ERROR", 401, "off"))
+    }
+
+    @Test
+    fun aHealthyPolishStoresItsReasonAndStillReadsAsPolishedBy() {
+        assertEquals("Polished by Gemini in 700 ms", PolishEngineLabels.historySummary("Gemini", 700L, "POLISHED", 200, "cloud:GEMINI"))
+    }
 }

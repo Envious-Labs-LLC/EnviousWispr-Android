@@ -148,17 +148,23 @@ class ProviderConfigurationRepository internal constructor(
         val selectedProvider = preferences.getString(KEY_PROVIDER, null)?.let { name ->
             runCatching { Provider.valueOf(name) }.getOrNull()
         }
+        // The key leaves the Keystore before the preferences commit, so a failed commit must put it back
+        // (#81, the mirror of saveProvider): the snapshot is mandatory, an unreadable store aborts here.
+        val previousKey = selectedProvider?.takeIf { it.capabilities().requiresApiKey }?.let(secrets::get)
         selectedProvider?.let { secrets.remove(it) }
-        check(
-            preferences.edit()
-                .putString(KEY_MODE, PolishMode.OFFLINE_S1.name)
-                .remove(KEY_PROVIDER)
-                .remove(KEY_MODEL)
-                .remove(KEY_ENDPOINT)
-                .remove(KEY_PROTOCOL)
-                .commit(),
-        ) {
-            "could not clear provider configuration"
+        val committed = preferences.edit()
+            .putString(KEY_MODE, PolishMode.OFFLINE_S1.name)
+            .remove(KEY_PROVIDER)
+            .remove(KEY_MODEL)
+            .remove(KEY_ENDPOINT)
+            .remove(KEY_PROTOCOL)
+            .commit()
+        if (!committed) {
+            if (selectedProvider != null && previousKey != null) {
+                val restored = runCatching { secrets.put(selectedProvider, previousKey) }
+                if (restored.isFailure) throw InconsistentProviderStorageException(selectedProvider, restored.exceptionOrNull())
+            }
+            error("could not clear provider configuration")
         }
     }
 

@@ -641,9 +641,18 @@ class ProviderPolishClientTest {
             assertTrue("$result", result is ProviderDiscovery.Listed)
             val probesAtReturn = server.requests.count { it.path.startsWith("/probe") }
             hold.countDown()
-            // The held probes finish now; a queued probe that was NOT cancelled would arrive in this window.
-            Thread.sleep(1_000)
-            val probesLater = server.requests.count { it.path.startsWith("/probe") }
+            // The held probes finish now; a queued probe that was NOT cancelled would be dequeued the instant
+            // a thread frees and arrive here. Gate on the count going quiet, never on a fixed sleep: unchanged
+            // across five polls 200 ms apart, with a 5 s ceiling that only a defect can reach.
+            var probesLater = server.requests.count { it.path.startsWith("/probe") }
+            var quiet = 0
+            var polls = 0
+            while (quiet < 5 && polls < 25) {
+                Thread.sleep(200)
+                val now = server.requests.count { it.path.startsWith("/probe") }
+                if (now == probesLater) quiet++ else { quiet = 0; probesLater = now }
+                polls++
+            }
             // Nine models, three in flight: without cancellation the queued six would all arrive after the
             // return. What the client promises is narrower than "none": a probe thread that freed up in the
             // same instant the deadline fired can have dequeued its next probe before the cancel reached the

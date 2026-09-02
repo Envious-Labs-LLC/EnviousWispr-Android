@@ -165,6 +165,9 @@ internal fun PolishScreen(
                     writeError = writeError,
                     errorKind = errorKind,
                     onPickTile = { browsedName = it.name },
+                    // An edited or abandoned draft takes its failure with it, so a reopened field never
+                    // shows the previous key's rejection with a disabled Retry.
+                    onClearKeyError = { if (errorKind == WriteKind.KEY) { writeError = null; errorKind = null } },
                     onStart = ::start,
                     onSave = onSave,
                     onClearProvider = onClearProvider,
@@ -189,6 +192,7 @@ private fun CloudRungs(
     writeError: String?,
     errorKind: WriteKind?,
     onPickTile: (Provider) -> Unit,
+    onClearKeyError: () -> Unit,
     onStart: (WriteKind, () -> Int) -> Unit,
     onSave: (Provider, String, String?, Int?) -> Int,
     onClearProvider: () -> Int,
@@ -217,9 +221,11 @@ private fun CloudRungs(
 
     // Everything below is keyed on the displayed tile, so switching tiles starts a fresh rung 3: the
     // previous tile's draft, check and Replace cannot leak into another provider's field.
+    // The draft and everything derived from it (the Check it ran, the save that Check produced) share ONE
+    // survival policy: none of it outlives a recreation, so nothing can describe a key that is gone.
     var apiKey by remember(displayed) { mutableStateOf("") }
-    var checkSequence by rememberSaveable(displayed) { mutableStateOf<Int?>(null) }
-    var savedForSequence by rememberSaveable(displayed) { mutableStateOf<Int?>(null) }
+    var checkSequence by remember(displayed) { mutableStateOf<Int?>(null) }
+    var savedForSequence by remember(displayed) { mutableStateOf<Int?>(null) }
     var replacing by rememberSaveable(displayed) { mutableStateOf(false) }
     LaunchedEffect(displayed) { onLoadCachedModels(displayed) }
 
@@ -256,7 +262,7 @@ private fun CloudRungs(
             }
             OutlinedTextField(
                 value = apiKey,
-                onValueChange = { apiKey = it; checkSequence = null; onKeyDraftChanged(displayed) },
+                onValueChange = { apiKey = it; checkSequence = null; onClearKeyError(); onKeyDraftChanged(displayed) },
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text(keyPlaceholder(displayed)) },
                 isError = failed,
@@ -272,7 +278,7 @@ private fun CloudRungs(
                 visualTransformation = PasswordVisualTransformation(),
             )
             if (replacing) {
-                TextButton(onClick = { replacing = false; apiKey = ""; checkSequence = null }, enabled = !saving) { Text("Keep current key") }
+                TextButton(onClick = { replacing = false; apiKey = ""; checkSequence = null; onClearKeyError() }, enabled = !saving) { Text("Keep current key") }
             }
             // The key listed nothing this app can use: nothing is stored until a model id is typed, and the
             // key and the id are then saved together, so a key never exists in storage without a model.

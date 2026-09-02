@@ -653,7 +653,11 @@ class EnviousWisprViewModel(
                     withContext(Dispatchers.IO) { operation() }
                 }
                 if (outcome.exceptionOrNull() is CancellationException) throw outcome.exceptionOrNull()!!
-                afterWrite(outcome.isSuccess)
+                // Cache maintenance is a limb: a failure here must never stop the write's completion from
+                // publishing, or the tab waits on this sequence for ever (code review, 2026-09-02).
+                runCatching { afterWrite(outcome.isSuccess) }.exceptionOrNull()?.let { failure ->
+                    if (failure is CancellationException) throw failure
+                }
                 withContext(Dispatchers.IO) {
                     outcome.fold(
                         onSuccess = { message -> refreshProviderSettings(message = message, sequence = sequence) },

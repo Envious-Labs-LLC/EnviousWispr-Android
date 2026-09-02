@@ -467,7 +467,7 @@ tests over `PolishLadder` (proposed); the screen itself is checked on the emulat
 | `PolishLadderTest.theS1LineIsExhaustiveOverHealth` (proposed) | Product Outcome | Card copy |
 | `PolishLadderTest.writeOutcomeWaitsCompletesOrFails` (proposed) | Product Outcome | WAITING while `completed < target`, DONE, FAILED; the loading-gate reset is control flow, checked on the emulator by killing the process mid-write |
 | `PolishLadderTest.saveAtAcceptWaitsForAPendingWrite` (proposed) | Product Outcome | No automatic key save while a mode, model or remove write is in flight |
-| `ProviderConfigurationRepositoryTest` (androidTest, four added cases) | Product Outcome | Snapshot-read failure aborts before any put; commit failure restores the previous key; commit failure with no previous key removes the new one; a failed restore reports inconsistent storage |
+| `ProviderConfigurationRepositoryTest` (androidTest, five added cases) | Product Outcome | Snapshot-read failure aborts before any put; commit failure restores the previous key; commit failure with no previous key removes the new one; a failed restore reports inconsistent storage; a failed Remove puts the key back |
 | `ProviderDiscoveryApplyPolicyTest.aSuppliedKeyClearsTheCacheBeforeTheWrite` (proposed) | Product Outcome | The pre-write clear rule |
 | `PolishLadderTest.snackbar...` (moved) | Product Outcome | Unchanged behaviour |
 | Deleted: `PolishCardStateTest` (removed) (8), `PolishSubpageTest` (removed) (3), `PolishModeWhenTurnedOnTest` (removed) (5) | | Their subjects no longer exist; the replacements above cover the outcomes that remain |
@@ -556,3 +556,15 @@ adopted, and every other revision confirmed closed.** (1) Replace closes only on
 the same sequence (§3 view model). (3) The inconsistent-storage error is a typed exception mapped to its
 own sentence (§3 repository). No third round: the residue was wording the drafts already honoured, and the
 founder's standing guidance is to spend no extra rounds on wording.
+
+**Code review round 1 (same session, after the build): FIX-THEN-RERUN, four gating findings and one
+note, all adopted.** (1) `afterWrite` sat outside the captured outcome, so a cache-maintenance throw would
+have left the tab waiting for ever; it now runs inside its own `runCatching` (cancellation rethrown) and
+the write's completion always publishes. (2) `checkSequence` and `savedForSequence` were saveable while
+the draft they describe is not; both are plain `remember` now, one survival policy for the pair
+(`kotlin-patterns.md`). (3) A failed KEY write's error outlived the draft it belonged to; editing the
+field or tapping "Keep current key" now clears it. (4) `clearSelection` removed the key before its
+commit; it now snapshots the key and puts it back when the commit fails, the mirror of `saveProvider`,
+with a device test. (5) The repaired timing test still decided with a fixed sleep after releasing its
+latch; it now gates on the probe count going quiet (unchanged across five polls) with a ceiling only a
+defect can reach.

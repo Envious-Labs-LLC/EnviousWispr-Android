@@ -83,6 +83,15 @@ class ProviderConfigurationRepositoryTest {
         assertEquals(0, broken.puts)
     }
 
+    @Test fun aFailedCommitOnRemoveRestoresTheKey_failingFake() {
+        repository.saveProvider(Provider.OPENAI, "gpt-test", null, "old-key", SelfHostedProtocol.OPENAI_COMPATIBLE)
+        val fragile = ProviderConfigurationRepository(FailingCommitPreferences(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)), secrets, checker)
+        val threw = runCatching { fragile.clearSelection() }.isFailure
+        assertEquals(true, threw)
+        assertEquals("old-key", secrets.get(Provider.OPENAI))
+        assertEquals("OPENAI", stored("provider"))
+    }
+
     @Test fun aFailedRestoreReportsInconsistentStorage_failingFake() {
         repository.saveProvider(Provider.OPENAI, "gpt-test", null, "old-key", SelfHostedProtocol.OPENAI_COMPATIBLE)
         val broken = FailingSecrets(secrets, failPutAfter = 1)

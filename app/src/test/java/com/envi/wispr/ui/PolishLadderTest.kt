@@ -170,7 +170,10 @@ class PolishLadderTest {
      */
     @Test fun everyScoreInTheAppRendersAsAMeter() {
         val rows = ModelNotes.all
-        assertTrue("an empty sweep is not a pass; the catalog had ${rows.size} rows", rows.size > 20)
+        // Nonempty only. A minimum ROW COUNT would go red the day a stale model id is retired, which is
+        // ordinary catalog maintenance and not a defect in any score; the predicate has to be the thing
+        // the reason names, which is that a sweep over nothing must not read as a pass.
+        assertTrue("a sweep over an empty catalog is not a pass", rows.isNotEmpty())
         val scores = rows.map { Triple(it.name, listOf(it.cost, it.speed, it.accuracy), "catalog") } +
             listOf(Triple("S1-mini", with(PolishLadder.S1_SCORES) { listOf(cost, speed, accuracy) }, "on-phone"))
         scores.forEach { (name, values, source) ->

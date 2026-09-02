@@ -78,7 +78,12 @@ internal fun ModelCard(
                 facts.forEach { fact -> FactPill(fact) }
             }
             if (scores != null) {
-                Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                Row(
+                    // Scrollable for the same reason the facts row above it is: these labels are words,
+                    // and at a large system font scale three of them are wider than a narrow phone.
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(22.dp),
+                ) {
                     ScoreColumn("Cost", scores.cost)
                     ScoreColumn("Speed", scores.speed)
                     ScoreColumn("Accuracy", scores.accuracy)

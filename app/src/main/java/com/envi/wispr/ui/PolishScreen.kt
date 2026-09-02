@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -517,7 +518,20 @@ private fun GetKeyLink(provider: Provider) {
         }
         withLink(link) { append("Get your key at ${portal.domain}") }
     }
-    Text(text, style = MaterialTheme.typography.bodySmall)
+    // A link's touch target is its LINE BOX, not the composable's bounds, so padding the Text would not
+    // have helped: measured 16 dp tall before this, against the 48 dp floor in
+    // docs/enviouswispr-android-architecture.md. Growing the line height grows the box the link is hit in.
+    // Converted from dp rather than written as sp, so a user on a small font scale still gets 48 dp.
+    val minTarget = with(LocalDensity.current) { 48.dp.toSp() }
+    val body = MaterialTheme.typography.bodySmall
+    // Never SHRINK the line: bodySmall is far below the floor today, but comparing rather than assuming
+    // means a later typography change cannot silently make the target smaller through this line.
+    val lineHeight = if (body.lineHeight.isSp && body.lineHeight.value > minTarget.value) body.lineHeight else minTarget
+    Text(
+        text,
+        style = body.copy(lineHeight = lineHeight),
+        modifier = Modifier.padding(top = 2.dp),
+    )
 }
 
 private fun keyPlaceholder(provider: Provider): String = when (provider) {

@@ -48,22 +48,38 @@ object ModelListPresentation {
      * recommending nothing. Before this, `gemini-omni-1.1-flash` was badged while unverified.
      */
     fun recommendedPick(provider: Provider, models: List<DiscoveredModel>): String? {
-        val available = models.filter { it.access == ModelAccess.AVAILABLE }
-        if (available.isEmpty()) return null
-        ModelNotes.preferred(provider).firstOrNull { id -> available.any { it.id == id } }?.let { return it }
-        return available
-            .filter { it.recommended }
-            .minWithOrNull(
-                compareBy(
-                    { ModelNotes.forId(provider, it.id)?.cost ?: Int.MAX_VALUE },
-                    { -(ModelNotes.forId(provider, it.id)?.speed ?: 0) },
-                    // Accuracy breaks the tie before the id does, so two models at the same price and speed
-                    // are separated by which writes better rather than by which sorts earlier. The id is
-                    // the last resort and exists only to keep the answer stable, never to decide it.
-                    { -(ModelNotes.forId(provider, it.id)?.accuracy ?: 0) },
-                    { it.id },
-                ),
-            )?.id
+        // The class is `ModelListRules.isRecommended`, already carried on every row: the vendors' own
+        // small-and-fast tier words, `mini`, `nano`, `flash` and `haiku`, minus the disqualifiers. That is
+        // the founder's rule in his words — "what is the cheapest Flash model now" — and it is the one
+        // matcher here whose members a vendor publishes rather than us predicting them.
+        val candidates = models.filter { it.access == ModelAccess.AVAILABLE && it.recommended }
+        if (candidates.isEmpty()) return null
+        val preferred = ModelNotes.preferred(provider)
+        fun rank(id: String): Int {
+            val index = preferred.indexOfFirst { it == id || it == ModelNotes.withoutSnapshot(id) }
+            return if (index < 0) preferred.size else index
+        }
+        return candidates.minWithOrNull(
+            compareBy(
+                // NEWEST FIRST, because that is the whole recommendation and everything below only breaks
+                // ties (#103). Leading with `preferred` instead made a hand-written id beat any model, so
+                // on the founder's key the badge sat on `gpt-4.1-mini` from April 2025 while `gpt-5-mini`
+                // from that August went unbadged; leading with COST had the same effect by a second route,
+                // because a model we have no row for scores worse than one we do.
+                { it.releasedAt == null && ModelNotes.forId(provider, it.id)?.released == null },
+                { -(releaseDateOf(provider, it) ?: 0L) },
+                // Same day: the founder's own shortlist decides, then the measures, then the id. He picked
+                // Gemini 3.8 Flash by hand and that choice is kept, as a tie-break rather than an override.
+                { rank(it.id) },
+                { ModelNotes.forId(provider, it.id)?.cost ?: Int.MAX_VALUE },
+                { -(ModelNotes.forId(provider, it.id)?.speed ?: 0) },
+                // Accuracy breaks the tie before the id does, so two models at the same price and speed
+                // are separated by which writes better rather than by which sorts earlier. The id is
+                // the last resort and exists only to keep the answer stable, never to decide it.
+                { -(ModelNotes.forId(provider, it.id)?.accuracy ?: 0) },
+                { it.id },
+            ),
+        )?.id
     }
 
     /**

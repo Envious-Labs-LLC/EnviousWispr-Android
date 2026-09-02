@@ -11,6 +11,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import com.envi.wispr.polish.PolishFailure
+import com.envi.wispr.ui.ModelListPresentation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
@@ -986,6 +987,45 @@ class ProviderPolishClientTest {
         }).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k")
             assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), result)
+        }
+    }
+
+    /**
+     * Product Outcome, END TO END from the provider's list to the badge on screen, which is the check the
+     * two halves of #103 kept passing individually while the outcome stayed broken.
+     *
+     * This is the founder's own OpenAI key, 2026-09-02: `gpt-4.1-mini` from April 2025 answers the probe
+     * outright, while `gpt-5-mini` and `gpt-5-nano` from that August spend the cap thinking and answer only
+     * when asked not to. Neither 5 has a catalogue row. The badge must land on `gpt-5-mini`.
+     *
+     * When this fails he is recommended a model a year and a half old while the newest one he owns sits
+     * unbadged, which is exactly what he reported.
+     */
+    @Test fun theNewestModelAKeyCanReachIsTheOneRecommended() {
+        val day = 24 * 60 * 60L
+        val thinking = "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}"
+        val answered = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"Hello there\"}]}]}"
+        val list = "{\"data\":[" + listOf(
+            "gpt-4.1-mini" to 20_183L,
+            "gpt-5-mini" to 20_305L,
+            "gpt-5-nano" to 20_305L,
+        ).joinToString(",") { (id, epochDay) -> "{\"id\":\"$id\",\"created\":${epochDay * day}}" } + "]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to list
+            else if (probedModel(request)!!.startsWith("gpt-5") && !request.body.contains("\"reasoning\"")) 200 to thinking
+            else 200 to answered
+        }).use { server ->
+            val models = (discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed).models
+            // The retry did its job first: all three are usable, so all three can be recommended.
+            assertEquals(
+                listOf(ModelAccess.AVAILABLE, ModelAccess.AVAILABLE, ModelAccess.AVAILABLE),
+                models.sortedBy { it.id }.map { it.access },
+            )
+            assertEquals("gpt-5-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, models))
+            // And the page agrees with the pick, with exactly one badge on it.
+            val rows = ModelListPresentation.present(Provider.OPENAI, models, "", "")
+            assertEquals("gpt-5-mini", rows.first { it.tag == "Recommended" }.id)
+            assertEquals(1, rows.count { it.tag == "Recommended" })
         }
     }
 

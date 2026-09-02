@@ -103,6 +103,31 @@ object ModelNotes {
      */
     val all: List<CatalogModel> get() = Provider.entries.flatMap(::forProvider)
 
-    fun forId(provider: Provider, id: String): CatalogModel? =
-        forProvider(provider).firstOrNull { it.name == id }
+    fun forId(provider: Provider, id: String): CatalogModel? {
+        val rows = forProvider(provider)
+        return rows.firstOrNull { it.name == id } ?: withoutSnapshot(id)?.let { base -> rows.firstOrNull { it.name == base } }
+    }
+
+    /**
+     * The id with a trailing DATED SNAPSHOT removed, or null when there is none (#103).
+     *
+     * Anthropic ships `claude-haiku-4-5-20251001` where its documentation says `claude-haiku-4-5`, and
+     * OpenAI ships `gpt-4o-2024-08-06`. Every one of those was a silent miss: no note, no dots, and not
+     * matched by [preferred], so a hand-written catalogue that is CORRECT still describes nothing the key
+     * actually returns. Measured on the founder's key 2026-09-02: all 11 Claude ids carry a suffix.
+     *
+     * A DATE is checked, not merely digits, because a model id may legitimately end in a number:
+     * `claude-fable-5-1` and `gemini-2.5-flash` must survive untouched. Both vendor spellings are handled,
+     * and nothing else is guessed at — an unrecognised id keeps missing, which is visible, rather than
+     * being trimmed until it accidentally matches.
+     */
+    internal fun withoutSnapshot(id: String): String? {
+        val match = SNAPSHOT.find(id) ?: return null
+        val (year, month, day) = match.destructured
+        if (year.toInt() !in 2000..2099 || month.toInt() !in 1..12 || day.toInt() !in 1..31) return null
+        return id.substring(0, match.range.first)
+    }
+
+    /** `-YYYYMMDD` or `-YYYY-MM-DD` at the END of an id, and only there. */
+    private val SNAPSHOT = Regex("-(\\d{4})-?(\\d{2})-?(\\d{2})$")
 }

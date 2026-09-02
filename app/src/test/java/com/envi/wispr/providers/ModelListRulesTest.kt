@@ -107,9 +107,26 @@ class ModelListRulesTest {
         assertEquals(true, merged[0].recommended)
     }
 
+    /**
+     * Product Outcome. When this fails the user is offered a model that cannot polish their words, or is
+     * denied one that can.
+     *
+     * The 200 rows carry a REAL body, because a 200 alone no longer means available (#104): measured
+     * 2026-09-02, gemini-3.5-transcribe answers 200 with an empty string and was being listed as a good
+     * choice while silently returning the user's raw text on every dictation.
+     */
     @Test fun probeOutcomeFollowsTheMacRulesPerProvider() {
-        fun a(p: Provider, s: Int?, b: String? = "{}") = ModelListRules.probeOutcome(p, s, b)
+        val answered = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi\"}]}}]}"
+        fun a(p: Provider, s: Int?, b: String? = answered) = ModelListRules.probeOutcome(p, s, b)
         assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.OPENAI, 200))
+        // A 200 that carries no text is the transcribe case, and it is UNAVAILABLE, not available.
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.GEMINI, 200, "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"}]}}]}"))
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 200, "{}"))
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 200, ""))
+        // Self-hosted labels its text `content`, not `text`; grouping it with the rest would call a
+        // working server unusable.
+        assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200, "{\"choices\":[{\"message\":{\"content\":\"Hi\"}}]}"))
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200, "{\"choices\":[{\"message\":{\"content\":\"\"}}]}"))
         assertEquals(ProbeOutcome.KeyRejected(401), a(Provider.OPENAI, 401))
         assertEquals(ProbeOutcome.KeyRejected(400), a(Provider.GEMINI, 400, "{\"error\":{\"details\":[{\"reason\":\"API_KEY_INVALID\"}]}}"))
         assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 403))
@@ -120,7 +137,9 @@ class ModelListRulesTest {
         assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.CLAUDE, 429))
         assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.CLAUDE, 529))
         assertEquals(ProbeOutcome.Access(ModelAccess.UNVERIFIED), a(Provider.OPENAI, 503))
-        assertEquals(ProbeOutcome.Access(ModelAccess.UNVERIFIED), a(Provider.OPENAI, 400))
+        // A non-key 400 is the provider answering "this model cannot serve this request", so it is a
+        // refusal rather than "we could not tell": the omni models and antigravity all answer this way.
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 400))
         assertEquals(ProbeOutcome.Access(ModelAccess.UNVERIFIED), a(Provider.OPENAI, null, null))
     }
 }

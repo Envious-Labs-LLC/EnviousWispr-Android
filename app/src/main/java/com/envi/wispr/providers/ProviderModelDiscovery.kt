@@ -157,6 +157,32 @@ object ModelListRules {
         }
     }
 
+    /**
+     * Did the probe body actually carry text? Exhaustive over [Provider] so a new one must say where its
+     * answer lives rather than inheriting a guess.
+     *
+     * Deliberately CRUDE: it looks for a non-empty text field in the shape each provider returns, not for
+     * a well-formed reply. A parser here would be a second copy of `parseResponse`, and the question is
+     * only ever "did anything come back".
+     */
+    internal fun probeReturnedText(provider: Provider, body: String?): Boolean {
+        if (body.isNullOrBlank()) return false
+        val marker = when (provider) {
+            // Gemini answers under candidates[].content.parts[].text, OpenAI's RESPONSES api under
+            // output[].content[].text, Anthropic under content[].text. Self-hosted speaks OpenAI CHAT
+            // COMPLETIONS, whose text is `content`, which is a different word: grouping it with the other
+            // three would have called a working server unusable. It is never probed today, because
+            // `filter` refuses it, but the branch has to be right rather than convenient.
+            Provider.GEMINI, Provider.OPENAI, Provider.CLAUDE -> "\"text\""
+            Provider.SELF_HOSTED_POLISH -> "\"content\""
+        }
+        val at = body.indexOf(marker)
+        if (at < 0) return false
+        // Something other than an immediately-closed string has to follow the label.
+        val rest = body.substring(at + marker.length).dropWhile { it == ':' || it.isWhitespace() }
+        return rest.startsWith("\"") && !rest.startsWith("\"\"")
+    }
+
     /** The probe verdict per provider (macOS `probeOpenAI` / `probeGemini` / `probeClaude`). */
     fun probeOutcome(provider: Provider, status: Int?, body: String?): ProbeOutcome {
         if (status == null) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
@@ -165,7 +191,12 @@ object ModelListRules {
             return ProbeOutcome.KeyRejected(status)
         }
         val access = when {
-            status == 200 -> ModelAccess.AVAILABLE
+            // 200 IS NOT ENOUGH. The probe asks the model to answer the word "Hi" with a tiny output cap,
+            // and a model that answers 200 with no text cannot polish anything: measured 2026-09-02,
+            // gemini-3.5-transcribe returns an empty string to a real cleanup request, so it was shipping
+            // as AVAILABLE while silently returning the user's raw words on every dictation. Green must
+            // mean the outcome happened (validation-discipline RULE: verify-the-feature-not-the-crash).
+            status == 200 -> if (probeReturnedText(provider, body)) ModelAccess.AVAILABLE else ModelAccess.UNAVAILABLE
             status == 429 -> when (provider) {
                 Provider.GEMINI -> if (body?.contains("limit: 0") == true) ModelAccess.UNAVAILABLE else ModelAccess.AVAILABLE
                 Provider.CLAUDE -> ModelAccess.AVAILABLE
@@ -173,6 +204,12 @@ object ModelListRules {
             }
             status == 403 || status == 404 -> ModelAccess.UNAVAILABLE
             status in 500..599 -> if (provider == Provider.CLAUDE) ModelAccess.AVAILABLE else ModelAccess.UNVERIFIED
+            // A 400 that is not about the KEY is the provider saying this model cannot serve this request.
+            // It answered, so "we could not tell" is the wrong record: measured 2026-09-02, the two omni
+            // models and antigravity-preview all answer 400 INVALID_ARGUMENT and were being listed as
+            // merely untested. Key rejections were already taken above, so nothing about the key reaches
+            // here.
+            status == 400 -> ModelAccess.UNAVAILABLE
             else -> ModelAccess.UNVERIFIED
         }
         return ProbeOutcome.Access(access)

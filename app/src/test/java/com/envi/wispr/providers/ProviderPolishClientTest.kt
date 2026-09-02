@@ -535,7 +535,7 @@ class ProviderPolishClientTest {
             if (request.path.startsWith("/models")) 200 to openAiList("gpt-5.6-terra", "gpt-4.1-mini", "gpt-4o-realtime-preview", "o1-mini", "gpt-5.6-terra", "gpt-locked")
             else when (probedModel(request)) {
                 "gpt-locked" -> 403 to "{}"
-                else -> 200 to "{}"
+                else -> 200 to okBody(Provider.OPENAI)
             }
         }).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "sk-test")
@@ -559,7 +559,7 @@ class ProviderPolishClientTest {
 
     @Test fun discoveryRunsAtMostThreeProbesAtOnce() {
         ScriptedServer(
-            { request -> if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else 200 to "{}" },
+            { request -> if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else 200 to okBody(Provider.OPENAI) },
             holdMs = 150,
         ).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k")
@@ -601,7 +601,7 @@ class ProviderPolishClientTest {
         // OpenAI sends unix SECONDS; everything downstream is millis.
         val openAi = "{\"data\":[{\"id\":\"gpt-5.6-luna\",\"created\":1756771200},{\"id\":\"gpt-4.1-mini\"}]}"
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAi else 200 to "{}"
+            if (request.path.startsWith("/models")) 200 to openAi else 200 to okBody(Provider.OPENAI)
         }).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
             val luna = result.models.first { it.id == "gpt-5.6-luna" }
@@ -614,7 +614,7 @@ class ProviderPolishClientTest {
         val claude = "{\"data\":[{\"id\":\"claude-haiku-4-5\",\"created_at\":\"2026-08-28T00:00:00Z\"}," +
             "{\"id\":\"claude-sonnet-5\",\"created_at\":\"not-a-date\"}],\"has_more\":false}"
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to claude else 200 to "{}"
+            if (request.path.startsWith("/models")) 200 to claude else 200 to okBody(Provider.OPENAI)
         }).use { server ->
             val result = discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed
             assertEquals(
@@ -631,7 +631,7 @@ class ProviderPolishClientTest {
         val gemini = "{\"models\":[{\"name\":\"models/gemini-3.8-flash\",\"displayName\":\"Gemini 3.8 Flash\"," +
             "\"supportedGenerationMethods\":[\"generateContent\"]}]}"
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to gemini else 200 to "{}"
+            if (request.path.startsWith("/models")) 200 to gemini else 200 to okBody(Provider.OPENAI)
         }).use { server ->
             val result = discoverer(server, Provider.GEMINI).discoverModels(Provider.GEMINI, "AIza") as ProviderDiscovery.Listed
             assertNull(result.models.single().releasedAt)
@@ -645,7 +645,7 @@ class ProviderPolishClientTest {
             when {
                 request.path.startsWith("/models") && request.path.contains("after_id=c1") -> 200 to page2
                 request.path.startsWith("/models") -> 200 to page1
-                else -> 200 to "{}"
+                else -> 200 to okBody(Provider.OPENAI)
             }
         }).use { server ->
             val result = discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed
@@ -665,7 +665,7 @@ class ProviderPolishClientTest {
             when {
                 request.path.startsWith("/models") && request.path.contains("after_id=c1") -> 200 to "not json at all"
                 request.path.startsWith("/models") -> 200 to page1
-                else -> 200 to "{}"
+                else -> 200 to okBody(Provider.OPENAI)
             }
         }).use { server ->
             val result = discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed
@@ -684,7 +684,7 @@ class ProviderPolishClientTest {
         // load (2026-09-02) when the list fetch ate the budget and the probes timed out instantly.
         val hold = java.util.concurrent.CountDownLatch(1)
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else { hold.await(10, TimeUnit.SECONDS); 200 to "{}" }
+            if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else { hold.await(10, TimeUnit.SECONDS); 200 to okBody(Provider.OPENAI) }
         }).use { server ->
             // The request log is a synchronized list; a count that iterates it must hold its lock, or a
             // probe landing mid-iteration throws and the test goes red on a correct client.
@@ -734,7 +734,7 @@ class ProviderPolishClientTest {
             assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k"))
         }
         val many = Array(ProviderPolishClient.MAX_PROBES + 3) { "gpt-x$it" }
-        ScriptedServer({ request -> if (request.path.startsWith("/models")) 200 to openAiList(*many) else 200 to "{}" }, connections = 128).use { server ->
+        ScriptedServer({ request -> if (request.path.startsWith("/models")) 200 to openAiList(*many) else 200 to okBody(Provider.OPENAI) }, connections = 128).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
             assertEquals(many.size, result.models.size)
             assertEquals(ProviderPolishClient.MAX_PROBES, result.models.count { it.access == ModelAccess.AVAILABLE })
@@ -745,7 +745,7 @@ class ProviderPolishClientTest {
 
     @Test fun aProbeTimeoutIsUnverifiedAndTheWholeDeadlineRefusesAsTimedOut() {
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAiList("gpt-slow", "gpt-fast") else { if (probedModel(request) == "gpt-slow") Thread.sleep(1_500); 200 to "{}" }
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-slow", "gpt-fast") else { if (probedModel(request) == "gpt-slow") Thread.sleep(1_500); 200 to okBody(Provider.OPENAI) }
         }).use { server ->
             val result = discoverer(server, Provider.OPENAI, probeTimeoutMs = 400, readTimeoutMs = 400).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
             assertEquals(ModelAccess.AVAILABLE, result.models.first { it.id == "gpt-fast" }.access)
@@ -754,7 +754,7 @@ class ProviderPolishClientTest {
         // The whole-operation deadline bounds every probe: the ones it cuts off are UNVERIFIED (never locked)
         // and the list still comes back, inside the deadline plus one probe's grace.
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAiList(*Array(6) { "gpt-m$it" }) else { Thread.sleep(700); 200 to "{}" }
+            if (request.path.startsWith("/models")) 200 to openAiList(*Array(6) { "gpt-m$it" }) else { Thread.sleep(700); 200 to okBody(Provider.OPENAI) }
         }).use { server ->
             val started = System.nanoTime()
             val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 900, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")

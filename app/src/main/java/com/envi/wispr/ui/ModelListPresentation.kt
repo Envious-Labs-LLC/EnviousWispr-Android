@@ -115,7 +115,15 @@ object ModelListPresentation {
                 current = model.id == savedModel,
             )
         }
-        val filtered = decorated.filter {
+        // MOBILE SHOWS ONLY WHAT IT CAN OFFER (#104, founder 2026-09-02). Desktop locks an unusable model
+        // and leaves it on screen; a phone has no room for a row nobody may tap. UNVERIFIED stays, because
+        // after #104's probe fix it means "not tested yet", not "broken": the probe stops at MAX_PROBES to
+        // bound the network cost, so 33 of his 69 OpenAI rows were never tried and most of them work.
+        //
+        // The SAVED model is never hidden even when it turns unusable, because a user has to be able to
+        // see and change what they are currently running.
+        val usable = decorated.filter { it.access != ModelAccess.UNAVAILABLE || it.id == savedModel }
+        val filtered = usable.filter {
             normalized.isEmpty() || it.id.lowercase().contains(normalized) || it.displayName.lowercase().contains(normalized)
         }
         // NEWEST FIRST (#101, founder 2026-09-02, replacing four sort chips he found unhelpful).
@@ -144,7 +152,16 @@ object ModelListPresentation {
         val pinnedRow = if (savedModel.isNotBlank() && models.none { it.id == savedModel } &&
             (normalized.isEmpty() || savedModel.lowercase().contains(normalized))
         ) pinned(savedModel) else null
-        return listOfNotNull(pinnedRow) + sorted
+        // A search that matches nothing offers the typed id, which used to happen only when the whole list
+        // was empty. Hiding rows without this makes a hidden model permanently unreachable, and the rows
+        // hidden above are the ones a power user is most likely to know by name.
+        val typed = query.trim()
+        val typedRow = if (sorted.isEmpty() && pinnedRow == null && typed.isNotEmpty() &&
+            typed.length <= ProviderPolishClient.MAX_MODEL_CHARS && typed.none(Char::isISOControl) && typed != savedModel
+        ) {
+            ModelRow(typed, typed, "Use this model id", null, null, null, null, ModelAccess.UNVERIFIED, releasedAt = null, selectable = true, current = false, typed = true)
+        } else null
+        return listOfNotNull(pinnedRow) + sorted + listOfNotNull(typedRow)
     }
 
     private fun pinned(savedModel: String) = ModelRow(
@@ -157,7 +174,9 @@ object ModelListPresentation {
         val real = rows.filter { !it.typed }
         val available = real.count { it.access == ModelAccess.AVAILABLE }
         val total = real.size
-        return if (query.isNotBlank()) "$shown of $total models" else "$total models · $available available"
+        // "checked", not "available": an untested row is not a broken one, and the old wording read as
+        // "33 of these do not work" when they had simply never been probed (#104).
+        return if (query.isNotBlank()) "$shown of $total models" else "$total models · $available checked"
     }
 
     /** The saved model sorted by the same rule the client uses, so the page and the client agree. */

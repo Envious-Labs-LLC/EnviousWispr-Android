@@ -13,6 +13,16 @@ Source repository: https://github.com/tokotype/PlusJakartaSans
 Bundled weights: 400, 500, 600, 700, latin subset
 Licensed under the SIL Open Font License 1.1, copied in full at the end of this file.
 
+Cloud provider brand marks
+Source: Simple Icons, https://github.com/simple-icons/simple-icons
+The SVG files are released under CC0 1.0, which asks for no attribution; this entry records
+provenance rather than discharging a licence condition.
+Bundled: the OpenAI, Google Gemini and Anthropic Claude marks, in
+app/src/main/res/drawable/ic_provider_*.xml, path data unmodified.
+The marks themselves remain the trademarks of their respective owners. They are used
+NOMINATIVELY, solely to identify which provider the user is configuring, drawn monochrome in
+the app's own colour. No affiliation, sponsorship or endorsement is implied by any of them.
+
 The exact S1-mini license follows. llama.cpp is also distributed under
 Apache License 2.0; its source license remains in third_party/llama.cpp/LICENSE.
 

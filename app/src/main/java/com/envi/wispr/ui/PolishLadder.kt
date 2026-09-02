@@ -56,6 +56,34 @@ enum class CloudTap { ACTIVATE, SETUP }
 
 enum class KeyRung { CONNECTED, FIELD }
 
+/**
+ * Where a user goes to make an API key for [Provider], and the domain to show them (#97).
+ *
+ * The domain is DISPLAYED, not decoration: it is the whole fallback if the browser never opens, because a
+ * user who can read `aistudio.google.com` can type it, and one who read "Get your key" cannot.
+ *
+ * Exhaustive with no `else`, so a new provider must declare a portal or declare it has none. Ported from
+ * the macOS links for OpenAI and Gemini; macOS ships no Claude link, and Android offers Claude, so that
+ * one is ours.
+ *
+ * **No claim about price.** macOS says "free API key", which holds for AI Studio and is wrong for the
+ * other two, both of which want billing set up before a key does anything.
+ */
+data class KeyPortal(val domain: String, val url: String)
+
+/**
+ * Measured 2026-09-02: `console.anthropic.com/settings/keys` answers 301 to `platform.claude.com`, so the
+ * old address ships a redirect rather than a destination. Re-check these by fetching them, never by
+ * remembering them; a dead link here is a user who cannot start.
+ */
+fun keyPortal(provider: Provider): KeyPortal? = when (provider) {
+    Provider.OPENAI -> KeyPortal("platform.openai.com", "https://platform.openai.com/api-keys")
+    Provider.GEMINI -> KeyPortal("aistudio.google.com", "https://aistudio.google.com/apikey")
+    Provider.CLAUDE -> KeyPortal("platform.claude.com", "https://platform.claude.com/settings/keys")
+    // A user's own server has no portal to send them to, and it never reaches this rung anyway.
+    Provider.SELF_HOSTED_POLISH -> null
+}
+
 data class KeyPill(val label: String, val enabled: Boolean)
 
 object PolishLadder {

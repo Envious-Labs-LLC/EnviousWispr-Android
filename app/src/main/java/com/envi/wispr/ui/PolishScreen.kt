@@ -38,7 +38,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -286,6 +293,7 @@ private fun CloudRungs(
                 enabled = !saving,
                 visualTransformation = PasswordVisualTransformation(),
             )
+            GetKeyLink(displayed)
             if (replacing) {
                 TextButton(onClick = { replacing = false; apiKey = ""; checkSequence = null; onClearKeyError() }, enabled = !saving) { Text("Keep current key") }
             }
@@ -473,6 +481,56 @@ private fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
         },
         onPause = { ModelDeliveryWorker.pause(context, ModelManifest.s1) },
         onResume = { ModelDeliveryWorker.resume(context, ModelManifest.s1) },
+    )
+}
+
+/**
+ * The way out of a key field for someone who has no key (#97).
+ *
+ * A real link, not a styled button: `LinkAnnotation.Url` gives it link semantics, so TalkBack announces it
+ * as a link rather than as text, and the whole string is one focus target.
+ *
+ * The intent is fired here rather than left to the default handler, so a device that cannot open a browser
+ * declines quietly instead of throwing `ActivityNotFoundException` out of a click. The user is not left
+ * with nothing: the domain is IN the visible text, so it can be read and typed. That is the accepted
+ * limit rather than a closed window, and it is why the domain is shown at all.
+ */
+@Composable
+private fun GetKeyLink(provider: Provider) {
+    val portal = keyPortal(provider) ?: return
+    val context = LocalContext.current
+    val style = SpanStyle(
+        color = MaterialTheme.colorScheme.primary,
+        textDecoration = TextDecoration.Underline,
+    )
+    val text = buildAnnotatedString {
+        val link = LinkAnnotation.Url(
+            url = portal.url,
+            styles = TextLinkStyles(style = style),
+        ) {
+            val uri = android.net.Uri.parse((it as LinkAnnotation.Url).url)
+            runCatching {
+                context.startActivity(
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        }
+        withLink(link) { append("Get your key at ${portal.domain}") }
+    }
+    // A link's touch target is its LINE BOX, not the composable's bounds, so padding the Text would not
+    // have helped: measured 16 dp tall before this, against the 48 dp floor in
+    // docs/enviouswispr-android-architecture.md. Growing the line height grows the box the link is hit in.
+    // Converted from dp rather than written as sp, so a user on a small font scale still gets 48 dp.
+    val minTarget = with(LocalDensity.current) { 48.dp.toSp() }
+    val body = MaterialTheme.typography.bodySmall
+    // Never SHRINK the line: bodySmall is far below the floor today, but comparing rather than assuming
+    // means a later typography change cannot silently make the target smaller through this line.
+    val lineHeight = if (body.lineHeight.isSp && body.lineHeight.value > minTarget.value) body.lineHeight else minTarget
+    Text(
+        text,
+        style = body.copy(lineHeight = lineHeight),
+        modifier = Modifier.padding(top = 2.dp),
     )
 }
 

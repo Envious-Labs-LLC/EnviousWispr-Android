@@ -10,6 +10,7 @@ import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -182,6 +183,32 @@ class PolishLadderTest {
         val displayed = PolishLadder.displayedProvider(Provider.GEMINI, browsingGeminiOverSelfHosted)
         assertEquals(Provider.GEMINI, displayed)
         assertEquals("GEMINI", PolishLadder.navigationAfterRemove(displayed).browsedName)
+    }
+
+    /**
+     * Product Outcome. When this fails a user with no API key is left staring at a password box with no way
+     * out, or is sent to a dead address (#97).
+     *
+     * The URLs are NOT asserted as literals against themselves, which would only prove the table equals
+     * itself. What is pinned is the shape a wrong entry breaks: every cloud provider has a portal, it is
+     * https, and its visible domain is genuinely part of its URL, which is what makes the domain a usable
+     * fallback when the browser does not open rather than decoration that can drift from the link.
+     */
+    @Test fun everyCloudProviderHasAReachablePlaceToGetAKey() {
+        CloudProviders.forEach { provider ->
+            val portal = keyPortal(provider)
+            assertNotNull("$provider has nowhere to send a user with no key", portal)
+            portal!!
+            assertTrue("$provider portal must be https, it is ${portal.url}", portal.url.startsWith("https://"))
+            // The domain is shown to the user as the fallback address; if it is not in the URL, the two
+            // have drifted and the fallback sends them somewhere the link does not go.
+            assertTrue(
+                "$provider shows ${portal.domain} but links to ${portal.url}",
+                portal.url.startsWith("https://${portal.domain}/"),
+            )
+        }
+        // A user's own server has no portal, and saying so is the answer rather than a missing row.
+        assertNull(keyPortal(Provider.SELF_HOSTED_POLISH))
     }
 
     @Test fun theS1LineIsExhaustiveOverHealth() {

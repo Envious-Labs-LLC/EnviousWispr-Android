@@ -59,12 +59,24 @@ data class ProviderSettingsUiState(
     val endpoint: String = "",
     val selfHostedProtocol: SelfHostedProtocol = SelfHostedProtocol.OPENAI_COMPATIBLE,
     val configured: Boolean = false,
-    val credentialStored: Boolean = false,
+    /**
+     * Every provider holding a usable key, whatever is selected (#103). The AI Polish tab asks this per
+     * TILE, so a key that is stored stays visible, switchable and removable even when another provider is
+     * the active one.
+     */
+    val storedProviders: Set<Provider> = emptySet(),
     val message: String = "",
     val error: String? = null,
     /** The request sequence of the LAST COMPLETED write, success or failure; 0 before any write (#67). */
     val writeSequence: Int = 0,
-)
+) {
+    /**
+     * The SELECTED provider's key is in the Keystore. DERIVED from [storedProviders] rather than stored
+     * beside it, so the tab's per-tile answer and the status chip's one-provider answer cannot disagree.
+     * Self-hosted stores no key and so is never credentialed, which is what it has always reported.
+     */
+    val credentialStored: Boolean get() = configured && provider in storedProviders
+}
 
 /** The setup page's live model list (#84): one provider at a time, one sequence, one phase. */
 data class ProviderDiscoveryUiState(
@@ -470,22 +482,24 @@ class EnviousWisprViewModel(
         }
     }
 
-    /** Remove, from the Ladder's connected row or the self-hosted card. Returns the request sequence. */
-    fun clearProviderSettings(): Int {
-        // The provider is captured BEFORE the selection is cleared, so its cache can be cleared after (#84).
-        val removed = providerSettings.value.takeIf { it.configured }?.provider
-        return updateProviderSettings(
-            afterWrite = { succeeded ->
-                if (succeeded && removed != null) {
-                    draftResults.remove(removed)
-                    withContext(Dispatchers.IO) { modelCache.clear(removed) }
-                    if (providerDiscoveryState.value.provider == removed) providerDiscoveryState.value = ProviderDiscoveryUiState(provider = removed)
-                }
-            },
-        ) {
-            providerRepository.clearSelection()
-            "Provider removed"
-        }
+    /**
+     * Remove, from the Ladder's connected row or the self-hosted card. Takes the provider the ROW is about
+     * (#103), not the selected one: with a connected row per stored key, a Remove on an inactive tile must
+     * delete that tile's key and leave the active provider running.
+     *
+     * Returns the request sequence.
+     */
+    fun removeProviderKey(provider: Provider): Int = updateProviderSettings(
+        afterWrite = { succeeded ->
+            if (succeeded) {
+                draftResults.remove(provider)
+                withContext(Dispatchers.IO) { modelCache.clear(provider) }
+                if (providerDiscoveryState.value.provider == provider) providerDiscoveryState.value = ProviderDiscoveryUiState(provider = provider)
+            }
+        },
+    ) {
+        providerRepository.removeKey(provider)
+        "${provider.capabilities().displayName} removed"
     }
 
     /** The page's cached list on open (#84); never replaces a live result already showing for that provider. */
@@ -545,9 +559,16 @@ class EnviousWisprViewModel(
             val outcome = if (draftInvalid) {
                 ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
             } else withContext(Dispatchers.IO) {
-                val key = draft ?: providerRepository.load()?.takeIf { it.provider == provider }?.apiKey
-                if (key.isNullOrBlank()) ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
-                else discoverer.discoverModels(provider, key)
+                // A stored-key Check reaches THIS provider's credential, not the selected one's (#103).
+                // Reading it through `load()` meant Refresh only ever worked on the active provider, so on
+                // any other connected tile it refused with no key while the key sat in the Keystore.
+                //
+                // The stored key is never named here: the repository runs the discovery with it and hands
+                // back only the listing, so no shape of this call can reach the plaintext
+                // (keystore-security.md RULE: plaintext-never-leaves-the-store).
+                if (draft != null) discoverer.discoverModels(provider, draft)
+                else providerRepository.discoverModelsWithStoredKey(provider, discoverer)
+                    ?: ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
             }
             val name = provider.capabilities().displayName
             // The class of defect this closes: a completion judged on state read BEFORE a suspension. There
@@ -618,7 +639,7 @@ class EnviousWisprViewModel(
             selfHostedProtocol = selected?.selfHostedProtocol
                 ?: SelfHostedProtocol.OPENAI_COMPATIBLE,
             configured = selected != null,
-            credentialStored = !selected?.apiKey.isNullOrBlank(),
+            storedProviders = providerRepository.storedProviders(),
             message = message,
             error = error,
             writeSequence = sequence,

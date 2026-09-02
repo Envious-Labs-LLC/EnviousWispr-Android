@@ -384,7 +384,17 @@ class ProviderPolishClient(
         }
 
         // The probes, at most MAX_PROBES of them, three in flight, every one bounded by the remaining time.
-        val toProbe = kept.take(MAX_PROBES)
+        //
+        // NEWEST FIRST, so the budget is spent on the rows the list will show at the top and on the models
+        // `recommendedPick` may choose from (#104 review round 1). Provider order is not the user's order:
+        // his key lists 69 OpenAI models and only 40 can be probed, so under list order the untested tail
+        // was arbitrary and could have contained the newest thing he owns. Under this it is the OLDEST 29.
+        //
+        // Gemini publishes no dates, measured 2026-09-02, so for it this is a stable no-op and its tail is
+        // still list order. That is the reason its dates are researched into `ModelNotes` instead.
+        val toProbe = kept
+            .sortedWith(compareBy({ it.releasedAt == null }, { -(it.releasedAt ?: 0L) }))
+            .take(MAX_PROBES)
         val futures = toProbe.map { row ->
             PROBE_EXECUTOR.submit<ProbeOutcome> { probe(provider, row.id, apiKey, remaining()) }
         }
@@ -458,8 +468,15 @@ class ProviderPolishClient(
         if (remainingMs <= 0) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
         val budget = remainingMs.coerceAtMost(probeTimeoutMs.coerceAtLeast(1))
         return when (val transport = run(plan, ProviderCancellation(), budget, connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, budget))) {
-            is Transport.Failed -> ModelListRules.probeOutcome(provider, null, null)
-            is Transport.Response -> ModelListRules.probeOutcome(provider, transport.status, transport.body)
+            // A transport failure has no body at all; the null status makes this UNVERIFIED before the
+            // reply is ever read.
+            is Transport.Failed -> ModelListRules.probeOutcome(provider, null, null, ModelListRules.ProbeReply.NO_TEXT)
+            is Transport.Response -> ModelListRules.probeOutcome(
+                provider,
+                transport.status,
+                transport.body,
+                probeReply(plan.responseFormat, transport.body),
+            )
         }
     }
 
@@ -817,19 +834,82 @@ class ProviderPolishClient(
         } catch (_: StackOverflowError) {
             return ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
         }
-        val text = when (format) {
-            ResponseFormat.OPENAI_RESPONSES -> root.firstMessageTextAt("output")
-            ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "message", "content")
-            ResponseFormat.GEMINI -> root.firstTextAt("candidates", 0, "content", "parts")
-            ResponseFormat.CLAUDE -> root.firstTextAt("content")
-            ResponseFormat.OLLAMA -> root.stringAt("message", "content") ?: root.stringAt("response")
-            ResponseFormat.NONE -> null
-        }?.substringAfterLast("</think>")?.trim()
+        val text = replyText(format, root)
         return if (text == null || text.isEmpty() || !ProviderPolishPrompt.isTranscriptOnly(text)) {
             ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
         } else {
             ProviderPolishResult.Success(text)
         }
+    }
+
+    /**
+     * The reply text a parsed body carries, trimmed, or null when it carries none.
+     *
+     * ONE owner for "where does this provider put its answer", used by [parseResponse] and by the model
+     * probe (#104 review round 1). The probe used to look for a `"text"` label in the raw body, which is a
+     * second reading of the same envelope and disagreed with this one in both directions: a multipart reply
+     * whose FIRST part is empty reads as no answer, and a whitespace-only answer reads as an answer even
+     * though polish rejects it. A model must not be offered or hidden on a judgement the polish path does
+     * not share.
+     *
+     * The judgement that stays HERE and out of the probe is [ProviderPolishPrompt.isTranscriptOnly]: it
+     * asks whether a polish reply is the transcript rather than commentary about it, and the probe sends
+     * the word "Hi" rather than a transcript, so applying it would refuse working models.
+     */
+    private fun replyText(format: ResponseFormat, root: Any?): String? = when (format) {
+        ResponseFormat.OPENAI_RESPONSES -> root.firstMessageTextAt("output")
+        ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "message", "content")
+        ResponseFormat.GEMINI -> root.firstTextAt("candidates", 0, "content", "parts")
+        ResponseFormat.CLAUDE -> root.firstTextAt("content")
+        ResponseFormat.OLLAMA -> root.stringAt("message", "content") ?: root.stringAt("response")
+        ResponseFormat.NONE -> null
+    }?.substringAfterLast("</think>")?.trim()
+
+    /**
+     * What this probe body carried, judged the way polish judges a real reply.
+     *
+     * A body that will not parse is NO_TEXT rather than inconclusive: every provider here answers a 200
+     * with JSON, so one that does not is not a model this app can use.
+     */
+    private fun probeReply(format: ResponseFormat, body: String): ModelListRules.ProbeReply {
+        val root = try {
+            JsonParser(body).parse()
+        } catch (_: IllegalArgumentException) {
+            return ModelListRules.ProbeReply.NO_TEXT
+        } catch (_: StackOverflowError) {
+            return ModelListRules.ProbeReply.NO_TEXT
+        }
+        if (!replyText(format, root).isNullOrEmpty()) return ModelListRules.ProbeReply.TEXT
+        return if (endedOfItsOwnAccord(format, root)) ModelListRules.ProbeReply.NO_TEXT else ModelListRules.ProbeReply.INCONCLUSIVE
+    }
+
+    /**
+     * Did the model finish because it had finished, rather than because something stopped it?
+     *
+     * **Asked in the positive on purpose.** Listing the ways a reply can be cut short — an output cap, a
+     * safety block, a recitation block, a language refusal, a tool-call fault — is a list that needs
+     * extending whenever a provider adds a reason, and every missing entry silently condemns a working
+     * model. Normal completion is ONE value per provider and providers do not add new ways to succeed.
+     *
+     * An absent, misspelt or unexpected marker therefore reads as "not proved", which is the safe answer
+     * in both directions: the model stays on screen and is never chosen for the user.
+     *
+     * Exhaustive with no `else`, so a new response format must declare its own value.
+     * `ResponseFormat.NONE` is the key check and never asks for text at all.
+     */
+    private fun endedOfItsOwnAccord(format: ResponseFormat, root: Any?): Boolean = when (format) {
+        // Measured 2026-09-02: gpt-4.1-mini answers `completed` with text at the probe's 16-token cap,
+        // while gpt-5-mini and gpt-5-nano answer `incomplete` / `max_output_tokens` with none.
+        ResponseFormat.OPENAI_RESPONSES -> root.stringAt("status") == "completed"
+        ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "finish_reason") == "stop"
+        ResponseFormat.GEMINI -> root.stringAt("candidates", 0, "finishReason") == "STOP"
+        // Anthropic ends a normal turn with `end_turn`, or with `stop_sequence` when one was matched. We
+        // send no stop sequences, so only the first is reachable today; both are the model finishing.
+        // Documented rather than measured: reaching it needs a Claude model that writes nothing at all,
+        // and both models the founder's key reaches answered within the cap on 2026-09-02.
+        ResponseFormat.CLAUDE -> root.stringAt("stop_reason") in setOf("end_turn", "stop_sequence")
+        ResponseFormat.OLLAMA -> root.stringAt("done_reason") == "stop"
+        ResponseFormat.NONE -> false
     }
 
     private fun ensureActive(cancellation: ProviderCancellation, deadline: Long) {

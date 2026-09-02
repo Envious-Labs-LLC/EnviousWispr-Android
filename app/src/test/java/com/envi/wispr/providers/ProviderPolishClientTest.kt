@@ -535,7 +535,7 @@ class ProviderPolishClientTest {
             if (request.path.startsWith("/models")) 200 to openAiList("gpt-5.6-terra", "gpt-4.1-mini", "gpt-4o-realtime-preview", "o1-mini", "gpt-5.6-terra", "gpt-locked")
             else when (probedModel(request)) {
                 "gpt-locked" -> 403 to "{}"
-                else -> 200 to "{}"
+                else -> 200 to okBody(Provider.OPENAI)
             }
         }).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "sk-test")
@@ -559,7 +559,7 @@ class ProviderPolishClientTest {
 
     @Test fun discoveryRunsAtMostThreeProbesAtOnce() {
         ScriptedServer(
-            { request -> if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else 200 to "{}" },
+            { request -> if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else 200 to okBody(Provider.OPENAI) },
             holdMs = 150,
         ).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k")
@@ -601,7 +601,7 @@ class ProviderPolishClientTest {
         // OpenAI sends unix SECONDS; everything downstream is millis.
         val openAi = "{\"data\":[{\"id\":\"gpt-5.6-luna\",\"created\":1756771200},{\"id\":\"gpt-4.1-mini\"}]}"
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAi else 200 to "{}"
+            if (request.path.startsWith("/models")) 200 to openAi else 200 to okBody(Provider.OPENAI)
         }).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
             val luna = result.models.first { it.id == "gpt-5.6-luna" }
@@ -614,7 +614,7 @@ class ProviderPolishClientTest {
         val claude = "{\"data\":[{\"id\":\"claude-haiku-4-5\",\"created_at\":\"2026-08-28T00:00:00Z\"}," +
             "{\"id\":\"claude-sonnet-5\",\"created_at\":\"not-a-date\"}],\"has_more\":false}"
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to claude else 200 to "{}"
+            if (request.path.startsWith("/models")) 200 to claude else 200 to okBody(Provider.CLAUDE)
         }).use { server ->
             val result = discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed
             assertEquals(
@@ -631,7 +631,7 @@ class ProviderPolishClientTest {
         val gemini = "{\"models\":[{\"name\":\"models/gemini-3.8-flash\",\"displayName\":\"Gemini 3.8 Flash\"," +
             "\"supportedGenerationMethods\":[\"generateContent\"]}]}"
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to gemini else 200 to "{}"
+            if (request.path.startsWith("/models")) 200 to gemini else 200 to okBody(Provider.GEMINI)
         }).use { server ->
             val result = discoverer(server, Provider.GEMINI).discoverModels(Provider.GEMINI, "AIza") as ProviderDiscovery.Listed
             assertNull(result.models.single().releasedAt)
@@ -645,7 +645,7 @@ class ProviderPolishClientTest {
             when {
                 request.path.startsWith("/models") && request.path.contains("after_id=c1") -> 200 to page2
                 request.path.startsWith("/models") -> 200 to page1
-                else -> 200 to "{}"
+                else -> 200 to okBody(Provider.CLAUDE)
             }
         }).use { server ->
             val result = discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed
@@ -665,7 +665,7 @@ class ProviderPolishClientTest {
             when {
                 request.path.startsWith("/models") && request.path.contains("after_id=c1") -> 200 to "not json at all"
                 request.path.startsWith("/models") -> 200 to page1
-                else -> 200 to "{}"
+                else -> 200 to okBody(Provider.CLAUDE)
             }
         }).use { server ->
             val result = discoverer(server, Provider.CLAUDE).discoverModels(Provider.CLAUDE, "sk-ant") as ProviderDiscovery.Listed
@@ -684,7 +684,7 @@ class ProviderPolishClientTest {
         // load (2026-09-02) when the list fetch ate the budget and the probes timed out instantly.
         val hold = java.util.concurrent.CountDownLatch(1)
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else { hold.await(10, TimeUnit.SECONDS); 200 to "{}" }
+            if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else { hold.await(10, TimeUnit.SECONDS); 200 to okBody(Provider.OPENAI) }
         }).use { server ->
             // The request log is a synchronized list; a count that iterates it must hold its lock, or a
             // probe landing mid-iteration throws and the test goes red on a correct client.
@@ -734,7 +734,7 @@ class ProviderPolishClientTest {
             assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k"))
         }
         val many = Array(ProviderPolishClient.MAX_PROBES + 3) { "gpt-x$it" }
-        ScriptedServer({ request -> if (request.path.startsWith("/models")) 200 to openAiList(*many) else 200 to "{}" }, connections = 128).use { server ->
+        ScriptedServer({ request -> if (request.path.startsWith("/models")) 200 to openAiList(*many) else 200 to okBody(Provider.OPENAI) }, connections = 128).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
             assertEquals(many.size, result.models.size)
             assertEquals(ProviderPolishClient.MAX_PROBES, result.models.count { it.access == ModelAccess.AVAILABLE })
@@ -745,7 +745,7 @@ class ProviderPolishClientTest {
 
     @Test fun aProbeTimeoutIsUnverifiedAndTheWholeDeadlineRefusesAsTimedOut() {
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAiList("gpt-slow", "gpt-fast") else { if (probedModel(request) == "gpt-slow") Thread.sleep(1_500); 200 to "{}" }
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-slow", "gpt-fast") else { if (probedModel(request) == "gpt-slow") Thread.sleep(1_500); 200 to okBody(Provider.OPENAI) }
         }).use { server ->
             val result = discoverer(server, Provider.OPENAI, probeTimeoutMs = 400, readTimeoutMs = 400).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed
             assertEquals(ModelAccess.AVAILABLE, result.models.first { it.id == "gpt-fast" }.access)
@@ -754,7 +754,7 @@ class ProviderPolishClientTest {
         // The whole-operation deadline bounds every probe: the ones it cuts off are UNVERIFIED (never locked)
         // and the list still comes back, inside the deadline plus one probe's grace.
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAiList(*Array(6) { "gpt-m$it" }) else { Thread.sleep(700); 200 to "{}" }
+            if (request.path.startsWith("/models")) 200 to openAiList(*Array(6) { "gpt-m$it" }) else { Thread.sleep(700); 200 to okBody(Provider.OPENAI) }
         }).use { server ->
             val started = System.nanoTime()
             val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 900, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")
@@ -794,6 +794,130 @@ class ProviderPolishClientTest {
         retryDelaysMs = delaysMs,
     )
 
+    /**
+     * Product Outcome, and the sweep of one class rather than one more instance of it. Two review rounds
+     * both landed on how a 200 probe body is read, so this covers every way a reply can carry no words:
+     * an empty string, whitespace, a later part, a body that is not JSON, an exhausted output budget, a
+     * safety block, and no terminal marker at all.
+     *
+     * The rule under it is one question, not a list: a model is refused only when it declared a NORMAL
+     * stop and still wrote nothing. When this fails a user is offered a model that silently returns their
+     * raw dictation, or is denied a model that works.
+     */
+    @Test fun aModelIsRefusedOnlyWhenItFinishedOfItsOwnAccordAndWroteNothing() {
+        // The measured transcribe case: 200, well-formed envelope, empty string.
+        val empty = "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"\"}]}}]}"
+        // Whitespace is not an answer either: polish trims before judging, so this must match it.
+        val blank = "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"   \"}]}}]}"
+        // A multipart reply whose FIRST part is empty still carries words. The old label scan stopped at
+        // the first `"text"` and called this model unusable.
+        val later = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"},{\"text\":\"Hi\"}]}}]}"
+        // A body that is not JSON at all did not answer, whatever bytes it happens to contain.
+        val notJson = "text: Hi"
+        // Measured 2026-09-02 against a live Gemini key: gemini-2.5-pro and gemini-3-flash-preview answer
+        // exactly this to the probe, having spent the whole output cap on thinking. Both polish fine at
+        // the real request's budget, so this must NOT be refused. Raising the cap does not help: the
+        // thinking grows with it, 2 thought tokens at a cap of 5 and 125 at a cap of 128.
+        val outOfBudget = "{\"candidates\":[{\"finishReason\":\"MAX_TOKENS\",\"content\":{\"parts\":[]}}]}"
+        // A safety block is the same answer for the same reason, and nothing in the code names it: the
+        // check asks whether the model finished, so every other way a reply can end lands here for free.
+        val blocked = "{\"candidates\":[{\"finishReason\":\"PROHIBITED_CONTENT\",\"content\":{\"parts\":[]}}]}"
+        // No marker at all is also unproved, rather than a refusal by default.
+        val noMarker = "{\"candidates\":[{\"content\":{\"parts\":[]}}]}"
+        val list = "{\"models\":[" + listOf("empty", "blank", "later", "notjson", "outofbudget", "blocked", "nomarker", "good").joinToString(",") {
+            "{\"name\":\"models/gemini-$it\",\"supportedGenerationMethods\":[\"generateContent\"]}"
+        } + "]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to list else when (probedModel(request)) {
+                "gemini-empty" -> 200 to empty
+                "gemini-blank" -> 200 to blank
+                "gemini-later" -> 200 to later
+                "gemini-notjson" -> 200 to notJson
+                "gemini-outofbudget" -> 200 to outOfBudget
+                "gemini-blocked" -> 200 to blocked
+                "gemini-nomarker" -> 200 to noMarker
+                else -> 200 to okBody(Provider.GEMINI)
+            }
+        }).use { server ->
+            val models = (discoverer(server, Provider.GEMINI).discoverModels(Provider.GEMINI, "AIza") as ProviderDiscovery.Listed)
+                .models.associate { it.id to it.access }
+            assertEquals(ModelAccess.UNAVAILABLE, models["gemini-empty"])
+            assertEquals(ModelAccess.UNAVAILABLE, models["gemini-blank"])
+            assertEquals(ModelAccess.AVAILABLE, models["gemini-later"])
+            assertEquals(ModelAccess.UNAVAILABLE, models["gemini-notjson"])
+            // Neither refused nor confirmed: the probe could not tell, and an UNVERIFIED row stays on
+            // screen, so the model is still offered.
+            assertEquals(ModelAccess.UNVERIFIED, models["gemini-outofbudget"])
+            assertEquals(ModelAccess.UNVERIFIED, models["gemini-blocked"])
+            assertEquals(ModelAccess.UNVERIFIED, models["gemini-nomarker"])
+            assertEquals(ModelAccess.AVAILABLE, models["gemini-good"])
+        }
+    }
+
+    /**
+     * Product Outcome, measured 2026-09-02 against a live OpenAI key and not hypothetical.
+     *
+     * `gpt-5-mini` and `gpt-5-nano` answer the probe with `status: "incomplete"`,
+     * `incomplete_details.reason: "max_output_tokens"` and no text, because the reasoning consumed the
+     * 16-token cap. Those are the two NEWEST models the founder's key can reach (#103), so refusing an
+     * empty reply without asking why it was empty would have hidden exactly them. `gpt-4.1-mini` answers
+     * `completed` with 34 characters at the same cap.
+     *
+     * When this fails, the newest models a user owns disappear from their list.
+     */
+    @Test fun anOpenAiModelThatSpentTheProbeBudgetThinkingIsNotRefused() {
+        val thinking = "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}"
+        val answered = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"Hello there\"}]}]}"
+        val silent = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"\"}]}]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-thinking", "gpt-answered", "gpt-silent")
+            else when (probedModel(request)) {
+                "gpt-thinking" -> 200 to thinking
+                "gpt-silent" -> 200 to silent
+                else -> 200 to answered
+            }
+        }).use { server ->
+            val models = (discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed)
+                .models.associate { it.id to it.access }
+            assertEquals(ModelAccess.UNVERIFIED, models["gpt-thinking"])
+            assertEquals(ModelAccess.AVAILABLE, models["gpt-answered"])
+            // A model that COMPLETED and still wrote nothing is the refusal case, on OpenAI as on Gemini.
+            assertEquals(ModelAccess.UNAVAILABLE, models["gpt-silent"])
+        }
+    }
+
+    /**
+     * Product Outcome. The probe budget stops at MAX_PROBES, so which models get checked decides which
+     * ones the list can offer and which one wears the Recommended badge. Spending it in provider order
+     * left the untested tail arbitrary: his key lists 69 OpenAI models and only 40 are probed.
+     *
+     * When this fails the newest model a user owns can be the one nobody checked.
+     */
+    @Test fun theProbeBudgetGoesToTheNewestModelsNotTheOnesTheProviderHappensToListFirst() {
+        val day = 24 * 60 * 60L
+        // Listed oldest first, with the newest model LAST, which is where provider order puts it.
+        val rows = (1..ProviderPolishClient.MAX_PROBES + 1).joinToString(",") { n ->
+            "{\"id\":\"gpt-m$n\",\"created\":${1_700_000_000L + n * day}}"
+        }
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to "{\"data\":[$rows]}" else 200 to okBody(Provider.OPENAI)
+        }).use { server ->
+            val models = (discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed)
+                .models.associate { it.id to it.access }
+            val newest = "gpt-m${ProviderPolishClient.MAX_PROBES + 1}"
+            assertEquals(ModelAccess.AVAILABLE, models[newest])
+            // The one left unprobed is the OLDEST, which is the model a user is least likely to pick.
+            assertEquals(ModelAccess.UNVERIFIED, models["gpt-m1"])
+            assertEquals(ProviderPolishClient.MAX_PROBES, server.requests.count { it.path.startsWith("/probe") })
+        }
+    }
+
+    /**
+     * A successful reply in each provider's own envelope. **It must match the provider under test**: since
+     * #104 the probe judges a body with the polish parser, so serving an OpenAI envelope to a Claude probe
+     * makes every model read UNAVAILABLE. That mismatch was live in four fixtures and only went red once
+     * the crude label scan was replaced.
+     */
     private fun okBody(provider: Provider) = when (provider) {
         Provider.OPENAI -> "{\"output\":[{\"content\":[{\"text\":\"clean result\"}]}]}"
         Provider.GEMINI -> "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"clean result\"}]}}]}"

@@ -71,6 +71,30 @@ class AndroidKeystoreSecretStoreTest {
         assertEquals("claude-test", store.get(Provider.CLAUDE))
     }
 
+    /**
+     * Product Outcome (#103). The AI Polish tab asks this per tile, so a wrong answer either hides a key
+     * the user stored or shows a connected row over a key that cannot be read.
+     */
+    @Test fun storedProvidersNamesEveryReadableKeyAndNothingElse() {
+        assertEquals(emptySet<Provider>(), store.storedProviders())
+        store.put(Provider.OPENAI, "openai-test")
+        store.put(Provider.CLAUDE, "claude-test")
+        assertEquals(setOf(Provider.OPENAI, Provider.CLAUDE), store.storedProviders())
+
+        store.remove(Provider.OPENAI)
+        assertEquals(setOf(Provider.CLAUDE), store.storedProviders())
+
+        // A blob that will not decrypt is not a key anyone can use, so it is not reported. Staged the way
+        // `ciphertextIsBoundToItsProviderByAad` stages it: the same bytes under the wrong provider name.
+        val file = File(context.noBackupFilesDir, "provider-secrets.v1")
+        file.writeText(file.readText().replace("CLAUDE=", "GEMINI="))
+        assertEquals(emptySet<Provider>(), store.storedProviders())
+
+        // A provider name this build does not know is skipped rather than throwing.
+        file.writeText("SOME_FUTURE_PROVIDER=v1:not-base64")
+        assertEquals(emptySet<Provider>(), store.storedProviders())
+    }
+
     @Test fun removingTheLastValueRemovesTheBackingFile() {
         val file = File(context.noBackupFilesDir, "provider-secrets.v1")
         store.put(Provider.OPENAI, "openai-test")

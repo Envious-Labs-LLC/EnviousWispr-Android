@@ -157,15 +157,67 @@ object ModelListRules {
         }
     }
 
-    /** The probe verdict per provider (macOS `probeOpenAI` / `probeGemini` / `probeClaude`). */
-    fun probeOutcome(provider: Provider, status: Int?, body: String?): ProbeOutcome {
+    /**
+     * What a 200 probe body carried, read by the same parser polish uses.
+     *
+     * THREE values, and the third is the whole point: an empty reply is only evidence against a model when
+     * the model itself chose to end it.
+     *
+     * **A model is refused only when it declared a NORMAL stop and still wrote nothing.** That is one
+     * question with a closed answer per provider, rather than a list of the ways a reply can go wrong; a
+     * list would need extending every time a provider adds a reason, which is how a check starts letting
+     * things through. Gemini alone publishes more than a dozen `finishReason` values, covering safety
+     * blocks, recitation, language refusals and tool-call faults; not one of them says the model cannot
+     * polish, and none of them has to be named here.
+     *
+     * Measured 2026-09-02 against a live Gemini key. The probe asks for 5 output tokens (16 on OpenAI) and
+     * a reasoning model can spend all of them thinking: `gemini-2.5-pro` and `gemini-3-flash-preview`
+     * answer 200 with `MAX_TOKENS` and no text. Raising the cap does not help, because the thinking grows
+     * with it: `gemini-2.5-pro` spent 2 thought tokens at a cap of 5, 29 at 32 and 125 at 128, emitting
+     * nothing at any of them. Both polish fine at the real request's budget.
+     *
+     * The same run confirms the check still does its job: `gemini-3.5-transcribe`, the model this whole
+     * thing exists for, answers `STOP` with no text and is refused.
+     */
+    enum class ProbeReply {
+        /** The polish parser found words. */
+        TEXT,
+
+        /** The model finished of its own accord and wrote nothing. This is the transcribe case. */
+        NO_TEXT,
+
+        /** No words, and something other than the model's own choice ended the reply. Nothing was proved. */
+        INCONCLUSIVE,
+    }
+
+    /**
+     * The probe verdict per provider (macOS `probeOpenAI` / `probeGemini` / `probeClaude`).
+     *
+     * [reply] is the caller's reading of the body, produced by the SAME parser polish uses. It is a
+     * required argument with no default, because a default here would be a silent answer at every call
+     * site that forgot it.
+     */
+    fun probeOutcome(provider: Provider, status: Int?, body: String?, reply: ProbeReply): ProbeOutcome {
         if (status == null) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
         if (status == 401) return ProbeOutcome.KeyRejected(status)
         if (status == 400 && body != null && ProviderErrorSignal.classify(provider, status, body) == ProviderErrorSignal.KEY_REJECTED) {
             return ProbeOutcome.KeyRejected(status)
         }
         val access = when {
-            status == 200 -> ModelAccess.AVAILABLE
+            // 200 IS NOT ENOUGH. The probe asks the model to answer the word "Hi" with a tiny output cap,
+            // and a model that answers 200 with no text cannot polish anything: measured 2026-09-02,
+            // gemini-3.5-transcribe returns an empty string to a real cleanup request, so it was shipping
+            // as AVAILABLE while silently returning the user's raw words on every dictation. Green must
+            // mean the outcome happened (validation-discipline RULE: verify-the-feature-not-the-crash).
+            status == 200 -> when (reply) {
+                ProbeReply.TEXT -> ModelAccess.AVAILABLE
+                ProbeReply.NO_TEXT -> ModelAccess.UNAVAILABLE
+                // Not "broken", and not "fine": nothing was proved. UNVERIFIED rows stay on screen and
+                // `recommendedPick` never chooses one, so the model is still offered to a user who asks
+                // for it by name and is never selected on their behalf. That is the only classification
+                // that is safe in BOTH directions, which is why the unreadable cases land here.
+                ProbeReply.INCONCLUSIVE -> ModelAccess.UNVERIFIED
+            }
             status == 429 -> when (provider) {
                 Provider.GEMINI -> if (body?.contains("limit: 0") == true) ModelAccess.UNAVAILABLE else ModelAccess.AVAILABLE
                 Provider.CLAUDE -> ModelAccess.AVAILABLE
@@ -173,6 +225,12 @@ object ModelListRules {
             }
             status == 403 || status == 404 -> ModelAccess.UNAVAILABLE
             status in 500..599 -> if (provider == Provider.CLAUDE) ModelAccess.AVAILABLE else ModelAccess.UNVERIFIED
+            // A 400 that is not about the KEY is the provider saying this model cannot serve this request.
+            // It answered, so "we could not tell" is the wrong record: measured 2026-09-02, the two omni
+            // models and antigravity-preview all answer 400 INVALID_ARGUMENT and were being listed as
+            // merely untested. Key rejections were already taken above, so nothing about the key reaches
+            // here.
+            status == 400 -> ModelAccess.UNAVAILABLE
             else -> ModelAccess.UNVERIFIED
         }
         return ProbeOutcome.Access(access)

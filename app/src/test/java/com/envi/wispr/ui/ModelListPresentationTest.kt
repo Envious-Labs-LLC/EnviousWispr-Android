@@ -37,11 +37,19 @@ class ModelListPresentationTest {
         assertEquals("Recommended", rows.first { it.id == "gpt-4.1-mini" }.tag)
     }
 
-    @Test fun lockedRowsAreNotSelectableUnlessTheyAreTheSavedModel() {
+    /**
+     * Product Outcome. Renamed from lockedRowsAreNotSelectableUnlessTheyAreTheSavedModel, whose first half
+     * asserted that an unusable row is SHOWN and untappable. On mobile it is now hidden outright (#104),
+     * so that half describes a behaviour that no longer exists; what survives, and matters more, is that
+     * the model you are CURRENTLY RUNNING is never hidden from you even when it turns unusable.
+     */
+    @Test fun anUnusableRowIsHiddenUnlessItIsTheModelYouAreRunning() {
+        // Not the saved model: gone from the list entirely, rather than shown greyed out as on desktop.
         val plain = ModelListPresentation.present(Provider.OPENAI, models, "", "")
-        val sol = plain.first { it.id == "gpt-5.6-sol" }
-        assertFalse(sol.selectable)
-        assertEquals("Not available with this key", sol.note)
+        assertTrue(plain.none { it.id == "gpt-5.6-sol" })
+
+        // The saved model is never hidden, however unusable it has become, and stays selectable so the
+        // user can see what they are running and change it. The note still says why it is a problem.
         val saved = ModelListPresentation.present(Provider.OPENAI, models, "", "gpt-5.6-sol").first { it.id == "gpt-5.6-sol" }
         assertTrue(saved.selectable)
         assertTrue(saved.current)
@@ -71,13 +79,21 @@ class ModelListPresentationTest {
 
     @Test fun countLineNamesTotalsAndAvailabilityAndCountsThePinnedSavedRow() {
         val rows = ModelListPresentation.present(Provider.OPENAI, models, "", "")
-        assertEquals("4 models · 3 available", ModelListPresentation.countLine(rows, 4, ""))
-        assertEquals("1 of 4 models", ModelListPresentation.countLine(rows, 1, "mini"))
+        // Three rows, not four: the unusable one is hidden now. And "checked", not "available", because an
+        // untested row is not a broken one (#104).
+        assertEquals("3 models · 3 checked", ModelListPresentation.countLine(rows, 3, ""))
+        assertEquals("1 of 3 models", ModelListPresentation.countLine(rows, 1, "mini"))
         val withPinned = ModelListPresentation.present(Provider.OPENAI, models, "", "gpt-old")
-        assertEquals(5, withPinned.size)
-        assertEquals("5 models · 3 available", ModelListPresentation.countLine(withPinned, 5, ""))
+        assertEquals(4, withPinned.size)
+        assertEquals("4 models · 3 checked", ModelListPresentation.countLine(withPinned, 4, ""))
         val typed = ModelListPresentation.present(Provider.OPENAI, emptyList(), "gpt-typed", "")
-        assertEquals("0 models · 0 available", ModelListPresentation.countLine(typed, 0, ""))
+        assertEquals("0 models · 0 checked", ModelListPresentation.countLine(typed, 0, ""))
+        // "Checked" counts a VERDICT, not a pass. The saved model is shown even when it turns unusable,
+        // and it was probed like every other row; counting only the passes read "4 models · 3 checked"
+        // over four checked rows (review round 3).
+        val withUnusableSaved = ModelListPresentation.present(Provider.OPENAI, models, "", "gpt-5.6-sol")
+        assertEquals(4, withUnusableSaved.size)
+        assertEquals("4 models · 4 checked", ModelListPresentation.countLine(withUnusableSaved, 4, ""))
     }
 
     /**
@@ -99,10 +115,10 @@ class ModelListPresentationTest {
         // The input order must not decide the output order, or the sort is not doing the work.
         assertEquals(ids, ModelListPresentation.present(Provider.OPENAI, dated.reversed(), "", "").map { it.id })
 
-        // A model the key cannot reach stays below the reachable ones however new it is, because being
-        // newest is no use if it cannot answer.
+        // A model the key cannot reach is not shown at all, however new it is (#104). It used to sort last;
+        // now being newest cannot drag an unusable row onto the screen.
         val lockedButNew = dated + DiscoveredModel("gpt-locked", "Locked", ModelAccess.UNAVAILABLE, false, releasedAt = 9_999 * day)
-        assertEquals("gpt-locked", ModelListPresentation.present(Provider.OPENAI, lockedButNew, "", "").last().id)
+        assertEquals(ids, ModelListPresentation.present(Provider.OPENAI, lockedButNew, "", "").map { it.id })
     }
 
     /**
@@ -118,6 +134,24 @@ class ModelListPresentationTest {
         // Every dated row really does carry a date, so an undated one is a gap in the table rather than
         // the sort quietly falling back to input order.
         fromGemini.forEach { assertTrue(it.id, ModelListPresentation.releaseDateOf(Provider.GEMINI, it) != null) }
+    }
+
+    /**
+     * Product Outcome. Hiding rows makes them unreachable unless the search offers the typed id, and the
+     * rows hidden are exactly the ones a power user is most likely to know by name (#104).
+     */
+    @Test fun aSearchThatMatchesNothingStillLetsYouTypeAModelId() {
+        val typed = ModelListPresentation.present(Provider.OPENAI, models, "gpt-5.6-sol", "")
+        assertEquals(listOf("gpt-5.6-sol"), typed.map { it.id })
+        assertTrue(typed.single().typed)
+        assertTrue(typed.single().selectable)
+
+        // A search that DOES match offers the matches, not a typed row on top of them.
+        val matched = ModelListPresentation.present(Provider.OPENAI, models, "mini", "")
+        assertTrue(matched.none { it.typed })
+
+        // Rubbish is not offered as a model id.
+        assertTrue(ModelListPresentation.present(Provider.OPENAI, models, "  ", "").none { it.typed })
     }
 
     /** The provider's own date beats the table, because a date we typed cannot be fresher than theirs. */

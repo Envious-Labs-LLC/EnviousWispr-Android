@@ -202,7 +202,7 @@ internal fun EnviousWisprApp(
     onDynamicColorChanged: (Boolean) -> Unit,
     onSetPolishMode: (PolishMode) -> Int,
     onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol, Int?) -> Int,
-    onClearProviderSettings: () -> Int,
+    onClearProviderSettings: (Provider) -> Int,
     providerDiscovery: ProviderDiscoveryUiState,
     onCheckKey: (Provider, String?) -> Int,
     onKeyDraftChanged: (Provider) -> Unit,

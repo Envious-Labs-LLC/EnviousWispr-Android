@@ -47,6 +47,21 @@ class AndroidKeystoreSecretStore(context: Context) : SecretStore {
         readAll()[provider.name]?.let { decrypt(provider, it) }
     }
 
+    /**
+     * Reads the stored names and proves each one decrypts, under ONE storage lock so the answer describes
+     * a single state of the file rather than three (#103). The plaintext is tested and dropped; nothing
+     * decrypted is returned or retained.
+     *
+     * A name this build does not know is skipped rather than throwing, which is what a downgrade after a
+     * new provider shipped looks like.
+     */
+    override fun storedProviders(): Set<Provider> = withStorageLock {
+        readAll().entries.mapNotNullTo(mutableSetOf()) { (name, blob) ->
+            val provider = runCatching { Provider.valueOf(name) }.getOrNull() ?: return@mapNotNullTo null
+            provider.takeIf { runCatching { decrypt(it, blob).isNotBlank() }.getOrDefault(false) }
+        }
+    }
+
     override fun remove(provider: Provider) = withStorageLock {
         val values = readAll().toMutableMap()
         if (values.remove(provider.name) != null) {

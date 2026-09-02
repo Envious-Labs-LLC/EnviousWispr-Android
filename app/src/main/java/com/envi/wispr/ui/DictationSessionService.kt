@@ -61,6 +61,7 @@ import com.envi.wispr.vocabulary.BuiltinVocabulary
 import com.envi.wispr.vocabulary.StructuredTermRestorer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
@@ -113,6 +114,12 @@ class DictationSessionService : Service() {
     private val state = AtomicReference(SessionState.IDLE)
     private val publicationStarted = AtomicBoolean(false)
     private val polishLedger = PolishRequestLedger()
+    /**
+     * Serialises the final state check, the ledger open, the watchdog launch and the binder call against
+     * `cancelProcessing` (#75): without it the transcription thread can read PROCESSING, lose the CPU to a
+     * cancel that closes an empty ledger, and then send a request nothing will ever cancel.
+     */
+    private val polishSubmissionLock = Any()
     private val teardownStarted = AtomicBoolean(false)
     private val draftId = AtomicLong(0L)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -264,6 +271,7 @@ class DictationSessionService : Service() {
             ACTION_CANCEL -> when (state.get()) {
                 SessionState.STARTING -> cancelStarting()
                 SessionState.RECORDING -> cancelRecording()
+                SessionState.PROCESSING -> cancelProcessing()
                 else -> stopIfIdle()
             }
             ACTION_STOP -> when (state.get()) {
@@ -520,7 +528,27 @@ class DictationSessionService : Service() {
                 publishFallback(rawText, takePreferences, PolishReason.SERVICE_UNAVAILABLE)
                 return@launch
             }
-            val requestId = polishLedger.open()
+            // The state check and the ledger open are one step under the submission lock, so a cancel
+            // either precedes them (no request is sent) or finds the open id and closes it. The binder call
+            // itself runs outside the lock: the lock is also taken on the main thread by Cancel, and a
+            // synchronous transaction to a stalled engine must not be able to hold the main thread.
+            val requestId = synchronized(polishSubmissionLock) {
+                if (state.get() != SessionState.PROCESSING || publicationStarted.get()) {
+                    DebugLogger.log(TAG, "Transcript arrived after the session ended; not polishing")
+                    return@launch
+                }
+                val opened = polishLedger.open()
+                // The watchdog is armed BEFORE the binder call so the call itself is inside the budget.
+                // The ledger is the only first-wins gate: an outcome that arrives first closes it.
+                serviceScope.launch {
+                    delay(PolishWatchdogBudget.forPolicy(takePreferences.policy))
+                    if (!polishLedger.claim(opened)) return@launch
+                    DebugLogger.warn(TAG, "Polish watchdog fired for request $opened; cancelling on the engine")
+                    runCatching { polishService?.cancel(opened) }
+                    publishFallback(rawText, takePreferences, PolishReason.WATCHDOG_TIMEOUT)
+                }
+                opened
+            }
             try {
                 service.polishRequest(
                     requestId,
@@ -535,13 +563,13 @@ class DictationSessionService : Service() {
                             // empty or misnamed outcome is the only answer this request will get: fail
                             // open now rather than leave the session in Processing forever.
                             if (outcome == null || outcome.requestId != requestId) {
-                                if (polishLedger.accepts(requestId)) {
+                                if (polishLedger.claim(requestId)) {
                                     DebugLogger.warn(TAG, "Invalid polish outcome for request $requestId")
                                     publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
                                 }
                                 return
                             }
-                            if (!polishLedger.accepts(outcome.requestId)) {
+                            if (!polishLedger.claim(outcome.requestId)) {
                                 DebugLogger.warn(
                                     TAG,
                                     "Ignoring polish outcome for request ${outcome.requestId}: not the open request (reason=${outcome.reason})",
@@ -559,18 +587,23 @@ class DictationSessionService : Service() {
                         // v1 answers are never produced for a v2 request. If one ever arrives it is an
                         // engine defect, and the session still fails open to the deterministic text.
                         override fun onResult(text: String?, engine: String?, latencyMs: Long) {
-                            if (polishLedger.accepts(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                            if (polishLedger.claim(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
                         }
 
                         override fun onError(message: String?) {
-                            if (polishLedger.accepts(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                            if (polishLedger.claim(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
                         }
                     },
                 )
             } catch (error: Exception) {
                 DebugLogger.error(TAG, "Unable to call polish service", error)
-                if (polishLedger.accepts(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                if (polishLedger.claim(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
             }
+            // A cancel that landed between the ledger open and the engine's registration found nothing to
+            // cancel on the engine. Now the request is registered, so send it again; on a delivered or
+            // never-registered id the engine treats it as a no-op. A read, never a claim: on a normal day
+            // the ledger is still open here and must stay open for the outcome.
+            if (polishLedger.openId != requestId) runCatching { service.cancel(requestId) }
         }
     }
 
@@ -834,6 +867,26 @@ class DictationSessionService : Service() {
             stopAudioCaptureService()
             finishSession()
         }
+    }
+
+    /**
+     * Cancel while the words are being transcribed or polished (#75). Claims publication first: if the
+     * text is already on its way the cancel is too late and does nothing. Otherwise it takes the submission
+     * lock so it either precedes the ledger open (no request is sent) or follows it (the open id is closed
+     * and cancelled on the engine, and the submitter re-sends that cancel once the engine has registered).
+     */
+    private fun cancelProcessing() {
+        if (!publicationStarted.compareAndSet(false, true)) return
+        synchronized(polishSubmissionLock) {
+            if (!state.compareAndSet(SessionState.PROCESSING, SessionState.CANCELLING)) return
+            DebugLogger.log(TAG, "Cancelled while processing; open polish request: ${polishLedger.openId != null}")
+            cancelOpenPolishRequest()
+        }
+        PasteAccessibilityService.releasePinnedTarget()
+        DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
+        vibrate(HapticCue.SESSION_CANCELED)
+        discardDraft()
+        finishSession()
     }
 
     private fun cancelStarting() {

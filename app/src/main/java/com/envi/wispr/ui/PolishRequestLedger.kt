@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Which polish request, if any, the session owner is still waiting for. An outcome is accepted
- * only when it names the open request, and only once; closing the ledger returns the id that was
+ * only when it claims the open request, and only once; closing the ledger returns the id that was
  * open so the caller can cancel exactly that request on the engine. Both operations are single
  * compare-and-swaps, so cancel versus outcome is first-wins with no window between reading the id
  * and closing it. Pure Kotlin: `PolishRequestLedgerTest` drives it with an injected id source.
@@ -24,8 +24,13 @@ class PolishRequestLedger(private val ids: PolishRequestIdSource = PolishRequest
         return id
     }
 
-    /** True exactly once, for the open request's id; anything else is stale and is refused. */
-    fun accepts(requestId: Long): Boolean = requestId != NONE && open.compareAndSet(requestId, NONE)
+    /**
+     * Claims the open request: true exactly once, for the open request's id, and the ledger is closed by
+     * the claim; anything else is stale and is refused. Named for what it does because a caller that only
+     * wants to look uses [openId]: a query-shaped name here once closed every normal ledger from a
+     * post-call check (#75, code round 2).
+     */
+    fun claim(requestId: Long): Boolean = requestId != NONE && open.compareAndSet(requestId, NONE)
 
     /** Closes the ledger and returns the id that was open, or null when nothing was. */
     fun close(): Long? = open.getAndSet(NONE).takeIf { it != NONE }

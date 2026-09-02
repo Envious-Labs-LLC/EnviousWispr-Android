@@ -5,6 +5,7 @@ import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderFailureKind
 import com.envi.wispr.providers.SelfHostedProtocol
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -36,6 +37,11 @@ class PolishReasonTest {
             assertEquals(PolishReason.OFF, PolishReason.resolve(PolishPolicy.Off, outcome, null))
             assertEquals(PolishReason.CLOUD_NOT_CONFIGURED, PolishReason.resolve(PolishPolicy.CloudUnconfigured, outcome, null))
         }
+    }
+
+    @Test fun theTimeoutReasonsAreRecordedReasonsAndSurviveResolution() {
+        assertEquals(PolishReason.LOCAL_TIMEOUT, PolishReason.resolve(PolishPolicy.LocalS1, PipelineOutcome.MODEL_DECLINED, PolishReason.LOCAL_TIMEOUT))
+        assertTrue(PolishReason.entries.containsAll(listOf(PolishReason.LOCAL_TIMEOUT, PolishReason.WATCHDOG_TIMEOUT)))
     }
 
     @Test fun aRecordedAdapterReasonWinsOverThePipelineShape() {

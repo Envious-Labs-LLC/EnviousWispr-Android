@@ -33,7 +33,8 @@ object DictationNotificationController {
             context = context,
             title = "EnviousWispr is listening",
             detail = InsertionOutcomeMessages.listeningDetail(autoPaste, clipboard),
-            includeActions = true,
+            includeStop = true,
+            includeCancel = true,
         )
     }
 
@@ -42,7 +43,8 @@ object DictationNotificationController {
             context = context,
             title = "Preparing your words",
             detail = "Transcribing and polishing locally on this phone.",
-            includeActions = false,
+            includeStop = false,
+            includeCancel = true,
         )
     }
 
@@ -54,7 +56,8 @@ object DictationNotificationController {
         context: Context,
         title: String,
         detail: String,
-        includeActions: Boolean,
+        includeStop: Boolean,
+        includeCancel: Boolean,
     ): Notification {
         ensureChannel(context)
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -66,7 +69,7 @@ object DictationNotificationController {
             .setOnlyAlertOnce(true)
             .setOngoing(true)
 
-        if (includeActions) {
+        if (includeStop) {
             builder.addAction(
                 R.drawable.ic_wispr_mic,
                 "Stop",
@@ -76,6 +79,8 @@ object DictationNotificationController {
                     DictationSessionService.ACTION_STOP,
                 ),
             )
+        }
+        if (includeCancel) {
             builder.addAction(
                 R.drawable.ic_wispr_mic,
                 "Cancel",

@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
@@ -59,10 +60,10 @@ fun polishStatusChip(settings: ProviderSettingsUiState, s1State: ModelUiState): 
     PolishMode.OFFLINE_S1 -> PolishStatusChip(
         kind = PolishStatusKind.LOCAL,
         label = "S1-mini",
-        dot = when (s1State.label) {
-            "Ready" -> PolishStatusDot.GREEN
-            "Failed", "Repair needed", "Update failed" -> PolishStatusDot.RED
-            else -> PolishStatusDot.NEUTRAL
+        dot = when (s1State.health) {
+            ModelHealth.READY -> PolishStatusDot.GREEN
+            ModelHealth.BROKEN -> PolishStatusDot.RED
+            ModelHealth.NOT_READY, ModelHealth.UNKNOWN -> PolishStatusDot.NEUTRAL
         },
     )
 

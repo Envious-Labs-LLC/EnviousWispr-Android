@@ -43,4 +43,23 @@ class ModelDeliveryUiTest {
         assertEquals("Update available", state.label)
         assertEquals(ModelUiAction.UPDATE, state.action)
     }
+
+    // #64: the meaning beside the label, set in the same branch, one assertion per branch.
+    @Test fun everyBranchCarriesItsHealth() {
+        assertEquals(ModelHealth.NOT_READY, modelUiState(false, "RUNNING").health)
+        assertEquals(ModelHealth.NOT_READY, modelUiState(false, "ENQUEUED").health)
+        assertEquals(ModelHealth.NOT_READY, modelUiState(false, "RUNNING", controlState = "PAUSED").health)
+        assertEquals(ModelHealth.BROKEN, modelUiState(false, "FAILED", reason = "checksum mismatch").health)
+        assertEquals(ModelHealth.NOT_READY, modelUiState(false, "CANCELLED").health)
+        assertEquals(ModelHealth.BROKEN, modelUiState(false, "FAILED", staleInstalled = true).health)
+        assertEquals(ModelHealth.READY, modelUiState(true, "FAILED").health)
+        assertEquals(ModelHealth.READY, modelUiState(true, "SUCCEEDED").health)
+        assertEquals(ModelHealth.NOT_READY, modelUiState(false, "SUCCEEDED", staleInstalled = true).health)
+        assertEquals(ModelHealth.NOT_READY, modelUiState(false, "SUCCEEDED").health)
+        assertEquals(ModelHealth.READY, modelUiState(true, null).health)
+        assertEquals(ModelHealth.BROKEN, modelUiState(false, null, progressState = DownloadState.REPAIR_NEEDED.name).health)
+        assertEquals(ModelHealth.NOT_READY, modelUiState(false, null, staleInstalled = true).health)
+        assertEquals(ModelHealth.NOT_READY, modelUiState(false, null).health)
+        assertEquals("Missing", modelUiState(false, null).label)
+    }
 }

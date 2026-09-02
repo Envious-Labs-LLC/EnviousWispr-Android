@@ -65,6 +65,8 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -99,6 +101,7 @@ import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelDeliveryControlStore
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
+import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.models.modelUiState
 import com.envi.wispr.history.TranscriptEntity
@@ -197,9 +200,10 @@ internal fun EnviousWisprApp(
     onRestoreClipboardChanged: (Boolean) -> Unit,
     onSmartInsertionChanged: (Boolean) -> Unit,
     onDynamicColorChanged: (Boolean) -> Unit,
+    onTurnPolishOn: () -> Unit,
     onSetPolishMode: (PolishMode) -> Unit,
-    onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol) -> Unit,
-    onClearProviderSettings: () -> Unit,
+    onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol) -> Int,
+    onClearProviderSettings: (ProviderWriteOrigin) -> Int,
     onHistorySearchChange: (String) -> Unit,
     onKeepHistory: (TranscriptEntity) -> Unit,
     onDeleteHistory: (TranscriptEntity) -> Unit,
@@ -240,6 +244,15 @@ internal fun EnviousWisprApp(
     val destination = AppDestination.entries.firstOrNull { it.name == destinationName }
         ?: AppDestination.History
     var settingsPageName by rememberSaveable { mutableStateOf<String?>(null) }
+    // A page opened from the AI Polish tab (#67). At most one of the two page kinds is open: the drawer
+    // cannot open over a polish page (its gestures are off then), and one callback clears both.
+    var polishPageName by rememberSaveable { mutableStateOf<String?>(null) }
+    val polishPage = polishPageName?.let(PolishSubpage::fromSaved)
+    // The AI Polish snackbar shows each completed write once. The memory lives HERE, above the animated
+    // screen body, because the tab is removed while a page shows and a value inside it would be reborn
+    // with the tab and replay the message (#67, `PolishSnackbarPolicy`).
+    var lastShownWriteSequence by rememberSaveable { mutableStateOf(0) }
+    val snackbarHostState = remember { SnackbarHostState() }
     // The one History card that is open, held here rather than inside the row so that scrolling it
     // out of the list, or leaving History for another tab, does not close it. Null is "all closed",
     // and holding ONE id is what makes "only one open at a time" true by construction.
@@ -253,7 +266,18 @@ internal fun EnviousWisprApp(
 
     // Only armed while a settings page is open, so the system back gesture on a tab still leaves the
     // app rather than being swallowed by a handler with nothing to close.
-    BackHandler(enabled = settingsPage != null) { settingsPageName = null }
+    val closePages = { settingsPageName = null; polishPageName = null }
+    BackHandler(enabled = settingsPage != null || polishPage != null, onBack = closePages)
+
+    LaunchedEffect(uiState.providerSettings.writeSequence, uiState.providerSettings.message, destination, polishPage) {
+        val decision = PolishSnackbarPolicy.decide(lastShownWriteSequence, uiState.providerSettings.writeSequence, uiState.providerSettings.message)
+        if (decision.show && destination == AppDestination.Polish && polishPage == null) {
+            lastShownWriteSequence = decision.remember
+            snackbarHostState.showSnackbar(uiState.providerSettings.message)
+        } else if (!decision.show) {
+            lastShownWriteSequence = decision.remember
+        }
+    }
 
     // Computed only while the Polish tab is showing, so every other tab pays no WorkManager query.
     // Both the app-bar badge and PolishScreen's body read this one value, never a second computation
@@ -267,11 +291,12 @@ internal fun EnviousWisprApp(
             .collectAsStateWithLifecycle(emptyList())
         workUiState(preferredModelWork(s1Work, s1Adoption), uiState.readiness.polishModelReady, ModelManifest.s1, context)
     } else {
-        ModelUiState(label = "")
+        ModelUiState(label = "", health = ModelHealth.UNKNOWN)
     }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
+        gesturesEnabled = settingsPage == null && polishPage == null,
         drawerContent = {
             SettingsDrawerSheet(
                 current = settingsPage,
@@ -284,9 +309,11 @@ internal fun EnviousWisprApp(
     ) {
         AppScaffold(
             destination = destination,
-            settingsPage = settingsPage,
+            page = settingsPage?.let { PageChrome(it.title) }
+                ?: polishPage?.let { PageChrome(it.title(uiState.providerSettings.provider.takeIf { uiState.providerSettings.configured })) },
+            snackbarHostState = snackbarHostState,
             onOpenDrawer = { scope.launch { drawerState.open() } },
-            onBack = { settingsPageName = null },
+            onBack = closePages,
             onSelectDestination = { destinationName = it.name },
             onStartDictation = {
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
@@ -302,7 +329,7 @@ internal fun EnviousWisprApp(
             } else null,
         ) { contentModifier ->
             AnimatedContent(
-                targetState = settingsPage?.let(Screen::Page) ?: Screen.Tab(destination),
+                targetState = settingsPage?.let(Screen::Page) ?: polishPage?.let(Screen::Polish) ?: Screen.Tab(destination),
                 transitionSpec = { fadeIn() togetherWith fadeOut() },
                 label = "destination",
                 modifier = contentModifier,
@@ -345,11 +372,28 @@ internal fun EnviousWisprApp(
                         AppDestination.Polish -> PolishScreen(
                             settings = uiState.providerSettings,
                             s1State = polishS1State,
-                            onRefreshReadiness = onRefreshReadiness,
+                            onTurnOn = onTurnPolishOn,
                             onSetMode = onSetPolishMode,
-                            onSaveProvider = onSaveProviderSettings,
-                            onClearProvider = onClearProviderSettings,
+                            onOpenProviderSetup = { provider -> polishPageName = PolishSubpage.ProviderSetup(provider).toSaved() },
+                            onOpenLocalModel = { polishPageName = PolishSubpage.LocalModel.toSaved() },
+                            onDownloadModel = {
+                                ModelDeliveryWorker.enqueue(context, ModelManifest.s1)
+                                onRefreshReadiness()
+                            },
+                            onClearProvider = { onClearProviderSettings(ProviderWriteOrigin.TAB) },
                         )
+                    }
+                    is Screen.Polish -> when (val page = current.page) {
+                        is PolishSubpage.ProviderSetup -> ProviderSetupPage(
+                            provider = page.provider,
+                            settings = uiState.providerSettings,
+                            onSave = { provider, model, apiKey ->
+                                onSaveProviderSettings(provider, model, null, apiKey, SelfHostedProtocol.OPENAI_COMPATIBLE)
+                            },
+                            onClear = { onClearProviderSettings(ProviderWriteOrigin.SETUP_PAGE) },
+                            onDone = closePages,
+                        )
+                        PolishSubpage.LocalModel -> LocalModelPage(s1State = polishS1State, onRefreshReadiness = onRefreshReadiness)
                     }
                     is Screen.Page -> when (current.page) {
                         SettingsPage.WhatsNew -> WhatsNewPage()
@@ -394,7 +438,13 @@ private sealed interface Screen {
     data class Tab(val destination: AppDestination) : Screen
 
     data class Page(val page: SettingsPage) : Screen
+
+    /** A page opened from the AI Polish tab (#67); same chrome as a drawer page. */
+    data class Polish(val page: PolishSubpage) : Screen
 }
+
+/** What the scaffold needs to know about a page on top of the tabs: its title. Null means a tab is showing. */
+private data class PageChrome(val title: String)
 
 /**
  * The chrome around whatever is on screen: the top bar with its one navigation control, and the
@@ -408,7 +458,8 @@ private sealed interface Screen {
 @OptIn(ExperimentalMaterial3Api::class)
 private fun AppScaffold(
     destination: AppDestination,
-    settingsPage: SettingsPage?,
+    page: PageChrome?,
+    snackbarHostState: SnackbarHostState,
     onOpenDrawer: () -> Unit,
     onBack: () -> Unit,
     onSelectDestination: (AppDestination) -> Unit,
@@ -418,11 +469,12 @@ private fun AppScaffold(
 ) {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(settingsPage?.title ?: destination.label) },
+                title = { Text(page?.title ?: destination.label) },
                 navigationIcon = {
-                    if (settingsPage == null) {
+                    if (page == null) {
                         IconButton(
                             onClick = onOpenDrawer,
                             modifier = Modifier.semantics { contentDescription = "Open settings menu" },
@@ -435,7 +487,7 @@ private fun AppScaffold(
                     }
                 },
                 actions = {
-                    if (settingsPage == null) {
+                    if (page == null) {
                         topBarBadge?.invoke()
                         IconButton(
                             onClick = onStartDictation,
@@ -454,7 +506,7 @@ private fun AppScaffold(
             )
         },
         bottomBar = {
-            if (settingsPage == null) {
+            if (page == null) {
                 NavigationBar {
                     AppDestination.entries.forEach { item ->
                         NavigationBarItem(

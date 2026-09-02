@@ -36,6 +36,66 @@ class ProviderConfigurationRepositoryTest {
         assertEquals(PolishMode.OFFLINE_S1, repository.loadMode())
     }
 
+    // #67: the engine used last, written in the same batch as the mode, on the REAL preference file.
+    private fun stored(key: String): String? = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getString(key, null)
+
+    @Test fun everyNonOffWriteRecordsTheLastOnModeBesideTheMode() {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putString("last_on_mode", "sentinel").commit()
+        repository.setMode(PolishMode.OFFLINE_S1)
+        assertEquals("OFFLINE_S1", stored("mode")); assertEquals("OFFLINE_S1", stored("last_on_mode"))
+        repository.setMode(PolishMode.OFF)
+        assertEquals("OFF", stored("mode")); assertEquals("OFFLINE_S1", stored("last_on_mode"))
+        repository.saveProvider(Provider.OPENAI, "gpt-test", null, "k", SelfHostedProtocol.OPENAI_COMPATIBLE)
+        assertEquals("PROVIDER", stored("mode")); assertEquals("PROVIDER", stored("last_on_mode"))
+        repository.setMode(PolishMode.OFF)
+        assertEquals("PROVIDER", stored("last_on_mode"))
+        repository.clearSelection()
+        assertEquals("OFFLINE_S1", stored("mode")); assertEquals("OFFLINE_S1", stored("last_on_mode"))
+    }
+
+    @Test fun turnOnLandsOnTheSixCellsAgainstTheRealFile() {
+        val prefs = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        // last_on_mode absent, no provider
+        prefs.edit().clear().putString("mode", "OFF").commit()
+        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn()); assertEquals("OFFLINE_S1", stored("mode"))
+        // PROVIDER remembered but the configuration is gone
+        prefs.edit().clear().putString("mode", "OFF").putString("last_on_mode", "PROVIDER").commit()
+        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
+        // PROVIDER remembered with a configuration
+        repository.saveProvider(Provider.GEMINI, "gemini-test", null, "k", SelfHostedProtocol.OPENAI_COMPATIBLE)
+        repository.setMode(PolishMode.OFF)
+        assertEquals(PolishMode.PROVIDER, repository.turnOn()); assertEquals("PROVIDER", stored("mode"))
+        // PROVIDER remembered, metadata saved, but the key is gone from the store
+        repository.setMode(PolishMode.OFF)
+        secrets.remove(Provider.GEMINI)
+        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn()); assertEquals("OFFLINE_S1", stored("mode"))
+        // last_on_mode absent while a configuration exists
+        repository.saveProvider(Provider.GEMINI, "gemini-test", null, "k", SelfHostedProtocol.OPENAI_COMPATIBLE)
+        prefs.edit().putString("mode", "OFF").remove("last_on_mode").commit()
+        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
+        // OFFLINE_S1 remembered, with and without a configuration
+        repository.setMode(PolishMode.OFFLINE_S1); repository.setMode(PolishMode.OFF)
+        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
+        repository.clearSelection(); repository.setMode(PolishMode.OFF)
+        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
+        // garbage remembered
+        prefs.edit().putString("last_on_mode", "garbage").putString("mode", "OFF").commit()
+        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
+    }
+
+    /** A FAKE, named as one: real preferences cannot be made to fail a commit. Both keys stay untouched. */
+    @Test fun aFailedCommitLeavesModeAndLastOnModeUntouched_failingFake() {
+        val real = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        real.edit().clear().putString("mode", "OFF").putString("last_on_mode", "PROVIDER").commit()
+        val failing = FailingCommitPreferences(real)
+        val fragile = ProviderConfigurationRepository(failing, secrets)
+        val threw = runCatching { fragile.setMode(PolishMode.OFFLINE_S1) }.isFailure
+        assertEquals(true, threw)
+        assertEquals("OFF", stored("mode")); assertEquals("PROVIDER", stored("last_on_mode"))
+        // Both keys were offered to ONE commit; a production that wrote mode alone before failing shows here.
+        assertEquals(listOf(setOf("mode", "last_on_mode")), failing.attemptedCommits)
+    }
+
     @Test fun providerModeWithoutSelectionRemainsNotReadyForServiceFallback() {
         repository.setMode(PolishMode.PROVIDER)
 
@@ -130,5 +190,24 @@ class ProviderConfigurationRepositoryTest {
 
     companion object {
         private const val PREFERENCES = "envious_wispr_provider_configuration"
+    }
+}
+
+/**
+ * Delegates every read to the real file, refuses every commit, and records which keys each refused commit
+ * carried, so a write can be proven atomic AND single-batch.
+ */
+private class FailingCommitPreferences(private val real: android.content.SharedPreferences) : android.content.SharedPreferences by real {
+    val attemptedCommits = mutableListOf<Set<String>>()
+
+    override fun edit(): android.content.SharedPreferences.Editor {
+        val keys = mutableSetOf<String>()
+        return object : android.content.SharedPreferences.Editor by real.edit() {
+            override fun commit(): Boolean { attemptedCommits += keys.toSet(); return false }
+            override fun apply() = Unit
+            override fun putString(key: String?, value: String?): android.content.SharedPreferences.Editor { key?.let(keys::add); return this }
+            override fun remove(key: String?): android.content.SharedPreferences.Editor { key?.let(keys::add); return this }
+            override fun clear(): android.content.SharedPreferences.Editor = this
+        }
     }
 }

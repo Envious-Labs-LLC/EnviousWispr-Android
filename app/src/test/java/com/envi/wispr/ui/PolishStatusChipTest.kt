@@ -1,6 +1,7 @@
 package com.envi.wispr.ui
 
 import com.envi.wispr.models.ModelUiAction
+import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
@@ -10,13 +11,13 @@ import org.junit.Test
 /** Product Outcome: when this fails, the user sees the wrong colour dot, or the wrong name, in the app bar. */
 class PolishStatusChipTest {
 
-    private val readyS1 = ModelUiState(label = "Ready", action = ModelUiAction.REMOVE)
-    private val failedS1 = ModelUiState(label = "Failed", action = ModelUiAction.RETRY)
-    private val downloadingS1 = ModelUiState(label = "Downloading", action = ModelUiAction.PAUSE)
-    private val repairNeededS1 = ModelUiState(label = "Repair needed", action = ModelUiAction.REPAIR)
-    private val updateFailedS1 = ModelUiState(label = "Update failed", action = ModelUiAction.UPDATE)
-    private val cancelledS1 = ModelUiState(label = "Cancelled", action = ModelUiAction.RETRY)
-    private val updateAvailableS1 = ModelUiState(label = "Update available", action = ModelUiAction.UPDATE)
+    private val readyS1 = ModelUiState(label = "Ready", health = ModelHealth.READY, action = ModelUiAction.REMOVE)
+    private val failedS1 = ModelUiState(label = "Failed", health = ModelHealth.BROKEN, action = ModelUiAction.RETRY)
+    private val downloadingS1 = ModelUiState(label = "Downloading", health = ModelHealth.NOT_READY, action = ModelUiAction.PAUSE)
+    private val repairNeededS1 = ModelUiState(label = "Repair needed", health = ModelHealth.BROKEN, action = ModelUiAction.REPAIR)
+    private val updateFailedS1 = ModelUiState(label = "Update failed", health = ModelHealth.BROKEN, action = ModelUiAction.UPDATE)
+    private val cancelledS1 = ModelUiState(label = "Cancelled", health = ModelHealth.NOT_READY, action = ModelUiAction.RETRY)
+    private val updateAvailableS1 = ModelUiState(label = "Update available", health = ModelHealth.NOT_READY, action = ModelUiAction.UPDATE)
 
     @Test fun offModeShowsGreyDotRegardlessOfS1State() {
         val settings = ProviderSettingsUiState(mode = PolishMode.OFF)

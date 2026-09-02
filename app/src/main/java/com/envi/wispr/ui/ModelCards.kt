@@ -29,6 +29,7 @@ import com.envi.wispr.models.ModelDeliveryControlStore
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
+import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.models.modelUiState
 
@@ -54,7 +55,7 @@ internal fun ModelCard(
                     Text(eyebrow, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                     Text(title, style = MaterialTheme.typography.headlineMedium)
                 }
-                StatusPill(state.label, state.label == "Ready")
+                StatusPill(state.label, state.health == ModelHealth.READY)
             }
             Text(description, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(

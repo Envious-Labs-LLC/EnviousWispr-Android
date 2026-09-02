@@ -152,6 +152,27 @@ class ProviderPolishClientTest {
         assertFalse(result.toString().contains("secret-bearing"))
     }
 
+    @Test fun anEmptyBodiedHttpErrorKeepsItsStatusRatherThanReadingAsUnreachable() = withServer(
+        status = 401,
+        response = "",
+    ) { endpoint ->
+        assertEquals(ProviderPolishResult.Failure(ProviderFailureKind.HTTP_ERROR, 401), client(endpoint).polish(request(endpoint)))
+    }
+
+    @Test fun claudeAsksForTheSameOutputBudgetAsMacOs() = withServer(
+        response = "{\"content\":[{\"type\":\"text\",\"text\":\"hello there\"}]}",
+        inspect = { request -> assertTrue(request.body.contains("\"max_tokens\":8192,")) },
+    ) { endpoint ->
+        val result = client(endpoint, Provider.CLAUDE).polish(ProviderPolishRequest(Provider.CLAUDE, "claude-test", "hello", "test-key"))
+        assertEquals(ProviderPolishResult.Success("hello there"), result)
+    }
+
+    @Test fun backticksInsideASentenceAreTheUsersWordsButALeadingFenceIsAWrapper() {
+        assertTrue(ProviderPolishPrompt.isTranscriptOnly("use the ``` fence to quote code"))
+        assertFalse(ProviderPolishPrompt.isTranscriptOnly("```\nhello\n```"))
+        assertFalse(ProviderPolishPrompt.isTranscriptOnly("```text hello```"))
+    }
+
     @Test fun anErrorBodyBecomesOnlyAClosedSignalOverTheWire() = withServer(
         status = 429,
         response = "{\"error\":{\"type\":\"insufficient_quota\",\"message\":\"secret-bearing quota text\"}}",

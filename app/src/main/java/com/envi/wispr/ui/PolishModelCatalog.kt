@@ -89,9 +89,6 @@ object PolishModelCatalog {
         CatalogModel("claude-opus-4-7", "Previous opus", cost = 3, speed = 1, accuracy = 3),
     )
 
-    /** The default model offered the first time a provider is picked, before any Suggested sort is applied. */
-    fun defaultModel(provider: Provider): String? = modelsFor(provider).firstOrNull { it.tag == "Suggested" }?.name
-
     fun modelsFor(provider: Provider): List<CatalogModel> = when (provider) {
         Provider.OPENAI -> openAi
         Provider.GEMINI -> gemini

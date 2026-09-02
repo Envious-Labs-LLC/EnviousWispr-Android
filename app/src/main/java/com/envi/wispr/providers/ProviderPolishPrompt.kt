@@ -17,11 +17,15 @@ internal object ProviderPolishPrompt {
         RegexOption.IGNORE_CASE,
     )
 
-    /** Rejects obvious provider wrappers before the shared transcript safety check runs. */
+    /**
+     * Rejects obvious provider wrappers before the shared transcript safety check runs. A fence counts
+     * only when the answer OPENS with one (macOS `EnviousOutputFilter.looksLikeCode`); backticks inside a
+     * sentence are the user's own words (#79).
+     */
     fun isTranscriptOnly(value: String): Boolean {
         val text = value.trim()
         return text.isNotEmpty() &&
-            !text.contains("```") &&
+            !text.startsWith("```") &&
             !commentaryLabel.containsMatchIn(text)
     }
 }

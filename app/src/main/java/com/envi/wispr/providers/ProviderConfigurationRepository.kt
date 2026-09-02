@@ -75,19 +75,24 @@ class ProviderConfigurationRepository internal constructor(
     fun storedProviders(): Set<Provider> = runCatching { secrets.storedProviders() }.getOrDefault(emptySet())
 
     /**
-     * Runs [action] with [provider]'s stored key, or returns null when there is no readable key.
+     * Lists [provider]'s models using its stored key, or returns null when there is no readable key.
      *
      * Needed because a connected row is now drawn for every stored key (#103), and its Refresh and its
      * model list have to reach THAT provider's credential rather than the selected one's.
      *
-     * It hands over the OPERATION rather than the value on purpose. A `storedKey(provider): String?`
-     * would have returned plaintext up into the view model, which `keystore-security.md`
-     * RULE: plaintext-never-leaves-the-store forbids: pass the store down, never the secret. Here the key
-     * exists only inside this call and the caller never holds a reference to it.
+     * **The return type is what enforces `keystore-security.md`
+     * RULE: plaintext-never-leaves-the-store here.** Two earlier shapes did not. A
+     * `storedKey(provider): String?` handed the plaintext up into the view model outright. A generic
+     * `withStoredKey(provider) { key -> ... }` looked safe and was not, because `T` lets a caller write
+     * `{ it }` and get the key back — its own test did exactly that (review rounds 2 and 3). Naming the
+     * operation and fixing the result to [ProviderDiscovery] closes the question at the TYPE, so no caller
+     * can reach the credential however it is written.
+     *
+     * This mirrors [keyCheck], which the repository has always run against the key inside its own call.
      */
-    fun <T> withStoredKey(provider: Provider, action: (String) -> T): T? {
+    fun discoverModelsWithStoredKey(provider: Provider, discoverer: ProviderModelDiscoverer): ProviderDiscovery? {
         val key = runCatching { secrets.get(provider) }.getOrNull()?.takeIf(String::isNotBlank) ?: return null
-        return action(key)
+        return discoverer.discoverModels(provider, key)
     }
 
     /**

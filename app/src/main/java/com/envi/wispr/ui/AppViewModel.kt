@@ -563,11 +563,11 @@ class EnviousWisprViewModel(
                 // Reading it through `load()` meant Refresh only ever worked on the active provider, so on
                 // any other connected tile it refused with no key while the key sat in the Keystore.
                 //
-                // The stored key is never assigned here: the repository runs the discovery with it, so the
-                // plaintext stays inside the store's own call (keystore-security.md
-                // RULE: plaintext-never-leaves-the-store).
+                // The stored key is never named here: the repository runs the discovery with it and hands
+                // back only the listing, so no shape of this call can reach the plaintext
+                // (keystore-security.md RULE: plaintext-never-leaves-the-store).
                 if (draft != null) discoverer.discoverModels(provider, draft)
-                else providerRepository.withStoredKey(provider) { discoverer.discoverModels(provider, it) }
+                else providerRepository.discoverModelsWithStoredKey(provider, discoverer)
                     ?: ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
             }
             val name = provider.capabilities().displayName

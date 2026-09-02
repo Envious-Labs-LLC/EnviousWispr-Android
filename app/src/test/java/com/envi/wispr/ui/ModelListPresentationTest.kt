@@ -88,6 +88,12 @@ class ModelListPresentationTest {
         assertEquals("4 models · 3 checked", ModelListPresentation.countLine(withPinned, 4, ""))
         val typed = ModelListPresentation.present(Provider.OPENAI, emptyList(), "gpt-typed", "")
         assertEquals("0 models · 0 checked", ModelListPresentation.countLine(typed, 0, ""))
+        // "Checked" counts a VERDICT, not a pass. The saved model is shown even when it turns unusable,
+        // and it was probed like every other row; counting only the passes read "4 models · 3 checked"
+        // over four checked rows (review round 3).
+        val withUnusableSaved = ModelListPresentation.present(Provider.OPENAI, models, "", "gpt-5.6-sol")
+        assertEquals(4, withUnusableSaved.size)
+        assertEquals("4 models · 4 checked", ModelListPresentation.countLine(withUnusableSaved, 4, ""))
     }
 
     /**

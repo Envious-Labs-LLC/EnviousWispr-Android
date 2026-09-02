@@ -248,25 +248,38 @@ class ProviderConfigurationRepositoryTest {
      * Product Outcome (#103). A connected row is drawn for every stored key, and its Refresh and model list
      * must reach THAT provider's credential. When this fails, refreshing any tile but the active one
      * refuses with "no key" while the key is sitting in the Keystore.
+     *
+     * The assertion is on the LISTING, never on the key. An earlier version of this test asserted the
+     * returned key value, which is the escape the operation-specific signature exists to close.
      */
-    @Test fun aStoredKeyIsReadableByProviderNotOnlyForTheSelectedOne() {
+    @Test fun aStoredKeyListsModelsForItsOwnProviderNotOnlyForTheSelectedOne() {
         repository.save(Provider.OPENAI, "gpt-test", apiKey = "openai-secret")
         repository.save(Provider.GEMINI, "gemini-test", apiKey = "gemini-secret")
         assertEquals(Provider.GEMINI, repository.load()?.provider)
 
-        assertEquals("openai-secret", repository.withStoredKey(Provider.OPENAI) { it })
-        assertEquals("gemini-secret", repository.withStoredKey(Provider.GEMINI) { it })
-        assertNull(repository.withStoredKey(Provider.CLAUDE) { it })
+        // The discoverer proves WHICH key it was handed by naming it back as a model id, so the test can
+        // assert the right credential was used without the repository ever returning one.
+        val echo = ProviderModelDiscoverer { provider, apiKey ->
+            ProviderDiscovery.Listed(listOf(DiscoveredModel(apiKey, provider.name, ModelAccess.AVAILABLE, false)), 0L)
+        }
+        fun idFor(provider: Provider) =
+            (repository.discoverModelsWithStoredKey(provider, echo) as? ProviderDiscovery.Listed)?.models?.single()?.id
+
+        // OpenAI is NOT the selected provider, and its own key is what reaches the discoverer.
+        assertEquals("openai-secret", idFor(Provider.OPENAI))
+        assertEquals("gemini-secret", idFor(Provider.GEMINI))
+        // No key means no listing, rather than a listing built with somebody else's key.
+        assertNull(repository.discoverModelsWithStoredKey(Provider.CLAUDE, echo))
 
         repository.removeKey(Provider.OPENAI)
-        assertNull(repository.withStoredKey(Provider.OPENAI) { it })
+        assertNull(repository.discoverModelsWithStoredKey(Provider.OPENAI, echo))
     }
 
     /** A store that cannot be read reports no keys rather than throwing at the screen. */
     @Test fun anUnreadableStoreReportsNoStoredProviders_failingFake() {
         val failing = ProviderConfigurationRepository(context, FailingSecrets(secrets, failGet = true), checker)
         assertEquals(emptySet<Provider>(), failing.storedProviders())
-        assertNull(failing.withStoredKey(Provider.OPENAI) { it })
+        assertNull(failing.discoverModelsWithStoredKey(Provider.OPENAI) { _, _ -> throw AssertionError("must not be reached") })
     }
 
     /**

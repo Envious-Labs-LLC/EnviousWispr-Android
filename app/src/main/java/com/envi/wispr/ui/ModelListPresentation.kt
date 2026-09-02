@@ -178,11 +178,15 @@ object ModelListPresentation {
     /** The count line over the rows the page can show (the pinned saved row included): "17 models · 15 checked", or the filtered form. */
     fun countLine(rows: List<ModelRow>, shown: Int, query: String): String {
         val real = rows.filter { !it.typed }
-        val available = real.count { it.access == ModelAccess.AVAILABLE }
-        val total = real.size
         // "checked", not "available": an untested row is not a broken one, and the old wording read as
         // "33 of these do not work" when they had simply never been probed (#104).
-        return if (query.isNotBlank()) "$shown of $total models" else "$total models · $available checked"
+        //
+        // So the count is of rows that got a VERDICT, either way, rather than of rows that passed. The
+        // saved model is shown even when it turns unusable, and it was probed like everything else;
+        // counting only the passes reported "4 models · 3 checked" over four checked rows (review round 3).
+        val checked = real.count { it.access != ModelAccess.UNVERIFIED }
+        val total = real.size
+        return if (query.isNotBlank()) "$shown of $total models" else "$total models · $checked checked"
     }
 
     /** The saved model sorted by the same rule the client uses, so the page and the client agree. */

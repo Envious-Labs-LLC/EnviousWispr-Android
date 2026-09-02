@@ -15,9 +15,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Product Outcome: when this fails the Ladder highlights an engine that is not running, claims a key is
- * connected that is not stored, starts cloud polish with no key, saves the same key twice, starts on a
- * model the key cannot reach, or tells a user their phone model is fine when it is broken.
+ * Product Outcome by default: when one of these fails the Ladder highlights an engine that is not running,
+ * claims a key is connected that is not stored, starts cloud polish with no key, saves the same key twice,
+ * starts on a model the key cannot reach, or tells a user their phone model is fine when it is broken.
+ *
+ * Three tests here are NOT that, and each declares itself so on its own KDoc rather than inheriting a
+ * class it cannot honour: the two remove-navigation tests, which no JVM test can tie to the composable
+ * that consults them, and the score sweep, which guards a rendering range nobody can call correct.
  */
 class PolishLadderTest {
     private val cloudWithKey = ProviderSettingsUiState(loading = false, mode = PolishMode.PROVIDER, provider = Provider.OPENAI, model = "gpt-4.1-mini", configured = true, credentialStored = true)
@@ -117,6 +121,67 @@ class PolishLadderTest {
         val listed = ProviderDiscoveryUiState(provider = Provider.OPENAI, sequence = 2, phase = ProviderDiscoveryUiState.Phase.LISTED, models = listOf(model("m", ModelAccess.AVAILABLE)))
         assertFalse("a mode, model or remove write is in flight", PolishLadder.saveAtAccept(listed, Provider.OPENAI, 2, false, null, writePending = true))
         assertTrue("and it fires once that write completes", PolishLadder.saveAtAccept(listed, Provider.OPENAI, 2, false, null, writePending = false))
+    }
+
+    /**
+     * **Drift Guard, NOT product coverage, and the distinction is the point.** A JVM test cannot enter a
+     * composable, so nothing here goes red if `PolishScreen.start` stops calling
+     * `navigationAfterRemove` — the wiring is two assignments with no logic left in them, which is why
+     * the decision was moved out of the tab in the first place. The user-visible transition was verified
+     * instead by running it: a real Gemini key connected on the emulator, Remove pressed, and the tab
+     * observed staying on Cloud with the tile kept (#94). A rig that could assert it automatically does
+     * not exist here; the gap is issue #95, routed rather than faked.
+     *
+     * What this DOES protect is every part of the decision itself, `cloudSetup` included. An earlier
+     * version passed `cloudSetup = true` in by hand, which asserted the answer it was meant to check.
+     */
+    @Test fun removingAKeyStaysInCloudSetupOnTheSameTile() {
+        // The state a remove leaves behind: the repository has reset the mode and dropped the selection.
+        val afterRemove = ProviderSettingsUiState(mode = PolishMode.OFFLINE_S1, configured = false)
+
+        // Without the flag the tab follows the mode out of the rung. This IS the reported bug.
+        assertEquals(RungOne.THIS_PHONE, PolishLadder.rungOne(afterRemove.mode, cloudSetup = false))
+
+        // The remove decides the flag; the test does not supply it.
+        val nav = PolishLadder.navigationAfterRemove(Provider.GEMINI)
+        assertEquals(RungOne.CLOUD, PolishLadder.rungOne(afterRemove.mode, nav.cloudSetup))
+        assertEquals("GEMINI", nav.browsedName)
+
+        // And the tile it names still has a rung 3 under it: the empty field, not the connected row.
+        val kept = CloudProviders.first { it.name == nav.browsedName }
+        assertEquals(kept, PolishLadder.displayedProvider(kept, afterRemove))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(kept, afterRemove, replacing = false))
+
+        // Nothing browsed and nothing saved leaves nothing to keep, and the caller assigns that null so a
+        // stale browse is cleared rather than left behind.
+        assertNull(PolishLadder.navigationAfterRemove(null).browsedName)
+        assertNull(PolishLadder.navigationAfterRemove(Provider.SELF_HOSTED_POLISH).browsedName)
+        // Every cloud tile survives its own removal; the rule is not about Gemini. Cloud setup is held in
+        // every case, including the ones that keep no tile.
+        CloudProviders.forEach {
+            val each = PolishLadder.navigationAfterRemove(it)
+            assertEquals(it.name, each.browsedName)
+            assertTrue(it.name, each.cloudSetup)
+        }
+        assertTrue("a removal with no tile still holds the rung", PolishLadder.navigationAfterRemove(null).cloudSetup)
+    }
+
+    /**
+     * Drift Guard, same limit as the test above. The self-hosted card is drawn from `settings` alone, so it
+     * stays on screen after the user taps a cloud tile: Remove on that card is reachable with Gemini's key
+     * field already open below it. The tab keeps Gemini, because losing the tile the user is standing on is
+     * the defect #94 exists to fix, and it does not matter that the thing removed was something else.
+     */
+    @Test fun removingSelfHostedKeepsTheCloudTileTheUserWasBrowsing() {
+        val browsingGeminiOverSelfHosted = ProviderSettingsUiState(
+            mode = PolishMode.PROVIDER,
+            provider = Provider.SELF_HOSTED_POLISH,
+            configured = true,
+        )
+        // The tile the user tapped wins over the saved provider, which is what puts the two out of step.
+        val displayed = PolishLadder.displayedProvider(Provider.GEMINI, browsingGeminiOverSelfHosted)
+        assertEquals(Provider.GEMINI, displayed)
+        assertEquals("GEMINI", PolishLadder.navigationAfterRemove(displayed).browsedName)
     }
 
     @Test fun theS1LineIsExhaustiveOverHealth() {

@@ -48,6 +48,9 @@ internal fun savedModelFor(provider: Provider, settings: ProviderSettingsUiState
 
 enum class RungOne { OFF, THIS_PHONE, CLOUD }
 
+/** Where the tab is standing: which rung one shows, and which tile the lower rungs describe. */
+data class SetupNavigation(val cloudSetup: Boolean, val browsedName: String?)
+
 /** What a tap on Cloud does: activate the configured provider, or open the setup rungs without a write. */
 enum class CloudTap { ACTIVATE, SETUP }
 
@@ -74,6 +77,42 @@ object PolishLadder {
     /** The tile the lower rungs describe: the one tapped, else the saved cloud provider, else none. */
     fun displayedProvider(browsed: Provider?, settings: ProviderSettingsUiState): Provider? =
         browsed ?: settings.provider.takeIf { settings.configured && it in CloudProviders }
+
+    /**
+     * The tile to keep showing when a remove starts (#94).
+     *
+     * **Removing a key is a step BACK inside cloud setup, never a departure from it.**
+     * `ProviderConfigurationRepository.clearSelection` resets the mode to `OFFLINE_S1` along with the key,
+     * and that write is right: cloud polish cannot run without a key, so leaving the mode at `PROVIDER`
+     * would make every later dictation attempt a provider that cannot answer. What was wrong is that the
+     * SCREEN followed the write out of the rung the user was standing in (founder report 2026-09-02).
+     *
+     * Two things have to be pinned for the tab to hold its place, and this is the second: `displayedProvider`
+     * falls back to the saved provider only while `configured` is true, so after the clear a user who
+     * reached the connected row without ever tapping a tile has nothing displayed and rung 3 vanishes.
+     *
+     * **It answers about the TILE, never about what was removed**, and those come apart at the self-hosted
+     * card: that card is drawn from `settings` alone, so it is still on screen after the user taps a cloud
+     * tile, and Remove on it can be pressed with Gemini open below. Keeping Gemini is the right answer
+     * there for the same reason the whole fix exists, that the tab must not lose the user's place; the
+     * self-hosted card simply disappears from above a key field they were already filling in.
+     *
+     * Null only when there is no cloud tile to keep, which is a stale or absent browse rather than a
+     * self-hosted removal. The caller assigns that null rather than skipping it, so a browse naming a
+     * provider no longer in [CloudProviders] is cleared instead of left behind.
+     */
+    fun browsedAfterRemove(displayed: Provider?): Provider? = displayed?.takeIf { it in CloudProviders }
+
+    /**
+     * The WHOLE navigation a starting remove must produce, so the tab holds no part of the decision.
+     *
+     * `cloudSetup` lives here rather than as a `true` written at the call site because that flag IS the
+     * bug: `rungOne` sends `OFFLINE_S1` to `THIS_PHONE` without it, and a test that passes the flag in by
+     * hand asserts the fix it is supposed to be checking. Owning both values means a test can state what
+     * a remove produces rather than what it hopes the caller remembered to set.
+     */
+    fun navigationAfterRemove(displayed: Provider?): SetupNavigation =
+        SetupNavigation(cloudSetup = true, browsedName = browsedAfterRemove(displayed)?.name)
 
     /** Connected only when the DISPLAYED provider is the saved one and its key is in the Keystore. */
     fun keyRung(displayed: Provider, settings: ProviderSettingsUiState, replacing: Boolean): KeyRung = when {

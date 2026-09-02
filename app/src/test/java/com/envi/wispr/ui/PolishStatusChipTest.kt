@@ -78,7 +78,7 @@ class PolishStatusChipTest {
             provider = Provider.OPENAI,
             model = "gpt-5.4-mini",
             configured = true,
-            credentialStored = true,
+            storedProviders = setOf(Provider.OPENAI),
         )
         val chip = polishStatusChip(settings, readyS1)
         assertEquals(PolishStatusDot.GREEN, chip.dot)
@@ -87,15 +87,15 @@ class PolishStatusChipTest {
     }
 
     @Test fun cloudConfiguredWithNoStoredKeyShowsRedNotGreen() {
-        // Same class as `PolishScreenProviderTilesTest.configuredButNoStoredKeyStartsAtKeyEntryNotConnected`:
-        // `configured` alone does not mean a key exists, and this is a known-broken state, not a
-        // neutral one — found while enumerating that class in code review, 2026-09-01.
+        // Same class as `PolishLadderTest.connectedNeedsTheSavedProviderWithItsKeyStored`: `configured`
+        // alone does not mean a key exists, and this is a known-broken state, not a neutral one — found
+        // while enumerating that class in code review, 2026-09-01.
         val settings = ProviderSettingsUiState(
             mode = PolishMode.PROVIDER,
             provider = Provider.OPENAI,
             model = "gpt-5.4-mini",
             configured = true,
-            credentialStored = false,
+            storedProviders = emptySet(),
         )
         val chip = polishStatusChip(settings, readyS1)
         assertEquals(PolishStatusDot.RED, chip.dot)

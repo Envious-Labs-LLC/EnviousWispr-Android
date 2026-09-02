@@ -3,11 +3,14 @@ package com.envi.wispr.ui
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
@@ -39,14 +43,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelManifest
@@ -79,7 +85,7 @@ internal fun PolishScreen(
     discovery: ProviderDiscoveryUiState,
     onSetMode: (PolishMode) -> Int,
     onSave: (Provider, String, String?, Int?) -> Int,
-    onClearProvider: () -> Int,
+    onClearProvider: (Provider) -> Int,
     onCheckKey: (Provider, String?) -> Int,
     onKeyDraftChanged: (Provider) -> Unit,
     onLoadCachedModels: (Provider) -> Unit,
@@ -210,7 +216,7 @@ private fun CloudRungs(
     onClearKeyError: () -> Unit,
     onStart: (WriteKind, () -> Int) -> Unit,
     onSave: (Provider, String, String?, Int?) -> Int,
-    onClearProvider: () -> Int,
+    onClearProvider: (Provider) -> Int,
     onCheckKey: (Provider, String?) -> Int,
     onKeyDraftChanged: (Provider) -> Unit,
     onLoadCachedModels: (Provider) -> Unit,
@@ -218,7 +224,17 @@ private fun CloudRungs(
     RungHeader("2 · PROVIDER")
     Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
         CloudProviders.forEach { option ->
-            ProviderTileButton(option, selected = option == displayed, enabled = !saving, onClick = { onPickTile(option) }, modifier = Modifier.weight(1f))
+            ProviderTileButton(
+                option,
+                selected = option == displayed,
+                // The tile says whether this provider has a key, so all four answers are visible without
+                // tapping each one (#103). Before this the only way to find a stored key was to open its
+                // tile, and after a remove that made three surviving keys look deleted.
+                hasKey = option in settings.storedProviders,
+                enabled = !saving,
+                onClick = { onPickTile(option) },
+                modifier = Modifier.weight(1f),
+            )
         }
     }
     if (settings.configured && settings.provider == Provider.SELF_HOSTED_POLISH) {
@@ -226,7 +242,12 @@ private fun CloudRungs(
             Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Self-hosted · ${hostOf(settings.endpoint)}", style = MaterialTheme.typography.titleSmall)
                 Text("Text is sent to your server.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedButton(onClick = { onStart(WriteKind.REMOVE, onClearProvider) }, enabled = !saving) { Text("Remove") }
+                OutlinedButton(
+                    // The self-hosted card is only drawn when self-hosted is the SELECTED provider, so it
+                    // names itself rather than reading `settings.provider` a second time.
+                    onClick = { onStart(WriteKind.REMOVE) { onClearProvider(Provider.SELF_HOSTED_POLISH) } },
+                    enabled = !saving,
+                ) { Text("Remove") }
                 if (writeError != null && errorKind == WriteKind.REMOVE) ErrorLine(writeError)
             }
         }
@@ -344,7 +365,9 @@ private fun CloudRungs(
                 CheckGlyph()
                 RungHeader("3 · KEY CONNECTED")
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { onStart(WriteKind.REMOVE, onClearProvider) }, enabled = !saving) { Text("Remove") }
+                // Removes the key of the tile this row is about, which after #103 need not be the active
+                // provider: a connected row is drawn for every stored key.
+                TextButton(onClick = { onStart(WriteKind.REMOVE) { onClearProvider(displayed) } }, enabled = !saving) { Text("Remove") }
             }
             if (writeError != null && errorKind == WriteKind.REMOVE) ErrorLine(writeError)
 
@@ -590,17 +613,43 @@ private fun RungOneButton(
 }
 
 @Composable
-private fun ProviderTileButton(provider: Provider, selected: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun ProviderTileButton(
+    provider: Provider,
+    selected: Boolean,
+    hasKey: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    val name = provider.capabilities().displayName
     Surface(
-        modifier = modifier.height(76.dp).selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick),
+        modifier = modifier
+            .height(76.dp)
+            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
+            // The dot is decoration to a screen reader; the tile says the same thing in words instead, so
+            // the state is announced once rather than as an unlabelled mark beside a name.
+            .semantics(mergeDescendants = true) { contentDescription = if (hasKey) "$name, key connected" else name },
         shape = RoundedCornerShape(14.dp),
         color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
         border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
-        Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            ProviderTile(provider, tint = fg, size = 26.dp)
-            Text(provider.capabilities().displayName, style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
+        Box(Modifier.fillMaxSize()) {
+            Column(
+                Modifier.fillMaxSize().padding(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                ProviderTile(provider, tint = fg, size = 26.dp)
+                Spacer(Modifier.height(6.dp))
+                Text(name, style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
+            }
+            if (hasKey) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(6.dp).size(7.dp)
+                        .background(if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary, CircleShape),
+                )
+            }
         }
     }
 }

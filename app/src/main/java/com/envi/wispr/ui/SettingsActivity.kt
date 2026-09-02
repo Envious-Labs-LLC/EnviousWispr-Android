@@ -93,7 +93,7 @@ class SettingsActivity : ComponentActivity() {
                     onDynamicColorChanged = viewModel::setDynamicColorEnabled,
                     onSetPolishMode = viewModel::setPolishMode,
                     onSaveProviderSettings = viewModel::saveProviderSettings,
-                    onClearProviderSettings = viewModel::clearProviderSettings,
+                    onClearProviderSettings = viewModel::removeProviderKey,
                     providerDiscovery = providerDiscovery,
                     onCheckKey = viewModel::discoverModels,
                     onKeyDraftChanged = viewModel::keyDraftChanged,

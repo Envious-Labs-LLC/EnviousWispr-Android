@@ -62,6 +62,30 @@ class ProviderConfigurationRepository internal constructor(
     }
 
     /**
+     * Every provider holding a usable key, whatever is currently selected (#103).
+     *
+     * The tab asks this per TILE. Before it existed the tab asked one question about the selected provider
+     * and reused the answer for all four tiles, so clearing the selection blanked every tile at once and
+     * the two keys that were still in the Keystore became invisible, unusable and impossible to delete
+     * (founder report 2026-09-02).
+     *
+     * An unreadable store is reported as no stored keys, matching [load]: a key that cannot be read is a
+     * key that cannot polish, and offering a connected row over one hides the failure until dictation.
+     */
+    fun storedProviders(): Set<Provider> = runCatching { secrets.storedProviders() }.getOrDefault(emptySet())
+
+    /**
+     * The stored key for [provider], whatever is selected (#103); null when there is none or it cannot be
+     * read. Needed because a connected row is now drawn for every stored key, and its Refresh and its model
+     * list have to reach THAT provider's credential rather than the selected one's.
+     *
+     * The caller uses the value inside the call that asks for it and never keeps it, which is the same
+     * contract [load] has always had (`keystore-security.md` RULE: plaintext-never-leaves-the-store).
+     */
+    fun storedKey(provider: Provider): String? =
+        runCatching { secrets.get(provider) }.getOrNull()?.takeIf(String::isNotBlank)
+
+    /**
      * The policy snapshot a dictation session carries to the engine (`PolishPolicy`). ONE read of the
      * preference map, so a commit landing between two reads cannot assemble a policy from two states,
      * and the credential is never read here. A store that cannot be read yields [PolishPolicy.Off].
@@ -142,6 +166,26 @@ class ProviderConfigurationRepository internal constructor(
         check(preferences.edit().putString(KEY_MODE, mode.name).commit()) {
             "could not persist polish mode"
         }
+    }
+
+    /**
+     * Deletes ONE provider's key (#103), which is what a Remove on a tile means now that every tile with a
+     * stored key shows its own connected row.
+     *
+     * Removing the SELECTED provider's key also clears the selection, because a `PROVIDER` mode pointing at
+     * a provider with no key is a mode that fails at dictation time; that is [clearSelection] and it is
+     * unchanged. Removing any OTHER provider's key touches only that key, so the selection, the mode and
+     * the other providers' keys survive.
+     *
+     * The selected provider is read the way [clearSelection] reads it, from the raw preference rather than
+     * from [decodeSelection], so a selection this build considers unusable still counts as selected and
+     * cannot be left behind pointing at a key that has just been deleted.
+     */
+    fun removeKey(provider: Provider) {
+        val selected = (preferences.all[KEY_PROVIDER] as? String)?.let { name ->
+            runCatching { Provider.valueOf(name) }.getOrNull()
+        }
+        if (selected == provider) clearSelection() else secrets.remove(provider)
     }
 
     fun clearSelection() {

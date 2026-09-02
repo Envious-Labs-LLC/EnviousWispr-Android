@@ -211,6 +211,65 @@ class ProviderConfigurationRepositoryTest {
     }
 
     /**
+     * Product Outcome (#103, founder 2026-09-02: "all 3 keys are showing blank in the app now").
+     *
+     * A Remove deletes ONE provider's key. When this fails, removing one key takes the others with it, or
+     * leaves the app pointing at a provider whose key has just gone.
+     */
+    @Test fun removingOneProvidersKeyLeavesTheOtherProvidersKeysAlone() {
+        repository.save(Provider.OPENAI, "gpt-test", apiKey = "openai-secret")
+        repository.save(Provider.CLAUDE, "claude-test", apiKey = "claude-secret")
+        repository.save(Provider.GEMINI, "gemini-test", apiKey = "gemini-secret")
+        assertEquals(setOf(Provider.OPENAI, Provider.CLAUDE, Provider.GEMINI), repository.storedProviders())
+
+        // Removing a key that is NOT the selected one touches only that key. Gemini stays selected and
+        // cloud polish keeps running.
+        repository.removeKey(Provider.OPENAI)
+        assertEquals(setOf(Provider.CLAUDE, Provider.GEMINI), repository.storedProviders())
+        assertNull(secrets.get(Provider.OPENAI))
+        assertEquals(PolishMode.PROVIDER, repository.loadMode())
+        assertEquals(Provider.GEMINI, repository.load()?.provider)
+
+        // Removing the SELECTED provider's key clears the selection, because a provider mode with no key
+        // cannot polish. The other key survives, which is the whole incident.
+        repository.removeKey(Provider.GEMINI)
+        assertEquals(setOf(Provider.CLAUDE), repository.storedProviders())
+        assertNull(repository.load())
+        assertEquals(PolishMode.OFFLINE_S1, repository.loadMode())
+        assertEquals("claude-secret", secrets.get(Provider.CLAUDE))
+
+        // And the survivor can still be removed, which it could not while the UI only knew about the
+        // selected provider.
+        repository.removeKey(Provider.CLAUDE)
+        assertEquals(emptySet<Provider>(), repository.storedProviders())
+    }
+
+    /**
+     * Product Outcome (#103). A connected row is drawn for every stored key, and its Refresh and model list
+     * must reach THAT provider's credential. When this fails, refreshing any tile but the active one
+     * refuses with "no key" while the key is sitting in the Keystore.
+     */
+    @Test fun aStoredKeyIsReadableByProviderNotOnlyForTheSelectedOne() {
+        repository.save(Provider.OPENAI, "gpt-test", apiKey = "openai-secret")
+        repository.save(Provider.GEMINI, "gemini-test", apiKey = "gemini-secret")
+        assertEquals(Provider.GEMINI, repository.load()?.provider)
+
+        assertEquals("openai-secret", repository.storedKey(Provider.OPENAI))
+        assertEquals("gemini-secret", repository.storedKey(Provider.GEMINI))
+        assertNull(repository.storedKey(Provider.CLAUDE))
+
+        repository.removeKey(Provider.OPENAI)
+        assertNull(repository.storedKey(Provider.OPENAI))
+    }
+
+    /** A store that cannot be read reports no keys rather than throwing at the screen. */
+    @Test fun anUnreadableStoreReportsNoStoredProviders_failingFake() {
+        val failing = ProviderConfigurationRepository(context, FailingSecrets(secrets, failGet = true), checker)
+        assertEquals(emptySet<Provider>(), failing.storedProviders())
+        assertNull(failing.storedKey(Provider.OPENAI))
+    }
+
+    /**
      * Product Outcome: when this fails, the mode the user picked is not the mode the engine runs,
      * because the session owner's policy snapshot disagrees with what the screen saved. The
      * unreadable-store branch is `readPolicy`, staged on the JVM in `PolishPolicyTest`.
@@ -254,6 +313,8 @@ class ProviderConfigurationRepositoryTest {
         }
         override fun get(provider: Provider): String? = if (failGet) throw IllegalStateException("keystore unavailable") else real.get(provider)
         override fun remove(provider: Provider) = real.remove(provider)
+        override fun storedProviders(): Set<Provider> =
+            if (failGet) throw IllegalStateException("keystore unavailable") else real.storedProviders()
     }
 
     private class MemorySecrets : SecretStore {
@@ -261,6 +322,7 @@ class ProviderConfigurationRepositoryTest {
         override fun put(provider: Provider, secret: String) { values[provider] = secret }
         override fun get(provider: Provider): String? = values[provider]
         override fun remove(provider: Provider) { values.remove(provider) }
+        override fun storedProviders(): Set<Provider> = values.keys.toSet()
     }
 
     companion object {

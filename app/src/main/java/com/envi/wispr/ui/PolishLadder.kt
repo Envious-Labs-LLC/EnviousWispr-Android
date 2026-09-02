@@ -143,16 +143,20 @@ object PolishLadder {
         SetupNavigation(cloudSetup = true, browsedName = browsedAfterRemove(displayed)?.name)
 
     /**
-     * Connected only when the DISPLAYED provider is the saved one and its key is in the Keystore.
+     * Connected whenever the DISPLAYED provider has a key in the Keystore, whatever is selected (#103).
      *
-     * There is no in-place replace any more (founder 2026-09-02): the row offers Remove alone, and adding
-     * a different key is remove-then-enter. So this depends on stored state only, with no UI mode able to
+     * It used to also require the displayed tile to BE the saved provider, which made one boolean about one
+     * provider answer for all four tiles. Removing a key clears the selection, so every tile then read
+     * FIELD at once and the two keys still in the Keystore became invisible, unusable and impossible to
+     * delete (founder report 2026-09-02, three keys stored and none shown). Switching providers also cost
+     * a re-typed key that was already on the phone.
+     *
+     * There is no in-place replace (founder 2026-09-02): the row offers Remove alone, and adding a
+     * different key is remove-then-enter. So this depends on stored state only, with no UI mode able to
      * force the field open over a live key.
      */
-    fun keyRung(displayed: Provider, settings: ProviderSettingsUiState): KeyRung = when {
-        settings.configured && settings.provider == displayed && settings.credentialStored -> KeyRung.CONNECTED
-        else -> KeyRung.FIELD
-    }
+    fun keyRung(displayed: Provider, settings: ProviderSettingsUiState): KeyRung =
+        if (displayed in settings.storedProviders) KeyRung.CONNECTED else KeyRung.FIELD
 
     fun keyPill(draftBlank: Boolean, checking: Boolean, failed: Boolean): KeyPill = when {
         checking -> KeyPill("Checking", enabled = false)

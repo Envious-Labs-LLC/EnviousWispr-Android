@@ -26,8 +26,8 @@ import org.junit.Test
  * that consults them, and the score sweep, which guards a rendering range nobody can call correct.
  */
 class PolishLadderTest {
-    private val cloudWithKey = ProviderSettingsUiState(loading = false, mode = PolishMode.PROVIDER, provider = Provider.OPENAI, model = "gpt-4.1-mini", configured = true, credentialStored = true)
-    private val cloudNoKey = cloudWithKey.copy(credentialStored = false)
+    private val cloudWithKey = ProviderSettingsUiState(loading = false, mode = PolishMode.PROVIDER, provider = Provider.OPENAI, model = "gpt-4.1-mini", configured = true, storedProviders = setOf(Provider.OPENAI))
+    private val cloudNoKey = cloudWithKey.copy(storedProviders = emptySet())
     private val selfHosted = ProviderSettingsUiState(loading = false, mode = PolishMode.PROVIDER, provider = Provider.SELF_HOSTED_POLISH, model = "local", endpoint = "https://box.local", configured = true)
     private val nothing = ProviderSettingsUiState(loading = false, mode = PolishMode.OFFLINE_S1)
 
@@ -67,6 +67,52 @@ class PolishLadderTest {
     @Test fun connectedNeedsTheSavedProviderWithItsKeyStored() {
         assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, cloudNoKey))
         assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, nothing))
+    }
+
+    /**
+     * Product Outcome, and the reported incident (#103, founder 2026-09-02: "all 3 keys are showing blank
+     * in the app now").
+     *
+     * A key that is stored belongs to its own provider, so every tile answers about itself. When this
+     * fails a user with several keys sees them all vanish the moment one is removed, and the survivors
+     * cannot be selected or deleted because no surface admits they exist.
+     */
+    @Test fun everyProviderWithAStoredKeyKeepsItsOwnConnectedRow() {
+        val openAiActiveGeminiAlsoStored = cloudWithKey.copy(storedProviders = setOf(Provider.OPENAI, Provider.GEMINI))
+        assertEquals(KeyRung.CONNECTED, PolishLadder.keyRung(Provider.OPENAI, openAiActiveGeminiAlsoStored))
+        // Stored but NOT the selected provider: still connected, so switching costs no re-typed key.
+        assertEquals(KeyRung.CONNECTED, PolishLadder.keyRung(Provider.GEMINI, openAiActiveGeminiAlsoStored))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.CLAUDE, openAiActiveGeminiAlsoStored))
+
+        // The incident itself: removing the SELECTED provider's key clears the selection, which is
+        // correct, and used to blank every tile because one boolean about one provider answered for all
+        // of them. The two keys still in the Keystore stay connected.
+        val afterRemovingTheSelectedKey = ProviderSettingsUiState(
+            mode = PolishMode.OFFLINE_S1,
+            configured = false,
+            storedProviders = setOf(Provider.OPENAI, Provider.CLAUDE),
+        )
+        assertEquals(KeyRung.CONNECTED, PolishLadder.keyRung(Provider.OPENAI, afterRemovingTheSelectedKey))
+        assertEquals(KeyRung.CONNECTED, PolishLadder.keyRung(Provider.CLAUDE, afterRemovingTheSelectedKey))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.GEMINI, afterRemovingTheSelectedKey))
+    }
+
+    /**
+     * Product Outcome. The status chip and Cloud tap ask about the SELECTED provider, and that answer is
+     * now derived from the same set the tiles read, so the two cannot disagree. When this fails the chip
+     * reports cloud polish ready on a provider whose key was never stored, or refuses to activate one
+     * whose key is.
+     */
+    @Test fun theSelectedProvidersKeyIsReadOutOfTheSameSetTheTilesUse() {
+        assertTrue(cloudWithKey.credentialStored)
+        assertFalse(cloudNoKey.credentialStored)
+        // Another provider's key is not this provider's key.
+        assertFalse(cloudWithKey.copy(storedProviders = setOf(Provider.CLAUDE)).credentialStored)
+        // No selection means no selected credential, whatever is in the Keystore.
+        assertFalse(nothing.copy(storedProviders = setOf(Provider.OPENAI)).credentialStored)
+        // Self-hosted stores no key and so is never credentialed, which is what it has always reported.
+        assertFalse(selfHosted.credentialStored)
+        assertEquals(CloudTap.ACTIVATE, PolishLadder.cloudTap(selfHosted))
     }
 
     @Test fun theCheckPillReadsCheckCheckingRetry() {

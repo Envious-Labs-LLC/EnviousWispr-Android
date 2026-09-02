@@ -114,7 +114,7 @@ class PolishLadderTest {
         assertTrue("the class should still be broad, it matched $inClass", inClass > 8)
 
         // The BADGE does not. Exactly one row carries it, and it is the founder's pick.
-        val rows = ModelListPresentation.present(Provider.GEMINI, founderGeminiCatalogue, "", ModelSort.SUGGESTED, "")
+        val rows = ModelListPresentation.present(Provider.GEMINI, founderGeminiCatalogue, "", "")
         assertEquals(1, rows.count { it.tag == "Recommended" })
         assertEquals("gemini-3.8-flash", rows.single { it.tag == "Recommended" }.id)
         // And it LEADS the suggested list. Measured on the founder's phone before this: the pick sat fifth
@@ -144,11 +144,11 @@ class PolishLadderTest {
             .map { model(it, ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended(it)) }
 
         // Saved model still in the list: nothing is pinned, so the recommendation is first outright.
-        val present = ModelListPresentation.present(Provider.GEMINI, catalogue, "", ModelSort.SUGGESTED, "gemini-2.5-flash")
+        val present = ModelListPresentation.present(Provider.GEMINI, catalogue, "", "gemini-2.5-flash")
         assertEquals("gemini-3.8-flash", present.first().id)
 
         // Saved model gone from the catalogue: the notice leads, the recommendation is immediately under it.
-        val stale = ModelListPresentation.present(Provider.GEMINI, catalogue, "", ModelSort.SUGGESTED, "gemini-9-retired")
+        val stale = ModelListPresentation.present(Provider.GEMINI, catalogue, "", "gemini-9-retired")
         assertEquals("gemini-9-retired", stale[0].id)
         assertTrue("the leading row is the current-model notice", stale[0].current)
         assertEquals("gemini-3.8-flash", stale[1].id)

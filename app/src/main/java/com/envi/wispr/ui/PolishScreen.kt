@@ -4,7 +4,6 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,7 +19,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -366,13 +364,12 @@ private fun ModelRung(
     onRefresh: () -> Unit,
 ) {
     var query by remember(provider) { mutableStateOf("") }
-    var sort by rememberSaveable(provider) { mutableStateOf(ModelSort.SUGGESTED) }
     val savedModel = savedModelFor(provider, settings)
     // Only a listing that describes the STORED key shows under a connected row; a draft's list never does.
     val models = discovery?.takeIf { it.usedStoredKey }?.models ?: emptyList()
     val refreshing = discovery?.phase == ProviderDiscoveryUiState.Phase.CHECKING
-    val rows = ModelListPresentation.present(provider, models, query, sort, savedModel)
-    val allRows = ModelListPresentation.present(provider, models, "", sort, savedModel)
+    val rows = ModelListPresentation.present(provider, models, query, savedModel)
+    val allRows = ModelListPresentation.present(provider, models, "", savedModel)
     val countLine = if (models.isEmpty()) null else ModelListPresentation.countLine(allRows, rows.count { !it.typed }, query) +
         (if (discovery?.fromCache == true && discovery.fetchedAt != null) " · from ${relativeAge(discovery.fetchedAt)}" else "")
 
@@ -393,11 +390,8 @@ private fun ModelRung(
             { Text("Clear", color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 12.dp).clickable { query = "" }) }
         } else null,
     )
-    Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ModelSort.entries.forEach { s -> FilterChip(selected = sort == s, onClick = { sort = s }, label = { Text(s.label) }) }
-    }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(sort.groupLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Newest first", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(end = 4.dp)) {
             listOf("C", "S", "A").forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
@@ -430,7 +424,7 @@ private fun ModelRung(
                                 color = if (locked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
-                            if (row.tag != null && sort == ModelSort.SUGGESTED) {
+                            if (row.tag != null) {
                                 Text(row.tag, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                             }
                         }

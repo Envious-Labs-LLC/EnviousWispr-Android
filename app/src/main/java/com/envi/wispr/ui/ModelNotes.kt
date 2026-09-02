@@ -14,14 +14,19 @@ data class CatalogModel(
     val cost: Int,
     val speed: Int,
     val accuracy: Int,
+    /**
+     * Release date as `YYYY-MM-DD`, for providers whose API does not tell us (#101).
+     *
+     * ONLY needed for Gemini. OpenAI sends `created` and Anthropic sends `created_at`, and a date from the
+     * provider is always fresher than one typed here, so the API wins wherever it speaks.
+     *
+     * These are read off Google's own changelog, https://ai.google.dev/gemini-api/docs/changelog, on
+     * 2026-09-02, not from anybody's memory. **This table goes stale the day Google ships a model**, and
+     * the model with no date sorts after the dated ones rather than being guessed into a position; that is
+     * the visible prompt to add the row.
+     */
+    val released: String? = null,
 )
-
-enum class ModelSort(val label: String, val groupLabel: String) {
-    SUGGESTED("Suggested", "Ranked for dictation polish"),
-    CHEAPEST("Cheapest", "Lowest cost first"),
-    FASTEST("Fastest", "Quickest to come back"),
-    ACCURATE("Most accurate", "Best output first"),
-}
 
 object ModelNotes {
     private val openAi = listOf(
@@ -60,19 +65,19 @@ object ModelNotes {
     }
 
     private val gemini = listOf(
-        CatalogModel("gemini-3.8-flash", "Newest flash, best value", tag = null, cost = 2, speed = 3, accuracy = 3),
-        CatalogModel("gemini-3.6-flash", "Thinks by default", cost = 2, speed = 2, accuracy = 3),
-        CatalogModel("gemini-3.7-flash", "Quick and capable", cost = 2, speed = 2, accuracy = 3),
+        CatalogModel("gemini-3.8-flash", "Newest flash, best value", tag = null, cost = 2, speed = 3, accuracy = 3, released = "2026-09-02"),
+        CatalogModel("gemini-3.6-flash", "Thinks by default", cost = 2, speed = 2, accuracy = 3, released = "2026-07-21"),
+        CatalogModel("gemini-3.7-flash", "Quick and capable", cost = 2, speed = 2, accuracy = 3, released = "2026-08-13"),
         // Cost 3, not 2: measured against Google's pricing page 2026-09-02 it is $1.50/$9.00 per 1M, double
         // every newer Flash, which makes it the worst value on the list rather than their peer.
-        CatalogModel("gemini-3.5-flash", "Older flash, costs double the newer ones", cost = 3, speed = 3, accuracy = 2),
-        CatalogModel("gemini-3.5-flash-lite", "Cheapest flash", cost = 1, speed = 3, accuracy = 2),
-        CatalogModel("gemini-3.1-flash-lite", "Cheap, previous lite", cost = 1, speed = 3, accuracy = 1),
-        CatalogModel("gemini-3.1-pro-preview", "Pro tier, slower", cost = 3, speed = 1, accuracy = 3),
-        CatalogModel("gemini-3-flash-preview", "First Gemini 3 flash", cost = 2, speed = 2, accuracy = 2),
-        CatalogModel("gemini-2.5-flash", "Token thinking budget", cost = 1, speed = 3, accuracy = 2),
-        CatalogModel("gemini-2.5-flash-lite", "Smallest 2.5", cost = 1, speed = 3, accuracy = 1),
-        CatalogModel("gemini-2.5-pro", "Previous pro tier", cost = 3, speed = 1, accuracy = 3),
+        CatalogModel("gemini-3.5-flash", "Older flash, costs double the newer ones", cost = 3, speed = 3, accuracy = 2, released = "2026-05-19"),
+        CatalogModel("gemini-3.5-flash-lite", "Cheapest flash", cost = 1, speed = 3, accuracy = 2, released = "2026-07-21"),
+        CatalogModel("gemini-3.1-flash-lite", "Cheap, previous lite", cost = 1, speed = 3, accuracy = 1, released = "2026-05-07"),
+        CatalogModel("gemini-3.1-pro-preview", "Pro tier, slower", cost = 3, speed = 1, accuracy = 3, released = "2026-02-19"),
+        CatalogModel("gemini-3-flash-preview", "First Gemini 3 flash", cost = 2, speed = 2, accuracy = 2, released = "2025-12-17"),
+        CatalogModel("gemini-2.5-flash", "Token thinking budget", cost = 1, speed = 3, accuracy = 2, released = "2025-06-17"),
+        CatalogModel("gemini-2.5-flash-lite", "Smallest 2.5", cost = 1, speed = 3, accuracy = 1, released = "2025-07-22"),
+        CatalogModel("gemini-2.5-pro", "Previous pro tier", cost = 3, speed = 1, accuracy = 3, released = "2025-06-17"),
     )
 
     private val claude = listOf(

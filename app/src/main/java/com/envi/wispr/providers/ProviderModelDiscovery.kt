@@ -160,23 +160,34 @@ object ModelListRules {
     /**
      * What a 200 probe body carried, read by the same parser polish uses.
      *
-     * THREE values, because a probe asks for at most a handful of output tokens and a reasoning model can
-     * spend all of them thinking. Measured 2026-09-02 against a live Gemini key: `gemini-2.5-pro` and
-     * `gemini-3-flash-preview` answer 200 with `finishReason: MAX_TOKENS` and no text at all, and raising
-     * the cap does not help because the thinking grows with it (2 thought tokens at a cap of 5, 125 at a
-     * cap of 128). Both models polish perfectly well at the real request's budget, so calling them
-     * unusable would hide working models. `gemini-3.5-transcribe`, the model this whole check exists for,
-     * answers `STOP` with no text and is correctly refused.
+     * THREE values, and the third is the whole point: an empty reply is only evidence against a model when
+     * the model itself chose to end it.
+     *
+     * **A model is refused only when it declared a NORMAL stop and still wrote nothing.** That is one
+     * question with a closed answer per provider, rather than a list of the ways a reply can go wrong; a
+     * list would need extending every time a provider adds a reason, which is how a check starts letting
+     * things through. Gemini alone publishes more than a dozen `finishReason` values, covering safety
+     * blocks, recitation, language refusals and tool-call faults; not one of them says the model cannot
+     * polish, and none of them has to be named here.
+     *
+     * Measured 2026-09-02 against a live Gemini key. The probe asks for 5 output tokens (16 on OpenAI) and
+     * a reasoning model can spend all of them thinking: `gemini-2.5-pro` and `gemini-3-flash-preview`
+     * answer 200 with `MAX_TOKENS` and no text. Raising the cap does not help, because the thinking grows
+     * with it: `gemini-2.5-pro` spent 2 thought tokens at a cap of 5, 29 at 32 and 125 at 128, emitting
+     * nothing at any of them. Both polish fine at the real request's budget.
+     *
+     * The same run confirms the check still does its job: `gemini-3.5-transcribe`, the model this whole
+     * thing exists for, answers `STOP` with no text and is refused.
      */
     enum class ProbeReply {
         /** The polish parser found words. */
         TEXT,
 
-        /** It answered and there were no words. This is the transcribe case. */
+        /** The model finished of its own accord and wrote nothing. This is the transcribe case. */
         NO_TEXT,
 
-        /** It ran out of output budget before writing any, so this probe proved nothing either way. */
-        TRUNCATED,
+        /** No words, and something other than the model's own choice ended the reply. Nothing was proved. */
+        INCONCLUSIVE,
     }
 
     /**
@@ -201,9 +212,11 @@ object ModelListRules {
             status == 200 -> when (reply) {
                 ProbeReply.TEXT -> ModelAccess.AVAILABLE
                 ProbeReply.NO_TEXT -> ModelAccess.UNAVAILABLE
-                // Not "broken", and not "fine": nothing was proved. UNVERIFIED rows stay on screen, so a
-                // reasoning model is still offered; it simply does not carry a verdict it did not earn.
-                ProbeReply.TRUNCATED -> ModelAccess.UNVERIFIED
+                // Not "broken", and not "fine": nothing was proved. UNVERIFIED rows stay on screen and
+                // `recommendedPick` never chooses one, so the model is still offered to a user who asks
+                // for it by name and is never selected on their behalf. That is the only classification
+                // that is safe in BOTH directions, which is why the unreadable cases land here.
+                ProbeReply.INCONCLUSIVE -> ModelAccess.UNVERIFIED
             }
             status == 429 -> when (provider) {
                 Provider.GEMINI -> if (body?.contains("limit: 0") == true) ModelAccess.UNAVAILABLE else ModelAccess.AVAILABLE

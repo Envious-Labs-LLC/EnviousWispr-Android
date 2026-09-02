@@ -866,8 +866,10 @@ class ProviderPolishClient(
     }?.substringAfterLast("</think>")?.trim()
 
     /**
-     * What this probe body carried, judged the way polish judges a real reply. A body that will not parse
-     * carried nothing; it is not "we could not tell", because a well-formed provider always sends JSON.
+     * What this probe body carried, judged the way polish judges a real reply.
+     *
+     * A body that will not parse is NO_TEXT rather than inconclusive: every provider here answers a 200
+     * with JSON, so one that does not is not a model this app can use.
      */
     private fun probeReply(format: ResponseFormat, body: String): ModelListRules.ProbeReply {
         val root = try {
@@ -878,24 +880,35 @@ class ProviderPolishClient(
             return ModelListRules.ProbeReply.NO_TEXT
         }
         if (!replyText(format, root).isNullOrEmpty()) return ModelListRules.ProbeReply.TEXT
-        return if (ranOutOfOutputBudget(format, root)) ModelListRules.ProbeReply.TRUNCATED else ModelListRules.ProbeReply.NO_TEXT
+        return if (endedOfItsOwnAccord(format, root)) ModelListRules.ProbeReply.NO_TEXT else ModelListRules.ProbeReply.INCONCLUSIVE
     }
 
     /**
-     * Did the provider stop because it hit the output cap? Each one says so in its own field, and the
-     * probe's cap is deliberately tiny, so this is the difference between "this model cannot answer" and
-     * "this model had no room to answer".
+     * Did the model finish because it had finished, rather than because something stopped it?
      *
-     * Exhaustive with no `else`, so a new response format must declare where it says this.
-     * `ResponseFormat.NONE` is the key check, which never asks for text and so can never be truncated.
+     * **Asked in the positive on purpose.** Listing the ways a reply can be cut short — an output cap, a
+     * safety block, a recitation block, a language refusal, a tool-call fault — is a list that needs
+     * extending whenever a provider adds a reason, and every missing entry silently condemns a working
+     * model. Normal completion is ONE value per provider and providers do not add new ways to succeed.
+     *
+     * An absent, misspelt or unexpected marker therefore reads as "not proved", which is the safe answer
+     * in both directions: the model stays on screen and is never chosen for the user.
+     *
+     * Exhaustive with no `else`, so a new response format must declare its own value.
+     * `ResponseFormat.NONE` is the key check and never asks for text at all.
      */
-    private fun ranOutOfOutputBudget(format: ResponseFormat, root: Any?): Boolean = when (format) {
-        ResponseFormat.OPENAI_RESPONSES ->
-            root.stringAt("status") == "incomplete" || root.stringAt("incomplete_details", "reason") == "max_output_tokens"
-        ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "finish_reason") == "length"
-        ResponseFormat.GEMINI -> root.stringAt("candidates", 0, "finishReason") == "MAX_TOKENS"
-        ResponseFormat.CLAUDE -> root.stringAt("stop_reason") == "max_tokens"
-        ResponseFormat.OLLAMA -> root.stringAt("done_reason") == "length"
+    private fun endedOfItsOwnAccord(format: ResponseFormat, root: Any?): Boolean = when (format) {
+        // Measured 2026-09-02: gpt-4.1-mini answers `completed` with text at the probe's 16-token cap,
+        // while gpt-5-mini and gpt-5-nano answer `incomplete` / `max_output_tokens` with none.
+        ResponseFormat.OPENAI_RESPONSES -> root.stringAt("status") == "completed"
+        ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "finish_reason") == "stop"
+        ResponseFormat.GEMINI -> root.stringAt("candidates", 0, "finishReason") == "STOP"
+        // Anthropic ends a normal turn with `end_turn`, or with `stop_sequence` when one was matched. We
+        // send no stop sequences, so only the first is reachable today; both are the model finishing.
+        // Documented rather than measured: reaching it needs a Claude model that writes nothing at all,
+        // and both models the founder's key reaches answered within the cap on 2026-09-02.
+        ResponseFormat.CLAUDE -> root.stringAt("stop_reason") in setOf("end_turn", "stop_sequence")
+        ResponseFormat.OLLAMA -> root.stringAt("done_reason") == "stop"
         ResponseFormat.NONE -> false
     }
 

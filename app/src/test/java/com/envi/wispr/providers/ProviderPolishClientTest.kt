@@ -795,18 +795,20 @@ class ProviderPolishClientTest {
     )
 
     /**
-     * Product Outcome. A model is offered only when the polish path would have got words out of it, judged
-     * by the SAME parser polish uses (#104 review round 1). The probe used to scan the raw body for a
-     * `"text"` label, which disagreed with that parser in both directions.
+     * Product Outcome, and the sweep of one class rather than one more instance of it. Two review rounds
+     * both landed on how a 200 probe body is read, so this covers every way a reply can carry no words:
+     * an empty string, whitespace, a later part, a body that is not JSON, an exhausted output budget, a
+     * safety block, and no terminal marker at all.
      *
-     * When this fails a user is offered a model that silently returns their raw dictation, or is denied a
-     * model that works.
+     * The rule under it is one question, not a list: a model is refused only when it declared a NORMAL
+     * stop and still wrote nothing. When this fails a user is offered a model that silently returns their
+     * raw dictation, or is denied a model that works.
      */
-    @Test fun aModelIsUsableOnlyWhenThePolishParserWouldHaveFoundWordsInItsReply() {
+    @Test fun aModelIsRefusedOnlyWhenItFinishedOfItsOwnAccordAndWroteNothing() {
         // The measured transcribe case: 200, well-formed envelope, empty string.
-        val empty = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"}]}}]}"
+        val empty = "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"\"}]}}]}"
         // Whitespace is not an answer either: polish trims before judging, so this must match it.
-        val blank = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"   \"}]}}]}"
+        val blank = "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"   \"}]}}]}"
         // A multipart reply whose FIRST part is empty still carries words. The old label scan stopped at
         // the first `"text"` and called this model unusable.
         val later = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"},{\"text\":\"Hi\"}]}}]}"
@@ -817,7 +819,12 @@ class ProviderPolishClientTest {
         // the real request's budget, so this must NOT be refused. Raising the cap does not help: the
         // thinking grows with it, 2 thought tokens at a cap of 5 and 125 at a cap of 128.
         val outOfBudget = "{\"candidates\":[{\"finishReason\":\"MAX_TOKENS\",\"content\":{\"parts\":[]}}]}"
-        val list = "{\"models\":[" + listOf("empty", "blank", "later", "notjson", "outofbudget", "good").joinToString(",") {
+        // A safety block is the same answer for the same reason, and nothing in the code names it: the
+        // check asks whether the model finished, so every other way a reply can end lands here for free.
+        val blocked = "{\"candidates\":[{\"finishReason\":\"PROHIBITED_CONTENT\",\"content\":{\"parts\":[]}}]}"
+        // No marker at all is also unproved, rather than a refusal by default.
+        val noMarker = "{\"candidates\":[{\"content\":{\"parts\":[]}}]}"
+        val list = "{\"models\":[" + listOf("empty", "blank", "later", "notjson", "outofbudget", "blocked", "nomarker", "good").joinToString(",") {
             "{\"name\":\"models/gemini-$it\",\"supportedGenerationMethods\":[\"generateContent\"]}"
         } + "]}"
         ScriptedServer({ request ->
@@ -827,6 +834,8 @@ class ProviderPolishClientTest {
                 "gemini-later" -> 200 to later
                 "gemini-notjson" -> 200 to notJson
                 "gemini-outofbudget" -> 200 to outOfBudget
+                "gemini-blocked" -> 200 to blocked
+                "gemini-nomarker" -> 200 to noMarker
                 else -> 200 to okBody(Provider.GEMINI)
             }
         }).use { server ->
@@ -839,7 +848,41 @@ class ProviderPolishClientTest {
             // Neither refused nor confirmed: the probe could not tell, and an UNVERIFIED row stays on
             // screen, so the model is still offered.
             assertEquals(ModelAccess.UNVERIFIED, models["gemini-outofbudget"])
+            assertEquals(ModelAccess.UNVERIFIED, models["gemini-blocked"])
+            assertEquals(ModelAccess.UNVERIFIED, models["gemini-nomarker"])
             assertEquals(ModelAccess.AVAILABLE, models["gemini-good"])
+        }
+    }
+
+    /**
+     * Product Outcome, measured 2026-09-02 against a live OpenAI key and not hypothetical.
+     *
+     * `gpt-5-mini` and `gpt-5-nano` answer the probe with `status: "incomplete"`,
+     * `incomplete_details.reason: "max_output_tokens"` and no text, because the reasoning consumed the
+     * 16-token cap. Those are the two NEWEST models the founder's key can reach (#103), so refusing an
+     * empty reply without asking why it was empty would have hidden exactly them. `gpt-4.1-mini` answers
+     * `completed` with 34 characters at the same cap.
+     *
+     * When this fails, the newest models a user owns disappear from their list.
+     */
+    @Test fun anOpenAiModelThatSpentTheProbeBudgetThinkingIsNotRefused() {
+        val thinking = "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}"
+        val answered = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"Hello there\"}]}]}"
+        val silent = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"\"}]}]}"
+        ScriptedServer({ request ->
+            if (request.path.startsWith("/models")) 200 to openAiList("gpt-thinking", "gpt-answered", "gpt-silent")
+            else when (probedModel(request)) {
+                "gpt-thinking" -> 200 to thinking
+                "gpt-silent" -> 200 to silent
+                else -> 200 to answered
+            }
+        }).use { server ->
+            val models = (discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed)
+                .models.associate { it.id to it.access }
+            assertEquals(ModelAccess.UNVERIFIED, models["gpt-thinking"])
+            assertEquals(ModelAccess.AVAILABLE, models["gpt-answered"])
+            // A model that COMPLETED and still wrote nothing is the refusal case, on OpenAI as on Gemini.
+            assertEquals(ModelAccess.UNAVAILABLE, models["gpt-silent"])
         }
     }
 

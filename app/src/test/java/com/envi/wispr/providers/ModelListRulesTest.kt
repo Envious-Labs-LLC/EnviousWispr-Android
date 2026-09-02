@@ -128,14 +128,15 @@ class ModelListRulesTest {
         assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 200, reply = ModelListRules.ProbeReply.NO_TEXT))
         assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200, reply = ModelListRules.ProbeReply.NO_TEXT))
         assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200))
-        // A model that ran out of output budget before writing anything proved NOTHING. Measured
+        // A reply that ended for any reason other than the model finishing proved NOTHING. Measured
         // 2026-09-02: gemini-2.5-pro spends every token of the probe's cap on thinking, at every cap. It
         // is a working model, so it must not be refused, and it earned no verdict, so it is not available.
+        // The sweep is over the whole enum, so a fourth reading has to declare its own access.
         ModelListRules.ProbeReply.entries.forEach { reply ->
             val expected = when (reply) {
                 ModelListRules.ProbeReply.TEXT -> ModelAccess.AVAILABLE
                 ModelListRules.ProbeReply.NO_TEXT -> ModelAccess.UNAVAILABLE
-                ModelListRules.ProbeReply.TRUNCATED -> ModelAccess.UNVERIFIED
+                ModelListRules.ProbeReply.INCONCLUSIVE -> ModelAccess.UNVERIFIED
             }
             assertEquals("$reply", ProbeOutcome.Access(expected), a(Provider.GEMINI, 200, reply = reply))
         }

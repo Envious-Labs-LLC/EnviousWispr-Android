@@ -136,11 +136,15 @@ class PolishLadderTest {
     }
 
     @Test fun theS1FactsNameThePublisherTheSizeAndTheOfflinePromise() {
-        // The size is read from the manifest the delivery worker fetches, so this asserts the wiring and
-        // the formatting rather than a number pasted twice.
-        val expectedSize = formatModelBytes(ModelManifest.s1.files.sumOf { it.expectedBytes })
-        assertEquals(listOf("Superwhisper", expectedSize, "Offline"), PolishLadder.s1Facts())
-        assertEquals("461.8 MB", expectedSize)
+        // The independent oracle is the manifest's own byte total, written here as a literal, because the
+        // formatted string cannot be one: formatModelBytes formats in the DEFAULT locale on purpose, so a
+        // German phone reads 461,8 MB and an English-literal assertion goes red under
+        // JAVA_TOOL_OPTIONS='-Duser.language=de -Duser.country=DE' while the app is behaving correctly.
+        val bytes = ModelManifest.s1.files.sumOf { it.expectedBytes }
+        assertEquals(484_219_808L, bytes)
+        val facts = PolishLadder.s1Facts()
+        assertEquals(listOf("Superwhisper", formatModelBytes(bytes), "Offline"), facts)
+        assertTrue(facts[1], facts[1].matches(Regex("""461[.,]8 MB""")))
     }
 
     @Test fun theS1ScoresSitOnTheSameOneToThreeScaleAsTheCloudRows() {

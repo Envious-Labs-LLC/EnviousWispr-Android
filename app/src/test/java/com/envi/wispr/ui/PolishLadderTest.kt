@@ -6,6 +6,7 @@ import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.providers.DiscoveredModel
 import com.envi.wispr.providers.ModelAccess
+import com.envi.wispr.providers.ModelListRules
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import org.junit.Assert.assertEquals
@@ -76,15 +77,102 @@ class PolishLadderTest {
     private fun model(id: String, access: ModelAccess, recommended: Boolean = false) = DiscoveredModel(id, id, access, recommended)
 
     @Test fun theDefaultModelPrefersRecommendedThenAvailableThenAnySelectable() {
+        val p = Provider.GEMINI
         // Recommended counts only when the probe reached it; a recommended model with no verdict loses to a reached one.
-        assertEquals("a", PolishLadder.defaultModel(listOf(model("a", ModelAccess.AVAILABLE), model("b", ModelAccess.UNVERIFIED, recommended = true))))
-        assertEquals("b", PolishLadder.defaultModel(listOf(model("a", ModelAccess.AVAILABLE), model("b", ModelAccess.AVAILABLE, recommended = true))))
-        assertEquals("b", PolishLadder.defaultModel(listOf(model("a", ModelAccess.UNVERIFIED), model("b", ModelAccess.AVAILABLE))))
-        assertEquals("a", PolishLadder.defaultModel(listOf(model("a", ModelAccess.UNVERIFIED), model("b", ModelAccess.UNVERIFIED))))
+        assertEquals("a", PolishLadder.defaultModel(p, listOf(model("a", ModelAccess.AVAILABLE), model("b", ModelAccess.UNVERIFIED, recommended = true))))
+        assertEquals("b", PolishLadder.defaultModel(p, listOf(model("a", ModelAccess.AVAILABLE), model("b", ModelAccess.AVAILABLE, recommended = true))))
+        assertEquals("b", PolishLadder.defaultModel(p, listOf(model("a", ModelAccess.UNVERIFIED), model("b", ModelAccess.AVAILABLE))))
+        assertEquals("a", PolishLadder.defaultModel(p, listOf(model("a", ModelAccess.UNVERIFIED), model("b", ModelAccess.UNVERIFIED))))
         // A model the key cannot reach is never the start, even when recommended.
-        assertEquals("b", PolishLadder.defaultModel(listOf(model("a", ModelAccess.UNAVAILABLE, recommended = true), model("b", ModelAccess.AVAILABLE))))
-        assertNull(PolishLadder.defaultModel(listOf(model("a", ModelAccess.UNAVAILABLE))))
-        assertNull(PolishLadder.defaultModel(emptyList()))
+        assertEquals("b", PolishLadder.defaultModel(p, listOf(model("a", ModelAccess.UNAVAILABLE, recommended = true), model("b", ModelAccess.AVAILABLE))))
+        assertNull(PolishLadder.defaultModel(p, listOf(model("a", ModelAccess.UNAVAILABLE))))
+        assertNull(PolishLadder.defaultModel(p, emptyList()))
+    }
+
+    /**
+     * Product Outcome. When this fails the user is started on one model while a different row wears the
+     * Recommended badge, or sees the badge on most of the list, which is what the founder reported (#99).
+     *
+     * The founder's own 17-model Gemini catalogue is the fixture, because a hand-picked pair cannot show
+     * the defect: the bug only appears at the scale where "contains flash" matches almost everything.
+     */
+    @Test fun exactlyOneModelIsRecommendedAndItIsWhatTheKeyStartsOn() {
+        val founderGeminiCatalogue = listOf(
+            "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-preview", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash",
+            "gemini-3.7-flash", "gemini-3.8-flash", "gemini-2.5-pro", "gemini-3.1-pro-preview",
+            "gemini-3.1-pro-preview-customtools", "gemini-3.5-transcribe",
+        ).map { model(it, ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended(it)) } +
+            listOf(
+                model("gemini-omni-1.1-flash", ModelAccess.UNVERIFIED, recommended = true),
+                model("gemini-omni-flash-preview", ModelAccess.UNVERIFIED, recommended = true),
+                model("antigravity-preview-05-2026", ModelAccess.UNVERIFIED),
+            )
+
+        // The class still matches most of the list; that is fine, it is what orders the rows.
+        val inClass = founderGeminiCatalogue.count { it.recommended }
+        assertTrue("the class should still be broad, it matched $inClass", inClass > 8)
+
+        // The BADGE does not. Exactly one row carries it, and it is the founder's pick.
+        val rows = ModelListPresentation.present(Provider.GEMINI, founderGeminiCatalogue, "", ModelSort.SUGGESTED, "")
+        assertEquals(1, rows.count { it.tag == "Recommended" })
+        assertEquals("gemini-3.8-flash", rows.single { it.tag == "Recommended" }.id)
+        // And it LEADS the suggested list. Measured on the founder's phone before this: the pick sat fifth
+        // and the list opened with no badge on screen at all, which is a recommendation nobody finds.
+        assertEquals("gemini-3.8-flash", rows.first().id)
+        // The badge is on a row the user can actually choose.
+        assertTrue(rows.first().selectable)
+
+        // And the key starts on that same model, so the badge and the choice cannot disagree.
+        assertEquals("gemini-3.8-flash", PolishLadder.defaultModel(Provider.GEMINI, founderGeminiCatalogue))
+    }
+
+    /**
+     * Product Outcome. A key that returns none of the preferred ids must still get ONE recommendation
+     * rather than none; a user on another tier or region is the case a pinned id cannot serve.
+     */
+    /**
+     * Product Outcome. Exactly one row is allowed above the recommendation, and only when the user's SAVED
+     * model has vanished from the refreshed catalogue. That row is not a suggestion, it is the news that
+     * the model they are polishing with has gone, and it has to be read before a replacement is offered.
+     *
+     * Without this the ordering is whatever list concatenation happens to produce, which is how a
+     * deliberate choice becomes an accident nobody can see.
+     */
+    @Test fun theRecommendedRowLeadsTheLiveRowsButNotTheStaleNotice() {
+        val catalogue = listOf("gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-pro")
+            .map { model(it, ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended(it)) }
+
+        // Saved model still in the list: nothing is pinned, so the recommendation is first outright.
+        val present = ModelListPresentation.present(Provider.GEMINI, catalogue, "", ModelSort.SUGGESTED, "gemini-2.5-flash")
+        assertEquals("gemini-3.8-flash", present.first().id)
+
+        // Saved model gone from the catalogue: the notice leads, the recommendation is immediately under it.
+        val stale = ModelListPresentation.present(Provider.GEMINI, catalogue, "", ModelSort.SUGGESTED, "gemini-9-retired")
+        assertEquals("gemini-9-retired", stale[0].id)
+        assertTrue("the leading row is the current-model notice", stale[0].current)
+        assertEquals("gemini-3.8-flash", stale[1].id)
+        assertEquals("Recommended", stale[1].tag)
+        // And still exactly one badge, which the extra row must not have duplicated.
+        assertEquals(1, stale.count { it.tag == "Recommended" })
+    }
+
+    @Test fun aCatalogueWithoutThePreferredModelStillRecommendsExactlyOne() {
+        val noPreferred = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro")
+            .map { model(it, ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended(it)) }
+        // Cheapest of the class wins. Both 2.5 flashes sit at cost 1 and speed 3, so the tie goes to the
+        // more accurate one, which is the full flash rather than the lite.
+        assertEquals("gemini-2.5-flash", ModelListPresentation.recommendedPick(Provider.GEMINI, noPreferred))
+
+        // Nothing reachable means no badge at all, rather than badging something the probe could not reach.
+        val unreachable = listOf(model("gemini-3.8-flash", ModelAccess.UNVERIFIED, recommended = true))
+        assertNull(ModelListPresentation.recommendedPick(Provider.GEMINI, unreachable))
+
+        // Every provider that offers models can name one, so no provider ships a list with no badge.
+        CloudProviders.forEach { provider ->
+            assertTrue("$provider has no preferred model", ModelNotes.preferred(provider).isNotEmpty())
+        }
+        assertTrue(ModelNotes.preferred(Provider.SELF_HOSTED_POLISH).isEmpty())
     }
 
     @Test fun aKeyWithNoUsableModelWaitsForATypedId() {

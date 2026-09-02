@@ -36,10 +36,36 @@ object ModelNotes {
         CatalogModel("o3", "Reasoning, deliberate", cost = 3, speed = 1, accuracy = 3),
     )
 
+    /**
+     * The ONE model each provider recommends, most preferred first (#99, founder 2026-09-02).
+     *
+     * A LIST rather than a single id, because the first entry is not guaranteed to come back: a key on a
+     * different tier, a region without a preview model, or a provider retiring one all return a catalogue
+     * that does not contain it, and a user who sees no recommendation at all is worse off than today. The
+     * caller falls through to ranking whatever they DID get.
+     *
+     * Gemini leads with `gemini-3.8-flash` on the founder's instruction. Measured 2026-09-02 against
+     * Google's pricing page, it costs the same as 3.6 and 3.7 and HALF what 3.5 Flash costs, so newest and
+     * cheap-per-quality are the same answer right now; they will diverge, which is why the fallback ranks
+     * on the table below rather than on the version number.
+     *
+     * OpenAI and Claude are not the founder's call; each is the row this same table already describes as
+     * the cheapest and fastest of its family, so the pick agrees with the dots beside it.
+     */
+    fun preferred(provider: Provider): List<String> = when (provider) {
+        Provider.OPENAI -> listOf("gpt-5.6-luna", "gpt-4.1-mini")
+        Provider.GEMINI -> listOf("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash")
+        Provider.CLAUDE -> listOf("claude-haiku-4-5")
+        Provider.SELF_HOSTED_POLISH -> emptyList()
+    }
+
     private val gemini = listOf(
+        CatalogModel("gemini-3.8-flash", "Newest flash, best value", tag = null, cost = 2, speed = 3, accuracy = 3),
         CatalogModel("gemini-3.6-flash", "Thinks by default", cost = 2, speed = 2, accuracy = 3),
-        CatalogModel("gemini-3.7-flash", "Newest flash", cost = 2, speed = 2, accuracy = 3),
-        CatalogModel("gemini-3.5-flash", "Steady and quick", cost = 2, speed = 3, accuracy = 2),
+        CatalogModel("gemini-3.7-flash", "Quick and capable", cost = 2, speed = 2, accuracy = 3),
+        // Cost 3, not 2: measured against Google's pricing page 2026-09-02 it is $1.50/$9.00 per 1M, double
+        // every newer Flash, which makes it the worst value on the list rather than their peer.
+        CatalogModel("gemini-3.5-flash", "Older flash, costs double the newer ones", cost = 3, speed = 3, accuracy = 2),
         CatalogModel("gemini-3.5-flash-lite", "Cheapest flash", cost = 1, speed = 3, accuracy = 2),
         CatalogModel("gemini-3.1-flash-lite", "Cheap, previous lite", cost = 1, speed = 3, accuracy = 1),
         CatalogModel("gemini-3.1-pro-preview", "Pro tier, slower", cost = 3, speed = 1, accuracy = 3),

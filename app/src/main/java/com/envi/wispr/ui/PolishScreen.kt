@@ -253,7 +253,7 @@ private fun CloudRungs(
     // An accepted Check saves at once with the suggested model, so "Key connected" is always a stored fact.
     LaunchedEffect(forTile?.phase, forTile?.sequence, checkSequence, apiKey.isBlank(), savedForSequence, saving) {
         if (forTile != null && PolishLadder.saveAtAccept(forTile, displayed, checkSequence, apiKey.isBlank(), savedForSequence, writePending = saving)) {
-            val model = PolishLadder.defaultModel(forTile.models) ?: return@LaunchedEffect
+            val model = PolishLadder.defaultModel(displayed, forTile.models) ?: return@LaunchedEffect
             val sequence = checkSequence
             savedForSequence = sequence
             onStart(WriteKind.KEY) { onSave(displayed, model, apiKey, sequence) }

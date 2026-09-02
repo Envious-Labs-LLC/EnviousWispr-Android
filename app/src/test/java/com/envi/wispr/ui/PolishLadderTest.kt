@@ -55,14 +55,18 @@ class PolishLadderTest {
     }
 
     @Test fun aBrowsedTileNeverInheritsAnotherProvidersKey() {
-        assertEquals(KeyRung.CONNECTED, PolishLadder.keyRung(Provider.OPENAI, cloudWithKey, replacing = false))
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.GEMINI, cloudWithKey, replacing = false))
+        assertEquals(KeyRung.CONNECTED, PolishLadder.keyRung(Provider.OPENAI, cloudWithKey))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.GEMINI, cloudWithKey))
     }
 
-    @Test fun connectedNeedsTheSavedProviderWithItsKeyAndNoReplace() {
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, cloudNoKey, replacing = false))
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, nothing, replacing = false))
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, cloudWithKey, replacing = true))
+    /**
+     * A third row was deleted here with the Replace control it covered: it asserted that an open Replace
+     * forces the FIELD over a stored key. That capability no longer exists, so there is nothing left to
+     * protect, and converting the row would have asserted the opposite of what the code now does.
+     */
+    @Test fun connectedNeedsTheSavedProviderWithItsKeyStored() {
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, cloudNoKey))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, nothing))
     }
 
     @Test fun theCheckPillReadsCheckCheckingRetry() {
@@ -239,7 +243,7 @@ class PolishLadderTest {
         // And the tile it names still has a rung 3 under it: the empty field, not the connected row.
         val kept = CloudProviders.first { it.name == nav.browsedName }
         assertEquals(kept, PolishLadder.displayedProvider(kept, afterRemove))
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(kept, afterRemove, replacing = false))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(kept, afterRemove))
 
         // Nothing browsed and nothing saved leaves nothing to keep, and the caller assigns that null so a
         // stale browse is cleared rather than left behind.

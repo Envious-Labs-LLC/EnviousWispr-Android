@@ -142,9 +142,14 @@ object PolishLadder {
     fun navigationAfterRemove(displayed: Provider?): SetupNavigation =
         SetupNavigation(cloudSetup = true, browsedName = browsedAfterRemove(displayed)?.name)
 
-    /** Connected only when the DISPLAYED provider is the saved one and its key is in the Keystore. */
-    fun keyRung(displayed: Provider, settings: ProviderSettingsUiState, replacing: Boolean): KeyRung = when {
-        replacing -> KeyRung.FIELD
+    /**
+     * Connected only when the DISPLAYED provider is the saved one and its key is in the Keystore.
+     *
+     * There is no in-place replace any more (founder 2026-09-02): the row offers Remove alone, and adding
+     * a different key is remove-then-enter. So this depends on stored state only, with no UI mode able to
+     * force the field open over a live key.
+     */
+    fun keyRung(displayed: Provider, settings: ProviderSettingsUiState): KeyRung = when {
         settings.configured && settings.provider == displayed && settings.credentialStored -> KeyRung.CONNECTED
         else -> KeyRung.FIELD
     }

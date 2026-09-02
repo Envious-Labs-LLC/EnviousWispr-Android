@@ -325,7 +325,7 @@ class ProviderPolishClient(
                     "x-api-key" to request.apiKey.orEmpty(),
                     "anthropic-version" to ANTHROPIC_VERSION,
                 ),
-                body = "{\"model\":${jsonString(request.model)},\"max_tokens\":1024,\"system\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}]}",
+                body = "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}]}",
                 responseFormat = ResponseFormat.CLAUDE,
             )
             Provider.SELF_HOSTED_POLISH -> {
@@ -338,10 +338,8 @@ class ProviderPolishClient(
                 RequestPlan(
                     url = url,
                     headers = if (request.apiKey.isNullOrEmpty()) emptyMap() else mapOf("Authorization" to "Bearer ${request.apiKey}"),
-                    body = when (request.selfHostedProtocol) {
-                        SelfHostedProtocol.OPENAI_COMPATIBLE -> "{\"model\":${jsonString(request.model)},\"messages\":[{\"role\":\"system\",\"content\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)}},{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}],\"stream\":false}"
-                        SelfHostedProtocol.OLLAMA -> "{\"model\":${jsonString(request.model)},\"messages\":[{\"role\":\"system\",\"content\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)}},{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}],\"stream\":false}"
-                    },
+                    // Both protocols take the same chat body; only the path and the answer's shape differ.
+                    body = "{\"model\":${jsonString(request.model)},\"messages\":[{\"role\":\"system\",\"content\":${jsonString(ProviderPolishPrompt.SYSTEM_INSTRUCTION)}},{\"role\":\"user\",\"content\":${jsonString(request.prompt)}}],\"stream\":false}",
                     responseFormat = when (request.selfHostedProtocol) {
                         SelfHostedProtocol.OPENAI_COMPATIBLE -> ResponseFormat.OPENAI_CHAT
                         SelfHostedProtocol.OLLAMA -> ResponseFormat.OLLAMA
@@ -378,8 +376,13 @@ class ProviderPolishClient(
     ): ResponseRead {
         val declared = connection.getHeaderFieldLong("Content-Length", -1L)
         if (declared > MAX_RESPONSE_BYTES) return ResponseRead.Failure(ProviderFailureKind.RESPONSE_TOO_LARGE)
-        val stream = if (status >= 400) connection.errorStream else connection.inputStream
-            ?: return ResponseRead.Failure(ProviderFailureKind.NETWORK)
+        // An error response with no body has a null error stream on Android; that is an EMPTY body, not a
+        // network failure (#79): the status still names what happened.
+        val stream = if (status >= 400) {
+            connection.errorStream ?: return ResponseRead.Success("")
+        } else {
+            connection.inputStream ?: return ResponseRead.Failure(ProviderFailureKind.NETWORK)
+        }
         stream.use { input ->
             val output = ByteArrayOutputStream(minOf(MAX_RESPONSE_BYTES, 16 * 1024))
             val buffer = ByteArray(4096)
@@ -507,6 +510,9 @@ class ProviderPolishClient(
         const val MAX_REQUEST_BYTES = 256 * 1024
         private const val TAG = "ProviderPolishClient"
         const val MAX_RESPONSE_BYTES = 512 * 1024
+
+        /** The Anthropic API requires `max_tokens`; the same value macOS sends, so a long dictation's polish is not cut off (#79). */
+        const val CLAUDE_MAX_OUTPUT_TOKENS = 8192
         const val MAX_MODEL_CHARS = 256
         const val MAX_PROMPT_CHARS = 100_000
         const val OPENAI_URL = "https://api.openai.com/v1/responses"

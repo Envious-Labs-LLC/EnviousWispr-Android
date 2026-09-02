@@ -61,11 +61,23 @@ object ModelListPresentation {
         }
         return candidates.minWithOrNull(
             compareBy(
-                // NEWEST FIRST, because that is the whole recommendation and everything below only breaks
-                // ties (#103). Leading with `preferred` instead made a hand-written id beat any model, so
-                // on the founder's key the badge sat on `gpt-4.1-mini` from April 2025 while `gpt-5-mini`
-                // from that August went unbadged; leading with COST had the same effect by a second route,
-                // because a model we have no row for scores worse than one we do.
+                // A MODEL WE HAVE A ROW FOR COMES FIRST, and this is a safety rule rather than a taste one
+                // (#103 review round 3). The badge auto-saves through `PolishLadder.defaultModel`, so it
+                // must not name a model that stops working. The catalogue is where a model was checked
+                // against the vendor's own deprecations list, and nothing a provider serves says a word
+                // about retirement: OpenAI still LISTS and still ANSWERS `gpt-5-mini` and `gpt-5-nano`,
+                // both scheduled to shut down 2026-10-23, so a rule that trusted the live list alone would
+                // have picked one seven weeks before it dies. `ModelNotesTest` holds the list of what has
+                // been checked out.
+                //
+                // A key that can reach none of our rows still gets a badge from the rows below, because a
+                // recommendation we cannot vouch for beats no recommendation at all on a key we have never
+                // seen.
+                { ModelNotes.forId(provider, it.id) == null },
+                // NEWEST FIRST within that, because that is the recommendation and everything below only
+                // breaks ties. Leading with `preferred` instead made a hand-written id beat any model, and
+                // leading with COST had the same effect by a second route, because a model we have no row
+                // for scores worse than one we do.
                 { it.releasedAt == null && ModelNotes.forId(provider, it.id)?.released == null },
                 { -(releaseDateOf(provider, it) ?: 0L) },
                 // Same day: the founder's own shortlist decides, then the measures, then the id. He picked

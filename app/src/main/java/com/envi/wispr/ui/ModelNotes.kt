@@ -135,7 +135,12 @@ object ModelNotes {
     internal fun withoutSnapshot(id: String): String? {
         val match = SNAPSHOT.find(id) ?: return null
         val (year, month, day) = match.destructured
-        if (year.toInt() !in 2000..2099 || month.toInt() !in 1..12 || day.toInt() !in 1..31) return null
+        // A real calendar date, parsed, never hand-rolled ranges: separate month and day checks accept
+        // 2025-02-31 and a non-leap 2025-02-29 (code-design-rules RULE:
+        // parse-structured-input-dont-regex-and-iterate). An id ending in impossible digits is not a
+        // snapshot, and trimming it would hand it another model's notes and ranking.
+        val parsed = runCatching { java.time.LocalDate.of(year.toInt(), month.toInt(), day.toInt()) }.getOrNull() ?: return null
+        if (parsed.year !in 2000..2099) return null
         return id.substring(0, match.range.first)
     }
 

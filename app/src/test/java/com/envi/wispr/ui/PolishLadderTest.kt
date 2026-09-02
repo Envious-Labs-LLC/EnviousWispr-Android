@@ -225,20 +225,26 @@ class PolishLadderTest {
         // the small tier at all and can never be picked, however new it is.
         assertEquals("gemini-2.5-flash-lite", ModelListPresentation.recommendedPick(Provider.GEMINI, noPreferred))
 
-        // THE CASE THIS EXISTS FOR (#103, measured on the founder's OpenAI key 2026-09-02): the newest
-        // models his key reaches are `gpt-5-mini` and `gpt-5-nano` from 2025-08-05, and we hold no
-        // catalogue row for either. They must still beat `gpt-4.1-mini` from 2025-04-10, which we do know.
+        // NEWER DOES NOT BEAT VETTED, and this is the case that taught it (#103 review round 3). His
+        // OpenAI key's newest models are `gpt-5-mini` and `gpt-5-nano` from 2025-08-05 and we hold no row
+        // for either, because both are on OpenAI's deprecations list for 2026-10-23. The badge auto-saves,
+        // so picking one would have quietly stopped his polish working seven weeks later. `gpt-4.1-mini`
+        // is older, catalogued, and not going anywhere.
         val day = 24 * 60 * 60 * 1000L
         val hisOpenAi = listOf(
             model("gpt-4.1-mini", ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_183 * day),
             model("gpt-5-nano", ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_305 * day),
             model("gpt-5-mini", ModelAccess.AVAILABLE, recommended = true).copy(releasedAt = 20_305 * day),
         )
-        assertEquals("gpt-5-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, hisOpenAi))
+        assertEquals("gpt-4.1-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, hisOpenAi))
+        assertEquals("gpt-4.1-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, hisOpenAi.reversed()))
 
-        // Same day, so the tie is broken below the date: neither 5 is in the shortlist and neither has a
-        // row, which leaves the id, and that must be stable rather than input order.
-        assertEquals("gpt-5-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, hisOpenAi.reversed()))
+        // A key that can reach NO row of ours still gets a badge, because a recommendation we cannot vouch
+        // for beats none at all on a key we have never seen. Newest wins there, and the same-day tie falls
+        // to the id so the answer is stable rather than input order.
+        val nothingCatalogued = hisOpenAi.filter { it.id.startsWith("gpt-5") }
+        assertEquals("gpt-5-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, nothingCatalogued))
+        assertEquals("gpt-5-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, nothingCatalogued.reversed()))
 
         // The founder's hand-picked shortlist still wins a SAME-DAY tie, which is the only place it may.
         val sameDay = listOf("gemini-3.8-flash", "gemini-3.9-unknown")
@@ -284,6 +290,9 @@ class PolishLadderTest {
         // Eight digits that are not a date, so the shape alone is not enough.
         assertNull(ModelNotes.withoutSnapshot("model-99999999"))
         assertNull(ModelNotes.withoutSnapshot("model-20251301"))
+        assertNull(ModelNotes.withoutSnapshot("model-20250231"))
+        assertNull(ModelNotes.withoutSnapshot("model-20250229"))
+        assertEquals("model", ModelNotes.withoutSnapshot("model-20240229"))
         assertNull(ModelNotes.withoutSnapshot("model-20251032"))
         assertNull(ModelNotes.withoutSnapshot("model-19991001"))
         // A date anywhere but the end is not a snapshot suffix.

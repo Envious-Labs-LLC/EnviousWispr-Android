@@ -996,12 +996,14 @@ class ProviderPolishClientTest {
      *
      * This is the founder's own OpenAI key, 2026-09-02: `gpt-4.1-mini` from April 2025 answers the probe
      * outright, while `gpt-5-mini` and `gpt-5-nano` from that August spend the cap thinking and answer only
-     * when asked not to. Neither 5 has a catalogue row. The badge must land on `gpt-5-mini`.
+     * when asked not to.
      *
-     * When this fails he is recommended a model a year and a half old while the newest one he owns sits
-     * unbadged, which is exactly what he reported.
+     * The retry must make all three USABLE, so none is hidden and he can pick any of them. The badge must
+     * still land on `gpt-4.1-mini`, because the two 5s are on OpenAI's deprecations list for 2026-10-23 and
+     * the badge auto-saves. Usable and recommended are different questions, and this is the test that says
+     * so end to end.
      */
-    @Test fun theNewestModelAKeyCanReachIsTheOneRecommended() {
+    @Test fun everyModelAKeyCanReachIsOfferedButOnlyAVettedOneIsRecommended() {
         val day = 24 * 60 * 60L
         val thinking = "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}"
         val answered = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"Hello there\"}]}]}"
@@ -1021,11 +1023,13 @@ class ProviderPolishClientTest {
                 listOf(ModelAccess.AVAILABLE, ModelAccess.AVAILABLE, ModelAccess.AVAILABLE),
                 models.sortedBy { it.id }.map { it.access },
             )
-            assertEquals("gpt-5-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, models))
-            // And the page agrees with the pick, with exactly one badge on it.
+            assertEquals("gpt-4.1-mini", ModelListPresentation.recommendedPick(Provider.OPENAI, models))
+            // And the page agrees with the pick, with exactly one badge on it. All three rows are shown:
+            // the retry is what keeps the newest two off the hidden list, whatever wears the badge.
             val rows = ModelListPresentation.present(Provider.OPENAI, models, "", "")
-            assertEquals("gpt-5-mini", rows.first { it.tag == "Recommended" }.id)
+            assertEquals("gpt-4.1-mini", rows.first { it.tag == "Recommended" }.id)
             assertEquals(1, rows.count { it.tag == "Recommended" })
+            assertEquals(setOf("gpt-4.1-mini", "gpt-5-mini", "gpt-5-nano"), rows.map { it.id }.toSet())
         }
     }
 

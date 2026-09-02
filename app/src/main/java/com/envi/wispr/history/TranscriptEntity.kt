@@ -1,5 +1,6 @@
 package com.envi.wispr.history
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -24,6 +25,12 @@ data class TranscriptEntity(
     val interrupted: Boolean = false,
     val status: String = STATUS_COMPLETED,
     val stateChangedAtMs: Long = 0L,
+    // Why the polish ended the way it did (#77): the `PolishReason` name, the HTTP status, and the latched
+    // policy as a `PolishContext` token. Schema values: never rename a member or a token without a
+    // migration or an alias. Rows from older builds carry the defaults and render as before.
+    @ColumnInfo(defaultValue = "''") val polishReason: String = "",
+    @ColumnInfo(defaultValue = "0") val polishStatus: Int = 0,
+    @ColumnInfo(defaultValue = "''") val polishContext: String = "",
 ) {
     companion object {
         const val STATUS_DRAFT = "draft"

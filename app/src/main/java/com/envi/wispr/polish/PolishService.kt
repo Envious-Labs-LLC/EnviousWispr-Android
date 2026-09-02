@@ -330,7 +330,7 @@ class PolishService : Service() {
                 when (val result = providerClient.polish(request, entry.cancellation)) {
                     is ProviderPolishResult.Success -> result.text
                     is ProviderPolishResult.Failure -> {
-                        attempt = PolishReason.from(result.kind)
+                        attempt = PolishReason.from(result.kind, result.signal)
                         statusCode = result.statusCode ?: 0
                         null
                     }

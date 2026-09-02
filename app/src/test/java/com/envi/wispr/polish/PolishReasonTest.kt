@@ -2,6 +2,7 @@ package com.envi.wispr.polish
 
 import com.envi.wispr.cleanup.PipelineOutcome
 import com.envi.wispr.providers.Provider
+import com.envi.wispr.providers.ProviderErrorSignal
 import com.envi.wispr.providers.ProviderFailureKind
 import com.envi.wispr.providers.SelfHostedProtocol
 import org.junit.Assert.assertEquals
@@ -19,7 +20,7 @@ class PolishReasonTest {
     @Test fun everyFailureKindMapsExactly() {
         val expected = mapOf(
             ProviderFailureKind.NO_API_KEY to PolishReason.NO_API_KEY,
-            ProviderFailureKind.INVALID_CONFIGURATION to PolishReason.CLOUD_NOT_CONFIGURED,
+            ProviderFailureKind.INVALID_CONFIGURATION to PolishReason.INVALID_CONFIGURATION,
             ProviderFailureKind.NETWORK to PolishReason.NETWORK,
             ProviderFailureKind.TIMEOUT to PolishReason.TIMEOUT,
             ProviderFailureKind.CANCELLED to PolishReason.CANCELLED,
@@ -30,6 +31,15 @@ class PolishReasonTest {
         )
         assertEquals("every kind is pinned", ProviderFailureKind.values().toSet(), expected.keys)
         expected.forEach { (kind, reason) -> assertEquals(kind.name, reason, PolishReason.from(kind)) }
+    }
+
+    @Test fun aBodySignalRefinesOnlyAnHttpError() {
+        assertEquals(PolishReason.HTTP_KEY_REJECTED, PolishReason.from(ProviderFailureKind.HTTP_ERROR, ProviderErrorSignal.KEY_REJECTED))
+        assertEquals(PolishReason.HTTP_OUT_OF_CREDITS, PolishReason.from(ProviderFailureKind.HTTP_ERROR, ProviderErrorSignal.OUT_OF_CREDITS))
+        assertEquals(PolishReason.HTTP_INPUT_TOO_LONG, PolishReason.from(ProviderFailureKind.HTTP_ERROR, ProviderErrorSignal.INPUT_TOO_LONG))
+        assertEquals(PolishReason.HTTP_CONTENT_BLOCKED, PolishReason.from(ProviderFailureKind.HTTP_ERROR, ProviderErrorSignal.CONTENT_BLOCKED))
+        assertEquals(PolishReason.NETWORK, PolishReason.from(ProviderFailureKind.NETWORK, ProviderErrorSignal.KEY_REJECTED))
+        assertEquals("the persisted names of the #77 members", listOf("HTTP_KEY_REJECTED", "HTTP_OUT_OF_CREDITS", "HTTP_INPUT_TOO_LONG", "HTTP_CONTENT_BLOCKED", "INVALID_CONFIGURATION"), PolishReason.entries.takeLast(5).map { it.name })
     }
 
     @Test fun offAndUnconfiguredPoliciesNameThemselvesWhateverThePipelineDid() {

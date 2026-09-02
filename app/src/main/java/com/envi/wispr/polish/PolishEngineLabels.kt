@@ -34,16 +34,34 @@ object PolishEngineLabels {
 
     /**
      * @return the polish line for an expanded History card, or an empty string when the row has
-     * nothing to say about polish.
+     * nothing to say about polish. Since #77 a row that stored a failure opens with the same sentence the
+     * completion surface showed, derived through the same `PolishFailure.from`; a row from an older build,
+     * or one whose stored reason or context no longer decodes, renders the engine line alone.
      */
-    fun historySummary(polishEngine: String, polishLatencyMs: Long): String = when (polishEngine) {
-        NOT_RECORDED -> ""
-        NO_SPEECH -> "No speech to polish"
-        OFF -> "AI Polish was off"
-        RAW_FALLBACK -> "AI Polish returned nothing, so your own words were kept"
-        DETERMINISTIC -> withLatency("Cleaned up on this phone", polishLatencyMs)
-        else -> withLatency("Polished by $polishEngine", polishLatencyMs)
+    fun historySummary(
+        polishEngine: String,
+        polishLatencyMs: Long,
+        polishReason: String = "",
+        polishStatus: Int = 0,
+        polishContext: String = "",
+    ): String {
+        val engineLine = when (polishEngine) {
+            NOT_RECORDED -> ""
+            NO_SPEECH -> "No speech to polish"
+            OFF -> "AI Polish was off"
+            RAW_FALLBACK -> "AI Polish returned nothing, so your own words were kept"
+            DETERMINISTIC -> withLatency("Cleaned up on this phone", polishLatencyMs)
+            else -> withLatency("Polished by $polishEngine", polishLatencyMs)
+        }
+        val context = PolishContext.decode(polishContext)
+        val failure = decodeStoredReason(polishReason)?.let { PolishFailure.from(it, polishStatus, context) } ?: return engineLine
+        val failureLine = "${failure.leadIn.text} ${failure.message(context)}"
+        return if (engineLine.isEmpty()) failureLine else "$failureLine\n$engineLine"
     }
+
+    /** Tolerant: an empty or unknown stored reason is null, never a throw (schema values outlive code). */
+    fun decodeStoredReason(value: String): PolishReason? =
+        value.takeIf(String::isNotEmpty)?.let { stored -> PolishReason.entries.firstOrNull { it.name == stored } }
 
     private fun withLatency(summary: String, latencyMs: Long): String =
         if (latencyMs > 0L) "$summary in $latencyMs ms" else summary

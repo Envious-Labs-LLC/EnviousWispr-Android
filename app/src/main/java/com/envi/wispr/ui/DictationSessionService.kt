@@ -42,7 +42,9 @@ import com.envi.wispr.paste.InsertionJudgement
 import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
+import com.envi.wispr.polish.PolishContext
 import com.envi.wispr.polish.PolishEngineLabels
+import com.envi.wispr.polish.PolishPublicationFacts
 import com.envi.wispr.polish.PolishFallback
 import com.envi.wispr.polish.PolishOutcome
 import com.envi.wispr.polish.PolishPolicy
@@ -581,6 +583,9 @@ class DictationSessionService : Service() {
                                 restoreTakeVocabulary(outcome.text, takePreferences),
                                 outcome.engine,
                                 outcome.latencyMs,
+                                outcome.reason,
+                                outcome.statusCode,
+                                PolishContext.from(takePreferences.policy),
                             )
                         }
 
@@ -615,7 +620,14 @@ class DictationSessionService : Service() {
     private fun publishFallback(rawText: String, takePreferences: SessionPreferences, reason: PolishReason) {
         cancelOpenPolishRequest()
         DebugLogger.warn(TAG, "Polish fell back on the session owner: reason=$reason")
-        publishResult(deterministicFallback(rawText, takePreferences), PolishEngineLabels.DETERMINISTIC, 0)
+        publishResult(
+            deterministicFallback(rawText, takePreferences),
+            PolishEngineLabels.DETERMINISTIC,
+            0,
+            reason,
+            0,
+            PolishContext.from(takePreferences.policy),
+        )
     }
 
     /**
@@ -648,7 +660,20 @@ class DictationSessionService : Service() {
         return if (TextSafety.isSafe(text, restored)) restored else text
     }
 
-    private fun publishResult(text: String, engine: String, latencyMs: Long) {
+    /**
+     * The one place a polish outcome becomes a History row and, when it did not do its job, a sentence
+     * (#77). Two routes reach it, the outcome callback and `publishFallback`; the facts are derived once
+     * here, and the notice is posted BEFORE persistence and insertion begin so it precedes the delivery
+     * line when both fire.
+     */
+    private fun publishResult(
+        text: String,
+        engine: String,
+        latencyMs: Long,
+        reason: PolishReason,
+        statusCode: Int,
+        polishContext: PolishContext,
+    ) {
         if (!publicationStarted.compareAndSet(false, true)) {
             DebugLogger.warn(TAG, "Ignoring duplicate final transcript callback")
             return
@@ -659,6 +684,14 @@ class DictationSessionService : Service() {
         if (finalText.isBlank()) {
             finishSession()
             return
+        }
+        val polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext)
+        polishFacts.notice?.let { notice ->
+            DebugLogger.log(TAG, "Polish notice shown: ${polishFacts.failure}")
+            mainHandler.post {
+                Toast.makeText(this, notice.toastLine, Toast.LENGTH_LONG).show()
+                DictationNotificationController.showPolishNotice(this, notice)
+            }
         }
 
         serviceScope.launch {
@@ -674,10 +707,13 @@ class DictationSessionService : Service() {
                         polishLatencyMs = latencyMs,
                         insertionResult = "pending",
                         durationMs = recordingDurationMs,
+                        polishReason = polishFacts.reasonToken,
+                        polishStatus = polishFacts.statusCode,
+                        polishContext = polishFacts.contextToken,
                     )
-                    if (updated > 0) existingId else insertReadyTranscript(finalText, finalEngine, latencyMs)
+                    if (updated > 0) existingId else insertReadyTranscript(finalText, finalEngine, latencyMs, polishFacts)
                 } else {
-                    insertReadyTranscript(finalText, finalEngine, latencyMs)
+                    insertReadyTranscript(finalText, finalEngine, latencyMs, polishFacts)
                 }
                 draftId.set(persistedId)
                 persistedId
@@ -755,7 +791,7 @@ class DictationSessionService : Service() {
         }
     }
 
-    private suspend fun insertReadyTranscript(finalText: String, engine: String, latencyMs: Long): Long {
+    private suspend fun insertReadyTranscript(finalText: String, engine: String, latencyMs: Long, polishFacts: PolishPublicationFacts): Long {
         return transcriptRepository.insert(
             TranscriptEntity(
                 originalText = rawTranscript,
@@ -767,6 +803,9 @@ class DictationSessionService : Service() {
                 polishLatencyMs = latencyMs,
                 insertionResult = "pending",
                 status = TranscriptEntity.STATUS_READY_FOR_INSERTION,
+                polishReason = polishFacts.reasonToken,
+                polishStatus = polishFacts.statusCode,
+                polishContext = polishFacts.contextToken,
             ),
         )
     }

@@ -11,6 +11,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -148,6 +149,47 @@ class ProviderPolishClientTest {
     ) { endpoint ->
         val result = client(endpoint).polish(request(endpoint))
         assertEquals(ProviderPolishResult.Failure(ProviderFailureKind.HTTP_ERROR, 401), result)
+        assertFalse(result.toString().contains("secret-bearing"))
+    }
+
+    @Test fun anErrorBodyBecomesOnlyAClosedSignalOverTheWire() = withServer(
+        status = 429,
+        response = "{\"error\":{\"type\":\"insufficient_quota\",\"message\":\"secret-bearing quota text\"}}",
+    ) { endpoint ->
+        val result = client(endpoint).polish(request(endpoint))
+        assertEquals(ProviderPolishResult.Failure(ProviderFailureKind.HTTP_ERROR, 429, ProviderErrorSignal.OUT_OF_CREDITS), result)
+        assertFalse(result.toString().contains("secret-bearing"))
+    }
+
+    @Test fun anOversizedErrorBodyKeepsItsOwnKindWithTheStatus() = withServer(
+        status = 500,
+        response = "x".repeat(600 * 1024),
+    ) { endpoint ->
+        val result = client(endpoint).polish(request(endpoint))
+        assertEquals(ProviderPolishResult.Failure(ProviderFailureKind.RESPONSE_TOO_LARGE, 500), result)
+    }
+
+    @Test fun theBodyMarkersAreTheMacOsOnesPerProvider() {
+        // (#77) OpenAI
+        assertEquals(ProviderErrorSignal.OUT_OF_CREDITS, ProviderErrorSignal.classify(Provider.OPENAI, 429, "{\"type\":\"insufficient_quota\"}"))
+        assertNull(ProviderErrorSignal.classify(Provider.OPENAI, 429, "{\"type\":\"rate_limit\"}"))
+        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderErrorSignal.classify(Provider.OPENAI, 400, "context_length_exceeded"))
+        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderErrorSignal.classify(Provider.OPENAI, 400, "content_filter"))
+        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderErrorSignal.classify(Provider.OPENAI, 400, "content_policy"))
+        assertNull(ProviderErrorSignal.classify(Provider.OPENAI, 400, "something else"))
+        assertNull(ProviderErrorSignal.classify(Provider.OPENAI, 401, "context_length_exceeded"))
+        // Gemini
+        assertEquals(ProviderErrorSignal.KEY_REJECTED, ProviderErrorSignal.classify(Provider.GEMINI, 400, "API_KEY_INVALID"))
+        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderErrorSignal.classify(Provider.GEMINI, 400, "exceeds the maximum number of tokens"))
+        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderErrorSignal.classify(Provider.GEMINI, 400, "PROHIBITED_CONTENT"))
+        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderErrorSignal.classify(Provider.GEMINI, 400, "\"blockReason\":\"SAFETY\""))
+        assertNull(ProviderErrorSignal.classify(Provider.GEMINI, 400, "something else"))
+        // Claude
+        assertEquals(ProviderErrorSignal.OUT_OF_CREDITS, ProviderErrorSignal.classify(Provider.CLAUDE, 400, "Your credit balance is too low"))
+        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderErrorSignal.classify(Provider.CLAUDE, 400, "prompt is too long: 250024 tokens"))
+        assertNull(ProviderErrorSignal.classify(Provider.CLAUDE, 400, "something else"))
+        // Self-hosted has no markers
+        assertNull(ProviderErrorSignal.classify(Provider.SELF_HOSTED_POLISH, 400, "API_KEY_INVALID insufficient_quota"))
     }
 
     @Test fun commentaryWrappersAreRejectedForDeterministicFallback() = withServer(

@@ -7,15 +7,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.envi.wispr.R
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
@@ -228,16 +232,47 @@ object PolishSnackbarPolicy {
 internal fun hostOf(endpoint: String): String =
     runCatching { java.net.URI(endpoint).host }.getOrNull()?.takeIf(String::isNotBlank) ?: endpoint
 
-/** The provider's initial in a rounded tile, the same measurements as the Dictionary's picker cards. */
+/**
+ * The provider's own brand mark, tinted to [tint] and drawn at [size].
+ *
+ * The marks are ported from the shipping macOS app rather than redrawn (issue #92); the path data and the
+ * trademark posture live in the drawables themselves, starting with `ic_provider_openai.xml`.
+ *
+ * **No content description, deliberately.** The only caller draws the provider's NAME directly under this
+ * mark, so a description here makes a screen reader say the provider twice. macOS marks the same tile
+ * `.accessibilityHidden(true)` for the same reason. A future caller that shows a mark with no visible name
+ * must pass its own label rather than relying on this.
+ *
+ * Exhaustive over [Provider] with no `else`, so a new provider is a compile error here rather than a tile
+ * that silently falls back to a letter.
+ */
 @Composable
-internal fun ProviderTile(provider: Provider, size: androidx.compose.ui.unit.Dp = 44.dp) {
-    Box(
-        modifier = Modifier
-            .size(size)
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(provider.capabilities().displayName.take(1), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+internal fun ProviderTile(provider: Provider, tint: Color, size: androidx.compose.ui.unit.Dp) {
+    val mark: Int? = when (provider) {
+        Provider.OPENAI -> R.drawable.ic_provider_openai
+        Provider.GEMINI -> R.drawable.ic_provider_gemini
+        Provider.CLAUDE -> R.drawable.ic_provider_claude
+        // Not reachable from rung 2 today: `CloudProviders` removes it from the row that is the only
+        // caller. It still needs to draw, because the type permits it and a self-hosted endpoint has no
+        // vendor whose mark we could use.
+        Provider.SELF_HOSTED_POLISH -> null
+    }
+    if (mark != null) {
+        Icon(
+            painter = painterResource(mark),
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(size),
+        )
+    } else {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .background(tint.copy(alpha = 0.15f), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(provider.capabilities().displayName.take(1), style = MaterialTheme.typography.titleMedium, color = tint)
+        }
     }
 }
 

@@ -529,7 +529,7 @@ private fun ProviderTileButton(provider: Provider, selected: Boolean, enabled: B
         border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            ProviderTile(provider, size = 28.dp)
+            ProviderTile(provider, tint = fg, size = 26.dp)
             Text(provider.capabilities().displayName, style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
         }
     }

@@ -254,19 +254,19 @@ class ProviderConfigurationRepositoryTest {
         repository.save(Provider.GEMINI, "gemini-test", apiKey = "gemini-secret")
         assertEquals(Provider.GEMINI, repository.load()?.provider)
 
-        assertEquals("openai-secret", repository.storedKey(Provider.OPENAI))
-        assertEquals("gemini-secret", repository.storedKey(Provider.GEMINI))
-        assertNull(repository.storedKey(Provider.CLAUDE))
+        assertEquals("openai-secret", repository.withStoredKey(Provider.OPENAI) { it })
+        assertEquals("gemini-secret", repository.withStoredKey(Provider.GEMINI) { it })
+        assertNull(repository.withStoredKey(Provider.CLAUDE) { it })
 
         repository.removeKey(Provider.OPENAI)
-        assertNull(repository.storedKey(Provider.OPENAI))
+        assertNull(repository.withStoredKey(Provider.OPENAI) { it })
     }
 
     /** A store that cannot be read reports no keys rather than throwing at the screen. */
     @Test fun anUnreadableStoreReportsNoStoredProviders_failingFake() {
         val failing = ProviderConfigurationRepository(context, FailingSecrets(secrets, failGet = true), checker)
         assertEquals(emptySet<Provider>(), failing.storedProviders())
-        assertNull(failing.storedKey(Provider.OPENAI))
+        assertNull(failing.withStoredKey(Provider.OPENAI) { it })
     }
 
     /**

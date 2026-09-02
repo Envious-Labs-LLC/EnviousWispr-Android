@@ -468,12 +468,14 @@ class ProviderPolishClient(
         if (remainingMs <= 0) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
         val budget = remainingMs.coerceAtMost(probeTimeoutMs.coerceAtLeast(1))
         return when (val transport = run(plan, ProviderCancellation(), budget, connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, budget))) {
-            is Transport.Failed -> ModelListRules.probeOutcome(provider, null, null, returnedText = false)
+            // A transport failure has no body at all; the null status makes this UNVERIFIED before the
+            // reply is ever read.
+            is Transport.Failed -> ModelListRules.probeOutcome(provider, null, null, ModelListRules.ProbeReply.NO_TEXT)
             is Transport.Response -> ModelListRules.probeOutcome(
                 provider,
                 transport.status,
                 transport.body,
-                returnedText = probeCarriedText(plan.responseFormat, transport.body),
+                probeReply(plan.responseFormat, transport.body),
             )
         }
     }
@@ -863,16 +865,38 @@ class ProviderPolishClient(
         ResponseFormat.NONE -> null
     }?.substringAfterLast("</think>")?.trim()
 
-    /** Did this probe body carry text the polish path would have accepted? A body that will not parse did not. */
-    private fun probeCarriedText(format: ResponseFormat, body: String): Boolean {
+    /**
+     * What this probe body carried, judged the way polish judges a real reply. A body that will not parse
+     * carried nothing; it is not "we could not tell", because a well-formed provider always sends JSON.
+     */
+    private fun probeReply(format: ResponseFormat, body: String): ModelListRules.ProbeReply {
         val root = try {
             JsonParser(body).parse()
         } catch (_: IllegalArgumentException) {
-            return false
+            return ModelListRules.ProbeReply.NO_TEXT
         } catch (_: StackOverflowError) {
-            return false
+            return ModelListRules.ProbeReply.NO_TEXT
         }
-        return !replyText(format, root).isNullOrEmpty()
+        if (!replyText(format, root).isNullOrEmpty()) return ModelListRules.ProbeReply.TEXT
+        return if (ranOutOfOutputBudget(format, root)) ModelListRules.ProbeReply.TRUNCATED else ModelListRules.ProbeReply.NO_TEXT
+    }
+
+    /**
+     * Did the provider stop because it hit the output cap? Each one says so in its own field, and the
+     * probe's cap is deliberately tiny, so this is the difference between "this model cannot answer" and
+     * "this model had no room to answer".
+     *
+     * Exhaustive with no `else`, so a new response format must declare where it says this.
+     * `ResponseFormat.NONE` is the key check, which never asks for text and so can never be truncated.
+     */
+    private fun ranOutOfOutputBudget(format: ResponseFormat, root: Any?): Boolean = when (format) {
+        ResponseFormat.OPENAI_RESPONSES ->
+            root.stringAt("status") == "incomplete" || root.stringAt("incomplete_details", "reason") == "max_output_tokens"
+        ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "finish_reason") == "length"
+        ResponseFormat.GEMINI -> root.stringAt("candidates", 0, "finishReason") == "MAX_TOKENS"
+        ResponseFormat.CLAUDE -> root.stringAt("stop_reason") == "max_tokens"
+        ResponseFormat.OLLAMA -> root.stringAt("done_reason") == "length"
+        ResponseFormat.NONE -> false
     }
 
     private fun ensureActive(cancellation: ProviderCancellation, deadline: Long) {

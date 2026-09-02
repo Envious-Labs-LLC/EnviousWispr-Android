@@ -75,15 +75,20 @@ class ProviderConfigurationRepository internal constructor(
     fun storedProviders(): Set<Provider> = runCatching { secrets.storedProviders() }.getOrDefault(emptySet())
 
     /**
-     * The stored key for [provider], whatever is selected (#103); null when there is none or it cannot be
-     * read. Needed because a connected row is now drawn for every stored key, and its Refresh and its model
-     * list have to reach THAT provider's credential rather than the selected one's.
+     * Runs [action] with [provider]'s stored key, or returns null when there is no readable key.
      *
-     * The caller uses the value inside the call that asks for it and never keeps it, which is the same
-     * contract [load] has always had (`keystore-security.md` RULE: plaintext-never-leaves-the-store).
+     * Needed because a connected row is now drawn for every stored key (#103), and its Refresh and its
+     * model list have to reach THAT provider's credential rather than the selected one's.
+     *
+     * It hands over the OPERATION rather than the value on purpose. A `storedKey(provider): String?`
+     * would have returned plaintext up into the view model, which `keystore-security.md`
+     * RULE: plaintext-never-leaves-the-store forbids: pass the store down, never the secret. Here the key
+     * exists only inside this call and the caller never holds a reference to it.
      */
-    fun storedKey(provider: Provider): String? =
-        runCatching { secrets.get(provider) }.getOrNull()?.takeIf(String::isNotBlank)
+    fun <T> withStoredKey(provider: Provider, action: (String) -> T): T? {
+        val key = runCatching { secrets.get(provider) }.getOrNull()?.takeIf(String::isNotBlank) ?: return null
+        return action(key)
+    }
 
     /**
      * The policy snapshot a dictation session carries to the engine (`PolishPolicy`). ONE read of the

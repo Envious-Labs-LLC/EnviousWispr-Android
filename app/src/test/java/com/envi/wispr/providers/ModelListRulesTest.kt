@@ -117,16 +117,28 @@ class ModelListRulesTest {
      * here sweep that answer rather than the envelope it came from.
      */
     @Test fun probeOutcomeFollowsTheMacRulesPerProvider() {
-        // Whether the body carried text is the CLIENT's answer, produced by the same parser polish uses;
-        // the envelope shapes are asserted against a real server in `ProviderPolishClientTest`. Passing
-        // it in keeps this table about STATUS, which is the only thing this function decides.
-        fun a(p: Provider, s: Int?, b: String? = "{}", text: Boolean = true) = ModelListRules.probeOutcome(p, s, b, returnedText = text)
+        // What the body carried is the CLIENT's answer, produced by the same parser polish uses; the
+        // envelope shapes are asserted against a real server in `ProviderPolishClientTest`. Passing it in
+        // keeps this table about STATUS, which is the only thing this function decides.
+        fun a(p: Provider, s: Int?, b: String? = "{}", reply: ModelListRules.ProbeReply = ModelListRules.ProbeReply.TEXT) =
+            ModelListRules.probeOutcome(p, s, b, reply)
         assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.OPENAI, 200))
         // A 200 that carries no text is the transcribe case, and it is UNAVAILABLE, not available.
-        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.GEMINI, 200, text = false))
-        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 200, text = false))
-        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200, text = false))
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.GEMINI, 200, reply = ModelListRules.ProbeReply.NO_TEXT))
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 200, reply = ModelListRules.ProbeReply.NO_TEXT))
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200, reply = ModelListRules.ProbeReply.NO_TEXT))
         assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200))
+        // A model that ran out of output budget before writing anything proved NOTHING. Measured
+        // 2026-09-02: gemini-2.5-pro spends every token of the probe's cap on thinking, at every cap. It
+        // is a working model, so it must not be refused, and it earned no verdict, so it is not available.
+        ModelListRules.ProbeReply.entries.forEach { reply ->
+            val expected = when (reply) {
+                ModelListRules.ProbeReply.TEXT -> ModelAccess.AVAILABLE
+                ModelListRules.ProbeReply.NO_TEXT -> ModelAccess.UNAVAILABLE
+                ModelListRules.ProbeReply.TRUNCATED -> ModelAccess.UNVERIFIED
+            }
+            assertEquals("$reply", ProbeOutcome.Access(expected), a(Provider.GEMINI, 200, reply = reply))
+        }
         // Text in the body cannot rescue a status that already refused, or the check would read a
         // successful envelope out of an error page. Every row below carries `text = true` for that reason.
         assertEquals(ProbeOutcome.KeyRejected(401), a(Provider.OPENAI, 401))

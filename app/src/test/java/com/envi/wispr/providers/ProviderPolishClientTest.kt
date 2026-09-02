@@ -812,7 +812,12 @@ class ProviderPolishClientTest {
         val later = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"},{\"text\":\"Hi\"}]}}]}"
         // A body that is not JSON at all did not answer, whatever bytes it happens to contain.
         val notJson = "text: Hi"
-        val list = "{\"models\":[" + listOf("empty", "blank", "later", "notjson", "good").joinToString(",") {
+        // Measured 2026-09-02 against a live Gemini key: gemini-2.5-pro and gemini-3-flash-preview answer
+        // exactly this to the probe, having spent the whole output cap on thinking. Both polish fine at
+        // the real request's budget, so this must NOT be refused. Raising the cap does not help: the
+        // thinking grows with it, 2 thought tokens at a cap of 5 and 125 at a cap of 128.
+        val outOfBudget = "{\"candidates\":[{\"finishReason\":\"MAX_TOKENS\",\"content\":{\"parts\":[]}}]}"
+        val list = "{\"models\":[" + listOf("empty", "blank", "later", "notjson", "outofbudget", "good").joinToString(",") {
             "{\"name\":\"models/gemini-$it\",\"supportedGenerationMethods\":[\"generateContent\"]}"
         } + "]}"
         ScriptedServer({ request ->
@@ -821,6 +826,7 @@ class ProviderPolishClientTest {
                 "gemini-blank" -> 200 to blank
                 "gemini-later" -> 200 to later
                 "gemini-notjson" -> 200 to notJson
+                "gemini-outofbudget" -> 200 to outOfBudget
                 else -> 200 to okBody(Provider.GEMINI)
             }
         }).use { server ->
@@ -830,6 +836,9 @@ class ProviderPolishClientTest {
             assertEquals(ModelAccess.UNAVAILABLE, models["gemini-blank"])
             assertEquals(ModelAccess.AVAILABLE, models["gemini-later"])
             assertEquals(ModelAccess.UNAVAILABLE, models["gemini-notjson"])
+            // Neither refused nor confirmed: the probe could not tell, and an UNVERIFIED row stays on
+            // screen, so the model is still offered.
+            assertEquals(ModelAccess.UNVERIFIED, models["gemini-outofbudget"])
             assertEquals(ModelAccess.AVAILABLE, models["gemini-good"])
         }
     }

@@ -559,12 +559,16 @@ class EnviousWisprViewModel(
             val outcome = if (draftInvalid) {
                 ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
             } else withContext(Dispatchers.IO) {
-                // The key of THIS provider, not of the selected one (#103). Reading it through `load()`
-                // meant a stored-key Check only worked on the active provider, so Refresh on any other
-                // connected tile refused with no key and its model list could never be rebuilt.
-                val key = draft ?: providerRepository.storedKey(provider)
-                if (key.isNullOrBlank()) ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
-                else discoverer.discoverModels(provider, key)
+                // A stored-key Check reaches THIS provider's credential, not the selected one's (#103).
+                // Reading it through `load()` meant Refresh only ever worked on the active provider, so on
+                // any other connected tile it refused with no key while the key sat in the Keystore.
+                //
+                // The stored key is never assigned here: the repository runs the discovery with it, so the
+                // plaintext stays inside the store's own call (keystore-security.md
+                // RULE: plaintext-never-leaves-the-store).
+                if (draft != null) discoverer.discoverModels(provider, draft)
+                else providerRepository.withStoredKey(provider) { discoverer.discoverModels(provider, it) }
+                    ?: ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
             }
             val name = provider.capabilities().displayName
             // The class of defect this closes: a completion judged on state read BEFORE a suspension. There

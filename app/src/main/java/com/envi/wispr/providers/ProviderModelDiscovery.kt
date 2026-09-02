@@ -158,13 +158,35 @@ object ModelListRules {
     }
 
     /**
+     * What a 200 probe body carried, read by the same parser polish uses.
+     *
+     * THREE values, because a probe asks for at most a handful of output tokens and a reasoning model can
+     * spend all of them thinking. Measured 2026-09-02 against a live Gemini key: `gemini-2.5-pro` and
+     * `gemini-3-flash-preview` answer 200 with `finishReason: MAX_TOKENS` and no text at all, and raising
+     * the cap does not help because the thinking grows with it (2 thought tokens at a cap of 5, 125 at a
+     * cap of 128). Both models polish perfectly well at the real request's budget, so calling them
+     * unusable would hide working models. `gemini-3.5-transcribe`, the model this whole check exists for,
+     * answers `STOP` with no text and is correctly refused.
+     */
+    enum class ProbeReply {
+        /** The polish parser found words. */
+        TEXT,
+
+        /** It answered and there were no words. This is the transcribe case. */
+        NO_TEXT,
+
+        /** It ran out of output budget before writing any, so this probe proved nothing either way. */
+        TRUNCATED,
+    }
+
+    /**
      * The probe verdict per provider (macOS `probeOpenAI` / `probeGemini` / `probeClaude`).
      *
-     * [returnedText] is the caller's answer to "would the polish path have got text out of this body",
-     * produced by the SAME parser polish uses. It is a required argument with no default, because a
-     * default here would be a silent answer at every call site that forgot it.
+     * [reply] is the caller's reading of the body, produced by the SAME parser polish uses. It is a
+     * required argument with no default, because a default here would be a silent answer at every call
+     * site that forgot it.
      */
-    fun probeOutcome(provider: Provider, status: Int?, body: String?, returnedText: Boolean): ProbeOutcome {
+    fun probeOutcome(provider: Provider, status: Int?, body: String?, reply: ProbeReply): ProbeOutcome {
         if (status == null) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
         if (status == 401) return ProbeOutcome.KeyRejected(status)
         if (status == 400 && body != null && ProviderErrorSignal.classify(provider, status, body) == ProviderErrorSignal.KEY_REJECTED) {
@@ -176,7 +198,13 @@ object ModelListRules {
             // gemini-3.5-transcribe returns an empty string to a real cleanup request, so it was shipping
             // as AVAILABLE while silently returning the user's raw words on every dictation. Green must
             // mean the outcome happened (validation-discipline RULE: verify-the-feature-not-the-crash).
-            status == 200 -> if (returnedText) ModelAccess.AVAILABLE else ModelAccess.UNAVAILABLE
+            status == 200 -> when (reply) {
+                ProbeReply.TEXT -> ModelAccess.AVAILABLE
+                ProbeReply.NO_TEXT -> ModelAccess.UNAVAILABLE
+                // Not "broken", and not "fine": nothing was proved. UNVERIFIED rows stay on screen, so a
+                // reasoning model is still offered; it simply does not carry a verdict it did not earn.
+                ProbeReply.TRUNCATED -> ModelAccess.UNVERIFIED
+            }
             status == 429 -> when (provider) {
                 Provider.GEMINI -> if (body?.contains("limit: 0") == true) ModelAccess.UNAVAILABLE else ModelAccess.AVAILABLE
                 Provider.CLAUDE -> ModelAccess.AVAILABLE

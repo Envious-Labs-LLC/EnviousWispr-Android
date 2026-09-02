@@ -16,6 +16,8 @@ data class ModelRow(
     val speed: Int?,
     val accuracy: Int?,
     val access: ModelAccess,
+    /** Release date in epoch millis, for the newest-first order; null when nobody publishes one. */
+    val releasedAt: Long?,
     /** UNAVAILABLE rows cannot be picked, except the saved model, which stays selectable and says why. */
     val selectable: Boolean,
     /** The saved model, pinned when the live list lacks it or shown with its access when present. */
@@ -69,7 +71,21 @@ object ModelListPresentation {
      * model pinned first when the list lacks it; with NO models at all a non-blank valid [query] becomes
      * one typed row so a power user is never stranded.
      */
-    fun present(provider: Provider, models: List<DiscoveredModel>, query: String, sort: ModelSort, savedModel: String): List<ModelRow> {
+    /**
+     * The release date to order a row by (#101): the provider's own if it sends one, else the date read
+     * off the vendor's changelog into [ModelNotes], else null.
+     *
+     * The API wins over the table wherever it speaks, because a date we typed cannot be fresher than the
+     * one the provider is serving today.
+     */
+    internal fun releaseDateOf(provider: Provider, model: DiscoveredModel): Long? =
+        model.releasedAt ?: ModelNotes.forId(provider, model.id)?.released?.let(::parseDay)
+
+    /** `YYYY-MM-DD` at UTC midnight. Null on anything else rather than a guess at what was meant. */
+    private fun parseDay(day: String): Long? =
+        runCatching { java.time.LocalDate.parse(day).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli() }.getOrNull()
+
+    fun present(provider: Provider, models: List<DiscoveredModel>, query: String, savedModel: String): List<ModelRow> {
         val pick = recommendedPick(provider, models)
         val normalized = query.trim().lowercase()
         if (models.isEmpty()) {
@@ -77,7 +93,7 @@ object ModelListPresentation {
             val valid = typed.isNotEmpty() && typed.length <= ProviderPolishClient.MAX_MODEL_CHARS && typed.none(Char::isISOControl)
             val rows = mutableListOf<ModelRow>()
             if (savedModel.isNotBlank() && (normalized.isEmpty() || savedModel.lowercase().contains(normalized))) rows += pinned(savedModel)
-            if (valid && typed != savedModel) rows += ModelRow(typed, typed, "Use this model id", null, null, null, null, ModelAccess.UNVERIFIED, selectable = true, current = false, typed = true)
+            if (valid && typed != savedModel) rows += ModelRow(typed, typed, "Use this model id", null, null, null, null, ModelAccess.UNVERIFIED, releasedAt = null, selectable = true, current = false, typed = true)
             return rows
         }
         val decorated = models.map { model ->
@@ -94,6 +110,7 @@ object ModelListPresentation {
                 speed = notes?.speed,
                 accuracy = notes?.accuracy,
                 access = model.access,
+                releasedAt = releaseDateOf(provider, model),
                 selectable = model.access != ModelAccess.UNAVAILABLE || model.id == savedModel,
                 current = model.id == savedModel,
             )
@@ -101,23 +118,29 @@ object ModelListPresentation {
         val filtered = decorated.filter {
             normalized.isEmpty() || it.id.lowercase().contains(normalized) || it.displayName.lowercase().contains(normalized)
         }
-        // Rated sorts: within each access group the rated ids first, ordered by their dots; unrated ids after.
-        val sorted = when (sort) {
-            // The one badged row leads the LIVE rows, because a recommendation nobody scrolls to is not
-            // one: measured on the founder's phone 2026-09-02, the pick sat fifth and the list opened
-            // with no badge in sight (#99). The rest keep discovery's order; the other three sorts each
-            // mean something specific and are left to say it.
-            //
-            // One row still comes above it, deliberately: the pinned notice added below when the SAVED
-            // model is missing from the refreshed catalogue. That row is not a suggestion, it is the news
-            // that the model this user is currently polishing with has gone, and they need to read that
-            // before being offered a replacement. `theRecommendedRowLeadsTheLiveRowsButNotTheStaleNotice`
-            // pins the order so it stays a decision rather than an accident of list concatenation.
-            ModelSort.SUGGESTED -> filtered.sortedBy { if (it.id == pick) 0 else 1 }
-            ModelSort.CHEAPEST -> filtered.sortedWith(compareBy({ ModelListRules.accessRank(it.access) }, { it.cost == null }, { it.cost ?: 0 }, { -(it.speed ?: 0) }))
-            ModelSort.FASTEST -> filtered.sortedWith(compareBy({ ModelListRules.accessRank(it.access) }, { it.speed == null }, { -(it.speed ?: 0) }, { it.cost ?: 0 }))
-            ModelSort.ACCURATE -> filtered.sortedWith(compareBy({ ModelListRules.accessRank(it.access) }, { it.accuracy == null }, { -(it.accuracy ?: 0) }, { it.cost ?: 0 }))
-        }
+        // NEWEST FIRST (#101, founder 2026-09-02, replacing four sort chips he found unhelpful).
+        //
+        // The one badged row still leads the LIVE rows, because a recommendation nobody scrolls to is not
+        // one: measured on his phone 2026-09-02, the pick sat fifth and the list opened with no badge in
+        // sight (#99). Newest-first is the ORGANISATION; the single highlight sits above it.
+        //
+        // An UNDATED model sorts after every dated one and keeps discovery's order among its peers. It is
+        // not guessed into a position: a model nobody publishes a date for is genuinely unplaceable, and a
+        // wrong date reorders the list invisibly. The visible consequence is that a brand-new Gemini model
+        // appears at the BOTTOM until its row is added to `ModelNotes`, which is the prompt to add it.
+        //
+        // One row still comes above the pick, deliberately: the pinned notice added below when the SAVED
+        // model is missing from the refreshed catalogue. That row is not a suggestion, it is the news that
+        // the model this user is currently polishing with has gone, and they need to read that before
+        // being offered a replacement. `theRecommendedRowLeadsTheLiveRowsButNotTheStaleNotice` pins it.
+        val sorted = filtered.sortedWith(
+            compareBy(
+                { if (it.id == pick) 0 else 1 },
+                { ModelListRules.accessRank(it.access) },
+                { it.releasedAt == null },
+                { -(it.releasedAt ?: 0L) },
+            ),
+        )
         val pinnedRow = if (savedModel.isNotBlank() && models.none { it.id == savedModel } &&
             (normalized.isEmpty() || savedModel.lowercase().contains(normalized))
         ) pinned(savedModel) else null
@@ -126,7 +149,7 @@ object ModelListPresentation {
 
     private fun pinned(savedModel: String) = ModelRow(
         savedModel, savedModel, "Currently selected", null, null, null, null, ModelAccess.UNVERIFIED,
-        selectable = true, current = true,
+        releasedAt = null, selectable = true, current = true,
     )
 
     /** The count line over the rows the page can show (the pinned saved row included): "17 models · 15 available", or the filtered form. */

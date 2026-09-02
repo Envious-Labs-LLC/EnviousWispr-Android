@@ -423,6 +423,11 @@ class ProviderPolishClient(
                     displayName = ModelListRules.displayName(provider, row.id, row.displayName),
                     access = access[row.id] ?: ModelAccess.UNVERIFIED,
                     recommended = ModelListRules.isRecommended(row.id),
+                    // The date the provider sent, carried through rather than re-derived. Dropping it here
+                    // left OpenAI and Claude in discovery order under a header reading "Newest first",
+                    // and the presentation tests could not see it because they injected dates straight
+                    // into DiscoveredModel and never ran this mapping (#101 review round 1).
+                    releasedAt = row.releasedAt,
                 )
             },
         )
@@ -461,6 +466,16 @@ class ProviderPolishClient(
     private class ModelPage(val rows: List<ListedModel>, val hasMore: Boolean, val lastId: String?)
 
     /** The provider's own list shape; null when the body is not that shape. */
+    /**
+     * Anthropic's `created_at`, e.g. `2026-08-28T00:00:00Z`, as epoch millis. Null on anything unparseable
+     * rather than a guessed date: an undated model sorts after the dated ones, which is visible and
+     * honest, while a wrong date silently reorders the list and nobody can see why.
+     *
+     * `Instant.parse` is API 26 and minSdk is 30, so there is no desugaring question here.
+     */
+    private fun parseIso8601(value: String?): Long? =
+        value?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+
     private fun parseModelRows(provider: Provider, body: String): ModelPage? {
         val root = try {
             JsonParser(body).parse()
@@ -473,7 +488,16 @@ class ProviderPolishClient(
         return when (provider) {
             Provider.OPENAI -> {
                 val data = map["data"] as? List<*> ?: return null
-                ModelPage(data.mapNotNull { (it as? Map<*, *>)?.get("id") as? String }.map { ListedModel(it, null) }, false, null)
+                // `created` is unix SECONDS here; the app's clock is millis everywhere else.
+                ModelPage(
+                    data.mapNotNull { entry ->
+                        val row = entry as? Map<*, *> ?: return@mapNotNull null
+                        val id = row["id"] as? String ?: return@mapNotNull null
+                        ListedModel(id, null, (row["created"] as? Number)?.toLong()?.times(1000L))
+                    },
+                    false,
+                    null,
+                )
             }
             Provider.GEMINI -> {
                 val list = map["models"] as? List<*> ?: return null
@@ -495,7 +519,7 @@ class ProviderPolishClient(
                     data.mapNotNull { entry ->
                         val row = entry as? Map<*, *> ?: return@mapNotNull null
                         val id = row["id"] as? String ?: return@mapNotNull null
-                        ListedModel(id, row["display_name"] as? String)
+                        ListedModel(id, row["display_name"] as? String, parseIso8601(row["created_at"] as? String))
                     },
                     map["has_more"] as? Boolean ?: false,
                     map["last_id"] as? String,

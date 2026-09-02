@@ -19,6 +19,15 @@ data class DiscoveredModel(
     val displayName: String,
     val access: ModelAccess,
     val recommended: Boolean,
+    /**
+     * When the provider says this model was released, epoch millis, or null when nobody knows (#101).
+     *
+     * Null is not an error and is the ordinary case for Gemini, whose `/v1beta/models` returns no date at
+     * all: measured 2026-09-02, its rows carry `version` (the model's own revision, "001") and a prose
+     * `description`, and only 2 of 30 descriptions even mention a release month. `ui/ModelNotes` supplies
+     * the date for those from Google's published changelog.
+     */
+    val releasedAt: Long? = null,
 )
 
 sealed interface ProviderDiscovery {
@@ -34,7 +43,7 @@ fun interface ProviderModelDiscoverer {
 }
 
 /** One raw row from a provider's list, before filtering. */
-data class ListedModel(val id: String, val displayName: String?)
+data class ListedModel(val id: String, val displayName: String?, val releasedAt: Long? = null)
 
 /** What one probe reply means; [KeyRejected] aborts the whole discovery. */
 sealed interface ProbeOutcome {

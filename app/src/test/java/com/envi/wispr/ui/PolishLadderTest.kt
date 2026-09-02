@@ -55,14 +55,18 @@ class PolishLadderTest {
     }
 
     @Test fun aBrowsedTileNeverInheritsAnotherProvidersKey() {
-        assertEquals(KeyRung.CONNECTED, PolishLadder.keyRung(Provider.OPENAI, cloudWithKey, replacing = false))
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.GEMINI, cloudWithKey, replacing = false))
+        assertEquals(KeyRung.CONNECTED, PolishLadder.keyRung(Provider.OPENAI, cloudWithKey))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.GEMINI, cloudWithKey))
     }
 
-    @Test fun connectedNeedsTheSavedProviderWithItsKeyAndNoReplace() {
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, cloudNoKey, replacing = false))
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, nothing, replacing = false))
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, cloudWithKey, replacing = true))
+    /**
+     * A third row was deleted here with the Replace control it covered: it asserted that an open Replace
+     * forces the FIELD over a stored key. That capability no longer exists, so there is nothing left to
+     * protect, and converting the row would have asserted the opposite of what the code now does.
+     */
+    @Test fun connectedNeedsTheSavedProviderWithItsKeyStored() {
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, cloudNoKey))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(Provider.OPENAI, nothing))
     }
 
     @Test fun theCheckPillReadsCheckCheckingRetry() {
@@ -114,7 +118,7 @@ class PolishLadderTest {
         assertTrue("the class should still be broad, it matched $inClass", inClass > 8)
 
         // The BADGE does not. Exactly one row carries it, and it is the founder's pick.
-        val rows = ModelListPresentation.present(Provider.GEMINI, founderGeminiCatalogue, "", ModelSort.SUGGESTED, "")
+        val rows = ModelListPresentation.present(Provider.GEMINI, founderGeminiCatalogue, "", "")
         assertEquals(1, rows.count { it.tag == "Recommended" })
         assertEquals("gemini-3.8-flash", rows.single { it.tag == "Recommended" }.id)
         // And it LEADS the suggested list. Measured on the founder's phone before this: the pick sat fifth
@@ -144,11 +148,11 @@ class PolishLadderTest {
             .map { model(it, ModelAccess.AVAILABLE, recommended = ModelListRules.isRecommended(it)) }
 
         // Saved model still in the list: nothing is pinned, so the recommendation is first outright.
-        val present = ModelListPresentation.present(Provider.GEMINI, catalogue, "", ModelSort.SUGGESTED, "gemini-2.5-flash")
+        val present = ModelListPresentation.present(Provider.GEMINI, catalogue, "", "gemini-2.5-flash")
         assertEquals("gemini-3.8-flash", present.first().id)
 
         // Saved model gone from the catalogue: the notice leads, the recommendation is immediately under it.
-        val stale = ModelListPresentation.present(Provider.GEMINI, catalogue, "", ModelSort.SUGGESTED, "gemini-9-retired")
+        val stale = ModelListPresentation.present(Provider.GEMINI, catalogue, "", "gemini-9-retired")
         assertEquals("gemini-9-retired", stale[0].id)
         assertTrue("the leading row is the current-model notice", stale[0].current)
         assertEquals("gemini-3.8-flash", stale[1].id)
@@ -239,7 +243,7 @@ class PolishLadderTest {
         // And the tile it names still has a rung 3 under it: the empty field, not the connected row.
         val kept = CloudProviders.first { it.name == nav.browsedName }
         assertEquals(kept, PolishLadder.displayedProvider(kept, afterRemove))
-        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(kept, afterRemove, replacing = false))
+        assertEquals(KeyRung.FIELD, PolishLadder.keyRung(kept, afterRemove))
 
         // Nothing browsed and nothing saved leaves nothing to keep, and the caller assigns that null so a
         // stale browse is cleared rather than left behind.

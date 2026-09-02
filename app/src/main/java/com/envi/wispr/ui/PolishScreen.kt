@@ -4,10 +4,10 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -20,7 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -66,7 +65,7 @@ private enum class WriteKind { MODE, KEY, MODEL, REMOVE }
 /**
  * The AI Polish tab as the founder's Ladder (#81): four numbered rungs on one page, each unlocking the
  * next. The tab renders persisted `settings` and the live `discovery`; its only local state is
- * navigation (an open Cloud setup, the tile being looked at, an open Replace), the key draft (plain
+ * navigation (an open Cloud setup, the tile being looked at), the key draft (plain
  * `remember`, never saveable, never hoisted, never logged) and the write it is waiting on. Every
  * "connected", "selected" and "running" on screen is read back from storage after the write that made it
  * so; an accepted key is saved at once with the model `PolishLadder.defaultModel` picks, so the connected
@@ -107,7 +106,7 @@ internal fun PolishScreen(
     val displayed = PolishLadder.displayedProvider(browsed, settings)
     var writeError by remember { mutableStateOf<String?>(null) }
     var errorKind by remember { mutableStateOf<WriteKind?>(null) }
-    // Counts completed KEY writes, so rung 3 can drop its draft and close Replace exactly once per save.
+    // Counts completed KEY writes, so rung 3 can drop its draft exactly once per save.
     var keyWriteCompleted by remember { mutableStateOf(0) }
 
     LaunchedEffect(settings.writeSequence, settings.error, target) {
@@ -236,13 +235,12 @@ private fun CloudRungs(
     val name = displayed.capabilities().displayName
 
     // Everything below is keyed on the displayed tile, so switching tiles starts a fresh rung 3: the
-    // previous tile's draft, check and Replace cannot leak into another provider's field.
+    // previous tile's draft, a check cannot leak into another provider's field.
     // The draft and everything derived from it (the Check it ran, the save that Check produced) share ONE
     // survival policy: none of it outlives a recreation, so nothing can describe a key that is gone.
     var apiKey by remember(displayed) { mutableStateOf("") }
     var checkSequence by remember(displayed) { mutableStateOf<Int?>(null) }
     var savedForSequence by remember(displayed) { mutableStateOf<Int?>(null) }
-    var replacing by rememberSaveable(displayed) { mutableStateOf(false) }
     LaunchedEffect(displayed) { onLoadCachedModels(displayed) }
 
     val forTile = discovery.takeIf { it.provider == displayed }
@@ -259,12 +257,12 @@ private fun CloudRungs(
             onStart(WriteKind.KEY) { onSave(displayed, model, apiKey, sequence) }
         }
     }
-    // A completed KEY write means the draft has done its work: drop it, and close Replace.
+    // A completed KEY write means the draft has done its work, so drop it.
     LaunchedEffect(keyWriteCompleted) {
-        if (keyWriteCompleted > 0) { apiKey = ""; replacing = false }
+        if (keyWriteCompleted > 0) apiKey = ""
     }
 
-    when (PolishLadder.keyRung(displayed, settings, replacing)) {
+    when (PolishLadder.keyRung(displayed, settings)) {
         KeyRung.FIELD -> {
             RungHeader("3 · YOUR ${name.uppercase()} KEY", error = failed)
             val pill = PolishLadder.keyPill(draftBlank = apiKey.isBlank(), checking = checking, failed = failed)
@@ -273,7 +271,6 @@ private fun CloudRungs(
                 checking -> "Asking $name which models this key can reach."
                 failed -> (if (errorKind == WriteKind.KEY) writeError else null) ?: draftListing?.line ?: "$name did not accept this key."
                 emptyListing -> draftListing?.line ?: "No models this key can use for polish."
-                replacing -> "Paste the new key. Your saved key stays until the new one is accepted."
                 else -> "Encrypted in the Android Keystore. Never written to logs."
             }
             OutlinedTextField(
@@ -294,9 +291,6 @@ private fun CloudRungs(
                 visualTransformation = PasswordVisualTransformation(),
             )
             GetKeyLink(displayed)
-            if (replacing) {
-                TextButton(onClick = { replacing = false; apiKey = ""; checkSequence = null; onClearKeyError() }, enabled = !saving) { Text("Keep current key") }
-            }
             // The key listed nothing this app can use: nothing is stored until a model id is typed, and the
             // key and the id are then saved together, so a key never exists in storage without a model.
             if (draftListing != null && PolishLadder.needsTypedModel(draftListing, displayed, checkSequence, apiKey.isBlank())) {
@@ -323,21 +317,34 @@ private fun CloudRungs(
             }
         }
         KeyRung.CONNECTED -> {
-            val listed = forTile?.takeIf { it.usedStoredKey && it.phase == ProviderDiscoveryUiState.Phase.LISTED && it.models.isNotEmpty() }?.models?.size
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f))) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    CheckGlyph()
-                    Column(Modifier.weight(1f)) {
-                        Text("3 · Key connected" + (if (listed != null) " · $listed models" else ""), style = MaterialTheme.typography.titleSmall)
-                        Text("Encrypted in the Android Keystore", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Text("Replace", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable(enabled = !saving) { replacing = true })
-                    Text("Remove", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable(enabled = !saving) { onStart(WriteKind.REMOVE, onClearProvider) })
-                }
+            // ONE LINE, no card (founder 2026-09-02). The card was 92 dp tall to say one thing: its title
+            // wrapped to two lines, a Keystore line sat under it, and card padding wrapped the lot. The
+            // model count it carried is repeated verbatim by rung 4's header one line below, and the
+            // Keystore sentence still shows under the field while a key is being entered, which is when
+            // it answers a question anyone is asking.
+            //
+            // Remove is the only action. Replace was a safe in-place swap that kept the old key live until
+            // a new one was accepted, and the founder chose remove-then-enter over carrying a second
+            // control for it; #94 already leaves the tab on Cloud with an empty field, so adding another
+            // key is the very next thing on screen.
+            //
+            // TextButton rather than a clickable Text, so the target is Material's minimum interactive
+            // size rather than the height of the word.
+            //
+            // The 48 dp floor in docs/enviouswispr-android-architecture.md is MET, and no explicit
+            // heightIn is needed to meet it. Do not add one on the strength of a view-tree reading: the
+            // dump UNDER-REPORTS this node by about 3 dp, proven by asking for 72 dp and reading 67.7 dp,
+            // and asking for 48 dp reads 45.0 dp exactly as asking for nothing does. An earlier round of
+            // this work took that 45.0 for a shortfall and added a modifier that changed nothing.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CheckGlyph()
+                RungHeader("3 · KEY CONNECTED")
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { onStart(WriteKind.REMOVE, onClearProvider) }, enabled = !saving) { Text("Remove") }
             }
             if (writeError != null && errorKind == WriteKind.REMOVE) ErrorLine(writeError)
 
@@ -366,13 +373,12 @@ private fun ModelRung(
     onRefresh: () -> Unit,
 ) {
     var query by remember(provider) { mutableStateOf("") }
-    var sort by rememberSaveable(provider) { mutableStateOf(ModelSort.SUGGESTED) }
     val savedModel = savedModelFor(provider, settings)
     // Only a listing that describes the STORED key shows under a connected row; a draft's list never does.
     val models = discovery?.takeIf { it.usedStoredKey }?.models ?: emptyList()
     val refreshing = discovery?.phase == ProviderDiscoveryUiState.Phase.CHECKING
-    val rows = ModelListPresentation.present(provider, models, query, sort, savedModel)
-    val allRows = ModelListPresentation.present(provider, models, "", sort, savedModel)
+    val rows = ModelListPresentation.present(provider, models, query, savedModel)
+    val allRows = ModelListPresentation.present(provider, models, "", savedModel)
     val countLine = if (models.isEmpty()) null else ModelListPresentation.countLine(allRows, rows.count { !it.typed }, query) +
         (if (discovery?.fromCache == true && discovery.fetchedAt != null) " · from ${relativeAge(discovery.fetchedAt)}" else "")
 
@@ -393,11 +399,8 @@ private fun ModelRung(
             { Text("Clear", color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 12.dp).clickable { query = "" }) }
         } else null,
     )
-    Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ModelSort.entries.forEach { s -> FilterChip(selected = sort == s, onClick = { sort = s }, label = { Text(s.label) }) }
-    }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(sort.groupLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Newest first", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(end = 4.dp)) {
             listOf("C", "S", "A").forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
@@ -430,7 +433,7 @@ private fun ModelRung(
                                 color = if (locked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
-                            if (row.tag != null && sort == ModelSort.SUGGESTED) {
+                            if (row.tag != null) {
                                 Text(row.tag, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                             }
                         }

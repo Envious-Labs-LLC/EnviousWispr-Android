@@ -32,6 +32,9 @@ class ModelListCache internal constructor(private val preferences: SharedPrefere
                         displayName = row.getString("displayName"),
                         access = ModelAccess.valueOf(row.getString("access")),
                         recommended = row.getBoolean("recommended"),
+                        // Absent in caches written before #101; a missing date is a real state, not a
+                        // migration failure, so an old cache reads back as undated rather than dropping.
+                        releasedAt = if (row.has("releasedAt")) row.getLong("releasedAt") else null,
                     )
                 },
             )
@@ -47,7 +50,8 @@ class ModelListCache internal constructor(private val preferences: SharedPrefere
                     .put("id", model.id)
                     .put("displayName", model.displayName)
                     .put("access", model.access.name)
-                    .put("recommended", model.recommended),
+                    .put("recommended", model.recommended)
+                    .apply { model.releasedAt?.let { put("releasedAt", it) } },
             )
         }
         val root = JSONObject().put("fetchedAt", entry.fetchedAt).put("models", rows)

@@ -20,7 +20,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,10 +34,14 @@ import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.models.modelUiState
 
 /**
- * Cost, speed and accuracy on the 1-3 scale the cloud model rows use, so a card and a row can be compared.
- * More dots is more of the named thing, which means a low cost score is the cheap one.
+ * A card's meters, on the 1-3 scale the cloud model rows use, so a card and a row can be compared. More
+ * dots is more of the named thing.
+ *
+ * There is no cost here. A card describes ONE model, and every model that has a card is free, so a cost
+ * meter would encode a constant; the cloud rows keep theirs because their prices differ from each other.
+ * Adding one back means answering what it would vary with.
  */
-internal data class ModelScores(val cost: Int, val speed: Int, val accuracy: Int)
+internal data class ModelScores(val speed: Int, val accuracy: Int)
 
 @Composable
 internal fun ModelCard(
@@ -80,13 +83,12 @@ internal fun ModelCard(
             if (scores != null) {
                 Row(
                     // Scrollable for the same reason the facts row above it is: these labels are words,
-                    // and at a large system font scale three of them are wider than a narrow phone.
+                    // and at a large system font scale two of them are wider than a narrow phone.
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(22.dp),
+                    horizontalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
-                    ScoreColumn("Cost", scores.cost)
-                    ScoreColumn("Speed", scores.speed)
-                    ScoreColumn("Accuracy", scores.accuracy)
+                    ScoreBar("Speed", scores.speed)
+                    ScoreBar("Accuracy", scores.accuracy)
                 }
             }
             if (state.total > 0L && (state.action == ModelUiAction.PAUSE || state.action == ModelUiAction.RESUME)) {
@@ -174,25 +176,6 @@ internal fun formatModelBytes(bytes: Long): String = when {
     bytes >= 1_000_000_000L -> "%.1f GB".format(bytes / 1_000_000_000.0)
     bytes >= 1_000_000L -> "%.1f MB".format(bytes / 1_000_000.0)
     else -> "${bytes / 1_000L} KB"
-}
-
-/**
- * One labelled meter, the same dots the cloud model rows use, so the legend is the word under it.
- *
- * The visible word is cleared from the semantics tree because `ScoreDots` already announces "Cost, 1 of
- * 3"; left alone the two nodes make TalkBack read the word twice.
- */
-@Composable
-private fun ScoreColumn(label: String, value: Int) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        ScoreDots(label, value)
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.clearAndSetSemantics {},
-        )
-    }
 }
 
 /** A display-only label on a model card. Not a chip, because a chip invites a tap that does nothing. */

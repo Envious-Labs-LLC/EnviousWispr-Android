@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.models.ModelHealth
+import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.providers.DiscoveredModel
@@ -132,10 +133,15 @@ object PolishLadder {
         savedForSequence != checkSequence &&
         defaultModel(discovery.models) != null
 
-    /** The sentence under the S1-mini title; exhaustive over health so a new state must say something. */
-    fun s1Line(state: ModelUiState): String = when (state.health) {
-        ModelHealth.READY -> "Polishes your words on this phone. Nothing is sent anywhere."
-        ModelHealth.BROKEN -> "S1-mini is not working right now. Your words come back with basic cleanup only, and nothing is sent anywhere."
+    /**
+     * The sentence under the S1-mini title, or null when a ready model has nothing left to say: the facts
+     * row already carries who made it, how big it is and that it runs offline, so a sentence repeating
+     * "on this phone" and "nothing is sent anywhere" is the same claim three times. Exhaustive over
+     * health, so a new state must still decide what it says.
+     */
+    fun s1Line(state: ModelUiState): String? = when (state.health) {
+        ModelHealth.READY -> null
+        ModelHealth.BROKEN -> "S1-mini is not working right now. Your words come back with basic cleanup only."
         ModelHealth.NOT_READY -> when (state.action) {
             ModelUiAction.DOWNLOAD, ModelUiAction.RETRY -> "Download S1-mini to polish on this phone."
             ModelUiAction.PAUSE, ModelUiAction.RESUME, ModelUiAction.REPAIR, ModelUiAction.REMOVE,
@@ -143,6 +149,31 @@ object PolishLadder {
         }
         ModelHealth.UNKNOWN -> "Getting S1-mini ready."
     }
+
+    /**
+     * The facts row under the S1-mini title: who published the model, how much of the phone it occupies,
+     * and that it needs no network. The size is summed from the manifest rather than written here, so it
+     * cannot drift from the file the delivery worker actually fetches.
+     */
+    fun s1Facts(): List<String> = listOf(
+        ModelManifest.s1.creator,
+        formatModelBytes(ModelManifest.s1.files.sumOf { it.expectedBytes }),
+        "Offline",
+    )
+
+    /**
+     * S1-mini on the same 1-3 cost/speed/accuracy scale as the cloud model rows, so the two rungs are read
+     * against each other rather than each in its own units.
+     *
+     * Cost 1 is definitional: the model is free, and the scale's lowest bucket is the cheapest one it has.
+     * Speed 3 is measured: 0.65 s on a short take and 2.5 to 3.5 s on a long one, with no network round
+     * trip (`.claude/knowledge/polish-engines.md` FACT: residency-measured-2026-09-01).
+     * **Accuracy 2 is a founder judgement, not a measurement.** No head-to-head run against the cloud
+     * models exists; the reasoning is that S1-mini is trained for this one job and beats the 1 bucket the
+     * oldest general chat models sit in, while a model this small does not reach the 3 bucket. Replace the
+     * value if a comparison is ever run, and say here what it measured.
+     */
+    internal val S1_SCORES: ModelScores = ModelScores(cost = 1, speed = 3, accuracy = 2)
 }
 
 /**

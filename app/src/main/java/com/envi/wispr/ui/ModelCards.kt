@@ -33,13 +33,20 @@ import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.models.modelUiState
 
+/**
+ * Cost, speed and accuracy on the 1-3 scale the cloud model rows use, so a card and a row can be compared.
+ * More dots is more of the named thing, which means a low cost score is the cheap one.
+ */
+internal data class ModelScores(val cost: Int, val speed: Int, val accuracy: Int)
+
 @Composable
 internal fun ModelCard(
     eyebrow: String,
     title: String,
-    description: String,
+    description: String?,
     state: ModelUiState,
     facts: List<String>,
+    scores: ModelScores? = null,
     onAction: () -> Unit = {},
     onPause: () -> Unit = {},
     onResume: () -> Unit = {},
@@ -57,7 +64,10 @@ internal fun ModelCard(
                 }
                 StatusPill(state.label, state.health == ModelHealth.READY)
             }
-            Text(description, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // A card whose state speaks for itself passes null, so the facts row is not restated as prose.
+            if (description != null) {
+                Text(description, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Row(
                 // Scrollable because the labels are words, not codes, so three of them can be wider
                 // than a phone.
@@ -65,6 +75,13 @@ internal fun ModelCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 facts.forEach { fact -> FactPill(fact) }
+            }
+            if (scores != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                    ScoreColumn("Cost", scores.cost)
+                    ScoreColumn("Speed", scores.speed)
+                    ScoreColumn("Accuracy", scores.accuracy)
+                }
             }
             if (state.total > 0L && (state.action == ModelUiAction.PAUSE || state.action == ModelUiAction.RESUME)) {
                 LinearProgressIndicator(
@@ -134,10 +151,19 @@ internal fun ModelWorkReadinessObserver(onRefreshReadiness: () -> Unit) {
     }
 }
 
-private fun formatModelBytes(bytes: Long): String = when {
+internal fun formatModelBytes(bytes: Long): String = when {
     bytes >= 1_024L * 1_024L * 1_024L -> "%.1f GB".format(bytes / (1_024.0 * 1_024.0 * 1_024.0))
     bytes >= 1_024L * 1_024L -> "%.1f MB".format(bytes / (1_024.0 * 1_024.0))
     else -> "${bytes / 1_024L} KB"
+}
+
+/** One labelled meter, the same dots the cloud model rows use, so the legend is the word under it. */
+@Composable
+private fun ScoreColumn(label: String, value: Int) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        ScoreDots(value)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 /** A display-only label on a model card. Not a chip, because a chip invites a tap that does nothing. */

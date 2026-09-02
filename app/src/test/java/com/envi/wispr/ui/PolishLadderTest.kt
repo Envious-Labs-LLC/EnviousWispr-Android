@@ -1,6 +1,7 @@
 package com.envi.wispr.ui
 
 import com.envi.wispr.models.ModelHealth
+import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.providers.DiscoveredModel
@@ -120,13 +121,34 @@ class PolishLadderTest {
 
     @Test fun theS1LineIsExhaustiveOverHealth() {
         fun state(health: ModelHealth, action: ModelUiAction) = ModelUiState("x", health, 0L, 0L, null, action)
-        assertEquals("Polishes your words on this phone. Nothing is sent anywhere.", PolishLadder.s1Line(state(ModelHealth.READY, ModelUiAction.REMOVE)))
-        assertTrue(PolishLadder.s1Line(state(ModelHealth.BROKEN, ModelUiAction.REPAIR)).startsWith("S1-mini is not working"))
+        assertNull("a ready model is described by its facts row, not by a sentence repeating it", PolishLadder.s1Line(state(ModelHealth.READY, ModelUiAction.REMOVE)))
+        assertTrue(PolishLadder.s1Line(state(ModelHealth.BROKEN, ModelUiAction.REPAIR))!!.startsWith("S1-mini is not working"))
         assertEquals("Download S1-mini to polish on this phone.", PolishLadder.s1Line(state(ModelHealth.NOT_READY, ModelUiAction.DOWNLOAD)))
         assertEquals("Download S1-mini to polish on this phone.", PolishLadder.s1Line(state(ModelHealth.NOT_READY, ModelUiAction.RETRY)))
         assertEquals("Getting S1-mini ready.", PolishLadder.s1Line(state(ModelHealth.NOT_READY, ModelUiAction.PAUSE)))
         assertEquals("Getting S1-mini ready.", PolishLadder.s1Line(state(ModelHealth.UNKNOWN, ModelUiAction.NONE)))
-        ModelHealth.entries.forEach { health -> assertTrue(PolishLadder.s1Line(state(health, ModelUiAction.NONE)).isNotBlank()) }
+        // READY is the ONLY health allowed to say nothing; every other one names what the user does next,
+        // and a blank string would render as an empty gap rather than as no row at all.
+        ModelHealth.entries.forEach { health ->
+            val line = PolishLadder.s1Line(state(health, ModelUiAction.NONE))
+            if (health == ModelHealth.READY) assertNull(line) else assertTrue(health.name, line?.isNotBlank() == true)
+        }
+    }
+
+    @Test fun theS1FactsNameThePublisherTheSizeAndTheOfflinePromise() {
+        // The size is read from the manifest the delivery worker fetches, so this asserts the wiring and
+        // the formatting rather than a number pasted twice.
+        val expectedSize = formatModelBytes(ModelManifest.s1.files.sumOf { it.expectedBytes })
+        assertEquals(listOf("Superwhisper", expectedSize, "Offline"), PolishLadder.s1Facts())
+        assertEquals("461.8 MB", expectedSize)
+    }
+
+    @Test fun theS1ScoresSitOnTheSameOneToThreeScaleAsTheCloudRows() {
+        val scores = PolishLadder.S1_SCORES
+        listOf(scores.cost, scores.speed, scores.accuracy).forEach { assertTrue(it in 1..3) }
+        assertEquals("free is the cheapest bucket the scale has", 1, scores.cost)
+        assertEquals("on-device, with no network round trip", 3, scores.speed)
+        assertEquals("a founder judgement recorded beside the value, not a measurement", 2, scores.accuracy)
     }
 
     @Test fun writeOutcomeWaitsCompletesOrFails() {

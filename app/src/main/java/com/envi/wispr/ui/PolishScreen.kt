@@ -422,7 +422,7 @@ private fun ModelRung(
                         }
                     }
                     if (row.cost != null && row.speed != null && row.accuracy != null) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { ScoreDots(row.cost); ScoreDots(row.speed); ScoreDots(row.accuracy) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { ScoreDots("Cost", row.cost); ScoreDots("Speed", row.speed); ScoreDots("Accuracy", row.accuracy) }
                     }
                 }
             }
@@ -449,7 +449,8 @@ private fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
         title = S1Config.MODEL_NAME,
         description = PolishLadder.s1Line(s1State),
         state = s1State,
-        facts = listOf("Offline", "Stays on this phone"),
+        facts = PolishLadder.s1Facts(),
+        scores = PolishLadder.S1_SCORES,
         onAction = {
             // Exhaustive with no `else`, for the reason given at the same `when` in `TranscriptionScreen`.
             when (s1State.action) {

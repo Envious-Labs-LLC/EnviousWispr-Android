@@ -57,10 +57,21 @@ object ModelNotes {
         CatalogModel("claude-opus-4-7", "Previous opus", cost = 3, speed = 1, accuracy = 3),
     )
 
-    fun forId(provider: Provider, id: String): CatalogModel? = when (provider) {
+    /** Exhaustive with no `else`, so a new provider must say whether it has decoration rows. */
+    private fun forProvider(provider: Provider): List<CatalogModel> = when (provider) {
         Provider.OPENAI -> openAi
         Provider.GEMINI -> gemini
         Provider.CLAUDE -> claude
         Provider.SELF_HOSTED_POLISH -> emptyList()
-    }.firstOrNull { it.name == id }
+    }
+
+    /**
+     * Every decoration row there is, built through [forProvider] so it cannot fall behind a new provider.
+     * The dot sweep in `PolishLadderTest` reads this rather than a list of its own, because a test that
+     * enumerates a set by hand stops covering the rows added after it was written.
+     */
+    val all: List<CatalogModel> get() = Provider.entries.flatMap(::forProvider)
+
+    fun forId(provider: Provider, id: String): CatalogModel? =
+        forProvider(provider).firstOrNull { it.name == id }
 }

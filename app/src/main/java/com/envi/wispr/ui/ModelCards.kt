@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -33,13 +34,20 @@ import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.models.modelUiState
 
+/**
+ * Cost, speed and accuracy on the 1-3 scale the cloud model rows use, so a card and a row can be compared.
+ * More dots is more of the named thing, which means a low cost score is the cheap one.
+ */
+internal data class ModelScores(val cost: Int, val speed: Int, val accuracy: Int)
+
 @Composable
 internal fun ModelCard(
     eyebrow: String,
     title: String,
-    description: String,
+    description: String?,
     state: ModelUiState,
     facts: List<String>,
+    scores: ModelScores? = null,
     onAction: () -> Unit = {},
     onPause: () -> Unit = {},
     onResume: () -> Unit = {},
@@ -57,7 +65,10 @@ internal fun ModelCard(
                 }
                 StatusPill(state.label, state.health == ModelHealth.READY)
             }
-            Text(description, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // A card whose state speaks for itself passes null, so the facts row is not restated as prose.
+            if (description != null) {
+                Text(description, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Row(
                 // Scrollable because the labels are words, not codes, so three of them can be wider
                 // than a phone.
@@ -65,6 +76,18 @@ internal fun ModelCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 facts.forEach { fact -> FactPill(fact) }
+            }
+            if (scores != null) {
+                Row(
+                    // Scrollable for the same reason the facts row above it is: these labels are words,
+                    // and at a large system font scale three of them are wider than a narrow phone.
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(22.dp),
+                ) {
+                    ScoreColumn("Cost", scores.cost)
+                    ScoreColumn("Speed", scores.speed)
+                    ScoreColumn("Accuracy", scores.accuracy)
+                }
             }
             if (state.total > 0L && (state.action == ModelUiAction.PAUSE || state.action == ModelUiAction.RESUME)) {
                 LinearProgressIndicator(
@@ -134,10 +157,42 @@ internal fun ModelWorkReadinessObserver(onRefreshReadiness: () -> Unit) {
     }
 }
 
-private fun formatModelBytes(bytes: Long): String = when {
-    bytes >= 1_024L * 1_024L * 1_024L -> "%.1f GB".format(bytes / (1_024.0 * 1_024.0 * 1_024.0))
-    bytes >= 1_024L * 1_024L -> "%.1f MB".format(bytes / (1_024.0 * 1_024.0))
-    else -> "${bytes / 1_024L} KB"
+/**
+ * A download size in the units the rest of the phone uses.
+ *
+ * DECIMAL, not binary, and the unit is the whole point of the function. Android's own
+ * `Formatter.formatFileSize` and the Play Store listing both divide by 1000, so a model shown as
+ * `484.2 MB` here is the same number the user reads on the store page and in Settings. Dividing by 1024
+ * and still writing MB reported S1-mini as `461.8 MB`, which is its size in MiB and understates the space
+ * it takes by 22 MB against every other number on the phone.
+ *
+ * The platform function is not used because it needs a `Context` and cannot be reached from a JVM unit
+ * test; `PolishLadderTest` pins this one's convention instead. It formats in the DEFAULT locale, so a
+ * German phone reads `484,2 MB`, which is correct and is why no test asserts an English literal.
+ */
+internal fun formatModelBytes(bytes: Long): String = when {
+    bytes >= 1_000_000_000L -> "%.1f GB".format(bytes / 1_000_000_000.0)
+    bytes >= 1_000_000L -> "%.1f MB".format(bytes / 1_000_000.0)
+    else -> "${bytes / 1_000L} KB"
+}
+
+/**
+ * One labelled meter, the same dots the cloud model rows use, so the legend is the word under it.
+ *
+ * The visible word is cleared from the semantics tree because `ScoreDots` already announces "Cost, 1 of
+ * 3"; left alone the two nodes make TalkBack read the word twice.
+ */
+@Composable
+private fun ScoreColumn(label: String, value: Int) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        ScoreDots(label, value)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.clearAndSetSemantics {},
+        )
+    }
 }
 
 /** A display-only label on a model card. Not a chip, because a chip invites a tap that does nothing. */

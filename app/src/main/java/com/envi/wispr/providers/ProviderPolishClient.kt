@@ -384,7 +384,17 @@ class ProviderPolishClient(
         }
 
         // The probes, at most MAX_PROBES of them, three in flight, every one bounded by the remaining time.
-        val toProbe = kept.take(MAX_PROBES)
+        //
+        // NEWEST FIRST, so the budget is spent on the rows the list will show at the top and on the models
+        // `recommendedPick` may choose from (#104 review round 1). Provider order is not the user's order:
+        // his key lists 69 OpenAI models and only 40 can be probed, so under list order the untested tail
+        // was arbitrary and could have contained the newest thing he owns. Under this it is the OLDEST 29.
+        //
+        // Gemini publishes no dates, measured 2026-09-02, so for it this is a stable no-op and its tail is
+        // still list order. That is the reason its dates are researched into `ModelNotes` instead.
+        val toProbe = kept
+            .sortedWith(compareBy({ it.releasedAt == null }, { -(it.releasedAt ?: 0L) }))
+            .take(MAX_PROBES)
         val futures = toProbe.map { row ->
             PROBE_EXECUTOR.submit<ProbeOutcome> { probe(provider, row.id, apiKey, remaining()) }
         }
@@ -458,8 +468,13 @@ class ProviderPolishClient(
         if (remainingMs <= 0) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
         val budget = remainingMs.coerceAtMost(probeTimeoutMs.coerceAtLeast(1))
         return when (val transport = run(plan, ProviderCancellation(), budget, connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, budget))) {
-            is Transport.Failed -> ModelListRules.probeOutcome(provider, null, null)
-            is Transport.Response -> ModelListRules.probeOutcome(provider, transport.status, transport.body)
+            is Transport.Failed -> ModelListRules.probeOutcome(provider, null, null, returnedText = false)
+            is Transport.Response -> ModelListRules.probeOutcome(
+                provider,
+                transport.status,
+                transport.body,
+                returnedText = probeCarriedText(plan.responseFormat, transport.body),
+            )
         }
     }
 
@@ -817,19 +832,47 @@ class ProviderPolishClient(
         } catch (_: StackOverflowError) {
             return ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
         }
-        val text = when (format) {
-            ResponseFormat.OPENAI_RESPONSES -> root.firstMessageTextAt("output")
-            ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "message", "content")
-            ResponseFormat.GEMINI -> root.firstTextAt("candidates", 0, "content", "parts")
-            ResponseFormat.CLAUDE -> root.firstTextAt("content")
-            ResponseFormat.OLLAMA -> root.stringAt("message", "content") ?: root.stringAt("response")
-            ResponseFormat.NONE -> null
-        }?.substringAfterLast("</think>")?.trim()
+        val text = replyText(format, root)
         return if (text == null || text.isEmpty() || !ProviderPolishPrompt.isTranscriptOnly(text)) {
             ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
         } else {
             ProviderPolishResult.Success(text)
         }
+    }
+
+    /**
+     * The reply text a parsed body carries, trimmed, or null when it carries none.
+     *
+     * ONE owner for "where does this provider put its answer", used by [parseResponse] and by the model
+     * probe (#104 review round 1). The probe used to look for a `"text"` label in the raw body, which is a
+     * second reading of the same envelope and disagreed with this one in both directions: a multipart reply
+     * whose FIRST part is empty reads as no answer, and a whitespace-only answer reads as an answer even
+     * though polish rejects it. A model must not be offered or hidden on a judgement the polish path does
+     * not share.
+     *
+     * The judgement that stays HERE and out of the probe is [ProviderPolishPrompt.isTranscriptOnly]: it
+     * asks whether a polish reply is the transcript rather than commentary about it, and the probe sends
+     * the word "Hi" rather than a transcript, so applying it would refuse working models.
+     */
+    private fun replyText(format: ResponseFormat, root: Any?): String? = when (format) {
+        ResponseFormat.OPENAI_RESPONSES -> root.firstMessageTextAt("output")
+        ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "message", "content")
+        ResponseFormat.GEMINI -> root.firstTextAt("candidates", 0, "content", "parts")
+        ResponseFormat.CLAUDE -> root.firstTextAt("content")
+        ResponseFormat.OLLAMA -> root.stringAt("message", "content") ?: root.stringAt("response")
+        ResponseFormat.NONE -> null
+    }?.substringAfterLast("</think>")?.trim()
+
+    /** Did this probe body carry text the polish path would have accepted? A body that will not parse did not. */
+    private fun probeCarriedText(format: ResponseFormat, body: String): Boolean {
+        val root = try {
+            JsonParser(body).parse()
+        } catch (_: IllegalArgumentException) {
+            return false
+        } catch (_: StackOverflowError) {
+            return false
+        }
+        return !replyText(format, root).isNullOrEmpty()
     }
 
     private fun ensureActive(cancellation: ProviderCancellation, deadline: Long) {

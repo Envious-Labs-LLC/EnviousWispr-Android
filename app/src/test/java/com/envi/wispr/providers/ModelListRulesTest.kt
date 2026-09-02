@@ -111,22 +111,24 @@ class ModelListRulesTest {
      * Product Outcome. When this fails the user is offered a model that cannot polish their words, or is
      * denied one that can.
      *
-     * The 200 rows carry a REAL body, because a 200 alone no longer means available (#104): measured
-     * 2026-09-02, gemini-3.5-transcribe answers 200 with an empty string and was being listed as a good
-     * choice while silently returning the user's raw text on every dictation.
+     * A 200 alone no longer means available (#104): measured 2026-09-02, gemini-3.5-transcribe answers 200
+     * with an empty string and was being listed as a good choice while silently returning the user's raw
+     * text on every dictation. Whether the body carried text is decided by the client, so the 200 rows
+     * here sweep that answer rather than the envelope it came from.
      */
     @Test fun probeOutcomeFollowsTheMacRulesPerProvider() {
-        val answered = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi\"}]}}]}"
-        fun a(p: Provider, s: Int?, b: String? = answered) = ModelListRules.probeOutcome(p, s, b)
+        // Whether the body carried text is the CLIENT's answer, produced by the same parser polish uses;
+        // the envelope shapes are asserted against a real server in `ProviderPolishClientTest`. Passing
+        // it in keeps this table about STATUS, which is the only thing this function decides.
+        fun a(p: Provider, s: Int?, b: String? = "{}", text: Boolean = true) = ModelListRules.probeOutcome(p, s, b, returnedText = text)
         assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.OPENAI, 200))
         // A 200 that carries no text is the transcribe case, and it is UNAVAILABLE, not available.
-        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.GEMINI, 200, "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"}]}}]}"))
-        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 200, "{}"))
-        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 200, ""))
-        // Self-hosted labels its text `content`, not `text`; grouping it with the rest would call a
-        // working server unusable.
-        assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200, "{\"choices\":[{\"message\":{\"content\":\"Hi\"}}]}"))
-        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200, "{\"choices\":[{\"message\":{\"content\":\"\"}}]}"))
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.GEMINI, 200, text = false))
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 200, text = false))
+        assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200, text = false))
+        assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.SELF_HOSTED_POLISH, 200))
+        // Text in the body cannot rescue a status that already refused, or the check would read a
+        // successful envelope out of an error page. Every row below carries `text = true` for that reason.
         assertEquals(ProbeOutcome.KeyRejected(401), a(Provider.OPENAI, 401))
         assertEquals(ProbeOutcome.KeyRejected(400), a(Provider.GEMINI, 400, "{\"error\":{\"details\":[{\"reason\":\"API_KEY_INVALID\"}]}}"))
         assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.OPENAI, 403))

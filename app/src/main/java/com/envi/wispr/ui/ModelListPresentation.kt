@@ -116,9 +116,15 @@ object ModelListPresentation {
             )
         }
         // MOBILE SHOWS ONLY WHAT IT CAN OFFER (#104, founder 2026-09-02). Desktop locks an unusable model
-        // and leaves it on screen; a phone has no room for a row nobody may tap. UNVERIFIED stays, because
-        // after #104's probe fix it means "not tested yet", not "broken": the probe stops at MAX_PROBES to
-        // bound the network cost, so 33 of his 69 OpenAI rows were never tried and most of them work.
+        // and leaves it on screen; a phone has no room for a row nobody may tap.
+        //
+        // UNVERIFIED STAYS, and that is a decision rather than an omission (#104 review round 1, which
+        // asked for it to be hidden too). After #104's probe fix UNVERIFIED means "not tested yet", not
+        // "broken": the probe stops at MAX_PROBES to bound the network cost, so with his key listing 69
+        // OpenAI models the last 29 are never probed however well they work. Hiding them would delete
+        // working models from the list permanently, which is a worse failure than showing an untested one,
+        // and the count line says how many were checked. The probe budget is spent NEWEST FIRST in
+        // `ProviderPolishClient`, so the untested tail is the oldest rows rather than an arbitrary set.
         //
         // The SAVED model is never hidden even when it turns unusable, because a user has to be able to
         // see and change what they are currently running.
@@ -169,7 +175,7 @@ object ModelListPresentation {
         releasedAt = null, selectable = true, current = true,
     )
 
-    /** The count line over the rows the page can show (the pinned saved row included): "17 models · 15 available", or the filtered form. */
+    /** The count line over the rows the page can show (the pinned saved row included): "17 models · 15 checked", or the filtered form. */
     fun countLine(rows: List<ModelRow>, shown: Int, query: String): String {
         val real = rows.filter { !it.typed }
         val available = real.count { it.access == ModelAccess.AVAILABLE }

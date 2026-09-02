@@ -637,19 +637,22 @@ class ProviderPolishClientTest {
         ScriptedServer({ request ->
             if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else { hold.await(10, TimeUnit.SECONDS); 200 to "{}" }
         }).use { server ->
+            // The request log is a synchronized list; a count that iterates it must hold its lock, or a
+            // probe landing mid-iteration throws and the test goes red on a correct client.
+            fun probeCount(): Int = synchronized(server.requests) { server.requests.count { it.path.startsWith("/probe") } }
             val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 800, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")
             assertTrue("$result", result is ProviderDiscovery.Listed)
-            val probesAtReturn = server.requests.count { it.path.startsWith("/probe") }
+            val probesAtReturn = probeCount()
             hold.countDown()
             // The held probes finish now; a queued probe that was NOT cancelled would be dequeued the instant
             // a thread frees and arrive here. Gate on the count going quiet, never on a fixed sleep: unchanged
             // across five polls 200 ms apart, with a 5 s ceiling that only a defect can reach.
-            var probesLater = server.requests.count { it.path.startsWith("/probe") }
+            var probesLater = probeCount()
             var quiet = 0
             var polls = 0
             while (quiet < 5 && polls < 25) {
                 Thread.sleep(200)
-                val now = server.requests.count { it.path.startsWith("/probe") }
+                val now = probeCount()
                 if (now == probesLater) quiet++ else { quiet = 0; probesLater = now }
                 polls++
             }

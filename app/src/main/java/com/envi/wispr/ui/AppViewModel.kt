@@ -51,7 +51,14 @@ data class ProviderSettingsUiState(
     val credentialStored: Boolean = false,
     val message: String = "",
     val error: String? = null,
+    /** The request sequence of the LAST COMPLETED write, success or failure; 0 before any write (#67). */
+    val writeSequence: Int = 0,
+    /** Who started the write that [writeSequence] names, so each surface renders only its own failures. */
+    val writeOrigin: ProviderWriteOrigin = ProviderWriteOrigin.TAB,
 )
+
+/** Which surface asked for a provider-settings write (#67). */
+enum class ProviderWriteOrigin { TAB, SETUP_PAGE }
 
 data class AppReadiness(
     val microphoneGranted: Boolean = false,
@@ -365,43 +372,51 @@ class EnviousWisprViewModel(
         viewModelScope.launch { appPreferences.setSmartInsertionEnabled(enabled) }
     }
 
-    fun setPolishMode(mode: PolishMode) {
-        updateProviderSettings {
-            if (mode == PolishMode.PROVIDER && providerRepository.load() == null) {
-                error("Save provider settings before selecting provider mode")
-            }
-            providerRepository.setMode(mode)
-            "Polish mode updated"
+    /** A mode tap on the tab. Returns the request sequence of the write it queued. */
+    fun setPolishMode(mode: PolishMode): Int = updateProviderSettings(ProviderWriteOrigin.TAB) {
+        if (mode == PolishMode.PROVIDER && providerRepository.load() == null) {
+            error("Save provider settings before selecting provider mode")
         }
+        providerRepository.setMode(mode)
+        ""
     }
 
+    /** The master switch turned on: the last engine used, or This phone if that engine is gone (#67). */
+    fun turnPolishOn(): Int = updateProviderSettings(ProviderWriteOrigin.TAB) {
+        providerRepository.turnOn()
+        ""
+    }
+
+    /** The setup page's Save. Returns the request sequence the page waits for. */
     fun saveProviderSettings(
         provider: Provider,
         model: String,
         endpoint: String?,
         apiKey: String?,
         selfHostedProtocol: SelfHostedProtocol,
+    ): Int = updateProviderSettings(ProviderWriteOrigin.SETUP_PAGE) {
+        providerRepository.saveProvider(
+            provider = provider,
+            model = model.trim(),
+            endpoint = endpoint?.trim()?.takeIf(String::isNotEmpty),
+            apiKey = apiKey?.takeIf(String::isNotBlank),
+            selfHostedProtocol = selfHostedProtocol,
+        )
+        "${provider.capabilities().displayName} saved"
+    }
+
+    /** Remove, from the setup page or the self-hosted card. Returns the request sequence. */
+    fun clearProviderSettings(origin: ProviderWriteOrigin = ProviderWriteOrigin.SETUP_PAGE): Int = updateProviderSettings(origin) {
+        providerRepository.clearSelection()
+        "Provider removed"
+    }
+
+    private fun refreshProviderSettings(
+        message: String = "",
+        error: String? = null,
+        sequence: Int = providerSettings.value.writeSequence,
+        origin: ProviderWriteOrigin = providerSettings.value.writeOrigin,
     ) {
-        updateProviderSettings {
-            providerRepository.saveProvider(
-                provider = provider,
-                model = model.trim(),
-                endpoint = endpoint?.trim()?.takeIf(String::isNotEmpty),
-                apiKey = apiKey?.takeIf(String::isNotBlank),
-                selfHostedProtocol = selfHostedProtocol,
-            )
-            "${provider.capabilities().displayName} saved"
-        }
-    }
-
-    fun clearProviderSettings() {
-        updateProviderSettings {
-            providerRepository.clearSelection()
-            "Provider credentials removed; offline S1 selected"
-        }
-    }
-
-    private fun refreshProviderSettings(message: String = "", error: String? = null) {
         val mode = providerRepository.loadMode()
         val selected = providerRepository.load()
         providerSettings.value = ProviderSettingsUiState(
@@ -416,10 +431,16 @@ class EnviousWisprViewModel(
             credentialStored = !selected?.apiKey.isNullOrBlank(),
             message = message,
             error = error,
+            writeSequence = sequence,
+            writeOrigin = origin,
         )
     }
 
-    private fun updateProviderSettings(operation: () -> String) {
+    /** Allocated before a write is enqueued, so a caller can wait for ITS write and not an older one (#67). */
+    private var nextWriteSequence = 0
+
+    private fun updateProviderSettings(origin: ProviderWriteOrigin, operation: () -> String): Int {
+        val sequence = ++nextWriteSequence
         providerSettings.value = providerSettings.value.copy(message = "", error = null)
         // Launching straight onto `Dispatchers.IO` would let two calls reach `withLock` in whichever
         // order the multithreaded IO pool happens to schedule them, not the order they were tapped —
@@ -431,17 +452,21 @@ class EnviousWisprViewModel(
             providerSettingsMutex.withLock {
                 withContext(Dispatchers.IO) {
                     runCatching(operation).fold(
-                        onSuccess = { message -> refreshProviderSettings(message = message) },
-                        onFailure = { failure ->
+                        onSuccess = { message -> refreshProviderSettings(message = message, sequence = sequence, origin = origin) },
+                        // One calm sentence for every failure: the exception text is internal wording
+                        // ("could not persist provider configuration"), never copy for the user.
+                        onFailure = {
                             refreshProviderSettings(
-                                error = failure.message?.takeIf(String::isNotBlank)
-                                    ?: "Could not update AI Polish settings",
+                                error = "Could not update AI Polish settings",
+                                sequence = sequence,
+                                origin = origin,
                             )
                         },
                     )
                 }
             }
         }
+        return sequence
     }
 
     class Factory(

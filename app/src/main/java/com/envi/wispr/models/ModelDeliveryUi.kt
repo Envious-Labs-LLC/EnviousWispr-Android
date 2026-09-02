@@ -2,8 +2,15 @@ package com.envi.wispr.models
 
 enum class ModelUiAction { DOWNLOAD, PAUSE, RESUME, RETRY, REPAIR, REMOVE, UPDATE, CANCEL, NONE }
 
+/**
+ * What a model's status MEANS, beside the label that says it (#64). Set in the same branch as each label,
+ * so the two cannot drift; consumers classify on this and never on the label string.
+ */
+enum class ModelHealth { READY, NOT_READY, BROKEN, UNKNOWN }
+
 data class ModelUiState(
     val label: String,
+    val health: ModelHealth,
     val bytes: Long = 0L,
     val total: Long = 0L,
     val reason: String? = null,
@@ -30,25 +37,27 @@ fun modelUiState(
     val cancelled = normalizedControl == ModelDeliveryControlState.CANCELLED.name
     return when (normalizedWork) {
         "ENQUEUED", "RUNNING" -> if (paused) {
-            ModelUiState("Paused", safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RESUME)
+            ModelUiState("Paused", ModelHealth.NOT_READY, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RESUME)
         } else ModelUiState(
             label = if (normalizedProgress == DownloadState.VERIFYING.name) "Verifying" else if (normalizedWork == "ENQUEUED") "Queued" else "Downloading",
+            health = ModelHealth.NOT_READY,
             bytes = safeBytes,
             total = safeTotal,
             reason = reason?.takeIf(String::isNotBlank),
             action = ModelUiAction.PAUSE,
         )
         "FAILED", "CANCELLED" -> if (paused) {
-            ModelUiState("Paused", safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RESUME)
+            ModelUiState("Paused", ModelHealth.NOT_READY, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RESUME)
         } else if (verifiedReady) {
-            ModelUiState("Ready", safeBytes, safeTotal, action = ModelUiAction.REMOVE)
+            ModelUiState("Ready", ModelHealth.READY, safeBytes, safeTotal, action = ModelUiAction.REMOVE)
         } else if (cancelled) {
-            ModelUiState("Cancelled", safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RETRY)
+            ModelUiState("Cancelled", ModelHealth.NOT_READY, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RETRY)
         } else if (staleInstalled) {
-            ModelUiState("Update failed", safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.UPDATE)
+            ModelUiState("Update failed", ModelHealth.BROKEN, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.UPDATE)
         } else {
             ModelUiState(
                 label = if (normalizedWork == "CANCELLED") "Cancelled" else "Failed",
+                health = if (normalizedWork == "CANCELLED") ModelHealth.NOT_READY else ModelHealth.BROKEN,
                 bytes = safeBytes,
                 total = safeTotal,
                 reason = reason?.takeIf(String::isNotBlank),
@@ -56,24 +65,24 @@ fun modelUiState(
             )
         }
         "SUCCEEDED" -> if (verifiedReady) {
-            ModelUiState("Ready", safeBytes, safeTotal, action = ModelUiAction.REMOVE)
+            ModelUiState("Ready", ModelHealth.READY, safeBytes, safeTotal, action = ModelUiAction.REMOVE)
         } else if (staleInstalled) {
-            ModelUiState("Update available", safeBytes, safeTotal, action = ModelUiAction.UPDATE)
+            ModelUiState("Update available", ModelHealth.NOT_READY, safeBytes, safeTotal, action = ModelUiAction.UPDATE)
         } else {
-            ModelUiState("Checking", safeBytes, safeTotal, reason, ModelUiAction.NONE)
+            ModelUiState("Checking", ModelHealth.NOT_READY, safeBytes, safeTotal, reason, ModelUiAction.NONE)
         }
         else -> if (paused) {
-            ModelUiState("Paused", safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RESUME)
+            ModelUiState("Paused", ModelHealth.NOT_READY, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RESUME)
         } else if (cancelled) {
-            ModelUiState("Cancelled", safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RETRY)
+            ModelUiState("Cancelled", ModelHealth.NOT_READY, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RETRY)
         } else if (verifiedReady) {
-            ModelUiState("Ready", safeBytes, safeTotal, action = ModelUiAction.REMOVE)
+            ModelUiState("Ready", ModelHealth.READY, safeBytes, safeTotal, action = ModelUiAction.REMOVE)
         } else if (normalizedProgress == DownloadState.REPAIR_NEEDED.name) {
-            ModelUiState("Repair needed", safeBytes, safeTotal, reason, ModelUiAction.REPAIR)
+            ModelUiState("Repair needed", ModelHealth.BROKEN, safeBytes, safeTotal, reason, ModelUiAction.REPAIR)
         } else if (staleInstalled) {
-            ModelUiState("Update available", safeBytes, safeTotal, reason, ModelUiAction.UPDATE)
+            ModelUiState("Update available", ModelHealth.NOT_READY, safeBytes, safeTotal, reason, ModelUiAction.UPDATE)
         } else {
-            ModelUiState("Missing", safeBytes, safeTotal, reason, ModelUiAction.DOWNLOAD)
+            ModelUiState("Missing", ModelHealth.NOT_READY, safeBytes, safeTotal, reason, ModelUiAction.DOWNLOAD)
         }
     }
 }

@@ -12,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -295,6 +296,11 @@ internal fun ScoreBar(label: String, value: Int) {
             "$label:",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // Cleared because the Row above already announces "Speed, 3 of 3"; merged with the word still
+            // in the tree, TalkBack says the label twice. The stacked renderer carried this guard on its
+            // own label and it was dropped when that composable was replaced, which is how a guard gets
+            // lost: not by being argued away, but by living inside something deleted for another reason.
+            modifier = Modifier.clearAndSetSemantics {},
         )
         for (level in 1..3) ScoreDot(value, level)
     }

@@ -1,6 +1,6 @@
 # Issue #81 — AI Polish: the founder's four-rung Ladder — 2026-09-02
 
-**Status:** BUILDING (Gate 2 passed 2026-09-02 on the founder's standing run-end-to-end instruction and his explicit ask for this layout). Tier: MEDIUM (one screen replaced, one runtime behaviour added: the key is saved with
+**Status:** SHIPPED 2026-09-02 (Gate 2 passed on the founder's standing run-end-to-end instruction and his explicit ask for this layout). Emulator pass in §13.1; the real-key path is owed with #84's run. Tier: MEDIUM (one screen replaced, one runtime behaviour added: the key is saved with
 the suggested model the moment the provider accepts it).
 
 ## Preface — Lane + Hardware UAT declaration
@@ -142,7 +142,7 @@ and of the master switch's memory (`turnOn|turnPolishOn|LastOnMode|last_on_mode|
 Existing authorities reused, not rebuilt: `ModelListPresentation.present` and `countLine` (rows, pinned
 saved row, typed-id row), `ModelSort` (chips and group labels), `ScoreDots`, `relativeAge`, `keyCheckLine`
 and `discoveryLine` (`ui/KeyCheckCopy.kt`), `polishStatusChip`, `ModelCard`, `PolishSnackbarPolicy`,
-`savedModelFor`, `CloudProviders`. New authority proposed: `ui/PolishLadder.kt` (proposed), pure rules for
+`savedModelFor`, `CloudProviders`. New authority proposed: `ui/PolishLadder.kt`, pure rules for
 the ladder's derived state (§3).
 
 ### 3. Read prior attempts and live direction
@@ -170,7 +170,7 @@ the ladder's derived state (§3).
   `rememberSaveable`; none of them can assert a fact the draft alone supported.
 - **Process death mid-write.** The tab has no wait of its own: a completed write publishes
   `writeSequence`; a restored `target` that the new view model can never reach is dropped by the same
-  rule `ProviderSetupSavePolicy` used (§3, `PolishWritePolicy` (proposed)).
+  rule `ProviderSetupSavePolicy` used (§3, `PolishWritePolicy`).
 - **A late discovery completion.** Already owned by the view model (`appliesNow()` after every
   suspension); the tab compares `discovery.provider` and `discovery.sequence` against what it displays.
 - **Save-at-accept re-runs the check.** `saveProvider` checks again before writing (#61), so an accepted
@@ -201,9 +201,9 @@ Loading gate unchanged. Body, top to bottom, inside `ScreenContainer`:
 
 **Rung 1, "1 · WHERE POLISH RUNS".** Three equal `Modifier.weight(1f)` buttons with fixed height so
 "This phone" cannot make the middle one taller. Highlight is `PolishLadder.rungOne(settings.mode,
-cloudSetup)` (proposed):
+cloudSetup)`:
 
-| Persisted mode | `cloudSetup` (proposed) | Highlighted |
+| Persisted mode | `cloudSetup` | Highlighted |
 |---|---|---|
 | OFF | false | Off |
 | OFFLINE_S1 | false | This phone |
@@ -212,16 +212,16 @@ cloudSetup)` (proposed):
 
 Taps: Off → `onSetMode(OFF)`, `cloudSetup = false`. This phone → `onSetMode(OFFLINE_S1)`,
 `cloudSetup = false` (no readiness gate: the card below says the truth and the badge goes red, which is the
-design's "S1 failed" state). Cloud → `PolishLadder.cloudTap(settings)` (proposed): `ACTIVATE` (proposed) when
+design's "S1 failed" state). Cloud → `PolishLadder.cloudTap(settings)`: `ACTIVATE` when
 `configured && (provider == SELF_HOSTED_POLISH || credentialStored)`, which calls `onSetMode(PROVIDER)`;
-otherwise `SETUP` (proposed), which sets `cloudSetup = true` and writes nothing, so S1-mini keeps polishing while the
+otherwise `SETUP`, which sets `cloudSetup = true` and writes nothing, so S1-mini keeps polishing while the
 user sets up (the design's chip shows S1-mini green during key entry).
 
 **Off** shows the design's one sentence: "No language model runs. Deterministic cleanup still removes
 obvious filler and spacing issues."
 
 **This phone** shows `ModelCard` with eyebrow "ON THIS PHONE", title `S1Config.MODEL_NAME`, description
-from `PolishLadder.s1Line(s1State)` (proposed): READY → "Polishes your words on this phone. Nothing is
+from `PolishLadder.s1Line(s1State)`: READY → "Polishes your words on this phone. Nothing is
 sent anywhere."; BROKEN → "S1-mini is not working right now. Your words come back with basic cleanup
 only, and nothing is sent anywhere."; NOT_READY with DOWNLOAD/RETRY → "Download S1-mini to polish on this
 phone."; other NOT_READY and UNKNOWN → "Getting S1-mini ready."; facts "Offline" and "Stays on this phone";
@@ -230,19 +230,19 @@ actions exactly as `LocalModelPage` wires them today (moved, not rewritten).
 **Cloud** shows rungs 2 to 4.
 
 **Rung 2, "2 · PROVIDER".** Three tiles from `CloudProviders`, highlighted when equal to
-`PolishLadder.displayedProvider(browsed, settings)` (proposed): `browsed ?: settings.provider.takeIf {
+`PolishLadder.displayedProvider(browsed, settings)`: `browsed ?: settings.provider.takeIf {
 settings.configured && it in CloudProviders }`. A tap sets `browsed` and clears the key draft, the check
 sequence and the Replace flag (all keyed on the displayed provider with `remember(displayed)`). When a
 self-hosted setup is configured, a card under the tiles reads "Self-hosted · <host>" with its status
 line and a Remove button (`onClearProvider`); rungs 3 and 4 show only for a displayed cloud provider.
 With nothing configured and nothing tapped, rung 2 shows three plain tiles and the page ends there.
 
-**Rung 3, "3 · YOUR <PROVIDER> KEY".** `PolishLadder.keyRung(displayed, settings, replacing)` (proposed) is
-`CONNECTED` (proposed) iff `configured && settings.provider == displayed && credentialStored && !replacing`, else
-`FIELD` (proposed).
+**Rung 3, "3 · YOUR <PROVIDER> KEY".** `PolishLadder.keyRung(displayed, settings, replacing)` is
+`CONNECTED` iff `configured && settings.provider == displayed && credentialStored && !replacing`, else
+`FIELD`.
 
 - `FIELD`: one `OutlinedTextField` (password transformation, draft in plain `remember`) with the pill as
-  its trailing control. `PolishLadder.keyPill(draftBlank, checking, failed, saving)` (proposed): label
+  its trailing control. `PolishLadder.keyPill(draftBlank, checking, failed, saving)`: label
   "Check" and enabled iff draft non-blank; "Checking" and disabled while the discovery for this provider
   and sequence is CHECKING or a save is in flight; "Retry" and enabled after a FAILED discovery or a failed
   save. Hint under the field: default "Encrypted in the Android Keystore. Never written to logs."; checking
@@ -251,8 +251,8 @@ With nothing configured and nothing tapped, rung 2 shows three plain tiles and t
 - Check tap: `checkSequence = onCheckKey(displayed, draft)`.
 - **Save at accept.** When `discovery.provider == displayed && discovery.phase == LISTED &&
   discovery.sequence == checkSequence && draft non-blank && checkSequence != savedForSequence`, the tab
-  calls `onSave(displayed, PolishLadder.defaultModel(models), draft, checkSequence)` (proposed) once and
-  records `savedForSequence = checkSequence` (`rememberSaveable`). `defaultModel` (proposed) reads the DISCOVERED
+  calls `onSave(displayed, PolishLadder.defaultModel(models), draft, checkSequence)` once and
+  records `savedForSequence = checkSequence` (`rememberSaveable`). `defaultModel` reads the DISCOVERED
   models, never presentation rows (a pinned saved row or a typed row is synthetic and may name a model the
   new key cannot reach): the first recommended AVAILABLE model, else the first AVAILABLE model, else the
   first UNVERIFIED model, never an UNAVAILABLE one; null otherwise. **The automatic save also requires no
@@ -311,7 +311,7 @@ false) keeps the target. On FAILED the error is shown under the rung that starte
 `turnPolishOn` (removed). `ProviderWriteOrigin` (removed) and the `origin` parameter of
 `updateProviderSettings`, `setPolishMode`, `saveProviderSettings` and `clearProviderSettings`. One
 addition: **a save that supplies a key clears that provider's persisted model cache BEFORE the repository
-write** (a `beforeWrite` (proposed) step run inside the write mutex and inside the captured outcome, before
+write** (a `beforeWrite` step run inside the write mutex and inside the captured outcome, before
 `operation`: if it throws, the repository write does not run and the same sequence publishes FAILED, so the
 tab is never left waiting). The commit and the
 cache promotion are two steps, and a process death between them would otherwise restart with the old
@@ -327,7 +327,7 @@ commit failure on Replace leaves the new key in place of the old one. The save n
 previous credential first, and that snapshot is mandatory: if reading it fails the save aborts before
 anything is written. When the commit fails, the previous key is put back, or the new one removed when none
 existed. When that compensation itself fails, the save throws a typed
-`InconsistentProviderStorageException` (proposed), which `updateProviderSettings` maps to "Could not
+`InconsistentProviderStorageException`, which `updateProviderSettings` maps to "Could not
 restore your saved key. Remove the provider and set it up again." (every other exception keeps the generic
 sentence), rather than claiming nothing changed. Failures of the secret store's own reads are no longer collapsed into "no key" on this
 path. An existing `last_on_mode` value in a user's
@@ -343,7 +343,7 @@ go. `PolishScreen` receives `providerDiscovery` and the three discovery callback
 ### Deleted files
 
 `ui/ProviderSetupPage.kt` (its `ProviderTile`, `ScoreDots`, `userMessage`, `relativeAge` move to
-`ui/PolishLadder.kt` (proposed) unchanged), `ui/PolishSubpage.kt`, `ui/PolishCardState.kt` except
+`ui/PolishLadder.kt` unchanged), `ui/PolishSubpage.kt`, `ui/PolishCardState.kt` except
 `PolishSnackbarPolicy` and `hostOf` (moved to `ui/PolishLadder.kt`), and the tests named in §11.
 
 ### Alternatives rejected
@@ -362,7 +362,7 @@ go. `PolishScreen` receives `providerDiscovery` and the three discovery callback
 
 ## 3b. Ownership justification
 
-The Ladder's derived rules live in `ui/PolishLadder.kt` (proposed), a pure file beside
+The Ladder's derived rules live in `ui/PolishLadder.kt`, a pure file beside
 `ModelListPresentation.kt`, so `PolishScreen.kt` holds layout and the rules are unit-tested without a rig.
 Persistence stays in the repository; sequencing stays in the view model. No new coordinator, no new
 shared object.
@@ -433,7 +433,7 @@ tab fires at acceptance is idempotent per check sequence.
 | File | Change |
 |---|---|
 | `ui/PolishScreen.kt` | Rewritten as the Ladder |
-| `ui/PolishLadder.kt` (proposed) | New: `rungOne` (proposed), `cloudTap`, `displayedProvider`, `keyRung`, `keyPill`, `defaultModel`, `s1Line`, `PolishWritePolicy`; `ProviderTile`, `ScoreDots`, `userMessage`, `relativeAge`, `hostOf`, `PolishSnackbarPolicy` moved in |
+| `ui/PolishLadder.kt` | New: `rungOne`, `cloudTap`, `displayedProvider`, `keyRung`, `keyPill`, `defaultModel`, `s1Line`, `PolishWritePolicy`; `ProviderTile`, `ScoreDots`, `userMessage`, `relativeAge`, `hostOf`, `PolishSnackbarPolicy` moved in |
 | `ui/ProviderSetupPage.kt` | Deleted |
 | `ui/PolishSubpage.kt` | Deleted |
 | `ui/PolishCardState.kt` | Deleted |
@@ -441,8 +441,8 @@ tab fires at acceptance is idempotent per check sequence.
 | `ui/AppViewModel.kt` | `turnPolishOn`, `ProviderWriteOrigin`, origin parameters removed |
 | `ui/SettingsActivity.kt` | One lambda removed |
 | `providers/ProviderConfigurationRepository.kt` | `turnOn`, last-on-mode removed |
-| `test/ui/PolishLadderTest.kt` (proposed) | New |
-| `test/ui/PolishCardStateTest.kt` (removed) | Deleted; its snackbar cases move to `PolishLadderTest` (proposed) |
+| `test/ui/PolishLadderTest.kt` | New |
+| `test/ui/PolishCardStateTest.kt` (removed) | Deleted; its snackbar cases move to `PolishLadderTest` |
 | `test/ui/PolishSubpageTest.kt` (removed) | Deleted |
 | `test/providers/PolishModeWhenTurnedOnTest.kt` (removed) | Deleted |
 | `androidTest/providers/ProviderConfigurationRepositoryTest.kt` | `turnOn` cases removed |
@@ -452,23 +452,23 @@ tab fires at acceptance is idempotent per check sequence.
 **Should each test exist?** Product Outcome: a wrong highlight, a false "connected", a save that fires
 twice or never, a model default that picks an unavailable row, an S1 line that lies. **Honest?** Every
 expectation is a literal; the pure rules take the same inputs the screen passes. **How written?** JVM unit
-tests over `PolishLadder` (proposed); the screen itself is checked on the emulator by reading the page source.
+tests over `PolishLadder`; the screen itself is checked on the emulator by reading the page source.
 
 | Test | Class | Protects |
 |---|---|---|
-| `PolishLadderTest.rungOneFollowsThePersistedModeUnlessSetupIsOpen` (proposed) | Product Outcome | The highlight table in §3 |
-| `PolishLadderTest.cloudActivatesOnlyAConfiguredProviderWithAKey` (proposed) | Product Outcome | No cloud attempt without a key; self-hosted activates |
-| `PolishLadderTest.aBrowsedTileNeverInheritsAnotherProvidersKey` (proposed) | Product Outcome | #62 round 21's join gap |
-| `PolishLadderTest.connectedNeedsTheSavedProviderWithItsKeyAndNoReplace` (proposed) | Product Outcome | #62 round 20 |
-| `PolishLadderTest.theCheckPillReadsCheckCheckingRetry` (proposed) | Product Outcome | Pill states |
-| `PolishLadderTest.theDefaultModelPrefersRecommendedThenAvailableThenAnySelectable` (proposed) | Product Outcome | Save-at-accept picks a DISCOVERED model the key can use, never a pinned or typed row; null when there is none |
-| `PolishLadderTest.aKeyWithNoUsableModelWaitsForATypedId` (proposed) | Product Outcome | The typed-model fallback rule |
-| `PolishLadderTest.saveAtAcceptFiresOncePerCheck` (proposed) | Product Outcome | The decision function, not the effect |
-| `PolishLadderTest.theS1LineIsExhaustiveOverHealth` (proposed) | Product Outcome | Card copy |
-| `PolishLadderTest.writeOutcomeWaitsCompletesOrFails` (proposed) | Product Outcome | WAITING while `completed < target`, DONE, FAILED; the loading-gate reset is control flow, checked on the emulator by killing the process mid-write |
-| `PolishLadderTest.saveAtAcceptWaitsForAPendingWrite` (proposed) | Product Outcome | No automatic key save while a mode, model or remove write is in flight |
+| `PolishLadderTest.rungOneFollowsThePersistedModeUnlessSetupIsOpen` | Product Outcome | The highlight table in §3 |
+| `PolishLadderTest.cloudActivatesOnlyAConfiguredProviderWithAKey` | Product Outcome | No cloud attempt without a key; self-hosted activates |
+| `PolishLadderTest.aBrowsedTileNeverInheritsAnotherProvidersKey` | Product Outcome | #62 round 21's join gap |
+| `PolishLadderTest.connectedNeedsTheSavedProviderWithItsKeyAndNoReplace` | Product Outcome | #62 round 20 |
+| `PolishLadderTest.theCheckPillReadsCheckCheckingRetry` | Product Outcome | Pill states |
+| `PolishLadderTest.theDefaultModelPrefersRecommendedThenAvailableThenAnySelectable` | Product Outcome | Save-at-accept picks a DISCOVERED model the key can use, never a pinned or typed row; null when there is none |
+| `PolishLadderTest.aKeyWithNoUsableModelWaitsForATypedId` | Product Outcome | The typed-model fallback rule |
+| `PolishLadderTest.saveAtAcceptFiresOncePerCheckAndOnlyForTheDraftsOwnListing` | Product Outcome | The decision function, not the effect |
+| `PolishLadderTest.theS1LineIsExhaustiveOverHealth` | Product Outcome | Card copy |
+| `PolishLadderTest.writeOutcomeWaitsCompletesOrFails` | Product Outcome | WAITING while `completed < target`, DONE, FAILED; the loading-gate reset is control flow, checked on the emulator by killing the process mid-write |
+| `PolishLadderTest.saveAtAcceptWaitsForAPendingWrite` | Product Outcome | No automatic key save while a mode, model or remove write is in flight |
 | `ProviderConfigurationRepositoryTest` (androidTest, five added cases) | Product Outcome | Snapshot-read failure aborts before any put; commit failure restores the previous key; commit failure with no previous key removes the new one; a failed restore reports inconsistent storage; a failed Remove puts the key back |
-| `ProviderDiscoveryApplyPolicyTest.aSuppliedKeyClearsTheCacheBeforeTheWrite` (proposed) | Product Outcome | The pre-write clear rule |
+| `ProviderDiscoveryApplyPolicyTest.aSuppliedKeyClearsTheCacheBeforeTheWrite` | Product Outcome | The pre-write clear rule |
 | `PolishLadderTest.snackbar...` (moved) | Product Outcome | Unchanged behaviour |
 | Deleted: `PolishCardStateTest` (removed) (8), `PolishSubpageTest` (removed) (3), `PolishModeWhenTurnedOnTest` (removed) (5) | | Their subjects no longer exist; the replacements above cover the outcomes that remain |
 
@@ -513,6 +513,21 @@ and every polish engine are untouched. Rollback is a revert of one merge.
 - No `rememberSaveable` holds the key draft or anything derived from it.
 - The consumer sweeps in §2.5.2 return zero hits for the removed names.
 - Unit count reported; the instrumented repository class green on the emulator.
+
+## 13.1 What the emulator pass found (2026-09-02)
+
+Every state §11.1 could stage on the emulator matched the design, read from the Appium page source and
+screenshots: rung 1's three equal buttons with the saved mode highlighted; Off's one sentence with the
+badge reading "Polish off"; This phone's S1-mini card with its red "Failed" pill (the emulator has no
+model), its not-working line and Retry, the badge red; Cloud with nothing configured showing the three
+tiles and stopping, the badge unchanged; the Gemini tile opening rung 3 with the placeholder, a disabled
+Check and the Keystore hint; a fake key's Check going live to Gemini and coming back "Gemini rejected this
+key." with Retry, a red header and a red border, nothing saved (the provider configuration file held the
+mode only); a rotation mid-entry bringing the field back empty with Check disabled and no rejection, the
+Cloud and Gemini highlights kept; and This phone writing `mode=OFFLINE_S1` with no `last_on_mode` key.
+The repository's device tests ran on the emulator with `am instrument`: 18 green, the five compensation
+cases included. Not run: the accepted-key path (rung 3 collapsing, the suggested model saved, rung 4,
+Replace, Remove), which waits on the vault-key permission rule with #84's run; nothing on the phone.
 
 ## 14. Open questions
 
@@ -568,3 +583,8 @@ commit; it now snapshots the key and puts it back when the commit fails, the mir
 with a device test. (5) The repaired timing test still decided with a fixed sleep after releasing its
 latch; it now gates on the probe count going quiet (unchanged across five polls) with a ceiling only a
 defect can reach.
+
+**Code review round 2 (confirming): FIX-THEN-RERUN on one residue,** the deadline test counted a
+synchronized list without its lock, so a probe landing mid-count could throw on a correct client; the
+three snapshots now hold the lock. The four code fixes were confirmed closed. **Round 3 (mechanical
+confirmation of that one line): CLEAN.**

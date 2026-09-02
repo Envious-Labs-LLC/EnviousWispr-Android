@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -41,61 +42,62 @@ class ProviderConfigurationRepositoryTest {
     // #67: the engine used last, written in the same batch as the mode, on the REAL preference file.
     private fun stored(key: String): String? = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getString(key, null)
 
-    @Test fun everyNonOffWriteRecordsTheLastOnModeBesideTheMode() {
-        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putString("last_on_mode", "sentinel").commit()
-        repository.setMode(PolishMode.OFFLINE_S1)
-        assertEquals("OFFLINE_S1", stored("mode")); assertEquals("OFFLINE_S1", stored("last_on_mode"))
-        repository.setMode(PolishMode.OFF)
-        assertEquals("OFF", stored("mode")); assertEquals("OFFLINE_S1", stored("last_on_mode"))
-        repository.saveProvider(Provider.OPENAI, "gpt-test", null, "k", SelfHostedProtocol.OPENAI_COMPATIBLE)
-        assertEquals("PROVIDER", stored("mode")); assertEquals("PROVIDER", stored("last_on_mode"))
-        repository.setMode(PolishMode.OFF)
-        assertEquals("PROVIDER", stored("last_on_mode"))
-        repository.clearSelection()
-        assertEquals("OFFLINE_S1", stored("mode")); assertEquals("OFFLINE_S1", stored("last_on_mode"))
-    }
-
-    @Test fun turnOnLandsOnTheSixCellsAgainstTheRealFile() {
-        val prefs = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
-        // last_on_mode absent, no provider
-        prefs.edit().clear().putString("mode", "OFF").commit()
-        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn()); assertEquals("OFFLINE_S1", stored("mode"))
-        // PROVIDER remembered but the configuration is gone
-        prefs.edit().clear().putString("mode", "OFF").putString("last_on_mode", "PROVIDER").commit()
-        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
-        // PROVIDER remembered with a configuration
-        repository.saveProvider(Provider.GEMINI, "gemini-test", null, "k", SelfHostedProtocol.OPENAI_COMPATIBLE)
-        repository.setMode(PolishMode.OFF)
-        assertEquals(PolishMode.PROVIDER, repository.turnOn()); assertEquals("PROVIDER", stored("mode"))
-        // PROVIDER remembered, metadata saved, but the key is gone from the store
-        repository.setMode(PolishMode.OFF)
-        secrets.remove(Provider.GEMINI)
-        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn()); assertEquals("OFFLINE_S1", stored("mode"))
-        // last_on_mode absent while a configuration exists
-        repository.saveProvider(Provider.GEMINI, "gemini-test", null, "k", SelfHostedProtocol.OPENAI_COMPATIBLE)
-        prefs.edit().putString("mode", "OFF").remove("last_on_mode").commit()
-        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
-        // OFFLINE_S1 remembered, with and without a configuration
-        repository.setMode(PolishMode.OFFLINE_S1); repository.setMode(PolishMode.OFF)
-        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
-        repository.clearSelection(); repository.setMode(PolishMode.OFF)
-        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
-        // garbage remembered
-        prefs.edit().putString("last_on_mode", "garbage").putString("mode", "OFF").commit()
-        assertEquals(PolishMode.OFFLINE_S1, repository.turnOn())
-    }
-
-    /** A FAKE, named as one: real preferences cannot be made to fail a commit. Both keys stay untouched. */
-    @Test fun aFailedCommitLeavesModeAndLastOnModeUntouched_failingFake() {
+    /** A FAKE, named as one: real preferences cannot be made to fail a commit. The mode stays untouched. */
+    @Test fun aFailedCommitLeavesTheModeUntouched_failingFake() {
         val real = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
-        real.edit().clear().putString("mode", "OFF").putString("last_on_mode", "PROVIDER").commit()
+        real.edit().clear().putString("mode", "OFF").commit()
         val failing = FailingCommitPreferences(real)
         val fragile = ProviderConfigurationRepository(failing, secrets, checker)
         val threw = runCatching { fragile.setMode(PolishMode.OFFLINE_S1) }.isFailure
         assertEquals(true, threw)
-        assertEquals("OFF", stored("mode")); assertEquals("PROVIDER", stored("last_on_mode"))
-        // Both keys were offered to ONE commit; a production that wrote mode alone before failing shows here.
-        assertEquals(listOf(setOf("mode", "last_on_mode")), failing.attemptedCommits)
+        assertEquals("OFF", stored("mode"))
+        assertEquals(listOf(setOf("mode")), failing.attemptedCommits)
+    }
+
+    // #81: the Keystore put happens before the preferences commit, so a failed commit must give the old key back.
+
+    @Test fun aFailedCommitOnReplaceRestoresThePreviousKey_failingFake() {
+        repository.saveProvider(Provider.OPENAI, "gpt-test", null, "old-key", SelfHostedProtocol.OPENAI_COMPATIBLE)
+        val fragile = ProviderConfigurationRepository(FailingCommitPreferences(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)), secrets, checker)
+        val failure = runCatching { fragile.saveProvider(Provider.OPENAI, "gpt-test", null, "new-key", SelfHostedProtocol.OPENAI_COMPATIBLE) }.exceptionOrNull()
+        assertTrue("$failure", failure is IllegalStateException && failure !is InconsistentProviderStorageException)
+        assertEquals("old-key", secrets.get(Provider.OPENAI))
+        assertEquals("gpt-test", stored("model"))
+    }
+
+    @Test fun aFailedCommitOnAFirstSaveRemovesTheNewKey_failingFake() {
+        val fragile = ProviderConfigurationRepository(FailingCommitPreferences(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)), secrets, checker)
+        val threw = runCatching { fragile.saveProvider(Provider.GEMINI, "gemini-test", null, "new-key", SelfHostedProtocol.OPENAI_COMPATIBLE) }.isFailure
+        assertEquals(true, threw)
+        assertNull(secrets.get(Provider.GEMINI))
+        assertNull(stored("provider"))
+    }
+
+    @Test fun anUnreadableKeySnapshotAbortsBeforeAnyWrite_failingFake() {
+        val broken = FailingSecrets(secrets, failGet = true)
+        val fragile = ProviderConfigurationRepository(context, broken, checker)
+        val threw = runCatching { fragile.saveProvider(Provider.OPENAI, "gpt-test", null, "new-key", SelfHostedProtocol.OPENAI_COMPATIBLE) }.isFailure
+        assertEquals(true, threw)
+        assertEquals("the checker was never asked", 0, checker.calls.size)
+        assertNull(stored("provider"))
+        assertEquals(0, broken.puts)
+    }
+
+    @Test fun aFailedCommitOnRemoveRestoresTheKey_failingFake() {
+        repository.saveProvider(Provider.OPENAI, "gpt-test", null, "old-key", SelfHostedProtocol.OPENAI_COMPATIBLE)
+        val fragile = ProviderConfigurationRepository(FailingCommitPreferences(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)), secrets, checker)
+        val threw = runCatching { fragile.clearSelection() }.isFailure
+        assertEquals(true, threw)
+        assertEquals("old-key", secrets.get(Provider.OPENAI))
+        assertEquals("OPENAI", stored("provider"))
+    }
+
+    @Test fun aFailedRestoreReportsInconsistentStorage_failingFake() {
+        repository.saveProvider(Provider.OPENAI, "gpt-test", null, "old-key", SelfHostedProtocol.OPENAI_COMPATIBLE)
+        val broken = FailingSecrets(secrets, failPutAfter = 1)
+        val fragile = ProviderConfigurationRepository(FailingCommitPreferences(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)), broken, checker)
+        val failure = runCatching { fragile.saveProvider(Provider.OPENAI, "gpt-test", null, "new-key", SelfHostedProtocol.OPENAI_COMPATIBLE) }.exceptionOrNull()
+        assertTrue("$failure", failure is InconsistentProviderStorageException)
     }
 
     // #61: no cloud key is written unless the checker accepted it; the checker sees the key that would be stored.
@@ -240,6 +242,18 @@ class ProviderConfigurationRepositoryTest {
             calls += provider to apiKey
             return verdict
         }
+    }
+
+    /** Delegates to a real store; refuses reads, or refuses puts after the first, to stage the #81 compensation paths. */
+    private class FailingSecrets(private val real: SecretStore, private val failGet: Boolean = false, private val failPutAfter: Int = Int.MAX_VALUE) : SecretStore {
+        var puts = 0
+        override fun put(provider: Provider, secret: String) {
+            puts++
+            if (puts > failPutAfter) throw IllegalStateException("keystore unavailable")
+            real.put(provider, secret)
+        }
+        override fun get(provider: Provider): String? = if (failGet) throw IllegalStateException("keystore unavailable") else real.get(provider)
+        override fun remove(provider: Provider) = real.remove(provider)
     }
 
     private class MemorySecrets : SecretStore {

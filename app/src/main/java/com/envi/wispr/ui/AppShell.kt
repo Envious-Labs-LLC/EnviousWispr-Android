@@ -200,10 +200,9 @@ internal fun EnviousWisprApp(
     onRestoreClipboardChanged: (Boolean) -> Unit,
     onSmartInsertionChanged: (Boolean) -> Unit,
     onDynamicColorChanged: (Boolean) -> Unit,
-    onTurnPolishOn: () -> Unit,
-    onSetPolishMode: (PolishMode) -> Unit,
+    onSetPolishMode: (PolishMode) -> Int,
     onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol, Int?) -> Int,
-    onClearProviderSettings: (ProviderWriteOrigin) -> Int,
+    onClearProviderSettings: () -> Int,
     providerDiscovery: ProviderDiscoveryUiState,
     onCheckKey: (Provider, String?) -> Int,
     onKeyDraftChanged: (Provider) -> Unit,
@@ -248,13 +247,9 @@ internal fun EnviousWisprApp(
     val destination = AppDestination.entries.firstOrNull { it.name == destinationName }
         ?: AppDestination.History
     var settingsPageName by rememberSaveable { mutableStateOf<String?>(null) }
-    // A page opened from the AI Polish tab (#67). At most one of the two page kinds is open: the drawer
-    // cannot open over a polish page (its gestures are off then), and one callback clears both.
-    var polishPageName by rememberSaveable { mutableStateOf<String?>(null) }
-    val polishPage = polishPageName?.let(PolishSubpage::fromSaved)
     // The AI Polish snackbar shows each completed write once. The memory lives HERE, above the animated
-    // screen body, because the tab is removed while a page shows and a value inside it would be reborn
-    // with the tab and replay the message (#67, `PolishSnackbarPolicy`).
+    // screen body, because the tab is removed while a settings page shows and a value inside it would be
+    // reborn with the tab and replay the message (#67, `PolishSnackbarPolicy`).
     var lastShownWriteSequence by rememberSaveable { mutableStateOf(0) }
     val snackbarHostState = remember { SnackbarHostState() }
     // The one History card that is open, held here rather than inside the row so that scrolling it
@@ -270,12 +265,12 @@ internal fun EnviousWisprApp(
 
     // Only armed while a settings page is open, so the system back gesture on a tab still leaves the
     // app rather than being swallowed by a handler with nothing to close.
-    val closePages = { settingsPageName = null; polishPageName = null }
-    BackHandler(enabled = settingsPage != null || polishPage != null, onBack = closePages)
+    val closePages = { settingsPageName = null }
+    BackHandler(enabled = settingsPage != null, onBack = closePages)
 
-    LaunchedEffect(uiState.providerSettings.writeSequence, uiState.providerSettings.message, destination, polishPage) {
+    LaunchedEffect(uiState.providerSettings.writeSequence, uiState.providerSettings.message, destination) {
         val decision = PolishSnackbarPolicy.decide(lastShownWriteSequence, uiState.providerSettings.writeSequence, uiState.providerSettings.message)
-        if (decision.show && destination == AppDestination.Polish && polishPage == null) {
+        if (decision.show && destination == AppDestination.Polish) {
             lastShownWriteSequence = decision.remember
             snackbarHostState.showSnackbar(uiState.providerSettings.message)
         } else if (!decision.show) {
@@ -300,7 +295,7 @@ internal fun EnviousWisprApp(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = settingsPage == null && polishPage == null,
+        gesturesEnabled = settingsPage == null,
         drawerContent = {
             SettingsDrawerSheet(
                 current = settingsPage,
@@ -313,8 +308,7 @@ internal fun EnviousWisprApp(
     ) {
         AppScaffold(
             destination = destination,
-            page = settingsPage?.let { PageChrome(it.title) }
-                ?: polishPage?.let { PageChrome(it.title(uiState.providerSettings.provider.takeIf { uiState.providerSettings.configured })) },
+            page = settingsPage?.let { PageChrome(it.title) },
             snackbarHostState = snackbarHostState,
             onOpenDrawer = { scope.launch { drawerState.open() } },
             onBack = closePages,
@@ -333,7 +327,7 @@ internal fun EnviousWisprApp(
             } else null,
         ) { contentModifier ->
             AnimatedContent(
-                targetState = settingsPage?.let(Screen::Page) ?: polishPage?.let(Screen::Polish) ?: Screen.Tab(destination),
+                targetState = settingsPage?.let(Screen::Page) ?: Screen.Tab(destination),
                 transitionSpec = { fadeIn() togetherWith fadeOut() },
                 label = "destination",
                 modifier = contentModifier,
@@ -376,32 +370,17 @@ internal fun EnviousWisprApp(
                         AppDestination.Polish -> PolishScreen(
                             settings = uiState.providerSettings,
                             s1State = polishS1State,
-                            onTurnOn = onTurnPolishOn,
-                            onSetMode = onSetPolishMode,
-                            onOpenProviderSetup = { provider -> polishPageName = PolishSubpage.ProviderSetup(provider).toSaved() },
-                            onOpenLocalModel = { polishPageName = PolishSubpage.LocalModel.toSaved() },
-                            onDownloadModel = {
-                                ModelDeliveryWorker.enqueue(context, ModelManifest.s1)
-                                onRefreshReadiness()
-                            },
-                            onClearProvider = { onClearProviderSettings(ProviderWriteOrigin.TAB) },
-                        )
-                    }
-                    is Screen.Polish -> when (val page = current.page) {
-                        is PolishSubpage.ProviderSetup -> ProviderSetupPage(
-                            provider = page.provider,
-                            settings = uiState.providerSettings,
                             discovery = providerDiscovery,
+                            onSetMode = onSetPolishMode,
                             onSave = { provider, model, apiKey, discoverySequence ->
                                 onSaveProviderSettings(provider, model, null, apiKey, SelfHostedProtocol.OPENAI_COMPATIBLE, discoverySequence)
                             },
-                            onClear = { onClearProviderSettings(ProviderWriteOrigin.SETUP_PAGE) },
+                            onClearProvider = onClearProviderSettings,
                             onCheckKey = onCheckKey,
                             onKeyDraftChanged = onKeyDraftChanged,
                             onLoadCachedModels = onLoadCachedModels,
-                            onDone = closePages,
+                            onRefreshReadiness = onRefreshReadiness,
                         )
-                        PolishSubpage.LocalModel -> LocalModelPage(s1State = polishS1State, onRefreshReadiness = onRefreshReadiness)
                     }
                     is Screen.Page -> when (current.page) {
                         SettingsPage.WhatsNew -> WhatsNewPage()
@@ -446,9 +425,6 @@ private sealed interface Screen {
     data class Tab(val destination: AppDestination) : Screen
 
     data class Page(val page: SettingsPage) : Screen
-
-    /** A page opened from the AI Polish tab (#67); same chrome as a drawer page. */
-    data class Polish(val page: PolishSubpage) : Screen
 }
 
 /** What the scaffold needs to know about a page on top of the tabs: its title. Null means a tab is showing. */

@@ -28,7 +28,11 @@ class ModelDeliveryStoreTest {
         val bytes = "model payload".toByteArray()
         val model = descriptor(bytes)
         val root = Files.createTempDirectory("models").toFile()
+        // Stamped with THIS revision, which is what makes it resumable. An unstamped partial cannot be
+        // attributed to any revision, so it is discarded rather than resumed: that is the one-time cost of
+        // introducing the stamp, paid by anyone mid-download when it first ships.
         val partial = java.io.File(root, ".demo.download/model.bin.part").apply { parentFile.mkdirs(); writeBytes(bytes.copyOf(5)) }
+        java.io.File(root, ".demo.download/.staging-revision").writeText("r1")
         val status = ModelDeliveryStore(root).download(model, ModelTransport { _, offset ->
             assertEquals(5, offset)
             TransportResponse(ByteArrayInputStream(bytes.copyOfRange(offset.toInt(), bytes.size)), true)
@@ -131,29 +135,55 @@ class ModelDeliveryStoreTest {
         root.deleteRecursively()
     }
 
-    @Test fun aPartialLeftByAnOlderRevisionIsDiscardedRatherThanResumed() {
-        val bytes = "second payload".toByteArray()
-        val newer = descriptor(bytes, "r2")
-        val root = Files.createTempDirectory("models").toFile()
-        // What a revision bump really leaves behind: the model id and the staging names do not change, so
-        // the previous revision's partial is still here and it is LONGER than the new file.
-        java.io.File(root, ".demo.download/model.bin.part").apply {
-            parentFile.mkdirs()
-            writeBytes("a much longer payload from the previous revision".toByteArray())
+    @Test fun aPartialLeftByAnOlderRevisionIsNeverResumedWhateverItsLength() {
+        // BOTH lengths, because fixing only the longer one was the round-4 mistake. Longer wedges on an
+        // HTTP 416 with the screen offering only Update, which repeats it. Shorter is quieter and costs
+        // more: it looks resumable, so the new suffix lands on old bytes and the whole 670 MB transfer is
+        // spent before the hash rejects it.
+        listOf(
+            "a much longer partial left by the previous revision" to "longer than the new file",
+            "old" to "shorter than the new file",
+        ).forEach { (stale, note) ->
+            val bytes = "second payload".toByteArray()
+            val newer = descriptor(bytes, "r2")
+            val root = Files.createTempDirectory("models").toFile()
+            java.io.File(root, ".demo.download/model.bin.part").apply {
+                parentFile.mkdirs()
+                writeBytes(stale.toByteArray())
+            }
+            val offsets = mutableListOf<Long>()
+
+            val status = ModelDeliveryStore(root).download(newer, ModelTransport { _, offset ->
+                offsets += offset
+                TransportResponse(ByteArrayInputStream(bytes), false)
+            })
+
+            // Asserting the offsets, not just the end state: an in-memory transport answers a bad resume
+            // with resumed=false, which the existing fallback already survives, so only the offset list
+            // separates "never asked to resume" from "asked, then recovered".
+            assertEquals("resumed a stale partial $note", listOf(0L), offsets)
+            assertEquals(DownloadState.READY, status.state)
+            assertEquals("second payload", java.io.File(root, "demo/model.bin").readText())
+            root.deleteRecursively()
         }
-        val offsets = mutableListOf<Long>()
+    }
 
-        val status = ModelDeliveryStore(root).download(newer, ModelTransport { _, offset ->
-            offsets += offset
-            TransportResponse(ByteArrayInputStream(bytes), false)
-        })
+    @Test fun theStagingRevisionStampIsNeverAdmittedIntoTheModelDirectory() {
+        val bytes = "model payload".toByteArray()
+        val model = descriptor(bytes)
+        val root = Files.createTempDirectory("models").toFile()
+        val store = ModelDeliveryStore(root)
 
-        // Resuming would ask for a range at or past the end of the file, which is HTTP 416. That throws
-        // before verification can quarantine anything, and the state it leaves offers Update or Retry but
-        // never Repair, so every press reuses the same partial.
-        assertEquals(listOf(0L), offsets)
-        assertEquals(DownloadState.READY, status.state)
-        assertEquals("second payload", java.io.File(root, "demo/model.bin").readText())
+        store.download(model, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(bytes), false) })
+
+        // isVerified demands EXACTLY the manifest's files plus the receipt, so a leftover stamp would make
+        // a byte-perfect model read as not ready, which is the silent failure this whole layer exists to
+        // avoid.
+        assertEquals(
+            setOf("model.bin", ".verified-receipt"),
+            java.io.File(root, "demo").listFiles()!!.map { it.name }.toSet(),
+        )
+        assertTrue(store.isVerified(model))
         root.deleteRecursively()
     }
 

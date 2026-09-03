@@ -78,7 +78,19 @@ class ModelDeliveryStore(private val root: File) {
         if (!model.isAvailable) return DownloadStatus(DownloadState.FAILED, message = "model manifest is unavailable")
         root.mkdirs()
         val staging = File(root, ".${model.id}.download")
+        // A revision bump keeps the model id and every staging file name, so the PREVIOUS revision's
+        // partials are still sitting here. Resuming them mixes two revisions' bytes into one file. The
+        // stamp closes that window at the source rather than reasoning about each partial's length:
+        // a partial longer than the new file wedges on an HTTP 416, and a SHORTER one is worse to reason
+        // about because it looks resumable, downloads the new suffix onto old bytes, and only fails at the
+        // hash, having spent the whole transfer (#36 review rounds 4 and 5, 2026-09-02).
+        val stamp = File(staging, STAGING_REVISION)
+        if (staging.exists() && runCatching { stamp.readText() }.getOrNull() != model.pinnedRevision) {
+            staging.deleteRecursively()
+        }
         try {
+            staging.mkdirs()
+            stamp.writeText(model.pinnedRevision)
             for (entry in model.files) {
                 if (control.isCancelled()) {
                     val bytes = File(staging, entry.name + ".part").length()
@@ -95,14 +107,12 @@ class ModelDeliveryStore(private val root: File) {
                 val part = File(staging, entry.name + ".part")
                 part.parentFile?.mkdirs()
                 var offset = part.length()
-                // A partial at or past the expected size is not a resumable PREFIX of this file, so it
-                // belongs to a different manifest revision. The model id and the staging names do not
-                // change across a revision bump, so a v2 partial is still sitting here after a v3 bump:
-                // asking for `Range: bytes=<size>-` returns 416, which throws before any verification can
-                // quarantine it, and every Retry or Update reuses the same partial forever. The user is
-                // never offered Repair from that state, so nothing clears it (#36 review, 2026-09-02).
-                // Cost of the simple rule: a download that finished but died before the rename starts
-                // over. That is rare and recoverable; the wedge was neither.
+                // Belt to the stamp's braces, and a DIFFERENT question: the stamp knows which revision a
+                // partial belongs to, this knows whether it is a valid prefix at all. Within one revision
+                // an oversized partial means local corruption, and resuming it asks for
+                // `Range: bytes=<size>-`, which is an HTTP 416 that throws before verification can
+                // quarantine anything. Cost: a transfer that finished but died before the rename starts
+                // over, which is rare and recoverable.
                 if (offset >= entry.expectedBytes) {
                     part.delete()
                     offset = 0
@@ -145,6 +155,10 @@ class ModelDeliveryStore(private val root: File) {
                 val admittedFile = File(staging, entry.name)
                 if (!part.renameTo(admittedFile)) throw IOException("could not finalize model file")
             }
+            // The stamp is staging-only bookkeeping and must not be admitted: `isVerified` requires the
+            // directory to hold EXACTLY the manifest's files plus the receipt, so one extra file makes an
+            // otherwise perfect model read as not ready.
+            stamp.delete()
             File(staging, RECEIPT).writeText(receiptText(model))
             val final = finalDirectory(model)
             val old = File(root, ".${model.id}.old")
@@ -213,6 +227,8 @@ class ModelDeliveryStore(private val root: File) {
 
     private companion object {
         const val RECEIPT = ".verified-receipt"
+        /** Which manifest revision the staging partials belong to. Staging-only; never admitted. */
+        const val STAGING_REVISION = ".staging-revision"
     }
 
     private fun quarantine(staging: File, stamp: Long) {

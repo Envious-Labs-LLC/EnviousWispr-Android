@@ -10,6 +10,7 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.LinearLayout
+import android.widget.LinearLayout.LayoutParams.WRAP_CONTENT as WRAP
 import android.widget.TextView
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import com.envi.wispr.ui.DictationSessionService
@@ -21,6 +22,7 @@ internal class RecordingAccessibilityOverlay(
     private val windowManager = service.getSystemService(WindowManager::class.java)
     private val density = service.resources.displayMetrics.density
     private val timer = TextView(service)
+    private val notice = TextView(service)
     private val root = buildRoot()
     private val layoutParams = WindowManager.LayoutParams(
         WindowManager.LayoutParams.WRAP_CONTENT,
@@ -57,6 +59,14 @@ internal class RecordingAccessibilityOverlay(
         }
         timer.text = "${snapshot.elapsedSeconds}s"
         timer.contentDescription = "${snapshot.elapsedSeconds} seconds elapsed"
+        val line = snapshot.notice
+        if (line.isNullOrBlank()) {
+            notice.visibility = View.GONE
+        } else {
+            notice.text = line
+            notice.contentDescription = line
+            notice.visibility = View.VISIBLE
+        }
         runCatching { updateTopOffset() }
             .onFailure { error -> Log.w(TAG, "Unable to position recording controls", error) }
         if (!attached) {
@@ -69,6 +79,30 @@ internal class RecordingAccessibilityOverlay(
     }
 
     private fun buildRoot(): View {
+        val pill = buildPill()
+
+        // The notice sits BELOW the pill rather than inside it, so the pill keeps its shape and the
+        // line can wrap. Hidden by default: an empty slot must not change what the recorder looks like.
+        notice.apply {
+            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(230, 230, 230))
+            textSize = 12f
+            maxLines = 2
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            background = roundedBackground(Color.rgb(36, 39, 43), dp(12).toFloat())
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+
+        return LinearLayout(service).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            addView(pill, LinearLayout.LayoutParams(WRAP, WRAP))
+            addView(notice, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(6) })
+        }
+    }
+
+    private fun buildPill(): View {
         val container = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL

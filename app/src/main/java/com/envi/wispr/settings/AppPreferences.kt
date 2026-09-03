@@ -3,11 +3,13 @@ package com.envi.wispr.settings
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
+import com.envi.wispr.vad.SilenceStopDetector
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -29,6 +31,10 @@ data class AppPreferencesState(
     val autoCopyToClipboard: Boolean = true,
     val restoreClipboardAfterPaste: Boolean = true,
     val smartInsertionEnabled: Boolean = true,
+    // OFF by default, matching the one canonical default across all three platforms. Auto-stop is
+    // actively wrong for someone who pauses to think mid-sentence, so it is opted into, never out of.
+    val autoStopOnSilenceEnabled: Boolean = false,
+    val silencePauseSeconds: Float = SilenceStopDetector.DEFAULT_PAUSE_SECONDS,
 )
 
 fun AppPreferencesState.cleanupOptions(): CleanupOptions = CleanupOptions(
@@ -69,6 +75,12 @@ class AppPreferences(context: Context) {
         autoCopyToClipboard = preferences[Keys.AUTO_COPY_TO_CLIPBOARD] ?: true,
         restoreClipboardAfterPaste = preferences[Keys.RESTORE_CLIPBOARD_AFTER_PASTE] ?: true,
         smartInsertionEnabled = preferences[Keys.SMART_INSERTION] ?: true,
+        autoStopOnSilenceEnabled = preferences[Keys.AUTO_STOP_ON_SILENCE] ?: false,
+        // A stored value outside the slider's range is a corrupt or foreign write, never a choice
+        // anyone made, so it reads as the default rather than being honoured.
+        silencePauseSeconds = SilenceStopDetector.sanitisePauseSeconds(
+            preferences[Keys.SILENCE_PAUSE_SECONDS] ?: SilenceStopDetector.DEFAULT_PAUSE_SECONDS,
+        ),
     )
 
     suspend fun setOnboardingStep(step: Int) {
@@ -133,6 +145,16 @@ class AppPreferences(context: Context) {
         dataStore.edit { preferences -> preferences[Keys.SMART_INSERTION] = enabled }
     }
 
+    suspend fun setAutoStopOnSilenceEnabled(enabled: Boolean) {
+        dataStore.edit { preferences -> preferences[Keys.AUTO_STOP_ON_SILENCE] = enabled }
+    }
+
+    /** Clamped on the way in as well as on the way out, so a bad value never reaches storage. */
+    suspend fun setSilencePauseSeconds(seconds: Float) {
+        val safe = SilenceStopDetector.sanitisePauseSeconds(seconds)
+        dataStore.edit { preferences -> preferences[Keys.SILENCE_PAUSE_SECONDS] = safe }
+    }
+
     private object Keys {
         val ONBOARDING_STEP = intPreferencesKey("onboarding_step")
         val ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
@@ -144,5 +166,7 @@ class AppPreferences(context: Context) {
         val AUTO_COPY_TO_CLIPBOARD = booleanPreferencesKey("auto_copy_to_clipboard")
         val RESTORE_CLIPBOARD_AFTER_PASTE = booleanPreferencesKey("restore_clipboard_after_paste")
         val SMART_INSERTION = booleanPreferencesKey("smart_insertion_enabled")
+        val AUTO_STOP_ON_SILENCE = booleanPreferencesKey("auto_stop_on_silence_enabled")
+        val SILENCE_PAUSE_SECONDS = floatPreferencesKey("silence_pause_seconds")
     }
 }

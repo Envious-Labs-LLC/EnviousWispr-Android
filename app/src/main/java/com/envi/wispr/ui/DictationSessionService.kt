@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
+import com.envi.wispr.audio.CaptureEnding
 import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
@@ -54,6 +55,7 @@ import com.envi.wispr.polish.PolishReason
 import com.envi.wispr.polish.PolishService
 import com.envi.wispr.providers.ProviderConfigurationRepository
 import com.envi.wispr.settings.AppPreferences
+import com.envi.wispr.vad.SilenceStopDetector
 import com.envi.wispr.settings.cleanupOptions
 import com.envi.wispr.settings.clipboardInsertionPolicy
 import com.envi.wispr.shortcuts.DictationNotificationController
@@ -86,6 +88,12 @@ import java.util.concurrent.atomic.AtomicReference
 /** Owns a dictation session without placing an Activity above the user's typing app. */
 class DictationSessionService : Service() {
     companion object {
+        /**
+         * macOS's own sentence for this state, reused rather than reinvented. Android writing its own
+         * words for a state macOS has already worded is how the two products drift apart.
+         */
+        private const val SILENCE_UNAVAILABLE_NOTICE = "Auto-stop on silence is unavailable right now"
+
         private const val TAG = "DictationSession"
         const val ACTION_START = "com.envi.wispr.action.START_DICTATION"
         const val ACTION_TOGGLE = "com.envi.wispr.action.TOGGLE_DICTATION"
@@ -168,6 +176,18 @@ class DictationSessionService : Service() {
      */
     @Volatile private var clipboardPolicy: ClipboardInsertionPolicy? = null
     @Volatile private var sessionPreferences = SessionPreferences()
+
+    /**
+     * Frozen at the moment a take starts, never read again during it. That is the same contract macOS
+     * uses, and it is why changing the slider mid-dictation does not move the goalposts under you.
+     *
+     * Written in the same collector block as the cleanup options, BEFORE its readiness signal completes,
+     * because `beginSession` awaits that signal before binding anything. Written anywhere else and a
+     * user who had enabled auto-stop would silently get a manual take after every cold start.
+     */
+    @Volatile private var autoStopOnSilence = false
+    @Volatile private var silencePauseSeconds = SilenceStopDetector.DEFAULT_PAUSE_SECONDS
+    @Volatile private var silenceNoticeShown = false
     private val cleanupPreferencesReady = CompletableDeferred<Unit>()
     private val structuredTermsReady = CompletableDeferred<Unit>()
 
@@ -268,6 +288,8 @@ class DictationSessionService : Service() {
                 AppPreferences(applicationContext).authoritativeState.collect { preferences ->
                     cleanupOptions = preferences.cleanupOptions()
                     clipboardPolicy = preferences.clipboardInsertionPolicy()
+                    autoStopOnSilence = preferences.autoStopOnSilenceEnabled
+                    silencePauseSeconds = preferences.silencePauseSeconds
                     cleanupPreferencesReady.complete(Unit)
                 }
             } catch (cancelled: CancellationException) {
@@ -385,7 +407,11 @@ class DictationSessionService : Service() {
         if (state.get() != SessionState.STARTING) return
         var captureStarted = false
         try {
-            if (audioService?.startCapture() != true) {
+            silenceNoticeShown = false
+            val started = runCatching {
+                audioService?.startCaptureWithSilenceStop(autoStopOnSilence, silencePauseSeconds)
+            }.getOrNull()
+            if (started != true) {
                 stopAudioCaptureService()
                 showError("Microphone capture could not start safely")
                 return
@@ -440,13 +466,21 @@ class DictationSessionService : Service() {
                         lastElapsedSecond = second
                         RecordingOverlayState.updateElapsed(second)
                     }
+                    publishSilenceNoticeIfNeeded(service)
                     if (!service.isCapturing && state.get() == SessionState.RECORDING) {
-                        if (service.terminalReason == AudioCaptureService.TERMINAL_REASON_ERROR) {
-                            DebugLogger.error(TAG, "Audio capture ended with a terminal failure")
-                            discardDraft()
-                            showError("Microphone capture stopped unexpectedly. Try again.")
-                        } else {
-                            stopAndTranscribe()
+                        // Exhaustive over CaptureEnding with no `else`, so a reason this build does not
+                        // know cannot fall through into an ordinary transcription.
+                        when (CaptureEnding.fromAidl(service.terminalReason)) {
+                            CaptureEnding.Failure -> {
+                                DebugLogger.error(TAG, "Audio capture ended with a terminal failure")
+                                discardDraft()
+                                showError("Microphone capture stopped unexpectedly. Try again.")
+                            }
+
+                            CaptureEnding.Manual,
+                            CaptureEnding.MaxDuration,
+                            CaptureEnding.Silence,
+                            CaptureEnding.StillRunning -> stopAndTranscribe()
                         }
                         break
                     }
@@ -456,6 +490,29 @@ class DictationSessionService : Service() {
                 Thread.sleep(100)
             }
         }, "DictationPollingThread").start()
+    }
+
+    /**
+     * Tell the user once, and only when auto-stop never became available for a take they had it on for.
+     *
+     * Losing the detector after it was already working leaves a correct recording, and a message
+     * several seconds into one is an interruption for nothing. The floating recorder only exists while
+     * the accessibility service runs, so clipboard-only mode gets the same sentence as a toast instead.
+     */
+    private fun publishSilenceNoticeIfNeeded(service: IAudioCaptureService) {
+        if (!autoStopOnSilence || silenceNoticeShown) return
+        val status = runCatching { service.silenceStopStatus }.getOrNull() ?: return
+        if (status != AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return
+        silenceNoticeShown = true
+        if (PasteAccessibilityService.isBound.value) {
+            RecordingOverlayState.showNotice(SILENCE_UNAVAILABLE_NOTICE)
+        } else {
+            serviceScope.launch(Dispatchers.Main.immediate) {
+                runCatching {
+                    Toast.makeText(applicationContext, SILENCE_UNAVAILABLE_NOTICE, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     private fun stopAndTranscribe() {

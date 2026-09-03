@@ -24,10 +24,18 @@ class AudioCaptureService : Service() {
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
         private const val MAX_RECORDING_DURATION_MS = 120_000L
         private const val AUDIO_FILENAME = "recording.pcm"
-        const val TERMINAL_REASON_NONE = 0
-        const val TERMINAL_REASON_MAX_DURATION = 1
-        const val TERMINAL_REASON_MANUAL = 2
-        const val TERMINAL_REASON_ERROR = 3
+        /**
+         * The terminal reasons, re-exported under the names callers already use. `CaptureEnding` owns the
+         * values, because they cross a process boundary and must have exactly one definition.
+         *
+         * [TERMINAL_REASON_SILENCE] is a NORMAL ending in the same class as [TERMINAL_REASON_MANUAL]: a
+         * reader that treats it as a failure discards a good transcript. Nothing sets it yet.
+         */
+        const val TERMINAL_REASON_NONE = CaptureEnding.NONE
+        const val TERMINAL_REASON_MAX_DURATION = CaptureEnding.MAX_DURATION
+        const val TERMINAL_REASON_MANUAL = CaptureEnding.MANUAL
+        const val TERMINAL_REASON_ERROR = CaptureEnding.ERROR
+        const val TERMINAL_REASON_SILENCE = CaptureEnding.SILENCE
     }
 
     /** Every native and file resource for one take has one owner and one lifetime. */
@@ -38,7 +46,11 @@ class AudioCaptureService : Service() {
         val startedAtMs: Long,
     ) {
         @Volatile var bytesWritten: Long = 0L
-        @Volatile var stopRequested: Boolean = false
+
+        /** The one owner of how this take ended. First claim wins; see `CaptureEndingClaim`. */
+        val endingClaim = CaptureEndingClaim()
+
+        val stopRequested: Boolean get() = endingClaim.ended
     }
 
     private val sessionLock = Any()
@@ -175,11 +187,8 @@ class AudioCaptureService : Service() {
             while (isRecording.get() && session === active) {
                 val elapsed = SystemClock.elapsedRealtime() - active.startedAtMs
                 if (elapsed >= MAX_RECORDING_DURATION_MS) {
-                    reachedMaxDuration = true
-                    terminalReason = TERMINAL_REASON_MAX_DURATION
+                    reachedMaxDuration = claimEnding(active, TERMINAL_REASON_MAX_DURATION)
                     DebugLogger.log(TAG, "Max duration reached (${elapsed}ms), auto-stopping")
-                    isRecording.set(false)
-                    active.stopRequested = true
                     break
                 }
 
@@ -205,10 +214,7 @@ class AudioCaptureService : Service() {
             }
         } catch (e: Exception) {
             synchronized(sessionLock) {
-                if (session === active) {
-                    terminalReason = TERMINAL_REASON_ERROR
-                    isRecording.set(false)
-                }
+                if (session === active) claimEnding(active, TERMINAL_REASON_ERROR)
             }
             DebugLogger.error(TAG, "Capture thread error", e)
         } finally {
@@ -220,14 +226,27 @@ class AudioCaptureService : Service() {
         }
     }
 
+    /**
+     * Publish the first ending claimed for [active] and stop the loop.
+     *
+     * The published reason must outlive [releaseSession], because the client polls `getTerminalReason`
+     * only AFTER `isCapturing` has gone false, by which point the session is gone. So the value lives on
+     * the service while the CLAIM lives on the session, and the claim is what makes it first-wins.
+     */
+    private fun claimEnding(active: CaptureSession, reason: Int): Boolean {
+        if (!active.endingClaim.claim(reason)) return false
+        terminalReason = reason
+        isRecording.set(false)
+        return true
+    }
+
     /** Signal the reader to finish. The reader performs the one final native release. */
     private fun stopRecording() {
         val active: CaptureSession
         synchronized(sessionLock) {
             active = session ?: return
-            if (!isRecording.compareAndSet(true, false)) return
-            terminalReason = TERMINAL_REASON_MANUAL
-            active.stopRequested = true
+            if (!isRecording.get()) return
+            if (!claimEnding(active, TERMINAL_REASON_MANUAL)) return
             try {
                 // stop() unblocks a pending read. Do not release here while the reader may
                 // still be using the same AudioRecord instance.

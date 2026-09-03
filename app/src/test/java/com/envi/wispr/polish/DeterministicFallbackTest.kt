@@ -32,7 +32,7 @@ class DeterministicFallbackTest {
     }
 
     @Test fun fallbackStillAppliesTheTakeCleanupOptions() {
-        assertEquals("hello world", PolishFallback.deterministic("um hello world", CleanupOptions(removeFillers = true)))
-        assertEquals("um hello world", PolishFallback.deterministic("um hello world", CleanupOptions(removeFillers = false)))
+        assertEquals("hello world", PolishFallback.deterministic("uh hello world", CleanupOptions(removeFillers = true)))
+        assertEquals("uh hello world", PolishFallback.deterministic("uh hello world", CleanupOptions(removeFillers = false)))
     }
 }

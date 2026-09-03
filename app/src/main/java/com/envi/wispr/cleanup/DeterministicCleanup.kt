@@ -15,7 +15,12 @@ data class CleanupResult(val text: String, val changed: Boolean, val recovered: 
 
 /** Conservative, deterministic English cleanup. It never calls a network service. */
 object DeterministicCleanup {
-    private val filler = Regex("\\b(um|uh|erm|err|ah|hmm|hm|mhm)\\b[,:]?\\s*", RegexOption.IGNORE_CASE)
+    // `um` and `err` were removed 2026-09-02 (#36, #107). Both are ordinary WORDS, so stripping them
+    // deletes something the speaker authored, and RULE: matcher-set-adversarial-tests says that direction
+    // fails worse than leaving a filler in. `err` is an English verb: "To err is human" became "To is
+    // human". `um` is a German preposition, a Portuguese article, and a Croatian and Slovenian noun, all
+    // inside the 25 languages Parakeet v3 decodes. The remaining six are not words in those languages.
+    private val filler = Regex("\\b(uh|erm|ah|hmm|hm|mhm)\\b[,:]?\\s*", RegexOption.IGNORE_CASE)
     private val emoji = linkedMapOf("smiley face" to "🙂", "smiling face" to "🙂", "thumbs up" to "👍", "heart" to "❤️", "fire" to "🔥")
     private val punctuation = linkedMapOf(
         "new paragraph" to "\n\n", "new line" to "\n", "question mark" to "?",

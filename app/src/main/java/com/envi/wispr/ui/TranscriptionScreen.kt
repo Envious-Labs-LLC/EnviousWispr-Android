@@ -23,6 +23,13 @@ import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.settings.AppPreferencesState
 
 /**
+ * The words this sentence NAMES must be words cleanup actually removes. `um` was named here while it was
+ * being deleted from German, Portuguese and Croatian, and removing it from the filler set left this line
+ * promising something untrue (#36, #107). `FillerCopyTest` binds the two together.
+ */
+internal const val FILLER_TOGGLE_SUBTITLE = "Remove pauses such as uh and hmm."
+
+/**
  * The speech engine that turns your voice into text, and the rules that tidy the result.
  *
  * The cleanup switches sit here rather than on their own page because the macOS reference puts
@@ -51,9 +58,9 @@ internal fun TranscriptionScreen(
         ModelCard(
             eyebrow = "SPEECH ENGINE",
             title = "Parakeet",
-            description = "Your offline English speech engine. It listens and transcribes on this phone, so your voice never leaves it.",
+            description = "Your offline speech engine. It listens and transcribes on this phone, so your voice never leaves it.",
             state = parakeetState,
-            facts = listOf("Offline", "English", "Stays on this phone"),
+            facts = listOf("Offline", "25 languages", "Stays on this phone"),
             onAction = {
                 // Exhaustive with no `else`, so a new ModelUiAction is a compile error here rather
                 // than a silent download. The four inert members are the ones `ModelCard` routes to
@@ -75,7 +82,7 @@ internal fun TranscriptionScreen(
         SettingsGroup("Text cleanup") {
             SettingsToggleRow(
                 title = "Remove filler words",
-                subtitle = "Remove pauses such as um and uh.",
+                subtitle = FILLER_TOGGLE_SUBTITLE,
                 checked = preferences.fillerRemovalEnabled,
                 onCheckedChange = { updateWithHaptic(it, onFillerRemovalChanged) },
             )
@@ -101,9 +108,9 @@ internal fun TranscriptionScreen(
         )
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Other languages", style = MaterialTheme.typography.titleMedium)
+                Text("Languages", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "EnviousWispr transcribes English today. More languages are coming, and dictation will always keep working with no network.",
+                    "EnviousWispr transcribes 25 European languages. There is nothing to choose: speak, and it writes what it hears, with no network. Tidying up spoken numbers, dates and money is still built for English.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )

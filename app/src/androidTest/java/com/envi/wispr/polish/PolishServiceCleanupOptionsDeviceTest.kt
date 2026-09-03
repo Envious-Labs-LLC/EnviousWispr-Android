@@ -95,8 +95,8 @@ class PolishServiceCleanupOptionsDeviceTest {
 
     @Test
     fun allDisabledCleanupOptionsCrossTheProcessBoundary() {
-        val outcome = polishOff(11L, "um keep thumbs up emoji comma literal", false, false, false)
-        assertEquals("um keep thumbs up emoji comma literal", outcome.text)
+        val outcome = polishOff(11L, "uh keep thumbs up emoji comma literal", false, false, false)
+        assertEquals("uh keep thumbs up emoji comma literal", outcome.text)
         assertEquals(11L, outcome.requestId)
     }
 
@@ -114,7 +114,7 @@ class PolishServiceCleanupOptionsDeviceTest {
         var outcome: PolishOutcome? = null
         service?.polishRequest(
             13L,
-            "um hello world",
+            "uh hello world",
             true,
             true,
             false,

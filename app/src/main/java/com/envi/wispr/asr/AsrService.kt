@@ -171,6 +171,11 @@ class AsrService : Service() {
 
             val config = OfflineRecognizerConfig()
             config.modelConfig = modelConfig
+            // Pinned, not defaulted. sherpa-onnx already defaults to greedy_search (read from the
+            // v1.12.29 tag, 2026-09-02), but sherpa-onnx issue 3267 reports modified_beam_search
+            // hallucinating or returning empty text on Parakeet TDT about a fifth of the time. An AAR
+            // upgrade that changed the default would otherwise reach this model silently.
+            config.decodingMethod = "greedy_search"
 
             recognizer = OfflineRecognizer(null, config)
             modelReady = true

@@ -95,6 +95,18 @@ class ModelDeliveryStore(private val root: File) {
                 val part = File(staging, entry.name + ".part")
                 part.parentFile?.mkdirs()
                 var offset = part.length()
+                // A partial at or past the expected size is not a resumable PREFIX of this file, so it
+                // belongs to a different manifest revision. The model id and the staging names do not
+                // change across a revision bump, so a v2 partial is still sitting here after a v3 bump:
+                // asking for `Range: bytes=<size>-` returns 416, which throws before any verification can
+                // quarantine it, and every Retry or Update reuses the same partial forever. The user is
+                // never offered Repair from that state, so nothing clears it (#36 review, 2026-09-02).
+                // Cost of the simple rule: a download that finished but died before the rename starts
+                // over. That is rare and recoverable; the wedge was neither.
+                if (offset >= entry.expectedBytes) {
+                    part.delete()
+                    offset = 0
+                }
                 var response = transport.open(entry.sourceUrl, offset)
                 if (offset > 0 && !response.resumed) {
                     response.stream.close()

@@ -131,6 +131,32 @@ class ModelDeliveryStoreTest {
         root.deleteRecursively()
     }
 
+    @Test fun aPartialLeftByAnOlderRevisionIsDiscardedRatherThanResumed() {
+        val bytes = "second payload".toByteArray()
+        val newer = descriptor(bytes, "r2")
+        val root = Files.createTempDirectory("models").toFile()
+        // What a revision bump really leaves behind: the model id and the staging names do not change, so
+        // the previous revision's partial is still here and it is LONGER than the new file.
+        java.io.File(root, ".demo.download/model.bin.part").apply {
+            parentFile.mkdirs()
+            writeBytes("a much longer payload from the previous revision".toByteArray())
+        }
+        val offsets = mutableListOf<Long>()
+
+        val status = ModelDeliveryStore(root).download(newer, ModelTransport { _, offset ->
+            offsets += offset
+            TransportResponse(ByteArrayInputStream(bytes), false)
+        })
+
+        // Resuming would ask for a range at or past the end of the file, which is HTTP 416. That throws
+        // before verification can quarantine anything, and the state it leaves offers Update or Retry but
+        // never Repair, so every press reuses the same partial.
+        assertEquals(listOf(0L), offsets)
+        assertEquals(DownloadState.READY, status.state)
+        assertEquals("second payload", java.io.File(root, "demo/model.bin").readText())
+        root.deleteRecursively()
+    }
+
     private fun descriptor(bytes: ByteArray, revision: String = "r1") = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", revision, listOf(ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://huggingface.co/test/model/resolve/$revision/model.bin")))
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }

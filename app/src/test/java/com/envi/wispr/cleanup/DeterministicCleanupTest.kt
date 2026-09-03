@@ -5,9 +5,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DeterministicCleanupTest {
+    /**
+     * Product Outcome. When this fails the user watches a word they actually said disappear from the text
+     * that gets inserted. Added with #36, which made 24 more languages reachable and therefore made the
+     * collision reachable; `err` was already broken in English before that. Owner of the wider sweep: #107.
+     */
+    @Test fun realWordsThatLookLikeFillersSurvive() {
+        fun clean(input: String) = DeterministicCleanup.apply(input, CleanupOptions()).text
+
+        // English, and this one was live before any language work: `err` is a verb.
+        assertEquals("To err is human", clean("To err is human"))
+        // German preposition, Portuguese article, Croatian noun. All inside Parakeet v3's 25 languages.
+        assertEquals("Wir treffen uns um drei", clean("Wir treffen uns um drei"))
+        assertEquals("Eu quero um cafe", clean("Eu quero um cafe"))
+        assertEquals("Um je bistar", clean("Um je bistar"))
+
+        // The six that stayed are not words in those languages, so filler removal still does its job.
+        assertEquals("hold on", clean("Uh, hold on"))
+        assertEquals("let me see", clean("Hmm, let me see"))
+    }
+
     @Test fun removesFillersAndExplicitCommands() {
         val result = DeterministicCleanup.apply(
-            "um hello comma thumbs up emoji",
+            "uh hello comma thumbs up emoji",
             CleanupOptions(spokenPunctuation = true),
         )
         assertEquals("hello, 👍", result.text)
@@ -16,15 +36,15 @@ class DeterministicCleanupTest {
     }
 
     @Test fun disabledOptionsLeaveCommandsAlone() {
-        val result = DeterministicCleanup.apply("um hello comma", CleanupOptions(false, false, false))
-        assertEquals("um hello comma", result.text)
+        val result = DeterministicCleanup.apply("uh hello comma", CleanupOptions(false, false, false))
+        assertEquals("uh hello comma", result.text)
     }
 
     @Test fun polishPipelineHonorsEachCleanupToggleIndependently() {
-        val raw = "um send thumbs up emoji comma literally"
+        val raw = "uh send thumbs up emoji comma literally"
 
         assertEquals(
-            "um send 👍 comma literally",
+            "uh send 👍 comma literally",
             PolishPipeline.run(
                 raw,
                 CleanupOptions(removeFillers = false, spokenEmoji = true, spokenPunctuation = false),
@@ -38,7 +58,7 @@ class DeterministicCleanupTest {
             ).text,
         )
         assertEquals(
-            "um send thumbs up emoji, literally",
+            "uh send thumbs up emoji, literally",
             PolishPipeline.run(
                 raw,
                 CleanupOptions(removeFillers = false, spokenEmoji = false, spokenPunctuation = true),
@@ -54,16 +74,16 @@ class DeterministicCleanupTest {
     }
 
     @Test fun rejectsMeaningDroppingOutput() {
-        val result = DeterministicCleanup.apply("um ".repeat(30))
+        val result = DeterministicCleanup.apply("uh ".repeat(30))
         assertTrue(result.recovered)
-        assertEquals("um ".repeat(30).trim(), result.text)
+        assertEquals("uh ".repeat(30).trim(), result.text)
     }
 
     @Test fun modelReceivesCleanedText() {
         var seen = ""
         // Four words or more, so the too-short bypass (#2) lets the model see the cleaned text.
         val result = PolishPipeline.run(
-            "um envious whisper comma works well today",
+            "uh envious whisper comma works well today",
             CleanupOptions(spokenPunctuation = true),
         ) { cleaned ->
             seen = cleaned
@@ -78,19 +98,19 @@ class DeterministicCleanupTest {
         val unsafe = PolishPipeline.run("hello world from the model") { "x".repeat(300) }
         assertEquals("hello world from the model", unsafe.text)
         assertTrue(unsafe.recovered)
-        val blank = PolishPipeline.run("um hello there my friend") { " " }
+        val blank = PolishPipeline.run("uh hello there my friend") { " " }
         assertEquals("hello there my friend", blank.text)
         assertTrue(blank.recovered)
     }
 
     @Test fun recoveredCleanupSkipsModel() {
         var invoked = false
-        val result = PolishPipeline.run("um ".repeat(30) + "envious whisper") {
+        val result = PolishPipeline.run("uh ".repeat(30) + "envious whisper") {
             invoked = true
             "model output"
         }
         assertTrue(!invoked)
-        assertEquals("um ".repeat(30).trim() + " envious whisper", result.text)
+        assertEquals("uh ".repeat(30).trim() + " envious whisper", result.text)
         assertTrue(result.recovered)
         assertTrue(!result.usedModel)
     }
@@ -170,9 +190,9 @@ class DeterministicCleanupTest {
     @Test fun cleanupIsStableAndFailsBackToOriginalOnMeaningLoss() {
         val once = clean("email alice at example dot com comma call two zero three nine five four eight eight seven nine")
         assertEquals(once, clean(once))
-        val lossy = DeterministicCleanup.apply("um ".repeat(30))
+        val lossy = DeterministicCleanup.apply("uh ".repeat(30))
         assertTrue(lossy.recovered)
-        assertEquals("um ".repeat(30).trim(), lossy.text)
+        assertEquals("uh ".repeat(30).trim(), lossy.text)
     }
 
     private fun clean(input: String): String = DeterministicCleanup.apply(

@@ -69,7 +69,7 @@ class PolishServiceDeviceTest {
 
         service?.polishRequest(
             1L,
-            "um enviouswispr works with saurabh and it is really really useful",
+            "uh enviouswispr works with saurabh and it is really really useful",
             true,
             true,
             false,
@@ -91,7 +91,7 @@ class PolishServiceDeviceTest {
         assertEquals(1L, result.requestId)
         assertEquals(PolishReason.POLISHED, result.reason)
         assertTrue("Unexpected engine: ${result.engine}", result.engine.startsWith("S1-mini by Superwhisper"))
-        assertFalse("Filler was not removed: ${result.text}", result.text.lowercase().startsWith("um "))
+        assertFalse("Filler was not removed: ${result.text}", result.text.lowercase().startsWith("uh "))
         assertTrue("Expected the proven NPU backend, got: ${result.engine}", result.engine.endsWith("(NPU)"))
         Log.i("S1DeviceTest", "engine=${result.engine} latencyMs=${result.latencyMs} chars=${result.text.length}")
     }

@@ -421,20 +421,25 @@ normally disarms that generation. If the deadline wins, the watchdog calls
 
 Killing only `:vad` turns an unbounded synchronous call into ordinary binder death, which this design
 already handles: the feeder receives `DeadObjectException` (external), the enabled take becomes unavailable,
-the feeder terminates, and capture continues. The bounded feeder join stays as a final defence, not as the
-normal mechanism for surviving a detector hang.
+the feeder terminates, and capture continues. **Capture teardown does not join the feeder**: the PCM file
+and the `AudioRecord` become available without waiting for detector cleanup, because interrupting cannot
+unblock a binder call and any wait would charge the user for the detector's problem.
 
 The callback interface was deleted rather than guarded, under a commitment made before the grounded review's
 verdict was read: three or more unenumerated members of the "a message arrives after the take it belongs to
 ended" class meant deleting the direction that produces them. Android's binding API supplied four.
 
-**Detector teardown never owns capture teardown.** `CaptureSession` invalidates the detector token, clears
-the ring, unbinds `:vad`, and waits only a bounded interval for the feeder. Whether the feeder returns or
-not, the capture thread remains the sole owner of closing the PCM file and the `AudioRecord`, and `session`
-becomes eligible for a new take once those heart resources close. A feeder still alive after the bounded
-join holds no `AudioRecord`, file stream, ring slot, or reference to a later session, and any eventual
-return fails the active-session and token checks. **A detector hang may disable auto-stop; it may not refuse
-the next recording.**
+**Detector teardown never owns capture teardown.** Once the capture thread closes the PCM file and the
+`AudioRecord`, `session` becomes eligible for a new take. The finished take's detector is marked abandoned
+and its feeder interrupted, **without a join**. The feeder owns only that take's ring, binding, status and
+token, and its `finally` finishes and unbinds that connection when it returns. **A detector hang may
+disable auto-stop; it may not delay the file, refuse the next recording, or touch a later take.**
+
+**And the detector process refuses work from a take that is over.** Two feeders can be alive at once after
+an immediate restart, and AIDL orders calls only within one client thread, so their calls can arrive in
+either order. Rather than guarding each site an old caller could reach, `:vad` accepts only a token
+strictly newer than the newest it has seen. The token is derived from the boot clock so the order survives
+a restart of `:audio`, which a plain counter would not.
 
 **A broken probability is rejected, not coerced.** Added during the code review. Reading a non-finite or
 out-of-range inference result as silence would walk the hangover and end the take, which is an inference
@@ -658,7 +663,8 @@ correctly.*
 | **Every producer of a terminal capture ending** | Manual stop from the session owner; cancellation; session-owner teardown; maximum-duration expiry in the capture loop; `AudioRecord.read` or file-write failure; a `SILENCE` return whose token is ACTIVE; `AudioCaptureService.onDestroy`; `:audio` process death. The first seven route through atomic `requestStop`. Process death has no readable terminal reason and surfaces through `audioConnection.onServiceDisconnected` in the session owner |
 | **Every path that starts a take** | Exactly one, `DictationSessionService.tryStartRecording:388`. Four entry surfaces feed it. `enumerated, one member` |
 | **Every `:vad` binding outcome** | `bindService` returns false; connected normally; returns a null binding (`onNullBinding` (external)); the binding dies permanently (`onBindingDied` (external)); the service disconnects and Android could reconnect automatically (`onServiceDisconnected`); `bindService` returns true but no connection callback ever arrives because the service crashed while being created; a connection arrives AFTER the capture token was invalidated; normal unbind. **Every failure marks the enabled take unavailable.** `onNullBinding`, `onBindingDied` and `onServiceDisconnected` explicitly unbind, so Android cannot reconnect into the same take. A late `onServiceConnected` is immediately unbound without calling `start`. **The eight-slot ring is the client-owned deadline for the no-callback-ever case**, which is the one Android gives no signal for |
-| **Every detector lifecycle exit** | Normal manual stop; silence stop; maximum duration; capture error; start failure after capture began; client binder death and unbind; `AudioCaptureService.onDestroy`; `:vad` process death; `:audio` process death; a stalled synchronous return; an immediate next start. Normal exits invalidate the token, clear the ring, unbind `:vad`, and bounded-join the feeder. `:vad` death disables auto-stop while capture continues. `:audio` death destroys its thread and ring with the process |
+| **Every detector lifecycle exit** | Normal manual stop; silence stop; maximum duration; capture error; start failure after capture began; client binder death and unbind; `AudioCaptureService.onDestroy`; `:vad` process death; `:audio` process death; a stalled synchronous return; an immediate next start. Normal exits invalidate the token, abandon the ring and interrupt the feeder **without joining it**; the
+feeder's `finally` unbinds its own take-specific connection when it returns. `:vad` death disables auto-stop while capture continues. `:audio` death destroys its thread and ring with the process |
 | **Every immediate-restart state** | While the old capture thread still owns the `AudioRecord` or the PCM file, a second start returns `false`. **Once those heart resources close and `session` is null, a new take may start even if an invalidated detector feeder has not returned.** The new take has a new token, ring, read buffer, binding and detector state; the old feeder owns none of them |
 | **Every state the detector can be in when a take ends** | not created; binding; preparing; ready and idle; ready and in `speech`; ready and in `hangover` (external); unavailable; released. All end at the same teardown, and the token check prevents a late `SILENCE` reaching a take it does not belong to |
 | **Every consumer of the new preferences** | `AppViewModel.baseUiState:171` collects `AppPreferences.state` for UI rendering; `DictationSessionService` collects `authoritativeState:268` for capture policy; `SettingsActivity` forwards write callbacks; `AppShell` carries them; `TranscriptionScreen` renders them. **UI may briefly render data-class defaults before DataStore delivers. Capture may not**: it waits for `cleanupPreferencesReady` at `:326`, completed after both new fields are written. A mid-take change reaches the UI and the collector cache but not the frozen active take |
@@ -697,7 +703,7 @@ correctly.*
 | `:vad` dies or a call throws AFTER `READY` | `:vad` | `:audio` | **Nothing.** Recording is correct and a notice several seconds in would be a modal interruption Aaron Wu does not want. Logged | None | No |
 | A synchronous call stalls and returns after teardown | `:vad` | `:audio` | Nothing | None | Discarded: fails the active-session and token checks |
 | A detector call exceeds its 2,000 ms deadline | native or service stall in `:vad` | the process-local watchdog | A startup stall shows the unavailable notice; a post-ready stall stays silent | None | **The watchdog terminates only `:vad`.** The feeder receives binder death and exits |
-| Feeder still alive after binder death and the bounded join | client-side teardown defect | `:audio` | Nothing; recording and the next take remain available | None | **Reported as a lifecycle defect, not accepted as idle state.** It holds no capture resource and cannot refuse the next recording |
+| Feeder still alive after capture teardown | an in-flight detector transaction | `:audio` | Nothing; recording and the next take remain available | None | **No join.** The 2,000 ms detector watchdog bounds the remote call; the feeder then finishes and unbinds only its own take. A start from an older token is refused by `:vad` outright |
 | Ring has no free slot | slow detector or slow binding | `:audio` | Nothing | None | Take marked unavailable, blocks cleared, `:vad` unbound, **never resumed**: a gap breaks Silero's recurrent continuity |
 | `:audio` process dies | Android or native capture failure | session owner's audio connection | The existing microphone-service failure path | Interrupted-draft behaviour already owned by the session service | A new take starts a fresh process |
 | Persisted pause is NaN, infinite, or outside 0.5 to 3.0 | corrupt or foreign DataStore write | settings mapper | Nothing unusual; the UI and the next take use 1.5 | The corrected value is represented in memory, not written back merely by reading | Use the binding default |
@@ -737,7 +743,7 @@ All copy is macOS's existing copy, per `content-brand.md` RULE: no-dashes-in-use
 | `app/src/main/aidl/com/envi/wispr/audio/IAudioCaptureService.aidl` | Append two methods. Nothing reordered or renamed |
 | `app/src/main/aidl/com/envi/wispr/vad/ISilenceVadService.aidl` | New synchronous interface: `start`, `processBlock`, `finish`; every method carries the capture token. **No callback interface** |
 | `app/src/main/AndroidManifest.xml` | New `<service android:process=":vad" android:exported="false">` |
-| `app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt` | `TERMINAL_REASON_SILENCE`; the two new binder methods; atomic `requestStop`; the eight-slot preallocated ring; the feeder thread and its bounded join; the `:vad` binding with all its outcomes; **the read-block split, and moving `ByteArray` allocation out of `captureLoop` into `CaptureSession`** |
+| `app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt` | `TERMINAL_REASON_SILENCE`; the two new binder methods; atomic `requestStop`; the eight-slot preallocated ring; the take-owned feeder and `:vad` binding lifecycle, with no teardown join; the boot-clock capture token; **the read-block split, and moving `ByteArray` allocation out of `captureLoop` into `CaptureSession`** |
 | `app/src/main/java/com/envi/wispr/audio/CaptureEnding.kt` | New sealed type; unknown maps to `Failure` |
 | `app/src/main/java/com/envi/wispr/vad/SilenceVadService.kt` | New. Hosts the model in `:vad` |
 | `app/src/main/java/com/envi/wispr/vad/SileroVadSession.kt` | New. Owns the `Vad` handle, verification, 512-sample framing, the eighth-window read, prepare and release. The only file importing `com.k2fsa.sherpa.onnx` here |

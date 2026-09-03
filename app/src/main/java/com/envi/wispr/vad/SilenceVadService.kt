@@ -30,6 +30,17 @@ class SilenceVadService : Service() {
     private var activeToken: Long = NO_TOKEN
     private var unavailable = false
 
+    /**
+     * The receiver-side answer to stale callers, and the reason this class exists rather than another
+     * check at another call site.
+     *
+     * Two feeders from different takes can be alive at once after an immediate restart, and AIDL only
+     * orders calls made from the SAME client thread, so their calls can arrive in either order. Guarding
+     * each site the old caller might reach is a description of a population. Refusing anything older
+     * than the newest take is the population.
+     */
+    private val tokenOrder = CaptureTokenOrder()
+
     private val watchdog: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "SilenceVadWatchdog").apply { isDaemon = true }
@@ -40,6 +51,10 @@ class SilenceVadService : Service() {
 
         override fun start(captureToken: Long, pauseSeconds: Float): Int = guarded(STATUS_UNAVAILABLE) {
             synchronized(lock) {
+                if (!tokenOrder.accept(captureToken)) {
+                    DebugLogger.warn(TAG, "Rejected a start from an older take, token $captureToken")
+                    return@guarded STATUS_UNAVAILABLE
+                }
                 releaseLocked()
                 unavailable = false
                 activeToken = captureToken
@@ -130,13 +145,22 @@ class SilenceVadService : Service() {
             TimeUnit.MILLISECONDS,
         )
         return try {
-            block()
-        } catch (e: Exception) {
-            DebugLogger.error(TAG, "Detector call failed", e)
-            synchronized(lock) { unavailable = true }
-            onDeadline
+            val result = try {
+                block()
+            } catch (e: Exception) {
+                DebugLogger.error(TAG, "Detector call failed", e)
+                onDeadline
+            }
+
+            // The deadline may have won while this call was running. If it did, this transaction must
+            // NOT return: a successful-looking return would let a later take start work inside a process
+            // that is already scheduled to die.
+            if (!active.compareAndSet(true, false)) {
+                Process.killProcess(Process.myPid())
+                throw IllegalStateException("detector deadline expired")
+            }
+            result
         } finally {
-            active.set(false)
             armed.cancel(false)
         }
     }
@@ -157,5 +181,23 @@ class SilenceVadService : Service() {
 
         /** 4096 samples of 16 kHz mono PCM16. Anything else is not one of our blocks. */
         const val PCM_BYTES_PER_BLOCK = 8_192
+    }
+}
+
+/**
+ * A total order over capture tokens, so the detector can refuse work from a take that is over.
+ *
+ * Held only while `SilenceVadService`'s lock is held, which is why it needs no synchronisation of its
+ * own. Separate from the service so the ordering rule can be tested without an Android runtime.
+ */
+internal class CaptureTokenOrder {
+
+    private var newest = 0L
+
+    /** @return true only for a token strictly newer than every token accepted before it. */
+    fun accept(token: Long): Boolean {
+        if (token <= newest) return false
+        newest = token
+        return true
     }
 }

@@ -19,6 +19,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
 /** Audio capture service running in a separate process (:audio). */
@@ -131,7 +132,26 @@ class AudioCaptureService : Service() {
     @Volatile private var lastAudioFile: File? = null
     @Volatile private var currentAmplitude = 0f
     @Volatile private var terminalReason = TERMINAL_REASON_NONE
-    private val tokens = java.util.concurrent.atomic.AtomicLong(0)
+    private val tokens = AtomicLong(0L)
+
+    /**
+     * A capture token that only ever increases, INCLUDING across a restart of this process.
+     *
+     * The detector process refuses anything not newer than the newest it has seen, which is what stops a
+     * call from a finished take reaching a live one. A plain counter would break that: if `:audio` dies
+     * and comes back it would restart at 1, and every take would then be refused forever. The boot clock
+     * is shared between processes, so it keeps the order; the compare-and-set keeps consecutive tokens
+     * distinct if the clock has not ticked between two takes.
+     */
+    private fun nextCaptureToken(): Long {
+        while (true) {
+            val previous = tokens.get()
+            val clock = SystemClock.elapsedRealtimeNanos()
+            val next = if (clock > previous) clock else previous + 1L
+            check(next > 0L) { "capture token clock overflow" }
+            if (tokens.compareAndSet(previous, next)) return next
+        }
+    }
 
     /**
      * Every way this binding can fail, and they all mean the same thing to a take: auto-stop is off for
@@ -278,7 +298,7 @@ class AudioCaptureService : Service() {
                     // Allocated HERE, before the thread starts, and never inside the capture loop. The
                     // capture thread may not allocate: it must do nothing that can make it late.
                     readBuffer = ByteArray(READ_BLOCK_BYTES),
-                    token = tokens.incrementAndGet(),
+                    token = nextCaptureToken(),
                     ring = if (detectorEnabled) BlockRing(RING_BLOCKS, READ_BLOCK_BYTES) else null,
                     pendingBlock = if (detectorEnabled) ByteArray(READ_BLOCK_BYTES) else null,
                 )

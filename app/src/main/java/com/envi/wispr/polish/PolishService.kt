@@ -4,7 +4,10 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import android.os.SystemClock
+import com.envi.wispr.cleanup.CleanupLanguage
+import com.envi.wispr.cleanup.CleanupLanguagePolicy
 import com.envi.wispr.cleanup.CleanupOptions
+import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.PolishPipeline
 import com.envi.wispr.cleanup.TextSafety
 import com.envi.wispr.debug.DebugLogger
@@ -14,6 +17,7 @@ import com.envi.wispr.providers.ProviderPolishRequest
 import com.envi.wispr.providers.ProviderPolishResult
 import com.envi.wispr.providers.SecretStore
 import com.envi.wispr.providers.capabilities
+import java.io.Closeable
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -40,6 +44,19 @@ class PolishService : Service() {
     private val providerClient = ProviderPolishClient()
     private val registry = PolishRequestRegistry()
     private val s1Runtime by lazy { S1GenieXRuntime(applicationContext) }
+
+    /**
+     * Reads the dictation's language off the finished transcript so deterministic cleanup does not apply
+     * English number, money and date rules to the other 24 languages Parakeet v3 decodes (#107).
+     * Built in `onCreate`, not as a field initializer and NOT lazily. A field initializer runs before the
+     * service's context is attached, and the detector needs an application context to initialize ML Kit
+     * in THIS process — `:polish`, where ML Kit's own `ContentProvider` initializer never runs. A `Lazy`
+     * would fix that and reopen the close-versus-first-use race one level ABOVE the detector's own lock:
+     * `onDestroy` could observe it uninitialised, return, and an in-flight binder callback could then
+     * construct it after the only close opportunity had passed. Constructing eagerly in `onCreate` loads
+     * no model, so the detector's lock owns the whole race (review round 5).
+     */
+    private lateinit var languageDetector: MlKitLanguageDetector
 
     // The hard deadline on local generation runs on its own thread because the worker it watches may be
     // wedged inside native code (#75). Expiry delivers, poisons, and ends this process.
@@ -81,7 +98,7 @@ class PolishService : Service() {
             }
             executor.execute {
                 val started = SystemClock.elapsedRealtime()
-                val text = PolishFallback.deterministic(raw, options)
+                val text = fallbackText(raw, options)
                 runCatching {
                     callback?.onResult(text, PolishEngineLabels.DETERMINISTIC, SystemClock.elapsedRealtime() - started)
                 }
@@ -117,7 +134,7 @@ class PolishService : Service() {
                 // learn that when the process died. Answer now.
                 deliver(
                     callback,
-                    PolishOutcome(requestId, PolishFallback.deterministic(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.LOCAL_FAILED, 0, 0),
+                    PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.LOCAL_FAILED, 0, 0),
                 )
                 return
             }
@@ -126,7 +143,7 @@ class PolishService : Service() {
                 DebugLogger.warn(TAG, "Refusing polish request $requestId: id already registered")
                 deliver(
                     callback,
-                    PolishOutcome(requestId, PolishFallback.deterministic(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.UNEXPECTED, 0, 0),
+                    PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.UNEXPECTED, 0, 0),
                 )
                 return
             }
@@ -181,9 +198,9 @@ class PolishService : Service() {
         }
         try {
             val outcome = if (entry.cancellation.isCancelled) {
-                PolishOutcome(requestId, PolishFallback.deterministic(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.CANCELLED, 0, 0)
+                PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.CANCELLED, 0, 0)
             } else if (poisoned.get()) {
-                PolishOutcome(requestId, PolishFallback.deterministic(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.LOCAL_FAILED, 0, 0)
+                PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.LOCAL_FAILED, 0, 0)
             } else {
                 run(requestId, raw, options, effectivePolicy, entry, started, budget)
             }
@@ -200,7 +217,7 @@ class PolishService : Service() {
             DebugLogger.error(TAG, "Polish failed", exception)
             val fallback = PolishOutcome(
                 requestId,
-                PolishFallback.deterministic(raw, options),
+                fallbackText(raw, options),
                 PolishEngineLabels.DETERMINISTIC,
                 PolishReason.UNEXPECTED,
                 0,
@@ -242,7 +259,7 @@ class PolishService : Service() {
                     callback,
                     PolishOutcome(
                         requestId,
-                        PolishFallback.deterministic(raw, options),
+                        fallbackText(raw, options),
                         PolishEngineLabels.DETERMINISTIC,
                         PolishReason.LOCAL_TIMEOUT,
                         0,
@@ -287,6 +304,21 @@ class PolishService : Service() {
         Thread.sleep(stallMs)
     }
 
+    /**
+     * The language answer for one request, resolved through the policy's confidence floor. Every exit
+     * from this engine goes through [fallbackText] or through `run`, and both call this, so two exits
+     * on one request cannot clean the same words under different language answers.
+     */
+    private fun detectLanguage(text: String): CleanupLanguage =
+        CleanupLanguagePolicy.resolve(languageDetector.detect(text))
+
+    /**
+     * The deterministic text for every failure exit. Detection lives here rather than at each of the
+     * seven call sites it replaced, so a new failure exit cannot forget the language.
+     */
+    private fun fallbackText(raw: String, options: CleanupOptions): String =
+        PolishFallback.deterministic(raw, options, languageDetector)
+
     /** The single delivery site. A dead client throws here; the throw is logged and goes no further. */
     private fun deliver(callback: IPolishCallback?, outcome: PolishOutcome) {
         DebugLogger.log(TAG, "polish_done")
@@ -308,9 +340,10 @@ class PolishService : Service() {
         // to the pipeline, which cannot tell a thrown adapter from a blank answer.
         var attempt: PolishReason? = null
         var statusCode = 0
+        val language = detectLanguage(raw)
         val pipeline = when (policy) {
-            PolishPolicy.Off, PolishPolicy.CloudUnconfigured -> PolishPipeline.run(raw, options)
-            PolishPolicy.LocalS1 -> PolishPipeline.run(raw, options) { cleaned ->
+            PolishPolicy.Off, PolishPolicy.CloudUnconfigured -> PolishPipeline.run(raw, options, language)
+            PolishPolicy.LocalS1 -> PolishPipeline.run(raw, options, language) { cleaned ->
                 if (!modelReady) {
                     attempt = PolishReason.LOCAL_NOT_READY
                     null
@@ -318,7 +351,7 @@ class PolishService : Service() {
                     polishWithS1(cleaned, budget.cooperativeMs) { reason -> attempt = reason }
                 }
             }
-            is PolishPolicy.Cloud -> PolishPipeline.run(raw, options) { cleaned ->
+            is PolishPolicy.Cloud -> PolishPipeline.run(raw, options, language) { cleaned ->
                 val request = ProviderPolishRequest(
                     provider = policy.provider,
                     model = policy.model,
@@ -356,11 +389,16 @@ class PolishService : Service() {
     override fun onCreate() {
         super.onCreate()
         secrets = AndroidKeystoreSecretStore(this)
+        languageDetector = MlKitLanguageDetector(applicationContext)
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
+        // Before the kill branch: that branch ends the process without returning here, and a released
+        // model costs nothing on a path that was about to die anyway. `close` is a no-op when no
+        // detection ever loaded a model.
+        if (::languageDetector.isInitialized) languageDetector.close()
         if (mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get())) {
             // Orderly destruction would cancel the deadline timer and queue the runtime close behind a
             // worker that may be wedged (#75). The client has already unbound; nothing is owed to it.

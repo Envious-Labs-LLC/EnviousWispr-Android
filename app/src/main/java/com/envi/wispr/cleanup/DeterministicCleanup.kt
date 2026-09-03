@@ -20,7 +20,25 @@ object DeterministicCleanup {
     // fails worse than leaving a filler in. `err` is an English verb: "To err is human" became "To is
     // human". `um` is a German preposition, a Portuguese article, and a Croatian and Slovenian noun, all
     // inside the 25 languages Parakeet v3 decodes. The remaining six are not words in those languages.
-    private val filler = Regex("\\b(uh|erm|ah|hmm|hm|mhm)\\b[,:]?\\s*", RegexOption.IGNORE_CASE)
+    private val baseFillers = listOf("uh", "erm", "ah", "hmm", "hm", "mhm")
+
+    /**
+     * One compiled matcher per member of [CleanupLanguagePolicy.allExtraFillerSets]. The population of
+     * extra-token sets is CLOSED and comes from the policy, so every state a dictation can be in is
+     * compiled once here rather than per take. `CleanupLanguagePolicy.allExtraFillerSets` is DERIVED
+     * from the same map the policy reads, so a language cannot be added without adding its set here, which
+     * is what makes `getValue` safe. The sampled test in `CleanupLanguagePolicyTest` is only a
+     * lookup-safety smoke test and would stay green against a hand-written list of the same members;
+     * the derivation, not the test, is what closes the window.
+     */
+    private val fillerByExtras: Map<Set<String>, Regex> =
+        CleanupLanguagePolicy.allExtraFillerSets.associateWith { extras ->
+            val tokens = (baseFillers + extras.sorted()).joinToString("|") { Regex.escape(it) }
+            Regex("\\b($tokens)\\b[,:]?\\s*", RegexOption.IGNORE_CASE)
+        }
+
+    internal fun fillerMatcher(language: CleanupLanguage): Regex =
+        fillerByExtras.getValue(CleanupLanguagePolicy.extraFillers(language))
     private val emoji = linkedMapOf("smiley face" to "🙂", "smiling face" to "🙂", "thumbs up" to "👍", "heart" to "❤️", "fire" to "🔥")
     private val punctuation = linkedMapOf(
         "new paragraph" to "\n\n", "new line" to "\n", "question mark" to "?",
@@ -88,15 +106,24 @@ object DeterministicCleanup {
     )
     private val agePeriods = setOf("year", "years", "month", "months", "week", "weeks", "day", "days")
 
-    fun apply(raw: String, options: CleanupOptions = CleanupOptions()): CleanupResult {
+    fun apply(
+        raw: String,
+        options: CleanupOptions = CleanupOptions(),
+        language: CleanupLanguage = CleanupLanguage.Unknown,
+    ): CleanupResult {
         if (raw.isBlank()) return CleanupResult(raw, false, false)
         val original = raw.trim()
+        // Every English-shaped rewriting family below is gated on this ONE answer, so a language the app
+        // could not establish takes exactly the path it took before #107. Filler removal is deliberately
+        // NOT gated on it: the shared six are safe in all 25 languages and the English extras are added
+        // by the same policy, which is macOS `FillerRemovalStep` read from the English side.
+        val skipEnglishRewrites = CleanupLanguagePolicy.skipsEnglishRewrites(language)
         return try {
             var value = original
             if (options.removeFillers) {
-                value = filler.replace(value, "")
+                value = fillerMatcher(language).replace(value, "")
             }
-            if (options.spokenEmoji) emoji.forEach { (phrase, symbol) ->
+            if (options.spokenEmoji && !skipEnglishRewrites) emoji.forEach { (phrase, symbol) ->
                 val discussion = "category|categories|feature|features|name|names|symbol|symbols|" +
                     "word|words|button|buttons|glyph|glyphs|icon|icons|character|characters|" +
                     "version|format|library|set|picker|keyboard|meaning|description|usage|" +
@@ -110,22 +137,27 @@ object DeterministicCleanup {
                     symbol,
                 )
             }
-            val protected = mutableListOf<String>()
-            (protectedPhrases + dottedNumericChain).forEach { phrase ->
-                value = phrase.replace(value) { match ->
-                    protected += match.value
-                    "\uE000${protected.lastIndex}\uE001"
+            // The placeholder insert and its restore are one unit and are skipped together; leaving the
+            // insert reachable without the restore would ship private-use characters into the editor.
+            var structuredChanged = false
+            if (!skipEnglishRewrites) {
+                val protected = mutableListOf<String>()
+                (protectedPhrases + dottedNumericChain).forEach { phrase ->
+                    value = phrase.replace(value) { match ->
+                        protected += match.value
+                        "\uE000${protected.lastIndex}\uE001"
+                    }
                 }
+                value = Regex("\\b(?:a|an)\\s+(hundred\\b)(?!-)").replace(value, "$1")
+                value = Regex(
+                    "(?i)\\b(a|an|the|this|that|another)\\s+catch[\\s-]+(?:twenty[\\s-]+two|22)\\b",
+                ).replace(value) { "${it.groupValues[1]} Catch-22" }
+                val beforeStructured = value
+                value = normalizeStructured(value)
+                structuredChanged = value != beforeStructured
+                protected.forEachIndexed { index, phrase -> value = value.replace("\uE000$index\uE001", phrase) }
             }
-            value = Regex("\\b(?:a|an)\\s+(hundred\\b)(?!-)").replace(value, "$1")
-            value = Regex(
-                "(?i)\\b(a|an|the|this|that|another)\\s+catch[\\s-]+(?:twenty[\\s-]+two|22)\\b",
-            ).replace(value) { "${it.groupValues[1]} Catch-22" }
-            val beforeStructured = value
-            value = normalizeStructured(value)
-            val structuredChanged = value != beforeStructured
-            protected.forEachIndexed { index, phrase -> value = value.replace("\uE000$index\uE001", phrase) }
-            if (options.spokenPunctuation) punctuation.forEach { (phrase, mark) ->
+            if (options.spokenPunctuation && !skipEnglishRewrites) punctuation.forEach { (phrase, mark) ->
                 val command = if ('\n' in mark) {
                     Regex("\\b${Regex.escape(phrase)}\\b", RegexOption.IGNORE_CASE)
                 } else {
@@ -138,6 +170,21 @@ object DeterministicCleanup {
             if (!TextSafety.isDeterministicSafe(original, value, structuredChanged)) CleanupResult(original, false, true)
             else CleanupResult(value, value != original, false)
         } catch (_: RuntimeException) {
+            CleanupResult(original, false, true)
+        } catch (_: StackOverflowError) {
+            // Catastrophic backtracking in one of the regex families unwinds the stack rather than
+            // corrupting it, so it is recoverable, and a limb must never throw into the session path
+            // (`kotlin-patterns.md` RULE: fail-open-to-the-last-good-text).
+            //
+            // `Throwable` is deliberately NOT caught. An OutOfMemoryError is not recoverable, and
+            // swallowing it here would hide a dying process behind a transcript that merely looks
+            // uncleaned.
+            //
+            // Both branches return `original` rather than a partially cleaned value ON PURPOSE. Cleanup
+            // is the FIRST limb, so the raw transcript IS the last successful text at this point
+            // (`architecture-rules.md` FACT: heart-and-limbs). Committing families as they complete would
+            // hand back text that is neither the input nor a finished cleaning, and the structured pass
+            // holds private-use placeholder characters until its restore step runs.
             CleanupResult(original, false, true)
         }
     }

@@ -23,6 +23,7 @@ import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.cleanup.CleanupOptions
+import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.TextSafety
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.history.EnviousWisprDatabase
@@ -45,6 +46,7 @@ import com.envi.wispr.polish.IPolishService
 import com.envi.wispr.polish.PolishContext
 import com.envi.wispr.polish.PolishEngineLabels
 import com.envi.wispr.polish.PolishPublicationFacts
+import com.envi.wispr.polish.MlKitLanguageDetector
 import com.envi.wispr.polish.PolishFallback
 import com.envi.wispr.polish.PolishOutcome
 import com.envi.wispr.polish.PolishPolicy
@@ -115,6 +117,16 @@ class DictationSessionService : Service() {
 
     private val state = AtomicReference(SessionState.IDLE)
     private val publicationStarted = AtomicBoolean(false)
+    /**
+     * Reads the dictation's language off the finished transcript for this side's deterministic fallback
+     * (#107). Built in `onCreate`, not as a field initializer and NOT lazily, for the reason
+     * `PolishService` gives: a field initializer has no context yet, and a `Lazy` reopens the
+     * close-versus-first-use race above the detector's own lock. Constructing loads no model; the bundled
+     * model is loaded on the first detection and released in `onDestroy`, which is what keeps this
+     * long-running process free of a resident model between dictations.
+     */
+    private lateinit var languageDetector: MlKitLanguageDetector
+
     private val polishLedger = PolishRequestLedger()
     /**
      * Serialises the final state check, the ledger open, the watchdog launch and the binder call against
@@ -227,6 +239,7 @@ class DictationSessionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        languageDetector = MlKitLanguageDetector(applicationContext)
         serviceScope.launch {
             runCatching { transcriptRepository.recoverStaleOpenRows(System.currentTimeMillis()) }
                 .onFailure { error -> DebugLogger.warn(TAG, "Unable to recover stale history: ${error.message}") }
@@ -640,7 +653,11 @@ class DictationSessionService : Service() {
         takePreferences: SessionPreferences,
     ): String {
         val prepared = restoreTakeVocabulary(rawText, takePreferences)
-        val cleaned = PolishFallback.deterministic(prepared, takePreferences.cleanup)
+        // The engine resolves the same answer on its own side. Detecting here too is what keeps this
+        // terminal from being the one that still applies English rules to foreign words when the engine
+        // is the side that failed (#107); the alternative was a new AIDL transaction to carry it across,
+        // which `workflow-process.md` RULE: tier-routing classifies as REFACTOR for a limb feature.
+        val cleaned = PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)
         return restoreTakeVocabulary(cleaned, takePreferences)
     }
 
@@ -1133,6 +1150,7 @@ class DictationSessionService : Service() {
     }
 
     override fun onDestroy() {
+        if (::languageDetector.isInitialized) languageDetector.close()
         RecordingOverlayState.hide()
         publicationStarted.set(true)
         cancelOpenPolishRequest()

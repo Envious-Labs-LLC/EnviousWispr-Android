@@ -31,9 +31,10 @@ object PolishPipeline {
     fun run(
         rawText: String,
         options: CleanupOptions = CleanupOptions(),
+        language: CleanupLanguage = CleanupLanguage.Unknown,
         model: ((cleanedText: String) -> String?)? = null,
     ): PolishPipelineResult {
-        val cleanup = DeterministicCleanup.apply(rawText, options)
+        val cleanup = DeterministicCleanup.apply(rawText, options, language)
         val cleaned = cleanup.text
         val fallback = cleaned
         if (cleanup.recovered) {

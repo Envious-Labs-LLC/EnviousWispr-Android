@@ -103,7 +103,7 @@ internal fun TranscriptionScreen(
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Languages", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "EnviousWispr transcribes 25 European languages. There is nothing to choose. Speak, and it writes what it hears, always without a network.",
+                    "EnviousWispr transcribes 25 European languages. There is nothing to choose: speak, and it writes what it hears. It never needs a network.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )

@@ -24,6 +24,20 @@ class AudioCaptureService : Service() {
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
         private const val MAX_RECORDING_DURATION_MS = 120_000L
         private const val AUDIO_FILENAME = "recording.pcm"
+
+        /**
+         * How much audio one `AudioRecord.read` asks for: 4096 samples, 256 ms at 16 kHz.
+         *
+         * **This is a different quantity from the buffer the AudioRecord is constructed with**, and the
+         * two want opposite things. The native buffer is the margin that stops an overrun when the
+         * capture thread is descheduled, so it wants to be large. This is the loop's decision
+         * granularity, so it wants to be small: the duration ceiling can only fire on a block boundary,
+         * and so can a silence stop. Reading the whole native buffer made both coarse to about a second.
+         *
+         * Android's own guidance is to read in short frequent chunks rather than waiting for the buffer
+         * to fill. 256 ms is macOS's detector chunk, which is what the silence state machine ticks on.
+         */
+        private const val READ_BLOCK_BYTES = 8_192
         /**
          * The terminal reasons, re-exported under the names callers already use. `CaptureEnding` owns the
          * values, because they cross a process boundary and must have exactly one definition.
@@ -44,6 +58,7 @@ class AudioCaptureService : Service() {
         val file: File,
         val output: FileOutputStream,
         val startedAtMs: Long,
+        val readBuffer: ByteArray,
     ) {
         @Volatile var bytesWritten: Long = 0L
 
@@ -99,11 +114,20 @@ class AudioCaptureService : Service() {
             // the new take's file or release the new take's AudioRecord.
             if (session != null) return false
 
-            val bufferSize = try {
-                AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
+            val nativeBufferBytes = try {
+                val minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
                     .takeIf { it > 0 }
-                    ?.coerceAtLeast(SAMPLE_RATE * PcmAudio.BYTES_PER_SAMPLE)
                     ?: throw IllegalStateException("AudioRecord buffer size unavailable")
+                val coerced = minimum.coerceAtLeast(SAMPLE_RATE * PcmAudio.BYTES_PER_SAMPLE)
+                // Whether the floor binds cannot be settled from source: getMinBufferSize is computed by
+                // the platform from the device's own frame count. Log both so the answer comes from the
+                // phone rather than from an assumption. Android may also enlarge what it actually
+                // allocates, which getBufferSizeInFrames reports once the recorder exists.
+                DebugLogger.log(
+                    TAG,
+                    "Buffer sizes: minimum=$minimum coerced=$coerced read=$READ_BLOCK_BYTES",
+                )
+                coerced
             } catch (e: Exception) {
                 DebugLogger.error(TAG, "Failed to determine audio buffer size", e)
                 stopSelf()
@@ -118,7 +142,7 @@ class AudioCaptureService : Service() {
                     SAMPLE_RATE,
                     CHANNEL,
                     ENCODING,
-                    bufferSize,
+                    nativeBufferBytes,
                 )
                 if (record.state != AudioRecord.STATE_INITIALIZED) {
                     throw IllegalStateException("AudioRecord failed to initialize")
@@ -140,6 +164,9 @@ class AudioCaptureService : Service() {
                     file = file,
                     output = output,
                     startedAtMs = SystemClock.elapsedRealtime(),
+                    // Allocated HERE, before the thread starts, and never inside the capture loop. The
+                    // capture thread may not allocate: it must do nothing that can make it late.
+                    readBuffer = ByteArray(READ_BLOCK_BYTES),
                 )
                 session = newSession
                 lastAudioFile = file
@@ -148,9 +175,14 @@ class AudioCaptureService : Service() {
                 currentAmplitude = 0f
                 DebugLogger.startPipeline()
                 DebugLogger.mark(TAG, "recording_start")
-                DebugLogger.log(TAG, "Recording started (PID: ${android.os.Process.myPid()}, max: ${MAX_RECORDING_DURATION_MS}ms)")
+                DebugLogger.log(
+                    TAG,
+                    "Recording started (PID: ${android.os.Process.myPid()}, " +
+                        "max: ${MAX_RECORDING_DURATION_MS}ms, " +
+                        "nativeFrames: ${runCatching { record.bufferSizeInFrames }.getOrDefault(-1)})",
+                )
 
-                val thread = Thread({ captureLoop(newSession, bufferSize) }, "AudioCaptureThread")
+                val thread = Thread({ captureLoop(newSession) }, "AudioCaptureThread")
                 captureThread = thread
                 try {
                     thread.start()
@@ -180,9 +212,9 @@ class AudioCaptureService : Service() {
         }
     }
 
-    private fun captureLoop(active: CaptureSession, bufferSize: Int) {
+    private fun captureLoop(active: CaptureSession) {
         var reachedMaxDuration = false
-        val buffer = ByteArray(bufferSize)
+        val buffer = active.readBuffer
         try {
             while (isRecording.get() && session === active) {
                 val elapsed = SystemClock.elapsedRealtime() - active.startedAtMs

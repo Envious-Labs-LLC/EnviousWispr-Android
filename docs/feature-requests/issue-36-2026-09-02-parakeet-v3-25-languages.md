@@ -456,6 +456,70 @@ restored per `RULE: revert-the-phone-after-a-session`.
 
 Suite count is taken with `--rerun-tasks` and the XML parser in `current-state.md`, never quoted from memory.
 
+## 11.3 Hardware run, 2026-09-02 — RESULTS
+
+S26 Ultra `100.94.206.47:5555`, debug build, plugged in, `am instrument` so the app is never uninstalled.
+Audio is Azure Speech at `raw-16khz-16bit-mono-pcm`, the exact fixture format, fed to `:asr` through
+`IAsrService.transcribeFile`. **Both models were measured on the same phone with the same audio**, which
+needed the manifest temporarily reverted, the v2 files replaced, and then the whole swap undone.
+
+**A first probe measured the wrong thing and its numbers were discarded.** `VoicePipelineDeviceTest`
+reports `polishedText`, so ASR, cleanup and S1-mini were being read as one figure. Every result below is
+RAW recognizer output, with the cleanup result taken separately, from a throwaway probe that bound `:asr`
+directly and was deleted afterwards.
+
+**The load question, §14 item 1, is CLOSED: v3 loads on sherpa-onnx 1.12.29.** No opset rejection, no
+native abort. Upstream `#2842` (external) did not reproduce.
+
+### The languages this change exists for
+
+| Spoken | v2 | v3 |
+|---|---|---|
+| "Der Zug war schon wieder zwanzig Minuten zu spät." | "Der Zukwa Son wider Zwanzig me not." | "Der Zug war schon wieder 20 Minuten zu spart." |
+| "Dit is ten minste duidelijk." | "Dit is then minsted outlook." | "Dit is ten minste duidelijk." |
+
+v2 produces gibberish; v3 produces the sentence. German lost one word to the recogniser ("spart" for "spät") and S1-mini repaired it in the polished pass. **This is the evidence the change is worth making.**
+
+### English, five sentences plus four number-heavy ones
+
+Comparable overall, with different failure modes rather than a regression. v3 was better on two, equal on
+five, worse on one, and the one is filed as
+[issue #109](https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/109): "twenty four thousand
+five hundred dollars and thirty cents" came back as "$4,500.30" on v3 and "$24,500.30" on v2, reproduced
+twice. v3 was better at "thirty seven thousand two hundred dollars", which it wrote as "$37,200" while v2
+left it as words, better at "sixty four gigabytes" and "twelve terabytes", and better at ending a question
+with a question mark.
+
+**v3 performs its own number and currency formatting**, which v2 largely left to deterministic cleanup.
+That is why the spoken German "zwanzig" became "20" in the line above: the model, not our code.
+
+### The cleanup fix, confirmed on hardware
+
+Spoken: "Um, I think we should ship it on Friday. Uh, assuming the tests pass." The recogniser emitted both
+words. Cleanup kept the "Um," and removed the "Uh,", which is exactly the intended behaviour.
+
+**The `err` half is NOT confirmed on the phone**, and the reason is worth recording: the recogniser heard
+"To err is human" as "To Air As Human", so `err` never reached cleanup. That fix rests on
+`DeterministicCleanupTest.realWordsThatLookLikeFillersSurvive` and its mutation, not on this run.
+
+### The #107 defect, proven rather than predicted
+
+Dutch "Dit is ten minste duidelijk." came out of the recogniser CORRECT and left cleanup as
+"Dit is 10 minste duidelijk." Isolated to our code, on real speech, on the device.
+
+### Memory
+
+`:asr` holding v3: `VmHWM` 1,454,784 kB, about 1.45 GB, sampled repeatedly during a live decode with the
+pid constant, so no restart and no low-memory kill. `.claude/knowledge/architecture.md` records `:asr` at
+about 1.5 to 1.9 GB for v2 on this phone on 2026-09-01, so this is at or below the existing range.
+**No v2 figure was taken in this session**, so the comparison is against that recorded range rather than a
+same-session control, and §13's criterion is met only in that weaker form.
+
+### Not done in this run
+
+Dictation from the side button into a real third-party editor, and the back-to-back case. Those need a
+person speaking, and are the founder's to run.
+
 ## 12. Blast radius & rollback
 
 - **Touched:** `models/ModelManifest.kt`, ONE line in `asr/AsrService.kt`, the filler set in

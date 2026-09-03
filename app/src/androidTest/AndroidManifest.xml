@@ -11,11 +11,20 @@
             being tested against, which both hides the phone and changes what is on screen while
             the insertion path is being measured.
         -->
+        <!--
+            showWhenLocked and turnScreenOn are TEST-ONLY and live only in this manifest. They let the
+            speaker play while the phone sits on its own lock screen, which is the difference between
+            being able to measure the audio path at all and needing the founder's PIN for every run. The
+            shipping app declares neither: an app that draws over a secure lock is a security decision,
+            and a test rig is not the place to make it.
+        -->
         <activity
             android:name="com.envi.wispr.SpeakerPlaybackActivity"
             android:excludeFromRecents="true"
             android:exported="true"
             android:label="Speaker playback"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <activity
             android:name="com.envi.wispr.ClipboardPasteTargetActivity"

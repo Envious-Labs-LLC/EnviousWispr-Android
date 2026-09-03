@@ -51,6 +51,131 @@ class CaptureWithSilenceStopDeviceTest {
         return service!! to connection
     }
 
+    /** The speaker finishes itself when the fixture ends. Overlapping runs measure the wrong audio. */
+    private fun waitForTheSpeakerToFinish() {
+        Thread.sleep(20_000)
+    }
+
+    /** Plays whatever fixture is in this package's cache, through the speaker, over the lock screen. */
+    private fun playFixture() {
+        context.startActivity(
+            Intent()
+                .setClassName("com.envi.wispr.test", "com.envi.wispr.SpeakerPlaybackActivity")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }
+
+    @Test
+    fun realSpeechThroughTheMicrophoneEndsTheTakeWhenItStops() {
+        // The one that matters: real sound, the real microphone, the real detector, the real ending.
+        // The fixture is the founder's own recorded speech followed by eight seconds of silence, so a
+        // take that does NOT end here is a take that would never end.
+        val (capture, connection) = bindCapture()
+        try {
+            assumeTrue(
+                "the microphone must be available to this test",
+                capture.startCaptureWithSilenceStop(true, 1.5f),
+            )
+
+            var ready = false
+            for (i in 0 until 40) {
+                if (capture.silenceStopStatus == AudioCaptureService.SILENCE_STATUS_READY) { ready = true; break }
+                Thread.sleep(100)
+            }
+            assumeTrue("the detector must be ready before the audio starts", ready)
+
+            playFixture()
+
+            var endedAfterMs = -1L
+            val startedAt = System.currentTimeMillis()
+            for (i in 0 until 250) {
+                Thread.sleep(100)
+                if (!capture.isCapturing) { endedAfterMs = System.currentTimeMillis() - startedAt; break }
+            }
+
+            assertTrue(
+                "speech then silence must end the take by itself; it did not in 25 seconds",
+                endedAfterMs > 0,
+            )
+            assertEquals(
+                "and it must end BECAUSE of the silence, not for any other reason",
+                AudioCaptureService.TERMINAL_REASON_SILENCE,
+                capture.terminalReason,
+            )
+            assertTrue("the recording must have closed", capture.waitForFileReady(3_000L))
+            // The fixture speaks for about 3.7 s before its silence begins, so an ending sooner than
+            // that would mean the take ended before the speech, which is the failure this test hides
+            // behind its own success if nobody checks.
+            assertTrue(
+                "it must not have ended before the speech finished, ended after ${endedAfterMs}ms",
+                endedAfterMs > 3_000,
+            )
+        } finally {
+            runCatching { context.unbindService(connection) }
+        }
+    }
+
+    /**
+     * The slider has to be worth having. Same audio, two settings, two outcomes.
+     *
+     * The fixture speaks, goes quiet for 2.5 seconds, speaks again, then goes quiet for good. At the
+     * default the take must end IN that gap. At the longest setting it must survive it, hear the second
+     * half, and only then end. If both behaved the same the control would be decoration.
+     *
+     * Run as one test rather than two because the two halves are only meaningful against each other.
+     */
+    @Test
+    fun theWaitSettingDecidesWhetherAThinkingPauseEndsTheTake() {
+        val gapEndings = mutableMapOf<Float, Long>()
+
+        listOf(1.5f, 3.0f).forEach { pause ->
+            val (capture, connection) = bindCapture()
+            try {
+                assumeTrue(
+                    "the microphone must be available to this test",
+                    capture.startCaptureWithSilenceStop(true, pause),
+                )
+                var ready = false
+                for (i in 0 until 40) {
+                    if (capture.silenceStopStatus == AudioCaptureService.SILENCE_STATUS_READY) { ready = true; break }
+                    Thread.sleep(100)
+                }
+                assumeTrue("the detector must be ready before the audio starts", ready)
+
+                playFixture()
+                val startedAt = System.currentTimeMillis()
+                var endedAfterMs = -1L
+                for (i in 0 until 300) {
+                    Thread.sleep(100)
+                    if (!capture.isCapturing) { endedAfterMs = System.currentTimeMillis() - startedAt; break }
+                }
+                assertTrue("the take must end at $pause seconds", endedAfterMs > 0)
+                assertEquals(
+                    "and end because of the silence",
+                    AudioCaptureService.TERMINAL_REASON_SILENCE,
+                    capture.terminalReason,
+                )
+                capture.waitForFileReady(3_000L)
+                gapEndings[pause] = endedAfterMs
+            } finally {
+                runCatching { context.unbindService(connection) }
+            }
+
+            // The fixture is 18 seconds long and the speaker finishes itself only when it ends. The
+            // first attempt at this test measured the SECOND run against audio the FIRST run was still
+            // playing, which made the two settings look identical when they were not. Wait it out.
+            waitForTheSpeakerToFinish()
+        }
+
+        val short = gapEndings.getValue(1.5f)
+        val long = gapEndings.getValue(3.0f)
+        assertTrue(
+            "the longer setting must survive the 2.5 second pause the shorter one ends in: " +
+                "1.5s ended after ${short}ms, 3.0s ended after ${long}ms",
+            long > short + 2_000,
+        )
+    }
+
     @Test
     fun aQuietRoomNeverEndsATakeByItselfThroughTheWholeRealPath() {
         val (capture, connection) = bindCapture()

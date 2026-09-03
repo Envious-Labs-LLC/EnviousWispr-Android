@@ -132,6 +132,29 @@ class SilenceStopWiringTest {
     }
 
     @Test
+    fun nothingAfterTheTakeEndsCanTellHowItEnded() {
+        // The strongest statement available about insertion without a real editor in front of a person:
+        // a silence-stopped take and a hand-stopped one are INDISTINGUISHABLE to everything downstream,
+        // so transcription, polish and insertion cannot behave differently after one.
+        //
+        // Enumerated from the producer rather than from a guess: every reader of the ending in the whole
+        // app, then the absence of any reader inside the path that runs afterwards.
+        val session = File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+
+        val readers = Regex("CaptureEnding\\.fromAidl\\(").findAll(session).count()
+        assertEquals("the ending is classified in exactly one place", 1, readers)
+
+        val afterTheEnding = session.substringAfter("private fun stopAndTranscribe(")
+        val downstream = afterTheEnding.substringBefore("\n    private fun ")
+        listOf("terminalReason", "CaptureEnding", "TERMINAL_REASON").forEach { name ->
+            assertFalse(
+                "$name must not be visible to the path that runs after a take ends",
+                downstream.contains(name),
+            )
+        }
+    }
+
+    @Test
     fun theDetectorRunsInItsOwnProcess() {
         assertTrue(
             manifest.contains("android:name=\".vad.SilenceVadService\"") &&

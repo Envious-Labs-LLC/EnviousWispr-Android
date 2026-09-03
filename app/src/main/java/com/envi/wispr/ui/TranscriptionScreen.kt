@@ -23,6 +23,13 @@ import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.settings.AppPreferencesState
 
 /**
+ * The words this sentence NAMES must be words cleanup actually removes. `um` was named here while it was
+ * being deleted from German, Portuguese and Croatian, and removing it from the filler set left this line
+ * promising something untrue (#36, #107). `FillerCopyTest` binds the two together.
+ */
+internal const val FILLER_TOGGLE_SUBTITLE = "Remove pauses such as uh and hmm."
+
+/**
  * The speech engine that turns your voice into text, and the rules that tidy the result.
  *
  * The cleanup switches sit here rather than on their own page because the macOS reference puts
@@ -75,7 +82,7 @@ internal fun TranscriptionScreen(
         SettingsGroup("Text cleanup") {
             SettingsToggleRow(
                 title = "Remove filler words",
-                subtitle = "Remove pauses such as um and uh.",
+                subtitle = FILLER_TOGGLE_SUBTITLE,
                 checked = preferences.fillerRemovalEnabled,
                 onCheckedChange = { updateWithHaptic(it, onFillerRemovalChanged) },
             )

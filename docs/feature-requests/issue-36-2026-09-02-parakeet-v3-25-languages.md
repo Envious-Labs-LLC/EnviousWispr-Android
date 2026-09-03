@@ -102,8 +102,14 @@ the first thing a non English speaker checks."
   behaviour reads that field. §8 records the decision.
 - **Engine cards showing measured tradeoffs (`PAR-031`).** There is one engine; a card comparing it to
   nothing is not honest.
-- **Making the deterministic cleanup layer language-aware.** Real, out of scope, and filed as
-  [issue #107](https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/107). See §7.
+- **Making the deterministic cleanup layer language-aware.** Still out of scope and still
+  [issue #107](https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/107). **Two members were
+  fixed here rather than deferred**, because they DELETE authored words rather than transforming them, and
+  because this change is what made them reachable. See §7.
+- **A fallback to the previous model while the new one downloads.** Real, correctly diagnosed by code
+  review, and filed as
+  [issue #108](https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/108). Stage 2 by
+  `CLAUDE.md`, and the founder's phone has no gap because installing and hand-placing are one operation.
 - **Fixing the missing Parakeet entry in `app/src/main/assets/THIRD_PARTY_NOTICES.txt`.** That file names no
   speech model today, which is issue #15's job, not a defect this change introduces.
 
@@ -289,11 +295,24 @@ No type, signature or enum changes.
 | Admission I/O failure | the atomic rename at `models/ModelDelivery.kt:183-187` | `ModelDeliveryWorker` | `Failed` | v2 restored from `.parakeet.old` | RETRY |
 | `:asr` killed for memory while loading v3 | native allocation, the shape of upstream `#2626` (external) | Android LMK | Dictation appears to hang, then the engine is not ready | None | §11 records peak memory so this is observed, not guessed |
 | Stale `:asr` process serves v2 after v3 lands | Process outlived the swap | `AsrService` | English-only results with a v3 model on disk, and nothing says why | None | Force-stop. **No code guards this; it is a Stage 1 dev-loop hazard, named so it is not misread as a model defect.** |
-| **Foreign-language text mangled by English cleanup** | `cleanup/DeterministicCleanup.kt`, applied unconditionally at `cleanup/PolishPipeline.kt:36` | Every dictation | Correct foreign words come back subtly wrong. Marcus does not report it; he stops using it (§Rubric 7) | The mangled text is what got inserted and what history stores | **Not fixed here.** See below. |
+| **A real word deleted as if it were a filler** | the filler set in `cleanup/DeterministicCleanup.kt` | Every dictation with filler removal on, which is the default | A word the user said is simply gone | The shortened text is what got inserted and what history stores | **FIXED HERE.** `um` and `err` removed from the set. |
+| **Foreign text reshaped by the other English cleanup families** | `cleanup/DeterministicCleanup.kt`, applied unconditionally at `cleanup/PolishPipeline.kt:36` | Every dictation | Numbers, dates and money rewritten to English conventions. Less destructive than deletion, because the words survive | The reshaped text is what got inserted | **Not fixed here**, and the copy no longer claims otherwise. See below. |
 
-**The cleanup collision is a PIPE problem, and this change deliberately ships no bucket for it.** The leak is
-not the two examples first noticed (the filler list at `cleanup/DeterministicCleanup.kt:16`, and the bare
-token `"o"` mapping to zero at `:34`). Enumerated from the producing code rather than from those two, the
+**The collision splits in two, and only one half is a pipe problem.**
+
+**The DELETING half was fixed here, and measured rather than reasoned.** Run through the real cleanup with
+default options: `"To err is human"` became `"To is human"`, `"Wir treffen uns um drei"` became `"Wir treffen
+uns drei"`, `"Eu quero um cafe"` became `"Eu quero cafe"`, and `"Um je bistar"` became `"je bistar"`. The
+filler set is CLOSED with eight members, so it could be enumerated rather than sampled: `um` is a German
+preposition, a Portuguese article and a Croatian and Slovenian noun, and `err` is an English verb that was
+broken before any language work. The other six are not words in those 25 languages. `code-design-rules.md`
+RULE: matcher-set-adversarial-tests settles the direction — accepting wrongly ACTS on data the user did not
+author. macOS strips both in its own Auto mode, but its 2026-08-20 protection decision depended on a LOCKED
+language, so parity here means the same safe outcome rather than the same unsafe path. **Stated cost:
+English no longer has `um` removed by deterministic cleanup**; AI polish still removes it when enabled.
+
+**The RESHAPING half stays on #107**, because it needs a language signal this engine cannot give. Enumerated
+from the producing code rather than from the examples found, the
 English-shaped transformation families are: fillers, spoken emoji, spoken punctuation, email, URL, decimal
 and `point`, money, percentage, time, date, ordinal, year, digit runs, digit scales, **ranges and
 dimensions**, **dosage runs**, cardinal conversion, **magnitude preservation**, and sentence capitalization.
@@ -302,7 +321,7 @@ carries a word-count content-drop ratio and `looksLikeQuestion`, an English ques
 English auxiliaries and English leading fillers. Every one is reachable on foreign text because
 `PolishPipeline.run` calls cleanup before every early return.
 
-A per-item bucket would need nineteen of them. The pipe fix is to gate the English families on a known
+A per-item bucket would need seventeen of them, after the two deletions were fixed at the set. The pipe fix is to gate the English families on a known
 language, and **this engine cannot supply one** — which is exactly why it is filed as
 [issue #107](https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/107) rather than guessed at
 here. macOS already made the narrow version of this call (catalog decision 2026-08-20:
@@ -348,9 +367,13 @@ No new fallback expression is introduced.
    106. Wording is drafted in §11's UAT step and checked against `content-brand.md`; the only hard
    constraint stated here is that the new text must not promise a language the model does not have, and
    must not claim detection (§8).
-5. **`.claude/knowledge/model-delivery.md`** — the `FACT: what-ships-today` row and the hand-place recipe's
+5. **`app/src/main/java/com/envi/wispr/cleanup/DeterministicCleanup.kt`** — `um` and `err` removed from the
+   filler set, with the enumeration and the rule citation in a comment. Sixteen fixtures across four suites
+   used `"um "` as a stand-in filler while testing something else and moved to `"uh "`, including two device
+   suites; the mac parity corpora are untouched because they run with `removeFillers = false`.
+6. **`.claude/knowledge/model-delivery.md`** — the `FACT: what-ships-today` row and the hand-place recipe's
    URL and repository, edited in place per `RULE: promote-by-editing-not-appending`.
-6. **`.claude/knowledge/current-state.md`** and **`.claude/knowledge/tech-stack.md`** — the Parakeet line in
+7. **`.claude/knowledge/current-state.md`** and **`.claude/knowledge/tech-stack.md`** — the Parakeet line in
    each, edited in place.
 
 ## 11. Testing
@@ -428,14 +451,16 @@ restored per `RULE: revert-the-phone-after-a-session`.
 | New case in `ModelDeliveryStoreTest`: admit an r1 payload, then apply a CORRUPT r2 | product outcome | The r1 directory is byte-identical afterwards and `REPAIR_NEEDED` is returned. The reason it survives is that a hash or byte-count mismatch quarantines the STAGING directory at `models/ModelDelivery.kt:129-131` and returns **before** `final` is ever renamed | Moving the admission of `final` ahead of the per-file verification loop. **Not** removing the `.old` restore at `models/ModelDelivery.kt:141` — that branch is only reachable when `staging.renameTo(final)` itself fails, which a corrupt download never reaches, so a test asserting it would be green with the behaviour gone |
 | Second new case: admit r1, then apply a VALID r2 | product outcome | The directory holds r2's bytes and r2's receipt, and `isVerified` is true against the r2 descriptor | Skipping the receipt rewrite at `models/ModelDelivery.kt:136` |
 | Emulator run of the SHIPPED update path | product outcome | Goal 4, exercised the way a real person meets it. On an arm64 emulator: install the BASELINE APK built from the current `main`, use its own in-app Download action to admit v2, keep app data, install the CANDIDATE APK over it, then tap Update and watch Update available → Queued → Downloading → Verifying → Ready **with no file placed by hand**. The emulator carries this rather than the phone so the daily driver does not take a second 670 MB transfer | Reverting the manifest revision, which removes the Update offer entirely |
+| `DeterministicCleanupTest.realWordsThatLookLikeFillersSurvive` | product outcome | A word the user said is not deleted: the English verb `err`, and `um` in German, Portuguese and Croatian. It also asserts the six remaining fillers still go, so the fix did not disable the feature | Restoring either token to the filler set, performed and watched go red |
 | Full unit suite | regression | Nothing keyed on the model id or the engine label broke | — |
 
 Suite count is taken with `--rerun-tasks` and the XML parser in `current-state.md`, never quoted from memory.
 
 ## 12. Blast radius & rollback
 
-- **Touched:** `models/ModelManifest.kt`, ONE line in `asr/AsrService.kt`, one Compose screen, two unit
-  tests, three knowledge files.
+- **Touched:** `models/ModelManifest.kt`, ONE line in `asr/AsrService.kt`, the filler set in
+  `cleanup/DeterministicCleanup.kt`, one Compose screen, three unit suites, two device suites, three
+  knowledge files.
 - **Deliberately NOT touched:** the recognizer's model wiring in `asr/AsrService.kt:159-170` — the file names
   and `nemo_transducer` type are untouched, and that negative space is the evidence this is a re-pin rather
   than an engine port. Also untouched: `cleanup/`, `polish/`, the delivery layer itself, the Room schema, and
@@ -454,7 +479,9 @@ Suite count is taken with `--rerun-tasks` and the XML parser in `current-state.m
       the v2 figure.
 - [ ] An install starting from the old model reaches the new one by tapping Update, with no file placed by
       hand. Confirmed on the emulator, not the phone, and §11.2 says why.
-- [ ] No sentence in the app still promises English only.
+- [ ] No sentence in the app still promises English only, and the Transcription card says plainly that the
+      number, date and money tidying is still built for English.
+- [ ] Saying "to err is human" into a real editor puts `err` in the field.
 - [ ] The claim made in public is "25 languages per NVIDIA's model card, one of them confirmed on this
       device", never "25 languages tested".
 
@@ -474,6 +501,8 @@ Suite count is taken with `--rerun-tasks` and the XML parser in `current-state.m
   (`docs/enviouswispr-android-parity-spec.md:61-68`).
 - Issue #15 — third-party notices, which names no speech model today.
 - Catalog `dual-speech-engines`, `automatic-language-detection`, `locked-language`.
+- [Issue #108](https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/108), no fallback to the
+  previous model while a bump downloads. Raised by code review on this change, adjudicated Stage 2.
 - [Issue #107](https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/107), the cross-language
   cleanup collision, whose scope is the nineteen transformation families plus the safety layer enumerated
   in §7. Filed 2026-09-02 by this plan.

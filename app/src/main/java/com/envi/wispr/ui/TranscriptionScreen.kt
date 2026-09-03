@@ -51,9 +51,9 @@ internal fun TranscriptionScreen(
         ModelCard(
             eyebrow = "SPEECH ENGINE",
             title = "Parakeet",
-            description = "Your offline English speech engine. It listens and transcribes on this phone, so your voice never leaves it.",
+            description = "Your offline speech engine. It listens and transcribes on this phone, so your voice never leaves it.",
             state = parakeetState,
-            facts = listOf("Offline", "English", "Stays on this phone"),
+            facts = listOf("Offline", "25 languages", "Stays on this phone"),
             onAction = {
                 // Exhaustive with no `else`, so a new ModelUiAction is a compile error here rather
                 // than a silent download. The four inert members are the ones `ModelCard` routes to
@@ -101,9 +101,9 @@ internal fun TranscriptionScreen(
         )
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Other languages", style = MaterialTheme.typography.titleMedium)
+                Text("Languages", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "EnviousWispr transcribes English today. More languages are coming, and dictation will always keep working with no network.",
+                    "EnviousWispr transcribes 25 European languages. There is nothing to choose. Speak, and it writes what it hears, always without a network.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )

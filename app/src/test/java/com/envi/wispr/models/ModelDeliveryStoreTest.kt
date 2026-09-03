@@ -8,6 +8,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/**
+ * Product Outcome. When these fail the user loses a working speech engine: a model that never admits, one
+ * that admits without verifying, or a failed update that takes the working model down with it.
+ */
 class ModelDeliveryStoreTest {
     @Test fun downloadsVerifiesAndAtomicallyPromotes() {
         val bytes = "model payload".toByteArray()
@@ -85,6 +89,45 @@ class ModelDeliveryStoreTest {
         store.download(installed, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(bytes), false) })
         assertTrue(store.needsUpdate(newer))
         assertEquals("model payload", java.io.File(root, "demo/model.bin").readText())
+        root.deleteRecursively()
+    }
+
+    @Test fun aCorruptUpdateLeavesTheAdmittedModelByteIdentical() {
+        val installed = descriptor("first payload".toByteArray(), "r1")
+        val newer = descriptor("second payload".toByteArray(), "r2")
+        val root = Files.createTempDirectory("models").toFile()
+        val store = ModelDeliveryStore(root)
+        store.download(installed, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream("first payload".toByteArray()), false) })
+
+        val status = store.download(newer, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream("truncated".toByteArray()), false) })
+
+        // The admitted directory is never touched: a hash mismatch quarantines the staging copy and returns
+        // before the promotion rename. Moving the promotion ahead of verification turns this red.
+        assertEquals(DownloadState.REPAIR_NEEDED, status.state)
+        assertEquals("first payload", java.io.File(root, "demo/model.bin").readText())
+        // But it is NOT a fallback. Production asks isVerified with the NEW descriptor, which these bytes fail,
+        // so the surviving files shorten the recovery and cannot serve a dictation.
+        assertFalse(store.isVerified(newer))
+        assertTrue(store.isVerified(installed))
+        root.deleteRecursively()
+    }
+
+    @Test fun aValidUpdateReplacesTheAdmittedModelAndItsReceipt() {
+        val installed = descriptor("first payload".toByteArray(), "r1")
+        val newer = descriptor("second payload".toByteArray(), "r2")
+        val root = Files.createTempDirectory("models").toFile()
+        val store = ModelDeliveryStore(root)
+        store.download(installed, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream("first payload".toByteArray()), false) })
+
+        val status = store.download(newer, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream("second payload".toByteArray()), false) })
+
+        assertEquals(DownloadState.READY, status.state)
+        assertEquals("second payload", java.io.File(root, "demo/model.bin").readText())
+        // The receipt moved with the bytes, so the old revision no longer reads as installed and nothing
+        // still offers an update. Skipping the receipt rewrite turns this red.
+        assertTrue(store.isVerified(newer))
+        assertFalse(store.needsUpdate(newer))
+        assertFalse(store.isVerified(installed))
         root.deleteRecursively()
     }
 

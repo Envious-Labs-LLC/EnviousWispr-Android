@@ -12,11 +12,13 @@ import android.os.IBinder
 import android.os.SystemClock
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.vad.ISilenceVadService
+import com.envi.wispr.vad.SilenceStopDetector
 import com.envi.wispr.vad.SilenceVadService
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 
 /** Audio capture service running in a separate process (:audio). */
@@ -61,6 +63,15 @@ class AudioCaptureService : Service() {
         const val SILENCE_STATUS_PREPARING = 1
         const val SILENCE_STATUS_READY = 2
         const val SILENCE_STATUS_UNAVAILABLE = 3
+
+        /**
+         * The detector was working and then stopped being available.
+         *
+         * Diagnostic and SILENT. The recording is still correct, and a message several seconds into one
+         * that is going fine is an interruption for nothing. Only [SILENCE_STATUS_UNAVAILABLE], which
+         * means auto-stop never became available at all, is worth telling the user about.
+         */
+        const val SILENCE_STATUS_LOST_AFTER_READY = 4
         /**
          * The terminal reasons, re-exported under the names callers already use. `CaptureEnding` owns the
          * values, because they cross a process boundary and must have exactly one definition.
@@ -90,6 +101,21 @@ class AudioCaptureService : Service() {
     ) {
         /** Capture thread only. */
         var pendingBytes: Int = 0
+
+        /**
+         * Everything about the detector belongs to the take that started it.
+         *
+         * Held here rather than on the service so that a feeder or a connection callback belonging to a
+         * finished take cannot set the status of, or unbind the detector of, the take running now.
+         */
+        val detectorAbandoned = AtomicBoolean(false)
+        val silenceStatus = AtomicInteger(
+            if (ring == null) SILENCE_STATUS_DISABLED else SILENCE_STATUS_PREPARING,
+        )
+        @Volatile var vadService: ISilenceVadService? = null
+        @Volatile var vadBound: Boolean = false
+        @Volatile var feederThread: Thread? = null
+        @Volatile var vadConnection: ServiceConnection? = null
         @Volatile var bytesWritten: Long = 0L
 
         /** The one owner of how this take ended. First claim wins; see `CaptureEndingClaim`. */
@@ -105,37 +131,41 @@ class AudioCaptureService : Service() {
     @Volatile private var lastAudioFile: File? = null
     @Volatile private var currentAmplitude = 0f
     @Volatile private var terminalReason = TERMINAL_REASON_NONE
-    @Volatile private var silenceStatus = SILENCE_STATUS_DISABLED
-    @Volatile private var vadService: ISilenceVadService? = null
-    @Volatile private var vadBound = false
-    @Volatile private var feederThread: Thread? = null
     private val tokens = java.util.concurrent.atomic.AtomicLong(0)
 
     /**
      * Every way this binding can fail, and they all mean the same thing to a take: auto-stop is off for
-     * it, and recording continues. `onNullBinding` and `onBindingDied` unbind explicitly so Android
-     * cannot reconnect into a take that has already given up on the detector.
+     * it, and recording continues.
+     *
+     * The connection is built PER TAKE and captures the session it belongs to. A callback that arrives
+     * after its take ended can then do nothing at all, rather than clearing the status or unbinding the
+     * detector of whatever is recording now. `onNullBinding` and `onBindingDied` unbind explicitly,
+     * because Android reconnects a disconnected binding on its own.
      */
-    private val vadConnection = object : ServiceConnection {
+    private fun vadConnectionFor(active: CaptureSession) = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            vadService = ISilenceVadService.Stub.asInterface(binder)
+            if (session !== active) {
+                unbindVad(active)
+                return
+            }
+            active.vadService = ISilenceVadService.Stub.asInterface(binder)
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            vadService = null
-            markSilenceUnavailable("detector process disconnected")
+            active.vadService = null
+            abandonDetector(active)
         }
 
         override fun onNullBinding(name: ComponentName?) {
-            vadService = null
-            markSilenceUnavailable("detector returned no binding")
-            unbindVad()
+            active.vadService = null
+            abandonDetector(active)
+            unbindVad(active)
         }
 
         override fun onBindingDied(name: ComponentName?) {
-            vadService = null
-            markSilenceUnavailable("detector binding died")
-            unbindVad()
+            active.vadService = null
+            abandonDetector(active)
+            unbindVad(active)
         }
     }
 
@@ -149,7 +179,8 @@ class AudioCaptureService : Service() {
         override fun startCaptureWithSilenceStop(autoStopOnSilence: Boolean, pauseSeconds: Float): Boolean =
             this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds)
 
-        override fun getSilenceStopStatus(): Int = this@AudioCaptureService.silenceStatus
+        override fun getSilenceStopStatus(): Int =
+            this@AudioCaptureService.session?.silenceStatus?.get() ?: SILENCE_STATUS_DISABLED
         override fun stopCapture() = this@AudioCaptureService.stopRecording()
         override fun isCapturing(): Boolean = this@AudioCaptureService.isRecording.get()
         override fun getTerminalReason(): Int = this@AudioCaptureService.terminalReason
@@ -177,6 +208,17 @@ class AudioCaptureService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     private fun startRecording(autoStopOnSilence: Boolean, pauseSeconds: Float): Boolean {
+        // REQUESTED is not the same as VALID AND ENABLED. A pause outside the slider's range reaching
+        // this binder means a caller we do not control, so the detector is not built at all rather than
+        // built with a number nobody chose. Ordinary recording is untouched either way.
+        val validPause = pauseSeconds.takeIf {
+            it.isFinite() &&
+                it >= SilenceStopDetector.MIN_PAUSE_SECONDS &&
+                it <= SilenceStopDetector.MAX_PAUSE_SECONDS
+        }
+        val detectorEnabled = autoStopOnSilence && validPause != null
+        val requestedButRefused = autoStopOnSilence && validPause == null
+
         synchronized(sessionLock) {
             // A stopped session remains here until its reader has closed both resources.
             // Starting another take before that point would make the old thread write into
@@ -237,15 +279,13 @@ class AudioCaptureService : Service() {
                     // capture thread may not allocate: it must do nothing that can make it late.
                     readBuffer = ByteArray(READ_BLOCK_BYTES),
                     token = tokens.incrementAndGet(),
-                    ring = if (autoStopOnSilence) BlockRing(RING_BLOCKS, READ_BLOCK_BYTES) else null,
-                    pendingBlock = if (autoStopOnSilence) ByteArray(READ_BLOCK_BYTES) else null,
+                    ring = if (detectorEnabled) BlockRing(RING_BLOCKS, READ_BLOCK_BYTES) else null,
+                    pendingBlock = if (detectorEnabled) ByteArray(READ_BLOCK_BYTES) else null,
                 )
                 session = newSession
                 lastAudioFile = file
                 isRecording.set(true)
                 terminalReason = TERMINAL_REASON_NONE
-                silenceStatus =
-                    if (autoStopOnSilence) SILENCE_STATUS_PREPARING else SILENCE_STATUS_DISABLED
                 currentAmplitude = 0f
                 DebugLogger.startPipeline()
                 DebugLogger.mark(TAG, "recording_start")
@@ -256,7 +296,13 @@ class AudioCaptureService : Service() {
                         "nativeFrames: ${runCatching { record.bufferSizeInFrames }.getOrDefault(-1)})",
                 )
 
-                if (autoStopOnSilence) startSilenceDetection(newSession, pauseSeconds)
+                if (requestedButRefused) {
+                    // The caller asked for auto-stop and cannot have it, which is exactly the state the
+                    // notice exists for. Recording itself is unaffected.
+                    newSession.silenceStatus.set(SILENCE_STATUS_UNAVAILABLE)
+                    DebugLogger.warn(TAG, "Auto-stop refused: pause $pauseSeconds is out of range")
+                }
+                if (detectorEnabled) startSilenceDetection(newSession, validPause!!)
 
                 val thread = Thread({ captureLoop(newSession) }, "AudioCaptureThread")
                 captureThread = thread
@@ -300,7 +346,9 @@ class AudioCaptureService : Service() {
                     break
                 }
 
-                val bytesRead = active.record.read(buffer, 0, buffer.size)
+                // Explicit, because the three-argument overload's blocking behaviour is a default
+                // rather than a statement, and this loop's timing depends on it.
+                val bytesRead = active.record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
                 if (bytesRead < 0) throw IOException("AudioRecord.read failed: $bytesRead")
                 if (bytesRead == 0) continue
 
@@ -338,15 +386,17 @@ class AudioCaptureService : Service() {
     /**
      * Capture thread only. Copies audio toward the detector and never waits for it.
      *
-     * A read that does not land on a block boundary is staged, so the detector always sees whole
-     * 256 ms blocks in order. If the ring is full the detector has fallen more than two seconds behind,
-     * and auto-stop is abandoned for the rest of the take rather than resumed across the gap: a gap
-     * breaks the model's recurrent continuity, and resumed speech could then read as an early stop.
+     * A read that does not land on a block boundary is staged, so the detector always sees whole 256 ms
+     * blocks in order. **Nothing here logs, allocates, locks or calls across a process.**
+     *
+     * A full ring means the detector has fallen further behind than it can recover from. Auto-stop is
+     * abandoned for the rest of the take and never resumed: resuming across dropped audio breaks the
+     * model's recurrent continuity, and speech that resumed inside the gap could then read as silence.
      */
     private fun offerToDetector(active: CaptureSession, buffer: ByteArray, bytesRead: Int) {
         val ring = active.ring ?: return
         val pending = active.pendingBlock ?: return
-        if (silenceStatus == SILENCE_STATUS_UNAVAILABLE) return
+        if (active.detectorAbandoned.get()) return
 
         var consumed = 0
         while (consumed < bytesRead) {
@@ -358,7 +408,8 @@ class AudioCaptureService : Service() {
             if (active.pendingBytes == READ_BLOCK_BYTES) {
                 active.pendingBytes = 0
                 if (!ring.offer(pending, READ_BLOCK_BYTES)) {
-                    markSilenceUnavailable("detector fell behind the ring")
+                    // Flag only. The feeder notices and does the logging, off this thread.
+                    abandonDetector(active)
                     return
                 }
             }
@@ -366,50 +417,69 @@ class AudioCaptureService : Service() {
     }
 
     /**
-     * Bind the detector process and start the one thread allowed to talk to it.
+     * Bind the detector process for one take and start the one thread allowed to talk to it.
      *
-     * Capture has already started by the time this runs, so a slow or failed detector delays nothing.
-     * A take whose detector never becomes ready is simply a take the user stops by hand.
+     * Capture has already started by the time this runs, so a slow or failed detector delays nothing. A
+     * take whose detector never becomes ready is simply a take the user stops by hand.
      */
     private fun startSilenceDetection(active: CaptureSession, pauseSeconds: Float) {
-        vadBound = runCatching {
+        val connection = vadConnectionFor(active)
+        active.vadConnection = connection
+
+        active.vadBound = runCatching {
             bindService(
                 Intent(this, SilenceVadService::class.java),
-                vadConnection,
+                connection,
                 Context.BIND_AUTO_CREATE,
             )
         }.getOrDefault(false)
 
-        if (!vadBound) {
-            markSilenceUnavailable("detector service could not be bound")
+        if (!active.vadBound) {
+            active.vadConnection = null
+            abandonDetector(active)
+            DebugLogger.warn(TAG, "Auto-stop unavailable: detector service could not be bound")
             return
         }
 
         val thread = Thread({ feederLoop(active, pauseSeconds) }, "SilenceFeederThread")
-        feederThread = thread
+        active.feederThread = thread
         runCatching { thread.start() }
             .onFailure {
-                feederThread = null
-                markSilenceUnavailable("detector feeder could not start")
+                active.feederThread = null
+                abandonDetector(active)
+                unbindVad(active)
+                DebugLogger.warn(TAG, "Auto-stop unavailable: detector feeder could not start")
             }
     }
 
     /**
      * The only thread that calls the detector. It is allowed to block; the capture thread is not.
      *
-     * Every result is checked against the live session AND its token before it can end anything. A
-     * synchronous call can still return after teardown if it stalled, and that result belongs to a take
-     * that is already over.
+     * The abandonment flag is checked at the top of every pass AND immediately after every remote call,
+     * because a gap can open while a call is in flight and a verdict computed from the blocks before a
+     * gap must never be applied to the audio after it.
      */
     private fun feederLoop(active: CaptureSession, pauseSeconds: Float) {
         val ring = active.ring ?: return
         val block = ByteArray(READ_BLOCK_BYTES)
         var started = false
+        var reportedAbandon = false
+
+        fun shouldStop(): Boolean {
+            if (active.detectorAbandoned.get()) {
+                if (!reportedAbandon) {
+                    reportedAbandon = true
+                    DebugLogger.warn(TAG, "Auto-stop abandoned for this take")
+                }
+                return true
+            }
+            return session !== active || active.stopRequested
+        }
+
         try {
-            while (session === active && !active.stopRequested) {
-                val remote = vadService
+            while (!shouldStop()) {
+                val remote = active.vadService
                 if (remote == null) {
-                    if (silenceStatus == SILENCE_STATUS_UNAVAILABLE) return
                     Thread.sleep(FEEDER_IDLE_MS)
                     continue
                 }
@@ -417,17 +487,21 @@ class AudioCaptureService : Service() {
                 if (!started) {
                     val status = runCatching { remote.start(active.token, pauseSeconds) }
                         .getOrElse {
-                            markSilenceUnavailable("detector start failed: ${it.message}")
+                            abandonDetector(active)
+                            DebugLogger.warn(TAG, "Auto-stop unavailable: start failed, ${it.message}")
                             return
                         }
+                    if (shouldStop()) return
                     if (status != SilenceVadService.STATUS_READY) {
-                        markSilenceUnavailable("detector reported it is unavailable")
+                        abandonDetector(active)
+                        DebugLogger.warn(TAG, "Auto-stop unavailable: the detector reported so")
                         return
                     }
                     started = true
-                    if (session === active && !active.stopRequested) {
-                        silenceStatus = SILENCE_STATUS_READY
-                    }
+                    active.silenceStatus.compareAndSet(
+                        SILENCE_STATUS_PREPARING,
+                        SILENCE_STATUS_READY,
+                    )
                 }
 
                 val length = ring.poll(block)
@@ -438,20 +512,24 @@ class AudioCaptureService : Service() {
 
                 val result = runCatching { remote.processBlock(active.token, block) }
                     .getOrElse {
-                        markSilenceUnavailable("detector call failed: ${it.message}")
+                        abandonDetector(active)
+                        DebugLogger.warn(TAG, "Auto-stop unavailable: the detector call failed")
                         return
                     }
 
+                if (shouldStop()) return
+
                 when (result) {
                     SilenceVadService.RESULT_SILENCE -> {
-                        // The token and the session identity are both checked inside endTake, so a
-                        // result from a finished take cannot end the one running now.
-                        if (session === active) endTake(TERMINAL_REASON_SILENCE)
+                        // endTake re-checks that this session is still the live one, under the lock, so
+                        // a verdict from a finished take cannot end the take running now.
+                        endTake(active, TERMINAL_REASON_SILENCE)
                         return
                     }
 
                     SilenceVadService.RESULT_UNAVAILABLE -> {
-                        markSilenceUnavailable("detector gave up mid-take")
+                        abandonDetector(active)
+                        DebugLogger.warn(TAG, "Auto-stop unavailable: the detector gave up mid-take")
                         return
                     }
                 }
@@ -459,52 +537,47 @@ class AudioCaptureService : Service() {
         } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
         } catch (e: Exception) {
-            markSilenceUnavailable("detector feeder failed: ${e.message}")
+            abandonDetector(active)
+            DebugLogger.warn(TAG, "Auto-stop unavailable: the feeder failed, ${e.message}")
         } finally {
-            if (started) runCatching { vadService?.finish(active.token) }
+            if (started) runCatching { active.vadService?.finish(active.token) }
+            unbindVad(active)
+            if (active.feederThread === Thread.currentThread()) active.feederThread = null
         }
     }
 
     /**
-     * Auto-stop is off for the rest of this take, and is never resumed within it.
+     * Auto-stop is off for the rest of THIS take, and is never resumed within it.
      *
-     * Only a take that never became ready produces a user-visible notice: losing the detector after it
-     * was working leaves a correct recording, and a message several seconds into one is an interruption
-     * for no gain.
+     * The status it lands on records whether the detector ever worked. A take that never got one tells
+     * the user; a take that had one and lost it does not, because that recording is still correct and a
+     * message part way through is an interruption for nothing.
      */
-    private fun markSilenceUnavailable(reason: String) {
-        if (silenceStatus == SILENCE_STATUS_DISABLED) return
-        silenceStatus = SILENCE_STATUS_UNAVAILABLE
-        DebugLogger.warn(TAG, "Auto-stop unavailable: $reason")
-    }
+    private fun abandonDetector(active: CaptureSession) {
+        active.detectorAbandoned.set(true)
+        while (true) {
+            val previous = active.silenceStatus.get()
+            val next = when (previous) {
+                SILENCE_STATUS_DISABLED,
+                SILENCE_STATUS_UNAVAILABLE,
+                SILENCE_STATUS_LOST_AFTER_READY -> return
 
-    private fun unbindVad() {
-        if (!vadBound) return
-        vadBound = false
-        vadService = null
-        runCatching { unbindService(vadConnection) }
-            .onFailure { DebugLogger.warn(TAG, "Detector unbind failed: ${it.message}") }
-    }
-
-    /**
-     * Release the detector without waiting on it.
-     *
-     * The feeder is signalled and joined only briefly. Whether it returns or not, it holds no
-     * AudioRecord, no file stream, no ring slot and no reference to a later session, and any result it
-     * eventually produces fails the session and token checks. A stalled detector may cost this take its
-     * auto-stop; it may not refuse the next recording.
-     */
-    private fun releaseSilenceDetection() {
-        val thread = feederThread
-        feederThread = null
-        thread?.interrupt()
-        if (thread != null && thread !== Thread.currentThread()) {
-            runCatching { thread.join(FEEDER_JOIN_MS) }
-            if (thread.isAlive) {
-                DebugLogger.warn(TAG, "Detector feeder did not finish; abandoning it")
+                SILENCE_STATUS_READY -> SILENCE_STATUS_LOST_AFTER_READY
+                else -> SILENCE_STATUS_UNAVAILABLE
             }
+            if (active.silenceStatus.compareAndSet(previous, next)) return
         }
-        unbindVad()
+    }
+
+    /** Unbinds only [active]'s own connection, so a finished take cannot unbind a running one's. */
+    private fun unbindVad(active: CaptureSession) {
+        if (!active.vadBound) return
+        active.vadBound = false
+        val connection = active.vadConnection ?: return
+        active.vadConnection = null
+        active.vadService = null
+        runCatching { unbindService(connection) }
+            .onFailure { DebugLogger.warn(TAG, "Detector unbind failed: ${it.message}") }
     }
 
     /**
@@ -521,53 +594,68 @@ class AudioCaptureService : Service() {
         return true
     }
 
-    /** The user, or anything else with the authority to end a take by hand. */
-    private fun stopRecording() = endTake(TERMINAL_REASON_MANUAL)
-
-    /**
-     * Signal the reader to finish, for whichever reason got here first. The reader performs the one
-     * final native release.
-     *
-     * The session identity is re-read under the lock, so a caller holding a reference to a take that
-     * has already ended cannot end the next one.
-     */
-    private fun endTake(reason: Int) {
-        val active: CaptureSession
+    /** The user, or anything else with the authority to end whatever take is running. */
+    private fun stopRecording() {
         synchronized(sessionLock) {
-            active = session ?: return
+            val active = session ?: return
             if (!isRecording.get()) return
-            if (!claimEnding(active, reason)) return
-            try {
-                // stop() unblocks a pending read. Do not release here while the reader may
-                // still be using the same AudioRecord instance.
-                active.record.stop()
-            } catch (e: Exception) {
-                // The reader's finally block still owns and releases the resources if stop
-                // itself fails, so a vendor-specific AudioRecord error cannot leak a session.
-                DebugLogger.warn(TAG, "AudioRecord stop failed: ${e.message}")
-            }
-            DebugLogger.mark(TAG, "recording_stop")
-            DebugLogger.log(
-                TAG,
-                "Stopped. ${active.bytesWritten} bytes (${String.format("%.1f", PcmAudio.durationSeconds(active.bytesWritten))}s) -> ${active.file.absolutePath}",
-            )
+            endTakeLocked(active, TERMINAL_REASON_MANUAL)
         }
     }
 
+    /**
+     * End exactly [expected], and nothing else.
+     *
+     * The identity check and the claim happen under ONE hold of the lock. Checking outside it and then
+     * ending "the current session" is the shape that lets a detector result from a take that has already
+     * finished stop the recording that started after it.
+     */
+    private fun endTake(expected: CaptureSession, reason: Int) {
+        synchronized(sessionLock) {
+            if (session !== expected || !isRecording.get()) return
+            endTakeLocked(expected, reason)
+        }
+    }
+
+    /**
+     * Signal the reader to finish. The reader performs the one final native release.
+     *
+     * Called only while [sessionLock] is held and [active] is still the current session.
+     */
+    private fun endTakeLocked(active: CaptureSession, reason: Int) {
+        if (!claimEnding(active, reason)) return
+        try {
+            // stop() unblocks a pending read. Do not release here while the reader may
+            // still be using the same AudioRecord instance.
+            active.record.stop()
+        } catch (e: Exception) {
+            // The reader's finally block still owns and releases the resources if stop
+            // itself fails, so a vendor-specific AudioRecord error cannot leak a session.
+            DebugLogger.warn(TAG, "AudioRecord stop failed: ${e.message}")
+        }
+        DebugLogger.mark(TAG, "recording_stop")
+        DebugLogger.log(
+            TAG,
+            "Stopped. ${active.bytesWritten} bytes (${String.format("%.1f", PcmAudio.durationSeconds(active.bytesWritten))}s) -> ${active.file.absolutePath}",
+        )
+    }
+
     private fun releaseSession(active: CaptureSession) {
-        // Outside the lock, and never joined for long: detector teardown does not own capture teardown.
-        if (active.ring != null) releaseSilenceDetection()
         synchronized(sessionLock) {
             if (session !== active) return
             closeResources(active)
             session = null
             if (captureThread === Thread.currentThread()) captureThread = null
             currentAmplitude = 0f
-            if (silenceStatus == SILENCE_STATUS_PREPARING || silenceStatus == SILENCE_STATUS_READY) {
-                silenceStatus = SILENCE_STATUS_DISABLED
-            }
-            stopSelf()
         }
+
+        // Audio and the PCM file are already closed above. Detector cleanup therefore cannot delay the
+        // file becoming ready, which is what the user is waiting for. Nothing here blocks: the feeder is
+        // told to stop and abandoned, and it holds no recorder, no stream, no ring slot and no reference
+        // to a later take.
+        active.detectorAbandoned.set(true)
+        active.feederThread?.interrupt()
+        stopSelf()
     }
 
     private fun closeResources(active: CaptureSession) = closeResources(active.record, active.output)
@@ -598,7 +686,11 @@ class AudioCaptureService : Service() {
 
     override fun onDestroy() {
         stopRecording()
-        releaseSilenceDetection()
+        session?.let { active ->
+            active.detectorAbandoned.set(true)
+            active.feederThread?.interrupt()
+            unbindVad(active)
+        }
         val thread = captureThread
         if (thread != null && thread !== Thread.currentThread()) {
             thread.join(2_000L)

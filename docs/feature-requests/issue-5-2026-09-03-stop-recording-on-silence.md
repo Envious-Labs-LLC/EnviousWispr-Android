@@ -1,6 +1,6 @@
 # Issue #5 — Stop recording on silence — 2026-09-03
 
-GitHub issue: `#5`. Tier: REFACTOR. Status: APPROVED (Gate 2 signed off 2026-09-03; the pause control is a slider, by founder decision).
+GitHub issue: `#5`. Tier: REFACTOR. Status: BUILT (Gate 2 signed off 2026-09-03, slider by founder decision; code review applied, hardware run outstanding).
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -184,7 +184,7 @@ it. So one appended AIDL method covers every start path and the four entry surfa
 
 ### 2. Find the existing authority before proposing one
 
-- **Silence detection**: `app/libs/sherpa-onnx.aar` (40,314,243 bytes, declared `app/build.gradle.kts:70`)
+- **Silence detection**: `app/libs/sherpa-onnx.aar` (40,314,243 bytes, declared `app/build.gradle.kts:77`)
   already contains `com/k2fsa/sherpa/onnx/Vad.class`, `VadModelConfig.class`, `SileroVadModelConfig.class`,
   `TenVadModelConfig.class`, `SpeechSegment.class` (external). **The authority exists and already ships.**
 - **The take-ended decision**: `AudioCaptureService.terminalReason`. Extended, and its ownership tightened
@@ -436,6 +436,20 @@ join holds no `AudioRecord`, file stream, ring slot, or reference to a later ses
 return fails the active-session and token checks. **A detector hang may disable auto-stop; it may not refuse
 the next recording.**
 
+**A broken probability is rejected, not coerced.** Added during the code review. Reading a non-finite or
+out-of-range inference result as silence would walk the hangover and end the take, which is an inference
+failure reaching the recording by the one path this design exists to close. The detector rejects it, the
+service turns that into unavailable, and the recording continues.
+
+**Detector state belongs to the take, not the service.** Also from the code review: the binding, the
+connection, the feeder and the status all live on the `CaptureSession`, and the connection closes over the
+take it was made for. A callback or a feeder from a finished take then has something to compare against,
+instead of clearing the status or unbinding the detector of whatever is recording now.
+
+**Capture teardown never waits for the detector.** The PCM file closes first, then the feeder is told to
+stop and abandoned. Interrupting does not unblock a binder call, so any join would charge the user for the
+detector's problem while they wait for words already recorded.
+
 **The model is still verified before construction**, following `polish/S1ModelSelection.kt:20-26`: exact byte
 count, exact SHA-256, then use, otherwise report unavailable. Isolation makes a violation survivable;
 verification makes it rare. Both, not either.
@@ -452,11 +466,21 @@ int getSilenceStopStatus();
 
 `startCapture()` remains and is redefined as `startCaptureWithSilenceStop(false, 0f)`.
 
+**An out-of-range pause refuses auto-stop rather than substituting a value.** Added during the code
+review. Requested is not the same as valid and enabled: a pause outside the slider's range reaching this
+binder means a caller we do not control, so no detector is built and the take starts with the status
+already `UNAVAILABLE`. Ordinary recording is untouched. Substituting the default would hand that caller a
+detector configured with a number nobody chose.
+
 **Sensitivity is not a parameter.** It is fixed inside the detector adapter at macOS's resolved 0.5
 behaviour. No caller can choose another value, and an append-only interface makes a speculative parameter
 permanent.
 
-`getSilenceStopStatus()` (proposed) returns `DISABLED(0)`, `PREPARING(1)`, `READY(2)` or `UNAVAILABLE(3)`.
+`getSilenceStopStatus()` (proposed) returns `DISABLED(0)`, `PREPARING(1)`, `READY(2)`, `UNAVAILABLE(3)` or
+`LOST_AFTER_READY(4)`. **The fifth value was added during the code review**: the poller sees only the
+current integer and never remembers a previous `READY`, so without it a detector lost mid-take was
+indistinguishable from one that never arrived, and both would have shown the startup notice. Status 4 is
+diagnostic and silent.
 `startPolling` reads it alongside elapsed time. The status resets before every capture and may never outlive
 its capture-session token.
 

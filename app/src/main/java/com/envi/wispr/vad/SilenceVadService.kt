@@ -8,7 +8,7 @@ import com.envi.wispr.debug.DebugLogger
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Hosts the silence detector, alone, in the `:vad` process.
@@ -35,8 +35,6 @@ class SilenceVadService : Service() {
             Thread(runnable, "SilenceVadWatchdog").apply { isDaemon = true }
         }
 
-    /** Bumped on entering and on leaving a guarded call, so a finished call disarms its own deadline. */
-    private val callGeneration = AtomicLong(0)
 
     private val binder = object : ISilenceVadService.Stub() {
 
@@ -65,11 +63,15 @@ class SilenceVadService : Service() {
                 synchronized(lock) {
                     // A token that is not the active one belongs to a take that already ended. Its
                     // result is discarded rather than applied to whatever is recording now.
-                    if (captureToken != activeToken) return@guarded RESULT_UNAVAILABLE
-                    if (unavailable) return@guarded RESULT_UNAVAILABLE
-                    val active = session ?: return@guarded RESULT_UNAVAILABLE
-                    val block = pcm16 ?: return@guarded RESULT_CONTINUE
-                    if (active.processBlock(block)) RESULT_SILENCE else RESULT_CONTINUE
+                    if (captureToken != activeToken || unavailable) return@guarded RESULT_UNAVAILABLE
+                    // A short, oversized or missing block is a broken contract, not audio. Scoring it
+                    // would be scoring something the microphone never produced.
+                    if (pcm16 == null || pcm16.size != PCM_BYTES_PER_BLOCK) {
+                        unavailable = true
+                        return@guarded RESULT_UNAVAILABLE
+                    }
+                    val detector = session ?: return@guarded RESULT_UNAVAILABLE
+                    if (detector.processBlock(pcm16)) RESULT_SILENCE else RESULT_CONTINUE
                 }
             }
 
@@ -111,10 +113,12 @@ class SilenceVadService : Service() {
      * without a gap, and a gap breaks the model's recurrent continuity anyway.
      */
     private fun <T> guarded(onDeadline: T, block: () -> T): T {
-        val mine = callGeneration.incrementAndGet()
+        // One flag per call, owned by that call. A shared counter would let a later call disarm an
+        // earlier stalled one, which is exactly the situation the deadline exists for.
+        val active = AtomicBoolean(true)
         val armed = watchdog.schedule(
             {
-                if (callGeneration.get() == mine) {
+                if (active.compareAndSet(true, false)) {
                     DebugLogger.error(
                         TAG,
                         "Detector call exceeded ${CALL_DEADLINE_MS}ms; terminating the detector process",
@@ -132,7 +136,7 @@ class SilenceVadService : Service() {
             synchronized(lock) { unavailable = true }
             onDeadline
         } finally {
-            callGeneration.incrementAndGet()
+            active.set(false)
             armed.cancel(false)
         }
     }
@@ -150,5 +154,8 @@ class SilenceVadService : Service() {
         const val RESULT_CONTINUE = 0
         const val RESULT_SILENCE = 1
         const val RESULT_UNAVAILABLE = 2
+
+        /** 4096 samples of 16 kHz mono PCM16. Anything else is not one of our blocks. */
+        const val PCM_BYTES_PER_BLOCK = 8_192
     }
 }

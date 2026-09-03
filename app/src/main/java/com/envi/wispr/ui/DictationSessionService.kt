@@ -471,16 +471,20 @@ class DictationSessionService : Service() {
                         // Exhaustive over CaptureEnding with no `else`, so a reason this build does not
                         // know cannot fall through into an ordinary transcription.
                         when (CaptureEnding.fromAidl(service.terminalReason)) {
-                            CaptureEnding.Failure -> {
-                                DebugLogger.error(TAG, "Audio capture ended with a terminal failure")
+                            // StillRunning belongs HERE. Capture that stopped without publishing a
+                            // reason has no successful ending to report, and the type says so:
+                            // StillRunning.transcribes is false. Grouping it with the successes would
+                            // send partial audio on as though it were a finished take.
+                            CaptureEnding.Failure,
+                            CaptureEnding.StillRunning -> {
+                                DebugLogger.error(TAG, "Audio capture ended without a successful reason")
                                 discardDraft()
                                 showError("Microphone capture stopped unexpectedly. Try again.")
                             }
 
                             CaptureEnding.Manual,
                             CaptureEnding.MaxDuration,
-                            CaptureEnding.Silence,
-                            CaptureEnding.StillRunning -> stopAndTranscribe()
+                            CaptureEnding.Silence -> stopAndTranscribe()
                         }
                         break
                     }

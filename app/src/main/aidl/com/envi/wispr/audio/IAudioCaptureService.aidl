@@ -22,6 +22,9 @@ interface IAudioCaptureService {
      */
     boolean startCaptureWithSilenceStop(boolean autoStopOnSilence, float pauseSeconds);
 
-    /** 0 disabled, 1 preparing, 2 ready, 3 unavailable. Reset before every take. */
+    /**
+     * 0 disabled, 1 preparing, 2 ready, 3 unavailable before ready, 4 lost after ready.
+     * Only 3 is worth telling the user about: 4 means the recording is still correct.
+     */
     int getSilenceStopStatus();
 }

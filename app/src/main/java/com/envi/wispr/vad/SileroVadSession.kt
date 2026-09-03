@@ -41,7 +41,11 @@ internal class SileroVadSession private constructor(
             // compute() advances the model's own recurrent state, so calling it in order IS the
             // streaming contract. acceptWaveform must never also be called on this handle: each
             // advances that state, and both would advance it twice for the same audio.
-            windowProbabilities[produced] = vad.compute(window)
+            val probability = vad.compute(window)
+            check(probability.isFinite() && probability in 0f..1f) {
+                "Silero returned an invalid speech probability"
+            }
+            windowProbabilities[produced] = probability
             produced++
             offset += SilenceStopDetector.WINDOW_SAMPLES
         }

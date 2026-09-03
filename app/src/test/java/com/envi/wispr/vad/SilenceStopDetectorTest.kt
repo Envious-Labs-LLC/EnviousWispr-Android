@@ -1,6 +1,7 @@
 package com.envi.wispr.vad
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -166,13 +167,16 @@ class SilenceStopDetectorTest {
     }
 
     @Test
-    fun aNonFiniteProbabilityIsTreatedAsSilenceRatherThanCrashing() {
-        val detector = SilenceStopDetector(1.5f)
-        detector.onBlock(1f)
-        detector.onBlock(1f)
-        assertTrue(detector.speechDetected)
-        val blocks = List(20) { Float.NaN }
-        assertEquals("NaN reads as silence, so the take still ends", 8, stopIndex(detector, blocks))
+    fun aBrokenProbabilityIsRejectedRatherThanReadAsSilence() {
+        // Reading a broken inference result as silence would walk the hangover and end the take, which
+        // is an inference failure reaching the recording by the one path this design exists to close.
+        // Rejecting it becomes "the detector is unavailable", and the recording carries on.
+        listOf(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, -0.5f, 1.5f).forEach { bad ->
+            val detector = SilenceStopDetector(1.5f)
+            detector.onBlock(1f)
+            detector.onBlock(1f)
+            assertThrows(IllegalArgumentException::class.java) { detector.onBlock(bad) }
+        }
     }
 
     @Test

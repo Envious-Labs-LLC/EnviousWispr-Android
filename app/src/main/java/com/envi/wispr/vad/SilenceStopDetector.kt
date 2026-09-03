@@ -44,8 +44,14 @@ internal class SilenceStopDetector(pauseSeconds: Float) {
      * slider presents its value as approximate.
      */
     fun onBlock(rawProbability: Float): Boolean {
-        val raw = if (rawProbability.isFinite()) rawProbability.coerceIn(0f, 1f) else 0f
-        smoothed = EMA_ALPHA * raw + (1f - EMA_ALPHA) * smoothed
+        // REJECTED, never coerced. Reading a broken inference result as silence walks the hangover and
+        // ends the take, which is an inference failure reaching the recording by the one path the whole
+        // design exists to close. The caller turns this into "the detector is unavailable" and keeps
+        // recording.
+        require(rawProbability.isFinite() && rawProbability in 0f..1f) {
+            "speech probability must be finite and between zero and one"
+        }
+        smoothed = EMA_ALPHA * rawProbability + (1f - EMA_ALPHA) * smoothed
 
         when (phase) {
             Phase.IDLE -> {

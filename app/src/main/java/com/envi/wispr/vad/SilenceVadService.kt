@@ -9,6 +9,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.LockSupport
 
 /**
  * Hosts the silence detector, alone, in the `:vad` process.
@@ -49,12 +50,14 @@ class SilenceVadService : Service() {
 
     private val binder = object : ISilenceVadService.Stub() {
 
-        override fun start(captureToken: Long, pauseSeconds: Float): Int = guarded(STATUS_UNAVAILABLE) {
-            synchronized(lock) {
-                if (!tokenOrder.accept(captureToken)) {
-                    DebugLogger.warn(TAG, "Rejected a start from an older take, token $captureToken")
-                    return@guarded STATUS_UNAVAILABLE
-                }
+        // The lock is OUTSIDE the deadline, not inside it. A call that waits for the lock must not have
+        // armed a watchdog while it waited, or it can kill this process while a newer take owns the lock.
+        override fun start(captureToken: Long, pauseSeconds: Float): Int = synchronized(lock) {
+            if (!tokenOrder.accept(captureToken)) {
+                DebugLogger.warn(TAG, "Rejected a start from an older take, token $captureToken")
+                return@synchronized STATUS_UNAVAILABLE
+            }
+            guarded(STATUS_UNAVAILABLE) {
                 releaseLocked()
                 unavailable = false
                 activeToken = captureToken
@@ -73,31 +76,25 @@ class SilenceVadService : Service() {
             }
         }
 
-        override fun processBlock(captureToken: Long, pcm16: ByteArray?): Int =
+        override fun processBlock(captureToken: Long, pcm16: ByteArray?): Int = synchronized(lock) {
+            // A token that is not the active one belongs to a take that already ended. Its result is
+            // discarded rather than applied to whatever is recording now.
+            if (captureToken != activeToken || unavailable) return@synchronized RESULT_UNAVAILABLE
+            // A short, oversized or missing block is a broken contract, not audio. Scoring it would be
+            // scoring something the microphone never produced.
+            if (pcm16 == null || pcm16.size != PCM_BYTES_PER_BLOCK) {
+                unavailable = true
+                return@synchronized RESULT_UNAVAILABLE
+            }
+            val detector = session ?: return@synchronized RESULT_UNAVAILABLE
             guarded(RESULT_UNAVAILABLE) {
-                synchronized(lock) {
-                    // A token that is not the active one belongs to a take that already ended. Its
-                    // result is discarded rather than applied to whatever is recording now.
-                    if (captureToken != activeToken || unavailable) return@guarded RESULT_UNAVAILABLE
-                    // A short, oversized or missing block is a broken contract, not audio. Scoring it
-                    // would be scoring something the microphone never produced.
-                    if (pcm16 == null || pcm16.size != PCM_BYTES_PER_BLOCK) {
-                        unavailable = true
-                        return@guarded RESULT_UNAVAILABLE
-                    }
-                    val detector = session ?: return@guarded RESULT_UNAVAILABLE
-                    if (detector.processBlock(pcm16)) RESULT_SILENCE else RESULT_CONTINUE
-                }
+                if (detector.processBlock(pcm16)) RESULT_SILENCE else RESULT_CONTINUE
             }
+        }
 
-        override fun finish(captureToken: Long) {
-            guarded(Unit) {
-                synchronized(lock) {
-                    if (captureToken != activeToken) return@guarded Unit
-                    releaseLocked()
-                    Unit
-                }
-            }
+        override fun finish(captureToken: Long) = synchronized(lock) {
+            if (captureToken != activeToken) return@synchronized
+            guarded(Unit) { releaseLocked() }
         }
     }
 
@@ -133,13 +130,7 @@ class SilenceVadService : Service() {
         val active = AtomicBoolean(true)
         val armed = watchdog.schedule(
             {
-                if (active.compareAndSet(true, false)) {
-                    DebugLogger.error(
-                        TAG,
-                        "Detector call exceeded ${CALL_DEADLINE_MS}ms; terminating the detector process",
-                    )
-                    Process.killProcess(Process.myPid())
-                }
+                if (active.compareAndSet(true, false)) terminateDetectorProcess()
             },
             CALL_DEADLINE_MS,
             TimeUnit.MILLISECONDS,
@@ -155,13 +146,29 @@ class SilenceVadService : Service() {
             // The deadline may have won while this call was running. If it did, this transaction must
             // NOT return: a successful-looking return would let a later take start work inside a process
             // that is already scheduled to die.
-            if (!active.compareAndSet(true, false)) {
-                Process.killProcess(Process.myPid())
-                throw IllegalStateException("detector deadline expired")
-            }
+            if (!active.compareAndSet(true, false)) terminateDetectorProcess()
             result
         } finally {
             armed.cancel(false)
+        }
+    }
+
+    /**
+     * Decide this process must die, and never return from the transaction that decided it.
+     *
+     * Returning would release the lock and let a newer take start work inside a process that is already
+     * scheduled to end. The park is only for the interval between the signal and the process actually
+     * going away.
+     */
+    private fun terminateDetectorProcess(): Nothing {
+        DebugLogger.error(
+            TAG,
+            "Detector call exceeded ${CALL_DEADLINE_MS}ms; terminating the detector process",
+        )
+        Process.killProcess(Process.myPid())
+        while (true) {
+            LockSupport.park()
+            Thread.interrupted()
         }
     }
 

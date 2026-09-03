@@ -4,6 +4,8 @@
         <activity
             android:name="com.envi.wispr.PasteTargetActivity"
             android:exported="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:label="Paste target" />
         <!--
             A speaker has no reason to have a screen. Without this theme it inherits the

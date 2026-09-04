@@ -57,6 +57,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -196,6 +197,8 @@ internal fun EnviousWisprApp(
     onFillerRemovalChanged: (Boolean) -> Unit,
     onEmojiFormatterChanged: (Boolean) -> Unit,
     onSpokenPunctuationChanged: (Boolean) -> Unit,
+    onAutoStopOnSilenceChanged: (Boolean) -> Unit,
+    onSilencePauseSecondsChanged: (Float) -> Unit,
     onAutoCopyChanged: (Boolean) -> Unit,
     onRestoreClipboardChanged: (Boolean) -> Unit,
     onSmartInsertionChanged: (Boolean) -> Unit,
@@ -366,6 +369,8 @@ internal fun EnviousWisprApp(
                             onFillerRemovalChanged = onFillerRemovalChanged,
                             onEmojiFormatterChanged = onEmojiFormatterChanged,
                             onSpokenPunctuationChanged = onSpokenPunctuationChanged,
+                            onAutoStopOnSilenceChanged = onAutoStopOnSilenceChanged,
+                            onSilencePauseSecondsChanged = onSilencePauseSecondsChanged,
                         )
                         AppDestination.Polish -> PolishScreen(
                             settings = uiState.providerSettings,
@@ -756,6 +761,65 @@ internal fun SettingsGroup(title: String, content: @Composable ColumnScope.() ->
         Card {
             Column(Modifier.fillMaxWidth(), content = content)
         }
+    }
+}
+
+/**
+ * A row carrying one slider, with its current value read out beside the title.
+ *
+ * The first slider in this app, so it borrows everything it can from [SettingsToggleRow]: the same 18 dp
+ * padding, the same title and subtitle typography, the same muted subtitle colour. The control sits BELOW
+ * the text rather than beside it, because eleven positions need the row's full width to be usable with a
+ * thumb.
+ *
+ * [valueLabel] is deliberately approximate wording rather than a number alone. The stored value is the
+ * policy the detector is given, not a stopwatch promise: the state machine spends a block noticing the
+ * silence before it starts counting, so the real wait is a little longer than the number shown.
+ */
+@Composable
+internal fun SettingsSliderRow(
+    title: String,
+    subtitle: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    valueLabel: String,
+    enabled: Boolean = true,
+    onValueChange: (Float) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                valueLabel,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Text(
+            subtitle,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            steps = steps,
+            enabled = enabled,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "$title, $valueLabel" },
+        )
     }
 }
 

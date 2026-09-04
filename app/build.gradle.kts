@@ -26,6 +26,13 @@ android {
         }
     }
 
+    androidResources {
+        // The model must be STORED, not deflated. Measured on this app's own APK: our text asset is
+        // Defl:N while ML Kit's model asset is Stored, and the only reason theirs is stored is that they
+        // renamed it to .jpg to reach AAPT's built-in never-compress list. .onnx is not on that list.
+        noCompress += "onnx"
+    }
+
     buildFeatures {
         compose = true
         aidl = true

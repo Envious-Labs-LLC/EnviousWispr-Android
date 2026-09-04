@@ -401,6 +401,15 @@ class EnviousWisprViewModel(
         }
     }
 
+    fun setAutoStopOnSilenceEnabled(enabled: Boolean) {
+        viewModelScope.launch { appPreferences.setAutoStopOnSilenceEnabled(enabled) }
+    }
+
+    /** The value is clamped in the store as well, so a bad one never reaches a take. */
+    fun setSilencePauseSeconds(seconds: Float) {
+        viewModelScope.launch { appPreferences.setSilencePauseSeconds(seconds) }
+    }
+
     fun setSpokenPunctuationEnabled(enabled: Boolean) {
         viewModelScope.launch {
             appPreferences.setSpokenPunctuationEnabled(enabled)

@@ -87,6 +87,8 @@ class SettingsActivity : ComponentActivity() {
                     onFillerRemovalChanged = viewModel::setFillerRemovalEnabled,
                     onEmojiFormatterChanged = viewModel::setEmojiFormatterEnabled,
                     onSpokenPunctuationChanged = viewModel::setSpokenPunctuationEnabled,
+                    onAutoStopOnSilenceChanged = viewModel::setAutoStopOnSilenceEnabled,
+                    onSilencePauseSecondsChanged = viewModel::setSilencePauseSeconds,
                     onAutoCopyChanged = viewModel::setAutoCopyToClipboard,
                     onRestoreClipboardChanged = viewModel::setRestoreClipboardAfterPaste,
                     onSmartInsertionChanged = viewModel::setSmartInsertionEnabled,

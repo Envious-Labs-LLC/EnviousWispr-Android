@@ -62,6 +62,16 @@
             android:exported="false" />
 
         <!-- ASR in separate process -->
+        <!--
+            The detector runs alone, in its own process, because the speech library terminates its host
+            process on a model or input contract violation rather than throwing. Anywhere else, that
+            would be able to kill a live recording.
+        -->
+        <service
+            android:name=".vad.SilenceVadService"
+            android:exported="false"
+            android:process=":vad" />
+
         <service
             android:name=".asr.AsrService"
             android:process=":asr"

@@ -44,6 +44,8 @@ internal fun TranscriptionScreen(
     onFillerRemovalChanged: (Boolean) -> Unit,
     onEmojiFormatterChanged: (Boolean) -> Unit,
     onSpokenPunctuationChanged: (Boolean) -> Unit,
+    onAutoStopOnSilenceChanged: (Boolean) -> Unit,
+    onSilencePauseSecondsChanged: (Float) -> Unit,
 ) {
     val context = LocalContext.current
     val view = LocalView.current
@@ -78,6 +80,37 @@ internal fun TranscriptionScreen(
             },
             onPause = { ModelDeliveryWorker.pause(context, ModelManifest.parakeet) },
             onResume = { ModelDeliveryWorker.resume(context, ModelManifest.parakeet) },
+        )
+        SettingsGroup("Recording") {
+            SettingsToggleRow(
+                title = "Stop recording on silence",
+                subtitle = "End the recording by itself when you stop speaking, instead of pressing stop.",
+                checked = preferences.autoStopOnSilenceEnabled,
+                onCheckedChange = { updateWithHaptic(it, onAutoStopOnSilenceChanged) },
+            )
+            if (preferences.autoStopOnSilenceEnabled) {
+                HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                SettingsSliderRow(
+                    title = "How long to wait",
+                    subtitle = "How long to wait after you stop speaking before ending the recording. " +
+                        "Recording can take a moment longer to stop while your voice fades.",
+                    value = preferences.silencePauseSeconds,
+                    valueRange = 0.5f..3.0f,
+                    // Eleven positions: 0.5 to 3.0 in quarter seconds, so nine sit between the ends.
+                    steps = 9,
+                    valueLabel = "about ${"%.2f".format(preferences.silencePauseSeconds).trimEnd('0').trimEnd('.')}s",
+                    onValueChange = {
+                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        onSilencePauseSecondsChanged(it)
+                    },
+                )
+            }
+        }
+        Text(
+            "Auto-stop listens on this phone only. It never sends anything anywhere, and it never " +
+                "changes what you said, only when the recording ends.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         SettingsGroup("Text cleanup") {
             SettingsToggleRow(

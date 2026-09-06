@@ -68,19 +68,35 @@ def _run(args, timeout=60):
     return done.returncode, done.stdout, done.stderr
 
 
-def _adb(command, timeout=60, serial=None):
-    """One `adb shell` command, with the sentinel that makes the REMOTE status readable.
+def _adb(command, timeout=60, check=True):
+    """One `adb shell` command, with the REMOTE status read and, by default, enforced.
 
-    `adb shell` returns adb's own status, never the command's, so every check written without a
-    sentinel reports success (`android-tooling.md` RULE: adb-shell-needs-a-sentinel).
+    Two separate traps, and this function is where both are closed.
+
+    `adb shell` returns adb's OWN status, never the command's, so a check written without a sentinel
+    reports success whatever happened (`android-tooling.md` RULE: adb-shell-needs-a-sentinel). And a
+    sentinel that is read but ignored is the same bug one step later: `input tap` failing while `tap()`
+    returned "pressed ..." is a false pass about an action that did not happen.
+
+    `check=False` is for commands whose non-zero status is an ANSWER rather than a failure, such as a
+    `grep` that legitimately finds nothing. It is never a way to ignore an error.
+
+    The command is quoted into a single `sh -c` argument so that no caller-supplied text can be read as
+    shell syntax.
     """
-    target = serial or device()
-    code, out, err = _run([ADB, "-s", target, "shell", f"{command}; echo __RC=$?"], timeout=timeout)
+    target = device()
+    code, out, err = _run(
+        [ADB, "-s", target, "shell", f"sh -c {shlex.quote(command)}; echo __RC=$?"], timeout=timeout
+    )
     if code != 0:
         raise Blocked(f"adb could not reach {target}: {err.strip() or 'no message'}")
     match = re.search(r"__RC=(\d+)\s*$", out)
-    remote = int(match.group(1)) if match else None
-    body = out[: match.start()] if match else out
+    if match is None:
+        raise Blocked(f"the phone returned no status for {command!r}, so nothing here can be believed")
+    remote = int(match.group(1))
+    body = out[: match.start()]
+    if check and remote != 0:
+        raise Blocked(f"the phone refused {command!r} (status {remote}): {body.strip() or 'no message'}")
     return remote, body
 
 
@@ -99,48 +115,77 @@ def devices():
     return found
 
 
-def device(serial=None):
-    """The PHONE's serial, refusing rather than guessing.
+# What the founder's phone answers to. A device that is not this is a stranger, and a harness that taps
+# and deletes must not pick one on its own (`tools-and-apps.md` RULE: a-harness-that-acts-must-refuse-not-choose).
+KNOWN_PHONE_MODELS = ("SM_S948U1",)
 
-    An emulator answers "is a device attached" with yes. A watcher once reported the founder's phone
-    online because an emulator had booted, and a UAT that picks the wrong one silently measures nothing
-    (`device-testing.md` RULE: a-watcher-for-the-phone-names-the-phone).
+
+def device(serial=None):
+    """The phone to drive, refusing rather than guessing.
+
+    Auto-selection is allowed ONLY for a device whose model this project knows. Any other physical
+    device has to be named, because "the attached device" is a question an emulator answers too, and a
+    stranger's phone answers it as readily as the founder's.
     """
-    if serial:
-        _STATE["serial"] = serial
+    if serial is not None:
+        if not isinstance(serial, str) or not serial.strip():
+            raise Blocked("a device serial must be a non-empty string")
+        attached = {s for s, _ in devices()}
+        if serial not in attached:
+            raise Blocked(f"{serial!r} is not attached. Attached: {', '.join(sorted(attached)) or 'nothing'}")
+        _switch_to(serial)
         return serial
     if _STATE["serial"]:
         return _STATE["serial"]
     env = os.environ.get("WISPR_SERIAL")
     if env:
-        _STATE["serial"] = env
-        return env
+        return device(env)
+
     physical = [(s, m) for s, m in devices() if not s.startswith("emulator-")]
     if not physical:
         raise Blocked(
             "no physical phone attached. Attached: "
             + (", ".join(f"{s} ({m})" for s, m in devices()) or "nothing")
-            + ". Turn on Wireless debugging, or pass a serial."
+            + ". Turn on Wireless debugging, or name a device."
         )
-    # ONE phone can appear TWICE, once as an address and once as an mDNS TLS name, and treating that as
-    # two devices refuses a run for no reason. Ask each entry what hardware it is; identical hardware is
-    # one phone (observed 2026-09-06). Different hardware stays ambiguous and is still refused.
+    known = [(s, m) for s, m in physical if m in KNOWN_PHONE_MODELS]
+    if not known:
+        raise Blocked(
+            "the attached phone is not one this project knows, so it will not be driven unasked: "
+            + ", ".join(f"{s} ({m})" for s, m in physical)
+            + ". Name it explicitly with device(serial) or WISPR_SERIAL if it really is the target."
+        )
+    # ONE phone can appear TWICE, once as an address and once as an mDNS TLS name, and calling that two
+    # devices refuses a run for no reason. Ask each entry what hardware it is; a property read that
+    # FAILS is not an answer and keeps the entry separate rather than merging it away.
     by_hardware = {}
-    for serial, model in physical:
-        code, out, _ = _run([ADB, "-s", serial, "shell", "getprop ro.serialno"], timeout=20)
-        hardware = out.strip() or serial
-        by_hardware.setdefault(hardware, []).append((serial, model))
+    for candidate, model in known:
+        code, out, _ = _run([ADB, "-s", candidate, "shell", "getprop ro.serialno"], timeout=20)
+        hardware = out.strip() if code == 0 and out.strip() else f"unknown:{candidate}"
+        by_hardware.setdefault(hardware, []).append((candidate, model))
     if len(by_hardware) > 1:
         raise Blocked(
-            "more than one physical phone is attached, so which one to drive is a guess: "
+            "more than one known phone is attached, so which to drive is a guess: "
             + "; ".join(f"{h}: {[s for s, _ in v]}" for h, v in by_hardware.items())
-            + ". Pass a serial or set WISPR_SERIAL."
+            + ". Name one with device(serial) or WISPR_SERIAL."
         )
     candidates = next(iter(by_hardware.values()))
-    # Prefer the plain address form: it is the one the knowledge files name and it survives longer.
     candidates.sort(key=lambda pair: ("_adb-tls" in pair[0], len(pair[0])))
-    _STATE["serial"] = candidates[0][0]
+    _switch_to(candidates[0][0])
     return _STATE["serial"]
+
+
+def _switch_to(serial):
+    """Point at a device, refusing to abandon changes owed to the previous one."""
+    if _STATE["serial"] == serial:
+        return
+    if _STATE["restore"]:
+        raise Blocked(
+            "there are changes still owed to "
+            f"{_STATE['serial']}; call restore() before driving another device."
+        )
+    _STATE["serial"] = serial
+    _STATE["tree"] = None
 
 
 def ready():
@@ -174,8 +219,10 @@ def bound():
     The enabled SETTING is not the answer: it still names a crashed service, and `install -r` unbinds
     without changing it (`code-gotchas.md` RULE: auto-paste-readiness-is-liveness-not-the-setting-string).
     """
-    _, out = _adb('dumpsys accessibility | grep -c "Bound services:{Service\\[label=EnviousWispr"')
-    return out.strip().endswith("1")
+    # Read the whole dump and decide here. `grep -c` exits non-zero when it finds nothing, which is the
+    # ANSWER, not a failure, and a checked runner cannot tell those apart.
+    _, out = _adb("dumpsys accessibility", timeout=90)
+    return bool(re.search(r"Bound services:\{Service\[label=EnviousWispr", out))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -256,33 +303,48 @@ def look(only_ours=False):
     return "\n".join(unique)
 
 
-def find(text, exact=False, clickable=None):
+def find(text, exact=True, clickable=None, package=PACKAGE):
     """The ONE node matching, or a refusal naming every candidate.
 
+    Three rules, and each one closes a way this could press the wrong thing.
+
+    **The screen is read fresh, every time.** A cached tree holds coordinates from a screen that is no
+    longer there, and a tap sends coordinates, not a node. Reusing one is how a harness presses whatever
+    now occupies that spot.
+
     **Ambiguity is an error, never a pick.** On 2026-09-06 two "Remove" buttons were on screen and one
-    of them deletes a 484 MB model. Choosing the first, or the topmost, is how a UAT deletes the
-    founder's data (`tools-and-apps.md` RULE: a-harness-that-acts-must-refuse-not-choose).
+    of them deletes a 484 MB model the founder would have to download again.
+
+    **The default is EXACT and scoped to our app.** A substring search across every app on screen is a
+    wide net over things nobody meant to press, and an empty query would match the first labelled node
+    on the phone.
     """
+    if not isinstance(text, str) or not text.strip():
+        raise Blocked("a non-empty control name is required; an empty one matches whatever is first")
     matches = []
-    for node in tree(refresh=_STATE["tree"] is None):
-        label = _label(node)
-        if not label:
+    for node in tree(refresh=True):
+        if package is not None and node["package"] != package:
             continue
-        hit = label == text if exact else text.lower() in label.lower()
-        if not hit:
-            continue
-        if clickable is not None and node["clickable"] != clickable:
-            continue
-        matches.append(node)
+        labels = {node["text"], node["desc"]} - {""}
+        hit = any(label == text for label in labels) if exact else any(
+            text.lower() in label.lower() for label in labels
+        )
+        if hit:
+            matches.append(node)
     if not matches:
         raise Blocked(f"nothing on screen matches {text!r}. What is there:\n{look(only_ours=True)}")
     if len(matches) > 1:
         where = "; ".join(f"{_label(n)!r} at {n['centre']}" for n in matches)
         raise Blocked(
             f"{len(matches)} nodes match {text!r}, so which one to press is a guess: {where}. "
-            "Narrow it with exact=True, clickable=True, or a longer phrase."
+            "Narrow it with a longer phrase, or clickable=True."
         )
-    return matches[0]
+    node = matches[0]
+    # Checked AFTER ambiguity, so a caller is told "there are two of these" rather than "there are none",
+    # which is the answer that sends somebody looking in the wrong place.
+    if clickable is not None and node["clickable"] != clickable:
+        raise Blocked(f"{text!r} is on screen but is not the kind of control that was asked for")
+    return node
 
 
 def present(text, exact=False):
@@ -316,26 +378,40 @@ def shot(path=None):
 # --------------------------------------------------------------------------------------------------
 
 def overlay():
-    """The recorder pill's state, or None when it is not on screen.
+    """The recorder pill, or None. A COMPLETE signature or nothing.
 
-    The pill is the surface the user sees most and the one hardest to observe: it belongs to the
-    accessibility service, so a screenshot may not contain it and an Appium session SUPPRESSES it
-    outright (Android unbinds every other accessibility service while UiAutomator2 holds one).
+    An earlier version called any uppercase word a recorder state, so an ordinary page with a heading
+    like STORAGE read as a recorder that was not there. The pill is recognised by its TIMER, which
+    nothing else on this app's screens carries, and a duplicate of any part is refused rather than
+    resolved by taking the first, because its controls get pressed.
     """
     nodes = [n for n in tree() if n["package"] == PACKAGE]
-    if not nodes:
+    timers = [n for n in nodes if re.fullmatch(r"\d+:\d\d", _label(n))]
+    if not timers:
         return None
-    labels = [_label(n) for n in nodes if _label(n)]
-    timer = next((l for l in labels if re.fullmatch(r"\d+:\d\d", l)), None)
-    state = next((l for l in labels if l.isupper() and len(l) > 3), None)
-    if timer is None and state is None:
-        return None
+    if len(timers) > 1:
+        raise Blocked(f"{len(timers)} things look like the recorder's timer, so the pill is ambiguous")
+
+    def one(description, predicate, required=True):
+        found = [n for n in nodes if predicate(n)]
+        if len(found) > 1:
+            raise Blocked(f"{len(found)} nodes look like the recorder's {description}")
+        if not found and required:
+            raise Blocked(f"the recorder has a timer but no {description}, so it is not fully drawn")
+        return found[0] if found else None
+
+    state = one("state label", lambda n: _label(n).isupper() and len(_label(n)) > 3, required=False)
+    cancel = one("cancel control", lambda n: _label(n).lower() in ("cancel", "×", "x"))
+    stop = one("stop control", lambda n: _label(n).lower() in ("stop", "done", "✓"))
+    for node, name in ((cancel, "cancel"), (stop, "stop")):
+        if not node["enabled"] or not node["clickable"]:
+            raise Blocked(f"the recorder's {name} control cannot be pressed")
     return {
-        "timer": timer,
-        "state": state,
-        "labels": labels,
-        "cancel": next((n["centre"] for n in nodes if _label(n).lower() in ("cancel", "×", "x")), None),
-        "stop": next((n["centre"] for n in nodes if _label(n).lower() in ("stop", "done", "✓")), None),
+        "timer": _label(timers[0]),
+        "state": _label(state) if state else None,
+        "labels": [_label(n) for n in nodes if _label(n)],
+        "cancel": _label(cancel),
+        "stop": _label(stop),
     }
 
 
@@ -356,13 +432,58 @@ def meter_lit(box=(290, 190, 570, 240), threshold=260):
 # Doing
 # --------------------------------------------------------------------------------------------------
 
-def tap(text, exact=False, clickable=None):
-    """Find one node by its words and press its centre. Never a coordinate typed by hand."""
-    node = find(text, exact=exact, clickable=clickable)
+def _enclosing_control(node, package):
+    """The one clickable control that CONTAINS this label, or a refusal.
+
+    Ambiguity is refused here too: if two clickable controls enclose the label, pressing either is a
+    guess, and the smallest is not obviously the right answer.
+    """
+    x0, y0, x1, y1 = node["bounds"]
+    holders = [
+        other for other in tree(refresh=False)
+        if other["clickable"] and other["package"] == package
+        and other["bounds"][0] <= x0 and other["bounds"][1] <= y0
+        and other["bounds"][2] >= x1 and other["bounds"][3] >= y1
+    ]
+    if not holders:
+        raise Blocked(f"{_label(node)!r} is on screen but nothing around it can be pressed")
+    holders.sort(key=lambda n: (n["bounds"][2] - n["bounds"][0]) * (n["bounds"][3] - n["bounds"][1]))
+    smallest = holders[0]
+    same_size = [h for h in holders if
+                 (h["bounds"][2] - h["bounds"][0]) * (h["bounds"][3] - h["bounds"][1])
+                 == (smallest["bounds"][2] - smallest["bounds"][0]) * (smallest["bounds"][3] - smallest["bounds"][1])]
+    if len(same_size) > 1:
+        raise Blocked(f"{len(same_size)} equally sized controls enclose {_label(node)!r}, so pressing one is a guess")
+    return smallest
+
+
+def tap(text, exact=True, clickable=True, package=PACKAGE):
+    """Find one control by its words and press it. Never a coordinate typed by hand.
+
+    Refuses a control that is present but disabled, and refuses when the phone cannot receive input at
+    all, because both of those return success and prove nothing.
+    """
+    ready()
+    # Ask for the LABEL, not for a clickable node. In Compose the words and the touch target are usually
+    # different nodes: the drawer row carries "Storage" on a non-clickable child inside a clickable
+    # parent, so demanding a clickable match refuses a control that is plainly there.
+    node = find(text, exact=exact, clickable=None, package=package)
+    if clickable and not node["clickable"]:
+        holder = _enclosing_control(node, package)
+        # PRESS WITHIN THE LABEL'S OWN ROW. A clickable ancestor can be the whole drawer, and its centre
+        # is then some other row entirely: tapping it opened "Open Source Licenses" when asked for
+        # "Appearance" (2026-09-06). The holder proves something here is pressable; the label says WHERE.
+        top, bottom = node["bounds"][1], node["bounds"][3]
+        if not (top <= holder["centre"][1] <= bottom):
+            holder = dict(holder, centre=(holder["centre"][0], node["centre"][1]))
+        node = dict(holder, text=node["text"], desc=node["desc"])
+    x0, y0, x1, y1 = node["bounds"]
+    if not node["enabled"] or x1 <= x0 or y1 <= y0:
+        raise Blocked(f"{text!r} is on screen but disabled or has no area, so pressing it proves nothing")
     x, y = node["centre"]
+    _STATE["tree"] = None
     _adb(f"input tap {x} {y}")
     time.sleep(1.2)
-    _STATE["tree"] = None
     return f"pressed {_label(node)!r} at ({x}, {y})"
 
 
@@ -396,7 +517,7 @@ def _start(component, what, settle):
     whole sequence against a launcher because nothing checked, and every later step failed for a reason
     that had nothing to do with its own subject.
     """
-    remote, out = _adb(f"am start -n {component}")
+    remote, out = _adb(f"am start -n {shlex.quote(component)}", check=False)
     if remote != 0 or "Error" in out:
         detail = out.strip().splitlines()[-1] if out.strip() else "no message"
         raise Blocked(f"{what} would not start: {detail}. Is the app installed on {device()}?")
@@ -428,13 +549,19 @@ def open_settings(dismiss_onboarding=True):
     # step after that fails for a reason that has nothing to do with its own subject. Found by using
     # this tool twice in a row on 2026-09-06. Getting to a known place is the caller's right, not its
     # job. Bounded, so a screen that will not leave says so instead of looping.
-    for _ in range(3):
-        if not present("Back"):
+    # The known place is "the menu button is reachable", not "no page is open". A previous errand can
+    # leave a settings page open OR the drawer open, and only the first shows a back arrow. Aiming at
+    # the state the caller needs covers both, and covers a third nobody has met yet.
+    for _ in range(4):
+        if present("Open settings menu"):
             break
-        tap("Back")
-        note = "closed a page that was already open"
-    if present("Back"):
-        raise Blocked("a settings page will not close; the app is stuck on one.")
+        back()
+        note = "closed what was already open"
+    if not present("Open settings menu"):
+        raise Blocked(
+            "could not get back to a screen with the settings menu on it. What is there:\n"
+            + look(only_ours=True)
+        )
     return note
 
 
@@ -448,7 +575,7 @@ def open_recorder():
         raise Blocked("our accessibility service is not bound, so no recorder will be drawn.")
     # The recorder activity is transient BY DESIGN: it starts the session and finishes, and the pill is
     # drawn by the accessibility service. So the landing check is the PILL, not the activity.
-    remote, out = _adb(f"am start -n {RECORDER_ACTIVITY}")
+    remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)}", check=False)
     if remote != 0 or "Error" in out:
         raise Blocked(f"the recorder would not start: {out.strip().splitlines()[-1] if out.strip() else 'no message'}")
     time.sleep(3)
@@ -483,22 +610,30 @@ def say(sentence, volume=25):
 
     The Mac speaks rather than the phone, so the phone's own audio settings are never touched and the
     sound arrives through the air like a person talking. The founder's standing instruction is that any
-    audio test runs at LOW VOLUME, so this sets a low output level and puts the previous one back.
+    audio test runs at LOW VOLUME.
 
-    **The phone has to be near the Mac.** That is the one thing this cannot check.
+    The volume is put back in a `finally` and then READ BACK. Restoring in the happy path only is how a
+    timeout leaves a machine loud, and trusting a restore nobody checked is how it stays loud quietly.
+
+    **The phone has to be near the Mac.** That is the one precondition this cannot check, so a report
+    says it rather than assuming it.
     """
-    code, before, _ = _run(["osascript", "-e", "output volume of (get volume settings)"])
-    previous = before.strip() if code == 0 else None
-    if previous and previous.isdigit():
-        _journal("mac-volume", previous)
-        _run(["osascript", "-e", f"set volume output volume {volume}"])
-    started = time.time()
-    _run(["say", sentence], timeout=120)
-    spoken = time.time() - started
-    if previous and previous.isdigit():
-        _run(["osascript", "-e", f"set volume output volume {previous}"])
-        _unjournal("mac-volume")
-    return spoken
+    if not isinstance(volume, int) or isinstance(volume, bool) or not 0 <= volume <= 40:
+        raise Blocked("volume must be a whole number from 0 to 40; this is a low-volume tool")
+    previous = _checked(["osascript", "-e", "output volume of (get volume settings)"]).strip()
+    if not previous.isdigit():
+        raise Blocked("could not read the Mac's current volume, so it could not be safely lowered")
+    entry = ("mac-volume", previous)
+    _STATE["restore"].append(entry)
+    try:
+        _checked(["osascript", "-e", f"set volume output volume {volume}"])
+        started = time.monotonic()
+        _checked(["say", "--", sentence], timeout=180)
+        return time.monotonic() - started
+    finally:
+        _restore_one(entry)
+        if entry in _STATE["restore"]:
+            _STATE["restore"].remove(entry)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -506,15 +641,28 @@ def say(sentence, volume=25):
 # --------------------------------------------------------------------------------------------------
 
 def clear_log():
-    """Clear the ring buffer and widen it, so an absent line means absent rather than evicted."""
+    """Clear the ring buffer and widen it, so an absent line means absent rather than evicted.
+
+    The widening is journaled, because it is a change to the founder's phone that outlives this run.
+    """
     _adb("logcat -c")
+    _, current = _adb("logcat -g | head -1", check=False)
+    size = re.search(r"(\d+)Kb", current or "")
+    if size and ("log-buffer", f"{size.group(1)}K") not in _STATE["restore"]:
+        _STATE["restore"].append(("log-buffer", f"{size.group(1)}K"))
     _adb("logcat -G 16M")
 
 
 def logs(pattern=None, lines=200):
-    """The app's own log lines, newest last."""
+    """The app's own log lines, newest last.
+
+    `lines` is validated rather than interpolated: it reaches a shell command, and a string there would
+    carry whatever the caller put in it.
+    """
+    if not isinstance(lines, int) or isinstance(lines, bool) or not 1 <= lines <= 10000:
+        raise Blocked("lines must be a whole number from 1 to 10000")
     tags = "|".join(APP_TAGS)
-    _, out = _adb(f"logcat -d -v time | grep -E '{tags}' | tail -{lines}", timeout=90)
+    _, out = _adb(f"logcat -d -v time | grep -E '{tags}' | tail -{lines}", timeout=90, check=False)
     if pattern:
         out = "\n".join(line for line in out.splitlines() if re.search(pattern, line))
     return out.strip()
@@ -552,29 +700,49 @@ def last_take():
 # Putting the phone back
 # --------------------------------------------------------------------------------------------------
 
-def _journal(what, previous):
-    _STATE["restore"].append((what, previous))
+def _checked(args, timeout=60):
+    """Run a local command and refuse to continue when it failed."""
+    code, out, err = _run(args, timeout=timeout)
+    if code != 0:
+        raise Blocked(f"{args[0]} failed: {err.strip() or f'status {code}'}")
+    return out
 
 
-def _unjournal(what):
-    _STATE["restore"] = [entry for entry in _STATE["restore"] if entry[0] != what]
+def _restore_one(entry):
+    """Put ONE change back, and read it back to prove it took.
+
+    A restore that returned zero is not a restore that happened.
+    """
+    what, previous = entry
+    if what == "mac-volume":
+        _checked(["osascript", "-e", f"set volume output volume {int(previous)}"])
+        now = _checked(["osascript", "-e", "output volume of (get volume settings)"]).strip()
+        if now != str(int(previous)):
+            raise Blocked(f"the Mac's volume did not go back to {previous}; it reads {now}")
+    elif what == "log-buffer":
+        _adb(f"logcat -G {previous}")
+    else:
+        raise Blocked(f"there is no verified way to put {what!r} back, so it must not have been journaled")
 
 
 def restore():
-    """Put back everything this session changed, and say what was put back.
+    """Put back everything this session changed, and say what.
 
-    The phone is the founder's daily driver, not a lab device. Two volume settings were left changed on
-    2026-09-06 (`session-behavior.md` RULE: revert-the-phone-after-a-session).
+    An entry is removed ONLY after its restore was read back. A failure leaves it in the journal and
+    raises, so the next call tries again rather than reporting a rollback that did not happen.
+
+    **What this does NOT cover, said plainly rather than implied:** a dictation this tool started and
+    the History row it produced, the app's foreground state, and onboarding once dismissed. Those are
+    dev state on a phone with no users (`CLAUDE.md`: a wiped phone is cheap), but they are not restored
+    and no report should say they were.
     """
     done = []
-    for what, previous in reversed(_STATE["restore"]):
-        if what == "mac-volume":
-            _run(["osascript", "-e", f"set volume output volume {previous}"])
-        elif what.startswith("stream-"):
-            _adb(f"cmd media_session volume --stream {what.split('-')[1]} --set {previous}")
-        done.append(f"{what} back to {previous}")
-    _STATE["restore"] = []
-    _adb("rm -f /sdcard/wispr-eyes.xml")
+    while _STATE["restore"]:
+        entry = _STATE["restore"][-1]
+        _restore_one(entry)
+        _STATE["restore"].pop()
+        done.append(f"{entry[0]} back to {entry[1]}")
+    _adb("rm -f /sdcard/wispr-eyes.xml", check=False)
     return done or ["nothing was changed"]
 
 
@@ -594,6 +762,7 @@ def check_recorder():
     report.append(f"VERIFIED: the recorder is up, showing {pill['state'] or 'no state label'} at {pill['timer']}")
     for part, name in ((pill["cancel"], "cancel"), (pill["stop"], "stop")):
         report.append(f"VERIFIED: a {name} control is present" if part else f"ISSUE: no {name} control")
+    report.append("NOTE: this did not dictate anything; use `dictate` for the whole path")
     return report
 
 
@@ -609,9 +778,11 @@ def test_dictation(sentence="The quick brown fox jumps over the lazy dog", volum
     say(sentence, volume=volume)
     time.sleep(1)
     pill = overlay()
-    if pill and pill["stop"]:
-        x, y = pill["stop"]
-        _adb(f"input tap {x} {y}")
+    if pill is None:
+        return ["ISSUE: the recorder disappeared before it could be stopped"]
+    # By LABEL, not by a coordinate read a moment ago, so the same refusal rules apply to the control
+    # this presses as to every other.
+    tap(pill["stop"])
     time.sleep(8)
     take = last_take()
     report = []
@@ -649,10 +820,11 @@ def _main(argv):
             print(tap(rest[0]))
         elif command == "nav":
             print(nav(rest[0]))
-        elif command == "recorder":
-            print("\n".join(check_recorder()))
-        elif command == "dictate":
-            print("\n".join(test_dictation(*(rest or []))))
+        elif command in ("recorder", "dictate"):
+            report = check_recorder() if command == "recorder" else test_dictation(*(rest or []))
+            print("\n".join(report))
+            # A findings report that exits 0 is a green light over a red result.
+            return 1 if any(line.startswith(("ISSUE", "BLOCKED")) for line in report) else 0
         elif command == "logs":
             print(logs(rest[0] if rest else None))
         elif command == "take":

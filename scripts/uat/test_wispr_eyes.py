@@ -45,6 +45,25 @@ RECORDER = """<?xml version='1.0' encoding='UTF-8'?>
   <node text="" content-desc="Stop" bounds="[910,140][1040,260]" package="com.envi.wispr" clickable="true" enabled="true" />
 </hierarchy>"""
 
+UPPERCASE_HEADING = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="DEVELOPMENT ONLY" bounds="[112,700][504,760]" package="com.envi.wispr" clickable="false" enabled="true" />
+  <node text="Development models folder" bounds="[112,780][900,840]" package="com.envi.wispr" clickable="false" enabled="true" />
+</hierarchy>"""
+
+TWO_STOPS = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="0:04" bounds="[150,150][300,240]" package="com.envi.wispr" clickable="false" enabled="true" />
+  <node text="" content-desc="Cancel" bounds="[770,140][900,260]" package="com.envi.wispr" clickable="true" enabled="true" />
+  <node text="" content-desc="Stop" bounds="[910,140][1040,260]" package="com.envi.wispr" clickable="true" enabled="true" />
+  <node text="" content-desc="Stop" bounds="[910,400][1040,520]" package="com.envi.wispr" clickable="true" enabled="true" />
+</hierarchy>"""
+
+ANOTHER_APP = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="Remove" bounds="[10,10][90,90]" package="com.android.settings" clickable="true" enabled="true" />
+</hierarchy>"""
+
 PASSED, FAILED = [], []
 
 
@@ -58,7 +77,7 @@ def with_screen(xml):
     eyes._STATE["tree"] = None
     eyes._STATE["serial"] = "fixture"
     original = eyes._adb
-    eyes._adb = lambda command, timeout=60, serial=None: (
+    eyes._adb = lambda command, timeout=60, check=True: (
         (0, xml) if command.startswith("cat ") else (0, "")
     )
     return original
@@ -86,7 +105,7 @@ def main():
         message = str(refusal)
         check("an ambiguous query refuses", True)
         check("and it names every candidate", message.count("(") >= 2, message)
-        check("and it says how to narrow it", "exact=True" in message, message)
+        check("and it says how to narrow it", "longer phrase" in message, message)
 
     # An unambiguous query still works, so the guard is not simply always-on.
     found = eyes.find("Development models folder")
@@ -122,8 +141,10 @@ def main():
     if pill:
         check("its timer is read", pill["timer"] == "0:04", pill["timer"])
         check("its state is read", pill["state"] == "LISTENING", pill["state"])
-        check("its cancel control is located", pill["cancel"] == (835, 200), pill["cancel"])
-        check("its stop control is located", pill["stop"] == (975, 200), pill["stop"])
+        # LABELS, not coordinates: the caller presses them through `tap`, so the same
+        # refusal rules apply to the recorder's own controls as to everything else.
+        check("its cancel control is named", pill["cancel"] == "Cancel", pill["cancel"])
+        check("its stop control is named", pill["stop"] == "Stop", pill["stop"])
 
     # A screen with no pill must answer None rather than half a pill.
     restore_adb(original)
@@ -131,10 +152,69 @@ def main():
     check("no recorder means None, not a guess", eyes.overlay() is None, eyes.overlay())
     restore_adb(original)
 
+    # ---- the rules the review added, each with its own control -----------------------------------
+    original = with_screen(TWO_REMOVES)
+    try:
+        eyes.find("")
+        check("an empty query refuses", False, "it matched something")
+    except eyes.Blocked:
+        check("an empty query refuses", True)
+
+    # Substring matching is opt-in now, so a partial word does not quietly widen the net.
+    try:
+        eyes.find("Remov")
+        check("a partial word does not match by default", False, "it matched")
+    except eyes.Blocked as refusal:
+        check("a partial word does not match by default", "nothing on screen matches" in str(refusal))
+    check("and substring is available on request",
+          eyes.find("Development models", exact=False)["centre"] == (506, 1530))
+
+    restore_adb(original)
+    original = with_screen(ANOTHER_APP)
+    try:
+        eyes.find("Remove")
+        check("another app's control is out of scope", False, "it matched a Settings button")
+    except eyes.Blocked as refusal:
+        check("another app's control is out of scope", "nothing on screen matches" in str(refusal))
+
+    # A page with an uppercase heading is NOT a recorder. The old version said it was.
+    restore_adb(original)
+    original = with_screen(UPPERCASE_HEADING)
+    check("an uppercase heading is not mistaken for the recorder", eyes.overlay() is None, eyes.overlay())
+
+    # Two stop controls get refused rather than resolved by taking the first, because they get pressed.
+    restore_adb(original)
+    original = with_screen(TWO_STOPS)
+    try:
+        eyes.overlay()
+        check("a duplicated recorder control refuses", False, "it picked one")
+    except eyes.Blocked as refusal:
+        check("a duplicated recorder control refuses", "stop control" in str(refusal), refusal)
+
+    # `lines` reaches a shell command.
+    restore_adb(original)
+    original = with_screen(TWO_REMOVES)
+    try:
+        eyes.logs(lines="200; input tap 257 908")
+        check("a non-numeric line count refuses", False, "it was accepted")
+    except eyes.Blocked:
+        check("a non-numeric line count refuses", True)
+    restore_adb(original)
+
     # ---- restore() reports honestly --------------------------------------------------------------
     eyes._STATE["restore"] = []
-    eyes._adb = lambda command, timeout=60, serial=None: (0, "")
+    eyes._adb = lambda command, timeout=60, check=True: (0, "")
     check("with nothing changed it says so", eyes.restore() == ["nothing was changed"])
+
+    # A restore with no verified way to put something back must RAISE, not claim success.
+    eyes._STATE["restore"] = [("something-nobody-wrote-a-handler-for", "x")]
+    try:
+        eyes.restore()
+        check("an unrestorable change refuses", False, "it reported success")
+    except eyes.Blocked as refusal:
+        check("an unrestorable change refuses", "no verified way" in str(refusal), refusal)
+    check("and it stays in the journal for the next try", len(eyes._STATE["restore"]) == 1)
+    eyes._STATE["restore"] = []
 
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")

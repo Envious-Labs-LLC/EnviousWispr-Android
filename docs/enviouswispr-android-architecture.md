@@ -176,7 +176,7 @@ The UI reports Downloading, Paused, Verifying, Ready, Update available, Repair n
 
 ### Samsung side button and floating overlay
 
-- The primary user path is a double-press of the Samsung right button mapped directly to `VoiceInputActivity` through Samsung's Open app shortcut.
+- The primary user path is a double-press of the Samsung side button mapped directly to `VoiceInputActivity` through Samsung's Open app shortcut.
 - The assistant entry opens a transparent floating recorder over the current app while Gboard or the user's chosen keyboard remains unchanged.
 - The overlay shows the current phase, cancel/stop, hands-free lock, level history, and optional partial text.
 - The Accessibility service continuously remembers only the last focused editable node identity. It ignores EnviousWispr's own windows and never stores surrounding text in diagnostics.

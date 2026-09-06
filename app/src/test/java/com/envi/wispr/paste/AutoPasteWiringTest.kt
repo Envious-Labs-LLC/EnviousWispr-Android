@@ -291,7 +291,7 @@ class AutoPasteWiringTest {
         val surfaces = listOf(
             Triple(
                 "the Permissions page auto-paste row",
-                "AutoPasteAvailability.LIVE -> \"Ready for right-button dictation\"",
+                "AutoPasteAvailability.LIVE -> \"Ready for side-button dictation\"",
                 source,
             ),
             Triple(
@@ -311,7 +311,7 @@ class AutoPasteWiringTest {
             ),
             Triple(
                 "onboarding step 4",
-                "AutoPasteAvailability.LIVE -> \"Right-button auto-insert ready\"",
+                "AutoPasteAvailability.LIVE -> \"Side-button auto-insert ready\"",
                 source,
             ),
         )

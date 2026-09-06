@@ -924,7 +924,7 @@ private fun OnboardingScreen(
             SetupStep("PRIVACY", "Private by default", "Audio stays on this phone. Cloud polish receives text only when you choose a provider and add your own key."),
             SetupStep("MICROPHONE", "Let EnviousWispr listen", "Microphone access is used only while you are visibly recording or while an optional warm period is active."),
             SetupStep("CONTROLS", "Stay in control", "Allow a quiet ongoing notification so Stop and Cancel remain available while EnviousWispr is listening."),
-            SetupStep("INSERTION", "Put words where you need them", "Keep Gboard. Double-press the right button, speak in the floating recorder, and EnviousWispr returns your words to the original field."),
+            SetupStep("INSERTION", "Put words where you need them", "Keep Gboard. Double-press the side button, speak in the floating recorder, and EnviousWispr returns your words to the original field."),
             SetupStep("MODELS", "Keep the essentials offline", "The fast speech and local polish models are verified before EnviousWispr calls them ready."),
             SetupStep("PRACTICE", "Try the real path", "Start a short dictation now. This uses your microphone, speech model, local polish model, and current insertion route."),
             SetupStep("READY", "You are ready to whisper", "Your setup is saved. You can change every choice later without losing dictation."),
@@ -1057,10 +1057,10 @@ private fun SetupStepAction(
         )
         4 -> SetupActionCard(
             title = when (autoPaste) {
-                AutoPasteAvailability.LIVE -> "Right-button auto-insert ready"
+                AutoPasteAvailability.LIVE -> "Side-button auto-insert ready"
                 AutoPasteAvailability.PERMITTED_NOT_RUNNING ->
                     "Auto-insert is turned on but not connected"
-                AutoPasteAvailability.NOT_PERMITTED -> "Enable right-button auto-insert"
+                AutoPasteAvailability.NOT_PERMITTED -> "Enable side-button auto-insert"
             },
             ready = autoPaste == AutoPasteAvailability.LIVE,
             action = if (autoPaste == AutoPasteAvailability.LIVE) null else "Accessibility settings",

@@ -18,6 +18,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -26,12 +28,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.envi.wispr.models.ModelDeliveryControlStore
+import com.envi.wispr.models.ModelFootprint
+import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.models.modelUiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * A card's meters, on the 1-3 scale the cloud model rows use, so a card and a row can be compared. More
@@ -51,6 +57,8 @@ internal fun ModelCard(
     state: ModelUiState,
     facts: List<String>,
     scores: ModelScores? = null,
+    /** The model this card is about, so the card can say what it costs in storage. */
+    model: com.envi.wispr.models.ModelDescriptor? = null,
     onAction: () -> Unit = {},
     onPause: () -> Unit = {},
     onResume: () -> Unit = {},
@@ -101,6 +109,9 @@ internal fun ModelCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (model != null) {
+                ModelStorageLine(model, state)
             }
             when (state.action) {
                 ModelUiAction.DOWNLOAD -> TextButton(onClick = onAction) { Text("Download") }
@@ -176,6 +187,58 @@ internal fun formatModelBytes(bytes: Long): String = when {
     bytes >= 1_000_000_000L -> "%.1f GB".format(bytes / 1_000_000_000.0)
     bytes >= 1_000_000L -> "%.1f MB".format(bytes / 1_000_000.0)
     else -> "${bytes / 1_000L} KB"
+}
+
+/**
+ * What this model is costing, right where the button that removes it lives.
+ *
+ * Storage is the single biggest cost of having EnviousWispr installed, and the app used to say nothing
+ * about it: every card read Ready, with a Remove button and no number to decide with.
+ *
+ * **The number comes from DISK once anything is there, and from the manifest before that.** They are
+ * different questions and the wording says which is being answered. "on this phone" is what the user is
+ * paying now, and it is the only one that counts a half-finished download or a file left behind by a
+ * version bump. "to download" is a promise about the future and cannot be measured.
+ *
+ * Measured on `Dispatchers.IO`, keyed on the model's own state, so it is taken again after a download,
+ * a repair or a remove rather than showing the size the model used to be.
+ */
+@Composable
+private fun ModelStorageLine(model: com.envi.wispr.models.ModelDescriptor, state: ModelUiState) {
+    val context = LocalContext.current
+    // `key` around `produceState`, and not `produceState`'s own keys, because those RESTART the producer
+    // while KEEPING the previous value. Remove a model and the card would go on showing the bytes it
+    // used to take, beside its new status, until the next measurement landed. `key` throws the holder
+    // away, so a changed input shows nothing rather than something wrong.
+    //
+    // Keyed on everything that can change what is on disk: which model, what the card says it is, what
+    // it is doing, and how far a download has got. A walk of a model directory is a handful of file
+    // lengths, so re-measuring as a download progresses is cheap and is also the honest thing to show.
+    val onDisk by key(model.id, state.label, state.action, state.bytes) {
+        // null while a measurement is in flight. The line is absent rather than showing a zero,
+        // because "0 KB on this phone" is a claim, and a wrong one for a model not yet measured.
+        produceState<Long?>(initialValue = null) {
+            value = withContext(Dispatchers.IO) {
+                runCatching { ModelFootprint.bytesUnder(ModelStorage.directory(context, model)) }
+                    .getOrNull()
+            }
+        }
+    }
+    val measured = onDisk
+    val expected = ModelFootprint.expectedBytes(model)
+    val line = when {
+        measured == null -> null
+        measured > 0L -> "${formatModelBytes(measured)} on this phone"
+        expected > 0L -> "${formatModelBytes(expected)} to download"
+        else -> null
+    }
+    if (line != null) {
+        Text(
+            line,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 /** A display-only label on a model card. Not a chip, because a chip invites a tap that does nothing. */

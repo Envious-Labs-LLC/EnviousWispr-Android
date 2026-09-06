@@ -63,6 +63,7 @@ internal fun TranscriptionScreen(
             description = "Your offline speech engine. It listens and transcribes on this phone, so your voice never leaves it.",
             state = parakeetState,
             facts = listOf("Offline", "25 languages", "Stays on this phone"),
+            model = ModelManifest.parakeet,
             onAction = {
                 // Exhaustive with no `else`, so a new ModelUiAction is a compile error here rather
                 // than a silent download. The four inert members are the ones `ModelCard` routes to

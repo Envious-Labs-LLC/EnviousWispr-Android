@@ -494,6 +494,7 @@ private fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
         state = s1State,
         facts = PolishLadder.s1Facts(),
         scores = PolishLadder.S1_SCORES,
+        model = ModelManifest.s1,
         onAction = {
             // Exhaustive with no `else`, for the reason given at the same `when` in `TranscriptionScreen`.
             when (s1State.action) {

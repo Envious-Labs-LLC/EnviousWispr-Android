@@ -736,11 +736,11 @@ class ProviderPolishClientTest {
             // bound was refused for a different reason and still is: a wider delta also accepts a client
             // that stopped cancelling.
             //
-            // A run where nothing probed at all is the harness losing a race, not a client defect, so it
-            // is SKIPPED rather than passed or failed. Passing it would be vacuous, because the only
+            // When no probe is recorded, this fixture cannot distinguish scheduling delay from a client
+            // defect, so it skips the inconclusive run. Passing it would be vacuous, because the only
             // remaining assertion is an upper bound.
             assumeTrue(
-                "no probe reached the server before the deadline, so this run staged nothing",
+                "no probe was recorded during the observation window, so this run is inconclusive",
                 total >= 1,
             )
             // EXACTLY WHAT THIS ROW HAS POWER OVER, from three controls that were run rather than

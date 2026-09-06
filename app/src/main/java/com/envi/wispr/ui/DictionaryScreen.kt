@@ -1,7 +1,7 @@
 package com.envi.wispr.ui
 
-import android.content.ClipData
-import android.content.ClipboardManager
+import android.provider.DocumentsContract
+import kotlin.coroutines.cancellation.CancellationException
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -72,8 +72,11 @@ import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.CustomTermAuthoring
 import com.envi.wispr.vocabulary.CustomTermRecord
 import com.envi.wispr.vocabulary.MatchStrictness
+import com.envi.wispr.vocabulary.VocabularyExport
 import com.envi.wispr.vocabulary.VocabularyTransfer
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -319,6 +322,72 @@ internal fun DictionaryScreen(
             }
         }
     }
+    val exportFile = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(VocabularyExport.MIME_TYPE),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val terms = allTerms.map(CustomTermRecord::term)
+        // UNDISPATCHED so the body is entered SYNCHRONOUSLY, before anything can cancel it. With the
+        // default start, a scope cancelled between the picker returning and this coroutine being
+        // dispatched would never run at all, and the empty document the picker just created would
+        // survive with nothing having taken responsibility for it. Nothing before the first suspension
+        // does real work, so this adds nothing to the main thread.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            // ONE FLAG AND A `finally`, because the question is not "which failure" but "every way this
+            // can end without a complete file". Three review rounds each found a different one: a write
+            // that failed part way, a cancellation during the write, and a cancellation before the write
+            // even started. A `finally` covers all of them and any fourth, which patching each in turn
+            // could not.
+            //
+            // The picker has already created the document by the time this runs, so every incomplete
+            // exit leaves a file behind. A half-written one is the dangerous shape: it imports cleanly
+            // as a SMALLER word list, so the user keeps a backup that quietly lost words and finds out
+            // on the day they need it.
+            var completed = false
+            var message: String? = null
+            try {
+                withContext(Dispatchers.IO) {
+                    // Built and CHECKED before the writer opens. A list too large fails here with
+                    // nothing written, and `verifiedPayload` also refuses a list that would export but
+                    // not import: the two sides of the format do not share limits, so "it saved" was
+                    // not the same promise as "you can get it back".
+                    val payload = VocabularyExport.verifiedPayload(terms)
+                    context.contentResolver.openOutputStream(uri, "wt")?.use { stream ->
+                        stream.write(payload.toByteArray(Charsets.UTF_8))
+                    } ?: error("That file could not be opened for writing.")
+                    // Set only after the write AND the close have both returned. `use` closes here, and
+                    // a close that throws is a write that did not finish.
+                    completed = true
+                }
+                message = "Saved ${terms.count { term -> term.spelling.isNotBlank() }} words"
+            } catch (failure: Throwable) {
+                // A cancellation is not a save error and the user is not told about one: the screen
+                // they would be told on is already gone.
+                if (failure !is CancellationException) {
+                    message = failure.message ?: "Your words could not be saved."
+                }
+            } finally {
+                if (!completed) {
+                    // NonCancellable, because the commonest way to arrive here is the screen leaving
+                    // composition, which cancels this scope. Ordinary cleanup would be skipped and the
+                    // partial file would survive with nothing said about it.
+                    val removed = withContext(NonCancellable + Dispatchers.IO) {
+                        runCatching {
+                            DocumentsContract.deleteDocument(context.contentResolver, uri)
+                        }.getOrDefault(false)
+                    }
+                    message = message?.let { reason ->
+                        if (removed) {
+                            "$reason The incomplete file was removed."
+                        } else {
+                            "$reason An incomplete file may remain, so delete it before trusting it."
+                        }
+                    }
+                }
+                message?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
     var selectedIds by remember { mutableStateOf(emptySet<Long>()) }
     var showNewEditor by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<CustomTermRecord?>(null) }
@@ -361,23 +430,18 @@ internal fun DictionaryScreen(
                 }
                 OutlinedButton(
                     contentPadding = pillPadding,
-                    onClick = {
-                        val exported = VocabularyTransfer.export(allTerms.map(CustomTermRecord::term))
-                        val copied = runCatching {
-                            context.getSystemService(ClipboardManager::class.java)
-                                ?.setPrimaryClip(ClipData.newPlainText("EnviousWispr vocabulary", exported))
-                                ?: error("Clipboard unavailable")
-                        }.isSuccess
-                        // Vocabulary JSON is now on the clipboard, so any standing claim that a
-                        // dictation is waiting there to be pasted is false.
-                        if (copied) {
-                        }
-                        Toast.makeText(
-                            context,
-                            if (copied) "Vocabulary copied" else "Unable to export vocabulary",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    },
+                    enabled = allTerms.isNotEmpty(),
+                    // Writes a FILE, and no longer the clipboard. A clipboard CAN be pasted into a
+                    // message and carried that way, so it was not useless; it is just not a backup.
+                    // It survives nothing, it is gone the next time anything is copied, and an hour of
+                    // word-building deserves better than that.
+                    //
+                    // It also closes a window rather than handling it. Overwriting the clipboard made
+                    // the insertion fallback's own instruction, "Copied. Press and hold, then tap
+                    // Paste.", false without retracting it. The previous version knew: it carried a
+                    // comment saying exactly that, above an empty `if (copied) { }` that did nothing
+                    // about it. Not touching the clipboard means there is nothing left to retract.
+                    onClick = { exportFile.launch(VocabularyExport.FILENAME) },
                 ) {
                     DownloadGlyph()
                     Spacer(Modifier.width(4.dp))

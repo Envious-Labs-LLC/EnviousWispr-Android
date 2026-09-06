@@ -44,7 +44,7 @@ llama.cpp
   License: MIT License
   Source:  https://github.com/ggml-org/llama.cpp
   Note:    Built from source as the :llama-android module. Runs the local polish model.
-  Read from: Commit read from `git submodule status third_party/llama.cpp`. Licence read from third_party/llama.cpp/LICENSE in this checkout.
+  Read from: Commit read from this repository's index entry for the submodule, not from the working checkout, which can lag it. Licence read from third_party/llama.cpp/LICENSE in this checkout.
 --------------------------------------------------------------------------------
 
 
@@ -219,12 +219,12 @@ PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
 PART 3 - TERMS PUBLISHED ONLY AT A URL
 ======================================
 
-These publishers ship under terms hosted on their own site. The terms are named and
-linked rather than copied, because a copy of terms that can change would become a
-second version of them.
+These publishers ship under terms hosted on their own site. The terms are named,
+and linked to the address the publisher's own POM gives, rather than copied: a copy
+of terms that can change would become a second version of them.
 
   Android Software Development Kit License
-      https://developer.android.com/studio/terms
+      https://developer.android.com/studio/terms.html
       com.google.android.gms:play-services-base:18.5.0
       com.google.android.gms:play-services-basement:18.4.0
       com.google.android.gms:play-services-tasks:18.2.0

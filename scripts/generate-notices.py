@@ -47,6 +47,7 @@ GRADLE_CACHE = Path.home() / ".gradle" / "caches" / "modules-2" / "files-2.1"
 CACHE_DIR = REPO / "scripts" / ".notices-pom-cache"
 TEXTS = REPO / "scripts" / "license-texts"
 OUTPUT = REPO / "THIRD-PARTY-NOTICES.txt"
+SUBMODULE = "third_party/llama.cpp"
 
 # POMs come in two shapes: most declare the Maven namespace on <project>, and older hand-written ones
 # (javax.inject:1 among our dependencies) declare none. A namespaced XPath silently returns nothing for
@@ -113,7 +114,8 @@ BUNDLED = [
         "source": "https://github.com/ggml-org/llama.cpp",
         "note": "Built from source as the :llama-android module. Runs the local polish model.",
         "evidence": (
-            "Commit read from `git submodule status third_party/llama.cpp`. Licence read from "
+            "Commit read from this repository's index entry for the submodule, not from the "
+            "working checkout, which can lag it. Licence read from "
             "third_party/llama.cpp/LICENSE in this checkout."
         ),
     },
@@ -163,12 +165,14 @@ ALIASES = {
     "bsd-3-clause": "BSD-3-Clause",
 }
 
-# Terms published only at a URL. They are named and linked, never copied: a copy of terms that can
-# change on the publisher's website would become a second, drifting version of them.
+# Licence names whose terms live on the publisher's own site and have no text we can reproduce. They
+# are named and LINKED TO THE URL THE POM ITSELF DECLARES, never copied: a copy of terms that can
+# change would become a second, drifting version of them, and a hand-written link is the same defect
+# one level up. The hard-coded link for the Android SDK terms was already wrong by a `.html`.
 URL_ONLY = {
-    "Android Software Development Kit License": "https://developer.android.com/studio/terms",
-    "ML Kit Terms of Service": "https://developers.google.com/ml-kit/terms",
-    "Qualcomm Terms of Use": "https://www.qualcomm.com/site/terms-of-use",
+    "Android Software Development Kit License",
+    "ML Kit Terms of Service",
+    "Qualcomm Terms of Use",
 }
 
 RULE = "-" * 80
@@ -268,7 +272,7 @@ def pom_path(group: str, artifact: str, version: str) -> Path | None:
     return None
 
 
-def licences_from_pom(pom: Path, depth: int = 0) -> list[str]:
+def licences_from_pom(pom: Path, depth: int = 0) -> list[tuple[str, str]]:
     """The licence names a POM declares, following at most one parent.
 
     Some publishers declare licences only on a parent POM. An unbounded walk would eventually
@@ -282,7 +286,7 @@ def licences_from_pom(pom: Path, depth: int = 0) -> list[str]:
     # readable name would publish a subset of what the publisher declared, and falling through to a
     # parent would publish somebody else's terms entirely. Both are refusals, not filters.
     if blocks:
-        names: list[str] = []
+        names: list[tuple[str, str]] = []
         for block in blocks:
             entries = _children(block, "license")
             if not entries:
@@ -294,7 +298,7 @@ def licences_from_pom(pom: Path, depth: int = 0) -> list[str]:
                         f"{pom} declares a licence with no literal name, so what the publisher "
                         "granted cannot be stated here"
                     )
-                names.append(name)
+                names.append((name, _text(licence, "url")))
         return names
 
     if depth >= 1:
@@ -312,18 +316,45 @@ def licences_from_pom(pom: Path, depth: int = 0) -> list[str]:
     return licences_from_pom(parent_pom, depth + 1) if parent_pom else []
 
 
+def git(*arguments: str) -> str:
+    """Run a git command, refusing anything but a clean exit.
+
+    A failed git command still prints to stdout on some paths, so branching on the text rather than
+    the status is how a failure becomes a plausible answer.
+    """
+    finished = subprocess.run(
+        ["git", *arguments], cwd=REPO, capture_output=True, text=True, check=False
+    )
+    if finished.returncode != 0:
+        fail(f"`git {' '.join(arguments)}` failed: {finished.stderr.strip() or 'no message'}")
+    return finished.stdout
+
+
 def submodule_commit() -> str:
-    output = subprocess.run(
-        ["git", "submodule", "status", "third_party/llama.cpp"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout
-    match = re.search(r"([0-9a-f]{40})", output)
+    """The llama.cpp commit this repository PINS, from the index, not from the working checkout.
+
+    `git submodule status` answers a different question: it reports the CHECKED-OUT commit, prefixed
+    with `+` when that differs from the pin. A regex for a hash reads the same either way, so a
+    checkout left behind an updated pin published the old commit and every check agreed with it.
+    The index entry is the pin itself, and it has no second reading.
+    """
+    staged = [line for line in git("ls-files", "--stage", "--", SUBMODULE).splitlines() if line.strip()]
+    if len(staged) != 1:
+        fail(f"expected exactly one index entry for {SUBMODULE}, found {len(staged)}")
+    match = re.match(r"^160000 ([0-9a-f]{40}) ", staged[0])
     if not match:
-        fail("could not read the llama.cpp commit from `git submodule status third_party/llama.cpp`")
-    return match.group(1)
+        fail(f"{SUBMODULE} is not recorded as a submodule in the index: {staged[0]}")
+    pinned = match.group(1)
+
+    # The licence text is read from the working checkout, so a checkout that is not AT the pin would
+    # have its licence attributed to a commit it does not belong to.
+    head = git("-C", SUBMODULE, "rev-parse", "HEAD").strip()
+    if head != pinned:
+        fail(
+            f"{SUBMODULE} is checked out at {head} but this repository pins {pinned}; run "
+            "`git submodule update --init` before generating notices"
+        )
+    return pinned
 
 
 def bundled_block(item: dict[str, str]) -> list[str]:
@@ -361,6 +392,7 @@ def main() -> None:
     unobtainable: list[str] = []
     undeclared: list[str] = []
     unrecognised: dict[str, list[str]] = {}
+    declared_urls: dict[str, set[str]] = {}
 
     for (group, artifact), version in sorted(resolved.items()):
         coordinate = f"{group}:{artifact}:{version}"
@@ -372,10 +404,16 @@ def main() -> None:
         if not names:
             undeclared.append(coordinate)
             continue
-        normalised = [normalise(name) for name in names]
-        for name in normalised:
-            if name in URL_ONLY:
-                unrecognised.setdefault(name, []).append(coordinate)
+        normalised = [normalise(name) for name, _ in names]
+        for (name, url), display in zip(names, normalised):
+            if display in URL_ONLY:
+                unrecognised.setdefault(display, []).append(coordinate)
+                if not url:
+                    fail(
+                        f"{coordinate} declares '{name}' with no URL, and its terms cannot be "
+                        "reproduced, so this file would name terms a reader cannot reach"
+                    )
+                declared_urls.setdefault(display, set()).add(url)
         entries.append((coordinate, " AND ".join(normalised)))
 
     if unobtainable:
@@ -473,15 +511,15 @@ def main() -> None:
                 "PART 3 - TERMS PUBLISHED ONLY AT A URL",
                 "=" * 38,
                 "",
-                "These publishers ship under terms hosted on their own site. The terms are named and",
-                "linked rather than copied, because a copy of terms that can change would become a",
-                "second version of them.",
+                "These publishers ship under terms hosted on their own site. The terms are named,",
+                "and linked to the address the publisher's own POM gives, rather than copied: a copy",
+                "of terms that can change would become a second version of them.",
                 "",
             ]
         )
         for name in sorted(unrecognised):
             out.append(f"  {name}")
-            out.append(f"      {URL_ONLY[name]}")
+            out.extend(f"      {url}" for url in sorted(declared_urls[name]))
             out.extend(f"      {coordinate}" for coordinate in unrecognised[name])
             out.append("")
 

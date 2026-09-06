@@ -1,6 +1,10 @@
 package com.envi.wispr.ui
 
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -48,7 +52,7 @@ class AppShellNavigationTest {
     @Before
     fun reachTheShell() {
         composeRule.waitForIdle()
-        if (present { composeRule.onNodeWithText("Set up later") }) {
+        if (present(hasText("Set up later"))) {
             composeRule.onNodeWithText("Set up later").performClick()
             composeRule.waitForIdle()
         }
@@ -56,22 +60,39 @@ class AppShellNavigationTest {
         // Observed while controlling the back arrow: with the arrow broken, the test that uses it left
         // the page open and the NEXT test failed on its precondition rather than on its own subject.
         // Order dependence between tests is a defect in the suite even when every test passes.
-        if (present { composeRule.onNodeWithContentDescription("Back") }) {
+        if (present(hasContentDescription("Back"))) {
             composeRule.onNodeWithContentDescription("Back").performClick()
             composeRule.waitForIdle()
         }
+        // DO NOT COPY THIS PART. Cleaning up THROUGH a behaviour that is itself under test couples the
+        // rows together: breaking the arrow reddens both, not just the row that presses it, so a control
+        // says less than it should. It is here because the activity rule does not reset the saved
+        // navigation state between rows, and the alternative was leaving the suite order-dependent.
+        // Whoever finds a clean reset should take this out.
         composeRule.onNodeWithContentDescription("Open settings menu")
             .assertExists("the shell never appeared, so nothing below tested navigation")
     }
 
-    /** Whether the node the block selects is on screen, without throwing when it is not. */
-    private fun present(select: () -> androidx.compose.ui.test.SemanticsNodeInteraction): Boolean =
-        runCatching { select().assertExists() }.isSuccess
+    /**
+     * Whether exactly one node matches, WITHOUT swallowing anything else.
+     *
+     * The first version wrapped `assertExists()` in `runCatching`, which turns every throwable into
+     * "absent": an ambiguous match, a synchronisation failure, a broken matcher. In setup that silently
+     * skips a required action, and in a negative check it passes for the wrong reason. Counting nodes
+     * answers only the question asked, and an ambiguous match is a loud failure rather than a false
+     * "no". Absence in the tests themselves is asserted with `assertDoesNotExist`, which is the API for
+     * it; this helper exists only for the two SETUP probes, which are genuinely conditional.
+     */
+    private fun present(matcher: SemanticsMatcher): Boolean {
+        val count = composeRule.onAllNodes(matcher).fetchSemanticsNodes().size
+        check(count <= 1) { "expected at most one node matching $matcher, found $count" }
+        return count == 1
+    }
 
     @Test
-    fun aSettingsPageTakesOverTheBarsAndBackReturnsToTheTabYouLeft() {
-        // Leave the landing tab, so "returned to where I was" is a real claim rather than the default.
-        composeRule.onNodeWithText("Transcription").performClick()
+    fun aSettingsPageTakesOverTheBarsAndTheSystemBackGestureLeavesIt() {
+        // Leave the landing tab, so the app is not sitting on its default while this runs.
+        composeRule.onNode(transcriptionTab).performClick()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithContentDescription("Open settings menu").performClick()
@@ -82,9 +103,7 @@ class AppShellNavigationTest {
         // On a settings page: a way out, and no tab bar behind it.
         composeRule.onNodeWithContentDescription("Back").assertIsDisplayed()
         composeRule.onNodeWithText("Space used by files in the models folder.").assertIsDisplayed()
-        if (present { composeRule.onNodeWithText("AI Polish") }) {
-            throw AssertionError("the tab bar must not sit under a settings page: 'AI Polish' is still on screen")
-        }
+        composeRule.onNodeWithText("AI Polish").assertDoesNotExist()
 
         // The SYSTEM back gesture, not the arrow. Both must work, and this is the one a person testing
         // by hand is least likely to try every time.
@@ -93,7 +112,7 @@ class AppShellNavigationTest {
 
         composeRule.onNodeWithText("AI Polish").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Open settings menu").assertIsDisplayed()
-        if (present { composeRule.onNodeWithContentDescription("Back") }) {
+        if (present(hasContentDescription("Back"))) {
             throw AssertionError("the way out must be gone once there is nothing to leave: 'Back' is still on screen")
         }
     }
@@ -110,4 +129,20 @@ class AppShellNavigationTest {
         composeRule.onNodeWithContentDescription("Open settings menu").assertIsDisplayed()
         composeRule.onNodeWithText("AI Polish").assertIsDisplayed()
     }
+
+    /**
+     * The Transcription tab, used only to move OFF the landing tab so the app is not sitting on its
+     * default while a row runs.
+     *
+     * **"Back returns you to the tab you left" is deliberately NOT asserted, because two attempts to
+     * bind it both failed a control (#48).** Review was right that asserting the tab BAR is back proves
+     * nothing about WHICH tab, so `assertIsSelected` was added on this matcher. A control that makes
+     * `closePages` also reset the destination to History did NOT turn the row red, on a run whose report
+     * timestamp advanced, so the assertion is not reading the selection it appears to read. Shipping it
+     * would be shipping a comment.
+     *
+     * The next author needs a matcher that provably reads `NavigationBarItem`'s selected state, and the
+     * control above is the one it has to fail.
+     */
+    private val transcriptionTab = hasText("Transcription") and hasClickAction()
 }

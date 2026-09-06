@@ -6,7 +6,7 @@ It redistributes the components below, each under its own terms.
 
 GENERATED FILE. Do not edit by hand. Regenerate with:
 
-    ./gradlew :app:dependencies --configuration releaseRuntimeClasspath \
+    ./gradlew -I scripts/notices-deps.init.gradle :app:printNoticesDependencies \
         --console=plain > /tmp/deps.txt
     python3 scripts/generate-notices.py /tmp/deps.txt
 
@@ -32,7 +32,7 @@ sherpa-onnx
 --------------------------------------------------------------------------------
 ONNX Runtime
   Version: 1.17.1
-  License: MIT
+  License: MIT License
   Source:  https://github.com/microsoft/onnxruntime
   Note:    Redistributed inside the sherpa-onnx AAR. Not a declared dependency of this project.
   Read from: Version measured with `strings` on jni/arm64-v8a/libonnxruntime.so inside app/libs/sherpa-onnx.aar. Licence read from https://github.com/microsoft/onnxruntime/blob/v1.17.1/LICENSE.
@@ -41,7 +41,7 @@ ONNX Runtime
 --------------------------------------------------------------------------------
 llama.cpp
   Version: ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc
-  License: MIT
+  License: MIT License
   Source:  https://github.com/ggml-org/llama.cpp
   Note:    Built from source as the :llama-android module. Runs the local polish model.
   Read from: Commit read from `git submodule status third_party/llama.cpp`. Licence read from third_party/llama.cpp/LICENSE in this checkout.
@@ -51,7 +51,7 @@ llama.cpp
 PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
 ===========================================================
 
-159 components, each with the licence its own POM declares.
+161 components, each with the licence its own POM declares.
 
   androidx.activity:activity:1.10.1                                 Apache-2.0
   androidx.activity:activity-compose:1.10.1                         Apache-2.0
@@ -78,6 +78,7 @@ PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
   androidx.compose.foundation:foundation-layout-android:1.10.4      Apache-2.0
   androidx.compose.material:material-ripple:1.10.4                  Apache-2.0
   androidx.compose.material:material-ripple-android:1.10.4          Apache-2.0
+  androidx.compose.material3:material3:1.4.0                        Apache-2.0
   androidx.compose.material3:material3-android:1.4.0                Apache-2.0
   androidx.compose.runtime:runtime:1.10.4                           Apache-2.0
   androidx.compose.runtime:runtime-android:1.10.4                   Apache-2.0
@@ -95,6 +96,7 @@ PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
   androidx.compose.ui:ui-graphics-android:1.10.4                    Apache-2.0
   androidx.compose.ui:ui-text:1.10.4                                Apache-2.0
   androidx.compose.ui:ui-text-android:1.10.4                        Apache-2.0
+  androidx.compose.ui:ui-tooling-preview:1.10.4                     Apache-2.0
   androidx.compose.ui:ui-tooling-preview-android:1.10.4             Apache-2.0
   androidx.compose.ui:ui-unit:1.10.4                                Apache-2.0
   androidx.compose.ui:ui-unit-android:1.10.4                        Apache-2.0

@@ -1,17 +1,21 @@
 EnviousWispr Android proof of concept third-party notices
 
 "S1-mini" by "Superwhisper"
+Model ID: s1-mini
 Model repository: https://huggingface.co/superwhisper/s1-mini-GGUF
 Pinned revision: 34add00a48a2e5d24e5a4ee5405a99620a3a240c
+License: Apache License 2.0
 
 "Parakeet TDT 0.6b v3 int8" by "NVIDIA", packaged for sherpa-onnx by csukuangfj
+Model ID: parakeet
 Model repository: https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
 Pinned revision: 2bda32ec70b097a55adaa07d9a7173915b43cc78
-Licensed under CC-BY-4.0, as recorded in the app's own model manifest.
+License: CC-BY-4.0
 
 llama.cpp
 Source repository: https://github.com/ggml-org/llama.cpp
 Pinned revision: ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc
+License: MIT License
 
 Plus Jakarta Sans
 Source repository: https://github.com/tokotype/PlusJakartaSans
@@ -28,9 +32,8 @@ The marks themselves remain the trademarks of their respective owners. They are 
 NOMINATIVELY, solely to identify which provider the user is configuring, drawn monochrome in
 the app's own colour. No affiliation, sponsorship or endorsement is implied by any of them.
 
-The exact S1-mini license follows. llama.cpp, which runs S1-mini, is distributed
-under the MIT License; its full text is in third_party/llama.cpp/LICENSE and is
-reproduced in THIRD-PARTY-NOTICES.txt at the root of the repository.
+The exact S1-mini license follows. The full text of every other license named
+above is reproduced in THIRD-PARTY-NOTICES.txt at the root of the repository.
 
 That root file also lists sherpa-onnx, ONNX Runtime, the Qualcomm GenieX runtime
 and every library the app links against, each with the license its own publisher

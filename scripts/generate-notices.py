@@ -20,7 +20,8 @@ the run and is named. A notices file that says "unknown" about something we ship
 
 Usage, from the repository root:
 
-    ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --console=plain > /tmp/deps.txt
+    ./gradlew -I scripts/notices-deps.init.gradle :app:printNoticesDependencies \
+        --console=plain > /tmp/deps.txt
     python3 scripts/generate-notices.py /tmp/deps.txt
 
 Run it after any dependency change. `ThirdPartyNoticesTest` goes red when a dependency declared in
@@ -67,12 +68,11 @@ REPOSITORIES = [
     "https://repo1.maven.org/maven2",
 ]
 
-# A Gradle dependency-tree line. The version after "->" is the one that wins a conflict, and is
-# therefore the version in the APK; the left-hand one is only what something asked for.
-COORD = re.compile(
-    r"([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+):([A-Za-z0-9_.\-]+)"
-    r"(?:\s+->\s+([A-Za-z0-9_.\-]+))?"
-)
+# One line of `scripts/notices-deps.init.gradle`'s output. Gradle resolves the classpath and prints
+# each component; nothing here interprets Gradle's printed dependency TREE, which is a grammar we do
+# not own. Reading that tree dropped 277 lines whose version came from a bill of materials and left
+# two Compose libraries out of the licence file entirely.
+COORD = re.compile(r"^NOTICES-DEP ([^\s:]+):([^\s:]+):(\S+)$")
 
 # Components that ship inside the APK with no Maven coordinate to read a licence from. Each names the
 # evidence behind its claim, so a reader can re-check it without trusting this file.
@@ -92,7 +92,7 @@ BUNDLED = [
     {
         "name": "ONNX Runtime",
         "version": "1.17.1",
-        "license": "MIT",
+        "license": "MIT License",
         "source": "https://github.com/microsoft/onnxruntime",
         "note": "Redistributed inside the sherpa-onnx AAR. Not a declared dependency of this project.",
         "evidence": (
@@ -104,7 +104,7 @@ BUNDLED = [
     {
         "name": "llama.cpp",
         "version": "(read from the submodule at generation time)",
-        "license": "MIT",
+        "license": "MIT License",
         "source": "https://github.com/ggml-org/llama.cpp",
         "note": "Built from source as the :llama-android module. Runs the local polish model.",
         "evidence": (
@@ -140,6 +140,16 @@ FULL_TEXTS = [
         "androidx.datastore:datastore-preferences-external-protobuf.",
     ),
 ]
+
+# MIT and BSD-3-Clause each require the component's OWN copyright line, so one shared text cannot
+# discharge them the way a single Apache-2.0 copy discharges every Apache component. This maps each
+# such Maven component to the file reproducing its notice; a new MIT or BSD dependency with no entry
+# here aborts the run rather than shipping under a neighbour's copyright.
+COMPONENT_TEXTS = {
+    "com.qualcomm.qti:geniex-android": "BSD-3-Clause-geniex.txt",
+    "androidx.datastore:datastore-preferences-external-protobuf": "BSD-3-Clause-protobuf.txt",
+}
+NEEDS_OWN_TEXT = {"MIT", "BSD-3-Clause"}
 
 # Publishers spell one licence several ways. Normalising keeps the listing readable and, more
 # importantly, keeps an unrecognised spelling VISIBLE instead of collapsing it into a neighbour.
@@ -178,20 +188,26 @@ def normalise(name: str) -> str:
     return ALIASES.get(name.strip().lower(), name.strip())
 
 
-def resolved_coordinates(tree_text: str) -> dict[tuple[str, str], str]:
-    """Every group:artifact on the release runtime classpath, at the version that won."""
+def resolved_coordinates(text: str) -> dict[tuple[str, str], str]:
+    """Every component Gradle resolved onto the release runtime classpath.
+
+    Gradle reports each component once, already resolved, so there is no conflict to adjudicate and
+    no version to pick. A group:artifact reported twice would mean the file was built from two runs;
+    that is refused rather than silently keeping the last one.
+    """
     resolved: dict[tuple[str, str], str] = {}
-    for line in tree_text.splitlines():
-        if "(c)" in line or "(n)" in line:
-            # A dependency constraint or an unresolved marker, not something in the APK.
-            continue
-        if not line.startswith(("+---", "\\---", "|", " ")):
-            continue
-        match = COORD.search(line)
+    for line in text.splitlines():
+        match = COORD.match(line.strip())
         if not match:
             continue
-        group, artifact, requested, winner = match.groups()
-        resolved[(group, artifact)] = winner or requested
+        group, artifact, version = match.groups()
+        previous = resolved.get((group, artifact))
+        if previous is not None and previous != version:
+            fail(
+                f"{group}:{artifact} appears at both {previous} and {version}; the input mixes "
+                "two Gradle runs and no single version can be published"
+            )
+        resolved[(group, artifact)] = version
     return resolved
 
 
@@ -230,15 +246,29 @@ def licences_from_pom(pom: Path, depth: int = 0) -> list[str]:
     and a miss fails closed rather than guessing.
     """
     root = ET.parse(pom).getroot()
-    names = [
-        name
-        for block in _children(root, "licenses")
-        for licence in _children(block, "license")
-        for name in [_text(licence, "name")]
-        if name
-    ]
-    if names or depth >= 1:
+    blocks = _children(root, "licenses")
+
+    # A <licenses> element is the publisher SPEAKING. Dropping a licence inside it because it has no
+    # readable name would publish a subset of what the publisher declared, and falling through to a
+    # parent would publish somebody else's terms entirely. Both are refusals, not filters.
+    if blocks:
+        names: list[str] = []
+        for block in blocks:
+            entries = _children(block, "license")
+            if not entries:
+                fail(f"{pom} has an empty <licenses> element, so its declaration cannot be read")
+            for licence in entries:
+                name = _text(licence, "name")
+                if not name or "${" in name:
+                    fail(
+                        f"{pom} declares a licence with no literal name, so what the publisher "
+                        "granted cannot be stated here"
+                    )
+                names.append(name)
         return names
+
+    if depth >= 1:
+        return []
     parents = _children(root, "parent")
     if not parents:
         return []
@@ -283,17 +313,17 @@ def bundled_block(item: dict[str, str]) -> list[str]:
 def main() -> None:
     if len(sys.argv) != 2:
         fail("usage: generate-notices.py <gradle-dependencies-output>")
-    tree_path = Path(sys.argv[1])
-    if not tree_path.is_file():
-        fail(f"{tree_path} does not exist; run the ./gradlew command in this script's docstring")
+    input_path = Path(sys.argv[1])
+    if not input_path.is_file():
+        fail(f"{input_path} does not exist; run the ./gradlew command in this script's docstring")
 
     for _, filename, _ in FULL_TEXTS:
         if not (TEXTS / filename).is_file():
             fail(f"scripts/license-texts/{filename} is missing; the full text must be in the repository")
 
-    resolved = resolved_coordinates(tree_path.read_text())
+    resolved = resolved_coordinates(input_path.read_text())
     if not resolved:
-        fail(f"no dependency coordinates found in {tree_path}; the Gradle run probably failed")
+        fail(f"no NOTICES-DEP lines in {input_path}; the Gradle run probably failed")
 
     entries: list[tuple[str, str]] = []
     unobtainable: list[str] = []
@@ -335,6 +365,21 @@ def main() -> None:
             "would name terms it does not discharge:\n  " + "\n  ".join(sorted(unmapped))
         )
 
+    uncovered = []
+    for coordinate, licence in entries:
+        if not NEEDS_OWN_TEXT.intersection(licence.split(" AND ")):
+            continue
+        module = coordinate.rsplit(":", 1)[0]
+        filename = COMPONENT_TEXTS.get(module)
+        if filename is None or not (TEXTS / filename).is_file():
+            uncovered.append(f"{coordinate} ({licence})")
+    if uncovered:
+        fail(
+            "MIT and BSD-3-Clause require each component's own copyright line, and these have no "
+            "text in scripts/license-texts. Add the file, add it to COMPONENT_TEXTS and to "
+            "FULL_TEXTS:\n  " + "\n  ".join(uncovered)
+        )
+
     bundled = [dict(item) for item in BUNDLED]
     for item in bundled:
         if item["name"] == "llama.cpp":
@@ -349,7 +394,7 @@ def main() -> None:
         "",
         "GENERATED FILE. Do not edit by hand. Regenerate with:",
         "",
-        "    ./gradlew :app:dependencies --configuration releaseRuntimeClasspath \\",
+        "    ./gradlew -I scripts/notices-deps.init.gradle :app:printNoticesDependencies \\",
         "        --console=plain > /tmp/deps.txt",
         "    python3 scripts/generate-notices.py /tmp/deps.txt",
         "",

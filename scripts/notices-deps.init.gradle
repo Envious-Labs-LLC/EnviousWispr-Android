@@ -1,0 +1,62 @@
+// Prints the components on :app's release runtime classpath, one per line, for
+// scripts/generate-notices.py.
+//
+// This exists because the printed dependency TREE is a grammar we do not own. Reading it lost 277
+// lines whose version came from a bill of materials, printed as `group:artifact -> version` with no
+// version in the coordinate itself: the Kotlin standard library and androidx.compose.ui:ui among
+// them. A regex expecting `group:artifact:version` matched none of those and dropped them in
+// silence, which in a licence document means redistributing software the file does not mention
+// (`tools-and-apps.md` RULE: ask-git-do-not-model-git, applied to Gradle).
+//
+// Asking Gradle for its own resolution result has no grammar to get wrong. It is an init script so
+// that generating notices cannot change the build itself.
+//
+//   ./gradlew -I scripts/notices-deps.init.gradle :app:printNoticesDependencies --console=plain
+//
+// Only ModuleComponentIdentifier components are printed, which excludes this project's own modules.
+// Those are ours, not third-party, and have no licence to declare here.
+
+gradle.allprojects { project ->
+    project.tasks.register("printNoticesDependencies") {
+        doLast {
+            def configuration = project.configurations.findByName("releaseRuntimeClasspath")
+            if (configuration == null) {
+                throw new GradleException(
+                    "no releaseRuntimeClasspath on ${project.path}; run this on :app"
+                )
+            }
+            def result = configuration.incoming.resolutionResult
+
+            // A dependency Gradle could NOT resolve is reported as an edge, never as a component, so
+            // listing components alone would print a shorter list and call it complete. That is the
+            // shape of every silent-empty trap: the failure and the clean answer look identical.
+            def unresolved = result.allDependencies.findAll {
+                it instanceof org.gradle.api.artifacts.result.UnresolvedDependencyResult
+            }
+            if (!unresolved.isEmpty()) {
+                throw new GradleException(
+                    "releaseRuntimeClasspath has unresolved dependencies, so no complete licence " +
+                        "list can be produced: " + unresolved.collect { it.requested }.join(", ")
+                )
+            }
+
+            def seen = new TreeSet<String>()
+            result.allComponents.each { component ->
+                def id = component.id
+                if (id instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier) {
+                    seen.add("${id.group}:${id.module}:${id.version}".toString())
+                }
+            }
+            if (seen.isEmpty()) {
+                throw new GradleException(
+                    "releaseRuntimeClasspath resolved to nothing; refusing to report an empty set"
+                )
+            }
+            seen.each { println("NOTICES-DEP ${it}") }
+
+            // The last line, so a run killed or truncated part way through cannot be read as a short
+            // but complete list. The generator requires this record and the count it carries.
+            println("NOTICES-DEP-COMPLETE ${seen.size()}")
+        }
+    }
+}

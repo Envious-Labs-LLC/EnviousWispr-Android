@@ -195,6 +195,25 @@ def read_text_file(filename: str) -> str:
     return path.read_text().rstrip()
 
 
+def url_problem(url: str) -> str:
+    """Why this URL cannot be published as where a licence's terms live, or the empty string.
+
+    A URL-only licence is named and linked and nothing else, so the link IS the notice. An
+    unexpanded POM property is the dangerous value here: it is non-empty, it looks like a field
+    somebody filled in, and it resolves to nothing.
+    """
+    if not url:
+        return "is missing"
+    if "${" in url:
+        return "is an unexpanded property"
+    if url != url.strip() or any(character.isspace() for character in url):
+        return "contains whitespace"
+    for scheme in ("https://", "http://"):
+        if url.startswith(scheme):
+            return "" if url[len(scheme):].split("/", 1)[0] else "has no host"
+    return "has no http or https scheme"
+
+
 def normalise(name: str) -> str:
     return ALIASES.get(name.strip().lower(), name.strip())
 
@@ -408,10 +427,12 @@ def main() -> None:
         for (name, url), display in zip(names, normalised):
             if display in URL_ONLY:
                 unrecognised.setdefault(display, []).append(coordinate)
-                if not url:
+                problem = url_problem(url)
+                if problem:
                     fail(
-                        f"{coordinate} declares '{name}' with no URL, and its terms cannot be "
-                        "reproduced, so this file would name terms a reader cannot reach"
+                        f"{coordinate} declares '{name}', whose terms cannot be reproduced, with a "
+                        f"URL that {problem}: '{url}'. A reader could not reach the terms this file "
+                        "would name."
                     )
                 declared_urls.setdefault(display, set()).add(url)
         entries.append((coordinate, " AND ".join(normalised)))

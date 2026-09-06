@@ -36,6 +36,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
+import com.envi.wispr.polish.DevelopmentPolishModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -175,7 +185,10 @@ internal fun PolishScreen(
         Column(Modifier.fillMaxWidth().animateContentSize(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             when (rungOne) {
                 RungOne.OFF -> QuietCard("No language model runs. Deterministic cleanup still removes obvious filler and spacing issues.")
-                RungOne.THIS_PHONE -> S1Card(s1State, onRefreshReadiness)
+                RungOne.THIS_PHONE -> {
+                    S1Card(s1State, onRefreshReadiness)
+                    DevelopmentModelCard()
+                }
                 RungOne.CLOUD -> CloudRungs(
                     settings = settings,
                     discovery = discovery,
@@ -510,6 +523,118 @@ private fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
         onResume = { ModelDeliveryWorker.resume(context, ModelManifest.s1) },
     )
 }
+
+/**
+ * The hand-placed development polish model, on the one screen that already talks about local polish.
+ *
+ * **Debuggable builds only, and absent rather than disabled otherwise.** A release build would never
+ * load this file, so a release build offering to manage it would be naming a capability it does not
+ * have. `DevelopmentPolishModel.isSupported` owns that test.
+ *
+ * It shows a file that EXISTS, not one that qualifies. A 469 MB file with the wrong hash is still 469 MB,
+ * and it is the case where being shown it matters most, because it is doing nothing at all
+ * ([issue #21](https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/21)).
+ *
+ * It also says whether polish is ACTUALLY using it, which is the question anyone reading a latency
+ * number needs answered: a measurement from this file is not a measurement of what ships
+ * (`architecture-rules.md` FACT: npu-polish-is-a-development-override).
+ */
+@Composable
+private fun DevelopmentModelCard() {
+    val context = LocalContext.current
+    if (!DevelopmentPolishModel.isSupported(context)) return
+    val scope = rememberCoroutineScope()
+
+    // Bumped after a removal, so the card measures again rather than showing what was just deleted.
+    var generation by rememberSaveable { mutableIntStateOf(0) }
+    var removalIncomplete by rememberSaveable { mutableStateOf(false) }
+    // null until measured. Absent rather than "0 KB", because a zero is a claim.
+    val state by key(generation) {
+        produceState<DevelopmentModelFacts?>(initialValue = null) {
+            value = withContext(Dispatchers.IO) {
+                // The two are measured SEPARATELY on purpose. Reading the size succeeds on a directory
+                // whose contents cannot be opened, while hashing that same file throws; sharing one
+                // catch threw the size away too and hid the card, so the user was shown nothing about
+                // space they are definitely paying for and could still have freed.
+                val bytes = runCatching { DevelopmentPolishModel.bytesOnDisk(context) }.getOrNull()
+                    ?: return@withContext null
+                DevelopmentModelFacts(
+                    bytes = bytes,
+                    // Hashing 469 MB, which is why this whole block is off the main thread. null means
+                    // the check itself could not be made, which is a third answer and not a false.
+                    selectable = runCatching { DevelopmentPolishModel.qualifies(context) }.getOrNull(),
+                )
+            }
+        }
+    }
+
+    val facts = state ?: return
+    if (facts.bytes <= 0L) return
+
+    ElevatedCard {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "DEVELOPMENT ONLY",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text("Hand-placed polish model", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                // ELIGIBILITY, never live state. Nothing here can see what the polish process has
+                // loaded, and a sentence claiming otherwise would be wrong for the whole window before
+                // the first polish request.
+                when (facts.selectable) {
+                    true ->
+                        "Polish on this phone will pick this file over the model that ships. " +
+                            "Any speed measured on this build is this file's, not the app's."
+                    false ->
+                        "Polish will not pick this file. It was placed here by hand and does not " +
+                            "match what the app expects, so it is only taking up room."
+                    null ->
+                        "This file could not be checked, so whether polish would pick it is unknown. " +
+                            "It is taking up room either way."
+                },
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "${formatModelBytes(facts.bytes)} on this phone",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (removalIncomplete) {
+                Text(
+                    "Some of it could not be removed. What is left is still counted above.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            OutlinedButton(
+                onClick = {
+                    // The delete is IO, and whether it worked is read from the world afterwards rather
+                    // than assumed. A partial removal is SAID rather than swallowed: the size above is
+                    // re-measured either way, so a silent failure would leave the user staring at a
+                    // number that did not move with no explanation.
+                    scope.launch {
+                        val removed = withContext(Dispatchers.IO) {
+                            runCatching { DevelopmentPolishModel.delete(context) }.getOrDefault(false)
+                        }
+                        removalIncomplete = !removed
+                        generation += 1
+                    }
+                },
+            ) { Text("Remove") }
+        }
+    }
+}
+
+/**
+ * What the development model card needs.
+ *
+ * [selectable] is nullable because "could not check" is a real third answer: the size can be measured on
+ * a file whose contents cannot be read, and the user still deserves to be told what it costs.
+ */
+private data class DevelopmentModelFacts(val bytes: Long, val selectable: Boolean?)
 
 /**
  * The way out of a key field for someone who has no key (#97).

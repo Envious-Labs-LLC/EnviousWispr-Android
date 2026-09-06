@@ -75,6 +75,29 @@ PILL_NOT_DRAWN = """  Window #2 Window{28b96f u0 EnviousWispr recording controls
     isOnScreen=false
     isVisible=false"""
 
+# A real switch and a single-choice group, side by side, exactly as the phone reports them. The Clipboard
+# switch is clickable while ON; the chosen member of the AI Polish group is not, and that is the ONLY
+# thing telling them apart.
+SWITCH_AND_CHOICE = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node bounds="[0,0][1080,2340]" package="com.envi.wispr" class="android.widget.FrameLayout" checkable="false" clickable="false" enabled="true" text="">
+    <node bounds="[56,600][1024,760]" package="com.envi.wispr" class="android.view.View" checkable="true" checked="true" clickable="true" enabled="true" text="">
+      <node bounds="[74,620][900,680]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Smart insertion" />
+      <node bounds="[74,690][900,740]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Match spacing to the text around your cursor." />
+    </node>
+    <node bounds="[56,900][350,1060]" package="com.envi.wispr" class="android.view.View" checkable="true" checked="false" clickable="true" enabled="true" text="">
+      <node bounds="[74,980][300,1040]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Off" />
+    </node>
+    <node bounds="[370,900][660,1060]" package="com.envi.wispr" class="android.view.View" checkable="true" checked="true" clickable="false" enabled="true" text="">
+      <node bounds="[380,980][650,1040]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="This phone" />
+    </node>
+    <node bounds="[680,900][1024,1060]" package="com.envi.wispr" class="android.view.View" checkable="true" checked="false" clickable="true" enabled="true" text="">
+      <node bounds="[700,980][1000,1040]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Cloud" />
+    </node>
+    <node bounds="[56,1200][1024,1300]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Cancel" />
+  </node>
+</hierarchy>"""
+
 PASSED, FAILED = [], []
 
 
@@ -162,6 +185,104 @@ def main():
     check("look never answers with silence", bool(text.strip()), repr(text))
     check("and it names what is showing instead", "nexuslauncher" in text, text)
 
+    # ---- a switch you can turn back, and a choice you cannot un-make -------------------------------
+    # Getting this wrong changes the founder's settings and cannot undo it: choosing "Off" on the polish
+    # page turns polish off, and choosing it again does not turn it back on.
+    restore_adb(original)
+    original = with_screen(SWITCH_AND_CHOICE)
+    check("a real switch is not one-way", eyes.one_way("Smart insertion") is False)
+    check("the chosen member of a set IS one-way", eyes.one_way("This phone") is True)
+    check("and so are its unchosen siblings", eyes.one_way("Off") is True)
+
+    # The guard is what stops the flip, so drive the real function.
+    try:
+        eyes.set_switch("Off", True, where="AI Polish")
+        check("flipping a one-way choice refuses", False, "it pressed it")
+    except eyes.Blocked as refusal:
+        check("flipping a one-way choice refuses", "cannot be undone" in str(refusal), refusal)
+
+    # A switch change has to say WHERE it was made, or the debt cannot be settled from a fresh process
+    # — and a fresh process is the only kind this tool has.
+    try:
+        eyes.set_switch("Smart insertion", False, where="somewhere")
+        check("a switch change must name its screen", False, "it accepted a screen that does not exist")
+    except eyes.Blocked as refusal:
+        check("a switch change must name its screen", "not a screen this app has" in str(refusal), refusal)
+
+    # And the guard is not simply always-on: a real switch still reads.
+    check("a real switch still reads", eyes.switch("Smart insertion") is True)
+
+    # `switches()` walks from the SWITCHES outward rather than from a list of names, so a switch added
+    # to the app appears without anyone editing the harness. This row is what binds that: it asserts the
+    # whole map, so a reader that found three of four would fail rather than look complete.
+    found = eyes.switches()
+    check("every switch on the screen is found, by its own words",
+          found == {"Smart insertion": True, "Off": False, "This phone": True, "Cloud": False}, found)
+
+    # A row with no switch in it is NOT a switch that is off. Collapsing those tells a reader a setting
+    # is off when the truth is that nothing there is a setting.
+    try:
+        eyes.switch("Cancel")
+        check("a row with no switch is not reported as off", False, "it answered False")
+    except eyes.Blocked as refusal:
+        check("a row with no switch is not reported as off",
+              "nothing around it is a switch" in str(refusal), refusal)
+    restore_adb(original)
+    original = with_screen(TWO_REMOVES)
+
+    # ---- reading the screen RETRIES, and the retry is exercised ----------------------------------
+    # The retry existed as a loop and a sentence for a while and could never run, because the helper it
+    # called raised on a failing status before the second attempt. These two rows are what bind it.
+    restore_adb(original)
+    eyes._STATE["tree"] = None
+    attempts = []
+
+    def flaky(command, timeout=60, check=True):
+        """A phone whose screen read fails twice, behaving like the REAL helper.
+
+        **Honouring `check` is what makes this row a control.** A stub that returns a status instead of
+        raising passes whether or not production asks for `check=False`, so removing the very thing the
+        retry depends on would have left this green. The real `_adb` raises when `check` is set, so
+        this does too.
+        """
+        if command.startswith("uiautomator"):
+            attempts.append(command)
+            # 137 is the real signal seen on the phone: another reader killed this one.
+            remote = 0 if len(attempts) >= 3 else 137
+            if check and remote:
+                raise eyes.Blocked(f"the phone refused it (status {remote})")
+            return remote, ""
+        if command.startswith("cat "):
+            return 0, TWO_REMOVES
+        return 0, ""
+
+    eyes._adb = flaky
+    # Caught rather than allowed to escape: a mutation that breaks the retry raises here, and a raise
+    # that ends the whole suite hides every row after it.
+    try:
+        nodes = eyes.tree(refresh=True)
+        check("a screen read that fails twice still succeeds", len(nodes) == 7, f"got {len(nodes)}")
+    except eyes.Blocked as why:
+        check("a screen read that fails twice still succeeds", False, f"it gave up: {why}")
+    check("and it really did retry", len(attempts) == 3, attempts)
+
+    eyes._STATE["tree"] = None
+    def never_reads(command, timeout=60, check=True):
+        remote = 137 if command.startswith("uiautomator") else 0
+        if check and remote:
+            raise eyes.Blocked(f"the phone refused it (status {remote})")
+        return remote, ""
+
+    eyes._adb = never_reads
+    try:
+        eyes.tree(refresh=True)
+        check("a screen that never reads refuses", False, "it returned something")
+    except eyes.Blocked as refusal:
+        check("a screen that never reads refuses", "three times" in str(refusal), refusal)
+        check("and it names the other reader", "same time" in str(refusal), refusal)
+    restore_adb(original)
+    original = with_screen(TWO_REMOVES)
+
     # ---- the recorder is read from the WINDOW MANAGER, the only eye that sees it ------------------
     # Trimmed from a real `dumpsys window windows` block captured on the founder's phone on
     # 2026-09-06 while a take was running.
@@ -203,12 +324,20 @@ def main():
     original = with_screen(TWO_REMOVES)
 
     # ---- the rules the review added, each with its own control -----------------------------------
-    original = with_screen(TWO_REMOVES)
+    # ONE labelled node on screen, deliberately. Against a busy screen the empty query was refused for
+    # AMBIGUITY, so deleting the empty-input guard left this row green. With a single node there is
+    # nothing ambiguous, and only the guard can produce a refusal.
+    original = with_screen(
+        "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+        "<node text=\"Remove\" bounds=\"[10,10][90,90]\" package=\"com.envi.wispr\" "
+        "clickable=\"true\" enabled=\"true\" /></hierarchy>")
     try:
         eyes.find("")
         check("an empty query refuses", False, "it matched something")
-    except eyes.Blocked:
-        check("an empty query refuses", True)
+    except eyes.Blocked as refusal:
+        check("an empty query refuses", "non-empty" in str(refusal), refusal)
+    restore_adb(original)
+    original = with_screen(TWO_REMOVES)
 
     # Substring matching is opt-in now, so a partial word does not quietly widen the net.
     try:
@@ -283,6 +412,27 @@ def main():
     check("and the phone actually holds the old value",
           store["screen_off_timeout"] == "600000", store)
     check("and the book is then empty", eyes._owed("fixture") == [], eyes._owed("fixture"))
+
+    # TWO SWITCHES ARE TWO DEBTS. Keying them on the word "switch" let one flipped switch hide the
+    # next, so a run that flipped four and crashed would have recorded one.
+    import json as _json
+    first = ("switch", _json.dumps({"where": "Clipboard", "label": "Smart insertion", "was": True},
+                                   sort_keys=True))
+    second = ("switch", _json.dumps({"where": "Clipboard", "label": "Auto-copy to clipboard", "was": True},
+                                    sort_keys=True))
+    eyes._owe(first)
+    eyes._owe(second)
+    check("two switches on one screen are two debts", len(eyes._owed("fixture")) == 2, eyes._owed("fixture"))
+    # And the same switch recorded twice stays ONE debt, holding the value it started at.
+    eyes._owe(("switch", _json.dumps({"where": "Clipboard", "label": "Smart insertion", "was": False},
+                                     sort_keys=True)))
+    check("the same switch twice is still one debt", len(eyes._owed("fixture")) == 2, eyes._owed("fixture"))
+    check("and it keeps the value it started at",
+          '"was": true' in dict(eyes._owed("fixture"))["switch"] or
+          any('"was": true' in e[1] and "Smart insertion" in e[1] for e in eyes._owed("fixture")))
+    eyes._settled(first)
+    eyes._settled(second)
+    check("settling them empties the book", eyes._owed("fixture") == [], eyes._owed("fixture"))
 
     # A change owed to ANOTHER phone is never restored onto this one.
     eyes._owe(("screen-timeout", "15000"), serial="some-other-phone")

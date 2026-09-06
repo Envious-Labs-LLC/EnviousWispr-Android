@@ -7,26 +7,34 @@ answers a question, nothing is driven by hand-computed coordinates, and every an
 person can read.
 
     python3 scripts/uat/wispr_eyes.py look
-    python3 scripts/uat/wispr_eyes.py tap "Storage"
-    python3 scripts/uat/wispr_eyes.py recorder
-    python3 scripts/uat/wispr_eyes.py dictate "the quick brown fox"
+    python3 scripts/uat/wispr_eyes.py scan
+    python3 scripts/uat/wispr_eyes.py quiet
+    python3 scripts/uat/wispr_eyes.py dictate
+    python3 scripts/uat/wispr_eyes.py restore
 
 Or from Python, chaining in ONE call the way the macOS one does:
 
     python3 -c "import sys; sys.path.insert(0, 'scripts/uat'); from wispr_eyes import *; nav('Storage'); print(look())"
 
-EVERY DESIGN RULE HERE WAS PAID FOR ON 2026-09-06, driving the founder's phone by hand:
+EVERY RULE HERE WAS PAID FOR ON 2026-09-06, driving the founder's phone by hand through all twelve
+screens, the recorder and a real dictation.
 
-* `look()` reads the ACCESSIBILITY TREE, and `shot()` reads PIXELS, and they see different things. The
-  floating recorder is a `TYPE_ACCESSIBILITY_OVERLAY`; `screencap` composited it on one attempt and
-  omitted it on another, and reading a screenshot that lacked it nearly produced "the recorder did not
-  open" about a recorder that was open. Ask the tree first, always.
-* `find()` REFUSES when a query matches more than one node. Two "Remove" buttons were on screen, one of
-  which deletes a 484 MB model the founder would have to download again. Coordinates were computed by
-  hand twice to tell them apart.
-* Every device change is journaled and `restore()` puts it back. Two volume settings were left changed.
-* A locked phone is refused, not driven. Taps land silently on the keyguard.
-* The phone is chosen by SERIAL and never by "the attached device". An emulator answers that question
+* **THREE EYES, AND THE RECORDER IS VISIBLE TO EXACTLY ONE OF THEM.** `look()` reads the accessibility
+  tree and sees every PAGE; `shot()` reads pixels; and neither can see the floating recorder at all,
+  because an accessibility overlay is excluded from screenshots and absent from the node tree. Only
+  `overlay()`, which reads `dumpsys window windows`, can. Measured with the service bound and a take
+  running: two confident "no recorder" answers about a recorder plainly on screen.
+* **`find()` REFUSES when a query matches more than one node.** Two "Remove" buttons were on screen, one
+  of which deletes a 484 MB model the founder would have to download again.
+* **A REFUSAL MUST NOT LEAVE THE MICROPHONE OPEN.** Every path out of `open_recorder()` that is not a
+  healthy pill cancels the take first. An earlier version raised and returned with it still running.
+* **Every device change is written to disk BEFORE it is made**, because this tool runs one process per
+  errand and an in-memory list is empty by the time `restore()` needs it.
+* **A locked phone is refused, and nothing is ever sent at a lock screen.** It cannot pass a credential
+  it does not have, and trying spends real unlock attempts on the founder's own phone.
+* **Do almost nothing while a take is running.** Reading the recorder window and staging audio inside a
+  take lost the pinned editor and produced `handoff=SERVICE_NOT_RUNNING` against a working app.
+* **The phone is chosen by SERIAL and never by "the attached device".** An emulator answers that question
   too, and it is not the phone.
 """
 
@@ -70,10 +78,39 @@ _STATE = {"serial": None, "restore": [], "tree": None}
 
 
 def _journal_read():
+    """The book, or a refusal. NEVER an empty book standing in for an unreadable one.
+
+    Swallowing a read error returned `{}`, which reads as "nothing is owed" — the one answer that makes
+    a caller stop looking, about a phone that may have several settings changed.
+    """
     try:
-        return json.loads(_JOURNAL.read_text())
-    except (OSError, ValueError):
+        raw = _JOURNAL.read_text()
+    except FileNotFoundError:
         return {}
+    except OSError as why:
+        raise Blocked(f"the restore book at {_JOURNAL} cannot be read: {why}") from why
+    try:
+        book = json.loads(raw)
+    except ValueError as why:
+        raise Blocked(
+            f"the restore book at {_JOURNAL} is damaged and will not be overwritten: {why}. "
+            "Read it by hand and put back whatever it names."
+        ) from why
+    if not isinstance(book, dict) or not all(isinstance(v, list) for v in book.values()):
+        raise Blocked(f"the restore book at {_JOURNAL} is not in the expected shape")
+    return book
+
+
+def _journal_write(book):
+    """Replace the book in one step, so an interrupted write cannot leave a half-file.
+
+    A `write_text` that dies mid-way leaves unreadable JSON, and the reader above then refuses
+    everything — which is safe, and still worse than not being able to happen.
+    """
+    _JOURNAL.parent.mkdir(parents=True, exist_ok=True)
+    beside = _JOURNAL.with_suffix(".writing")
+    beside.write_text(json.dumps(book, indent=2))
+    os.replace(beside, _JOURNAL)
 
 
 def _owed(serial=None):
@@ -82,16 +119,33 @@ def _owed(serial=None):
     return [tuple(entry) for entry in _journal_read().get(serial or "", [])]
 
 
+def _debt_key(entry):
+    """What makes two debts the SAME setting. One media volume; one per switch, per screen."""
+    what, previous = entry
+    if what == "switch":
+        try:
+            named = json.loads(previous)
+            return (what, named["where"], named["label"])
+        except (ValueError, KeyError, TypeError):
+            return (what, previous)
+    return (what,)
+
+
 def _owe(entry, serial=None):
     """Record a change BEFORE making it, so a crash between the two leaves a note rather than nothing."""
     serial = serial or _STATE["serial"]
     book = _journal_read()
     owed = [tuple(e) for e in book.get(serial or "", [])]
-    if entry not in owed:
+    # THE FIRST VALUE FOR EACH SETTING IS THE ONE TO KEEP, and this is not a tidiness rule. Staging
+    # twice recorded "media volume was 8" and then "media volume was 3", and restoring both in order
+    # ended at 3 with an empty book: the phone left changed and the tool reporting it clean.
+    #
+    # "EACH SETTING" IS NOT "EACH KIND". There is one media volume, but there are eleven switches, and
+    # keying them all on the word `switch` would let one flipped switch hide the next.
+    if not any(_debt_key(old) == _debt_key(entry) for old in owed):
         owed.append(entry)
-    book[serial or ""] = [list(e) for e in owed]
-    _JOURNAL.parent.mkdir(parents=True, exist_ok=True)
-    _JOURNAL.write_text(json.dumps(book, indent=2))
+        book[serial or ""] = [list(e) for e in owed]
+        _journal_write(book)
 
 
 def _settled(entry, serial=None):
@@ -100,8 +154,7 @@ def _settled(entry, serial=None):
     book = _journal_read()
     owed = [tuple(e) for e in book.get(serial or "", []) if tuple(e) != entry]
     book[serial or ""] = [list(e) for e in owed]
-    _JOURNAL.parent.mkdir(parents=True, exist_ok=True)
-    _JOURNAL.write_text(json.dumps(book, indent=2))
+    _journal_write(book)
 
 
 class Blocked(RuntimeError):
@@ -303,30 +356,68 @@ def tree(refresh=True):
     accessibility overlay and a screenshot omitted it on 2026-09-06, which read as the recorder never
     having opened.
 
-    `uiautomator dump` can crash on this phone and write no XML, so it is retried once before failing
+    `uiautomator dump` can crash on this phone and write no XML, so it is retried
     (`device-testing.md` FACT: uiautomator-dump-crashes-on-this-phone-INTERMITTENTLY).
+
+    **`check=False` IS WHAT MAKES THE RETRY EXIST.** With the default, `_adb` RAISES on a non-zero
+    status, so the loop below never reached its second attempt and the comment describing a retry was
+    describing nothing — a claim about a mechanism, which is the one kind of comment that retires a
+    check instead of failing it. Measured 2026-09-06: a dump returned status 137 and the run died on
+    the spot, with this loop in the file.
+
+    **TWO DUMPS AT ONCE KILL EACH OTHER**, and 137 is that signal. `uiautomator` allows one instance,
+    so a second reader anywhere — another session, or a person poking the phone from a terminal — takes
+    the first one down. That is `one-phone-serialises-every-session` at the level of a single command,
+    and it is why the retry is worth having rather than being papered over: the second attempt usually
+    lands once the other reader has finished.
     """
     if not refresh and _STATE["tree"] is not None:
         return _STATE["tree"]
     xml = None
-    for attempt in (1, 2):
-        remote, _ = _adb("uiautomator dump /sdcard/wispr-eyes.xml")
+    last = None
+    for attempt in (1, 2, 3):
+        remote, message = _adb("uiautomator dump /sdcard/wispr-eyes.xml", check=False)
         if remote == 0:
-            _, xml = _adb("cat /sdcard/wispr-eyes.xml")
+            _, xml = _adb("cat /sdcard/wispr-eyes.xml", check=False)
             if xml and "<hierarchy" in xml:
                 break
             xml = None
-        if attempt == 1:
-            time.sleep(1)
+            last = "the dump succeeded but wrote no tree"
+        else:
+            last = (f"status {remote}" + (f": {message.strip()}" if message.strip() else "")
+                    + (" — something else is reading this phone's screen at the same time"
+                       if remote == 137 else ""))
+        if attempt < 3:
+            time.sleep(1.5)
     if not xml:
-        raise Blocked("uiautomator could not read the screen, twice. It fails intermittently on this phone.")
+        raise Blocked(f"uiautomator could not read the screen, three times. Last answer: {last}.")
+    # PARSED AS A TREE, because the answer to "what control owns this label" is ANCESTRY and not
+    # geometry. A regex over `<node …>` throws the nesting away, and the readers then had to ask which
+    # box CONTAINS which — which is right most of the time and silently wrong whenever an unrelated
+    # control happens to overlap, on a harness that presses buttons that delete things.
+    import xml.etree.ElementTree as ElementTree
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError as why:
+        raise Blocked(f"the screen came back as XML that will not parse: {why}") from why
+
     nodes = []
-    for chunk in re.finditer(r"<node ([^>]*?)/?>", xml):
-        attrs = dict(re.findall(r'(\w[\w-]*)="([^"]*)"', chunk.group(1)))
-        bounds = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", attrs.get("bounds", ""))
-        if not bounds:
-            continue
+
+    def visit(element, parent):
+        if element.tag != "node":
+            for child in element:
+                visit(child, parent)
+            return
+        attrs = element.attrib
+        bounds = re.fullmatch(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", attrs.get("bounds", ""))
+        if bounds is None:
+            raise Blocked("a node on screen has bounds that cannot be read, so nothing can be pressed "
+                          "safely from this reading")
+        checkable = attrs.get("checkable") == "true"
+        if checkable and attrs.get("checked") not in ("true", "false"):
+            raise Blocked("a switch on screen does not say whether it is on, so it must not be reported")
         x0, y0, x1, y1 = (int(v) for v in bounds.groups())
+        here = len(nodes)
         nodes.append({
             "text": attrs.get("text", ""),
             "desc": attrs.get("content-desc", ""),
@@ -339,13 +430,17 @@ def tree(refresh=True):
             "scrollable": attrs.get("scrollable") == "true",
             "focused": attrs.get("focused") == "true",
             # A SWITCH HAS THREE STATES HERE, not two, and collapsing them is how a reader is told a
-            # switch is off when the truth is that nothing on this row is a switch. `checkable` says
-            # whether `checked` means anything at all; `on` is None when it does not.
-            "checkable": attrs.get("checkable") == "true",
-            "on": (attrs.get("checked") == "true") if attrs.get("checkable") == "true" else None,
+            # switch is off when the truth is that nothing on this row is a switch.
+            "checkable": checkable,
+            "on": (attrs.get("checked") == "true") if checkable else None,
             "bounds": (x0, y0, x1, y1),
             "centre": ((x0 + x1) // 2, (y0 + y1) // 2),
+            "parent": parent,
         })
+        for child in element:
+            visit(child, here)
+
+    visit(root, None)
     _STATE["tree"] = nodes
     return nodes
 
@@ -435,10 +530,11 @@ def present(text, exact=False):
 
 
 def shot(path=None):
-    """A screenshot, for PIXELS: colour, layout, whether a meter is lit.
+    """A screenshot, for PIXELS on a PAGE: colour, layout, spacing.
 
-    **It is not the way to ask whether something EXISTS.** Use `tree()` for that. A screenshot omitted
-    the floating recorder entirely on 2026-09-06.
+    **It is not the way to ask whether something EXISTS, and it cannot see the recorder at all.** Use
+    `tree()` for a page and `overlay()` for the recorder. An accessibility overlay is excluded from
+    screenshots, so anything cropped from where the pill appears belongs to the app BEHIND it.
     """
     path = path or f"/tmp/wispr-eyes-{int(time.time())}.png"
     with open(path, "wb") as handle:
@@ -481,13 +577,27 @@ def overlay():
     # `WindowStateAnimator{... EnviousWispr recording controls}:` line, so a name match finds ONE
     # window twice and the duplicate guard refuses a perfectly healthy recorder. Measured on the
     # phone 2026-09-06: lines 63 and 81 of one dump, inside one block.
-    heads = [i for i, line in enumerate(lines)
-             if re.match(r"\s*Window #\d+ Window\{.*recording controls\}:", line)]
+    headers = [i for i, line in enumerate(lines) if re.match(r"\s*Window #\d+ Window\{", line)]
+    if not headers:
+        raise Blocked("the window dump held no window headers at all, so nothing here can be believed")
+    heads = [i for i in headers
+             if re.match(r"\s*Window #\d+ Window\{.*recording controls\}:", lines[i])]
     if not heads:
         return None
     if len(heads) > 1:
         raise Blocked(f"{len(heads)} recorder windows exist at once, so which one is showing is a guess")
-    block = "\n".join(lines[heads[0]: heads[0] + 40])
+    # END AT THE NEXT WINDOW, not after a fixed number of lines. A short recorder block followed by a
+    # healthy window let this read that window's `shown=true` and `isVisible=true` and report them as
+    # the recorder's, which is the plausible-value trap in its purest form.
+    stop = next((i for i in headers if i > heads[0]), len(lines))
+    block = "\n".join(lines[heads[0]:stop])
+    # Every field must be PRESENT. A missing one currently reads as False, which is indistinguishable
+    # from a window that is genuinely not drawn.
+    for needed in (r"Surface:\s+shown=(true|false)", r"\bisVisible=(true|false)",
+                   r"\bmDrawState=\w+", r"\bisOnScreen=(true|false)"):
+        if re.search(needed, block) is None:
+            raise Blocked("the recorder window's state could not be read in full, so whether the user "
+                          "can see it is unknown")
 
     def field(pattern, cast=str):
         found = re.search(pattern, block)
@@ -517,73 +627,56 @@ def overlay():
     }
 
 
-def meter_lit(box=(290, 190, 570, 240), threshold=260):
-    """How many pixels of the level meter are brightly lit, from a screenshot.
-
-    A COUNT rather than a verdict, because one reading proves nothing: a quiet room and a broken meter
-    both read low. Compare two readings across a sound to get an answer.
-    """
-    from PIL import Image  # imported here so the module works without Pillow for everything else
-
-    image = Image.open(shot()).convert("RGB").crop(box)
-    pixels = list(image.getdata())
-    return sum(1 for r, g, b in pixels if r + g + b > threshold)
-
-
 # --------------------------------------------------------------------------------------------------
 # Doing
 # --------------------------------------------------------------------------------------------------
 
-def _enclosing_control(node, package):
-    """The one clickable control that CONTAINS this label, or a refusal.
-
-    Ambiguity is refused here too: if two clickable controls enclose the label, pressing either is a
-    guess, and the smallest is not obviously the right answer.
-    """
-    x0, y0, x1, y1 = node["bounds"]
-    holders = [
-        other for other in tree(refresh=False)
-        if other["clickable"] and other["package"] == package
-        and other["bounds"][0] <= x0 and other["bounds"][1] <= y0
-        and other["bounds"][2] >= x1 and other["bounds"][3] >= y1
-    ]
-    if not holders:
-        raise Blocked(f"{_label(node)!r} is on screen but nothing around it can be pressed")
-    holders.sort(key=lambda n: (n["bounds"][2] - n["bounds"][0]) * (n["bounds"][3] - n["bounds"][1]))
-    smallest = holders[0]
-    same_size = [h for h in holders if
-                 (h["bounds"][2] - h["bounds"][0]) * (h["bounds"][3] - h["bounds"][1])
-                 == (smallest["bounds"][2] - smallest["bounds"][0]) * (smallest["bounds"][3] - smallest["bounds"][1])]
-    if len(same_size) > 1:
-        raise Blocked(f"{len(same_size)} equally sized controls enclose {_label(node)!r}, so pressing one is a guess")
-    return smallest
-
-
 def _holder(node, want, package=PACKAGE, described=""):
-    """The SMALLEST node containing this one that satisfies `want`, or a refusal.
+    """The nearest ANCESTOR of this node that satisfies `want`, or None.
 
     Compose puts a row's words and the row's behaviour on different nodes: `SettingsToggleRow` writes
-    its title into a `TextView` and its on/off state onto the `toggleable` Row that contains it. So
-    every reader here finds the WORDS and then walks outward to the thing that carries the answer.
+    its title into a `TextView` and its on/off state onto the `toggleable` Row that CONTAINS it. So
+    every reader here finds the WORDS and then walks outward.
+
+    **Outward means UP THE TREE, not "the smallest box around it".** Geometry answers the same question
+    correctly almost always and wrongly whenever an unrelated control overlaps the label, and the wrong
+    answer is a press on something nobody asked for.
     """
-    x0, y0, x1, y1 = node["bounds"]
-    holders = [
-        other for other in tree(refresh=False)
-        if want(other) and other["package"] == package
-        and other["bounds"][0] <= x0 and other["bounds"][1] <= y0
-        and other["bounds"][2] >= x1 and other["bounds"][3] >= y1
-    ]
-    if not holders:
+    nodes = tree(refresh=False)
+    found = []
+    current = nodes[node["parent"]] if node.get("parent") is not None else None
+    while current is not None:
+        if current["package"] == package and want(current):
+            found.append(current)
+        current = nodes[current["parent"]] if current.get("parent") is not None else None
+    if not found:
         return None
-    area = lambda n: (n["bounds"][2] - n["bounds"][0]) * (n["bounds"][3] - n["bounds"][1])
-    holders.sort(key=area)
-    tied = [h for h in holders if area(h) == area(holders[0])]
-    if len(tied) > 1:
+    if len(found) > 1:
         raise Blocked(
-            f"{len(tied)} equally sized {described or 'controls'} enclose {_label(node)!r}, "
-            "so choosing one is a guess"
+            f"{_label(node)!r} sits inside {len(found)} nested {described or 'controls'}, so pressing "
+            "one of them is a guess"
         )
-    return holders[0]
+    return found[0]
+
+
+def _rows_by_label(package=PACKAGE, refresh=True):
+    """Map each checkable row to the words inside it, walking each node's parents ONCE.
+
+    Built from the switches outward, so a switch added to the app appears without anyone editing this
+    file, and a switch whose label changed shows up under its new words rather than going missing.
+    """
+    nodes = tree(refresh=refresh)
+    owner = {}
+    for node in nodes:
+        if node["package"] != package or not _label(node):
+            continue
+        current = node
+        while current.get("parent") is not None:
+            current = nodes[current["parent"]]
+            if current["package"] == package and current["checkable"]:
+                owner.setdefault(id(current), []).append(node)
+                break
+    return nodes, owner
 
 
 def switch(label, package=PACKAGE):
@@ -604,41 +697,89 @@ def switch(label, package=PACKAGE):
 
 
 def switches(package=PACKAGE, refresh=True):
-    """Every switch on this screen, as {label: on}. The labels are the words beside each switch.
+    """Every switch on this screen, as {label: on}. The labels are the words INSIDE each switch's row.
 
-    Built by walking from the SWITCHES rather than from a list of names, so a switch added to the app
-    appears here without anyone editing this file, and a switch whose label changed shows up under its
-    new words rather than going silently missing.
+    Refuses when two switches carry the same words, rather than letting one overwrite the other in the
+    map and reporting a state that belongs to the wrong control.
     """
-    nodes = [n for n in tree(refresh=refresh) if n["package"] == package]
+    nodes, owner = _rows_by_label(package=package, refresh=refresh)
     found = {}
-    for row in (n for n in nodes if n["checkable"]):
-        x0, y0, x1, y1 = row["bounds"]
-        inside = [
-            n for n in nodes
-            if _label(n) and n is not row
-            and n["bounds"][0] >= x0 and n["bounds"][1] >= y0
-            and n["bounds"][2] <= x1 and n["bounds"][3] <= y1
-        ]
+    for row in nodes:
+        if row["package"] != package or not row["checkable"]:
+            continue
+        inside = owner.get(id(row), [])
         if not inside:
             continue
         # The TITLE is the topmost, leftmost label in the row; the sentence under it is the subtitle.
         inside.sort(key=lambda n: (n["bounds"][1], n["bounds"][0]))
-        found[_label(inside[0])] = bool(row["on"])
+        name = _label(inside[0])
+        if name in found:
+            raise Blocked(f"two switches on this screen are both labelled {name!r}, so reporting a "
+                          "state for that name would be reporting one of them at random")
+        found[name] = bool(row["on"])
     return found
 
 
-def set_switch(label, on, package=PACKAGE):
+def one_way(label, package=PACKAGE):
+    """Is this a SWITCH you can turn back, or a CHOICE you cannot un-make?
+
+    **Getting it wrong changes the founder's settings and cannot undo it.** The AI Polish page offers
+    `Off` / `This phone` / `Cloud`, and all three report themselves as checkable, exactly like the four
+    switches on the Transcription tab. Turning one ON is a tap; turning it OFF is not a thing a
+    single-choice group can do. A caller that flips one "and puts it back" turns the founder's polish
+    off and leaves it off.
+
+    **The discriminator is measured: a real switch is CLICKABLE while it is on, and the chosen member of
+    a group is NOT.** That is Compose saying there is nothing to press, and it is the same signal the
+    tab bar gives for the tab you are already on. Read off the phone 2026-09-06: the three Clipboard
+    switches all report `checkable, checked, clickable` while on; `This phone` reports
+    `checkable, checked` and no click.
+    """
+    node = find(label, exact=True, clickable=None, package=package)
+    row = _holder(node, lambda n: n["checkable"], package=package, described="switches")
+    if row is None:
+        raise Blocked(f"{label!r} is on screen but nothing around it is a switch")
+    top, bottom = row["bounds"][1], row["bounds"][3]
+    band = [n for n in tree(refresh=False)
+            if n["checkable"] and n["package"] == package
+            and n["bounds"][1] < bottom and n["bounds"][3] > top]
+    if len(band) < 2:
+        return False
+    chosen = [n for n in band if n["on"]]
+    return len(chosen) == 1 and not chosen[0]["clickable"]
+
+
+def set_switch(label, on, where, package=PACKAGE):
     """Put a switch into a known state, and READ IT BACK. Returns what it was before.
 
     Does nothing when it is already there, so a caller can ask for a state rather than for a flip, and
     a run cannot leave a setting inverted by asking twice.
+
+    **`where` NAMES THE SCREEN, and it is required rather than optional.** Flipping a switch changes a
+    setting on the founder's phone, so it goes in the book like every other change, and a debt that
+    cannot say which screen the switch is on cannot be settled from a fresh process — which is the only
+    kind this tool has.
     """
     if not isinstance(on, bool):
         raise Blocked("a switch is set to True or False")
+    if where not in TABS and where not in PAGES:
+        raise Blocked(
+            f"{where!r} is not a screen this app has, and a switch change has to say where it was made "
+            f"or it cannot be put back. One of: {', '.join(TABS + PAGES)}"
+        )
+    if one_way(label, package=package):
+        raise Blocked(
+            f"{label!r} is one of a set where exactly one is chosen, not a switch. Choosing it cannot be "
+            "undone by choosing it again, so a run that flipped it would leave the founder's setting "
+            "changed. Select the one you want by name instead, and put the original back by name."
+        )
     before = switch(label, package=package)
     if before == on:
         return before
+    # Owed BEFORE the tap. A debt written afterwards is not written at all when the tap is the thing
+    # that goes wrong.
+    debt = ("switch", json.dumps({"where": where, "label": label, "was": before}, sort_keys=True))
+    _owe(debt)
     tap(label, package=package)
     time.sleep(0.6)
     after = switch(label, package=package)
@@ -647,7 +788,31 @@ def set_switch(label, on, package=PACKAGE):
             f"{label!r} was pressed but is still {'on' if after else 'off'}. The press landed and the "
             "setting did not change, so this is the app refusing it rather than a missed tap."
         )
+    # SETTLE THE DEBT THAT THIS PUT RIGHT, not the one this call happened to write. Flipping a switch
+    # and flipping it back is two calls: the first writes the debt, and the SECOND is the one that ends
+    # it. An earlier version compared its own before-and-after, which are never equal after a real
+    # flip, so every debt stayed in the book for ever and `restore()` kept trying to undo work that was
+    # already undone.
+    for owed in _owed():
+        if owed[0] != "switch":
+            continue
+        named = json.loads(owed[1])
+        if named["where"] == where and named["label"] == label and named["was"] == after:
+            _settled(owed)
     return before
+
+
+def _enclosing_control(node, package):
+    """The clickable ANCESTOR of this label, or a refusal.
+
+    Was geometry, and is now ancestry for the same reason `_holder` is: the smallest box that happens
+    to contain a label is right almost always, and pressing the wrong control is not a mistake this
+    harness may make almost never.
+    """
+    holder = _holder(node, lambda n: n["clickable"], package=package, described="pressable controls")
+    if holder is None:
+        raise Blocked(f"{_label(node)!r} is on screen but nothing containing it can be pressed")
+    return holder
 
 
 def tap(text, exact=True, clickable=True, package=PACKAGE):
@@ -699,6 +864,38 @@ def home():
 SCREEN_DEPTH = 6
 
 
+def reveal(label, package=PACKAGE):
+    """Scroll until `label` is on screen, looking UP first. Returns True when it is there.
+
+    **Looking down first is wrong and reads as absence.** A caller that has just walked a screen is at
+    the BOTTOM of it, so the control it wants is above, and scrolling further down moves away from it
+    until `find` says "nothing on screen matches" about a control that is plainly on the page. Measured
+    2026-09-06: `Stop recording on silence` was reported missing from the Transcription tab, which had
+    been scrolled past it moments earlier.
+
+    So this goes back to the top, which is where a page's settings live, and only then works downward.
+    """
+    if present(label, exact=True):
+        return True
+    for _ in range(SCREEN_DEPTH + 2):
+        try:
+            if not scroll("up", 1, package=package):
+                break
+        except Blocked:
+            break
+        if present(label, exact=True):
+            return True
+    for _ in range(SCREEN_DEPTH + 2):
+        try:
+            if not scroll("down", 1, package=package):
+                return False
+        except Blocked:
+            return False
+        if present(label, exact=True):
+            return True
+    return False
+
+
 def _walk_this_screen():
     """Every switch on this screen, including the ones below the fold, with a BOUND on how far it looks.
 
@@ -707,12 +904,15 @@ def _walk_this_screen():
     """
     found = dict(switches())
     for _ in range(SCREEN_DEPTH):
-        try:
-            if not scroll("down", 1):
-                return found, True
-        except Blocked:
+        # "NOTHING ON THIS SCREEN SCROLLS" IS THE BOTTOM. Anything else that goes wrong is not, and an
+        # earlier version caught every refusal alike — so an unreachable phone reported a fully walked
+        # screen with no switches on it.
+        if not any(n["scrollable"] and n["package"] == PACKAGE for n in tree(refresh=False)):
             return found, True
-        # `scroll` has just read the screen it landed on, so this reuses it rather than reading again.
+        if not scroll("down", 1):
+            # The screen did not move. That is usually the end, and it is also what a swipe that missed
+            # looks like, so it is not claimed as a complete walk.
+            return found, False
         found.update(switches(refresh=False))
     return found, False
 
@@ -733,7 +933,10 @@ def scroll(direction="down", amount=1, package=PACKAGE):
         raise Blocked("direction must be 'down' or 'up'")
     if not isinstance(amount, int) or isinstance(amount, bool) or not 1 <= amount <= 20:
         raise Blocked("amount must be a whole number from 1 to 20")
-    areas = [n for n in tree(refresh=True) if n["scrollable"] and n["package"] == package]
+    # ONE read serves both questions asked of this screen: what scrolls, and what was here before the
+    # swipe. Reading twice costs about two seconds per swipe, and `scan()` swipes dozens of times.
+    here = tree(refresh=True)
+    areas = [n for n in here if n["scrollable"] and n["package"] == package]
     if not areas:
         raise Blocked(
             "nothing on this screen scrolls, so there is no more of it to see. Everything the page has "
@@ -746,9 +949,18 @@ def scroll(direction="down", amount=1, package=PACKAGE):
     x = (x0 + x1) // 2
     # Well inside the area's own edges, so the swipe cannot start on the system gesture strip.
     near, far = y0 + (y1 - y0) // 5, y1 - (y1 - y0) // 5
+    # AND NEVER START A DOWNWARD DRAG NEAR THE TOP OF THE SCREEN. Scrolling UP means dragging the
+    # content down, and a drag that begins in the top strip is how Android opens the notification
+    # shade — which then covers the app and every later step reports "EnviousWispr is not on screen".
+    # Measured 2026-09-06: `reveal()` scrolled up on a page whose scrollable area starts high, and the
+    # shade came down over the settings screen.
+    _, height = _screen_size()
+    near = max(near, height // 6)
+    if near >= far:
+        raise Blocked("this screen has no room to swipe in without starting at the very top of it")
     moved = 0
     for _ in range(amount):
-        before = [(_label(n), n["bounds"]) for n in tree(refresh=True) if n["package"] == package]
+        before = [(_label(n), n["bounds"]) for n in here if n["package"] == package]
         if direction == "down":
             _adb(f"input swipe {x} {far} {x} {near} 300")
         else:
@@ -758,11 +970,20 @@ def scroll(direction="down", amount=1, package=PACKAGE):
         # The tree read here is left CACHED on purpose. A caller that scrolls and then asks what is on
         # screen would otherwise pay for a third `uiautomator dump` of the same screen, and each one
         # costs about two seconds: `scan()` took six minutes before this.
-        after = [(_label(n), n["bounds"]) for n in tree(refresh=True) if n["package"] == package]
+        here = tree(refresh=True)
+        after = [(_label(n), n["bounds"]) for n in here if n["package"] == package]
         if after == before:
             break
         moved += 1
     return moved
+
+
+def _screen_size():
+    _, out = _adb("wm size")
+    found = re.search(r"(\d+)x(\d+)", out or "")
+    if not found:
+        raise Blocked(f"the phone would not say how big its screen is: {out.strip()!r}")
+    return int(found.group(1)), int(found.group(2))
 
 
 def _start(component, what, settle):
@@ -786,6 +1007,14 @@ def _start(component, what, settle):
     time.sleep(settle)
     _STATE["tree"] = None
     showing = {n["package"] for n in tree()}
+    if PACKAGE not in showing and "com.android.systemui" in showing:
+        # THE SHADE, not a failure to start. It covers whatever is underneath, so the app really is not
+        # on screen and the message would be true and useless. Closing a shade is not getting past a
+        # lock, so it is allowed here where a swipe at a keyguard is not.
+        _adb("cmd statusbar collapse", check=False)
+        time.sleep(1.2)
+        _STATE["tree"] = None
+        showing = {n["package"] for n in tree()}
     if PACKAGE not in showing:
         raise Blocked(
             f"{what} was started but EnviousWispr is not on screen; showing "
@@ -881,6 +1110,27 @@ def cancel_dictation():
     _dictation("cancel")
 
 
+def _cancel_safely():
+    """End a take no matter what went wrong, and never RELY on the cancel having worked.
+
+    **Every path out of a started take comes through here.** An earlier version cancelled only on the
+    one failure it had thought of, so an exception anywhere else — a timeout reading the window, a
+    refusal restoring the volume — returned with the microphone still open. That already cost about
+    thirty seconds of the founder's room once.
+
+    `stop_app()` is the last resort rather than the first: it force-stops the app, which CLEARS the
+    accessibility permission, so it also repairs that. A recording left running is worse.
+    """
+    try:
+        cancel_dictation()
+        if recording():
+            stop_app()
+    except BaseException:
+        # A cancel that raised tells us nothing about whether the microphone closed, so do not believe
+        # it. This branch is deliberately unconditional.
+        stop_app()
+
+
 def open_recorder():
     """Start the floating recorder, and NEVER leave a recording running if the check fails.
 
@@ -899,17 +1149,17 @@ def open_recorder():
         raise Blocked("our accessibility service is not bound, so no recorder will be drawn.")
     # The recorder activity is transient BY DESIGN: it starts the session and finishes, and the pill is
     # drawn by the accessibility service. So the landing check is the PILL, not the activity.
-    _dictation("start")
-    time.sleep(2.5)
-    _STATE["tree"] = None
     try:
+        _dictation("start")
+        time.sleep(2.5)
+        _STATE["tree"] = None
         pill = overlay()
-    except Blocked:
-        cancel_dictation()
+    except BaseException:
+        _cancel_safely()
         raise
     if pill is None:
         live = recording()
-        cancel_dictation()
+        _cancel_safely()
         raise Blocked(
             "the recorder was started but no pill is in the accessibility tree"
             + (", although a dictation IS running (its notification is posted), so this is the overlay "
@@ -931,22 +1181,59 @@ def nav(page):
 ACCESSIBILITY_SERVICE = f"{PACKAGE}/{PACKAGE}.paste.PasteAccessibilityService"
 
 
-def _a11y_setting():
-    _, out = _adb("settings get secure enabled_accessibility_services")
-    return out.strip()
+# Both halves of the answer. Reading one and writing the other is how a repair half-happens.
+_A11Y_KEYS = ("enabled_accessibility_services", "accessibility_enabled")
+
+
+def _a11y_state():
+    """Both accessibility settings, exactly as the phone stores them. `null` means the key is unset."""
+    state = {}
+    for key in _A11Y_KEYS:
+        _, value = _adb(f"settings get secure {key}")
+        state[key] = value.strip()
+    return state
+
+
+def _a11y_services(state=None):
+    """The enabled services as a LIST. The phone stores them colon-separated, and ours is one of them."""
+    raw = (state or _a11y_state())["enabled_accessibility_services"]
+    return [item for item in raw.split(":") if item and item != "null"]
+
+
+def _put_a11y(state):
+    """Write both settings and read them back. `null` is a DELETE, not the four characters."""
+    for key in _A11Y_KEYS:
+        if state[key] == "null":
+            _adb(f"settings delete secure {key}", check=False)
+        else:
+            _adb(f"settings put secure {key} {shlex.quote(state[key])}")
+    time.sleep(2)
+    now = _a11y_state()
+    if now != state:
+        raise Blocked(f"the accessibility settings did not go back: wanted {state}, they read {now}")
 
 
 def enable_auto_paste():
     """Switch our accessibility service on and PROVE it bound. Returns whether anything changed.
 
-    Writing the setting is not the same as the service running: the setting can name a service that
-    never binds (`code-gotchas.md` RULE: auto-paste-readiness-is-liveness-not-the-setting-string), so
-    this reads `bound()` back rather than reporting the write.
+    **IT ADDS OURS TO WHATEVER IS ALREADY ON, and never replaces the list.** An earlier version wrote
+    our service as the whole value, which switches off every other accessibility service the founder
+    uses — a screen reader, a switch-access tool, a password manager — to run a test. The setting is
+    colon-separated for exactly this reason.
+
+    Writing the setting is not the same as the service running: it can name a service that never binds
+    (`code-gotchas.md` RULE: auto-paste-readiness-is-liveness-not-the-setting-string), so this reads
+    `bound()` back rather than reporting the write.
     """
     if bound():
         return False
-    _adb(f"settings put secure enabled_accessibility_services {shlex.quote(ACCESSIBILITY_SERVICE)}")
-    _adb("settings put secure accessibility_enabled 1")
+    before = _a11y_state()
+    _owe(("a11y-state", json.dumps(before, sort_keys=True)))
+    services = _a11y_services(before)
+    if ACCESSIBILITY_SERVICE not in services:
+        services.append(ACCESSIBILITY_SERVICE)
+    _put_a11y({"enabled_accessibility_services": ":".join(services),
+               "accessibility_enabled": "1"})
     for _ in range(6):
         time.sleep(1)
         if bound():
@@ -970,7 +1257,9 @@ def stop_app():
     ANY force-stop does this — from app info, a task killer, or Samsung's own "put unused apps to
     sleep".
     """
-    was_on = _a11y_setting() == ACCESSIBILITY_SERVICE
+    # MEMBERSHIP, NOT EQUALITY. With any other accessibility service also enabled the value reads
+    # `theirs:ours`, so an equality test answered "it was not on" and the repair below never ran.
+    was_on = ACCESSIBILITY_SERVICE in _a11y_services()
     _adb(f"am force-stop {PACKAGE}")
     time.sleep(1)
     _STATE["tree"] = None
@@ -1024,7 +1313,12 @@ def stage_phone_speech(sentence, volume=3, use_fixture=True):
     _owe(("media-volume", str(current)))
     _adb(f"cmd media_session volume --stream 3 --set {volume}")
     _adb(f"run-as {TEST_PACKAGE} mkdir -p files")
-    _adb(f"run-as {TEST_PACKAGE} sh -c {shlex.quote('cat > files/speaker-utterance.txt')} <<'WISPREOF'\n{sentence}\nWISPREOF")
+    # THE SENTENCE IS DATA, AND A HEREDOC MADE IT SYNTAX. Quoting the outer `sh -c` does nothing about
+    # what is INSIDE it, so a sentence containing a line reading `WISPREOF` closed the heredoc and
+    # everything after it ran as shell on the founder's phone. `printf %s` with the sentence quoted as
+    # one argument has no such boundary.
+    _adb(f"printf %s {shlex.quote(sentence)} | run-as {shlex.quote(TEST_PACKAGE)} "
+         f"sh -c {shlex.quote('cat > files/speaker-utterance.txt')}")
     # WHICH AUDIO WILL ACTUALLY PLAY, said out loud rather than assumed.
     #
     # `SpeakerPlaybackActivity` PREFERS `cache/enviouswispr-uat.pcm` and only falls back to the phone's
@@ -1062,7 +1356,7 @@ def play_staged_speech():
     _adb(f"am start -n {shlex.quote(SPEAKER_ACTIVITY)}", check=False)
 
 
-def unstage_phone_speech(previous):
+def unstage_phone_speech():
     """Put back EVERYTHING staging changed: the media volume, and the parked fixture.
 
     The fixture matters as much as the volume and is easier to forget, because nothing on the phone
@@ -1088,7 +1382,7 @@ def say_on_phone(sentence, volume=3, seconds=30, use_fixture=True):
     decoded in 445 ms to `textChars=0`, a clean transcription of silence, which reads exactly like a
     broken speech engine.
     """
-    previous, will_say = stage_phone_speech(sentence, volume=volume, use_fixture=use_fixture)
+    _, will_say = stage_phone_speech(sentence, volume=volume, use_fixture=use_fixture)
     try:
         started = time.monotonic()
         play_staged_speech()
@@ -1104,7 +1398,7 @@ def say_on_phone(sentence, volume=3, seconds=30, use_fixture=True):
             raise Blocked(f"the phone was still speaking after {seconds}s; the audio may be too long")
         return {"seconds": time.monotonic() - started, "said": will_say["what"]}
     finally:
-        unstage_phone_speech(previous)
+        unstage_phone_speech()
 
 
 def say(sentence, volume=25):
@@ -1145,16 +1439,16 @@ def say(sentence, volume=25):
 # --------------------------------------------------------------------------------------------------
 
 def clear_log():
-    """Clear the ring buffer and widen it, so an absent line means absent rather than evicted.
+    """Clear the ring buffer so an absent line means absent rather than left over.
 
-    The widening is journaled, because it is a change to the founder's phone that outlives this run.
+    **It no longer RESIZES the buffer, and that is a deletion rather than a fix.** The old version
+    widened it to 16M and journaled "the buffer was N K" from the first line of `logcat -g` — which
+    names one buffer out of several, and silently journaled nothing at all when that line did not match,
+    while still doing the resize. A debt that cannot describe the change it undoes is worse than no
+    resize: it leaves the founder's phone altered and the book saying otherwise. Every take this tool
+    measures is seconds long, so the default buffer holds it.
     """
     _adb("logcat -c")
-    _, current = _adb("logcat -g | head -1", check=False)
-    size = re.search(r"(\d+)Kb", current or "")
-    if size:
-        _owe(("log-buffer", f"{size.group(1)}K"))
-    _adb("logcat -G 16M")
 
 
 def keep_awake(minutes=30):
@@ -1190,11 +1484,16 @@ def logs(pattern=None, lines=200):
     """
     if not isinstance(lines, int) or isinstance(lines, bool) or not 1 <= lines <= 10000:
         raise Blocked("lines must be a whole number from 1 to 10000")
-    tags = "|".join(APP_TAGS)
-    _, out = _adb(f"logcat -d -v time | grep -E '{tags}' | tail -{lines}", timeout=90, check=False)
+    # LOGCAT'S OWN TAG FILTER, not a pipe into grep. Two things were wrong with the pipe: a pipeline
+    # reports its LAST command's status, so a failed `logcat` looked like a successful empty read, and
+    # `check=False` then turned that into "nothing was logged" — which `recording()` reads as "the
+    # microphone is closed". The filter also cannot be defeated by a tag containing a regex character.
+    filters = " ".join(shlex.quote(f"{tag}:V") for tag in APP_TAGS)
+    _, out = _adb(f"logcat -d -v time {filters} {shlex.quote('*:S')}", timeout=90)
+    selected = out.splitlines()[-lines:]
     if pattern:
-        out = "\n".join(line for line in out.splitlines() if re.search(pattern, line))
-    return out.strip()
+        selected = [line for line in selected if re.search(pattern, line)]
+    return "\n".join(selected).strip()
 
 
 def last_take():
@@ -1204,6 +1503,15 @@ def last_take():
     which is different from zero and is left different.
     """
     text = logs(lines=400)
+    # ONE TAKE, THE LAST ONE. Every field below is the FIRST match in the text, so with two takes in
+    # the log a run could report one take's ending beside another take's character count and read as a
+    # single coherent result.
+    starts = list(re.finditer(r"(?m)^.*\brecording_start\b.*$", text))
+    if not starts:
+        raise Blocked("the log holds no take at all since it was last cleared, so there is nothing to "
+                      "report on. Call clear_log() before the take you mean to measure.")
+    text = text[starts[-1].start():]
+
     def first(pattern, cast=str):
         match = re.search(pattern, text)
         if not match:
@@ -1249,7 +1557,13 @@ def _restore_one(entry):
         if now != str(int(previous)):
             raise Blocked(f"the Mac's volume did not go back to {previous}; it reads {now}")
     elif what == "log-buffer":
-        _adb(f"logcat -G {previous}")
+        # A debt written by the old `clear_log`, which named one buffer out of several. It cannot be
+        # settled honestly, so it is not settled. `logcat -G <size>` by hand is the fix.
+        raise Blocked(
+            f"a log-buffer debt of {previous!r} was left by an older version that could not name which "
+            "buffer it changed. Put it back by hand with `adb shell logcat -G <size>` and delete the "
+            f"entry from {_JOURNAL}."
+        )
     elif what == "parked-fixture":
         # `previous` is the path the fixture was moved to. Moved BACK, then confirmed present, because
         # a fixture left parked silently changes what every later run plays.
@@ -1264,21 +1578,35 @@ def _restore_one(entry):
         reading = re.search(r"volume is (\d+)", now or "")
         if not reading or int(reading.group(1)) != int(previous):
             raise Blocked(f"the phone's media volume did not go back to {previous}; it reads {now.strip()!r}")
+    elif what == "a11y-state":
+        _put_a11y(json.loads(previous))
     elif what == "a11y-services":
-        # `null` is a real stored value here and means "no service is enabled"; writing the four
-        # characters back would enable a service literally named `null`.
+        # A debt from an older version that recorded only the service list. The enable flag is derived
+        # from it, which is the most that entry can support.
+        state = {"enabled_accessibility_services": previous or "null",
+                 "accessibility_enabled": "0" if previous in ("null", "", None) else "1"}
         if previous in ("null", "", None):
-            _adb("settings put secure enabled_accessibility_services ''")
-            _adb("settings put secure accessibility_enabled 0")
+            state["enabled_accessibility_services"] = "null"
+        _put_a11y(state)
+    elif what == "switch":
+        # Navigate BY NAME and set it BY NAME. A switch debt survives the process that made it, so the
+        # screen has to be reached again from wherever the phone happens to be.
+        wanted = json.loads(previous)
+        if wanted["where"] in TABS:
+            open_tab(wanted["where"])
         else:
-            _adb(f"settings put secure enabled_accessibility_services {shlex.quote(previous)}")
-            _adb("settings put secure accessibility_enabled 1")
-        time.sleep(2)
-        _, now = _adb("settings get secure enabled_accessibility_services")
-        now = now.strip()
-        want = "null" if previous in ("null", "", None) else previous
-        if now != want:
-            raise Blocked(f"the accessibility services did not go back to {want!r}; they read {now!r}")
+            open_settings()
+            tap("Open settings menu")
+            tap(wanted["where"], exact=True)
+        if not reveal(wanted["label"]):
+            raise Blocked(f"{wanted['label']!r} could not be found on {wanted['where']}, so it cannot "
+                          "be put back")
+        if switch(wanted["label"]) != wanted["was"]:
+            tap(wanted["label"])
+            time.sleep(0.6)
+        if switch(wanted["label"]) != wanted["was"]:
+            raise Blocked(f"{wanted['label']!r} would not go back to "
+                          f"{'on' if wanted['was'] else 'off'}")
     elif what == "screen-timeout":
         _adb(f"settings put system screen_off_timeout {int(previous)}")
         _, now = _adb("settings get system screen_off_timeout")
@@ -1337,7 +1665,7 @@ def check_recorder():
         report.append("VERIFIED: a take is running" if recording()
                       else "ISSUE: the recorder is drawn but nothing is recording")
     finally:
-        cancel_dictation()
+        _cancel_safely()
         time.sleep(1.5)
         if recording():
             report.append("ISSUE: the take would not cancel and is STILL RECORDING")
@@ -1473,12 +1801,21 @@ def scan(toggle=False):
             else:
                 open_settings(); tap("Open settings menu"); tap(name, exact=True)
             for label, was in sorted(controls.items()):
-                if not present(label):
-                    scroll("down", 3)
+                if not reveal(label):
+                    report.append(f"ISSUE: {name} / {label} could not be brought back on screen")
+                    continue
                 try:
-                    set_switch(label, not was)
+                    if one_way(label):
+                        report.append(f"SKIPPED: {name} / {label} is one of a set where exactly one is "
+                                      "chosen, so flipping it could not be undone")
+                        continue
+                except Blocked as why:
+                    report.append(f"ISSUE: {name} / {label}: {why}")
+                    continue
+                try:
+                    set_switch(label, not was, where=name)
                     moved = switch(label) != was
-                    set_switch(label, was)
+                    set_switch(label, was, where=name)
                     back_again = switch(label) == was
                 except Blocked as why:
                     report.append(f"ISSUE: {name} / {label}: {why}")
@@ -1511,18 +1848,28 @@ def room_is_quiet(seconds=6):
     """
     ready()
     clear_log()
-    _dictation("toggle")
     try:
+        _dictation("toggle")
         time.sleep(seconds)
-    finally:
         stop_dictation()
-    _wait_for_the_take_to_finish(seconds=30)
-    heard = last_take()["transcribed_chars"] or 0
+        ending = _wait_for_the_take_to_finish(seconds=30)
+    finally:
+        _cancel_safely()
+    if ending is None:
+        raise Blocked("the room probe never reached an ending, so it measured nothing")
+    heard = last_take()["transcribed_chars"]
+    if heard is None:
+        raise Blocked("the probe ran but no transcription result was logged, so it measured nothing")
     return {
+        # Named for what was measured. Nothing recognised is good evidence the room was quiet enough
+        # for this engine, and it is not the same claim as acoustic silence — a sound the recogniser
+        # discards still reaches the microphone.
         "quiet": heard == 0,
         "characters_heard": heard,
-        "verdict": ("the room is quiet" if heard == 0 else
-                    f"the room is OCCUPIED: {heard} characters came back with nothing played"),
+        "verdict": ("nothing was recognised with no audio played, so the room is quiet enough to test in"
+                    if heard == 0 else
+                    f"the room is OCCUPIED: {heard} characters came back with nothing played, so anything "
+                    "measured now is measuring whoever is talking"),
     }
 
 
@@ -1554,18 +1901,33 @@ def test_dictation(sentence="The quick brown fox jumps over the lazy dog.", volu
     report = []
 
     def field_now():
-        """What the target editor holds. THE ORACLE, and it is not the clipboard.
+        """The target editor's IDENTITY and its text. THE ORACLE, and it is not the clipboard.
 
         Publishing to the clipboard is the app's documented FALLBACK, so a clipboard check cannot tell
         a successful insertion from a failed one (`validation-discipline.md`
         RULE: verify-the-feature-not-the-crash). The editor's own text can.
+
+        **Identity travels with the text so the comparison is about ONE editor.** Taking "the first
+        EditText" before and after lets a different field answer the second time — a screen that gains
+        an editor, or two whose order changes — and any difference then reads as words having arrived.
+        Prefers the FOCUSED editor, which is the one a dictation aims at.
         """
-        fields = [n["text"] for n in tree(refresh=True)
-                  if n["kind"] == "EditText" and (target_package is None or n["package"] == target_package)]
-        return fields[0] if fields else None
+        fields = [n for n in tree(refresh=True) if n["kind"] == "EditText"
+                  and (target_package is None or n["package"] == target_package)]
+        if not fields:
+            return None
+        focused = [n for n in fields if n["focused"]]
+        chosen = focused or fields
+        if len(chosen) > 1:
+            raise Blocked(
+                f"{len(chosen)} editors are on screen and none is uniquely focused, so which one the "
+                "words were meant for is a guess"
+            )
+        node = chosen[0]
+        return (node["package"], node["id"] or node["bounds"], node["text"])
 
     before = field_now()
-    previous_volume, will_say = stage_phone_speech(sentence, volume=volume, use_fixture=use_fixture)
+    _, will_say = stage_phone_speech(sentence, volume=volume, use_fixture=use_fixture)
     # THE RECORDING IS AS LONG AS THE AUDIO, PLUS A MARGIN, AND NOT A ROUND NUMBER. A fixed wait leaves
     # the recorder running after the sound has stopped, which the founder can see and which records
     # whatever else is in the room. `record_seconds` stays as an override and as the answer when the
@@ -1583,10 +1945,12 @@ def test_dictation(sentence="The quick brown fox jumps over the lazy dog.", volu
         stop_dictation()
         ending = _wait_for_the_take_to_finish()
     finally:
-        unstage_phone_speech(previous_volume)
-        if recording():
-            cancel_dictation()
-            report.append("NOTE: the take was still running at the end and was cancelled")
+        # THE MICROPHONE FIRST, the settings second. An earlier order restored the volume before trying
+        # to close the take, so a failure in the restore left the take running.
+        try:
+            _cancel_safely()
+        finally:
+            unstage_phone_speech()
     if ending is None:
         report.append("ISSUE: the dictation never reached an ending, so nothing can be said about it")
         return report
@@ -1611,12 +1975,15 @@ def test_dictation(sentence="The quick brown fox jumps over the lazy dog.", volu
     # Chrome's address bar the whole time — so the log alone would have reported a working insertion
     # as a failure, and a clipboard check would have reported the fallback as a success.
     after = field_now()
-    if after is None:
-        report.append("ISSUE: no editor was on screen afterwards, so where the words went is unknown")
-    elif after != before:
-        report.append(f"VERIFIED: the words reached the editor, which now holds {after!r}")
+    if after is None or before is None:
+        report.append("ISSUE: no editor was on screen before or after, so where the words went is unknown")
+    elif after[:2] != before[:2]:
+        report.append("ISSUE: a DIFFERENT editor is on screen now, so nothing here says where the words "
+                      "went")
+    elif after[2] != before[2]:
+        report.append(f"VERIFIED: the same editor changed, and now holds {after[2]!r}")
     else:
-        report.append(f"ISSUE: the editor is unchanged; it still holds {after!r}")
+        report.append(f"ISSUE: the editor is unchanged; it still holds {after[2]!r}")
     return report
 
 

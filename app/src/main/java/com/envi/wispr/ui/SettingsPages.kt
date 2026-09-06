@@ -340,7 +340,7 @@ internal fun PermissionsPage(
             SettingsActionRow(
                 title = "Auto-paste access",
                 subtitle = when (autoPaste) {
-                    AutoPasteAvailability.LIVE -> "Ready for right-button dictation"
+                    AutoPasteAvailability.LIVE -> "Ready for side-button dictation"
                     AutoPasteAvailability.PERMITTED_NOT_RUNNING ->
                         "Turned on but not connected. Words will not go into the field until it reconnects."
                     AutoPasteAvailability.NOT_PERMITTED -> "Needs accessibility permission"

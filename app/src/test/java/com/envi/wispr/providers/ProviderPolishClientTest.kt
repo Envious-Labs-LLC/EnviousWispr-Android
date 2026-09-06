@@ -703,7 +703,6 @@ class ProviderPolishClientTest {
             }
             val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 800, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")
             assertTrue("$result", result is ProviderDiscovery.Listed)
-            val atReturn = probeCount()
             hold.countDown()
 
             // Let any straggler land. The loop gates on the count going QUIET, never on a fixed sleep.
@@ -717,34 +716,38 @@ class ProviderPolishClientTest {
                 polls++
             }
 
-            // THE INVARIANT, and it is a DELTA OF ZERO rather than a count: once the deadline has
-            // passed and the call has returned, not one further probe is sent. Measured zero on every
-            // run, quiet and under 2x core oversubscription (#110, 2026-09-06).
+            // WHAT THE OLD ASSERTION GOT WRONG, and it was both halves. It read
+            // `probesLater <= probesAtReturn + 3 && probesLater < 9`, with 3 as a literal.
             //
-            // The old assertion allowed the executor's width of slack on this same delta and compared a
-            // total against a literal 3. Both halves were wrong, and MEASUREMENT is what settled it, not
-            // reasoning. The slack was for something that never happens. And three was never the total:
-            // a probe's socket timeout is clamped to what is left of the DISCOVERY budget, so a first
-            // wave times out just before the deadline and a second wave legitimately starts inside the
-            // remaining budget. Nine models over three workers reach the provider SIX times, repeatably,
-            // and every one of those six began while budget remained. Raising the old bound was refused,
-            // and correctly: a wider delta also accepts a client that stopped cancelling.
-            assertEquals(
-                "a probe was sent after the deadline had passed and the call had returned: ${probeDetail()}",
-                atReturn,
-                total,
-            )
-            // Not vacuous: a run where nothing probed at all would satisfy the equality above.
+            // The slack was for something that never happens: the delta measured zero on every run,
+            // quiet and under 2x core oversubscription. And 3 was never the total. A probe's socket
+            // timeout is clamped to what is left of the DISCOVERY budget, so a first wave of three times
+            // out just before the deadline, frees its workers, and a second wave legitimately starts
+            // while budget remains. Nine models over three workers reach the provider SIX times,
+            // repeatably, every one of them beginning while budget remained. The old bound absorbed that
+            // as slack, which is why load moved it. Raising it was refused: a wider delta also accepts a
+            // client that stopped cancelling.
+            //
+            // THE DELTA IS NOT ASSERTED EITHER, and that is deliberate. The count comes from the fake
+            // server's request LOG, and a handler can be descheduled between reading a request and
+            // appending it, so a probe sent BEFORE the deadline can be recorded after the call returns.
+            // A correct client would go red. Server logging time cannot establish client send time, so
+            // there is no honest delta assertion to make here at all.
+            //
+            // Not vacuous: a run where nothing probed would satisfy an upper bound on its own.
             assertTrue("no probe was sent at all, so this proves nothing: ${probeDetail()}", total >= 1)
-            // WHAT THIS ROW DOES NOT PROVE, said here because the old name implied it did. Neither
-            // removing `futures.forEach { it.cancel(true) }` NOR removing the per-probe budget check
-            // turns this red: with either gone the other still stops the rest of the queue, and the two
-            // were not separated. So this is a REGRESSION BOUND on the observable promise, and it is not
-            // a proof that cancellation itself works. Staging a real cancellation regression needs a
-            // fixture that can hold the two apart; #110 records that as unbuilt rather than pretending
-            // the assertion below covers it.
+            // The regression bound, and it is load-stable in the safe direction: load can only make this
+            // number smaller.
+            //
+            // EXACTLY WHAT THIS ROW HAS POWER OVER, from three controls that were run rather than
+            // reasoned about. Removing `futures.forEach { it.cancel(true) }` alone: still green.
+            // Removing the per-probe budget check alone: still green. Removing BOTH: RED, naming all
+            // nine models. So the row does catch a client where nothing stops the queue, and it cannot
+            // say WHICH of the two mechanisms stopped it, because either one suffices and this fixture
+            // does not hold them apart. #110 carries a concrete fixture that would separate them, using
+            // an early key rejection rather than the deadline, and records it as unbuilt.
             assertTrue(
-                "the queue was not cancelled: all $models models were probed: ${probeDetail()}",
+                "all $models models were probed, so nothing stopped the queue: ${probeDetail()}",
                 total < models,
             )
         }

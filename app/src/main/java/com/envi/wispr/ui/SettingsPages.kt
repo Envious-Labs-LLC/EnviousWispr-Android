@@ -17,16 +17,139 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.BuildConfig
 import com.envi.wispr.about.ReleaseNotes
+import com.envi.wispr.models.ModelFootprint
+import com.envi.wispr.models.ModelManifest
+import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.settings.AppPreferencesState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/**
+ * What EnviousWispr is taking up on this phone, and where.
+ *
+ * Storage is the single biggest cost of having this app installed, and until #20 the app said nothing
+ * about it anywhere. The model cards answered it per model; this answers it for the app, which is the
+ * question a user on a full phone actually has.
+ *
+ * **The total is measured at the models FOLDER, not summed from the models.** Those are different
+ * numbers whenever a version bump leaves a file behind, or a download half finishes, and the folder is
+ * the one the user is paying for. Summing the cards would report the tidy number and hide the cost. The
+ * difference, when there is one, gets its own line rather than being folded into a model that does not
+ * own it.
+ *
+ * Nothing is shown until the measurement lands. A zero would be a claim, and the wrong one.
+ */
+@Composable
+internal fun StoragePage() {
+    val context = LocalContext.current
+    // `key` on nothing, so this measures once per visit to the page: a walk of the models folder is a
+    // handful of file lengths, and the page is not live while a download runs. Opening it again after a
+    // download is what re-measures, which is what a user would expect of a page they navigated to.
+    val measurement by key(Unit) {
+        produceState<StorageMeasurement?>(initialValue = null) {
+            value = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = ModelStorage.root(context)
+                    StorageMeasurement(
+                        perModel = ModelManifest.all.map { model ->
+                            model.displayName to ModelFootprint.bytesUnder(ModelStorage.directory(context, model))
+                        },
+                        folderTotal = ModelFootprint.bytesUnder(root),
+                    )
+                }.getOrNull()
+            }
+        }
+    }
+
+    ScreenContainer(subtitle = SettingsPage.Storage.subtitle) {
+        val reading = measurement
+        if (reading == null) {
+            Text(
+                "Measuring what is on this phone.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            SettingsGroup("Models") {
+                reading.perModel.forEachIndexed { index, (name, bytes) ->
+                    if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                    StorageRow(
+                        title = name,
+                        value = if (bytes > 0L) formatModelBytes(bytes) else "Not on this phone",
+                    )
+                }
+                if (reading.unaccounted > 0L) {
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                    // Its own line rather than folded into a model, because no model owns it. This is
+                    // what a half-finished download, or a file a version bump left behind, looks like.
+                    StorageRow(
+                        title = "Files no model claims",
+                        value = formatModelBytes(reading.unaccounted),
+                    )
+                }
+                HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                StorageRow(title = "Total", value = formatModelBytes(reading.folderTotal), emphasise = true)
+            }
+            Text(
+                "This is what the speech and polish models take up. The app itself, your history and " +
+                    "your words are small next to them. Removing a model frees its space straight away, " +
+                    "and you can download it again later.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * One measurement of the models folder, taken in one pass so the rows cannot disagree with the total.
+ *
+ * Taking the per-model numbers and the folder total in two separate reads would let a download landing
+ * between them produce a total smaller than its own parts.
+ */
+internal data class StorageMeasurement(
+    val perModel: List<Pair<String, Long>>,
+    val folderTotal: Long,
+) {
+    /** What is in the folder that no model accounts for. Never negative, so a race cannot print one. */
+    val unaccounted: Long get() = (folderTotal - perModel.sumOf { it.second }).coerceAtLeast(0L)
+}
+
+@Composable
+private fun StorageRow(title: String, value: String, emphasise: Boolean = false) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            style = if (emphasise) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+        )
+        Text(
+            value,
+            style = if (emphasise) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+            color = if (emphasise) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
 
 @Composable
 internal fun WhatsNewPage() {

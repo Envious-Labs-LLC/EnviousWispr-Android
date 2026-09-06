@@ -75,4 +75,68 @@ object ModelFootprint {
 
     /** What the manifest says this model weighs once every file is present and verified. */
     fun expectedBytes(model: ModelDescriptor): Long = model.files.sumOf { it.expectedBytes }
+
+    /**
+     * Every model's bytes AND the folder's bytes, from ONE traversal.
+     *
+     * **The single walk is the point, not an optimisation.** Walking each model and then walking the
+     * folder is N+1 measurements taken at N+1 instants, and a model that grows between two of them
+     * makes the folder look larger than its parts, which this page would report as space "no model
+     * claims" that nobody is using. A model deleted between them does the reverse. Every file here is
+     * counted exactly once, into exactly one bucket, from the length observed on that one visit, so the
+     * parts always add up to the whole.
+     *
+     * A file is attributed to a model when it sits under that model's own directory. Anything else
+     * under the root goes to [ModelFolderFootprint.unclaimed]: a half-finished download, a file a
+     * version bump left behind, or a hand-placed model no card knows about.
+     *
+     * Same contract as [bytesUnder], and for the same reason: a traversal failure or an overflowing
+     * total THROWS rather than returning a smaller number, because a storage figure that silently omits
+     * what it could not read is worse than no figure. **Never call this on the main thread.**
+     */
+    fun measureFolder(root: File, models: List<ModelDescriptor>): ModelFolderFootprint {
+        val rootPath = root.toPath()
+        val owners = models.associateWith { File(root, it.id).toPath() }
+        val perModel = models.associateWith { 0L }.toMutableMap()
+        var total = 0L
+
+        val attributes = try {
+            Files.readAttributes(rootPath, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        } catch (_: NoSuchFileException) {
+            // Nothing downloaded yet. Every model is zero and so is the folder, which is the truth.
+            return ModelFolderFootprint(perModel, 0L)
+        }
+        if (!attributes.isDirectory) return ModelFolderFootprint(perModel, 0L)
+
+        Files.walkFileTree(
+            rootPath,
+            object : SimpleFileVisitor<Path>() {
+                override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    if (!attrs.isRegularFile) return FileVisitResult.CONTINUE
+                    val size = attrs.size()
+                    total = Math.addExact(total, size)
+                    val owner = owners.entries.firstOrNull { (_, directory) -> file.startsWith(directory) }
+                    if (owner != null) {
+                        perModel[owner.key] = Math.addExact(perModel.getValue(owner.key), size)
+                    }
+                    return FileVisitResult.CONTINUE
+                }
+            },
+        )
+        return ModelFolderFootprint(perModel, total)
+    }
+}
+
+/**
+ * One reading of the models folder: what each model holds, and what the folder holds in total.
+ *
+ * [unclaimed] is derived rather than stored, so it cannot disagree with the two numbers it comes from,
+ * and it cannot be negative because both came from the same traversal.
+ */
+data class ModelFolderFootprint(
+    val perModel: Map<ModelDescriptor, Long>,
+    val total: Long,
+) {
+    /** Bytes under the root that no model's own directory accounts for. */
+    val unclaimed: Long get() = total - perModel.values.sum()
 }

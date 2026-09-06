@@ -172,7 +172,7 @@ internal enum class SettingsPage(
     Storage(
         SettingsPageGroup.SYSTEM,
         "Storage",
-        "What EnviousWispr is taking up on this phone.",
+        "Space used by files in the models folder.",
     ),
     Licenses(
         SettingsPageGroup.SYSTEM,

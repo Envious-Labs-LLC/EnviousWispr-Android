@@ -29,103 +29,111 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.BuildConfig
 import com.envi.wispr.about.ReleaseNotes
+import com.envi.wispr.models.ModelFolderFootprint
 import com.envi.wispr.models.ModelFootprint
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.settings.AppPreferencesState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * What EnviousWispr is taking up on this phone, and where.
+ * What the models folder is taking up on this phone, and where it goes.
  *
  * Storage is the single biggest cost of having this app installed, and until #20 the app said nothing
- * about it anywhere. The model cards answered it per model; this answers it for the app, which is the
- * question a user on a full phone actually has.
+ * about it anywhere. The model cards answer it per model; this answers it for the folder, which is the
+ * question a user trying to free space actually has.
  *
- * **The total is measured at the models FOLDER, not summed from the models.** Those are different
- * numbers whenever a version bump leaves a file behind, or a download half finishes, and the folder is
- * the one the user is paying for. Summing the cards would report the tidy number and hide the cost. The
- * difference, when there is one, gets its own line rather than being folded into a model that does not
- * own it.
+ * **The rows and the total come from ONE traversal**, in `ModelFootprint.measureFolder`. Walking each
+ * model and then walking the folder is N+1 measurements at N+1 instants, and a model that grows between
+ * two of them invents space "no model claims" that nobody is using. Review found exactly that in the
+ * first version of this page, which held both numbers in one object and called that one measurement.
  *
- * Nothing is shown until the measurement lands. A zero would be a claim, and the wrong one.
+ * Three states, not two. A failed walk used to collapse into the same null as a running one, so the page
+ * said "Measuring" forever with nothing left to measure.
  */
 @Composable
 internal fun StoragePage() {
     val context = LocalContext.current
-    // `key` on nothing, so this measures once per visit to the page: a walk of the models folder is a
-    // handful of file lengths, and the page is not live while a download runs. Opening it again after a
-    // download is what re-measures, which is what a user would expect of a page they navigated to.
-    val measurement by key(Unit) {
-        produceState<StorageMeasurement?>(initialValue = null) {
+    // `key(Unit)` is not what makes this re-measure; leaving the page disposes the state and returning
+    // starts a fresh producer. It is here so that a future key can be added without moving the holder.
+    val reading by key(Unit) {
+        produceState<StorageReading>(initialValue = StorageReading.Measuring) {
             value = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = ModelStorage.root(context)
-                    StorageMeasurement(
-                        perModel = ModelManifest.all.map { model ->
-                            model.displayName to ModelFootprint.bytesUnder(ModelStorage.directory(context, model))
-                        },
-                        folderTotal = ModelFootprint.bytesUnder(root),
+                try {
+                    StorageReading.Measured(
+                        ModelFootprint.measureFolder(ModelStorage.root(context), ModelManifest.all),
                     )
-                }.getOrNull()
+                } catch (cancellation: CancellationException) {
+                    // Cancellation is the page going away, not a measurement failure. Rethrowing keeps
+                    // structured concurrency honest instead of reporting an error nobody will see.
+                    throw cancellation
+                } catch (_: Throwable) {
+                    // `measureFolder` throws rather than returning a smaller number, so there is no
+                    // partial figure to show and the honest answer is that we could not measure.
+                    StorageReading.Failed
+                }
             }
         }
     }
 
     ScreenContainer(subtitle = SettingsPage.Storage.subtitle) {
-        val reading = measurement
-        if (reading == null) {
-            Text(
+        when (val state = reading) {
+            StorageReading.Measuring -> Text(
                 "Measuring what is on this phone.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } else {
-            SettingsGroup("Models") {
-                reading.perModel.forEachIndexed { index, (name, bytes) ->
-                    if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 18.dp))
-                    StorageRow(
-                        title = name,
-                        value = if (bytes > 0L) formatModelBytes(bytes) else "Not on this phone",
-                    )
-                }
-                if (reading.unaccounted > 0L) {
-                    HorizontalDivider(Modifier.padding(horizontal = 18.dp))
-                    // Its own line rather than folded into a model, because no model owns it. This is
-                    // what a half-finished download, or a file a version bump left behind, looks like.
-                    StorageRow(
-                        title = "Files no model claims",
-                        value = formatModelBytes(reading.unaccounted),
-                    )
-                }
-                HorizontalDivider(Modifier.padding(horizontal = 18.dp))
-                StorageRow(title = "Total", value = formatModelBytes(reading.folderTotal), emphasise = true)
-            }
-            Text(
-                "This is what the speech and polish models take up. The app itself, your history and " +
-                    "your words are small next to them. Removing a model frees its space straight away, " +
-                    "and you can download it again later.",
+            StorageReading.Failed -> Text(
+                "Couldn't measure model storage. Leave this page and open it again to retry.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            is StorageReading.Measured -> {
+                val footprint = state.footprint
+                SettingsGroup("Models") {
+                    ModelManifest.all.forEachIndexed { index, model ->
+                        if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                        val bytes = footprint.perModel[model] ?: 0L
+                        StorageRow(
+                            title = model.displayName,
+                            value = if (bytes > 0L) formatModelBytes(bytes) else "Not on this phone",
+                        )
+                    }
+                    if (footprint.unclaimed > 0L) {
+                        HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                        // Its own row rather than folded into a model, because no model owns it. This is
+                        // what a half-finished download, or a file a version bump left behind, looks like.
+                        StorageRow(
+                            title = "Files no model claims",
+                            value = formatModelBytes(footprint.unclaimed),
+                        )
+                    }
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                    StorageRow(title = "Total", value = formatModelBytes(footprint.total), emphasise = true)
+                }
+                Text(
+                    "This total covers the models folder, including files outside known model folders. " +
+                        "It excludes the app itself and data stored elsewhere. Removing a model frees " +
+                        "its space straight away, and you can download it again later.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
 
 /**
- * One measurement of the models folder, taken in one pass so the rows cannot disagree with the total.
- *
- * Taking the per-model numbers and the folder total in two separate reads would let a download landing
- * between them produce a total smaller than its own parts.
+ * What the Storage page knows so far. A sealed type because the third state is the one that went wrong:
+ * a failure and a measurement still running are not the same thing and must not render the same way.
  */
-internal data class StorageMeasurement(
-    val perModel: List<Pair<String, Long>>,
-    val folderTotal: Long,
-) {
-    /** What is in the folder that no model accounts for. Never negative, so a race cannot print one. */
-    val unaccounted: Long get() = (folderTotal - perModel.sumOf { it.second }).coerceAtLeast(0L)
+internal sealed interface StorageReading {
+    data object Measuring : StorageReading
+    data object Failed : StorageReading
+    data class Measured(val footprint: ModelFolderFootprint) : StorageReading
 }
 
 @Composable

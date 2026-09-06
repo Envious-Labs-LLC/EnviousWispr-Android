@@ -54,3 +54,6 @@ docs/internal/
 # Python bytecode from the guard hooks
 __pycache__/
 *.pyc
+
+# POMs fetched by scripts/generate-notices.py for dependencies Gradle cached without one.
+scripts/.notices-pom-cache/

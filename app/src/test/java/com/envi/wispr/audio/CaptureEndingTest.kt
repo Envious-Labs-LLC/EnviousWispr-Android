@@ -53,6 +53,19 @@ class CaptureEndingTest {
     }
 
     @Test
+    fun theManualLabelDoesNotClaimAButtonWasPressed() {
+        // `AudioCaptureService.onDestroy` ends a running take through the same route as the stop button,
+        // so both claim MANUAL. A label naming a button would be a false statement in a log for every
+        // take killed with the service.
+        listOf("button", "pressed", "tapped").forEach { word ->
+            assertFalse(
+                "the manual label must not claim a gesture nobody made: ${CaptureEnding.Manual.label}",
+                CaptureEnding.Manual.label.contains(word, ignoreCase = true),
+            )
+        }
+    }
+
+    @Test
     fun theServiceConstantsAndTheEndingTypeAgreeOnEveryValue() {
         // Two homes for one number is how the audio process and the app process end up disagreeing about
         // what happened. This pins the re-export.

@@ -116,8 +116,8 @@ internal fun StoragePage() {
                 }
                 Text(
                     "This total covers the models folder, including files outside known model folders. " +
-                        "It excludes the app itself and data stored elsewhere. Removing a model frees " +
-                        "its space straight away, and you can download it again later.",
+                        "It excludes the app itself and data stored elsewhere. Removing a model can " +
+                        "free space, and you can download it again later.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

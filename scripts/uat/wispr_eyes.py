@@ -47,6 +47,7 @@ import shlex
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 ADB = os.path.expanduser("~/Android/sdk/platform-tools/adb")
@@ -101,6 +102,25 @@ def _journal_read():
     return book
 
 
+@contextmanager
+def _journal_locked():
+    """Hold the book across a read-modify-write, so two processes cannot overwrite each other.
+
+    `os.replace` makes each WRITE atomic, and that is not the same thing: two processes can both read
+    the same book, each add its own debt, and the second write erase the first. One phone means this is
+    rare rather than impossible, and a lost debt is a setting left on the founder's phone with nothing
+    recording it.
+    """
+    import fcntl
+    _JOURNAL.parent.mkdir(parents=True, exist_ok=True)
+    with _JOURNAL.with_suffix(".lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def _journal_write(book):
     """Replace the book in one step, so an interrupted write cannot leave a half-file.
 
@@ -134,6 +154,11 @@ def _debt_key(entry):
 def _owe(entry, serial=None):
     """Record a change BEFORE making it, so a crash between the two leaves a note rather than nothing."""
     serial = serial or _STATE["serial"]
+    with _journal_locked():
+        _owe_locked(entry, serial)
+
+
+def _owe_locked(entry, serial):
     book = _journal_read()
     owed = [tuple(e) for e in book.get(serial or "", [])]
     # THE FIRST VALUE FOR EACH SETTING IS THE ONE TO KEEP, and this is not a tidiness rule. Staging
@@ -151,10 +176,11 @@ def _owe(entry, serial=None):
 def _settled(entry, serial=None):
     """Drop a change from the book, ONLY after its restore was read back."""
     serial = serial or _STATE["serial"]
-    book = _journal_read()
-    owed = [tuple(e) for e in book.get(serial or "", []) if tuple(e) != entry]
-    book[serial or ""] = [list(e) for e in owed]
-    _journal_write(book)
+    with _journal_locked():
+        book = _journal_read()
+        owed = [tuple(e) for e in book.get(serial or "", []) if tuple(e) != entry]
+        book[serial or ""] = [list(e) for e in owed]
+        _journal_write(book)
 
 
 class Blocked(RuntimeError):
@@ -644,7 +670,11 @@ def _holder(node, want, package=PACKAGE, described=""):
     """
     nodes = tree(refresh=False)
     found = []
-    current = nodes[node["parent"]] if node.get("parent") is not None else None
+    # START AT THE NODE ITSELF. A control that carries its own words — a checkable row with the label
+    # written on it rather than on a child — has no ancestor that matches, so starting at the parent
+    # made it vanish from `switches()` and refuse in `switch()`. "The nearest thing that satisfies this,
+    # looking outward" includes where you are standing.
+    current = node
     while current is not None:
         if current["package"] == package and want(current):
             found.append(current)
@@ -671,11 +701,11 @@ def _rows_by_label(package=PACKAGE, refresh=True):
         if node["package"] != package or not _label(node):
             continue
         current = node
-        while current.get("parent") is not None:
-            current = nodes[current["parent"]]
+        while current is not None:
             if current["package"] == package and current["checkable"]:
                 owner.setdefault(id(current), []).append(node)
                 break
+            current = nodes[current["parent"]] if current.get("parent") is not None else None
     return nodes, owner
 
 
@@ -718,6 +748,24 @@ def switches(package=PACKAGE, refresh=True):
                           "state for that name would be reporting one of them at random")
         found[name] = bool(row["on"])
     return found
+
+
+def on_screen(where):
+    """Is the app showing this named screen right now?
+
+    A tab is the one reporting itself SELECTED; a page is the one whose title is on screen beside the
+    back arrow. Both readings come from the app rather than from a memory of where a caller navigated,
+    which is the only kind that survives a process boundary.
+    """
+    if where in TABS:
+        try:
+            return bool(_tab_row()[where]["selected"]) or _holder(
+                _tab_row()[where], lambda n: n["selected"]) is not None
+        except Blocked:
+            return False
+    if where in PAGES:
+        return present(where, exact=True) and present("Back", exact=True)
+    raise Blocked(f"{where!r} is not a screen this app has")
 
 
 def one_way(label, package=PACKAGE):
@@ -767,11 +815,21 @@ def set_switch(label, on, where, package=PACKAGE):
             f"{where!r} is not a screen this app has, and a switch change has to say where it was made "
             f"or it cannot be put back. One of: {', '.join(TABS + PAGES)}"
         )
+    # "THIS IS NOT A SWITCH AT ALL" OUTRANKS "you are on the wrong page", because it is the answer that
+    # stops a caller changing something it cannot change back.
     if one_way(label, package=package):
         raise Blocked(
             f"{label!r} is one of a set where exactly one is chosen, not a switch. Choosing it cannot be "
             "undone by choosing it again, so a run that flipped it would leave the founder's setting "
             "changed. Select the one you want by name instead, and put the original back by name."
+        )
+    # AND IT HAS TO BE THE SCREEN YOU ARE ACTUALLY ON. A name that merely EXISTS is not a name that can
+    # restore anything: flipping `Smart insertion` while naming `Appearance` writes a debt pointing at a
+    # page that does not have that switch, and the restore then fails at the moment it is needed.
+    if not on_screen(where):
+        raise Blocked(
+            f"the phone is not showing {where!r}, so a change recorded against it could not be put back. "
+            f"Open it first: open_tab({where!r}) or nav({where!r})."
         )
     before = switch(label, package=package)
     if before == on:
@@ -875,21 +933,26 @@ def reveal(label, package=PACKAGE):
 
     So this goes back to the top, which is where a page's settings live, and only then works downward.
     """
+    def try_scroll(direction):
+        """True when the screen moved, False when there is nothing to scroll. Anything else RAISES.
+
+        Catching every refusal alike turned an unreachable phone into "the control is not on this
+        screen", which is a confident answer about the app produced by a broken instrument.
+        """
+        try:
+            return bool(scroll(direction, 1, package=package))
+        except Blocked as why:
+            if "nothing on this screen scrolls" in str(why):
+                return False
+            raise
+
     if present(label, exact=True):
         return True
-    for _ in range(SCREEN_DEPTH + 2):
-        try:
-            if not scroll("up", 1, package=package):
-                break
-        except Blocked:
-            break
+    while try_scroll("up"):
         if present(label, exact=True):
             return True
     for _ in range(SCREEN_DEPTH + 2):
-        try:
-            if not scroll("down", 1, package=package):
-                return False
-        except Blocked:
+        if not try_scroll("down"):
             return False
         if present(label, exact=True):
             return True
@@ -1065,8 +1128,17 @@ def _dictation(what):
     matching command to the service. So this is not a back door, it is the same door the side button
     uses. Measured 2026-09-06 against `VoiceInputActivity.kt` and the manifest.
     """
-    flag = {"start": "", "toggle": "--ez toggle true",
-            "stop": "--ez stop true", "cancel": "--ez cancel true"}[what]
+    # STARTING A TAKE IS NOT AVAILABLE HERE, and that is a deletion rather than a guard.
+    #
+    # Two review rounds each found a different path that reached this function with "start", got past
+    # whatever cleanup that caller had, and returned with the microphone open. The third one was found
+    # after the fix for the second, which is the signal that the SHAPE is wrong: any number of callers
+    # can start a take, and each one has to remember to end it. So the shape is gone. `open_recorder` is
+    # a context manager that owns a take from its first instruction to its last, and it is the only
+    # thing that can begin one.
+    if what not in ("stop", "cancel"):
+        raise Blocked("a take is started only by `open_recorder()`, which owns ending it")
+    flag = {"stop": "--ez stop true", "cancel": "--ez cancel true"}[what]
     remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)} {flag}".strip(), check=False)
     if remote != 0 or "Error" in out:
         detail = out.strip().splitlines()[-1] if out.strip() else "no message"
@@ -1097,7 +1169,25 @@ def recording():
             last_start = index
         elif "recording_stop" in line:
             last_stop = index
+    if last_start < 0 and last_stop < 0:
+        # NEITHER LINE IS THERE, which is not "no take is running". It is what a cleared log looks like,
+        # and what a take whose start scrolled out of the window looks like, and answering False sends a
+        # caller away believing the microphone is closed.
+        raise Blocked(
+            "the log holds neither the start nor the end of a take, so whether the microphone is open "
+            "cannot be read. Clear the log before the take you mean to measure."
+        )
     return last_start > last_stop
+
+
+def _start_take():
+    """Send the start intent. THE ONLY CALLER IS `open_recorder`, which owns ending what this begins."""
+    remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)}", check=False)
+    if remote != 0 or "Error" in out:
+        detail = out.strip().splitlines()[-1] if out.strip() else "no message"
+        raise Blocked(f"the recorder would not start: {detail}")
+    time.sleep(1.5)
+    _STATE["tree"] = None
 
 
 def stop_dictation():
@@ -1113,61 +1203,77 @@ def cancel_dictation():
 def _cancel_safely():
     """End a take no matter what went wrong, and never RELY on the cancel having worked.
 
-    **Every path out of a started take comes through here.** An earlier version cancelled only on the
-    one failure it had thought of, so an exception anywhere else — a timeout reading the window, a
-    refusal restoring the volume — returned with the microphone still open. That already cost about
-    thirty seconds of the founder's room once.
+    **Every path out of a started take comes through here.** Two review rounds each found a different
+    exit that skipped cleanup, which is why the shape changed: `open_recorder` is now a context manager
+    and this is its `finally`.
 
     `stop_app()` is the last resort rather than the first: it force-stops the app, which CLEARS the
     accessibility permission, so it also repairs that. A recording left running is worse.
     """
     try:
         cancel_dictation()
-        if recording():
-            stop_app()
     except BaseException:
-        # A cancel that raised tells us nothing about whether the microphone closed, so do not believe
-        # it. This branch is deliberately unconditional.
+        # The cancel itself could not be sent, so nothing here knows whether the microphone closed.
+        stop_app()
+        return
+    try:
+        still_running = recording()
+    except BaseException:
+        # Whether a take is running is UNREADABLE, which is not the same as "no". One more look after a
+        # pause, and if that fails too the microphone is closed the only way left.
+        time.sleep(1.5)
+        try:
+            still_running = recording()
+        except BaseException:
+            stop_app()
+            return
+    if still_running:
         stop_app()
 
 
-def open_recorder():
-    """Start the floating recorder, and NEVER leave a recording running if the check fails.
+@contextmanager
+def open_recorder(verify=True):
+    """Start the floating recorder and OWN THE TAKE UNTIL THE BLOCK ENDS.
+
+    ```python
+    with open_recorder() as pill:
+        ...                       # the take is running here, and only here
+    ```
+
+    **A context manager rather than a function, and that is the fix for a class rather than a case.**
+    Two review rounds each found a different way to reach the start intent, get past whatever cleanup
+    that caller had written, and return with the microphone open on the founder's phone — the second
+    found after the first was fixed. Any number of callers being able to begin a take, each responsible
+    for remembering to end it, is the defect; so beginning one is no longer something a caller can do.
+
+    `verify=False` skips the pill check, for a caller whose subject is the audio rather than the
+    recorder's appearance. The take is owned either way.
 
     `am start -a android.intent.action.ASSIST` shows a chooser on this phone, because more than one app
     answers the action (`device-testing.md` FACT: the-ASSIST-action-opens-a-CHOOSER-on-this-phone), so
     the component is named instead.
-
-    **A REFUSAL MUST NOT LEAVE THE MICROPHONE OPEN.** This call starts a REAL recording on the founder's
-    daily driver. An earlier version raised as soon as the pill was missing from the tree and returned,
-    with the take still running: measured 2026-09-06, about thirty seconds of his room were captured
-    before anyone noticed, and stopping it needed a force-stop because the tool did not know the exported
-    stop door existed. The macOS twin learned the same lesson on 2026-08-18, where the founder ended the
-    recording by hand. So every path out of here that is not a healthy pill cancels first.
     """
+    ready()
     if not bound():
         raise Blocked("our accessibility service is not bound, so no recorder will be drawn.")
-    # The recorder activity is transient BY DESIGN: it starts the session and finishes, and the pill is
-    # drawn by the accessibility service. So the landing check is the PILL, not the activity.
+    _start_take()
     try:
-        _dictation("start")
-        time.sleep(2.5)
+        time.sleep(1.0)
         _STATE["tree"] = None
-        pill = overlay()
-    except BaseException:
+        pill = None
+        if verify:
+            pill = overlay()
+            if pill is None:
+                raise Blocked(
+                    "the recorder was started but no pill is in the accessibility tree, and the window "
+                    "manager has no recorder window either, so the take did not draw. It has been "
+                    "cancelled, so nothing is still listening."
+                )
+            if not pill["the_user_can_see_it"]:
+                raise Blocked(f"the recorder window exists but the user cannot see it: {pill}")
+        yield pill
+    finally:
         _cancel_safely()
-        raise
-    if pill is None:
-        live = recording()
-        _cancel_safely()
-        raise Blocked(
-            "the recorder was started but no pill is in the accessibility tree"
-            + (", although a dictation IS running (its notification is posted), so this is the overlay "
-               "not being readable rather than the recorder not starting. " if live
-               else ", and no dictation notification is posted either, so the take did not start. ")
-            + "The take was cancelled, so nothing is still listening."
-        )
-    return pill
 
 
 def nav(page):
@@ -1259,12 +1365,24 @@ def stop_app():
     """
     # MEMBERSHIP, NOT EQUALITY. With any other accessibility service also enabled the value reads
     # `theirs:ours`, so an equality test answered "it was not on" and the repair below never ran.
-    was_on = ACCESSIBILITY_SERVICE in _a11y_services()
+    # CAPTURED BEFORE, RESTORED AFTER, and never through `enable_auto_paste`. That function journals
+    # the state it finds — which, after a force-stop, is the CLEARED one — so a later `restore()` would
+    # put the founder's phone back to having no accessibility services at all.
+    before = _a11y_state()
+    was_on = ACCESSIBILITY_SERVICE in _a11y_services(before)
     _adb(f"am force-stop {PACKAGE}")
     time.sleep(1)
     _STATE["tree"] = None
     if was_on:
-        enable_auto_paste()
+        _put_a11y(before)
+        for _ in range(6):
+            time.sleep(1)
+            if bound():
+                return
+        raise Blocked(
+            "the accessibility settings were put back after the force-stop but the service never bound, "
+            "so text will still not reach the field you are typing in."
+        )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1390,9 +1508,18 @@ def say_on_phone(sentence, volume=3, seconds=30, use_fixture=True):
         # duration: a fixed sleep either clips the sentence or records silence after it.
         for _ in range(seconds * 2):
             time.sleep(0.5)
+            # `check=True`, and the COUNT is parsed rather than searched for any digit. A failed read
+            # returned "", which contains no digit, which read as "the activity is gone" — so a broken
+            # connection reported that the phone had finished speaking when it may not have started.
             _, running = _adb(
                 f"dumpsys activity activities | grep -c {shlex.quote(SPEAKER_ACTIVITY)}", check=False)
-            if not re.search(r"[1-9]", running or ""):
+            counted = re.fullmatch(r"\s*(\d+)\s*", running or "")
+            if counted is None:
+                raise Blocked(
+                    "could not read whether the phone is still speaking, so how much of the sentence "
+                    f"reached the microphone is unknown. The phone answered {running.strip()!r}."
+                )
+            if counted.group(1) == "0":
                 break
         else:
             raise Blocked(f"the phone was still speaking after {seconds}s; the audio may be too long")
@@ -1565,9 +1692,14 @@ def _restore_one(entry):
             f"entry from {_JOURNAL}."
         )
     elif what == "parked-fixture":
-        # `previous` is the path the fixture was moved to. Moved BACK, then confirmed present, because
-        # a fixture left parked silently changes what every later run plays.
-        _adb(f"run-as {TEST_PACKAGE} mv {shlex.quote(previous)} cache/{UAT_FIXTURE}", check=False)
+        # `previous` is the path the fixture was moved to. Moved BACK, and the MOVE's own status is what
+        # decides — an earlier version asked only whether something now sits at the destination, so a
+        # failed move over a different file already there settled the debt and left the real fixture
+        # parked, changing what every later run plays.
+        moved, why = _adb(f"run-as {TEST_PACKAGE} mv {shlex.quote(previous)} cache/{UAT_FIXTURE}",
+                          check=False)
+        if moved != 0:
+            raise Blocked(f"the recorded fixture would not move back from {previous!r}: {why.strip()}")
         code, listing = _adb(f"run-as {TEST_PACKAGE} ls -l cache/{UAT_FIXTURE}", check=False)
         if code != 0 or UAT_FIXTURE not in listing:
             raise Blocked(f"the recorded fixture did not come back from {previous!r}; the phone now plays "
@@ -1653,24 +1785,21 @@ def check_recorder():
                 "enable_auto_paste() turns it back on."]
     clear_log()
     try:
-        pill = open_recorder()
+        with open_recorder() as pill:
+            report.append(
+                f"VERIFIED: the recorder is on screen at {pill['where']}, "
+                f"{pill['size'][0]}x{pill['size'][1]}")
+            report.append("VERIFIED: a take is running" if recording()
+                          else "ISSUE: the recorder is drawn but nothing is recording")
     except Blocked as why:
-        return [f"ISSUE: {why}"]
+        report.append(f"ISSUE: {why}")
+    # AFTER the block, so this is asking whether the context manager's own cleanup worked.
+    time.sleep(1.5)
     try:
-        report.append(
-            f"VERIFIED: the recorder is on screen at {pill['where']}, {pill['size'][0]}x{pill['size'][1]}"
-            if pill["the_user_can_see_it"] else
-            f"ISSUE: the recorder window exists but the user cannot see it: {pill}"
-        )
-        report.append("VERIFIED: a take is running" if recording()
-                      else "ISSUE: the recorder is drawn but nothing is recording")
-    finally:
-        _cancel_safely()
-        time.sleep(1.5)
-        if recording():
-            report.append("ISSUE: the take would not cancel and is STILL RECORDING")
-        else:
-            report.append("VERIFIED: the take was cancelled and nothing is listening")
+        report.append("ISSUE: the take would not cancel and is STILL RECORDING" if recording()
+                      else "VERIFIED: the take was cancelled and nothing is listening")
+    except Blocked as why:
+        report.append(f"ISSUE: whether anything is still recording could not be read: {why}")
     return report
 
 
@@ -1848,13 +1977,12 @@ def room_is_quiet(seconds=6):
     """
     ready()
     clear_log()
-    try:
-        _dictation("toggle")
+    # `verify=False`: the subject is what the microphone HEARS, so the recorder's appearance is not
+    # what this run is about, and refusing on it would refuse the probe on a phone whose pill is fine.
+    with open_recorder(verify=False):
         time.sleep(seconds)
         stop_dictation()
         ending = _wait_for_the_take_to_finish(seconds=30)
-    finally:
-        _cancel_safely()
     if ending is None:
         raise Blocked("the room probe never reached an ending, so it measured nothing")
     heard = last_take()["transcribed_chars"]
@@ -1938,19 +2066,19 @@ def test_dictation(sentence="The quick brown fox jumps over the lazy dog.", volu
                   + (f", {playing:.1f}s long, so the take runs {listen_for:.1f}s" if playing else ""))
     try:
         clear_log()
-        _dictation("toggle")
-        time.sleep(LEAD_IN_S)
-        play_staged_speech()
-        time.sleep(listen_for)
-        stop_dictation()
-        ending = _wait_for_the_take_to_finish()
+        # The take's whole life is this block, and the context manager closes it however the block ends.
+        # `verify=False` because the subject here is the words, not the pill.
+        with open_recorder(verify=False):
+            time.sleep(LEAD_IN_S)
+            play_staged_speech()
+            time.sleep(listen_for)
+            stop_dictation()
+            ending = _wait_for_the_take_to_finish()
     finally:
-        # THE MICROPHONE FIRST, the settings second. An earlier order restored the volume before trying
-        # to close the take, so a failure in the restore left the take running.
-        try:
-            _cancel_safely()
-        finally:
-            unstage_phone_speech()
+        # THE MICROPHONE FIRST, the settings second, and that ordering is why the restore sits OUTSIDE
+        # the block rather than inside it: an earlier version put the volume back before trying to close
+        # the take, so a failure in the restore left the take running.
+        unstage_phone_speech()
     if ending is None:
         report.append("ISSUE: the dictation never reached an ending, so nothing can be said about it")
         return report

@@ -33,6 +33,14 @@ TWO_REMOVES = """<?xml version='1.0' encoding='UTF-8'?>
   <node text="" content-desc="Open settings menu" bounds="[12,183][156,327]" package="com.envi.wispr" clickable="true" enabled="true" />
 </hierarchy>"""
 
+# Two labels where one is a PREFIX of the other, so exact and substring matching disagree. Without a
+# screen like this, a row claiming to test exact matching passes with exact matching deleted.
+EXACT_VS_SUBSTRING = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="Remove" bounds="[180,880][335,937]" package="com.envi.wispr" clickable="true" enabled="true" />
+  <node text="Remove all models" bounds="[180,1000][600,1057]" package="com.envi.wispr" clickable="true" enabled="true" />
+</hierarchy>"""
+
 NOTHING_OF_OURS = """<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy rotation="0">
   <node text="Gmail" bounds="[0,100][100,200]" package="com.google.android.apps.nexuslauncher" clickable="true" enabled="true" />
@@ -163,12 +171,21 @@ def main():
     found = eyes.find("Development models folder")
     check("an unambiguous query still resolves", found["centre"] == (506, 1530), found["centre"])
 
-    # `exact` is a real escape hatch, not decoration.
+    # `exact` IS THE THING BEING TESTED, so the fixture has to be one where exact and substring give
+    # DIFFERENT answers. Against a screen with a single candidate either way, turning exact matching
+    # into substring matching changes nothing and the row stays green having asserted nothing.
+    restore_adb(original)
+    original = with_screen(EXACT_VS_SUBSTRING)
+    found = eyes.find("Remove", exact=True)
+    check("exact matching finds the one whose whole label matches",
+          found["bounds"] == (180, 880, 335, 937), found["bounds"])
     try:
-        eyes.find("12.3 MB on this phone", exact=True)
-        check("exact matching narrows a query", True)
+        eyes.find("Remove", exact=False)
+        check("and substring matching would have been ambiguous", False, "it resolved to one")
     except eyes.Blocked as refusal:
-        check("exact matching narrows a query", False, refusal)
+        check("and substring matching would have been ambiguous", "2 nodes match" in str(refusal), refusal)
+    restore_adb(original)
+    original = with_screen(TWO_REMOVES)
 
     # ---- absence says what IS there, so a wrong screen is diagnosed in one read -------------------
     try:
@@ -208,6 +225,14 @@ def main():
         check("a switch change must name its screen", False, "it accepted a screen that does not exist")
     except eyes.Blocked as refusal:
         check("a switch change must name its screen", "not a screen this app has" in str(refusal), refusal)
+
+    # A name that merely EXISTS is not a name that can restore anything. This screen is not Clipboard,
+    # so a debt recorded against Clipboard would point somewhere the switch is not.
+    try:
+        eyes.set_switch("Smart insertion", False, where="Clipboard")
+        check("and it must be the screen actually showing", False, "it accepted the wrong screen")
+    except eyes.Blocked as refusal:
+        check("and it must be the screen actually showing", "is not showing" in str(refusal), refusal)
 
     # And the guard is not simply always-on: a real switch still reads.
     check("a real switch still reads", eyes.switch("Smart insertion") is True)
@@ -427,9 +452,13 @@ def main():
     eyes._owe(("switch", _json.dumps({"where": "Clipboard", "label": "Smart insertion", "was": False},
                                      sort_keys=True)))
     check("the same switch twice is still one debt", len(eyes._owed("fixture")) == 2, eyes._owed("fixture"))
+    # THE SPECIFIC ENTRY, not "one of them". `dict(...)["switch"]` collapses both switch debts to
+    # whichever came last, so changing Smart insertion's saved value left this green on the strength of
+    # the OTHER switch's untouched one.
+    smart = [_json.loads(e[1]) for e in eyes._owed("fixture")
+             if e[0] == "switch" and _json.loads(e[1])["label"] == "Smart insertion"]
     check("and it keeps the value it started at",
-          '"was": true' in dict(eyes._owed("fixture"))["switch"] or
-          any('"was": true' in e[1] and "Smart insertion" in e[1] for e in eyes._owed("fixture")))
+          len(smart) == 1 and smart[0]["was"] is True, smart)
     eyes._settled(first)
     eyes._settled(second)
     check("settling them empties the book", eyes._owed("fixture") == [], eyes._owed("fixture"))

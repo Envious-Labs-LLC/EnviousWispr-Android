@@ -40,7 +40,7 @@ done
 printf '%s\n' "${LOG:-}" > "$OUT/$LABEL.log"
 
 echo "== $LABEL: did it stop on its own? ($ENDED)"
-grep -iE "recording_start|Buffer sizes|Detector ready|Detector unavailable|Auto-stop unavailable|recording_stop|Stopped\.|Max duration|asr_request|result_received|Auto-insert handed|kept on clipboard|showError" \
+grep -iE "recording_start|Buffer sizes|Detector ready|Detector unavailable|Auto-stop unavailable|recording_stop|Stopped by|Max duration|asr_request|result_received|Auto-insert handed|kept on clipboard|showError" \
   "$OUT/$LABEL.log" | sed 's/^\(..-.. ..:..:..\.[0-9]*\).*: \(.*\)$/\1 \2/'
 
 echo "== $LABEL: process check, the detector must be its own pid"

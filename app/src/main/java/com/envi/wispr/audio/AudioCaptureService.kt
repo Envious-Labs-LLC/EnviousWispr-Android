@@ -654,9 +654,19 @@ class AudioCaptureService : Service() {
             DebugLogger.warn(TAG, "AudioRecord stop failed: ${e.message}")
         }
         DebugLogger.mark(TAG, "recording_stop")
+        // The ending is read back from the CLAIM rather than from this function's parameter, because the
+        // claim is the owner of the answer and the parameter is only what this caller proposed.
+        //
+        // Naming it here is what makes a stop button and a silence stop tell apart in a log at all. The
+        // other two endings already write their own distinct lines from the capture loop; these two wrote
+        // the same one. Ordering against the foreground-service line is NOT a discriminator, because
+        // `claimEnding` clears `isRecording` before this log runs, so the session's polling thread can log
+        // its own promotion first. Measured on the S26 and recorded in issue #114: a silence-ended take
+        // did exactly that, by 11 ms.
         DebugLogger.log(
             TAG,
-            "Stopped. ${active.bytesWritten} bytes (${String.format("%.1f", PcmAudio.durationSeconds(active.bytesWritten))}s) -> ${active.file.absolutePath}",
+            "Stopped by ${active.endingClaim.ending.label}. ${active.bytesWritten} bytes " +
+                "(${String.format("%.1f", PcmAudio.durationSeconds(active.bytesWritten))}s) -> ${active.file.absolutePath}",
         )
     }
 

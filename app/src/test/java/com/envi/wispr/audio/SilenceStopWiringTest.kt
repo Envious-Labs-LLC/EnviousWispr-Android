@@ -227,4 +227,33 @@ class SilenceStopWiringTest {
         assertTrue(start.contains("ring = if (detectorEnabled) BlockRing(RING_BLOCKS, READ_BLOCK_BYTES) else null"))
         assertTrue(start.contains("pendingBlock = if (detectorEnabled) ByteArray(READ_BLOCK_BYTES) else null"))
     }
+
+    @Test
+    fun theStopLineSaysHowTheTakeEnded() {
+        // Two endings wrote the same line: a stop button and a silence stop. That is the ONE question a
+        // support report or a hardware run asks of this log, and it could not be answered from it.
+        val end = bodyOf("private fun endTakeLocked(")
+        assertTrue(
+            "the stop line must name the ending",
+            end.contains("\"Stopped by ${'$'}{active.endingClaim.ending.label}."),
+        )
+        // Read from the CLAIM, not from this function's `reason` parameter. The claim is first-wins and
+        // is the owner of the answer; the parameter is only what one caller proposed.
+        assertFalse(
+            "the line must not name the parameter instead of the claimed ending",
+            end.contains("CaptureEnding.fromAidl(reason)"),
+        )
+    }
+
+    @Test
+    fun theTwoEndingsThatDoNotReachTheStopLineStillLogSomethingOfTheirOwn() {
+        // Max duration and a capture failure claim their ending inside the loop and break, so they never
+        // reach endTakeLocked. They are already distinguishable, and this pins that they stay so: without
+        // it, naming the ending in one place reads as covering all four.
+        val loop = bodyOf("private fun captureLoop(")
+        assertTrue(loop.contains("claimEnding(active, TERMINAL_REASON_MAX_DURATION)"))
+        assertTrue(loop.contains("Max duration reached"))
+        assertTrue(loop.contains("claimEnding(active, TERMINAL_REASON_ERROR)"))
+        assertTrue(loop.contains("Capture thread error"))
+    }
 }

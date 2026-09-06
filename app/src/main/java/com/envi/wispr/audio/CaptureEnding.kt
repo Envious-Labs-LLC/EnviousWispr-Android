@@ -17,7 +17,14 @@ internal sealed interface CaptureEnding {
     /** The duration ceiling fired. */
     data object MaxDuration : CaptureEnding
 
-    /** The user pressed stop. */
+    /**
+     * A stop request from anything with the authority to end the take.
+     *
+     * **Not only the stop button.** `AudioCaptureService.onDestroy` ends a running take by the same
+     * route, so a take killed with the service claims this. The name and the label say "request" rather
+     * than "button" because a log line that named a button nobody pressed would be a false statement.
+     * Telling the two apart would need a new AIDL reason; #114 records that as unbuilt.
+     */
     data object Manual : CaptureEnding
 
     /** The user stopped speaking and the detector said so. A SUCCESS, in the same class as [Manual]. */
@@ -30,6 +37,22 @@ internal sealed interface CaptureEnding {
      * provenance is unknown rather than to guess that it was fine.
      */
     data object Failure : CaptureEnding
+
+    /**
+     * What this ending is called in a log line. Content-free: a fixed word, never anything the user said.
+     *
+     * Declared per member with no `else`, so a new ending is a compile error here rather than a take that
+     * logs under an existing name. `toString()` would have supplied a name for free, which is exactly the
+     * property this must not have: the point is that somebody decides what a new ending is called.
+     */
+    val label: String
+        get() = when (this) {
+            StillRunning -> "still running"
+            MaxDuration -> "the time limit"
+            Manual -> "a stop request"
+            Silence -> "silence"
+            Failure -> "a capture failure or an unrecognised ending"
+        }
 
     /** Whether a take that ended this way should go on to be transcribed and inserted. */
     val transcribes: Boolean

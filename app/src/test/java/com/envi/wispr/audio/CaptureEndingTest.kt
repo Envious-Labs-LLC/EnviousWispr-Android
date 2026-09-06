@@ -2,6 +2,7 @@ package com.envi.wispr.audio
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
@@ -28,6 +29,57 @@ class CaptureEndingTest {
         assertTrue(CaptureEnding.MaxDuration.transcribes)
         assertFalse(CaptureEnding.Failure.transcribes)
         assertFalse("a running take is not something to transcribe yet", CaptureEnding.StillRunning.transcribes)
+    }
+
+    @Test
+    fun everyEndingHasItsOwnNameForALog() {
+        // Enumerated from the PRODUCER, which is the sealed hierarchy itself, so a new member added
+        // without a case here is a compile error in `label` rather than a missing row in this list.
+        val endings = listOf(
+            CaptureEnding.StillRunning,
+            CaptureEnding.MaxDuration,
+            CaptureEnding.Manual,
+            CaptureEnding.Silence,
+            CaptureEnding.Failure,
+        )
+        val labels = endings.map { it.label }
+        assertEquals("every ending must have a distinct name: $labels", labels.size, labels.toSet().size)
+        labels.forEach { label ->
+            assertTrue("a name must be readable in a log line, not blank", label.isNotBlank())
+        }
+        // The pair this exists for. A stop button and a silence stop wrote the same line, and their
+        // order against the foreground-service line is not a discriminator.
+        assertNotEquals(CaptureEnding.Manual.label, CaptureEnding.Silence.label)
+    }
+
+    @Test
+    fun aLabelDoesNotAssertMoreThanItsMemberCovers() {
+        // Two members stand for MORE than one cause, and a label naming only one of them is a false
+        // statement in a log. MANUAL is claimed by the stop button AND by `onDestroy`; FAILURE is claimed
+        // by a capture error AND by any reason integer this build does not recognise, which is what
+        // `fromAidl` maps an unknown value to.
+        assertTrue(
+            "the failure label must not read as a capture error alone: ${CaptureEnding.Failure.label}",
+            CaptureEnding.Failure.label.contains("unrecognised"),
+        )
+        assertEquals(
+            "an unknown reason is the case this label has to cover",
+            CaptureEnding.Failure,
+            CaptureEnding.fromAidl(99),
+        )
+    }
+
+    @Test
+    fun theManualLabelDoesNotClaimAButtonWasPressed() {
+        // `AudioCaptureService.onDestroy` ends a running take through the same route as the stop button,
+        // so both claim MANUAL. A label naming a button would be a false statement in a log for every
+        // take killed with the service.
+        listOf("button", "pressed", "tapped").forEach { word ->
+            assertFalse(
+                "the manual label must not claim a gesture nobody made: ${CaptureEnding.Manual.label}",
+                CaptureEnding.Manual.label.contains(word, ignoreCase = true),
+            )
+        }
     }
 
     @Test

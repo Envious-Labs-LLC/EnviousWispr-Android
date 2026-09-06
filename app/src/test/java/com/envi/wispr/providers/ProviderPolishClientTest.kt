@@ -678,40 +678,75 @@ class ProviderPolishClientTest {
         }
     }
 
-    @Test fun theDeadlineCancelsQueuedAndActiveProbes() {
-        // Every probe the fake server receives is HELD on this latch, never slept: an in-flight probe cannot
-        // finish before the deadline, so at most three (the executor's width) can reach the server before
-        // the client returns, whatever the machine load. A sleep here raced the clock and went red under
-        // load (2026-09-02) when the list fetch ate the budget and the probes timed out instantly.
+    @Test fun noProbeIsSentAfterTheDeadlineHasPassedAndTheCallHasReturned() {
+        // Renamed from theDeadlineCancelsQueuedAndActiveProbes (#110). The old name claimed more than
+        // the row establishes, and the difference is the whole story below.
+        //
+        // Every probe the fake server receives is HELD on this latch, never slept, so a probe cannot
+        // answer early. A sleep here raced the clock and went red under load (2026-09-02) when the list
+        // fetch ate the budget and the probes timed out instantly.
         val hold = java.util.concurrent.CountDownLatch(1)
+        val models = 9
         ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAiList(*Array(9) { "gpt-m$it" }) else { hold.await(10, TimeUnit.SECONDS); 200 to okBody(Provider.OPENAI) }
+            if (request.path.startsWith("/models")) 200 to openAiList(*Array(models) { "gpt-m$it" }) else { hold.await(10, TimeUnit.SECONDS); 200 to okBody(Provider.OPENAI) }
         }).use { server ->
             // The request log is a synchronized list; a count that iterates it must hold its lock, or a
             // probe landing mid-iteration throws and the test goes red on a correct client.
             fun probeCount(): Int = synchronized(server.requests) { server.requests.count { it.path.startsWith("/probe") } }
+            // A count alone cannot say WHAT arrived, and "six requests" and "three probes asked twice"
+            // are different defects. The message names the requests so the next red is diagnosed once.
+            fun probeDetail(): String = synchronized(server.requests) {
+                server.requests.filter { it.path.startsWith("/probe") }
+                    .joinToString(", ") { request ->
+                        Regex("\"model\"\\s*:\\s*\"([^\"]+)\"").find(request.body)?.groupValues?.get(1) ?: "?"
+                    }
+            }
             val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 800, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")
             assertTrue("$result", result is ProviderDiscovery.Listed)
-            val probesAtReturn = probeCount()
+            val atReturn = probeCount()
             hold.countDown()
-            // The held probes finish now; a queued probe that was NOT cancelled would be dequeued the instant
-            // a thread frees and arrive here. Gate on the count going quiet, never on a fixed sleep: unchanged
-            // across five polls 200 ms apart, with a 5 s ceiling that only a defect can reach.
-            var probesLater = probeCount()
+
+            // Let any straggler land. The loop gates on the count going QUIET, never on a fixed sleep.
+            var total = probeCount()
             var quiet = 0
             var polls = 0
             while (quiet < 5 && polls < 25) {
                 Thread.sleep(200)
                 val now = probeCount()
-                if (now == probesLater) quiet++ else { quiet = 0; probesLater = now }
+                if (now == total) quiet++ else { quiet = 0; total = now }
                 polls++
             }
-            // Nine models, three in flight: without cancellation the queued six would all arrive after the
-            // return. What the client promises is narrower than "none": a probe thread that freed up in the
-            // same instant the deadline fired can have dequeued its next probe before the cancel reached the
-            // queue, and an interrupt cannot pull back a request already connecting, so up to the executor's
-            // width (three) may still land. Never more, and never the whole queue.
-            assertTrue("at return $probesAtReturn, later $probesLater", probesLater <= probesAtReturn + 3 && probesLater < 9)
+
+            // THE INVARIANT, and it is a DELTA OF ZERO rather than a count: once the deadline has
+            // passed and the call has returned, not one further probe is sent. Measured zero on every
+            // run, quiet and under 2x core oversubscription (#110, 2026-09-06).
+            //
+            // The old assertion allowed the executor's width of slack on this same delta and compared a
+            // total against a literal 3. Both halves were wrong, and MEASUREMENT is what settled it, not
+            // reasoning. The slack was for something that never happens. And three was never the total:
+            // a probe's socket timeout is clamped to what is left of the DISCOVERY budget, so a first
+            // wave times out just before the deadline and a second wave legitimately starts inside the
+            // remaining budget. Nine models over three workers reach the provider SIX times, repeatably,
+            // and every one of those six began while budget remained. Raising the old bound was refused,
+            // and correctly: a wider delta also accepts a client that stopped cancelling.
+            assertEquals(
+                "a probe was sent after the deadline had passed and the call had returned: ${probeDetail()}",
+                atReturn,
+                total,
+            )
+            // Not vacuous: a run where nothing probed at all would satisfy the equality above.
+            assertTrue("no probe was sent at all, so this proves nothing: ${probeDetail()}", total >= 1)
+            // WHAT THIS ROW DOES NOT PROVE, said here because the old name implied it did. Neither
+            // removing `futures.forEach { it.cancel(true) }` NOR removing the per-probe budget check
+            // turns this red: with either gone the other still stops the rest of the queue, and the two
+            // were not separated. So this is a REGRESSION BOUND on the observable promise, and it is not
+            // a proof that cancellation itself works. Staging a real cancellation regression needs a
+            // fixture that can hold the two apart; #110 records that as unbuilt rather than pretending
+            // the assertion below covers it.
+            assertTrue(
+                "the queue was not cancelled: all $models models were probed: ${probeDetail()}",
+                total < models,
+            )
         }
     }
 

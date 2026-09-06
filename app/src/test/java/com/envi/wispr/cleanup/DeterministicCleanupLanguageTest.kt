@@ -1,6 +1,7 @@
 package com.envi.wispr.cleanup
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
@@ -91,6 +92,45 @@ class DeterministicCleanupLanguageTest {
         listOf(CleanupLanguage.Unknown, CleanupLanguage.Known("en"), CleanupLanguage.Known("de")).forEach { state ->
             assertEquals("uh survived at $state", "hello there", clean("uh hello there", state))
         }
+    }
+
+    /**
+     * The last open question on #107: the SAFETY layer is built from English auxiliaries and English
+     * leading fillers, and unlike the rewriting families it is not gated on a language at all.
+     *
+     * It cannot damage foreign text, and the reason is WHAT IT JUDGES and in WHICH DIRECTION. It judges
+     * the POLISH MODEL'S output against the already-cleaned text, not cleanup's own output, and its only
+     * verdict is to REFUSE. `PolishPipeline.run` answers a refusal with `fallback`, which is `cleaned`,
+     * so the words handed on are the ones the model was given (`architecture-rules.md`
+     * FACT: heart-and-limbs). A detector wrong about a non-English sentence therefore costs a polish
+     * improvement and can never cost the user's words.
+     *
+     * The row worth having is the German one, because `was` is an English auxiliary AND an ordinary
+     * German interrogative, which is the collision most likely to make somebody "fix" this later.
+     */
+    @Test fun theEnglishQuestionDetectorCannotDamageForeignText() {
+        // A German question whose first word is in the English auxiliary set. Read BOTH sides: the
+        // detector answering true here is harmless precisely because it answers true on both.
+        val german = "Was ist das"
+        assertEquals(
+            "cleanup must not rewrite a German question",
+            german,
+            clean(german, CleanupLanguage.Known("de")),
+        )
+        assertEquals("and not at an unestablished language either", german, clean(german, CleanupLanguage.Unknown))
+
+        // The safety layer's own contract, asserted directly rather than through the pipeline: an
+        // unchanged transformation is never refused, whatever the detector thinks of the language.
+        assertNull("an unchanged output is always safe", TextSafety.refusal(german, german))
+        assertNull(TextSafety.refusal("Wir treffen uns um drei", "Wir treffen uns um drei"))
+
+        // And the direction that matters. When the detector DOES fire on foreign text, the outcome is a
+        // refusal, which hands back the text it was given. Nothing the user said can be lost that way.
+        assertEquals(
+            "a fired refusal names itself rather than editing the words",
+            "question turned into an answer",
+            TextSafety.refusal(german, "Das ist es"),
+        )
     }
 
     @Test fun spokenPunctuationAndEmojiAreEnglishCommandsAndStopOnForeignText() {

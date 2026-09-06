@@ -28,16 +28,28 @@ class ThirdPartyNoticesTest {
     private val rootFile = File("../THIRD-PARTY-NOTICES.txt")
     private val gradleFile = File("build.gradle.kts").readText()
 
-    /** One blank-line-separated entry of the shipped asset, as its `Field: value` pairs. */
+    /**
+     * One blank-line-separated entry of the shipped asset, as its `Field: value` pairs.
+     *
+     * A repeated field is REFUSED rather than resolved. Collapsing pairs into a map keeps the last
+     * one, so a false `License:` line sitting above the correct one would be discarded by the parser
+     * and the entry would still compare equal: the check would hide the very claim it is reading.
+     */
     private fun shippedEntries(): List<Map<String, String>> =
         shipped.split("\n\n").map { block ->
-            block.lineSequence()
-                .mapNotNull { line ->
-                    val separator = line.indexOf(": ")
-                    if (separator <= 0 || line.first().isWhitespace()) null
-                    else line.substring(0, separator) to line.substring(separator + 2).trim()
-                }
-                .toMap()
+            val fields = mutableMapOf<String, String>()
+            block.lineSequence().forEach { line ->
+                val separator = line.indexOf(": ")
+                if (separator <= 0 || line.first().isWhitespace()) return@forEach
+                val name = line.substring(0, separator)
+                val value = line.substring(separator + 2).trim()
+                val previous = fields.put(name, value)
+                assertTrue(
+                    "the notices declare '$name' twice in one entry, as '$previous' and '$value'",
+                    previous == null,
+                )
+            }
+            fields
         }
 
     // ---- The notices shipped inside the app ----
@@ -176,10 +188,16 @@ class ThirdPartyNoticesTest {
             val (version, licence) = row
             assertTrue("$module is listed with no version", version.isNotBlank())
             assertTrue("$module is listed with no licence", licence.isNotBlank())
-            assertTrue(
-                "$module is listed with a placeholder licence: $licence",
-                !licence.contains("unknown", ignoreCase = true) && !licence.contains("TODO"),
-            )
+            // A placeholder satisfies "not blank" while saying nothing, which is the shape a partly
+            // failed generation leaves behind. An unresolved ${'$'}{...} is a POM property nobody expanded.
+            listOf(version, licence).forEach { value ->
+                listOf("unknown", "todo", "tbd", "${'$'}{").forEach { placeholder ->
+                    assertTrue(
+                        "$module is listed with a placeholder value: '$value'",
+                        !value.contains(placeholder, ignoreCase = true),
+                    )
+                }
+            }
         }
     }
 
@@ -197,11 +215,36 @@ class ThirdPartyNoticesTest {
         )
     }
 
-    /** Every `group:artifact:version  Licence` row of the root file, keyed by `group:artifact`. */
-    private fun mavenRows(): Map<String, Pair<String, String>> =
-        Regex("""(?m)^ {2}(\S+:\S+):(\S+) {2,}(.+)$""")
-            .findAll(rootFile.readText())
-            .associate { it.groupValues[1] to (it.groupValues[2] to it.groupValues[3].trim()) }
+    /**
+     * Every `group:artifact:version  Licence` row of the root file's listing, keyed by
+     * `group:artifact`.
+     *
+     * EVERY indented line in that section must parse. Matching the well-formed rows and letting the
+     * rest fall out is how a row with a missing licence column escapes every check that follows: the
+     * malformed row is exactly the one worth looking at, and a filter makes it invisible.
+     */
+    private fun mavenRows(): Map<String, Pair<String, String>> {
+        val text = rootFile.readText()
+        val start = text.indexOf("PART 2 -")
+        assertTrue("the root notices must have a dependency listing", start >= 0)
+        val after = listOf("PART 3 -", "PART 4 -").mapNotNull { heading ->
+            text.indexOf(heading, start).takeIf { it > start }
+        }.minOrNull() ?: text.length
+        val section = text.substring(start, after)
+        val row = Regex("""^ {2}(\S+):(\S+):(\S+) {2,}(\S.*)$""")
+
+        val rows = mutableMapOf<String, Pair<String, String>>()
+        section.lineSequence()
+            .filter { it.startsWith("  ") && it.isNotBlank() }
+            .forEach { line ->
+                val match = row.matchEntire(line)
+                assertTrue("this listing row does not parse: '$line'", match != null)
+                val module = "${match!!.groupValues[1]}:${match.groupValues[2]}"
+                val previous = rows.put(module, match.groupValues[3] to match.groupValues[4].trim())
+                assertTrue("$module is listed twice, as '$previous' and again", previous == null)
+            }
+        return rows
+    }
 
     private companion object {
         /**

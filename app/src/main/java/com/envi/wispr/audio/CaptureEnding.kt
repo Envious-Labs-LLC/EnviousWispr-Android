@@ -51,7 +51,7 @@ internal sealed interface CaptureEnding {
             MaxDuration -> "the time limit"
             Manual -> "a stop request"
             Silence -> "silence"
-            Failure -> "a capture failure"
+            Failure -> "a capture failure or an unrecognised ending"
         }
 
     /** Whether a take that ended this way should go on to be transcribed and inserted. */

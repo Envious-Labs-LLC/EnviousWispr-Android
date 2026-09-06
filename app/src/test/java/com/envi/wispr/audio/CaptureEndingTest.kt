@@ -53,6 +53,23 @@ class CaptureEndingTest {
     }
 
     @Test
+    fun aLabelDoesNotAssertMoreThanItsMemberCovers() {
+        // Two members stand for MORE than one cause, and a label naming only one of them is a false
+        // statement in a log. MANUAL is claimed by the stop button AND by `onDestroy`; FAILURE is claimed
+        // by a capture error AND by any reason integer this build does not recognise, which is what
+        // `fromAidl` maps an unknown value to.
+        assertTrue(
+            "the failure label must not read as a capture error alone: ${CaptureEnding.Failure.label}",
+            CaptureEnding.Failure.label.contains("unrecognised"),
+        )
+        assertEquals(
+            "an unknown reason is the case this label has to cover",
+            CaptureEnding.Failure,
+            CaptureEnding.fromAidl(99),
+        )
+    }
+
+    @Test
     fun theManualLabelDoesNotClaimAButtonWasPressed() {
         // `AudioCaptureService.onDestroy` ends a running take through the same route as the stop button,
         // so both claim MANUAL. A label naming a button would be a false statement in a log for every

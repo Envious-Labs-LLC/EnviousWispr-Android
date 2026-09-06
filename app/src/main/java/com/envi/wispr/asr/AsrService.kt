@@ -6,6 +6,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.audio.PcmAudio
+import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
@@ -28,7 +29,15 @@ class AsrService : Service() {
     companion object {
         private const val TAG = "AsrService"
         private const val SAMPLE_RATE = 16000
-        private const val MAX_AUDIO_BYTES = 120L * SAMPLE_RATE * 2
+
+        /**
+         * The refusal the user reads if a file somehow arrives longer than the cap.
+         *
+         * Built from the limit rather than written out, because the two used to be separate: the number
+         * in the sentence was 120 while the capture process was free to be changed to anything else.
+         */
+        private val OVER_LIMIT_MESSAGE =
+            "This recording is longer than the ${RecordingLimits.MAX_DURATION_MINUTES} minute limit."
     }
 
     private var recognizer: OfflineRecognizer? = null
@@ -52,10 +61,16 @@ class AsrService : Service() {
                 callback?.onError(msg)
                 return
             }
-            if (file.length() > MAX_AUDIO_BYTES) {
-                val msg = "Audio recording exceeds the 120 second limit"
-                DebugLogger.warn(TAG, msg)
-                callback?.onError(msg)
+            // Not an independent limit. `RecordingLimits` owns the number and the capture process
+            // stops a take before this can be reached, so arriving here means something upstream is
+            // wrong rather than that the user talked for too long.
+            if (file.length() > RecordingLimits.MAX_AUDIO_BYTES) {
+                DebugLogger.warn(
+                    TAG,
+                    "Audio file is ${file.length()} bytes, over the " +
+                        "${RecordingLimits.MAX_AUDIO_BYTES} byte ceiling",
+                )
+                callback?.onError(OVER_LIMIT_MESSAGE)
                 return
             }
 

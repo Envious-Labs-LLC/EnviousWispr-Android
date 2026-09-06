@@ -38,6 +38,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -208,10 +209,19 @@ def url_problem(url: str) -> str:
         return "is an unexpanded property"
     if url != url.strip() or any(character.isspace() for character in url):
         return "contains whitespace"
-    for scheme in ("https://", "http://"):
-        if url.startswith(scheme):
-            return "" if url[len(scheme):].split("/", 1)[0] else "has no host"
-    return "has no http or https scheme"
+    # urlsplit rather than a hand-rolled scheme-and-slice. Splitting the text after the scheme on
+    # "/" reads the query of `https://?terms` as the hostname, and a hand-written parser for
+    # somebody else's grammar always has one more of those
+    # (`code-design-rules.md` RULE: parse-structured-input-dont-regex-and-iterate).
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "is malformed"
+    if parsed.scheme not in ("http", "https"):
+        return "has no http or https scheme"
+    if not parsed.hostname:
+        return "has no host"
+    return ""
 
 
 def normalise(name: str) -> str:

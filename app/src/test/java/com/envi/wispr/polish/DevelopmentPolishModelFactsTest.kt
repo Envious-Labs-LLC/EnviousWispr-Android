@@ -38,20 +38,29 @@ class DevelopmentPolishModelFactsTest {
         assertTrue(
             "the selector must ask the owner",
             selector.contains("DevelopmentPolishModel.isSupported(context)") &&
-                selector.contains("DevelopmentPolishModel.qualifies(context)"),
+                selector.contains("DevelopmentPolishModel.selectable(context)"),
         )
     }
 
     @Test
     fun theTwoQuestionsAboutTheSameFileStaySeparate() {
-        // EXISTS is what the screen asks, QUALIFIES is what polish asks. Collapsing them hides the case
+        // EXISTS is what the screen asks, SELECTABLE is what polish asks. Collapsing them hides the case
         // that matters most: a large file with the wrong hash, which is doing nothing and costing
         // everything.
         assertTrue("presence must be measurable on its own", owner.contains("fun bytesOnDisk("))
-        assertTrue("and loadability separately", owner.contains("fun qualifies("))
-        assertTrue(
-            "the card must decide on SIZE, not on whether the file is usable",
-            screen.contains("if (facts.bytes <= 0L) return"),
+        assertTrue("and loadability separately", owner.contains("fun selectable("))
+    }
+
+    @Test
+    fun theFileThatWasCheckedIsTheFileThatIsLoaded() {
+        // Asking a Context for the directory again AFTER validating a file is a second question, and
+        // only an identical answer makes them the same file. `selectable` hands back the very file it
+        // tested so no caller can validate one path and load another.
+        assertTrue("the owner returns the checked file", owner.contains("fun selectable(context: Context): File?"))
+        assertTrue("and returns the candidate itself", owner.contains("return candidate"))
+        assertFalse(
+            "the selector must not rebuild the path after checking it",
+            selector.contains("DevelopmentPolishModel.file(context)"),
         )
     }
 
@@ -95,11 +104,11 @@ class DevelopmentPolishModelFactsTest {
         assertTrue("and so does the removal", owner.contains("Files.walkFileTree("))
         assertTrue(
             "a removal that leaves anything must report itself as incomplete",
-            screen.contains("removalIncomplete = !removed"),
+            screen.contains("lastRemovalFailed = !removed"),
         )
         assertTrue(
             "and say so where the number is",
-            screen.contains("Some of it could not be removed."),
+            screen.contains("The last attempt to remove it did not finish."),
         )
     }
 
@@ -120,39 +129,68 @@ class DevelopmentPolishModelFactsTest {
     }
 
     @Test
-    fun theCardClaimsEligibilityAndNeverLiveState() {
-        // Nothing here can see what the :polish process has loaded. An earlier version said "polish is
-        // running from this file", which this check cannot know and which is wrong for the whole window
-        // before the first polish request.
-        assertFalse("no claim about what is running", screen.contains("is running from this file"))
-        assertTrue("the wording must be about what would be picked", screen.contains("will pick this file"))
+    fun theCardClaimsNothingItCannotEstablish() {
+        // Three sentences were tried and all three overreached: that polish was RUNNING from the file,
+        // that a measured speed CAME FROM it, and that a named model was present and invalid. The last
+        // settled it, because a folder holding some other file produced a confident sentence about a
+        // model that was not there. The card describes a FOLDER and its SIZE, and nothing else.
+        listOf(
+            "is running from this file",
+            "will pick this file",
+            "not the app's",
+            "does not match what the app expects",
+            // Who created the files is not knowable from here either; another development tool could
+            // write into this folder just as easily as a person could.
+            "put here by hand",
+        ).forEach { claim ->
+            assertFalse("the card must not claim: $claim", screen.contains(claim))
+        }
         assertTrue(
-            "and it must still warn that a measurement here is not the app's",
-            screen.contains("not the app's"),
+            "it names the scope it actually measured",
+            screen.contains("Development models folder"),
         )
         assertTrue(
-            "the owner must say the same thing where the next reader looks",
-            owner.contains("This is not a claim about what is loaded."),
+            "and the one thing it can check about a released build",
+            screen.contains("A released build never selects a model from here."),
         )
     }
 
     @Test
-    fun aFailedCheckStillShowsWhatTheFileCosts() {
-        // Measuring a directory succeeds where opening a file to hash it throws. Sharing one catch
-        // threw the size away too and hid the card, so the user was told nothing about space they were
-        // definitely paying for and could still have freed.
+    fun noSentenceIsShownBeforeItsCondition() {
+        // Enumerating the STRINGS was not enough; each also has a STATE it may appear in, and that axis
+        // is where the last one hid. A measurement that had not returned yet was indistinguishable from
+        // one that failed, so the card reported a failure in the moment before the first answer arrived,
+        // and again after every removal.
         assertTrue(
-            "size and eligibility must be caught separately",
-            screen.contains("runCatching { DevelopmentPolishModel.bytesOnDisk(context) }.getOrNull()") &&
-                screen.contains("runCatching { DevelopmentPolishModel.qualifies(context) }.getOrNull()"),
+            "pending must be its own state, not folded into failure",
+            screen.contains("produceState<Result<Long>?>(initialValue = null)"),
         )
         assertTrue(
-            "an unknown eligibility is its own answer, not a false",
-            screen.contains("val selectable: Boolean?"),
+            "and nothing renders until there is an answer",
+            screen.contains("if (measurement == null && !lastRemovalFailed) return") &&
+                screen.contains("if (measurement != null) {"),
+        )
+    }
+
+    @Test
+    fun aFolderThatCannotBeMeasuredStillExplainsItself() {
+        // A removal that failed must be able to say so even when the next measurement of that same
+        // broken folder also fails. Tying the card's presence to a successful measurement hid both.
+        assertTrue(
+            "a failed measurement is its own answer",
+            screen.contains("Could not measure what is in it"),
         )
         assertTrue(
-            "and the card must have a sentence for it",
-            screen.contains("could not be checked"),
+            "and the card survives it when a removal failed",
+            screen.contains("if (bytes == 0L && !lastRemovalFailed) return"),
+        )
+        assertTrue(
+            "the failure describes the attempt, not the contents",
+            screen.contains("The last attempt to remove it did not finish."),
+        )
+        assertFalse(
+            "and it must not survive a recreation, or it describes replaced contents",
+            screen.contains("var lastRemovalFailed by rememberSaveable"),
         )
     }
 }

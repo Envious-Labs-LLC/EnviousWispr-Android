@@ -16,12 +16,14 @@ internal object S1ModelSelector {
         // Same three conditions as before, now asked of `DevelopmentPolishModel` so the path and the
         // qualification test have ONE owner. The Models screen needs the same path to show what the
         // file costs, and a second copy of it is how the file stayed invisible.
-        if (DevelopmentPolishModel.isSupported(context) && DevelopmentPolishModel.qualifies(context)) {
-            return S1ModelSelection(
-                DevelopmentPolishModel.file(context),
-                listOf("npu", "gpu", "cpu"),
-                npuOptimized = true,
-            )
+        if (DevelopmentPolishModel.isSupported(context)) {
+            // The file that was CHECKED is the file that is returned. Asking for the path again after
+            // validating it is a second question, and only an identical answer makes them the same
+            // file. The old code kept the `File` it had tested; this keeps that property deliberately.
+            val checked = DevelopmentPolishModel.selectable(context)
+            if (checked != null) {
+                return S1ModelSelection(checked, listOf("npu", "gpu", "cpu"), npuOptimized = true)
+            }
         }
 
         if (!ModelStorage.isReady(context, ModelManifest.s1)) return null

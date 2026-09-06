@@ -65,11 +65,22 @@ internal object DevelopmentPolishModel {
      *
      * Hashes 469 MB, so this is IO and belongs off the main thread with everything else here.
      */
-    fun qualifies(context: Context): Boolean {
+    fun qualifies(context: Context): Boolean = selectable(context) != null
+
+    /**
+     * The file the polish path would load, or null.
+     *
+     * It returns THE VERY FILE IT CHECKED rather than a description of it, so a caller cannot validate
+     * one path and then load another. The old selector already had this property by accident, because
+     * it kept the `File` it had tested; asking a `Context` for its directory a second time is a second
+     * question, and only an identical answer makes the two the same file.
+     */
+    fun selectable(context: Context): File? {
         val candidate = file(context)
-        if (!candidate.isFile) return false
-        if (candidate.length() != S1Config.NPU_MODEL_BYTES) return false
-        return sha256(candidate) == S1Config.NPU_MODEL_SHA256
+        if (!candidate.isFile) return null
+        if (candidate.length() != S1Config.NPU_MODEL_BYTES) return null
+        if (sha256(candidate) != S1Config.NPU_MODEL_SHA256) return null
+        return candidate
     }
 
     /**

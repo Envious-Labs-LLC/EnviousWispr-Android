@@ -35,11 +35,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import com.envi.wispr.polish.DevelopmentPolishModel
@@ -525,19 +527,21 @@ private fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
 }
 
 /**
- * The hand-placed development polish model, on the one screen that already talks about local polish.
+ * The development-models folder: what it costs, and a way to be rid of it.
  *
- * **Debuggable builds only, and absent rather than disabled otherwise.** A release build would never
- * load this file, so a release build offering to manage it would be naming a capability it does not
- * have. `DevelopmentPolishModel.isSupported` owns that test.
+ * **Debuggable builds only, and absent rather than disabled otherwise.** A release build never reads
+ * this folder, so offering to manage it would name a capability that build does not have.
+ * `DevelopmentPolishModel.isSupported` owns that test.
  *
- * It shows a file that EXISTS, not one that qualifies. A 469 MB file with the wrong hash is still 469 MB,
- * and it is the case where being shown it matters most, because it is doing nothing at all
- * ([issue #21](https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/21)).
+ * **It describes a FOLDER, and says nothing about what is in it.** Three sentences were tried here and
+ * all three claimed more than the code establishes: that polish was running from the file, that a
+ * measured speed came from it, and that a named model was present and invalid. The last is the one that
+ * settled it, because a folder holding some other file entirely produced a confident sentence about a
+ * model that was not there. What is actually known is the SIZE and the SCOPE, so that is all it says
+ * (issue #21, review 2026-09-06, against a consequence declared before the verdict was read).
  *
- * It also says whether polish is ACTUALLY using it, which is the question anyone reading a latency
- * number needs answered: a measurement from this file is not a measurement of what ships
- * (`architecture-rules.md` FACT: npu-polish-is-a-development-override).
+ * The thing the removed sentences were reaching for, which model produced a given latency number, is
+ * real and belongs where a benchmark is reported rather than asserted by a card about a folder.
  */
 @Composable
 private fun DevelopmentModelCard() {
@@ -547,29 +551,29 @@ private fun DevelopmentModelCard() {
 
     // Bumped after a removal, so the card measures again rather than showing what was just deleted.
     var generation by rememberSaveable { mutableIntStateOf(0) }
-    var removalIncomplete by rememberSaveable { mutableStateOf(false) }
-    // null until measured. Absent rather than "0 KB", because a zero is a claim.
-    val state by key(generation) {
-        produceState<DevelopmentModelFacts?>(initialValue = null) {
+    // Plain `remember`, NOT rememberSaveable. It describes the last attempt in this sitting. Surviving
+    // a recreation would let it describe contents that were replaced while the screen was away.
+    var lastRemovalFailed by remember { mutableStateOf(false) }
+
+    // THREE states, not two. `null` is PENDING; a `Result` is an answer, successful or not. Collapsing
+    // pending into failure made the card say "Could not measure what is in it" for the moment before
+    // the first measurement returned, and again after every removal, which is a failure reported before
+    // one has happened.
+    val measured by key(generation) {
+        produceState<Result<Long>?>(initialValue = null) {
             value = withContext(Dispatchers.IO) {
-                // The two are measured SEPARATELY on purpose. Reading the size succeeds on a directory
-                // whose contents cannot be opened, while hashing that same file throws; sharing one
-                // catch threw the size away too and hid the card, so the user was shown nothing about
-                // space they are definitely paying for and could still have freed.
-                val bytes = runCatching { DevelopmentPolishModel.bytesOnDisk(context) }.getOrNull()
-                    ?: return@withContext null
-                DevelopmentModelFacts(
-                    bytes = bytes,
-                    // Hashing 469 MB, which is why this whole block is off the main thread. null means
-                    // the check itself could not be made, which is a third answer and not a false.
-                    selectable = runCatching { DevelopmentPolishModel.qualifies(context) }.getOrNull(),
-                )
+                runCatching { DevelopmentPolishModel.bytesOnDisk(context) }
             }
         }
     }
 
-    val facts = state ?: return
-    if (facts.bytes <= 0L) return
+    val measurement = measured
+    val bytes = measurement?.getOrNull()
+    // Nothing to show while still measuring, and nothing to show when the folder is measurably empty. A
+    // FAILED measurement still shows the card, because a removal that failed must be able to say so even
+    // when the next measurement of that same broken folder also fails.
+    if (measurement == null && !lastRemovalFailed) return
+    if (bytes == 0L && !lastRemovalFailed) return
 
     ElevatedCard {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -578,48 +582,45 @@ private fun DevelopmentModelCard() {
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )
-            Text("Hand-placed polish model", style = MaterialTheme.typography.headlineMedium)
+            Text("Development models folder", style = MaterialTheme.typography.headlineMedium)
             Text(
-                // ELIGIBILITY, never live state. Nothing here can see what the polish process has
-                // loaded, and a sentence claiming otherwise would be wrong for the whole window before
-                // the first polish request.
-                when (facts.selectable) {
-                    true ->
-                        "Polish on this phone will pick this file over the model that ships. " +
-                            "Any speed measured on this build is this file's, not the app's."
-                    false ->
-                        "Polish will not pick this file. It was placed here by hand and does not " +
-                            "match what the app expects, so it is only taking up room."
-                    null ->
-                        "This file could not be checked, so whether polish would pick it is unknown. " +
-                            "It is taking up room either way."
-                },
+                // Says only what is checkable. An earlier version said the files were put here BY
+                // HAND, which is a claim about who created them that nothing here establishes: another
+                // development tool could write into this folder just as easily.
+                "Storage for development files. A released build never selects a model from here.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(
-                "${formatModelBytes(facts.bytes)} on this phone",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (removalIncomplete) {
+            // Silent while the measurement is still in flight. A size line that appears only once
+            // there is an answer cannot report a failure that has not happened.
+            if (measurement != null) {
                 Text(
-                    "Some of it could not be removed. What is left is still counted above.",
+                    if (bytes != null) {
+                        "${formatModelBytes(bytes)} on this phone"
+                    } else {
+                        "Could not measure what is in it"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (lastRemovalFailed) {
+                Text(
+                    "The last attempt to remove it did not finish.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
             OutlinedButton(
                 onClick = {
-                    // The delete is IO, and whether it worked is read from the world afterwards rather
-                    // than assumed. A partial removal is SAID rather than swallowed: the size above is
-                    // re-measured either way, so a silent failure would leave the user staring at a
-                    // number that did not move with no explanation.
+                    // Whether it worked is read from the world afterwards, never assumed, and a failure
+                    // is SAID. It is recorded separately from the measurement so a folder that cannot
+                    // be measured either can still explain itself.
                     scope.launch {
                         val removed = withContext(Dispatchers.IO) {
                             runCatching { DevelopmentPolishModel.delete(context) }.getOrDefault(false)
                         }
-                        removalIncomplete = !removed
+                        lastRemovalFailed = !removed
                         generation += 1
                     }
                 },
@@ -627,14 +628,6 @@ private fun DevelopmentModelCard() {
         }
     }
 }
-
-/**
- * What the development model card needs.
- *
- * [selectable] is nullable because "could not check" is a real third answer: the size can be measured on
- * a file whose contents cannot be read, and the user still deserves to be told what it costs.
- */
-private data class DevelopmentModelFacts(val bytes: Long, val selectable: Boolean?)
 
 /**
  * The way out of a key field for someone who has no key (#97).

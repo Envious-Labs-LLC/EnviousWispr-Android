@@ -201,6 +201,34 @@ def _settled_locked(entry, serial):
     _journal_write(book)
 
 
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────
+# THE RECORDING HALF OF THIS HARNESS IS OFF.
+#
+# Six review rounds, and every one found a different sequence that could leave a recording running on the
+# founder's phone with nothing recording that it was. Each fix was correct and structural — the raw start
+# was deleted, the take became a context manager, the take went into the on-disk book before the start
+# intent under a lock held across it, each take got its own id, and no take could begin until the phone
+# had been restored. Round six found another anyway: `restore()` decided what to do outside the lock, so
+# a second session could erase the debt of a recording that had started while it waited.
+#
+# The consequence was declared in round six's own prompt, before its verdict was read, and this is it.
+# The alternative is a seventh clever fix, and the evidence of five rounds is that the next one has one
+# more sequence in it.
+#
+# The reading and settings half is untouched and is most of what this tool does: `look`, `find`, `tap`,
+# `open_tab`, `nav`, `scan`, `switches`, `set_switch`, `overlay`, `recording`, `logs`, `last_take`,
+# `restore`. Only the four calls that START a recording refuse.
+#
+# TO TURN IT BACK ON, delete this constant and the four guards that read it. Do that only on a review
+# round whose verdict says, in as many words, that the take-with-no-debt class is CLOSED — not that the
+# latest instance is fixed. Round six's `## CLASS` section is the shape of answer required.
+RECORDING_IS_OFF = (
+    "recording from this harness is off. Six review rounds each found a different sequence that could "
+    "leave a recording running on the phone with nothing recording it, so the recording half is not "
+    "offered until a round says the class is closed. Everything that READS the phone still works."
+)
+
+
 class Blocked(RuntimeError):
     """The question cannot be answered right now, and driving on would produce a wrong answer."""
 
@@ -1320,6 +1348,8 @@ def open_recorder(verify=True):
     answers the action (`device-testing.md` FACT: the-ASSIST-action-opens-a-CHOOSER-on-this-phone), so
     the component is named instead.
     """
+    if RECORDING_IS_OFF:
+        raise Blocked(RECORDING_IS_OFF)
     # THE PRE-COMMITTED CONSEQUENCE, and it is paid on every take.
     #
     # Round 5 found the last way a take could run with an empty book, and the criterion declared before
@@ -1327,7 +1357,10 @@ def open_recorder(verify=True):
     # that. It means the phone is left clean before any new recording starts, so an unknown take from a
     # killed run cannot sit under a new one, and a harness that cannot clean the phone cannot record on
     # it. The cost is a full restore before every take, which is the point rather than a side effect.
-    if _STATE.get("restored_for") != device():
+    # POPPED, so it is spent by the take it allows. Left in place it was once per process, which is
+    # not what this was said to do: a second take in the same run would have started on a phone whose
+    # state had changed since the last restore.
+    if _STATE.pop("restored_for", None) != device():
         raise Blocked(
             "restore() has not been run in this process, so the phone's state is unknown and a take "
             "must not be started on it. Call restore() first; it ends any recording an earlier run left "
@@ -1605,8 +1638,14 @@ def stage_phone_speech(sentence, volume=3, use_fixture=True):
 
 
 def play_staged_speech():
-    """Start the phone speaking. ONE adb call, because this one runs inside a live take."""
-    _adb(f"am start -n {shlex.quote(SPEAKER_ACTIVITY)}", check=False)
+    """Start the phone speaking, and REFUSE if it did not. ONE adb call: this runs inside a live take.
+
+    The launch's status was discarded, so a helper that never started left the caller watching for an
+    activity that was never there, finding none, and reporting that the sentence had been spoken.
+    """
+    remote, out = _adb(f"am start -n {shlex.quote(SPEAKER_ACTIVITY)}", check=False)
+    if remote != 0 or "Error" in out:
+        raise Blocked(f"the phone's speaker helper did not start: {out.strip() or 'no message'}")
 
 
 def unstage_phone_speech():
@@ -1729,16 +1768,24 @@ def keep_awake(minutes=30):
     """
     if not isinstance(minutes, int) or isinstance(minutes, bool) or not 1 <= minutes <= 60:
         raise Blocked("minutes must be a whole number from 1 to 60")
-    _, previous = _adb("settings get system screen_off_timeout")
-    previous = previous.strip()
-    if not previous.isdigit():
-        raise Blocked(f"could not read the phone's screen timeout, so it could not be safely changed: {previous!r}")
-    # Owed BEFORE the write. A note about a change that did not happen is a wasted restore; a change
-    # with no note is a setting left on the founder's phone.
-    if not any(what == "screen-timeout" for what, _ in _owed()):
-        _owe(("screen-timeout", previous))
-    _adb(f"settings put system screen_off_timeout {minutes * 60_000}")
-    return f"screen stays on for {minutes} minutes (was {int(previous) // 1000}s)"
+    # UNDER THE LOCK, for the same reason `restore()` is: another session could settle this debt in the
+    # gap between writing it and making the change, leaving the founder's screen timeout altered with
+    # nothing recording it.
+    with _journal_locked():
+        _, previous = _adb("settings get system screen_off_timeout")
+        previous = previous.strip()
+        if not previous.isdigit():
+            raise Blocked(
+                f"could not read the phone's screen timeout, so it could not be safely changed: {previous!r}")
+        # Owed BEFORE the write. A note about a change that did not happen is a wasted restore; a change
+        # with no note is a setting left on the founder's phone.
+        _owe_locked(("screen-timeout", previous), device())
+        wanted = str(minutes * 60_000)
+        _adb(f"settings put system screen_off_timeout {wanted}")
+        _, actual = _adb("settings get system screen_off_timeout")
+        if actual.strip() != wanted:
+            raise Blocked("the screen timeout did not change, so the note about it would be wrong")
+        return f"screen stays on for {minutes} minutes (was {int(previous) // 1000}s)"
 
 
 def logs(pattern=None, lines=200):
@@ -1900,6 +1947,19 @@ def _restore_one(entry):
 def restore():
     """Put back everything this session changed, and say what.
 
+    **THE WHOLE RUN IS UNDER THE BOOK'S LOCK, and that is the fix for the last race.** Reading the book,
+    acting on it, and settling were three separate steps with gaps between them, so another session could
+    decide what to do from a state that had already changed: it read a take debt, checked and found
+    nothing recording YET, waited, and then erased the debt of a recording that had started in the
+    meantime. Deciding and settling have to be one indivisible act.
+    """
+    with _journal_locked():
+        return _restore_locked()
+
+
+def _restore_locked():
+    """Put back everything this session changed, and say what.
+
     An entry is removed ONLY after its restore was read back. A failure leaves it in the journal and
     raises, so the next call tries again rather than reporting a rollback that did not happen.
 
@@ -1915,7 +1975,7 @@ def restore():
     for scope in ("host", device()):
         for entry in list(_owed(scope)):
             _restore_one(entry)
-            _settled(entry, scope)
+            _settled_locked(entry, scope)
             done.append(f"{entry[0]} back to {entry[1]}")
     _STATE["restore"] = []
     # THE SCREEN DUMP IS NOT DELETED, and that is the whole of it. `rm -f` on a fixed path removes
@@ -1933,6 +1993,8 @@ def restore():
 
 def check_recorder():
     """Does the floating recorder open, and can the user see it? One call, and it always tidies up."""
+    if RECORDING_IS_OFF:
+        return [f"BLOCKED: {RECORDING_IS_OFF}"]
     ready()
     report = []
     # The phone is left clean before anything is recorded on it, which is also what makes the take
@@ -2133,6 +2195,8 @@ def room_is_quiet(seconds=6):
     Non-disruptive by construction: it plays nothing, so it is safe to run while somebody is talking,
     which is exactly when it is needed.
     """
+    if RECORDING_IS_OFF:
+        return [f"BLOCKED: {RECORDING_IS_OFF}"]
     ready()
     restore()
     clear_log()
@@ -2181,6 +2245,8 @@ def test_dictation(sentence="The quick brown fox jumps over the lazy dog.", volu
     so a run started from the app's own screens is testing something the product never does. Chrome's
     address bar is the safe one: nothing is sent.
     """
+    if RECORDING_IS_OFF:
+        return [f"BLOCKED: {RECORDING_IS_OFF}"]
     ready()
     restore()
     if not bound():

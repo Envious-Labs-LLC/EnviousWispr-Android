@@ -489,15 +489,36 @@ def main():
     eyes._settled(second)
     check("settling them empties the book", eyes._owed("fixture") == [], eyes._owed("fixture"))
 
-    # A TAKE MAY NOT BEGIN ON A PHONE WHOSE STATE IS UNKNOWN. The consequence declared before round 5's
-    # verdict: every take is preceded by a completed `restore()` in this process, so a recording left by
-    # a killed run cannot sit underneath a new one.
+    # THE RECORDING HALF IS OFF, and this row is what says so rather than a comment claiming it. Six
+    # review rounds each found a different sequence that could leave a recording running with nothing
+    # recording it, and the consequence declared before round six's verdict was that the four calls which
+    # START one refuse until a round says the class is closed.
+    try:
+        with eyes.open_recorder():
+            check("starting a recording is refused", False, "it started one")
+    except eyes.Blocked as refusal:
+        check("starting a recording is refused", "recording from this harness is off" in str(refusal),
+              refusal)
+    for name, call in (("check_recorder", eyes.check_recorder),
+                       ("test_dictation", eyes.test_dictation),
+                       ("room_is_quiet", eyes.room_is_quiet)):
+        answer = call()
+        check(f"{name} reports it as BLOCKED rather than raising",
+              isinstance(answer, list) and answer and answer[0].startswith("BLOCKED:"), answer)
+
+    # AND THE GUARD UNDERNEATH IS STILL THERE, so turning recording back on does not also turn off the
+    # rule that a take may not begin on a phone whose state is unknown. Read directly, because the
+    # refusal above now happens first.
+    real_off = eyes.RECORDING_IS_OFF
+    eyes.RECORDING_IS_OFF = ""
     eyes._STATE["restored_for"] = None
     try:
         with eyes.open_recorder():
             check("a take refuses on an unrestored phone", False, "it started one")
     except eyes.Blocked as refusal:
         check("a take refuses on an unrestored phone", "restore() has not been run" in str(refusal), refusal)
+    finally:
+        eyes.RECORDING_IS_OFF = real_off
 
     # A RECORDING THAT OUTLIVED THE PROCESS THAT STARTED IT. Only a debt on disk can carry this across
     # a killed run, and only a later session can act on it, so this row is the whole reason the take is
@@ -514,7 +535,9 @@ def main():
 
     store["take"] = "running"
     eyes._owe(("take", "fixture"))
-    check("a take left by a killed run is in the book",
+    # NAMED FOR WHAT IT DOES. This inserts a debt by hand; it does not kill a process, so it is evidence
+    # that the book carries a take, not that one survived a crash.
+    check("a take debt is readable from the book",
           ("take", "fixture") in eyes._owed("fixture"), eyes._owed("fixture"))
     said = eyes.restore()
     # NAMED FOR WHAT IT CHECKS. This runs in the same process, so it is not evidence that a LATER

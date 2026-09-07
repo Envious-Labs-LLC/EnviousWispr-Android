@@ -177,10 +177,14 @@ def _settled(entry, serial=None):
     """Drop a change from the book, ONLY after its restore was read back."""
     serial = serial or _STATE["serial"]
     with _journal_locked():
-        book = _journal_read()
-        owed = [tuple(e) for e in book.get(serial or "", []) if tuple(e) != entry]
-        book[serial or ""] = [list(e) for e in owed]
-        _journal_write(book)
+        _settled_locked(entry, serial)
+
+
+def _settled_locked(entry, serial):
+    book = _journal_read()
+    owed = [tuple(e) for e in book.get(serial or "", []) if tuple(e) != entry]
+    book[serial or ""] = [list(e) for e in owed]
+    _journal_write(book)
 
 
 class Blocked(RuntimeError):
@@ -1219,11 +1223,33 @@ def _kill_take():
     was busy being careful about a setting. So the order is: end the recording, THEN try the repair, and
     the repair's failure is raised after the microphone is already closed.
     """
-    _adb(f"am force-stop {PACKAGE}", check=False)
+    # THE ACCESSIBILITY STATE FIRST, because a force-stop CLEARS it and this is the emergency path —
+    # the one most likely to be followed by the process ending. Journaled, so a later session can put it
+    # back even if this one does not survive to.
+    before = None
+    try:
+        before = _a11y_state()
+        if ACCESSIBILITY_SERVICE in _a11y_services(before):
+            _owe(("a11y-state", json.dumps(before, sort_keys=True)))
+    except Blocked:
+        # Unreadable. Closing the microphone still comes first; the settings are the lesser harm.
+        before = None
+    stopped, why = _adb(f"am force-stop {PACKAGE}", check=False)
     time.sleep(1)
     _STATE["tree"] = None
+    if stopped != 0:
+        # A FORCE-STOP THAT FAILED IS NOT A CLOSED MICROPHONE. Reporting success here let the caller
+        # settle the take's debt while the recording carried on, which is the exact state the debt
+        # exists to make impossible.
+        raise Blocked(
+            f"the recording would not stop and the app would not be force-stopped ({why.strip()}). "
+            "The microphone may still be open on this phone."
+        )
     # The repair is a separate concern and comes second, always.
-    if not bound():
+    if before is not None and ACCESSIBILITY_SERVICE in _a11y_services(before):
+        _put_a11y(before)
+        _settled(("a11y-state", json.dumps(before, sort_keys=True)))
+    elif not bound():
         enable_auto_paste()
 
 
@@ -1297,9 +1323,28 @@ def open_recorder(verify=True):
     # that would not have fixed this, because the manual `with open_recorder()` block has the identical
     # window. The object was wrong, so this replaces it rather than performing it.
     take = ("take", device())
-    _owe(take)
+    # THE DECLARED CONSEQUENCE, and it is paid on every run.
+    #
+    # Round 4 found the last way a take could be running with nothing recording it: this process writes
+    # the debt, ANOTHER session's `restore()` reads the book, finds a take with nothing running yet,
+    # cancels nothing and settles it — and only then does this process send the start. Running, with an
+    # empty book.
+    #
+    # Reading the debt back proves it reached the disk; holding the journal lock ACROSS the start is
+    # what makes the window itself not exist, because no other process can read or settle the book
+    # until the take is real. The cost is that a second session waits for this one, which on a harness
+    # with exactly one phone is a description of the correct behaviour rather than a price.
+    with _journal_locked():
+        _owe_locked(take, device())
+        if take not in _owed():
+            raise Blocked("the take could not be recorded on disk, so it will not be started. A take "
+                          "nothing has written down is one nobody can end.")
+        try:
+            _start_take()
+        except BaseException:
+            _settled_locked(take, device())
+            raise
     try:
-        _start_take()
         time.sleep(1.0)
         _STATE["tree"] = None
         pill = None
@@ -1448,7 +1493,9 @@ FIXTURE_BYTES_PER_SAMPLE = 2
 
 
 def _media_volume():
-    _, out = _adb("cmd media_session volume --stream 3 --get", check=False)
+    # `check=True`: a failed read whose output happens to carry a plausible volume line was
+    # otherwise accepted as the phone's real volume, and journaled as the value to restore.
+    _, out = _adb("cmd media_session volume --stream 3 --get")
     reading = re.search(r"volume is (\d+) in range \[0\.\.(\d+)\]", out or "")
     if not reading:
         raise Blocked(f"could not read the phone's media volume, so it could not be safely lowered: {out.strip()!r}")
@@ -1838,11 +1885,11 @@ def restore():
             _settled(entry, scope)
             done.append(f"{entry[0]} back to {entry[1]}")
     _STATE["restore"] = []
-    # ONLY IF IT IS OURS. `rm -f` on a fixed path deletes whatever happens to be sitting there, and
-    # nothing here put it in the book, so a file of the founder's with that name would go silently.
-    code, head = _adb("head -c 40 /sdcard/wispr-eyes.xml", check=False)
-    if code == 0 and "<hierarchy" in head:
-        _adb("rm -f /sdcard/wispr-eyes.xml", check=False)
+    # THE SCREEN DUMP IS NOT DELETED, and that is the whole of it. `rm -f` on a fixed path removes
+    # whatever is sitting there, and "it looks like XML" is a description, not proof of ownership: a
+    # file of the founder's with that name and that shape would go silently. It is one small file that
+    # every run overwrites, so leaving it costs nothing and deleting it can cost something that is not
+    # ours to spend.
     return done or ["nothing was changed"]
 
 

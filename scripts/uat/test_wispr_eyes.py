@@ -424,10 +424,20 @@ def main():
         got = re.match(r"settings get system (\w+)", command)
         if got:
             return 0, store.get(got.group(1), "null") + "\n"
+        if "VoiceInputActivity" in command and "cancel" in command:
+            store["take"] = "stopped"
+            return 0, ""
+        if command.startswith("am force-stop"):
+            store["take"] = "stopped"
+            return 0, ""
         if command.startswith("logcat -d"):
-            # A take that STARTED AND STOPPED, so `recording()` can answer False rather than refuse.
-            return 0, ("09-06 10:00:00.000 I/AudioCapture(1): recording_start [+0ms]\n"
-                       "09-06 10:00:05.000 I/AudioCapture(1): recording_stop [+5000ms]\n")
+            # A TAKE THAT IS STILL RUNNING UNTIL SOMETHING ENDS IT. A fixture that always reports a
+            # stopped take lets a restore which cancels NOTHING report success, so the row asserting
+            # that a later session ends a leftover recording was green with the cancel deleted.
+            started = "09-06 10:00:00.000 I/AudioCapture(1): recording_start [+0ms]\n"
+            if store.get("take") == "running":
+                return 0, started
+            return 0, started + "09-06 10:00:05.000 I/AudioCapture(1): recording_stop [+5000ms]\n"
         return 0, ""
 
     eyes._adb = fake_phone
@@ -482,11 +492,15 @@ def main():
     # A RECORDING THAT OUTLIVED THE PROCESS THAT STARTED IT. Only a debt on disk can carry this across
     # a killed run, and only a later session can act on it, so this row is the whole reason the take is
     # journaled rather than merely wrapped in a `finally`.
+    store["take"] = "running"
     eyes._owe(("take", "fixture"))
     check("a take left by a killed run is in the book",
           ("take", "fixture") in eyes._owed("fixture"), eyes._owed("fixture"))
     said = eyes.restore()
     check("and a later session ends it", any("take" in line for line in said), said)
+    # THE PHONE, not the report. The row above says what the harness CLAIMED; this one says the
+    # microphone actually closed, and it is the one that fails when the cancel is deleted.
+    check("and the microphone is actually closed", store.get("take") == "stopped", store.get("take"))
     check("and the book is clear afterwards", eyes._owed("fixture") == [], eyes._owed("fixture"))
 
     # A change owed to ANOTHER phone is never restored onto this one.

@@ -609,53 +609,85 @@ def main():
     module = ast.parse(source)
     TOUCHES = {"_owe", "_settled", "_owe_locked", "_settled_locked"}
 
-    def called_names(node):
-        """Every function name called anywhere inside this node, its own nested defs excluded."""
-        names = set()
-        for child in ast.walk(node):
-            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
-                names.add(child.func.id)
-        return names
+    def unguarded_calls(function):
+        """Every debt call in this function that is NOT inside a `with _journal_locked()`.
 
-    def guarded_by_with(node):
-        """Is every debt call inside a `with _journal_locked()` block in THIS function?"""
-        inside = set()
-        for child in ast.walk(node):
-            if not isinstance(child, ast.With):
-                continue
-            if not any(isinstance(item.context_expr, ast.Call)
-                       and getattr(item.context_expr.func, "id", "") == "_journal_locked"
-                       for item in child.items):
-                continue
-            inside |= called_names(child)
-        return TOUCHES <= (TOUCHES - called_names(node)) | inside
+        **IT WALKS, RATHER THAN COLLECTING NAMES.** The first version gathered the names called inside
+        any lock and the names called anywhere, and compared the two sets — so one `_owe` inside a lock
+        made every other `_owe` in the function count as protected. An unlocked call could hide behind a
+        locked one, which is precisely the defect this row exists to find.
+        """
+        bad = []
 
-    everything = [n for n in ast.walk(module)
-                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        def visit(node, held):
+            # A nested definition is its own function and is judged on its own.
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                return
+            if isinstance(node, ast.With):
+                active = held
+                for item in node.items:
+                    visit(item.context_expr, active)
+                    expr = item.context_expr
+                    if (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name)
+                            and expr.func.id == "_journal_locked"):
+                        active = True
+                for statement in node.body:
+                    visit(statement, active)
+                return
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in TOUCHES and not held):
+                bad.append(node.lineno)
+            for child in ast.iter_child_nodes(node):
+                visit(child, held)
+
+        for statement in function.body:
+            visit(statement, False)
+        return bad
+
     unlocked = []
-    for node in everything:
-        touched = TOUCHES & called_names(node)
-        if not touched:
+    for node in ast.walk(module):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        # The lock-free halves are the ones the decorator's own callers use; they are the mechanism, not
-        # members of the set, and they are named here rather than pattern-matched.
         # The lock-free halves are the mechanism rather than members of the set, and the convention is
         # in the NAME: anything ending `_locked` is only ever called by something already holding it.
         if node.name.endswith("_locked") or node.name in ("_owe", "_settled", "_atomic_change", "wrapped"):
             continue
-        decorated = any(getattr(d, "id", "") == "_atomic_change" for d in node.decorator_list)
-        if decorated or guarded_by_with(node):
+        decorators = [getattr(d, "id", "") for d in node.decorator_list]
+        # A DECORATOR CANNOT HOLD A LOCK ACROSS A `yield`. `@_atomic_change` on a generator wraps the
+        # call that BUILDS it, so the lock is released before the body ever runs — which is exactly the
+        # bug this row failed to catch once. A function that yields must take the lock inside itself.
+        yields = any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in ast.walk(node))
+        deferred = yields or "contextmanager" in decorators
+        if "_atomic_change" in decorators and not deferred:
+            continue
+        if not unguarded_calls(node):
             continue
         unlocked.append(node.name)
     check("every function that touches a debt holds the book's lock", not unlocked, unlocked)
 
-    # AND THE ROW CAN FAIL. A comment mentioning the lock must not satisfy it, which is how the first
-    # version passed.
-    fake = ast.parse("def sneaky():\n    # with _journal_locked() in a comment\n    _owe(('x','y'))\n")
-    sneaky = fake.body[0]
-    check("and a comment mentioning the lock does not count",
-          not (any(getattr(d, "id", "") == "_atomic_change" for d in sneaky.decorator_list)
-               or guarded_by_with(sneaky)))
+    # AND ONE LOCKED CALL DOES NOT COVER AN UNLOCKED ONE.
+    mixed = ast.parse("def mixed():\n"
+                      "    with _journal_locked():\n"
+                      "        _owe(('a', 'b'))\n"
+                      "    _owe(('c', 'd'))\n").body[0]
+    check("an unlocked call cannot hide behind a locked one", bool(unguarded_calls(mixed)))
+
+    # AND A DECORATOR ON A GENERATOR DOES NOT COUNT, because it releases the lock before the body runs.
+    generator = ast.parse("@_atomic_change\n"
+                          "@contextmanager\n"
+                          "def a_take():\n"
+                          "    _owe(('t', 'x'))\n"
+                          "    yield\n").body[0]
+    gen_decorators = [getattr(d, "id", "") for d in generator.decorator_list]
+    gen_deferred = any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in ast.walk(generator)) \
+        or "contextmanager" in gen_decorators
+    check("a decorator on a generator does not count as holding the lock",
+          gen_deferred and bool(unguarded_calls(generator)))
+
+    # AND A COMMENT MENTIONING THE LOCK MUST NOT SATISFY IT, which is how the FIRST version passed.
+    sneaky = ast.parse("def sneaky():\n    # with _journal_locked() in a comment\n"
+                       "    _owe(('x','y'))\n").body[0]
+    check("and a comment mentioning the lock does not count", bool(unguarded_calls(sneaky)))
 
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")

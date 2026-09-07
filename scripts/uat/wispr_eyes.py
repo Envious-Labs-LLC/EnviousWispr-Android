@@ -648,9 +648,14 @@ def shot(path=None):
     path = path or f"/tmp/wispr-eyes-{int(time.time())}.png"
     # NEVER OVER SOMETHING ALREADY THERE. This is the one call that writes to a path the CALLER chose,
     # and `wb` on an existing file destroys it with nothing recording that it did.
-    if Path(path).exists():
-        raise Blocked(f"{path} already exists and this will not write over it. Pass another name.")
-    with open(path, "wb") as handle:
+    # `xb` RATHER THAN A CHECK. Asking whether the file exists and then opening it leaves a gap in
+    # which something else can create it, and `wb` then truncates it. The filesystem can answer both at
+    # once, so it does.
+    try:
+        handle = open(path, "xb")
+    except FileExistsError:
+        raise Blocked(f"{path} already exists and this will not write over it. Pass another name.") from None
+    with handle:
         done = subprocess.run([ADB, "-s", device(), "exec-out", "screencap", "-p"],
                               stdout=handle, stderr=subprocess.PIPE)
     if done.returncode != 0 or not Path(path).stat().st_size:
@@ -1177,6 +1182,10 @@ def _start(component, what, settle):
     # about the wrong subject, and it sends a reader looking at the app. Measured 2026-09-06: the phone
     # locked itself mid-session and this is exactly what came back.
     ready()
+    # THIS OPENS THE APP, AND NOTHING ELSE. Handed the recorder's component it sends the very command
+    # `_start_take` guards, so the recording off-switch had a door beside it.
+    if component != SETTINGS_ACTIVITY:
+        raise Blocked(f"{what} is not something this opens; only the app's own settings screen is.")
     remote, out = _adb(f"am start -n {shlex.quote(component)}", check=False)
     if remote != 0 or "Error" in out:
         detail = out.strip().splitlines()[-1] if out.strip() else "no message"
@@ -1356,6 +1365,13 @@ def _kill_take():
         # nothing now knows what they were.
         before = None
         unreadable = why
+        # A NOTE THAT SAYS "SOMETHING IS WRONG AND I CANNOT NAME IT" beats no note. The force-stop below
+        # clears the accessibility settings and their previous values could not be read, so there is
+        # nothing honest to restore — but a later session must still find out that it happened. The
+        # unknown-entry handler refuses to settle this, which is the point.
+        _owe(("a11y-state-unknown",
+              "a force-stop cleared the accessibility settings and their previous values could not be "
+              "read first, so they need putting back by hand"))
     stopped, why = _adb(f"am force-stop {PACKAGE}", check=False)
     time.sleep(1)
     _STATE["tree"] = None
@@ -1412,7 +1428,6 @@ def _cancel_safely():
         _kill_take()
 
 
-@_atomic_change
 @contextmanager
 def open_recorder(verify=True):
     """Start the floating recorder and OWN THE TAKE UNTIL THE BLOCK ENDS.
@@ -1484,7 +1499,12 @@ def open_recorder(verify=True):
     # what makes the window itself not exist, because no other process can read or settle the book
     # until the take is real. The cost is that a second session waits for this one, which on a harness
     # with exactly one phone is a description of the correct behaviour rather than a price.
-    if True:  # the book is already held for this whole take by @_atomic_change
+    # THE LOCK IS TAKEN HERE, INSIDE, AND NOT BY A DECORATOR. `@_atomic_change` on a
+    # `@contextmanager` wraps the call that BUILDS the generator, so it acquires and releases the lock
+    # before `__enter__` ever runs: the take, its body and its cleanup all happened outside it, while a
+    # commit message of mine said the book was held for the whole take. It was not. A decorator cannot
+    # hold a lock across a `yield`; only a `with` inside the generator can.
+    with _journal_locked():
         _owe_locked(take, device())
         if take not in _owed():
             raise Blocked("the take could not be recorded on disk, so it will not be started. A take "
@@ -1493,26 +1513,26 @@ def open_recorder(verify=True):
         # the phone, so settling the debt on the way out is exactly the case the debt exists for: the
         # take runs and the book forgets it. An uncertain start keeps its debt, and `restore()` ends it.
         _start_take()
-    try:
-        time.sleep(1.0)
-        _STATE["tree"] = None
-        pill = None
-        if verify:
-            pill = overlay()
-            if pill is None:
-                raise Blocked(
-                    "the recorder was started but no pill is in the accessibility tree, and the window "
-                    "manager has no recorder window either, so the take did not draw. It has been "
-                    "cancelled, so nothing is still listening."
-                )
-            if not pill["the_user_can_see_it"]:
-                raise Blocked(f"the recorder window exists but the user cannot see it: {pill}")
-        yield pill
-    finally:
-        _cancel_safely()
-        # Settled only after the microphone is closed. `_cancel_safely` force-stops rather than return
-        # while a take might still be running, so reaching here means it is not.
-        _settled(take)
+        try:
+            time.sleep(1.0)
+            _STATE["tree"] = None
+            pill = None
+            if verify:
+                pill = overlay()
+                if pill is None:
+                    raise Blocked(
+                        "the recorder was started but no pill is in the accessibility tree, and the "
+                        "window manager has no recorder window either, so the take did not draw. It has "
+                        "been cancelled, so nothing is still listening."
+                    )
+                if not pill["the_user_can_see_it"]:
+                    raise Blocked(f"the recorder window exists but the user cannot see it: {pill}")
+            yield pill
+        finally:
+            _cancel_safely()
+            # Settled only after the microphone is closed. `_cancel_safely` force-stops rather than
+            # return while a take might still be running, so reaching here means it is not.
+            _settled(take)
 
 
 def nav(page):

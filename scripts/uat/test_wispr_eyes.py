@@ -168,7 +168,11 @@ def main():
     except eyes.Blocked as refusal:
         message = str(refusal)
         check("an ambiguous query refuses", True)
-        check("and it names every candidate", message.count("(") >= 2, message)
+        # THE NAMES AND THE PLACES, not a count of brackets. Counting `(` passed on a message with the
+        # right shape and the wrong contents, which is the whole thing this refusal exists to give:
+        # somebody has to be able to tell the two Removes apart from what it says.
+        check("and it names every candidate",
+              "'Remove' at (257, 908)" in message and "'Remove' at (257, 1777)" in message, message)
         check("and it says how to narrow it", "longer phrase" in message, message)
 
     # An unambiguous query still works, so the guard is not simply always-on.
@@ -563,6 +567,29 @@ def main():
     except eyes.Blocked as refusal:
         check("an unrestorable change refuses", "no verified way" in str(refusal), refusal)
     check("and it stays in the book for the next try", len(eyes._owed("fixture")) == 1)
+
+    # ---- THE SWEEP, ENUMERATED FROM THE CODE ITSELF ----------------------------------------------
+    # Six review rounds each found ONE function that wrote a debt and then made its change outside the
+    # book's lock, so another session could settle the debt in between and leave the founder's phone
+    # changed with nothing recording it. Six rounds, six functions, because each round was handed an
+    # instance instead of the set.
+    #
+    # The set is enumerable: every function whose body records or settles a debt. This row walks the
+    # module's own syntax tree and fails when one appears without the lock, so a function added later
+    # cannot reopen the class quietly.
+    import ast
+    source = (Path(__file__).parent / "wispr_eyes.py").read_text()
+    unlocked = []
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        body = ast.get_source_segment(source, node) or ""
+        if "_owe(" not in body and "_settled(" not in body:
+            continue
+        decorated = any(getattr(d, "id", "") == "_atomic_change" for d in node.decorator_list)
+        if not decorated and "_journal_locked()" not in body:
+            unlocked.append(node.name)
+    check("every journalled change holds the book's lock", not unlocked, unlocked)
 
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")

@@ -77,7 +77,7 @@ APP_TAGS = (
 _JOURNAL = Path(os.path.expanduser("~/.cache/wispr-eyes/restore.json"))
 
 _STATE = {"serial": None, "restore": [], "tree": None, "holding_journal": False,
-          "restored_for": None}
+          "restored_for": None, "dump_path": None}
 
 
 def _journal_read():
@@ -130,6 +130,29 @@ def _journal_locked():
         finally:
             _STATE["holding_journal"] = False
             fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _atomic_change(function):
+    """Hold the book's lock across a whole read-change-verify-settle.
+
+    **EVERY function that records a debt wears this, and a test enumerates them.** The gap between
+    writing a debt and making the change is the one defect this harness kept producing: another session
+    reads the book, sees the phone still in its original state, decides there is nothing to undo, and
+    settles the debt — and only then does the change happen. Six review rounds found it in six different
+    functions, one per round, because each round was handed one instance instead of the set.
+
+    The set is enumerable from the code itself: every function whose body calls `_owe`. The test named
+    `every journalled change holds the book's lock` walks this file's own syntax tree and fails when a
+    new one appears without this decorator, so the class cannot be reopened by adding a function.
+    """
+    def wrapped(*args, **kwargs):
+        with _journal_locked():
+            return function(*args, **kwargs)
+    wrapped.__name__ = function.__name__
+    wrapped.__doc__ = function.__doc__
+    wrapped.__wrapped__ = function
+    wrapped._holds_the_book = True
+    return wrapped
 
 
 def _journal_write(book):
@@ -390,17 +413,19 @@ def ready():
     # `deviceidle`'s `mScreenLocked` is that service's own view, and `dumpsys trust`'s `deviceLocked`
     # answers "is a CREDENTIAL required", which is 0 for an insecure keyguard that is nonetheless
     # covering the screen and swallowing every tap.
-    _, activities = _adb("dumpsys activity activities | grep -m1 -i isKeyguardShowing", check=False)
-    if "isKeyguardShowing=true" in activities.replace(" ", ""):
+    _, activities = _adb("dumpsys activity activities | grep -i isKeyguardShowing", check=False)
+    states = re.findall(r"isKeyguardShowing\s*=\s*(true|false)", activities)
+    if not states or len(set(states)) != 1:
+        raise Blocked(
+            "the phone would not say clearly whether its lock screen is up"
+            + (f" (it said {states})" if states else "")
+            + ", so whether a tap would land is unknown. Refusing rather than driving blind."
+        )
+    if states[0] == "true":
         raise Blocked(
             "the phone is locked, and only its owner can open it. This tool does not send taps, swipes "
             "or keys at a lock screen: it cannot pass a credential it does not have, and trying would "
             "spend real unlock attempts on the founder's own phone. Unlock it and run this again."
-        )
-    if not activities.strip():
-        raise Blocked(
-            "the phone would not say whether its lock screen is up, so whether a tap would land is "
-            "unknown. Refusing rather than driving blind."
         )
     return True
 
@@ -414,6 +439,11 @@ def bound():
     # Read the whole dump and decide here. `grep -c` exits non-zero when it finds nothing, which is the
     # ANSWER, not a failure, and a checked runner cannot tell those apart.
     _, out = _adb("dumpsys accessibility", timeout=90)
+    # THE ANSWER HAS TO BE PRESENT. An empty or truncated dump contains no match, which read as "not
+    # bound" — a confident no from a measurement that did not happen.
+    if "Bound services:" not in out:
+        raise Blocked("the accessibility dump did not contain a bound-services line, so whether our "
+                      "service is running is unknown")
     return bool(re.search(r"Bound services:\{Service\[label=EnviousWispr", out))
 
 
@@ -447,10 +477,15 @@ def tree(refresh=True):
         return _STATE["tree"]
     xml = None
     last = None
+    # A PATH OF OUR OWN, made once per process. A fixed name is a file we do not own: another session
+    # writes it between our dump and our read, and reading it reports THEIR screen as ours.
+    dump = _STATE.get("dump_path")
+    if dump is None:
+        dump = _STATE["dump_path"] = f"/sdcard/wispr-eyes-{uuid.uuid4().hex}.xml"
     for attempt in (1, 2, 3):
-        remote, message = _adb("uiautomator dump /sdcard/wispr-eyes.xml", check=False)
+        remote, message = _adb(f"uiautomator dump {shlex.quote(dump)}", check=False)
         if remote == 0:
-            _, xml = _adb("cat /sdcard/wispr-eyes.xml")
+            _, xml = _adb(f"cat {shlex.quote(dump)}")
             if xml and "<hierarchy" in xml:
                 break
             xml = None
@@ -849,6 +884,7 @@ def one_way(label, package=PACKAGE):
     return len(chosen) == 1 and not chosen[0]["clickable"]
 
 
+@_atomic_change
 def set_switch(label, on, where, package=PACKAGE):
     """Put a switch into a known state, and READ IT BACK. Returns what it was before.
 
@@ -944,6 +980,16 @@ def tap(text, exact=True, clickable=True, package=PACKAGE):
         top, bottom = node["bounds"][1], node["bounds"][3]
         if not (top <= holder["centre"][1] <= bottom):
             holder = dict(holder, centre=(holder["centre"][0], node["centre"][1]))
+        # AND THE COMPOSED POINT MUST LIE INSIDE THE CONTROL IT CAME FROM. Taking one coordinate from
+        # the control and the other from the label is only sound while the result is still within the
+        # control; asserting it is cheap, and the alternative is a press somewhere nobody asked for.
+        px, py = holder["centre"]
+        hx0, hy0, hx1, hy1 = holder["bounds"]
+        if not (hx0 <= px <= hx1 and hy0 <= py <= hy1):
+            raise Blocked(
+                f"the point worked out for {text!r} falls outside the control it belongs to, so pressing "
+                "it would press something else"
+            )
         node = dict(holder, text=node["text"], desc=node["desc"])
     x0, y0, x1, y1 = node["bounds"]
     if not node["enabled"] or x1 <= x0 or y1 <= y0:
@@ -1257,6 +1303,7 @@ def cancel_dictation():
     _dictation("cancel")
 
 
+@_atomic_change
 def _kill_take():
     """Close the microphone, and let NOTHING come before it.
 
@@ -1269,13 +1316,17 @@ def _kill_take():
     # the one most likely to be followed by the process ending. Journaled, so a later session can put it
     # back even if this one does not survive to.
     before = None
+    unreadable = None
     try:
         before = _a11y_state()
         if ACCESSIBILITY_SERVICE in _a11y_services(before):
             _owe(("a11y-state", json.dumps(before, sort_keys=True)))
-    except Blocked:
-        # Unreadable. Closing the microphone still comes first; the settings are the lesser harm.
+    except Blocked as why:
+        # Unreadable. Closing the microphone still comes first, so the force-stop below runs anyway —
+        # but the caller is TOLD afterwards, because a force-stop clears the accessibility settings and
+        # nothing now knows what they were.
         before = None
+        unreadable = why
     stopped, why = _adb(f"am force-stop {PACKAGE}", check=False)
     time.sleep(1)
     _STATE["tree"] = None
@@ -1288,7 +1339,13 @@ def _kill_take():
             "The microphone may still be open on this phone."
         )
     # The repair is a separate concern and comes second, always.
-    if before is not None and ACCESSIBILITY_SERVICE in _a11y_services(before):
+    if before is None:
+        raise Blocked(
+            "the recording was stopped by force-stopping the app, which CLEARS the accessibility "
+            f"settings, and their original value could not be read first ({unreadable}). Auto-paste is "
+            "probably off now; enable_auto_paste() turns it back on."
+        )
+    if ACCESSIBILITY_SERVICE in _a11y_services(before):
         _put_a11y(before)
         _settled(("a11y-state", json.dumps(before, sort_keys=True)))
     elif not bound():
@@ -1448,6 +1505,10 @@ def _a11y_state():
     state = {}
     for key in _A11Y_KEYS:
         _, value = _adb(f"settings get secure {key}")
+        if not value.strip():
+            # An UNSET key reads `null`, so empty means the read itself failed. Saving that as the value
+            # to restore would put the founder's phone into a state it was never in.
+            raise Blocked(f"the accessibility setting {key} could not be read")
         state[key] = value.strip()
     return state
 
@@ -1471,6 +1532,7 @@ def _put_a11y(state):
         raise Blocked(f"the accessibility settings did not go back: wanted {state}, they read {now}")
 
 
+@_atomic_change
 def enable_auto_paste():
     """Switch our accessibility service on and PROVE it bound. Returns whether anything changed.
 
@@ -1502,6 +1564,7 @@ def enable_auto_paste():
     )
 
 
+@_atomic_change
 def stop_app():
     """Force-stop the app, and put auto-paste back, because force-stopping silently switches it off.
 
@@ -1564,6 +1627,7 @@ def _media_volume():
     return int(reading.group(1)), int(reading.group(2))
 
 
+@_atomic_change
 def stage_phone_speech(sentence, volume=3, use_fixture=True):
     """Get everything ready to speak BEFORE the take starts. Returns the volume that was there.
 
@@ -1648,6 +1712,7 @@ def play_staged_speech():
         raise Blocked(f"the phone's speaker helper did not start: {out.strip() or 'no message'}")
 
 
+@_atomic_change
 def unstage_phone_speech():
     """Put back EVERYTHING staging changed: the media volume, and the parked fixture.
 
@@ -1705,6 +1770,7 @@ def say_on_phone(sentence, volume=3, seconds=30, use_fixture=True):
         unstage_phone_speech()
 
 
+@_atomic_change
 def say(sentence, volume=25):
     """Speak a sentence out of the MAC's speakers, into the phone's microphone, quietly.
 

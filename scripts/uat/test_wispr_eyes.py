@@ -106,6 +106,10 @@ SWITCH_AND_CHOICE = """<?xml version='1.0' encoding='UTF-8'?>
   </node>
 </hierarchy>"""
 
+# The same window with EVERY signal healthy except one. Without a fixture like this, a row claiming to
+# test the drawn state passes with the drawn check deleted, because some other false signal carries it.
+PILL_SHOWN_BUT_NOT_DRAWN = PILL_SHOWING.replace("mDrawState=HAS_DRAWN", "mDrawState=NO_SURFACE")
+
 PASSED, FAILED = [], []
 
 
@@ -331,6 +335,14 @@ def main():
     check("an undrawn recorder is not reported as visible",
           pill is not None and pill["the_user_can_see_it"] is False, pill)
 
+    # AND WITH ONLY THE DRAWN STATE WRONG. The row above has every signal false, so deleting the drawn
+    # check leaves it green on the strength of the others. This one is carried by nothing else.
+    restore_adb(original)
+    original = with_window(PILL_SHOWN_BUT_NOT_DRAWN)
+    pill = eyes.overlay()
+    check("a window that was never painted is not reported as visible",
+          pill is not None and pill["drawn"] is False and pill["the_user_can_see_it"] is False, pill)
+
     # No such window means None, never half a pill.
     restore_adb(original)
     original = with_window("Window #2 Window{1 u0 com.sec.android.app.launcher}:\n  isVisible=true")
@@ -412,6 +424,10 @@ def main():
         got = re.match(r"settings get system (\w+)", command)
         if got:
             return 0, store.get(got.group(1), "null") + "\n"
+        if command.startswith("logcat -d"):
+            # A take that STARTED AND STOPPED, so `recording()` can answer False rather than refuse.
+            return 0, ("09-06 10:00:00.000 I/AudioCapture(1): recording_start [+0ms]\n"
+                       "09-06 10:00:05.000 I/AudioCapture(1): recording_stop [+5000ms]\n")
         return 0, ""
 
     eyes._adb = fake_phone
@@ -462,6 +478,16 @@ def main():
     eyes._settled(first)
     eyes._settled(second)
     check("settling them empties the book", eyes._owed("fixture") == [], eyes._owed("fixture"))
+
+    # A RECORDING THAT OUTLIVED THE PROCESS THAT STARTED IT. Only a debt on disk can carry this across
+    # a killed run, and only a later session can act on it, so this row is the whole reason the take is
+    # journaled rather than merely wrapped in a `finally`.
+    eyes._owe(("take", "fixture"))
+    check("a take left by a killed run is in the book",
+          ("take", "fixture") in eyes._owed("fixture"), eyes._owed("fixture"))
+    said = eyes.restore()
+    check("and a later session ends it", any("take" in line for line in said), said)
+    check("and the book is clear afterwards", eyes._owed("fixture") == [], eyes._owed("fixture"))
 
     # A change owed to ANOTHER phone is never restored onto this one.
     eyes._owe(("screen-timeout", "15000"), serial="some-other-phone")

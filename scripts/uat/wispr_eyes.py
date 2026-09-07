@@ -597,7 +597,9 @@ def overlay():
 
     Returns None when no such window exists, which is the honest reading of "the recorder is not up".
     """
-    _, out = _adb("dumpsys window windows", timeout=90, check=False)
+    # `check=True`: a failed dump that happens to contain a window header would otherwise be read
+    # as a real measurement of the recorder.
+    _, out = _adb("dumpsys window windows", timeout=90)
     lines = out.splitlines()
     # ANCHOR ON THE WINDOW HEADER, NOT ON THE NAME. The same window's block also contains a
     # `WindowStateAnimator{... EnviousWispr recording controls}:` line, so a name match finds ONE
@@ -758,11 +760,15 @@ def on_screen(where):
     which is the only kind that survives a process boundary.
     """
     if where in TABS:
-        try:
-            return bool(_tab_row()[where]["selected"]) or _holder(
-                _tab_row()[where], lambda n: n["selected"]) is not None
-        except Blocked:
+        # A FRESH READ, and a refusal is passed on rather than answered "no". An unreadable screen is
+        # not the same as a screen showing something else, and this decides whether a change to the
+        # founder's settings gets recorded against a page that can put it back.
+        tree(refresh=True)
+        row = _tab_row()
+        if where not in row:
             return False
+        node = row[where]
+        return bool(node["selected"]) or _holder(node, lambda n: n["selected"]) is not None
     if where in PAGES:
         return present(where, exact=True) and present("Back", exact=True)
     raise Blocked(f"{where!r} is not a screen this app has")
@@ -948,7 +954,12 @@ def reveal(label, package=PACKAGE):
 
     if present(label, exact=True):
         return True
-    while try_scroll("up"):
+    # BOUNDED. A list whose rows change as it moves — a timer, a live count — makes every comparison
+    # differ, so "keep going while the screen is moving" never stops. Twice the depth a page is walked
+    # to is enough to get back to the top of one.
+    for _ in range((SCREEN_DEPTH + 2) * 2):
+        if not try_scroll("up"):
+            break
         if present(label, exact=True):
             return True
     for _ in range(SCREEN_DEPTH + 2):
@@ -1200,6 +1211,22 @@ def cancel_dictation():
     _dictation("cancel")
 
 
+def _kill_take():
+    """Close the microphone, and let NOTHING come before it.
+
+    `stop_app()` reads the accessibility settings first so it can put them back, and that read can fail
+    — which used to mean the force-stop never happened and a recording kept running while the harness
+    was busy being careful about a setting. So the order is: end the recording, THEN try the repair, and
+    the repair's failure is raised after the microphone is already closed.
+    """
+    _adb(f"am force-stop {PACKAGE}", check=False)
+    time.sleep(1)
+    _STATE["tree"] = None
+    # The repair is a separate concern and comes second, always.
+    if not bound():
+        enable_auto_paste()
+
+
 def _cancel_safely():
     """End a take no matter what went wrong, and never RELY on the cancel having worked.
 
@@ -1214,7 +1241,7 @@ def _cancel_safely():
         cancel_dictation()
     except BaseException:
         # The cancel itself could not be sent, so nothing here knows whether the microphone closed.
-        stop_app()
+        _kill_take()
         return
     try:
         still_running = recording()
@@ -1225,10 +1252,10 @@ def _cancel_safely():
         try:
             still_running = recording()
         except BaseException:
-            stop_app()
+            _kill_take()
             return
     if still_running:
-        stop_app()
+        _kill_take()
 
 
 @contextmanager
@@ -1256,8 +1283,23 @@ def open_recorder(verify=True):
     ready()
     if not bound():
         raise Blocked("our accessibility service is not bound, so no recorder will be drawn.")
-    _start_take()
+    # WRITTEN TO DISK BEFORE THE START INTENT IS SENT, and this is the part a `try` cannot do.
+    #
+    # Three review rounds each found a different way out of a started take, and the third found one in
+    # the fix for the second. The fourth was the start itself: the intent had reached the phone and the
+    # cleanup was not installed yet. Moving the `try` up closes that window, and it still cannot close
+    # the one that matters most — this process being killed, or the laptop losing the phone's network
+    # mid-take. Nothing in Python runs then.
+    #
+    # A debt on disk does. `restore()` cancels any take this book still records, from ANY later session,
+    # so "a recording is running and nobody knows" stops being reachable rather than becoming rarer.
+    # The named consequence for a fourth escape was to delete `check_recorder` and `test_dictation`;
+    # that would not have fixed this, because the manual `with open_recorder()` block has the identical
+    # window. The object was wrong, so this replaces it rather than performing it.
+    take = ("take", device())
+    _owe(take)
     try:
+        _start_take()
         time.sleep(1.0)
         _STATE["tree"] = None
         pill = None
@@ -1274,6 +1316,9 @@ def open_recorder(verify=True):
         yield pill
     finally:
         _cancel_safely()
+        # Settled only after the microphone is closed. `_cancel_safely` force-stops rather than return
+        # while a take might still be running, so reaching here means it is not.
+        _settled(take)
 
 
 def nav(page):
@@ -1370,6 +1415,11 @@ def stop_app():
     # put the founder's phone back to having no accessibility services at all.
     before = _a11y_state()
     was_on = ACCESSIBILITY_SERVICE in _a11y_services(before)
+    if was_on:
+        # ON DISK BEFORE THE FORCE-STOP. A force-stop CLEARS the accessibility settings, and this
+        # process can end between the two — a crash, a killed run, the laptop losing the phone's
+        # network — leaving the founder unable to dictate into anything with nothing recording why.
+        _owe(("a11y-state", json.dumps(before, sort_keys=True)))
     _adb(f"am force-stop {PACKAGE}")
     time.sleep(1)
     _STATE["tree"] = None
@@ -1378,6 +1428,7 @@ def stop_app():
         for _ in range(6):
             time.sleep(1)
             if bound():
+                _settled(("a11y-state", json.dumps(before, sort_keys=True)))
                 return
         raise Blocked(
             "the accessibility settings were put back after the force-stop but the service never bound, "
@@ -1450,6 +1501,14 @@ def stage_phone_speech(sentence, volume=3, use_fixture=True):
         # PARK IT, so the phone reads the sentence that was asked for. Journaled and put back, because
         # a fixture left parked changes what every later run plays without anyone deciding to.
         parked = f"cache/{UAT_FIXTURE}.parked"
+        # REFUSE RATHER THAN OVERWRITE. Something already parked means an earlier run did not put its
+        # fixture back, and moving over it destroys that one with nothing recording it.
+        already, _ = _adb(f"run-as {TEST_PACKAGE} ls {shlex.quote(parked)}", check=False)
+        if already == 0:
+            raise Blocked(
+                f"{parked} already exists, so an earlier run left a fixture parked. Call restore() to "
+                "put it back before parking another one."
+            )
         _owe(("parked-fixture", parked))
         _adb(f"run-as {TEST_PACKAGE} mv cache/{UAT_FIXTURE} {shlex.quote(parked)}")
         fixture = 1
@@ -1691,6 +1750,17 @@ def _restore_one(entry):
             "buffer it changed. Put it back by hand with `adb shell logcat -G <size>` and delete the "
             f"entry from {_JOURNAL}."
         )
+    elif what == "take":
+        # A RECORDING THAT OUTLIVED THE PROCESS THAT STARTED IT. Only a debt on disk can carry this, and
+        # only a later session can act on it, so this is the whole point of the take being journaled.
+        cancel_dictation()
+        time.sleep(1.5)
+        if recording():
+            stop_app()
+            time.sleep(1.5)
+        if recording():
+            raise Blocked("a recording from an earlier run is STILL running and would not stop. The "
+                          "microphone is open on this phone right now.")
     elif what == "parked-fixture":
         # `previous` is the path the fixture was moved to. Moved BACK, and the MOVE's own status is what
         # decides — an earlier version asked only whether something now sits at the destination, so a
@@ -1768,7 +1838,11 @@ def restore():
             _settled(entry, scope)
             done.append(f"{entry[0]} back to {entry[1]}")
     _STATE["restore"] = []
-    _adb("rm -f /sdcard/wispr-eyes.xml", check=False)
+    # ONLY IF IT IS OURS. `rm -f` on a fixed path deletes whatever happens to be sitting there, and
+    # nothing here put it in the book, so a file of the founder's with that name would go silently.
+    code, head = _adb("head -c 40 /sdcard/wispr-eyes.xml", check=False)
+    if code == 0 and "<hierarchy" in head:
+        _adb("rm -f /sdcard/wispr-eyes.xml", check=False)
     return done or ["nothing was changed"]
 
 

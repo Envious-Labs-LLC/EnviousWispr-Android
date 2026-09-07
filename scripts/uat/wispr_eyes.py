@@ -399,6 +399,8 @@ def ready():
     *"Do you even know my password? Seems like a bad place to test swiping no?"* The answer to both is
     no. The phone is handed back, always.
     """
+    # WAKING THE PHONE IS A CHANGE, and it is not journaled on purpose: a phone that is awake goes back
+    # to sleep on its own timer, so there is nothing to put back. Nothing here gets past a LOCK.
     _, power = _adb("dumpsys power | grep -m1 mWakefulness")
     awake = "Awake" in power
     if not awake:
@@ -644,6 +646,10 @@ def shot(path=None):
     screenshots, so anything cropped from where the pill appears belongs to the app BEHIND it.
     """
     path = path or f"/tmp/wispr-eyes-{int(time.time())}.png"
+    # NEVER OVER SOMETHING ALREADY THERE. This is the one call that writes to a path the CALLER chose,
+    # and `wb` on an existing file destroys it with nothing recording that it did.
+    if Path(path).exists():
+        raise Blocked(f"{path} already exists and this will not write over it. Pass another name.")
     with open(path, "wb") as handle:
         done = subprocess.run([ADB, "-s", device(), "exec-out", "screencap", "-p"],
                               stdout=handle, stderr=subprocess.PIPE)
@@ -964,6 +970,11 @@ def _enclosing_control(node, package):
 def tap(text, exact=True, clickable=True, package=PACKAGE):
     """Find one control by its words and press it. Never a coordinate typed by hand.
 
+    **IT RECORDS NO DEBT, and that is the caller's job rather than an oversight.** A press changes
+    whatever the control does, and only the caller knows what that was: `set_switch` knows it is
+    changing a setting and journals it, while `open_tab` and `nav` know they are only moving between
+    screens. A debt written here would have to guess.
+
     Refuses a control that is present but disabled, and refuses when the phone cannot receive input at
     all, because both of those return success and prove nothing.
     """
@@ -1170,9 +1181,16 @@ def _start(component, what, settle):
     if remote != 0 or "Error" in out:
         detail = out.strip().splitlines()[-1] if out.strip() else "no message"
         raise Blocked(f"{what} would not start: {detail}. Is the app installed on {device()}?")
-    time.sleep(settle)
-    _STATE["tree"] = None
-    showing = {n["package"] for n in tree()}
+    # LOOK MORE THAN ONCE. `am start` returns as soon as the request is accepted, and the app arriving on
+    # screen is a separate event that a busy phone takes longer to reach: measured 2026-09-06 with
+    # Netflix playing, the first check saw Netflix and the very next call to this function found our app
+    # already there. One reading was calling a slow transition a failed launch.
+    for _ in range(6):
+        time.sleep(settle / 3 if settle else 0.5)
+        _STATE["tree"] = None
+        if PACKAGE in {n["package"] for n in tree()}:
+            break
+    showing = {n["package"] for n in tree(refresh=False)}
     if PACKAGE not in showing and "com.android.systemui" in showing:
         # THE SHADE, not a failure to start. It covers whatever is underneath, so the app really is not
         # on screen and the message would be true and useless. Closing a shade is not getting past a
@@ -1198,6 +1216,10 @@ def open_settings(dismiss_onboarding=True):
     _start(SETTINGS_ACTIVITY, "the app", 2.5)
     note = "opened"
     if dismiss_onboarding and present("Set up later"):
+        # DISMISSING ONBOARDING IS A CHANGE AND IT IS NOT JOURNALED, because it cannot be put back: the
+        # app remembers that setup was skipped and nothing here can un-remember it. Said out loud rather
+        # than left for somebody to find. It is dev state on a phone with no users
+        # (`CLAUDE.md`: a wiped phone is cheap), and `dismiss_onboarding=False` refuses to touch it.
         tap("Set up later")
         if present("Set up later"):
             raise Blocked("onboarding would not dismiss; 'Set up later' is still on screen.")
@@ -1284,7 +1306,14 @@ def recording():
 
 
 def _start_take():
-    """Send the start intent. THE ONLY CALLER IS `open_recorder`, which owns ending what this begins."""
+    """Send the start intent. THE ONLY CALLER IS `open_recorder`, which owns ending what this begins.
+
+    It carries the off-switch itself rather than trusting its caller to. A guard on the caller is a
+    guard somebody can walk around by calling this directly, and this is the one function in the file
+    that opens the founder's microphone.
+    """
+    if RECORDING_IS_OFF:
+        raise Blocked(RECORDING_IS_OFF)
     remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)}", check=False)
     if remote != 0 or "Error" in out:
         detail = out.strip().splitlines()[-1] if out.strip() else "no message"
@@ -1383,6 +1412,7 @@ def _cancel_safely():
         _kill_take()
 
 
+@_atomic_change
 @contextmanager
 def open_recorder(verify=True):
     """Start the floating recorder and OWN THE TAKE UNTIL THE BLOCK ENDS.
@@ -1454,7 +1484,7 @@ def open_recorder(verify=True):
     # what makes the window itself not exist, because no other process can read or settle the book
     # until the take is real. The cost is that a second session waits for this one, which on a harness
     # with exactly one phone is a description of the correct behaviour rather than a price.
-    with _journal_locked():
+    if True:  # the book is already held for this whole take by @_atomic_change
         _owe_locked(take, device())
         if take not in _owed():
             raise Blocked("the take could not be recorded on disk, so it will not be started. A take "
@@ -1520,7 +1550,19 @@ def _a11y_services(state=None):
 
 
 def _put_a11y(state):
-    """Write both settings and read them back. `null` is a DELETE, not the four characters."""
+    """Write both settings and read them back. `null` is a DELETE, not the four characters.
+
+    **IT RECORDS NO DEBT OF ITS OWN, so it REFUSES unless the caller is holding the book.** Every caller
+    — `enable_auto_paste`, `stop_app`, `_restore_one` — journals the previous state around it, and that
+    was a contract nobody enforced: a future caller changing the founder's accessibility settings
+    without a debt is exactly the defect six review rounds kept finding, one function at a time. The
+    check makes it impossible rather than reviewable.
+    """
+    if not _STATE.get("holding_journal"):
+        raise Blocked(
+            "the accessibility settings may only be changed while holding the restore book, so the "
+            "previous value is recorded. Wrap the caller in @_atomic_change."
+        )
     for key in _A11Y_KEYS:
         if state[key] == "null":
             _adb(f"settings delete secure {key}", check=False)
@@ -1654,6 +1696,10 @@ def stage_phone_speech(sentence, volume=3, use_fixture=True):
         raise Blocked(f"volume must be a whole number from 0 to {max(1, ceiling // 3)}; this is a low-volume tool")
     _owe(("media-volume", str(current)))
     _adb(f"cmd media_session volume --stream 3 --set {volume}")
+    # THE SENTENCE FILE IS OVERWRITTEN AND NOT JOURNALED. It belongs to the TEST package, the helper
+    # deletes it after reading, and nothing but this function ever writes it — so there is no previous
+    # value of anyone's to lose. Stated because "overwrites a file with no debt" is otherwise a gap a
+    # reader has to rediscover.
     _adb(f"run-as {TEST_PACKAGE} mkdir -p files")
     # THE SENTENCE IS DATA, AND A HEREDOC MADE IT SYNTAX. Quoting the outer `sh -c` does nothing about
     # what is INSIDE it, so a sentence containing a line reading `WISPREOF` closed the heredoc and
@@ -1810,6 +1856,10 @@ def say(sentence, volume=25):
 
 def clear_log():
     """Clear the ring buffer so an absent line means absent rather than left over.
+
+    **IT CHANGES THE PHONE AND CANNOT BE PUT BACK, and that is stated rather than journaled.** The log
+    it discards is gone; a debt promising to restore it would be a lie, and a lie in the restore book is
+    worse than an honest gap. What is lost is diagnostic history, never the founder's own data.
 
     **It no longer RESIZES the buffer, and that is a deletion rather than a fix.** The old version
     widened it to 16M and journaled "the buffer was N K" from the first line of `logcat -g` — which

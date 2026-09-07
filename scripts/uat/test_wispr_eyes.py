@@ -568,28 +568,94 @@ def main():
         check("an unrestorable change refuses", "no verified way" in str(refusal), refusal)
     check("and it stays in the book for the next try", len(eyes._owed("fixture")) == 1)
 
+    # ---- the two changes that record NOTHING, and are stopped rather than journaled ---------------
+    # Enumerating every function that changes something (not only the ones already journaled) turned up
+    # two that could alter something of the founder's with no record: a screenshot over a file he named,
+    # and an accessibility write from a caller that had not taken the book.
+    import tempfile as _tf
+    existing = Path(_tf.mkdtemp()) / "his-file.png"
+    existing.write_text("something of his")
+    try:
+        eyes.shot(str(existing))
+        check("a screenshot refuses to write over a file", False, "it overwrote it")
+    except eyes.Blocked as refusal:
+        check("a screenshot refuses to write over a file", "already exists" in str(refusal), refusal)
+    check("and the file is untouched", existing.read_text() == "something of his")
+
+    eyes._STATE["holding_journal"] = False
+    try:
+        eyes._put_a11y({"enabled_accessibility_services": "x", "accessibility_enabled": "1"})
+        check("accessibility cannot be changed without the book", False, "it wrote them")
+    except eyes.Blocked as refusal:
+        check("accessibility cannot be changed without the book",
+              "holding the restore book" in str(refusal), refusal)
+
     # ---- THE SWEEP, ENUMERATED FROM THE CODE ITSELF ----------------------------------------------
     # Six review rounds each found ONE function that wrote a debt and then made its change outside the
     # book's lock, so another session could settle the debt in between and leave the founder's phone
     # changed with nothing recording it. Six rounds, six functions, because each round was handed an
     # instance instead of the set.
     #
-    # The set is enumerable: every function whose body records or settles a debt. This row walks the
-    # module's own syntax tree and fails when one appears without the lock, so a function added later
-    # cannot reopen the class quietly.
+    # **THE FIRST VERSION OF THIS ROW WAS WEAKER THAN ITS OWN NAME.** It looked only at top-level
+    # functions, matched the word `_journal_locked()` anywhere in the source INCLUDING COMMENTS, and
+    # ignored `_owe_locked` and `_settled_locked` callers entirely — so it passed while claiming to make
+    # the class impossible to reopen. A test that claims a mechanism and does not have it is worse than
+    # no test, because it stops the next person looking.
+    #
+    # This version walks EVERY function at any nesting depth, including methods, decides "is it inside
+    # the lock" from the syntax tree rather than from text, and covers the locked helpers too.
     import ast
     source = (Path(__file__).parent / "wispr_eyes.py").read_text()
+    module = ast.parse(source)
+    TOUCHES = {"_owe", "_settled", "_owe_locked", "_settled_locked"}
+
+    def called_names(node):
+        """Every function name called anywhere inside this node, its own nested defs excluded."""
+        names = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+                names.add(child.func.id)
+        return names
+
+    def guarded_by_with(node):
+        """Is every debt call inside a `with _journal_locked()` block in THIS function?"""
+        inside = set()
+        for child in ast.walk(node):
+            if not isinstance(child, ast.With):
+                continue
+            if not any(isinstance(item.context_expr, ast.Call)
+                       and getattr(item.context_expr.func, "id", "") == "_journal_locked"
+                       for item in child.items):
+                continue
+            inside |= called_names(child)
+        return TOUCHES <= (TOUCHES - called_names(node)) | inside
+
+    everything = [n for n in ast.walk(module)
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     unlocked = []
-    for node in ast.parse(source).body:
-        if not isinstance(node, ast.FunctionDef):
+    for node in everything:
+        touched = TOUCHES & called_names(node)
+        if not touched:
             continue
-        body = ast.get_source_segment(source, node) or ""
-        if "_owe(" not in body and "_settled(" not in body:
+        # The lock-free halves are the ones the decorator's own callers use; they are the mechanism, not
+        # members of the set, and they are named here rather than pattern-matched.
+        # The lock-free halves are the mechanism rather than members of the set, and the convention is
+        # in the NAME: anything ending `_locked` is only ever called by something already holding it.
+        if node.name.endswith("_locked") or node.name in ("_owe", "_settled", "_atomic_change", "wrapped"):
             continue
         decorated = any(getattr(d, "id", "") == "_atomic_change" for d in node.decorator_list)
-        if not decorated and "_journal_locked()" not in body:
-            unlocked.append(node.name)
-    check("every journalled change holds the book's lock", not unlocked, unlocked)
+        if decorated or guarded_by_with(node):
+            continue
+        unlocked.append(node.name)
+    check("every function that touches a debt holds the book's lock", not unlocked, unlocked)
+
+    # AND THE ROW CAN FAIL. A comment mentioning the lock must not satisfy it, which is how the first
+    # version passed.
+    fake = ast.parse("def sneaky():\n    # with _journal_locked() in a comment\n    _owe(('x','y'))\n")
+    sneaky = fake.body[0]
+    check("and a comment mentioning the lock does not count",
+          not (any(getattr(d, "id", "") == "_atomic_change" for d in sneaky.decorator_list)
+               or guarded_by_with(sneaky)))
 
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")

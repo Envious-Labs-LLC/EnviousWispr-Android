@@ -489,15 +489,38 @@ def main():
     eyes._settled(second)
     check("settling them empties the book", eyes._owed("fixture") == [], eyes._owed("fixture"))
 
+    # A TAKE MAY NOT BEGIN ON A PHONE WHOSE STATE IS UNKNOWN. The consequence declared before round 5's
+    # verdict: every take is preceded by a completed `restore()` in this process, so a recording left by
+    # a killed run cannot sit underneath a new one.
+    eyes._STATE["restored_for"] = None
+    try:
+        with eyes.open_recorder():
+            check("a take refuses on an unrestored phone", False, "it started one")
+    except eyes.Blocked as refusal:
+        check("a take refuses on an unrestored phone", "restore() has not been run" in str(refusal), refusal)
+
     # A RECORDING THAT OUTLIVED THE PROCESS THAT STARTED IT. Only a debt on disk can carry this across
     # a killed run, and only a later session can act on it, so this row is the whole reason the take is
     # journaled rather than merely wrapped in a `finally`.
+    # THE LOCK MUST NOT BLOCK ON ITSELF. `flock` is per open file description, so a second `open` plus
+    # `LOCK_EX` from the same process waits for ever — and `open_recorder` holds this lock across the
+    # start, so a deadlock there means a take running on the phone with the harness frozen.
+    with eyes._journal_locked():
+        with eyes._journal_locked():
+            eyes._owe(("screen-timeout", "1"))
+    check("taking the book's lock twice in one process does not hang",
+          ("screen-timeout", "1") in eyes._owed("fixture"), eyes._owed("fixture"))
+    eyes._settled(("screen-timeout", "1"))
+
     store["take"] = "running"
     eyes._owe(("take", "fixture"))
     check("a take left by a killed run is in the book",
           ("take", "fixture") in eyes._owed("fixture"), eyes._owed("fixture"))
     said = eyes.restore()
-    check("and a later session ends it", any("take" in line for line in said), said)
+    # NAMED FOR WHAT IT CHECKS. This runs in the same process, so it is not evidence that a LATER
+    # session ends anything; it says the restore reported handling the debt. The row below is the one
+    # that says the microphone closed, and that is the property.
+    check("restore says it handled the take debt", any("take" in line for line in said), said)
     # THE PHONE, not the report. The row above says what the harness CLAIMED; this one says the
     # microphone actually closed, and it is the one that fails when the cancel is deleted.
     check("and the microphone is actually closed", store.get("take") == "stopped", store.get("take"))

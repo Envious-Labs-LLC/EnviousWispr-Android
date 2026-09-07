@@ -46,6 +46,7 @@ import re
 import shlex
 import subprocess
 import sys
+import uuid
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -75,7 +76,8 @@ APP_TAGS = (
 # Keyed by device serial, because a change owed to one phone must never be "restored" onto another.
 _JOURNAL = Path(os.path.expanduser("~/.cache/wispr-eyes/restore.json"))
 
-_STATE = {"serial": None, "restore": [], "tree": None}
+_STATE = {"serial": None, "restore": [], "tree": None, "holding_journal": False,
+          "restored_for": None}
 
 
 def _journal_read():
@@ -112,12 +114,21 @@ def _journal_locked():
     recording it.
     """
     import fcntl
+    # RE-ENTRANT WITHIN THIS PROCESS. `flock` is held per open file description, so a second `open` and
+    # `LOCK_EX` from the SAME process blocks on itself, for ever, holding the phone's take open while it
+    # waits. `open_recorder` holds this across a start and anything it calls in there could reach the
+    # book again, so the shape has to be safe rather than merely currently-unused.
+    if _STATE.get("holding_journal"):
+        yield
+        return
     _JOURNAL.parent.mkdir(parents=True, exist_ok=True)
     with _JOURNAL.with_suffix(".lock").open("a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
+        _STATE["holding_journal"] = True
         try:
             yield
         finally:
+            _STATE["holding_journal"] = False
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
@@ -142,6 +153,9 @@ def _owed(serial=None):
 def _debt_key(entry):
     """What makes two debts the SAME setting. One media volume; one per switch, per screen."""
     what, previous = entry
+    if what == "take":
+        # Every take is distinct. There is no "the take" to collapse them onto.
+        return (what, previous)
     if what == "switch":
         try:
             named = json.loads(previous)
@@ -408,7 +422,7 @@ def tree(refresh=True):
     for attempt in (1, 2, 3):
         remote, message = _adb("uiautomator dump /sdcard/wispr-eyes.xml", check=False)
         if remote == 0:
-            _, xml = _adb("cat /sdcard/wispr-eyes.xml", check=False)
+            _, xml = _adb("cat /sdcard/wispr-eyes.xml")
             if xml and "<hierarchy" in xml:
                 break
             xml = None
@@ -1306,6 +1320,19 @@ def open_recorder(verify=True):
     answers the action (`device-testing.md` FACT: the-ASSIST-action-opens-a-CHOOSER-on-this-phone), so
     the component is named instead.
     """
+    # THE PRE-COMMITTED CONSEQUENCE, and it is paid on every take.
+    #
+    # Round 5 found the last way a take could run with an empty book, and the criterion declared before
+    # its verdict was that every take would then have to be preceded by a completed `restore()`. This is
+    # that. It means the phone is left clean before any new recording starts, so an unknown take from a
+    # killed run cannot sit under a new one, and a harness that cannot clean the phone cannot record on
+    # it. The cost is a full restore before every take, which is the point rather than a side effect.
+    if _STATE.get("restored_for") != device():
+        raise Blocked(
+            "restore() has not been run in this process, so the phone's state is unknown and a take "
+            "must not be started on it. Call restore() first; it ends any recording an earlier run left "
+            "behind and puts back anything it changed."
+        )
     ready()
     if not bound():
         raise Blocked("our accessibility service is not bound, so no recorder will be drawn.")
@@ -1322,7 +1349,10 @@ def open_recorder(verify=True):
     # The named consequence for a fourth escape was to delete `check_recorder` and `test_dictation`;
     # that would not have fixed this, because the manual `with open_recorder()` block has the identical
     # window. The object was wrong, so this replaces it rather than performing it.
-    take = ("take", device())
+    # A DEBT OF ITS OWN, not one keyed on the phone. Two sessions using the same key let the first
+    # settle the second's take: A cancels and reads back its own, B starts another under the identical
+    # key, and A's settle then erases the record of a recording that is running.
+    take = ("take", uuid.uuid4().hex)
     # THE DECLARED CONSEQUENCE, and it is paid on every run.
     #
     # Round 4 found the last way a take could be running with nothing recording it: this process writes
@@ -1339,11 +1369,10 @@ def open_recorder(verify=True):
         if take not in _owed():
             raise Blocked("the take could not be recorded on disk, so it will not be started. A take "
                           "nothing has written down is one nobody can end.")
-        try:
-            _start_take()
-        except BaseException:
-            _settled_locked(take, device())
-            raise
+        # NO `except` HERE, DELIBERATELY. An interrupted or timed-out start may already have reached
+        # the phone, so settling the debt on the way out is exactly the case the debt exists for: the
+        # take runs and the book forgets it. An uncertain start keeps its debt, and `restore()` ends it.
+        _start_take()
     try:
         time.sleep(1.0)
         _STATE["tree"] = None
@@ -1617,9 +1646,12 @@ def say_on_phone(sentence, volume=3, seconds=30, use_fixture=True):
             # `check=True`, and the COUNT is parsed rather than searched for any digit. A failed read
             # returned "", which contains no digit, which read as "the activity is gone" — so a broken
             # connection reported that the phone had finished speaking when it may not have started.
-            _, running = _adb(
-                f"dumpsys activity activities | grep -c {shlex.quote(SPEAKER_ACTIVITY)}", check=False)
-            counted = re.fullmatch(r"\s*(\d+)\s*", running or "")
+            # COUNTED HERE, not by a `grep -c` at the end of a pipe. A pipeline reports its LAST
+            # command's status, so a failed dump produced a confident `0` — "the phone has finished
+            # speaking" — from a measurement that did not happen.
+            _, activities = _adb("dumpsys activity activities", timeout=90)
+            running = str(sum(SPEAKER_ACTIVITY in line for line in activities.splitlines()))
+            counted = re.fullmatch(r"\s*(\d+)\s*", running)
             if counted is None:
                 raise Blocked(
                     "could not read whether the phone is still speaking, so how much of the sentence "
@@ -1823,7 +1855,7 @@ def _restore_one(entry):
                           "its own voice instead, and later runs would quietly measure the wrong audio")
     elif what == "media-volume":
         _adb(f"cmd media_session volume --stream 3 --set {int(previous)}")
-        _, now = _adb("cmd media_session volume --stream 3 --get", check=False)
+        _, now = _adb("cmd media_session volume --stream 3 --get")
         reading = re.search(r"volume is (\d+)", now or "")
         if not reading or int(reading.group(1)) != int(previous):
             raise Blocked(f"the phone's media volume did not go back to {previous}; it reads {now.strip()!r}")
@@ -1876,6 +1908,7 @@ def restore():
     dev state on a phone with no users (`CLAUDE.md`: a wiped phone is cheap), but they are not restored
     and no report should say they were.
     """
+    _STATE["restored_for"] = None
     done = []
     # The HOST book first, then this phone's. Never another phone's: a change owed to a device that is
     # not attached cannot be verified, and an unverified restore is not a restore.
@@ -1890,6 +1923,7 @@ def restore():
     # file of the founder's with that name and that shape would go silently. It is one small file that
     # every run overwrites, so leaving it costs nothing and deleting it can cost something that is not
     # ours to spend.
+    _STATE["restored_for"] = device()
     return done or ["nothing was changed"]
 
 
@@ -1901,6 +1935,9 @@ def check_recorder():
     """Does the floating recorder open, and can the user see it? One call, and it always tidies up."""
     ready()
     report = []
+    # The phone is left clean before anything is recorded on it, which is also what makes the take
+    # below allowed to start at all.
+    report.append("put back first: " + "; ".join(restore()))
     if not bound():
         return ["BLOCKED: auto-paste is switched off, so no recorder will be drawn. "
                 "enable_auto_paste() turns it back on."]
@@ -2097,6 +2134,7 @@ def room_is_quiet(seconds=6):
     which is exactly when it is needed.
     """
     ready()
+    restore()
     clear_log()
     # `verify=False`: the subject is what the microphone HEARS, so the recorder's appearance is not
     # what this run is about, and refusing on it would refuse the probe on a phone whose pill is fine.
@@ -2144,6 +2182,7 @@ def test_dictation(sentence="The quick brown fox jumps over the lazy dog.", volu
     address bar is the safe one: nothing is sent.
     """
     ready()
+    restore()
     if not bound():
         return ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
                 "enable_auto_paste() turns it back on."]

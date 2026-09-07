@@ -133,7 +133,18 @@ def _journal_locked():
 
 
 def _atomic_change(function):
-    """Hold the book's lock across a whole read-change-verify-settle.
+    """Hold the book's lock across an ordinary synchronous call.
+
+    **WHAT THE TEST BESIDE THIS PROVES, AND WHAT IT DOES NOT.** It finds recognised debt calls in
+    non-exempt functions and checks they sit inside a `with _journal_locked()`. It does NOT prove that
+    every device change is journaled, that the lock still covers a write made after it is released, or
+    that a debt reached through an alias, a `getattr`, a lambda or a generator is seen. Deferred work
+    must take the lock itself — a decorator cannot hold one across a `yield`.
+
+    Saying so here because the previous version of this docstring claimed the class could not be
+    reopened, which is the third time in this file that a claim outran its mechanism.
+
+    Hold the book's lock across a whole read-change-verify-settle.
 
     **EVERY function that records a debt wears this, and a test enumerates them.** The gap between
     writing a debt and making the change is the one defect this harness kept producing: another session
@@ -909,6 +920,11 @@ def set_switch(label, on, where, package=PACKAGE):
     """
     if not isinstance(on, bool):
         raise Blocked("a switch is set to True or False")
+    # A SWITCH DEBT NAMES A SCREEN AND A LABEL, AND NO PACKAGE. Two apps with a same-named switch on a
+    # same-named screen would share one debt, and the second change would clear the first — both left
+    # changed, book empty. This tool's screens are EnviousWispr's, so the honest fix is to say so.
+    if package != PACKAGE:
+        raise Blocked(f"switches are only changed in {PACKAGE}, not in {package}")
     if where not in TABS and where not in PAGES:
         raise Blocked(
             f"{where!r} is not a screen this app has, and a switch change has to say where it was made "
@@ -1583,6 +1599,13 @@ def _put_a11y(state):
             "the accessibility settings may only be changed while holding the restore book, so the "
             "previous value is recorded. Wrap the caller in @_atomic_change."
         )
+    # AND HOLDING THE BOOK IS NOT THE SAME AS HAVING WRITTEN IN IT. The lock says nobody else can
+    # interfere; it says nothing about whether this change can be undone.
+    if not any(what in ("a11y-state", "a11y-services", "a11y-state-unknown") for what, _ in _owed()):
+        raise Blocked(
+            "the accessibility settings' previous value is not in the restore book, so changing them "
+            "now would leave the founder's phone altered with nothing able to put it back."
+        )
     for key in _A11Y_KEYS:
         if state[key] == "null":
             _adb(f"settings delete secure {key}", check=False)
@@ -1993,12 +2016,23 @@ def _checked(args, timeout=60):
     return out
 
 
+@_atomic_change
 def _restore_one(entry):
     """Put ONE change back, and read it back to prove it took.
 
     A restore that returned zero is not a restore that happened.
+
+    **THE DEBT HAS TO BE IN THE BOOK.** Handed one that is not, this changed the founder's phone to a
+    value nobody had recorded — `_restore_one(("screen-timeout", "1800000"))` against an empty book set
+    his timeout to half an hour and left no trace. "Undo" is only undo when there is something to undo.
     """
     what, previous = entry
+    scope = "host" if what == "mac-volume" else device()
+    if entry not in _owed(scope):
+        raise Blocked(
+            f"there is no record of {what!r} having been changed on {scope}, so putting it 'back' to "
+            f"{previous!r} would be changing it to a value nobody chose."
+        )
     if what == "mac-volume":
         _checked(["osascript", "-e", f"set volume output volume {int(previous)}"])
         now = _checked(["osascript", "-e", "output volume of (get volume settings)"]).strip()

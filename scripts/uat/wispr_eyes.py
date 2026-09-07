@@ -135,26 +135,15 @@ def _journal_locked():
 def _atomic_change(function):
     """Hold the book's lock across an ordinary synchronous call.
 
-    **WHAT THE TEST BESIDE THIS PROVES, AND WHAT IT DOES NOT.** It finds recognised debt calls in
-    non-exempt functions and checks they sit inside a `with _journal_locked()`. It does NOT prove that
-    every device change is journaled, that the lock still covers a write made after it is released, or
-    that a debt reached through an alias, a `getattr`, a lambda or a generator is seen. Deferred work
-    must take the lock itself — a decorator cannot hold one across a `yield`.
+    **WHAT THE TEST BESIDE THIS PROVES, AND WHAT IT DOES NOT.** It recognises certain debt calls and
+    checks they sit inside an explicit `with _journal_locked()` or under an exact synchronous decorator
+    stack. It handles a literal `getattr` and treats lambda and generator-expression bodies as deferred.
+    It does NOT prove that every phone change is journaled, resolve an arbitrary alias, or prove that
+    deferred work keeps the lock.
 
-    Saying so here because the previous version of this docstring claimed the class could not be
-    reopened, which is the third time in this file that a claim outran its mechanism.
-
-    Hold the book's lock across a whole read-change-verify-settle.
-
-    **EVERY function that records a debt wears this, and a test enumerates them.** The gap between
-    writing a debt and making the change is the one defect this harness kept producing: another session
-    reads the book, sees the phone still in its original state, decides there is nothing to undo, and
-    settles the debt — and only then does the change happen. Six review rounds found it in six different
-    functions, one per round, because each round was handed one instance instead of the set.
-
-    The set is enumerable from the code itself: every function whose body calls `_owe`. The test named
-    `every journalled change holds the book's lock` walks this file's own syntax tree and fails when a
-    new one appears without this decorator, so the class cannot be reopened by adding a function.
+    An earlier version of this docstring said the class could not be reopened. It cannot say that, and
+    saying it stopped the next reader looking — which is how two real defects reached a commit message
+    as facts.
     """
     def wrapped(*args, **kwargs):
         with _journal_locked():
@@ -1199,7 +1188,7 @@ def _start(component, what, settle):
     # locked itself mid-session and this is exactly what came back.
     ready()
     # THIS OPENS THE APP, AND NOTHING ELSE. Handed the recorder's component it sends the very command
-    # `_start_take` guards, so the recording off-switch had a door beside it.
+    # `open_recorder` writes inline, so the recording off-switch had a door beside it.
     if component != SETTINGS_ACTIVITY:
         raise Blocked(f"{what} is not something this opens; only the app's own settings screen is.")
     remote, out = _adb(f"am start -n {shlex.quote(component)}", check=False)
@@ -1231,7 +1220,7 @@ def _start(component, what, settle):
         )
 
 
-def open_settings(dismiss_onboarding=True):
+def open_settings(dismiss_onboarding=False):
     """Open the app, and get past onboarding so the caller reaches the thing it asked for.
 
     A fresh install lands on WELCOME, which replaces the whole shell, so every later step fails for a
@@ -1240,6 +1229,16 @@ def open_settings(dismiss_onboarding=True):
     """
     _start(SETTINGS_ACTIVITY, "the app", 2.5)
     note = "opened"
+    if present("Set up later") and not dismiss_onboarding:
+        # OFF BY DEFAULT. Dismissing onboarding changes something the app REMEMBERS and this tool cannot
+        # put back, and it is the one route left, outside the raw primitives, by which this harness could
+        # change the founder's phone with nothing recording it. Passing `dismiss_onboarding=True` is a
+        # caller saying it knows that.
+        raise Blocked(
+            "the welcome screen is showing, and getting past it changes something the app remembers "
+            "that nothing here can put back. Dismiss it on the phone, or pass dismiss_onboarding=True "
+            "if losing that is intended."
+        )
     if dismiss_onboarding and present("Set up later"):
         # DISMISSING ONBOARDING IS A CHANGE AND IT IS NOT JOURNALED, because it cannot be put back: the
         # app remembers that setup was skipped and nothing here can un-remember it. Said out loud rather
@@ -1328,23 +1327,6 @@ def recording():
             "cannot be read. Clear the log before the take you mean to measure."
         )
     return last_start > last_stop
-
-
-def _start_take():
-    """Send the start intent. THE ONLY CALLER IS `open_recorder`, which owns ending what this begins.
-
-    It carries the off-switch itself rather than trusting its caller to. A guard on the caller is a
-    guard somebody can walk around by calling this directly, and this is the one function in the file
-    that opens the founder's microphone.
-    """
-    if RECORDING_IS_OFF:
-        raise Blocked(RECORDING_IS_OFF)
-    remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)}", check=False)
-    if remote != 0 or "Error" in out:
-        detail = out.strip().splitlines()[-1] if out.strip() else "no message"
-        raise Blocked(f"the recorder would not start: {detail}")
-    time.sleep(1.5)
-    _STATE["tree"] = None
 
 
 def stop_dictation():
@@ -1525,10 +1507,22 @@ def open_recorder(verify=True):
         if take not in _owed():
             raise Blocked("the take could not be recorded on disk, so it will not be started. A take "
                           "nothing has written down is one nobody can end.")
-        # NO `except` HERE, DELIBERATELY. An interrupted or timed-out start may already have reached
-        # the phone, so settling the debt on the way out is exactly the case the debt exists for: the
-        # take runs and the book forgets it. An uncertain start keeps its debt, and `restore()` ends it.
-        _start_take()
+        # THE START IS WRITTEN HERE AND NOWHERE ELSE. It used to be a function of its own, and a
+        # function that starts a recording is one somebody can call: with the off-switch removed it
+        # would send the start with no debt and no cleanup, which is the whole class again wearing the
+        # shape of a helper. There is no such function now.
+        #
+        # NO `except` AROUND IT, DELIBERATELY. An interrupted or timed-out start may already have
+        # reached the phone, so settling the debt on the way out is exactly the case the debt exists
+        # for: the take runs and the book forgets it. An uncertain start keeps its debt.
+        if RECORDING_IS_OFF:
+            raise Blocked(RECORDING_IS_OFF)
+        remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)}", check=False)
+        if remote != 0 or "Error" in out:
+            detail = out.strip().splitlines()[-1] if out.strip() else "no message"
+            raise Blocked(f"the recorder would not start: {detail}")
+        time.sleep(1.5)
+        _STATE["tree"] = None
         try:
             time.sleep(1.0)
             _STATE["tree"] = None

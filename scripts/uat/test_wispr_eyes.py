@@ -449,17 +449,22 @@ def main():
     check("with nothing changed it says so", eyes.restore() == ["nothing was changed"])
 
     # THE DEFECT THAT MADE THIS FILE-BACKED: a change written by one process must be visible to the
-    # next. Reading it back through a FRESH import of the module is the only way to test that, because
-    # anything else shares this process's memory and would pass with the old in-memory list.
+    # next. **AND THIS ROW HAS TO ACTUALLY CROSS A PROCESS BOUNDARY.** It used to import a second copy
+    # of the module inside THIS process and read it back — which passes whether the book is a file or a
+    # module-level list, so it never tested the thing its name promised. It runs a real interpreter now.
     eyes._owe(("screen-timeout", "600000"))
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "wispr_eyes_second_process", Path(__file__).parent / "wispr_eyes.py")
-    fresh = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(fresh)
-    fresh._JOURNAL = book
-    check("a change survives into the NEXT process",
-          fresh._owed("fixture") == [("screen-timeout", "600000")], fresh._owed("fixture"))
+    import subprocess as _sp
+    elsewhere = _sp.run(
+        [sys.executable, "-c",
+         "import sys, pathlib;"
+         f"sys.path.insert(0, {str(Path(__file__).parent)!r});"
+         "import wispr_eyes as w;"
+         f"w._JOURNAL = pathlib.Path({str(book)!r});"
+         "print(w._owed('fixture'))"],
+        capture_output=True, text=True, timeout=60)
+    check("a change survives into a REAL next process",
+          "screen-timeout" in elsewhere.stdout and "600000" in elsewhere.stdout,
+          elsewhere.stdout.strip() or elsewhere.stderr.strip()[:200])
 
     # And it is put back FOR REAL, once, and then gone.
     said = eyes.restore()
@@ -694,8 +699,11 @@ def main():
          "def mixed():\n    with _journal_locked():\n        _owe(('a','b'))\n    _owe(('c','d'))\n", True),
         ("a comment mentioning the lock does not count",
          "def sneaky():\n    # with _journal_locked()\n    _owe(('x','y'))\n", True),
+        # ONE decorator, deliberately. With `@contextmanager` under it as well, the stack alone is
+        # unrecognised and the row passed without the rule ever having to notice a generator — so
+        # deleting the deferred-work check left it green.
         ("a decorator on a generator does not count as holding the lock",
-         "@_atomic_change\n@contextmanager\ndef a_take():\n    _owe(('t','x'))\n    yield\n", True),
+         "@_atomic_change\ndef a_take():\n    _owe(('t','x'))\n    yield\n", True),
         ("a debt reached through getattr is still seen",
          "def sly():\n    getattr(eyes, '_owe')(('a','b'))\n", True),
         ("a debt inside a generator expression is not covered by the lock around it",

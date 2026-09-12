@@ -17,6 +17,16 @@ class VoiceInputActivity : Activity() {
         const val EXTRA_STOP = "stop"
         const val EXTRA_CANCEL = "cancel"
         const val EXTRA_TOGGLE = "toggle"
+
+        /**
+         * Start, never toggle. The floating bubble sends this: a TOGGLE arriving while a take is still
+         * STARTING would cancel it, and a second tap during startup is exactly what a user does when
+         * nothing has visibly happened yet.
+         */
+        const val EXTRA_START = "start"
+
+        /** The bubble's request token, forwarded onto the service intent unchanged. */
+        const val EXTRA_REQUEST = "request"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,6 +47,7 @@ class VoiceInputActivity : Activity() {
         val action = when {
             intent.getBooleanExtra(EXTRA_CANCEL, false) -> DictationSessionService.ACTION_CANCEL
             intent.getBooleanExtra(EXTRA_STOP, false) -> DictationSessionService.ACTION_STOP
+            intent.getBooleanExtra(EXTRA_START, false) -> DictationSessionService.ACTION_START
             intent.getBooleanExtra(EXTRA_TOGGLE, false) -> DictationSessionService.ACTION_TOGGLE
             else -> DictationSessionService.ACTION_TOGGLE
         }
@@ -50,7 +61,7 @@ class VoiceInputActivity : Activity() {
             // and this one dies first.
             PasteAccessibilityService.pinTargetForDictation()
         }
-        runCatching { DictationSessionService.sendCommand(this, action) }
+        runCatching { DictationSessionService.sendCommand(this, action, intent.getStringExtra(EXTRA_REQUEST)) }
             .onFailure {
                 Toast.makeText(this, "Dictation service could not start", Toast.LENGTH_LONG).show()
             }

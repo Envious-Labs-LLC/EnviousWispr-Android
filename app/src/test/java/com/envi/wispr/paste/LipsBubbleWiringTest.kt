@@ -99,6 +99,17 @@ class LipsBubbleWiringTest {
     }
 
     @Test
+    fun aReconnectAndAWindowSwitchDiscoverAnAlreadyFocusedEditor() {
+        // Discovery is a traversal, so it is allowed only on connect and on a window state change,
+        // never on the frequent windows-changed stream.
+        assertTrue(service.contains("revalidateBubbleField(it, discover = true)"))
+        assertTrue(service.contains("discover = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED"))
+        val body = service.substringAfter("private fun revalidateBubbleField(").substringBefore("\n    /**")
+        assertTrue(body.contains("if (!stillFocused && discover)"))
+        assertTrue(body.contains("findFocusedEditableTarget()"))
+    }
+
+    @Test
     fun theOverlayIsCreatedOncePerServiceInstance() {
         // A repeat onServiceConnected (any package install triggers one) must not drop the bubble's state.
         assertTrue(service.contains("if (recordingOverlay == null) {"))

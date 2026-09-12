@@ -19,6 +19,7 @@ private val Context.enviousWisprDataStore by preferencesDataStore(name = "enviou
 
 data class AppPreferencesState(
     val onboardingStep: Int = 0,
+    val onboardingMobileData: Boolean = false,
     val onboardingComplete: Boolean = false,
     val onboardingDismissed: Boolean = false,
     // OFF by default, so what a user sees out of the box is EnviousWispr rather than their wallpaper.
@@ -65,7 +66,8 @@ class AppPreferences(context: Context) {
         }
 
     private fun mapState(preferences: Preferences): AppPreferencesState = AppPreferencesState(
-        onboardingStep = preferences[Keys.ONBOARDING_STEP] ?: 0,
+        onboardingStep = if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0,
+        onboardingMobileData = preferences[Keys.ONBOARDING_MOBILE_DATA] ?: false,
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
         onboardingDismissed = preferences[Keys.ONBOARDING_DISMISSED] ?: false,
         dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: false,
@@ -85,9 +87,14 @@ class AppPreferences(context: Context) {
 
     suspend fun setOnboardingStep(step: Int) {
         dataStore.edit { preferences ->
-            preferences[Keys.ONBOARDING_STEP] = step.coerceAtLeast(0)
+            preferences[Keys.ONBOARDING_STEP] = step.coerceIn(0, 3)
+            preferences[Keys.ONBOARDING_VERSION] = 2
             preferences[Keys.ONBOARDING_DISMISSED] = false
         }
+    }
+
+    suspend fun setOnboardingMobileData(allowed: Boolean) {
+        dataStore.edit { it[Keys.ONBOARDING_MOBILE_DATA] = allowed }
     }
 
     suspend fun dismissOnboarding() {
@@ -156,6 +163,8 @@ class AppPreferences(context: Context) {
     }
 
     private object Keys {
+        val ONBOARDING_VERSION = intPreferencesKey("onboarding_version")
+        val ONBOARDING_MOBILE_DATA = booleanPreferencesKey("onboarding_mobile_data")
         val ONBOARDING_STEP = intPreferencesKey("onboarding_step")
         val ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         val ONBOARDING_DISMISSED = booleanPreferencesKey("onboarding_dismissed")

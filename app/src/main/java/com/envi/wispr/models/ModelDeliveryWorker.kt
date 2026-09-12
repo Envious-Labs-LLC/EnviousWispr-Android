@@ -224,6 +224,21 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             enqueueDownload(context, model, update = false)
         }
 
+        /** Explicit setup action. KEEP makes recreation/repeated Get Started idempotent. */
+        internal fun enqueueSetup(context: Context, model: ModelDescriptor, mobileData: Boolean, restart: Boolean = false) {
+            val root = ModelStorage.root(context)
+            if (ModelDeliveryStore(root).isVerified(model)) return
+            if (restart) ModelDeliveryControlStore(root).clear(model)
+            val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
+                .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id).build())
+                .setConstraints(Constraints.Builder()
+                    .setRequiredNetworkType(if (mobileData) NetworkType.CONNECTED else NetworkType.UNMETERED)
+                    .setRequiresStorageNotLow(true).build())
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model),
+                if (restart) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, request)
+        }
+
         fun enqueueUpdate(context: Context, model: ModelDescriptor) {
             enqueueDownload(context, model, update = true)
         }
@@ -247,11 +262,10 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
 
         fun enqueueBootstrap(context: Context, model: ModelDescriptor) {
-            ModelDeliveryControlStore(ModelStorage.root(context)).clear(model)
             val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>().setInputData(
                 Data.Builder().putString(KEY_MODEL_ID, model.id).putBoolean(KEY_ADOPT_ONLY, true).build()
             ).build()
-            WorkManager.getInstance(context).enqueueUniqueWork(adoptionWorkName(model), ExistingWorkPolicy.REPLACE, request)
+            WorkManager.getInstance(context).enqueueUniqueWork(adoptionWorkName(model), ExistingWorkPolicy.KEEP, request)
         }
 
         fun enqueueRemove(context: Context, model: ModelDescriptor) {

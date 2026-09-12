@@ -65,13 +65,13 @@ class SettingsActivity : ComponentActivity() {
                         startActivity(Intent(this, VoiceInputActivity::class.java))
                     },
                     onRequestMicrophone = {
-                        microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                        requestPermissionWithRecovery(Manifest.permission.RECORD_AUDIO) { microphonePermission.launch(it) }
                     },
                     onRequestNotifications = {
-                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissionWithRecovery(Manifest.permission.POST_NOTIFICATIONS) { notificationPermission.launch(it) } else refreshReadiness()
                     },
                     onOpenAccessibility = {
-                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        startActivity(Intent(this, AccessibilityGuideActivity::class.java))
                     },
                     licenseNotices = thirdPartyNotices,
                     onOnboardingStep = viewModel::setOnboardingStep,
@@ -113,6 +113,17 @@ class SettingsActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshReadiness()
+    }
+
+    private fun requestPermissionWithRecovery(permission: String, request: (String) -> Unit) {
+        val requested = getSharedPreferences("permission_requests", MODE_PRIVATE)
+        val denied = androidx.core.content.ContextCompat.checkSelfPermission(this, permission) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (denied && requested.getBoolean(permission, false) && !shouldShowRequestPermissionRationale(permission)) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
+        } else {
+            requested.edit().putBoolean(permission, true).apply()
+            request(permission)
+        }
     }
 
     private fun refreshReadiness() {

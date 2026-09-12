@@ -310,9 +310,9 @@ class AutoPasteWiringTest {
                 insertChip,
             ),
             Triple(
-                "onboarding step 4",
-                "AutoPasteAvailability.LIVE -> \"Side-button auto-insert ready\"",
-                source,
+                "onboarding permissions",
+                "autoPaste == AutoPasteAvailability.LIVE",
+                read("ui/OnboardingScreen.kt"),
             ),
         )
         val missing = surfaces.filterNot { (_, evidence, haystack) -> haystack.contains(evidence) }

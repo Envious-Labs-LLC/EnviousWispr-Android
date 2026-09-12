@@ -11,6 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.envi.wispr"
+        manifestPlaceholders["applicationLabel"] = "@string/app_name"
         minSdk = 30
         targetSdk = 36
         versionCode = 1
@@ -23,6 +24,14 @@ android {
             cmake {
                 cppFlags += "-std=c++17"
             }
+        }
+    }
+
+    // Opt-in separate app for fresh onboarding UAT without wiping a Play-signed daily installation.
+    buildTypes.getByName("debug") {
+        if (providers.gradleProperty("onboardingPreview").orNull == "true") {
+            applicationIdSuffix = ".onboardingpreview"
+            manifestPlaceholders["applicationLabel"] = "EnviousWispr Preview"
         }
     }
 

@@ -64,7 +64,9 @@ fun modelUiState(
                 action = ModelUiAction.RETRY,
             )
         }
-        "SUCCEEDED" -> if (verifiedReady) {
+        "SUCCEEDED" -> if (paused && !verifiedReady) {
+            ModelUiState("Paused", ModelHealth.NOT_READY, safeBytes, safeTotal, reason, ModelUiAction.RESUME)
+        } else if (verifiedReady) {
             ModelUiState("Ready", ModelHealth.READY, safeBytes, safeTotal, action = ModelUiAction.REMOVE)
         } else if (staleInstalled) {
             ModelUiState("Update available", ModelHealth.NOT_READY, safeBytes, safeTotal, action = ModelUiAction.UPDATE)

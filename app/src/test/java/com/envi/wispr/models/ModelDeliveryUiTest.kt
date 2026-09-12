@@ -62,4 +62,11 @@ class ModelDeliveryUiTest {
         assertEquals(ModelHealth.NOT_READY, modelUiState(false, null).health)
         assertEquals("Missing", modelUiState(false, null).label)
     }
+    @Test fun pausedBootstrapRemainsResumableAfterTheWorkerReturns() {
+        val paused = modelUiState(false, "SUCCEEDED", controlState = "PAUSED")
+        assertEquals("Paused", paused.label)
+        assertEquals(ModelUiAction.RESUME, paused.action)
+        assertEquals(ModelHealth.NOT_READY, paused.health)
+    }
+
 }

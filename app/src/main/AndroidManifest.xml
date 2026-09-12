@@ -16,10 +16,19 @@
         android:name=".models.ModelBootstrapApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="${applicationLabel}"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.EnviousWispr">
+
+        <activity
+            android:name=".ui.AccessibilityGuideActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
+            android:theme="@style/Theme.EnviousWispr" />
 
         <!-- Main app shell -->
         <activity

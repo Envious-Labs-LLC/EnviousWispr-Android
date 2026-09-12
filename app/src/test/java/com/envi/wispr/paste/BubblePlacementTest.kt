@@ -90,12 +90,28 @@ class BubblePlacementTest {
     }
 
     @Test
-    fun theHideTargetIsTheStripAboveTheKeyboardOrTheBottomEdge() {
+    fun theHideTargetSitsCentredInTheStripAboveTheKeyboardOrTheBottomEdge() {
         val withKeyboard = BubbleBounds(usable, keyboardTop = 1200)
-        assertEquals(true, BubblePlacement.overHideTarget(dragTop = 1200 - 72 - size / 2 + 1, withKeyboard, size, stripPx = 72))
-        assertEquals(false, BubblePlacement.overHideTarget(dragTop = 900, withKeyboard, size, stripPx = 72))
-        val noKeyboard = BubbleBounds(usable, null)
-        assertEquals(true, BubblePlacement.overHideTarget(dragTop = 1900 - 60, noKeyboard, size, stripPx = 72))
+        val target = BubblePlacement.hideTargetBox(withKeyboard, widthPx = 300, heightPx = 44, stripPx = 72)
+        assertEquals(500, target.centerX)
+        assertEquals(1200 - 72 + 14, target.top)
+        val noKeyboard = BubblePlacement.hideTargetBox(BubbleBounds(usable, null), 300, 44, 72)
+        assertEquals(1900 - 72 + 14, noKeyboard.top)
+    }
+
+    @Test
+    fun aSidewaysDragFromTheDefaultDockDocksAndNeverHides() {
+        // The default dock's centre is 40 px above the keyboard, inside any full-width strip. Only the
+        // drawn target counts, so dragging straight across the bottom to the other edge is a dock.
+        val bounds = BubbleBounds(usable, keyboardTop = 1200)
+        val target = BubblePlacement.hideTargetBox(bounds, widthPx = 300, heightPx = 44, stripPx = 72)
+        val defaultBox = BubblePlacement.bubbleBox(BubblePosition.DEFAULT, bounds, size, margin)!!
+        assertEquals(false, BubblePlacement.overHideTarget(defaultBox.left, defaultBox.top, size, target, slackPx = 16))
+        assertEquals(false, BubblePlacement.overHideTarget(margin, defaultBox.top, size, target, slackPx = 16))
+        // Over the drawn label it hides, with a little slack around it.
+        assertEquals(true, BubblePlacement.overHideTarget(target.centerX - size / 2, target.centerY - size / 2, size, target, slackPx = 16))
+        assertEquals(true, BubblePlacement.overHideTarget(target.right + 10 - size / 2, target.centerY - size / 2, size, target, slackPx = 16))
+        assertEquals(false, BubblePlacement.overHideTarget(target.right + 40 - size / 2, target.centerY - size / 2, size, target, slackPx = 16))
     }
 
     @Test

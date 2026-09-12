@@ -38,4 +38,10 @@ class OnboardingPolicyTest {
         assertEquals("Hello." to 6, mergePracticeText("", 0, 0, "Hello."))
         assertEquals("Hello Sam." to 10, mergePracticeText("Hello Pat.", 10, 6, "Sam."))
     }
+    @Test fun anOlderModelCheckCannotRevokeANewerPermissionAnswer() {
+        val granted = AppReadiness(microphoneGranted = true, notificationsGranted = true, accessibilityPermitted = true)
+        val checkedBeforeGrant = AppReadiness(speechModelReady = true, polishModelReady = true)
+        assertEquals(granted.copy(speechModelReady = true, polishModelReady = true), granted.withVerifiedModels(checkedBeforeGrant))
+    }
+
 }

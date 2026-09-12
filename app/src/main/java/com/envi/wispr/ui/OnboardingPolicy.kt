@@ -24,3 +24,9 @@ internal fun mergePracticeText(text: String, start: Int, end: Int, result: Strin
     val inserted = prefix + result + suffix
     return text.replaceRange(left, right, inserted) to (left + inserted.length)
 }
+
+/** A slow file check cannot overwrite a newer permission answer. */
+internal fun AppReadiness.withVerifiedModels(checked: AppReadiness): AppReadiness = copy(
+    speechModelReady = checked.speechModelReady,
+    polishModelReady = checked.polishModelReady,
+)

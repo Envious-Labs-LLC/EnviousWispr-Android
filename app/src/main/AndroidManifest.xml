@@ -23,6 +23,8 @@
 
         <activity
             android:name=".ui.AccessibilityGuideActivity"
+            android:taskAffinity="${applicationId}.accessibilityguide"
+            android:launchMode="singleTask"
             android:exported="false"
             android:excludeFromRecents="true"
             android:supportsPictureInPicture="true"

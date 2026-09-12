@@ -38,6 +38,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         if (inputData.getBoolean(KEY_REPAIR, false)) {
             if (!store.repair(model)) return@withContext failure("model repair cleanup failed", DownloadState.REPAIR_NEEDED)
         }
+        setProgressAsync(Data.Builder().putString(KEY_STATE, DownloadState.VERIFYING.name).build())
         if (store.isVerified(model)) {
             controls.clear(model)
             ModelDeliveryNotification.clear(applicationContext, model)
@@ -59,6 +60,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         // access is intentionally not requested by the normal manifest.
         val legacy = java.io.File(applicationContext.getExternalFilesDir(null), "models/${model.id}")
         if (inputData.getBoolean(KEY_ADOPT_ONLY, false)) {
+            if (!legacy.isDirectory) return@withContext Result.success(Data.Builder().putBoolean(KEY_NO_LEGACY, true).build())
             enterForeground(model, 0, model.files.sumOf { it.expectedBytes }, adoptionWorkName(model))
             val required = model.files.sumOf { it.expectedBytes } + 128L * 1024L * 1024L
             if (StatFs(root.path).availableBytes < required) {
@@ -214,6 +216,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         const val KEY_BYTES = "bytes"
         const val KEY_TOTAL = "total"
         const val KEY_REASON = "reason"
+        const val KEY_NO_LEGACY = "no_legacy_model"
         private const val DOWNLOAD_PREFIX = "model-download-"
         private const val ADOPT_PREFIX = "model-adopt-"
 
@@ -227,7 +230,6 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         /** Explicit setup action. KEEP makes recreation/repeated Get Started idempotent. */
         internal fun enqueueSetup(context: Context, model: ModelDescriptor, mobileData: Boolean, restart: Boolean = false) {
             val root = ModelStorage.root(context)
-            if (ModelDeliveryStore(root).isVerified(model)) return
             if (restart) ModelDeliveryControlStore(root).clear(model)
             val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
                 .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id).build())

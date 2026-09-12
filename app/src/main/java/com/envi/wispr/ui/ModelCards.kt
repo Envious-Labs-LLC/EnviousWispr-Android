@@ -145,7 +145,7 @@ internal fun workUiState(info: WorkInfo?, ready: Boolean, model: com.envi.wispr.
 
 internal fun preferredModelWork(download: List<WorkInfo>, adoption: List<WorkInfo>): WorkInfo? {
     val active = (download + adoption).firstOrNull { !it.state.isFinished }
-    return active ?: download.firstOrNull() ?: adoption.firstOrNull()
+    return active ?: download.firstOrNull() ?: adoption.firstOrNull { !it.outputData.getBoolean(ModelDeliveryWorker.KEY_NO_LEGACY, false) }
 }
 
 @Composable

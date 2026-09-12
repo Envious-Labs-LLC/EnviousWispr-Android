@@ -69,7 +69,7 @@ class AccessibilityGuideActivity : ComponentActivity() {
             if (packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
                 runCatching { enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational(230, 215)).build()) }
             }
-            runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                 .onFailure { launchFailed = true }
         }
     }
@@ -108,7 +108,12 @@ private fun AccessibilityGuide(compact: Boolean, launchFailed: Boolean, openSett
     val reduced = onboardingReducedMotion()
     var step by remember { mutableIntStateOf(0) }
     var paused by remember { mutableStateOf(reduced) }
-    val steps = listOf("Tap Installed apps", "Choose EnviousWispr", "Turn on the service", "Review access, then Allow", "Return to EnviousWispr")
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val appLabel = remember { context.applicationInfo.loadLabel(context.packageManager).toString() }
+    val samsung = android.os.Build.MANUFACTURER.equals("samsung", ignoreCase = true)
+    val frames = if (samsung) listOf(0, 1, 2, 3, 4) else listOf(1, 2, 3, 4)
+    val steps = (if (samsung) listOf("Tap Installed apps") else emptyList()) +
+        listOf("Choose $appLabel", "Turn on the service", "Review access, then Allow", "Return to EnviousWispr")
     LaunchedEffect(owner, paused) {
         if (!paused) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) { delay(3400); step = (step + 1) % steps.size }
@@ -123,19 +128,19 @@ private fun AccessibilityGuide(compact: Boolean, launchFailed: Boolean, openSett
                 Text("${step + 1} / ${steps.size}", fontSize = 11.sp)
             }
             if (compact && reduced) {
-                Text("1. Installed apps\n2. EnviousWispr\n3. Turn on service\n4. Review and Allow\n5. Return to the app", Modifier.padding(10.dp), fontSize = 12.sp, lineHeight = 19.sp)
-            } else Crossfade(targetState = step, animationSpec = tween(if (reduced) 0 else 400), label = "Accessibility instructions") { current ->
+                Text(steps.mapIndexed { index, text -> "${index + 1}. $text" }.joinToString("\n"), Modifier.padding(10.dp), fontSize = 12.sp, lineHeight = 19.sp)
+            } else Crossfade(targetState = frames[step], animationSpec = tween(if (reduced) 0 else 400), label = "Accessibility instructions") { current ->
                 Surface(color = Color(0xFFF3F3F6), contentColor = Color(0xFF17171B), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(when (current) { 0 -> "Accessibility"; 1 -> "Installed apps"; 3 -> "Review Android’s prompt"; else -> "EnviousWispr" }, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text(when (current) { 0 -> "Installed apps    ›"; 1 -> "EnviousWispr    Off"; 2 -> "Off    ○"; 3 -> "Allow"; else -> "On    ✓" }, Modifier.fillMaxWidth().background(Color(0xFFE7DFFC), RoundedCornerShape(7.dp)).padding(10.dp), fontSize = 11.sp)
+                        Text(when (current) { 0 -> "Accessibility"; 1 -> if (samsung) "Installed apps" else "Accessibility"; 3 -> "Review Android’s prompt"; else -> appLabel }, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(when (current) { 0 -> "Installed apps    ›"; 1 -> "$appLabel    Off"; 2 -> "Off    ○"; 3 -> "Allow"; else -> "On    ✓" }, Modifier.fillMaxWidth().background(Color(0xFFE7DFFC), RoundedCornerShape(7.dp)).padding(10.dp), fontSize = 11.sp)
                         if (current == 2) Text("Leave the shortcut off", fontSize = 10.sp)
                     }
                 }
             }
             Text(steps[step], fontWeight = FontWeight.Bold, fontSize = if (compact) 11.sp else 18.sp)
             if (!compact) {
-                Text("Samsung: Installed apps → EnviousWispr → On. On other phones, look for Downloaded apps or Installed services. Leave the optional Accessibility shortcut off.", Modifier.padding(vertical = 18.dp), fontSize = 14.sp)
+                Text(if (samsung) "Installed apps → $appLabel → On. Leave the optional Accessibility shortcut off." else "Find $appLabel in Accessibility. Your phone may group it under Downloaded apps or Installed services. Leave the optional shortcut off.", Modifier.padding(vertical = 18.dp), fontSize = 14.sp)
                 if (launchFailed) Text("Open your phone’s Settings, then Accessibility.")
                 Row { TextButton(onClick = { paused = !paused }) { Text(if (paused) "Play" else "Pause") }; TextButton(onClick = { paused = true; step = (step + 1) % steps.size }) { Text("Next") } }
                 Button(onClick = openSettings) { Text("Open Settings again") }

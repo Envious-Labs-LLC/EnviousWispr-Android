@@ -26,6 +26,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -54,20 +58,34 @@ internal class OnboardingViewModel(application: Application, private val saved: 
 
     init { saved["practice_active"] = false }
 
-    private fun modelFlow(model: com.envi.wispr.models.ModelDescriptor) = combine(
-        work.getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.downloadWorkName(model)),
-        work.getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.adoptionWorkName(model)), refresh,
-    ) { download, adoption, _ ->
-        withContext(Dispatchers.IO) { workUiState(preferredModelWork(download, adoption), ModelStorage.isReady(context, model), model, context) }
+    private fun modelFlow(model: com.envi.wispr.models.ModelDescriptor): kotlinx.coroutines.flow.Flow<ModelUiState> {
+        val observations = combine(
+            work.getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.downloadWorkName(model)),
+            work.getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.adoptionWorkName(model)),
+        ) { download, adoption -> preferredModelWork(download, adoption) }
+        return observeSetupModelProgress(observations, refresh, viewModelScope,
+            verify = { ModelStorage.isReady(context, model) },
+            project = { info, ready ->
+                val state = workUiState(info, ready, model, context)
+                if (state.action == com.envi.wispr.models.ModelUiAction.RESUME) state.copy(
+                    bytes = com.envi.wispr.models.ModelDeliveryStore(ModelStorage.root(context)).stagedBytes(model),
+                    total = model.files.sumOf { it.expectedBytes },
+                ) else state
+            })
     }
 
     val downloads = combine(modelFlow(ModelManifest.parakeet), modelFlow(ModelManifest.s1)) { speech, polish -> listOf(speech, polish) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    fun startSetup() = downloadAction {
-        val mobile = preferences.authoritativeState.first().onboardingMobileData
-        ModelManifest.all.forEach { ModelDeliveryWorker.enqueueSetup(context, it, mobile) }
-        preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)
+    fun startSetup() {
+        viewModelScope.launch {
+            // Navigation is committed before worker admission. No late write can undo Back.
+            preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)
+            downloadAction {
+                val mobile = preferences.authoritativeState.first().onboardingMobileData
+                ModelManifest.all.forEach { ModelDeliveryWorker.enqueueSetup(context, it, mobile) }
+            }
+        }
     }
 
     fun resumeDownloads(mobileData: Boolean? = null) = downloadAction {
@@ -77,7 +95,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     }
 
     fun pauseDownloads() = downloadAction {
-        ModelManifest.all.filterNot { ModelStorage.isReady(context, it) }.forEach { ModelDeliveryWorker.pause(context, it) }
+        ModelManifest.all.filterIndexed { index, _ -> downloads.value.getOrNull(index)?.health != ModelHealth.READY }.forEach { ModelDeliveryWorker.pause(context, it) }
     }
 
     private fun downloadAction(block: suspend () -> Unit) {

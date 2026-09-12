@@ -69,7 +69,7 @@ internal fun OnboardingScreen(
                         if (model.downloadMessage.isNotBlank()) Text(model.downloadMessage, Modifier.padding(top = 12.dp), color = muted, textAlign = TextAlign.Center)
                     }
                     OnboardingStage.DOWNLOADS -> {
-                        val index = if (readiness.speechModelReady) 1 else 0
+                        val index = if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0
                         val state = downloads.getOrNull(index)
                         val descriptor = if (index == 0) ModelManifest.parakeet else ModelManifest.s1
                         SetupHeading(if (index == 0) "First, get your\nwords right." else "Less cleanup.\nMore ready to send.",
@@ -85,7 +85,7 @@ internal fun OnboardingScreen(
                                 } else if (state?.action == ModelUiAction.PAUSE) {
                                     LinearProgressIndicator(Modifier.fillMaxWidth(), color = accent)
                                 }
-                                Text(if (state?.label == "Queued") "Waiting for network or available storage." else state?.label ?: "Checking your models…", color = muted, fontSize = 13.sp)
+                                Text(state?.label ?: "Checking your models…", color = muted, fontSize = 13.sp)
                                 state?.reason?.let { Text(it, fontSize = 12.sp, color = muted) }
                             }
                         }
@@ -130,7 +130,7 @@ internal fun OnboardingScreen(
                 when (stage) {
                     OnboardingStage.WELCOME -> SetupButton("Get Started!", fill, action = model::startSetup)
                     OnboardingStage.DOWNLOADS -> {
-                        val active = downloads.getOrNull(if (readiness.speechModelReady) 1 else 0)
+                        val active = downloads.getOrNull(if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0)
                         val action = active?.action
                         SetupButton(when (action) { ModelUiAction.PAUSE -> "Pause download"; ModelUiAction.RESUME -> "Resume download"; else -> "Retry download" }, fill, active != null) {
                             if (action == ModelUiAction.PAUSE) model.pauseDownloads() else model.resumeDownloads()
@@ -169,7 +169,10 @@ private fun PermissionRow(title: String, description: String, kind: SetupPermiss
             OnboardingPermissionIcon(kind, if (granted) green else accent)
             Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp); Text(description, color = muted, fontSize = 11.sp, lineHeight = 16.sp) }
             if (granted) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                Box(Modifier.size(17.dp).background(green, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) { Text("✓", color = surface, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                Box(Modifier.size(17.dp).background(green, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) { androidx.compose.foundation.Canvas(Modifier.size(12.dp)) {
+                    val path = androidx.compose.ui.graphics.Path().apply { moveTo(size.width * .12f, size.height * .52f); lineTo(size.width * .4f, size.height * .8f); lineTo(size.width * .9f, size.height * .2f) }
+                    drawPath(path, surface, style = androidx.compose.ui.graphics.drawscope.Stroke(size.width * .13f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                } }
                 Text("Granted", color = green, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
             else FilledTonalButton(onClick = action, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp), shape = RoundedCornerShape(10.dp)) { Text("Grant", fontSize = 12.sp) }

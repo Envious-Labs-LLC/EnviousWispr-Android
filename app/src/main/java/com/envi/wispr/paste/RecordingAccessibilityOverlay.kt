@@ -1,24 +1,47 @@
 package com.envi.wispr.paste
 
+import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.util.Log
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.LinearLayout.LayoutParams.MATCH_PARENT as MATCH
 import android.widget.LinearLayout.LayoutParams.WRAP_CONTENT as WRAP
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.res.ResourcesCompat
 import com.envi.wispr.R
+import com.envi.wispr.shortcuts.BubbleRequestToken
+import com.envi.wispr.shortcuts.BubbleRequests
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import com.envi.wispr.ui.DictationSessionService
+import com.envi.wispr.ui.VoiceInputActivity
 
-/** Small trusted overlay. Its window never takes editor or IME focus. */
+/**
+ * The one floating window, in two shapes. Its window never takes editor or IME focus.
+ *
+ * At idle, while another app's editable field is focused, it is the lips bubble: the primary way to
+ * start a dictation (issue #135). During a take it is the recorder pill, anchored to the edge the
+ * bubble was docked at. Both shapes are sized to exactly what they paint, because with
+ * FLAG_NOT_TOUCH_MODAL the WINDOW rectangle is the touch area and anything transparent inside it eats
+ * taps meant for the app underneath.
+ *
+ * Everything that decides WHETHER the bubble shows comes from [PasteAccessibilityService], which owns
+ * the accessibility events; this class never reads the node tree. Everything that decides what a touch
+ * MEANT is [BubbleGestureClassifier]; everything that decides WHERE a shape goes is [BubblePlacement].
+ * This class wires them to Android.
+ */
 internal class RecordingAccessibilityOverlay(
     private val service: PasteAccessibilityService,
 ) : RecordingOverlayState.Listener {
@@ -29,14 +52,14 @@ internal class RecordingAccessibilityOverlay(
     private val meter = RecordingLevelMeterView(service)
     private val stateLabel = TextView(service)
     private val notice = TextView(service)
+    private val bubbleMark = BrandMarkView(service)
+    private val bubble = buildBubble()
+    private val pillColumn = buildPillColumn()
     private val root = buildRoot()
+    private val hideTarget = buildHideTarget()
     private val layoutParams = WindowManager.LayoutParams(
-        // Set to the pill's own width in `updateWindowBounds`, never MATCH_PARENT and never
-        // WRAP_CONTENT. WRAP_CONTENT let the rail's weight resolve against the whole screen and the
-        // pill ran edge to edge. MATCH_PARENT fixed the look and broke something worse: a transparent
-        // margin inside the window is still TOUCHABLE, because FLAG_NOT_TOUCH_MODAL passes touches
-        // outside the WINDOW and not outside the painted pill, so two strips beside the recorder
-        // silently ate taps meant for the app underneath.
+        // Set per shape in `render`, never MATCH_PARENT and never WRAP_CONTENT for the width: with
+        // FLAG_NOT_TOUCH_MODAL, transparent room inside the window still swallows the taps under it.
         1,
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -45,15 +68,48 @@ internal class RecordingAccessibilityOverlay(
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
         PixelFormat.TRANSLUCENT,
     ).apply {
-        gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        y = dp(12)
-        title = "EnviousWispr recording controls"
+        gravity = Gravity.TOP or Gravity.START
+        title = WINDOW_TITLE
     }
+    private val hideTargetParams = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+        PixelFormat.TRANSLUCENT,
+    ).apply {
+        gravity = Gravity.TOP or Gravity.START
+        title = "EnviousWispr hide target"
+    }
+
+    private val classifier = BubbleGestureClassifier(
+        slopPx = ViewConfiguration.get(service).scaledTouchSlop.toFloat(),
+        holdTimeoutMs = ViewConfiguration.getLongPressTimeout().toLong(),
+    )
+    private val holdRunnable = Runnable { onGesture(classifier.holdTimeout(nowMs())) }
+
     private var attached = false
+    private var hideTargetAttached = false
     private var active = false
+    private var snapshot = RecordingOverlayState.Snapshot()
     /** What the slow half of the recorder was last set to. -1 and null mean it is not shown. */
     private var lastElapsedSeconds = -1
     private var lastNotice: String? = null
+
+    /** The service's word on whether another app's editable field is focused, and which one. */
+    private var fieldActive = false
+    private var fieldKey: Any? = null
+    /** Set when the user drops the bubble on the hide target; cleared by a DIFFERENT field key. */
+    private var hiddenForKey: Any? = null
+    private var keyboardTop: Int? = null
+    private var position = BubblePosition.DEFAULT
+    /** The bubble's box while a drag is in progress, in screen pixels; null otherwise. */
+    private var dragBox: Box? = null
+    private var dragOrigin: Box? = null
+    private var lastBounds: BubbleBounds? = null
 
     fun start() {
         active = true
@@ -63,15 +119,56 @@ internal class RecordingAccessibilityOverlay(
     fun stop() {
         active = false
         RecordingOverlayState.detach(this)
+        cancelGesture()
+        removeHideTarget()
         remove()
     }
 
+    // ---- what the service tells the overlay ----
+
+    /** Another app's editable field is focused. [key] identifies the editor node, never the window alone. */
+    fun fieldActivated(key: Any) {
+        if (hiddenForKey != null && hiddenForKey != key) hiddenForKey = null
+        val changed = !fieldActive || fieldKey != key
+        fieldActive = true
+        fieldKey = key
+        if (changed) render()
+    }
+
+    fun fieldLost() {
+        if (!fieldActive) return
+        fieldActive = false
+        fieldKey = null
+        render()
+    }
+
+    /** The top of a docked keyboard in screen pixels, or null when none is showing. */
+    fun keyboardBounds(top: Int?) {
+        if (keyboardTop == top) return
+        keyboardTop = top
+        render()
+    }
+
+    /** The persisted position, loaded by the service off the main thread. */
+    fun setPosition(loaded: BubblePosition) {
+        if (position == loaded) return
+        position = loaded
+        render()
+    }
+
+    /** What the service persists after a drag. Set by the service so the store stays out of this class. */
+    var onPositionChanged: ((BubblePosition) -> Unit)? = null
+
+    // ---- what the session owner tells the overlay ----
+
     override fun onChanged(snapshot: RecordingOverlayState.Snapshot) {
         if (!active) return
+        val previous = this.snapshot
+        this.snapshot = snapshot
         if (!snapshot.visible) {
             lastElapsedSeconds = -1
             lastNotice = null
-            remove()
+            if (previous.visible != snapshot.visible || previous.phase != snapshot.phase) render()
             return
         }
         // The meter is the only thing that moves at speaking rate. It redraws itself and touches
@@ -81,10 +178,7 @@ internal class RecordingAccessibilityOverlay(
         // Everything past here changes about once a second at most, and one part of it reads the
         // window metrics, which is framework work on the main thread. Doing it on every level change
         // would run it ten times a second to write the same string back.
-        //
-        // Compared field by field rather than through a holder object, because building one to throw
-        // it away is itself an allocation ten times a second on the main thread.
-        if (attached &&
+        if (attached && previous.visible &&
             snapshot.elapsedSeconds == lastElapsedSeconds &&
             snapshot.notice == lastNotice
         ) {
@@ -103,25 +197,271 @@ internal class RecordingAccessibilityOverlay(
             notice.contentDescription = line
             notice.visibility = View.VISIBLE
         }
-        // A failure HERE returns rather than logging and carrying on. The window starts at one pixel
-        // wide, so attaching after a failed sizing puts a sliver on screen with the controls inside it
-        // unreachable. Returning leaves `attached` false, and the next tick tries again a second later.
-        runCatching { updateWindowBounds() }
+        render()
+    }
+
+    // ---- rendering: one decision, one window ----
+
+    /**
+     * Decide the shape and place the window. Pill while a take is visible; bubble while a field is
+     * active and the user has not hidden it; nothing otherwise. A drag in progress keeps the bubble
+     * where the finger is.
+     */
+    private fun render() {
+        if (!active) return
+        val bounds = runCatching { readBounds() }
             .getOrElse { error ->
-                Log.w(TAG, "Unable to position recording controls", error)
+                // A failure HERE returns rather than carrying on. The window starts at one pixel wide,
+                // so attaching after a failed sizing puts a sliver on screen with the controls inside
+                // it unreachable. The next event or tick tries again.
+                Log.w(TAG, "Unable to read window bounds", error)
                 return
             }
+        lastBounds = bounds
+        when {
+            snapshot.visible -> {
+                val bubbleBox = BubblePlacement.bubbleBox(position, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
+                    ?: Box(bounds.usable.right - dp(MARGIN_DP) - dp(BUBBLE_DP), bounds.usable.top + dp(MARGIN_DP), bounds.usable.right - dp(MARGIN_DP), bounds.usable.top + dp(MARGIN_DP) + dp(BUBBLE_DP))
+                val pill = BubblePlacement.pillBox(position, bubbleBox, bounds, bounds.usable.width - 2 * dp(MARGIN_DP), dp(PILL_HEIGHT_DP), dp(MARGIN_DP))
+                showShape(pill = true, box = pill, width = pill.width, height = WindowManager.LayoutParams.WRAP_CONTENT)
+            }
+            dragBox != null -> {
+                val box = dragBox ?: return
+                showShape(pill = false, box = box, width = box.width, height = box.height)
+            }
+            fieldActive && hiddenForKey == null -> {
+                val box = BubblePlacement.bubbleBox(position, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
+                if (box == null) {
+                    remove()
+                } else {
+                    // STARTING and PROCESSING: the bubble stays, dimmed, and ignores taps. The mock's
+                    // working state; the owner is not accepting a start yet.
+                    bubble.alpha = if (snapshot.phase == RecordingOverlayState.Phase.IDLE) 1f else WORKING_ALPHA
+                    showShape(pill = false, box = box, width = box.width, height = box.height)
+                }
+            }
+            else -> remove()
+        }
+    }
+
+    private fun showShape(pill: Boolean, box: Box, width: Int, height: Int) {
+        pillColumn.visibility = if (pill) View.VISIBLE else View.GONE
+        bubble.visibility = if (pill) View.GONE else View.VISIBLE
+        val unchanged = layoutParams.x == box.left && layoutParams.y == box.top &&
+            layoutParams.width == width && layoutParams.height == height
+        layoutParams.x = box.left
+        layoutParams.y = box.top
+        layoutParams.width = width
+        layoutParams.height = height
         if (!attached) {
             runCatching {
                 windowManager.addView(root, layoutParams)
                 attached = true
                 root.requestApplyInsets()
-            }.onFailure { error -> Log.w(TAG, "Unable to show recording controls", error) }
+            }.onFailure { error -> Log.w(TAG, "Unable to show the floating window", error) }
+        } else if (!unchanged) {
+            // Never update a window whose bounds did not change: the update itself is a windows
+            // change, and the service must not hear about a move it did not make.
+            runCatching { windowManager.updateViewLayout(root, layoutParams) }
+                .onFailure { error -> Log.w(TAG, "Unable to move the floating window", error) }
         }
     }
 
+    private fun remove() {
+        if (!attached) return
+        runCatching { windowManager.removeViewImmediate(root) }
+        attached = false
+    }
+
+    /**
+     * The usable rectangle: the screen minus the bars it must not sit under. The keyboard is not an
+     * inset here; it is the service's answer, delivered through [keyboardBounds], because only the
+     * accessibility windows list says where a docked keyboard ends.
+     */
+    private fun readBounds(): BubbleBounds {
+        val metrics = windowManager.currentWindowMetrics
+        val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
+            WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars() or WindowInsets.Type.displayCutout(),
+        )
+        val screen = metrics.bounds
+        val usable = Box(
+            left = screen.left + insets.left,
+            top = screen.top + insets.top,
+            right = screen.right - insets.right,
+            bottom = screen.bottom - insets.bottom,
+        )
+        val keyboard = keyboardTop?.takeIf { it in usable.top until usable.bottom }
+        return BubbleBounds(usable, keyboard)
+    }
+
+    // ---- gestures on the bubble ----
+
+    private fun onTouch(event: MotionEvent): Boolean {
+        // Only the primary pointer drives the gesture. A second finger arriving or leaving is ignored,
+        // and the primary finger leaving while a second is down reads as up.
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                onGesture(classifier.down(event.rawX, event.rawY, nowMs()))
+                root.removeCallbacks(holdRunnable)
+                root.postDelayed(holdRunnable, ViewConfiguration.getLongPressTimeout().toLong())
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val bounds = lastBounds ?: return true
+                val origin = dragOrigin ?: currentBubbleBox(bounds) ?: return true
+                val top = origin.top + (event.rawY - downRawY).toInt()
+                val over = BubblePlacement.overHideTarget(top, bounds, dp(BUBBLE_DP), dp(HIDE_STRIP_DP))
+                onGesture(classifier.move(event.rawX, event.rawY, nowMs(), over))
+            }
+            MotionEvent.ACTION_UP -> onGesture(classifier.up(nowMs()))
+            MotionEvent.ACTION_CANCEL -> onGesture(classifier.cancel())
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                if (event.actionIndex == 0 && event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
+                    onGesture(classifier.up(nowMs()))
+                }
+            }
+        }
+        return true
+    }
+
+    /** Where the primary finger went down, in screen pixels; a drag is measured from here. */
+    private var downRawY = 0f
+
+    /** The bubble's outstanding request. A new tap or hold replaces it; the owner's ledger orders them. */
+    private var currentRequest: BubbleRequestToken? = null
+
+    private fun onGesture(gesture: BubbleGesture) {
+        when (gesture) {
+            BubbleGesture.Nothing -> Unit
+            BubbleGesture.Tap -> {
+                root.removeCallbacks(holdRunnable)
+                startDictation()
+            }
+            BubbleGesture.HoldStart -> {
+                bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                startDictation()
+            }
+            BubbleGesture.HoldRelease -> {
+                // Sent at once, whatever the snapshot shows: the owner's ledger orders it against the
+                // start, so a release before capture began still finishes the take (#135 §3).
+                currentRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP, it.encode()) }
+            }
+            BubbleGesture.HoldCancelled -> {
+                currentRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL, it.encode()) }
+            }
+            is BubbleGesture.DragMove -> {
+                root.removeCallbacks(holdRunnable)
+                val bounds = lastBounds ?: return
+                val origin = dragOrigin ?: (currentBubbleBox(bounds) ?: return).also {
+                    dragOrigin = it
+                    showHideTarget(bounds)
+                }
+                val size = dp(BUBBLE_DP)
+                val left = (origin.left + gesture.dx.toInt()).coerceIn(bounds.usable.left, bounds.usable.right - size)
+                val top = (origin.top + gesture.dy.toInt()).coerceIn(bounds.usable.top, bounds.usable.bottom - size)
+                dragBox = Box(left, top, left + size, top + size)
+                hideTarget.alpha = if (BubblePlacement.overHideTarget(top, bounds, size, dp(HIDE_STRIP_DP))) 1f else 0.7f
+                render()
+            }
+            is BubbleGesture.DragEnd -> {
+                val bounds = lastBounds
+                val box = dragBox
+                dragBox = null
+                dragOrigin = null
+                removeHideTarget()
+                if (bounds == null || box == null || gesture.cancelled) {
+                    render()
+                    return
+                }
+                if (gesture.overHideTarget) {
+                    hiddenForKey = fieldKey ?: HIDDEN_WITHOUT_KEY
+                    Toast.makeText(service, "Hidden until your next text box", Toast.LENGTH_SHORT).show()
+                    render()
+                    return
+                }
+                val snapped = BubblePlacement.snap(box.left, box.top, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
+                position = snapped
+                onPositionChanged?.invoke(snapped)
+                render()
+            }
+        }
+    }
+
+    private fun cancelGesture() {
+        root.removeCallbacks(holdRunnable)
+        onGesture(classifier.cancel())
+    }
+
+    private fun currentBubbleBox(bounds: BubbleBounds): Box? =
+        dragBox ?: BubblePlacement.bubbleBox(position, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
+
+    /**
+     * Start the take. The service owns the two routes: straight to the session owner, which leaves the
+     * keyboard exactly where it is, or through the transparent launcher when Android refuses a
+     * foreground start from here. Measured 2026-09-12 on the emulator: launching the activity makes
+     * Chrome hide its keyboard, so the direct route is tried first.
+     */
+    private fun startDictation() {
+        // Only an IDLE owner takes a new request; a tap while starting or processing does nothing.
+        if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return
+        val request = BubbleRequests.mint()
+        currentRequest = request
+        if (!service.startDictationFromBubble(request.encode())) {
+            val intent = Intent(service, VoiceInputActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(VoiceInputActivity.EXTRA_START, true)
+                .putExtra(VoiceInputActivity.EXTRA_REQUEST, request.encode())
+            runCatching { service.startActivity(intent) }
+                .onFailure { error ->
+                    Log.w(TAG, "Unable to start dictation from the bubble", error)
+                    Toast.makeText(service, "Dictation could not start", Toast.LENGTH_SHORT).show()
+                }
+        }
+    }
+
+    private fun nowMs(): Long = android.os.SystemClock.uptimeMillis()
+
+    // ---- views ----
 
     private fun buildRoot(): View {
+        // The root listens for configuration changes itself. A rotation must cancel any gesture in
+        // flight BEFORE relayout, and must not wait for a tick or an event to re-place the window.
+        return object : FrameLayout(service) {
+            override fun onConfigurationChanged(newConfig: Configuration?) {
+                super.onConfigurationChanged(newConfig)
+                if (!active) return
+                cancelGesture()
+                render()
+            }
+        }.apply {
+            addView(pillColumn, FrameLayout.LayoutParams(MATCH, WRAP))
+            addView(bubble, FrameLayout.LayoutParams(dp(BUBBLE_DP), dp(BUBBLE_DP)))
+        }
+    }
+
+    /** The idle lips: the brand mark in a 56 dp violet-outlined circle. */
+    private fun buildBubble(): View {
+        bubbleMark.setPadding(dp(13), dp(16), dp(13), dp(16))
+        return FrameLayout(service).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(BrandPalette.PILL_BACKGROUND)
+                setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)
+            }
+            elevation = dp(10).toFloat()
+            outlineSpotShadowColor = BrandPalette.VIOLET
+            outlineAmbientShadowColor = BrandPalette.VIOLET
+            contentDescription = "EnviousWispr. Double tap to dictate. Touch and hold to talk. Drag to move."
+            isClickable = true
+            isFocusable = false
+            addView(bubbleMark, FrameLayout.LayoutParams(MATCH, MATCH))
+            setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) downRawY = event.rawY
+                onTouch(event)
+            }
+        }
+    }
+
+    private fun buildPillColumn(): View {
         val pill = buildPill()
 
         // The notice sits BELOW the pill rather than inside it, so the pill keeps its shape and the
@@ -138,21 +478,9 @@ internal class RecordingAccessibilityOverlay(
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
 
-        // The root listens for configuration changes itself. Window sizing otherwise rides on the
-        // elapsed second, so a rotation would leave a window built for the other orientation until the
-        // next tick, and the window's rectangle is its touch area.
-        return object : LinearLayout(service) {
-            override fun onConfigurationChanged(newConfig: android.content.res.Configuration?) {
-                super.onConfigurationChanged(newConfig)
-                if (!active || !attached) return
-                runCatching { updateWindowBounds() }
-                    .onFailure { error -> Log.w(TAG, "Unable to resize recording controls", error) }
-            }
-        }.apply {
+        return LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            // No padding: the window is already inset to the pill's width, and any transparent room
-            // inside it would be touchable.
             addView(pill, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(notice, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(6) })
         }
@@ -183,18 +511,16 @@ internal class RecordingAccessibilityOverlay(
             setTextColor(BrandPalette.TEXT)
             textSize = 15f
             // Plus Jakarta Sans, the brand typeface, which is already bundled and which every Compose
-            // screen uses. The recorder was on the platform monospace, which drew "0 : 05" with gaps
-            // wide enough to read as three separate numbers. `minWidth` holds the column steady as the
-            // digits change, so the rail beside it does not shift every second.
+            // screen uses. `minWidth` holds the column steady as the digits change, so the rail beside
+            // it does not shift every second.
             typeface = brandTypeface(R.font.plus_jakarta_sans_semibold)
             minWidth = dp(48)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
 
         stateLabel.apply {
-            // STATIC, and it can only be right. The recorder exists between `show()` and `hide()`,
-            // which is exactly the listening phase; every later phase has already hidden it. A label
-            // wired to a live phase would add a way for it to be wrong and buy nothing.
+            // STATIC, and it can only be right. The pill exists while `visible` is true, which is
+            // exactly the listening phase; every later phase has already hidden it.
             text = LISTENING_LABEL
             gravity = Gravity.CENTER
             setTextColor(BrandPalette.TEXT_MUTED)
@@ -238,6 +564,44 @@ internal class RecordingAccessibilityOverlay(
         return container
     }
 
+    /** "Drop to hide", in its own untouchable window, shown only while a drag is in progress. */
+    private fun buildHideTarget(): TextView = TextView(service).apply {
+        text = "Drop to hide"
+        setTextColor(BrandPalette.TEXT)
+        typeface = brandTypeface(R.font.plus_jakarta_sans_medium)
+        textSize = 13f
+        gravity = Gravity.CENTER
+        setPadding(dp(18), dp(10), dp(18), dp(10))
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(22).toFloat()
+            setColor(BrandPalette.PILL_BACKGROUND)
+            setStroke(dp(1).coerceAtLeast(1), BrandPalette.TEXT_MUTED)
+        }
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    private fun showHideTarget(bounds: BubbleBounds) {
+        if (hideTargetAttached) return
+        val floor = bounds.keyboardTop ?: bounds.usable.bottom
+        hideTargetParams.width = WindowManager.LayoutParams.WRAP_CONTENT
+        hideTargetParams.height = WindowManager.LayoutParams.WRAP_CONTENT
+        hideTarget.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        hideTargetParams.x = bounds.usable.centerX - hideTarget.measuredWidth / 2
+        hideTargetParams.y = floor - dp(HIDE_STRIP_DP) + (dp(HIDE_STRIP_DP) - hideTarget.measuredHeight) / 2
+        hideTarget.alpha = 0.7f
+        runCatching {
+            windowManager.addView(hideTarget, hideTargetParams)
+            hideTargetAttached = true
+        }.onFailure { error -> Log.w(TAG, "Unable to show the hide target", error) }
+    }
+
+    private fun removeHideTarget() {
+        if (!hideTargetAttached) return
+        runCatching { windowManager.removeViewImmediate(hideTarget) }
+        hideTargetAttached = false
+    }
+
     /** The pill's ground plus its violet outline, as one drawable. */
     private fun pillBackground() = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
@@ -279,37 +643,26 @@ internal class RecordingAccessibilityOverlay(
         setColor(color)
     }
 
-    private fun remove() {
-        if (!attached) return
-        runCatching { windowManager.removeViewImmediate(root) }
-        attached = false
-    }
-
-    /**
-     * Size and place the window to the pill itself.
-     *
-     * Width as well as position, because the window's rectangle IS its touch area: anything it covers
-     * and does not paint is a tap the user's own app never receives. Recomputed on every update so a
-     * rotation or a multi-window resize does not leave a window sized for the other shape.
-     */
-    private fun updateWindowBounds() {
-        val metrics = windowManager.currentWindowMetrics
-        val desiredWidth = (metrics.bounds.width() - dp(24)).coerceAtLeast(1)
-        val desiredY = metrics.windowInsets
-            .getInsetsIgnoringVisibility(WindowInsets.Type.statusBars())
-            .top + dp(12)
-        if (layoutParams.width == desiredWidth && layoutParams.y == desiredY) return
-        layoutParams.width = desiredWidth
-        layoutParams.y = desiredY
-        if (attached) runCatching { windowManager.updateViewLayout(root, layoutParams) }
-    }
-
     private fun dp(value: Int): Int = (value * density).toInt()
 
     private companion object {
         const val TAG = "RecordingOverlay"
 
+        /** Unchanged on purpose: the device harness finds the window by this title. */
+        const val WINDOW_TITLE = "EnviousWispr recording controls"
+
         /** What the recorder says it is doing. The mockup's own word, in quiet caps. */
         const val LISTENING_LABEL = "LISTENING"
+
+        const val BUBBLE_DP = 56
+        const val MARGIN_DP = 12
+        const val PILL_HEIGHT_DP = 60
+        const val HIDE_STRIP_DP = 72
+
+        /** The bubble while the owner is starting or processing: present, quiet, not tappable. */
+        const val WORKING_ALPHA = 0.55f
+
+        /** A hide with no field key on record: cleared by the next field, whatever it is. */
+        val HIDDEN_WITHOUT_KEY = Any()
     }
 }

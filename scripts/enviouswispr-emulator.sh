@@ -22,7 +22,10 @@ if [[ ! -x "$ADB" || ! -x "$EMULATOR" ]]; then
 fi
 
 if ! "$ADB" -s "$SERIAL" get-state >/dev/null 2>&1; then
-  "$EMULATOR" -avd "$AVD_NAME" -gpu host -no-boot-anim \
+  # -allow-host-audio: without it the emulator zeroes every microphone sample by design (its own help
+  # text), so a dictation records silence and the recogniser returns nothing. With it, the Mac's
+  # microphone is the phone's, and `say` through the Mac speaker is a real utterance to the app.
+  "$EMULATOR" -avd "$AVD_NAME" -gpu host -no-boot-anim -allow-host-audio \
     >"/tmp/${AVD_NAME}.log" 2>&1 &
 fi
 

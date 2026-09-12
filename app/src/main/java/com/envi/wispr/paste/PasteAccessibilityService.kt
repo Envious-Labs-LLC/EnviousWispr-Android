@@ -264,7 +264,15 @@ class PasteAccessibilityService : AccessibilityService() {
         val overlay = recordingOverlay ?: return
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED, AccessibilityEvent.TYPE_VIEW_CLICKED -> {
-                if (remembered) lastTarget?.let { overlay.fieldActivated(fieldKey(it)) }
+                if (remembered) {
+                    lastTarget?.let { overlay.fieldActivated(fieldKey(it)) }
+                } else {
+                    // Focus or a click went to something that is not an editor, in the same window or
+                    // another. Whether the remembered editor still holds focus is a question, not a
+                    // given: a hardware-keyboard tab to a button produces no window change to catch it
+                    // (Codex code review, round 2).
+                    revalidateBubbleField(overlay)
+                }
             }
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isOwnOverlayWindow(event.windowId)) return

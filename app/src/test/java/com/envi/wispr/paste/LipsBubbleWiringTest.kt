@@ -49,7 +49,18 @@ class LipsBubbleWiringTest {
         assertTrue(overlay.contains("DictationSessionService.ACTION_STOP, it.encode())"))
         assertTrue(overlay.contains("DictationSessionService.ACTION_CANCEL, it.encode())"))
         // A tap starts a new request only at IDLE.
-        assertTrue(overlay.contains("if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return"))
+        assertTrue(overlay.contains("if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return null"))
+        // A hold's release and cancel go to the request THAT hold created, never to an earlier take.
+        assertTrue(overlay.contains("holdRequest = startDictation()"))
+        assertTrue(overlay.contains("holdRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP, it.encode()) }"))
+        assertFalse(overlay.contains("currentRequest"))
+    }
+
+    @Test
+    fun focusLeavingTheEditorForANonEditableControlIsRevalidated() {
+        val branch = service.substringAfter("AccessibilityEvent.TYPE_VIEW_FOCUSED, AccessibilityEvent.TYPE_VIEW_CLICKED ->").substringBefore("AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED")
+        assertTrue(branch.contains("if (remembered) {"))
+        assertTrue(branch.contains("revalidateBubbleField(overlay)"))
     }
 
     @Test

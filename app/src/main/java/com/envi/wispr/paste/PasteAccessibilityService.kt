@@ -217,6 +217,9 @@ class PasteAccessibilityService : AccessibilityService() {
             }
         }
         Log.i(TAG, "Accessibility insertion service connected")
+        // A text box may already hold focus when this service (re)connects: discover it once, now,
+        // rather than waiting for the user to tap it again.
+        mainHandler.post { recordingOverlay?.let { revalidateBubbleField(it, discover = true) } }
         // Disk, and this is the connect path of the heart. Liveness is already published above, so
         // a dictation arriving in this window would otherwise pin a target while a synchronous
         // SharedPreferences load held the main thread and before the event mask was installed.
@@ -276,7 +279,7 @@ class PasteAccessibilityService : AccessibilityService() {
             }
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isOwnOverlayWindow(event.windowId)) return
-                revalidateBubbleField(overlay)
+                revalidateBubbleField(overlay, discover = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
             }
             else -> Unit
         }
@@ -301,10 +304,27 @@ class PasteAccessibilityService : AccessibilityService() {
             .isSuccess
     }
 
-    private fun revalidateBubbleField(overlay: RecordingAccessibilityOverlay) {
-        val target = lastTarget
-        val stillFocused = target != null &&
+    /**
+     * Is the remembered editor still focused? When it is not, and [discover] is set, look for the
+     * editor that IS focused right now and adopt it. Discovery is one window traversal, so it runs only
+     * on the rare events: a window state change and a service connect, never on the frequent
+     * windows-changed stream. Without it a service recreated while a text box already had focus (a Play
+     * update, an accessibility toggle) kept the bubble hidden until the user tapped the box again
+     * (Codex review of the Play branch, 2026-09-12).
+     */
+    private fun revalidateBubbleField(overlay: RecordingAccessibilityOverlay, discover: Boolean = false) {
+        var target = lastTarget
+        var stillFocused = target != null &&
             runCatching { target.node.refresh() && isSafeFocusedEditor(target.node) }.getOrDefault(false)
+        if (!stillFocused && discover) {
+            val found = runCatching { findFocusedEditableTarget() }.getOrNull()
+            if (found != null) {
+                clearTarget()
+                lastTarget = found
+                target = found
+                stillFocused = true
+            }
+        }
         if (stillFocused) overlay.fieldActivated(fieldKey(target!!)) else overlay.fieldLost()
         overlay.keyboardBounds(dockedKeyboardTop())
     }

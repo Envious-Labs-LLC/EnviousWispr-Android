@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
+import com.envi.wispr.audio.AudioLevelScale
 import com.envi.wispr.audio.CaptureEnding
 import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.cleanup.CleanupOptions
@@ -165,6 +166,8 @@ class DictationSessionService : Service() {
     @Volatile private var recordingDurationMs = 0L
     private var draftCreation: Deferred<Long>? = null
     private var lastElapsedSecond = -1
+    /** The meter position the recorder was last told, so each tick smooths from the drawn value. */
+    private var lastMeterLevel = 0f
     @Volatile private var structuredTerms: List<CustomTerm> = emptyList()
     @Volatile private var cleanupOptions = CleanupOptions()
     /**
@@ -343,6 +346,7 @@ class DictationSessionService : Service() {
         rawTranscript = ""
         recordingDurationMs = 0L
         lastElapsedSecond = -1
+        lastMeterLevel = 0f
         serviceScope.launch {
             val ready = withTimeoutOrNull(10_000L) {
                 cleanupPreferencesReady.await()
@@ -488,6 +492,25 @@ class DictationSessionService : Service() {
                         }
                         break
                     }
+                    // The meter is LAST in the tick, and its position is the isolation. Everything
+                    // this take depends on -- the elapsed second, the auto-stop notice, and the
+                    // terminal-reason check that starts transcription -- has already happened by the
+                    // time the level is read, so a slow, throwing or dead reading costs the meter and
+                    // nothing else (architecture-rules.md RULE: isolate-limbs).
+                    //
+                    // It is also read HERE and nowhere else. The recorder is pushed a finished number
+                    // rather than reaching for the capture service itself, so a second surface cannot
+                    // become a second reader (RULE: no-idle-cost). The loop exists only while a take
+                    // is open, so idle cost is unchanged.
+                    //
+                    // A failed reading falls to silence rather than holding the last value, so a dead
+                    // microphone looks dead instead of looking like a held note.
+                    val amplitude = runCatching { service.currentAmplitude }.getOrDefault(0f)
+                    lastMeterLevel = AudioLevelScale.smooth(
+                        lastMeterLevel,
+                        AudioLevelScale.display(amplitude),
+                    )
+                    RecordingOverlayState.updateLevel(lastMeterLevel)
                 } catch (_: Exception) {
                     // A binder disconnect is handled by its ServiceConnection callback.
                 }

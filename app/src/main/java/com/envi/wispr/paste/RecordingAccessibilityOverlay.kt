@@ -327,8 +327,12 @@ internal class RecordingAccessibilityOverlay(
     private var downRawX = 0f
     private var downRawY = 0f
 
-    /** The bubble's outstanding request. A new tap or hold replaces it; the owner's ledger orders them. */
-    private var currentRequest: BubbleRequestToken? = null
+    /**
+     * The request the hold in progress created, or null when that hold created none (the owner was
+     * not IDLE). Its release or cancel goes to this request and no other; the owner's ledger orders
+     * everything else.
+     */
+    private var holdRequest: BubbleRequestToken? = null
 
     private fun onGesture(gesture: BubbleGesture) {
         when (gesture) {
@@ -339,15 +343,20 @@ internal class RecordingAccessibilityOverlay(
             }
             BubbleGesture.HoldStart -> {
                 bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                startDictation()
+                // Only THIS gesture's own request may be released or cancelled by this gesture. A hold
+                // on the dimmed bubble during an earlier take mints nothing, so its release cannot stop
+                // that take (Codex code review, round 2).
+                holdRequest = startDictation()
             }
             BubbleGesture.HoldRelease -> {
                 // Sent at once, whatever the snapshot shows: the owner's ledger orders it against the
                 // start, so a release before capture began still finishes the take (#135 §3).
-                currentRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP, it.encode()) }
+                holdRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP, it.encode()) }
+                holdRequest = null
             }
             BubbleGesture.HoldCancelled -> {
-                currentRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL, it.encode()) }
+                holdRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL, it.encode()) }
+                holdRequest = null
             }
             is BubbleGesture.DragMove -> {
                 root.removeCallbacks(holdRunnable)
@@ -401,11 +410,11 @@ internal class RecordingAccessibilityOverlay(
      * foreground start from here. Measured 2026-09-12 on the emulator: launching the activity makes
      * Chrome hide its keyboard, so the direct route is tried first.
      */
-    private fun startDictation() {
+    /** Returns the request this gesture created, or null when the owner was not IDLE and nothing was sent. */
+    private fun startDictation(): BubbleRequestToken? {
         // Only an IDLE owner takes a new request; a tap while starting or processing does nothing.
-        if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return
+        if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return null
         val request = BubbleRequests.mint()
-        currentRequest = request
         if (!service.startDictationFromBubble(request.encode())) {
             val intent = Intent(service, VoiceInputActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -417,6 +426,7 @@ internal class RecordingAccessibilityOverlay(
                     Toast.makeText(service, "Dictation could not start", Toast.LENGTH_SHORT).show()
                 }
         }
+        return request
     }
 
     private fun nowMs(): Long = android.os.SystemClock.uptimeMillis()

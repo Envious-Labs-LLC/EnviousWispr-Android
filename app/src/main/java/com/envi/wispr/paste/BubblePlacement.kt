@@ -112,12 +112,27 @@ internal object BubblePlacement {
     }
 
     /**
-     * Whether a drag is over the hide target: a strip along the bottom of the usable rectangle, above
-     * the keyboard when one is docked. [stripPx] is the strip's height.
+     * Where the "Drop to hide" target is drawn while a drag is in progress: centred horizontally in a
+     * strip of [stripPx] above the keyboard, or above the bottom edge when no keyboard is docked. Its
+     * size is the painted label's, [widthPx] by [heightPx].
      */
-    fun overHideTarget(dragTop: Int, bounds: BubbleBounds, sizePx: Int, stripPx: Int): Boolean {
+    fun hideTargetBox(bounds: BubbleBounds, widthPx: Int, heightPx: Int, stripPx: Int): Box {
         val floor = bounds.keyboardTop ?: bounds.usable.bottom
+        val left = bounds.usable.centerX - widthPx / 2
+        val top = floor - stripPx + (stripPx - heightPx) / 2
+        return Box(left, top, left + widthPx, top + heightPx)
+    }
+
+    /**
+     * Whether a drag is over the visible hide target: the bubble's centre inside [target] grown by
+     * [slackPx] on every side. Hit-testing the drawn rectangle, and only it, is what keeps an ordinary
+     * sideways drag along the bottom from hiding the bubble: the default dock is 40 dp above the
+     * keyboard, inside any full-width strip, and a drag from there to the other edge must dock, not hide.
+     */
+    fun overHideTarget(dragLeft: Int, dragTop: Int, sizePx: Int, target: Box, slackPx: Int): Boolean {
+        val centreX = dragLeft + sizePx / 2
         val centreY = dragTop + sizePx / 2
-        return centreY >= floor - stripPx
+        return centreX >= target.left - slackPx && centreX <= target.right + slackPx &&
+            centreY >= target.top - slackPx && centreY <= target.bottom + slackPx
     }
 }

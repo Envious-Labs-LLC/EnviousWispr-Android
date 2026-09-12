@@ -308,9 +308,9 @@ internal class RecordingAccessibilityOverlay(
             MotionEvent.ACTION_MOVE -> {
                 val bounds = lastBounds ?: return true
                 val origin = dragOrigin ?: currentBubbleBox(bounds) ?: return true
+                val left = origin.left + (event.rawX - downRawX).toInt()
                 val top = origin.top + (event.rawY - downRawY).toInt()
-                val over = BubblePlacement.overHideTarget(top, bounds, dp(BUBBLE_DP), dp(HIDE_STRIP_DP))
-                onGesture(classifier.move(event.rawX, event.rawY, nowMs(), over))
+                onGesture(classifier.move(event.rawX, event.rawY, nowMs(), overHideTarget(left, top)))
             }
             MotionEvent.ACTION_UP -> onGesture(classifier.up(nowMs()))
             MotionEvent.ACTION_CANCEL -> onGesture(classifier.cancel())
@@ -324,6 +324,7 @@ internal class RecordingAccessibilityOverlay(
     }
 
     /** Where the primary finger went down, in screen pixels; a drag is measured from here. */
+    private var downRawX = 0f
     private var downRawY = 0f
 
     /** The bubble's outstanding request. A new tap or hold replaces it; the owner's ledger orders them. */
@@ -359,7 +360,7 @@ internal class RecordingAccessibilityOverlay(
                 val left = (origin.left + gesture.dx.toInt()).coerceIn(bounds.usable.left, bounds.usable.right - size)
                 val top = (origin.top + gesture.dy.toInt()).coerceIn(bounds.usable.top, bounds.usable.bottom - size)
                 dragBox = Box(left, top, left + size, top + size)
-                hideTarget.alpha = if (BubblePlacement.overHideTarget(top, bounds, size, dp(HIDE_STRIP_DP))) 1f else 0.7f
+                hideTarget.alpha = if (overHideTarget(left, top)) 1f else 0.7f
                 render()
             }
             is BubbleGesture.DragEnd -> {
@@ -455,7 +456,10 @@ internal class RecordingAccessibilityOverlay(
             isFocusable = false
             addView(bubbleMark, FrameLayout.LayoutParams(MATCH, MATCH))
             setOnTouchListener { _, event ->
-                if (event.actionMasked == MotionEvent.ACTION_DOWN) downRawY = event.rawY
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                }
                 onTouch(event)
             }
         }
@@ -581,14 +585,23 @@ internal class RecordingAccessibilityOverlay(
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
+    /** The drawn "Drop to hide" rectangle while a drag is in progress; the ONLY place a drop hides. */
+    private var hideTargetBox: Box? = null
+
+    private fun overHideTarget(left: Int, top: Int): Boolean {
+        val target = hideTargetBox ?: return false
+        return BubblePlacement.overHideTarget(left, top, dp(BUBBLE_DP), target, dp(HIDE_SLACK_DP))
+    }
+
     private fun showHideTarget(bounds: BubbleBounds) {
         if (hideTargetAttached) return
-        val floor = bounds.keyboardTop ?: bounds.usable.bottom
-        hideTargetParams.width = WindowManager.LayoutParams.WRAP_CONTENT
-        hideTargetParams.height = WindowManager.LayoutParams.WRAP_CONTENT
         hideTarget.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
-        hideTargetParams.x = bounds.usable.centerX - hideTarget.measuredWidth / 2
-        hideTargetParams.y = floor - dp(HIDE_STRIP_DP) + (dp(HIDE_STRIP_DP) - hideTarget.measuredHeight) / 2
+        val box = BubblePlacement.hideTargetBox(bounds, hideTarget.measuredWidth, hideTarget.measuredHeight, dp(HIDE_STRIP_DP))
+        hideTargetBox = box
+        hideTargetParams.width = box.width
+        hideTargetParams.height = box.height
+        hideTargetParams.x = box.left
+        hideTargetParams.y = box.top
         hideTarget.alpha = 0.7f
         runCatching {
             windowManager.addView(hideTarget, hideTargetParams)
@@ -597,6 +610,7 @@ internal class RecordingAccessibilityOverlay(
     }
 
     private fun removeHideTarget() {
+        hideTargetBox = null
         if (!hideTargetAttached) return
         runCatching { windowManager.removeViewImmediate(hideTarget) }
         hideTargetAttached = false
@@ -658,6 +672,9 @@ internal class RecordingAccessibilityOverlay(
         const val MARGIN_DP = 12
         const val PILL_HEIGHT_DP = 60
         const val HIDE_STRIP_DP = 72
+
+        /** How far outside the drawn hide label a drop still counts as on it. */
+        const val HIDE_SLACK_DP = 16
 
         /** The bubble while the owner is starting or processing: present, quiet, not tappable. */
         const val WORKING_ALPHA = 0.55f

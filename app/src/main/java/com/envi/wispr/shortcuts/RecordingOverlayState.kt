@@ -6,8 +6,19 @@ import kotlin.math.roundToInt
 
 /** Process-local state bridge between the dictation session and accessibility overlay. */
 object RecordingOverlayState {
+    /**
+     * Where the session owner says the take is. Written by the owner ONLY: the accessibility service
+     * detaches its surface without touching this, so a reconnect renders whatever the owner retained
+     * and a hidden pill never means IDLE (issue #135, review round 1).
+     */
+    enum class Phase { IDLE, STARTING, RECORDING, PROCESSING }
+
     data class Snapshot(
+        /** True exactly while the pill is drawn: the RECORDING phase. */
         val visible: Boolean = false,
+        val phase: Phase = Phase.IDLE,
+        /** The floating bubble's request this take answers, or null for a take started elsewhere. */
+        val requestToken: BubbleRequestToken? = null,
         val elapsedSeconds: Int = 0,
         /**
          * A short line to show under the timer, or null.
@@ -48,7 +59,18 @@ object RecordingOverlayState {
         }
     }
 
-    fun show() = change { Snapshot(visible = true, elapsedSeconds = 0) }
+    /** The take was admitted and is binding its services. Not yet interactive. */
+    fun showStarting(token: BubbleRequestToken?) = change {
+        Snapshot(phase = Phase.STARTING, requestToken = token)
+    }
+
+    /** Capture is running: draw the pill. Keeps the token the take was admitted with. */
+    fun show() = change { Snapshot(visible = true, phase = Phase.RECORDING, requestToken = it.requestToken, elapsedSeconds = 0) }
+
+    /** Transcribing, polishing, cancelling, finishing or failing: not accepting a start, pill hidden. */
+    fun showProcessing() = change {
+        if (it.phase == Phase.PROCESSING) it else Snapshot(phase = Phase.PROCESSING, requestToken = it.requestToken)
+    }
 
     /** Show a line under the timer. It survives every later tick until the recorder is hidden. */
     fun showNotice(text: String) = change {
@@ -73,6 +95,7 @@ object RecordingOverlayState {
         change { if (!it.visible || it.elapsedSeconds == safe) it else it.copy(elapsedSeconds = safe) }
     }
 
+    /** The owner can accept a new start: IDLE, no pill, no token. */
     fun hide() = change { Snapshot() }
 
     /**

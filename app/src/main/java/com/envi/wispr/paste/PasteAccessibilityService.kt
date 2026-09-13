@@ -105,6 +105,7 @@ class PasteAccessibilityService : AccessibilityService() {
         private const val INSERTION_TIMEOUT_MS = 2_500L
         private const val MAIN_CALL_TIMEOUT_MS = 1_000L
         private const val RETRY_INTERVAL_MS = 125L
+        private const val CONNECT_DISCOVERY_RETRY_MS = 1_000L
         private const val LIFECYCLE_PREFERENCES = "paste_service_lifecycle"
         private const val KEY_STOP_WAS_CLEAN = "stop_was_clean"
         private val STOP_MARKER_LOCK = Any()
@@ -217,9 +218,13 @@ class PasteAccessibilityService : AccessibilityService() {
             }
         }
         Log.i(TAG, "Accessibility insertion service connected")
-        // A text box may already hold focus when this service (re)connects: discover it once, now,
-        // rather than waiting for the user to tap it again.
+        // A text box may already hold focus when this service (re)connects: discover it rather than
+        // waiting for the user to tap it again. The window list is not yet populated at the instant of
+        // connect (measured 2026-09-12 on the emulator: an immediate discovery found nothing while the
+        // editor was focused), so the discovery runs once now and once more shortly after. Two
+        // one-shot posts on a connect, never a recurring timer.
         mainHandler.post { recordingOverlay?.let { revalidateBubbleField(it, discover = true) } }
+        mainHandler.postDelayed({ recordingOverlay?.let { revalidateBubbleField(it, discover = true) } }, CONNECT_DISCOVERY_RETRY_MS)
         // Disk, and this is the connect path of the heart. Liveness is already published above, so
         // a dictation arriving in this window would otherwise pin a target while a synchronous
         // SharedPreferences load held the main thread and before the event mask was installed.
@@ -318,6 +323,12 @@ class PasteAccessibilityService : AccessibilityService() {
             runCatching { target.node.refresh() && isSafeFocusedEditor(target.node) }.getOrDefault(false)
         if (!stillFocused && discover) {
             val found = runCatching { findFocusedEditableTarget() }.getOrNull()
+            // Content-free: counts and booleans only (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
+            Log.d(
+                TAG,
+                "Bubble discovery found=${found != null} activeRoot=${rootInActiveWindow != null} " +
+                    "windows=${runCatching { windows.size }.getOrDefault(-1)}",
+            )
             if (found != null) {
                 clearTarget()
                 lastTarget = found

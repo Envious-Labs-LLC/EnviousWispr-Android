@@ -59,10 +59,14 @@ class LipsBubbleWiringTest {
     @Test
     fun focusLeavingTheEditorForANonEditableControlIsRevalidated() {
         val branch = service.substringAfter("AccessibilityEvent.TYPE_VIEW_FOCUSED, AccessibilityEvent.TYPE_VIEW_CLICKED ->").substringBefore("AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED")
+        // Remembered = field found the direct way: activate it and stop any discovery retries chasing it.
         assertTrue(branch.contains("if (remembered) {"))
-        // An unremembered focus discovers (the return to an app whose editor is already focused emits no
-        // fresh focus event for the editor); a click does not, to stay cheap (BUG 1, 2026-09-13).
-        assertTrue(branch.contains("revalidateBubbleField(overlay, discover = event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED)"))
+        assertTrue(branch.contains("cancelDiscoveryRetries()"))
+        // An unremembered focus discovers WITH retry (the return to an app whose editor is already focused
+        // emits no fresh focus event for the editor, and the editor can be exposed ~2 s late); a click just
+        // re-checks without a traversal, to stay cheap (BUG 1 + phone-pass lag, 2026-09-13).
+        assertTrue(branch.contains("event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {"))
+        assertTrue(branch.contains("discoverFieldWithRetry()"))
     }
 
     @Test
@@ -114,9 +118,10 @@ class LipsBubbleWiringTest {
     fun aReconnectAndAWindowSwitchDiscoverAnAlreadyFocusedEditor() {
         // Discovery is a traversal, so it is allowed on connect, on a window state change, and on a
         // windows-changed that carries a focus/active/added/removed change (a real app switch), never on
-        // the cosmetic windows-changed stream (BUG 1, 2026-09-13).
-        assertTrue(service.contains("revalidateBubbleField(it, discover = true)"))
-        assertTrue(service.contains("revalidateBubbleField(overlay, discover = discoveryWarranted(event))"))
+        // the cosmetic windows-changed stream (BUG 1, 2026-09-13). Connect and app-switch both run the
+        // discover-with-retry sequence so a late-exposed editor still lights the bubble (phone-pass lag).
+        assertTrue(service.contains("mainHandler.post { if (connectGeneration == discoveryGeneration) discoverFieldWithRetry() }"))
+        assertTrue(service.contains("if (discoveryWarranted(event)) discoverFieldWithRetry() else if (revalidateBubbleField(overlay)) cancelDiscoveryRetries()"))
         val gate = service.substringAfter("private fun discoveryWarranted(").substringBefore("\n    /**")
         assertTrue(gate.contains("event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return true"))
         assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_FOCUSED"))
@@ -132,6 +137,35 @@ class LipsBubbleWiringTest {
         assertTrue(body.contains("isSafeFocusedEditor(target.node) && isInFocusedWindow(target.windowId)"))
         assertTrue(body.contains("findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) }"))
         assertTrue(service.contains("windows.any { it.id == windowId && it.isFocused }"))
+    }
+
+    @Test
+    fun discoveryRetriesUntilTheReturningEditorIsAccessible() {
+        // A real Samsung exposes a returning editor ~2 s late, so the first look finds nothing. Re-look at
+        // fixed offsets so the bubble lights without a re-tap; one guarded sequence, coalesced per window,
+        // cancelled on success and teardown (phone pass + Codex, 2026-09-13).
+        assertTrue(service.contains("DISCOVERY_RETRY_DELAYS_MS = longArrayOf(250L, 750L, 2_250L)"))
+        val start = service.substringAfter("private fun discoverFieldWithRetry()").substringBefore("private fun scheduleDiscoveryRetry")
+        // Coalesce: a sequence already chasing the same focused window (unknown -1 included) is not restarted.
+        assertTrue(start.contains("discoveryRetryRunnable != null && focusedId == discoveryWindowId) return"))
+        assertTrue(start.contains("if (revalidateBubbleField(overlay, discover = true)) return"))
+        assertTrue(start.contains("discoveryStartUptime = SystemClock.uptimeMillis()"))
+        assertTrue(start.contains("scheduleDiscoveryRetry(discoveryGeneration)"))
+        val sched = service.substringAfter("private fun scheduleDiscoveryRetry(").substringBefore("private fun cancelDiscoveryRetries")
+        // Absolute offsets from the first attempt, so a slow traversal cannot stretch the schedule.
+        assertTrue(sched.contains("postAtTime(runnable, discoveryStartUptime + DISCOVERY_RETRY_DELAYS_MS[discoveryAttempt])"))
+        // Generation guard: a superseding transition or teardown makes an in-flight attempt do nothing.
+        assertTrue(sched.contains("if (generation != discoveryGeneration) return@Runnable"))
+        // Stops the moment a field is found.
+        assertTrue(sched.contains("if (revalidateBubbleField(overlay, discover = true)) {"))
+        assertTrue(sched.contains("cancelDiscoveryRetries()"))
+        val cancel = service.substringAfter("private fun cancelDiscoveryRetries()").substringBefore("private fun focusedWindowId")
+        assertTrue(cancel.contains("discoveryGeneration++"))
+        assertTrue(cancel.contains("mainHandler.removeCallbacks(it)"))
+        // Cancelled on every teardown so retries never leak past the service.
+        assertTrue(service.substringAfter("override fun onInterrupt()").substringBefore("override fun onUnbind").contains("cancelDiscoveryRetries()"))
+        assertTrue(service.substringAfter("override fun onUnbind(").substringBefore("override fun onDestroy").contains("cancelDiscoveryRetries()"))
+        assertTrue(service.substringAfter("override fun onDestroy()").substringBefore("private fun ").contains("cancelDiscoveryRetries()"))
     }
 
     @Test

@@ -10,8 +10,11 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.LinearLayout
+import android.widget.LinearLayout.LayoutParams.MATCH_PARENT as MATCH
 import android.widget.LinearLayout.LayoutParams.WRAP_CONTENT as WRAP
 import android.widget.TextView
+import androidx.core.content.res.ResourcesCompat
+import com.envi.wispr.R
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import com.envi.wispr.ui.DictationSessionService
 
@@ -21,12 +24,20 @@ internal class RecordingAccessibilityOverlay(
 ) : RecordingOverlayState.Listener {
     private val windowManager = service.getSystemService(WindowManager::class.java)
     private val density = service.resources.displayMetrics.density
+    private val mark = BrandMarkView(service)
     private val timer = TextView(service)
     private val meter = RecordingLevelMeterView(service)
+    private val stateLabel = TextView(service)
     private val notice = TextView(service)
     private val root = buildRoot()
     private val layoutParams = WindowManager.LayoutParams(
-        WindowManager.LayoutParams.WRAP_CONTENT,
+        // Set to the pill's own width in `updateWindowBounds`, never MATCH_PARENT and never
+        // WRAP_CONTENT. WRAP_CONTENT let the rail's weight resolve against the whole screen and the
+        // pill ran edge to edge. MATCH_PARENT fixed the look and broke something worse: a transparent
+        // margin inside the window is still TOUCHABLE, because FLAG_NOT_TOUCH_MODAL passes touches
+        // outside the WINDOW and not outside the painted pill, so two strips beside the recorder
+        // silently ate taps meant for the app underneath.
+        1,
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -40,8 +51,9 @@ internal class RecordingAccessibilityOverlay(
     }
     private var attached = false
     private var active = false
-    /** What the slow half of the recorder was last set to, or null when it is not shown. */
-    private var lastChrome: Chrome? = null
+    /** What the slow half of the recorder was last set to. -1 and null mean it is not shown. */
+    private var lastElapsedSeconds = -1
+    private var lastNotice: String? = null
 
     fun start() {
         active = true
@@ -57,7 +69,8 @@ internal class RecordingAccessibilityOverlay(
     override fun onChanged(snapshot: RecordingOverlayState.Snapshot) {
         if (!active) return
         if (!snapshot.visible) {
-            lastChrome = null
+            lastElapsedSeconds = -1
+            lastNotice = null
             remove()
             return
         }
@@ -68,12 +81,20 @@ internal class RecordingAccessibilityOverlay(
         // Everything past here changes about once a second at most, and one part of it reads the
         // window metrics, which is framework work on the main thread. Doing it on every level change
         // would run it ten times a second to write the same string back.
-        val chrome = Chrome(snapshot.elapsedSeconds, snapshot.notice)
-        if (attached && chrome == lastChrome) return
-        lastChrome = chrome
+        //
+        // Compared field by field rather than through a holder object, because building one to throw
+        // it away is itself an allocation ten times a second on the main thread.
+        if (attached &&
+            snapshot.elapsedSeconds == lastElapsedSeconds &&
+            snapshot.notice == lastNotice
+        ) {
+            return
+        }
+        lastElapsedSeconds = snapshot.elapsedSeconds
+        lastNotice = snapshot.notice
 
-        timer.text = "${snapshot.elapsedSeconds}s"
-        timer.contentDescription = "${snapshot.elapsedSeconds} seconds elapsed"
+        timer.text = ElapsedLabels.clock(snapshot.elapsedSeconds)
+        timer.contentDescription = ElapsedLabels.spoken(snapshot.elapsedSeconds)
         val line = snapshot.notice
         if (line.isNullOrBlank()) {
             notice.visibility = View.GONE
@@ -82,8 +103,14 @@ internal class RecordingAccessibilityOverlay(
             notice.contentDescription = line
             notice.visibility = View.VISIBLE
         }
-        runCatching { updateTopOffset() }
-            .onFailure { error -> Log.w(TAG, "Unable to position recording controls", error) }
+        // A failure HERE returns rather than logging and carrying on. The window starts at one pixel
+        // wide, so attaching after a failed sizing puts a sliver on screen with the controls inside it
+        // unreachable. Returning leaves `attached` false, and the next tick tries again a second later.
+        runCatching { updateWindowBounds() }
+            .getOrElse { error ->
+                Log.w(TAG, "Unable to position recording controls", error)
+                return
+            }
         if (!attached) {
             runCatching {
                 windowManager.addView(root, layoutParams)
@@ -93,8 +120,6 @@ internal class RecordingAccessibilityOverlay(
         }
     }
 
-    /** Everything on the recorder EXCEPT the meter, which moves far faster than the rest. */
-    private data class Chrome(val elapsedSeconds: Int, val notice: String?)
 
     private fun buildRoot(): View {
         val pill = buildPill()
@@ -103,64 +128,122 @@ internal class RecordingAccessibilityOverlay(
         // line can wrap. Hidden by default: an empty slot must not change what the recorder looks like.
         notice.apply {
             gravity = Gravity.CENTER
-            setTextColor(Color.rgb(230, 230, 230))
+            setTextColor(BrandPalette.TEXT)
+            typeface = brandTypeface(R.font.plus_jakarta_sans_medium)
             textSize = 12f
             maxLines = 2
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            background = roundedBackground(Color.rgb(36, 39, 43), dp(12).toFloat())
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            background = roundedBackground(BrandPalette.PILL_BACKGROUND, dp(12).toFloat())
             visibility = View.GONE
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
 
-        return LinearLayout(service).apply {
+        // The root listens for configuration changes itself. Window sizing otherwise rides on the
+        // elapsed second, so a rotation would leave a window built for the other orientation until the
+        // next tick, and the window's rectangle is its touch area.
+        return object : LinearLayout(service) {
+            override fun onConfigurationChanged(newConfig: android.content.res.Configuration?) {
+                super.onConfigurationChanged(newConfig)
+                if (!active || !attached) return
+                runCatching { updateWindowBounds() }
+                    .onFailure { error -> Log.w(TAG, "Unable to resize recording controls", error) }
+            }
+        }.apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            addView(pill, LinearLayout.LayoutParams(WRAP, WRAP))
+            // No padding: the window is already inset to the pill's width, and any transparent room
+            // inside it would be touchable.
+            addView(pill, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(notice, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(6) })
         }
     }
 
+    /**
+     * The pill, in the founder's own order: mark, elapsed time, level rail, state, cancel, accept.
+     *
+     * Layout from `docs/mockups/android-v2/06-floating-recorder.png` and that folder's README.
+     */
     private fun buildPill(): View {
         val container = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            elevation = dp(10).toFloat()
-            background = roundedBackground(Color.rgb(36, 39, 43), dp(32).toFloat())
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            elevation = dp(12).toFloat()
+            // A violet outline and a soft violet glow on a fully rounded pill. The glow is the
+            // elevation's own shadow tinted violet, which is what makes the recorder read as ours
+            // rather than as a system chip.
+            background = pillBackground()
+            outlineSpotShadowColor = BrandPalette.VIOLET
+            outlineAmbientShadowColor = BrandPalette.VIOLET
             contentDescription = "Recording controls"
         }
 
         timer.apply {
             gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+            setTextColor(BrandPalette.TEXT)
             textSize = 15f
-            typeface = Typeface.MONOSPACE
-            minWidth = dp(36)
+            // Plus Jakarta Sans, the brand typeface, which is already bundled and which every Compose
+            // screen uses. The recorder was on the platform monospace, which drew "0 : 05" with gaps
+            // wide enough to read as three separate numbers. `minWidth` holds the column steady as the
+            // digits change, so the rail beside it does not shift every second.
+            typeface = brandTypeface(R.font.plus_jakarta_sans_semibold)
+            minWidth = dp(48)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
-        // The meter leads, because it is the answer to "is this thing hearing me" and the timer is the
-        // answer to "how long have I been going". Reading order matches which question comes first.
+
+        stateLabel.apply {
+            // STATIC, and it can only be right. The recorder exists between `show()` and `hide()`,
+            // which is exactly the listening phase; every later phase has already hidden it. A label
+            // wired to a live phase would add a way for it to be wrong and buy nothing.
+            text = LISTENING_LABEL
+            gravity = Gravity.CENTER
+            setTextColor(BrandPalette.TEXT_MUTED)
+            textSize = 10f
+            letterSpacing = 0.14f
+            typeface = brandTypeface(R.font.plus_jakarta_sans_bold)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            contentDescription = "Listening"
+        }
+
         container.addView(
-            meter,
-            LinearLayout.LayoutParams(dp(26), dp(28)).apply { marginEnd = dp(8) },
+            mark,
+            LinearLayout.LayoutParams(dp(22), dp(20)).apply { marginEnd = dp(10) },
         )
         container.addView(
             timer,
-            LinearLayout.LayoutParams(dp(36), dp(48)).apply { marginEnd = dp(6) },
+            LinearLayout.LayoutParams(WRAP, dp(44)).apply { marginEnd = dp(10) },
+        )
+        // The rail takes the room that is left, so the pill grows with the screen rather than the rail
+        // being pinned to one width that is wrong on two of them.
+        container.addView(
+            meter,
+            LinearLayout.LayoutParams(0, dp(22), 1f).apply { marginEnd = dp(10) },
         )
         container.addView(
-            actionButton("■", "Stop", Color.rgb(46, 125, 50)) {
-                DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP)
-            },
-            LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(6) },
+            stateLabel,
+            LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(10) },
         )
         container.addView(
-            actionButton("×", "Cancel", Color.rgb(198, 40, 40)) {
+            actionButton("×", "Cancel", BrandPalette.NEUTRAL_CONTROL) {
                 DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL)
             },
-            LinearLayout.LayoutParams(dp(48), dp(48)),
+            LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(8) },
+        )
+        container.addView(
+            actionButton("✓", "Stop and use these words", BrandPalette.ACCENT) {
+                DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP)
+            },
+            LinearLayout.LayoutParams(dp(40), dp(40)),
         )
         return container
+    }
+
+    /** The pill's ground plus its violet outline, as one drawable. */
+    private fun pillBackground() = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(28).toFloat()
+        setColor(BrandPalette.PILL_BACKGROUND)
+        setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)
     }
 
     private fun actionButton(
@@ -170,15 +253,25 @@ internal class RecordingAccessibilityOverlay(
         action: () -> Unit,
     ) = TextView(service).apply {
         text = glyph
-        textSize = if (glyph == "×") 30f else 19f
+        typeface = brandTypeface(R.font.plus_jakarta_sans_semibold)
+        textSize = if (glyph == "×") 22f else 17f
         setTextColor(Color.WHITE)
         gravity = Gravity.CENTER
         contentDescription = accessibilityLabel
         isClickable = true
         isFocusable = false
-        background = roundedBackground(color, dp(24).toFloat())
+        background = roundedBackground(color, dp(20).toFloat())
         setOnClickListener { action() }
     }
+
+    /**
+     * The bundled brand font, or the platform default if it cannot be loaded.
+     *
+     * A missing font must never take the recorder down: it is the window the heart path draws in, and
+     * a typeface is the most cosmetic thing on it.
+     */
+    private fun brandTypeface(fontRes: Int): Typeface =
+        runCatching { ResourcesCompat.getFont(service, fontRes) }.getOrNull() ?: Typeface.DEFAULT
 
     private fun roundedBackground(color: Int, radius: Float) = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
@@ -192,13 +285,22 @@ internal class RecordingAccessibilityOverlay(
         attached = false
     }
 
-    private fun updateTopOffset() {
+    /**
+     * Size and place the window to the pill itself.
+     *
+     * Width as well as position, because the window's rectangle IS its touch area: anything it covers
+     * and does not paint is a tap the user's own app never receives. Recomputed on every update so a
+     * rotation or a multi-window resize does not leave a window sized for the other shape.
+     */
+    private fun updateWindowBounds() {
         val metrics = windowManager.currentWindowMetrics
-        val desired = metrics.windowInsets
+        val desiredWidth = (metrics.bounds.width() - dp(24)).coerceAtLeast(1)
+        val desiredY = metrics.windowInsets
             .getInsetsIgnoringVisibility(WindowInsets.Type.statusBars())
             .top + dp(12)
-        if (layoutParams.y == desired) return
-        layoutParams.y = desired
+        if (layoutParams.width == desiredWidth && layoutParams.y == desiredY) return
+        layoutParams.width = desiredWidth
+        layoutParams.y = desiredY
         if (attached) runCatching { windowManager.updateViewLayout(root, layoutParams) }
     }
 
@@ -206,5 +308,8 @@ internal class RecordingAccessibilityOverlay(
 
     private companion object {
         const val TAG = "RecordingOverlay"
+
+        /** What the recorder says it is doing. The mockup's own word, in quiet caps. */
+        const val LISTENING_LABEL = "LISTENING"
     }
 }

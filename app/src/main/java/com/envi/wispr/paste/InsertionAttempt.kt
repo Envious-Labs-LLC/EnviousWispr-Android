@@ -4,7 +4,9 @@ import com.envi.wispr.insertion.InsertionText
 import com.envi.wispr.paste.AccessibilityInsertionRules.EditorRead
 import com.envi.wispr.paste.AccessibilityInsertionRules.EditorSelection
 import com.envi.wispr.paste.AccessibilityInsertionRules.Judgement
+import com.envi.wispr.paste.AccessibilityInsertionRules.SurroundingWindow
 import com.envi.wispr.paste.AccessibilityInsertionRules.Verification
+import com.envi.wispr.paste.AccessibilityInsertionRules.WINDOW_CHARS
 
 /**
  * The pinned editor as the service can see it on one tick. `null` from [EditorWrites.locateTarget]
@@ -34,16 +36,40 @@ internal enum class PasteOutcome {
     CONTEXT_CHANGED,
 }
 
+/** What the input connection's commit call reported, classified by the port that made it. */
+internal enum class CommitOutcome {
+    /** `commitText` was called on the captured connection. Void by contract. */
+    SENT,
+
+    /**
+     * The input session captured at the eligibility check is no longer live (input finished or
+     * restarted since); `commitText` was never called. The attempt prepares again on its next tick.
+     */
+    SESSION_CHANGED,
+}
+
 /**
  * Everything [InsertionAttempt] may ask the accessibility service to do. The service implements it
- * with its `AccessibilityNodeInfo` and clipboard calls; a test implements it with a fake. Any of these
- * may throw; the attempt catches and classifies by WHEN the throw happened, never by what it was.
+ * with its `AccessibilityNodeInfo`, input connection and clipboard calls; a test implements it with a
+ * fake. Any of these may throw; the attempt catches and classifies by WHEN the throw happened, never
+ * by what it was.
  */
 internal interface EditorWrites {
     fun locateTarget(): TargetState?
 
-    /** Whether the input session provably belongs to the pinned node right now. */
+    /**
+     * Whether the input session provably belongs to the pinned node right now. `true` also captures
+     * that session inside the port, so [readSurrounding] and [commit] use the connection that was
+     * checked, never whichever one is current later.
+     */
     fun commitEligible(): Boolean
+
+    /**
+     * A read off the captured input connection: up to [beforeChars] characters before the caret and
+     * [afterChars] after it. Null when no session was captured, the captured one is no longer live,
+     * or the editor answered nothing.
+     */
+    fun readSurrounding(beforeChars: Int, afterChars: Int): SurroundingWindow?
 
     /**
      * Puts [payload] on the clipboard for the paste route, taking the restore snapshot immediately
@@ -64,8 +90,12 @@ internal interface EditorWrites {
      */
     fun paste(expectedBaseline: String?, expectedSelection: EditorSelection?): PasteOutcome
 
-    /** `commitText` on the captured input connection. Void by contract. */
-    fun commit(payload: String)
+    /**
+     * `commitText` on the captured input connection, guarded by its liveness in the same call.
+     * [CommitOutcome.SESSION_CHANGED] means `commitText` was never called and nothing was mutated.
+     * A throw from `commitText` itself escapes, because that call may have reached the editor.
+     */
+    fun commit(payload: String): CommitOutcome
 
     /** A fresh raw read of the pinned node; `null` when it cannot be refreshed. */
     fun readTarget(): EditorRead?
@@ -94,7 +124,7 @@ internal class InsertionAttempt(
 ) {
     enum class Returned { NONE, TRUE, FALSE, VOID, THREW }
 
-    enum class Evidence { NONE, NODE, UNREADABLE }
+    enum class Evidence { NONE, SURROUNDING, NODE, UNREADABLE }
 
     sealed interface Tick {
         /** Nothing terminal happened; tick again after the retry interval. */
@@ -152,34 +182,67 @@ internal class InsertionAttempt(
         if (expired()) return Tick.Expired(false)
 
         val baseline = AccessibilityInsertionRules.baseline(target.read)
-        val plan = payloadFor(baseline, target.selection)
         val chosen = InsertionRoutePolicy.select(commitEligible())
         route = chosen
         return when (chosen) {
-            InsertionRoute.COMMIT -> writeCommit(target, plan.text)
-            InsertionRoute.PASTE -> writePaste(target, baseline, plan)
+            InsertionRoute.COMMIT -> {
+                // The pipe's own read composes the payload, so the seam is repaired against what
+                // the editor really holds around the caret even when the node exposes no text. A
+                // window the composer cannot use falls back to the node read, as the paste route.
+                val window = readSurrounding()?.takeIf { it.composable }
+                if (expired()) return Tick.Expired(false)
+                val plan = if (window != null) {
+                    payloadFor(
+                        window.before + window.selected + window.after,
+                        EditorSelection(window.before.length, window.before.length + window.selected.length),
+                    )
+                } else {
+                    payloadFor(baseline, target.selection)
+                }
+                writeCommit(target, baseline, plan.text, window)
+            }
+            InsertionRoute.PASTE -> writePaste(target, baseline, payloadFor(baseline, target.selection))
         }
     }
 
-    private fun writeCommit(target: TargetState, payload: String): Tick {
+    private fun writeCommit(
+        located: TargetState,
+        baseline: String?,
+        payload: String,
+        window: SurroundingWindow?,
+    ): Tick {
         val record = Verification(
             action = AccessibilityInsertionRules.Action.COMMIT,
-            beforeText = AccessibilityInsertionRules.baseline(target.read),
-            beforeWasHint = target.read.isShowingHintText,
-            selection = target.selection,
+            beforeText = baseline,
+            beforeWasHint = located.read.isShowingHintText,
+            selection = located.selection,
             insertedText = payload,
+            beforeWindow = window,
         )
         if (expired()) return Tick.Expired(false)
         verification = record
-        writeCount += 1
-        returned = try {
+        val outcome = try {
             editor.commit(payload)
-            Returned.VOID
         } catch (error: Exception) {
-            Returned.THREW
+            writeCount += 1
+            returned = Returned.THREW
+            noteOverrun()
+            return judge(record)
         }
         noteOverrun()
-        return judge(record)
+        return when (outcome) {
+            CommitOutcome.SESSION_CHANGED -> {
+                // commitText was never called: the session moved between the check and the write,
+                // so the next tick prepares again and will most likely take the paste route.
+                verification = null
+                Tick.Waiting
+            }
+            CommitOutcome.SENT -> {
+                writeCount += 1
+                returned = Returned.VOID
+                judge(record)
+            }
+        }
     }
 
     private fun writePaste(
@@ -233,6 +296,21 @@ internal class InsertionAttempt(
     }
 
     private fun judge(record: Verification): Tick {
+        // The commit route's first evidence is a second read off the same connection; the node judge
+        // decides only when the windows cannot (`AccessibilityInsertionRules.judgeWindow`).
+        val window = if (record.action == AccessibilityInsertionRules.Action.COMMIT) readSurrounding() else null
+        val byWindow = window?.let { AccessibilityInsertionRules.judgeWindow(record, it) }
+        if (byWindow != null) {
+            lastJudgement = byWindow
+            evidence = Evidence.SURROUNDING
+            lastMissShape = when (byWindow) {
+                Judgement.VERIFIED -> null
+                else -> "judgement=${byWindow.name} evidence=SURROUNDING " +
+                    "beforeLen=${window.before.length} afterLen=${window.after.length} " +
+                    "insertedLen=${record.insertedText.length} documentStart=${window.atDocumentStart}"
+            }
+            return verdict(byWindow)
+        }
         val read = try {
             editor.readTarget()
         } catch (error: Exception) {
@@ -249,11 +327,24 @@ internal class InsertionAttempt(
             Judgement.UNREADABLE -> "judgement=UNREADABLE readNull=${read == null} " +
                 "hint=${read?.isShowingHintText ?: false} baselineKnown=${record.beforeText != null}"
         }
-        return when {
-            judgement == Judgement.VERIFIED -> Tick.Verified(checkNotNull(route))
-            expired() -> Tick.Expired(written)
-            else -> Tick.Waiting
-        }
+        return verdict(judgement)
+    }
+
+    private fun verdict(judgement: Judgement): Tick = when {
+        judgement == Judgement.VERIFIED -> Tick.Verified(checkNotNull(route))
+        expired() -> Tick.Expired(written)
+        else -> Tick.Waiting
+    }
+
+    /**
+     * The same window on both sides of the write: enough before the caret to hold the payload plus
+     * the [WINDOW_CHARS] the judge compares AND to show whether the draft already ended that way, and
+     * [WINDOW_CHARS] after it.
+     */
+    private fun readSurrounding(): SurroundingWindow? = try {
+        editor.readSurrounding(text.length + 2 * WINDOW_CHARS, WINDOW_CHARS)
+    } catch (error: Exception) {
+        null
     }
 
     private fun payloadFor(baseline: String?, selection: EditorSelection?): InsertionText.SmartPayloadPlan {

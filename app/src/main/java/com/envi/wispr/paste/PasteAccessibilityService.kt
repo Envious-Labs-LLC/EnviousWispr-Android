@@ -2,6 +2,7 @@ package com.envi.wispr.paste
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.accessibilityservice.InputMethod
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -83,6 +84,9 @@ class PasteAccessibilityService : AccessibilityService() {
         val clipboardOwnershipToken: String = UUID.randomUUID().toString(),
     ) {
         lateinit var attempt: InsertionAttempt
+
+        /** The input session captured at the eligibility check; the commit and its judge use only this. */
+        var commitSession: EditorInputSession.Captured? = null
         var previousClipboard: ClipData? = null
         var previousClipboardCaptured: Boolean = false
         var clipboardOverwritten: Boolean = false
@@ -235,12 +239,21 @@ class PasteAccessibilityService : AccessibilityService() {
                 0
             }
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            // This is the only writer of serviceInfo, and it replaces the whole object on every
+            // call, so the input method flag lives here or it is wiped at the first request (#141).
             flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
-                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR
             notificationTimeout = 50
         }
     }
+
+    /** The keyboard pipe: the framework asks for it once the input method flag is set. */
+    override fun onCreateInputMethod(): InputMethod = EditorInputSession(this)
+
+    private val editorInputSession: EditorInputSession?
+        get() = inputMethod as? EditorInputSession
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
@@ -779,11 +792,74 @@ class PasteAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Chunk 2 of #141 wires the accessibility input method; until then the route is always paste.
-        override fun commitEligible(): Boolean = false
+        /**
+         * The input session and the pinned node are two identities. The pipe is used only when they
+         * provably coincide right now: input is started on the pipe for the pinned package, the
+         * window holding input focus is the pinned window, and that window's input-focused node is
+         * FRAMEWORK-EQUAL to the pinned node (never metadata alone: two same-class fields with no
+         * view ids in one window are indistinguishable by metadata). The session captured here,
+         * generation included, is the one the commit and its judge use.
+         */
+        override fun commitEligible(): Boolean {
+            pending.commitSession = null
+            val reason = commitIneligibleReason()
+            if (reason != null) {
+                Log.d(TAG, "Commit route not eligible: $reason")
+                return false
+            }
+            return true
+        }
 
-        override fun commit(payload: String) {
-            throw UnsupportedOperationException("The commit route is not wired yet (#141 chunk 2)")
+        /** Null when eligible (and the session is captured); otherwise the SHAPE of the refusal. */
+        private fun commitIneligibleReason(): String? {
+            val expected = pinnedTarget ?: return "no pin"
+            val session = editorInputSession ?: return "no input method"
+            val captured = session.capture() ?: return "input not started"
+            if (captured.packageName != expected.packageName) return "session package differs"
+            val focusedWindow = windows.firstOrNull { it.isFocused } ?: return "no focused window"
+            if (focusedWindow.id != expected.windowId) return "focused window differs"
+            // The same proof the write itself relies on: the pinned node is present in its window,
+            // focused, editable and framework-equal to the pin. A window holds one focused view, so
+            // with input focus in the pinned window the session belongs to that view. Chrome's
+            // FOCUS_INPUT search from the window root answers a different node than the pinned
+            // editor (measured 2026-09-13 on the Android 16 AVD), so it is not the test.
+            if (withPinnedNode(expected) { node -> node.isFocused } != true) return "pinned editor not focused"
+            pending.commitSession = captured
+            return null
+        }
+
+        override fun readSurrounding(beforeChars: Int, afterChars: Int): AccessibilityInsertionRules.SurroundingWindow? {
+            val captured = liveCommitSession() ?: return null
+            val surrounding = captured.connection.getSurroundingText(beforeChars, afterChars, 0)
+            if (surrounding == null) {
+                Log.d(TAG, "The pipe read no surrounding text")
+                return null
+            }
+            val window = AccessibilityInsertionRules.window(
+                surrounding.text,
+                surrounding.selectionStart,
+                surrounding.selectionEnd,
+                surrounding.offset,
+            )
+            Log.d(
+                TAG,
+                "The pipe read surrounding text: before=${window?.before?.length ?: -1} " +
+                    "after=${window?.after?.length ?: -1} offset=${surrounding.offset}",
+            )
+            return window
+        }
+
+        override fun commit(payload: String): CommitOutcome {
+            val captured = liveCommitSession() ?: return CommitOutcome.SESSION_CHANGED
+            captured.connection.commitText(payload, 1, null)
+            return CommitOutcome.SENT
+        }
+
+        /** The captured session, only while it is still the pipe's current one. */
+        private fun liveCommitSession(): EditorInputSession.Captured? {
+            val captured = pending.commitSession ?: return null
+            val session = editorInputSession ?: return null
+            return captured.takeIf { session.isLive(it) }
         }
 
         override fun stageClipboard(payload: String): Boolean {

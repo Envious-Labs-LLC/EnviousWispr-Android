@@ -440,6 +440,69 @@ def main():
     eyes._run = original_run
     eyes._STATE["serial"] = None
 
+    # ---- the emulator is spoken to through the cable, never the speakers ---------------------------
+    # Founder 2026-09-13: the speaker-to-microphone path was the flaky half of every emulator take.
+    # These rows pin the shape of a cable take: input switched to the cable BEFORE the voice, the
+    # voice played INTO the cable, the input put back and read back AFTER, no speaker volume touched.
+    import tempfile as _tempfile
+    cable_book = Path(_tempfile.mkdtemp()) / "restore.json"
+    original_journal, original_has_tool = eyes._JOURNAL, eyes._has_tool
+    eyes._JOURNAL = cable_book
+    eyes._STATE["serial"] = "emulator-5554"
+    calls = []
+    mac_input = ["MacBook Pro Microphone"]
+
+    def cable_run(args, timeout=60):
+        calls.append(args)
+        if args[0] == eyes.SWITCH_AUDIO:
+            if args[1:] == ["-a", "-t", "input"]:
+                return (0, "BlackHole 2ch\nMacBook Pro Microphone\n", "")
+            if args[1:3] == ["-c", "-t"]:
+                return (0, mac_input[0] + "\n", "")
+            if args[1:4] == ["-t", "input", "-s"]:
+                mac_input[0] = args[4]
+                return (0, "", "")
+        if args[0] == "say":
+            return (0, "", "")
+        if args[0] == "osascript":
+            return (0, "35\n", "")
+        if len(args) >= 5 and args[3:5] == ["emu", "avd"]:
+            return (0, "OK\n", "")
+        return original_run(args, timeout)
+
+    eyes._run = cable_run
+    eyes._has_tool = lambda name: True
+    eyes.say("hello there")
+    said = [c for c in calls if c[0] == "say"]
+    switches = [c[4] for c in calls if c[0] == eyes.SWITCH_AUDIO and c[1:4] == ["-t", "input", "-s"]]
+    check("on an emulator the voice is played into the cable, not the speakers",
+          len(said) == 1 and said[0][said[0].index("-a") + 1] == eyes.CABLE and "hello there" in said[0])
+    check("the Mac's input is switched to the cable before the voice and put back after",
+          switches == [eyes.CABLE, "MacBook Pro Microphone"] and mac_input[0] == "MacBook Pro Microphone")
+    check("the input switch is settled in the book once it is back",
+          eyes._owed("host") == [])
+    check("no speaker volume is touched on a cable take",
+          not any(c[0] == "osascript" and "set volume" in " ".join(c) for c in calls))
+    check("the emulator's host microphone is switched on first",
+          any(len(c) >= 6 and c[3:6] == ["emu", "avd", "hostmicon"] for c in calls))
+    eyes._has_tool = lambda name: False
+    try:
+        eyes.say("hello there")
+        check("a Mac without the audio switcher is refused with the install line", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("a Mac without the audio switcher is refused with the install line", "switchaudio-osx" in str(refusal))
+    eyes._has_tool = lambda name: True
+    eyes._STATE["serial"] = "100.94.206.47:5555"
+    try:
+        eyes.say_into_emulator("hello there")
+        check("a phone is refused by say_into_emulator", False, "it returned")
+    except eyes.Blocked:
+        check("a phone is refused by say_into_emulator", True)
+    eyes._run = original_run
+    eyes._has_tool = original_has_tool
+    eyes._JOURNAL = original_journal
+    eyes._STATE["serial"] = None
+
     # ---- the "put it back" book -------------------------------------------------------------------
     # Every row here drives the REAL journal, pointed at a throwaway file. The rows exist because the
     # book used to live in memory, and this tool runs one process per errand.

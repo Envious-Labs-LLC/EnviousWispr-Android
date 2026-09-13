@@ -91,6 +91,16 @@ class LipsBubbleWiringTest {
     }
 
     @Test
+    fun theServiceRequestsTheKeyboardPipeInBothPlacesTheFlagsLive() {
+        // configureEventMode replaces serviceInfo whole on every call, so the input method flag must
+        // be in that call or the first dictation wipes it; the XML mirrors it for the bind (#141).
+        assertTrue(config.contains("flagInputMethodEditor"))
+        val eventMode = service.substringAfter("private fun configureEventMode(").substringBefore("\n    }")
+        assertTrue(eventMode.contains("AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR"))
+        assertTrue(service.contains("override fun onCreateInputMethod(): InputMethod = EditorInputSession(this)"))
+    }
+
+    @Test
     fun theServiceSubscribesToWindowsChangedForTheKeyboard() {
         assertTrue(config.contains("typeWindowsChanged"))
         assertTrue(config.contains("flagRetrieveInteractiveWindows"))

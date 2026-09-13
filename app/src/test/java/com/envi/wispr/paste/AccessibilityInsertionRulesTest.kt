@@ -254,6 +254,29 @@ class AccessibilityInsertionRulesTest {
         assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judge(record, EditorRead("hello", false)))
     }
 
+    /**
+     * REPRODUCIBLE, read off the founder's Gmail draft 2026-09-13 with `uiautomator dump` after build 107
+     * reported `judgement=MISS actualLen=67 beforeLen=46 insertedLen=21`: Gmail stores the seam space
+     * as U+00A0. Same length, one character class apart, and the words are there. Revert that turns
+     * this red: removing the no-break-space fold.
+     */
+    @Test
+    fun gmailNoBreakSpaceAtTheSeamIsStillVerified() {
+        val before = "Testing in Gmail now, let's see what happens."
+        val record = Verification(
+            action = Action.PASTE,
+            beforeText = before,
+            beforeWasHint = false,
+            selection = EditorSelection(before.length, before.length),
+            insertedText = " Trying again. 12345. ",
+        )
+        val gmail = "Testing in Gmail now, let's see what happens. Trying again. 12345. "
+        assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judge(record, EditorRead(gmail, false)))
+        // Only the space class is folded: a changed word is still a miss.
+        val changedWord = "Testing in Gmail now, let's see what happens. Trying against. 12345. "
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judge(record, EditorRead(changedWord, false)))
+    }
+
     /** The editor transformed the payload: the words are very likely there, and that is a MISS, not a false success. */
     @Test
     fun editorTransformationIsAMissNotAVerified() {

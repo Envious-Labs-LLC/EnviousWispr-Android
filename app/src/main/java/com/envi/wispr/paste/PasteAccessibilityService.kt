@@ -942,9 +942,18 @@ class PasteAccessibilityService : AccessibilityService() {
     private fun restorePreviousClipboardIfSafe(pending: PendingInsertion) {
         if (!pending.clipboardOverwritten) return
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        if (!ownsClipboard(clipboard.primaryClip, pending)) {
-            Log.i(TAG, "Clipboard changed during insertion; preserving the newer clipboard")
-            return
+        // Restoring is the one direction where a guess can destroy something: an older clip written
+        // over one we cannot see. OURS is the only answer that permits it.
+        when (clipboardOwner(clipboard.primaryClip, pending)) {
+            ClipboardOwner.OURS -> Unit
+            ClipboardOwner.OTHER -> {
+                Log.i(TAG, "Clipboard changed during insertion; preserving the newer clipboard")
+                return
+            }
+            ClipboardOwner.UNREADABLE -> {
+                Log.i(TAG, "Clipboard unreadable after insertion; leaving the words on it")
+                return
+            }
         }
 
         // The clip being restored came from another app and can carry a URI this process has no
@@ -1000,12 +1009,36 @@ class PasteAccessibilityService : AccessibilityService() {
         pending.clipboardPayload = text
     }
 
-    private fun ownsClipboard(clip: ClipData?, pending: PendingInsertion): Boolean {
-        return clip.isOwnedBy(
+    /** What a clipboard read said about who wrote it last. Three answers, because the read can be refused. */
+    private enum class ClipboardOwner { OURS, OTHER, UNREADABLE }
+
+    /**
+     * Android 10+ refuses `primaryClip` to any app that is not in focus or the default keyboard, and
+     * this service is neither while the editor has focus (`ClipboardService: Denying clipboard access
+     * to com.envi.wispr`, measured on the S26 and the emulator 2026-09-13). A null read is therefore
+     * "cannot see", not "somebody else's clip", and each caller says what it does with that.
+     */
+    private fun clipboardOwner(clip: ClipData?, pending: PendingInsertion): ClipboardOwner = when {
+        clip == null -> ClipboardOwner.UNREADABLE
+        clip.isOwnedBy(
             token = pending.clipboardOwnershipToken,
             fingerprint = pending.ownedClipboardFingerprint,
-        )
+        ) -> ClipboardOwner.OURS
+        else -> ClipboardOwner.OTHER
     }
+
+    /**
+     * Whether the transcript we staged is still what the clipboard holds. An UNREADABLE clipboard is
+     * counted as still ours when we wrote it during this same attempt: nothing observed says otherwise,
+     * and treating a refused read as "someone else's clip" reported every successful copy on the
+     * founder's phone as "Saved in History too, if it did not arrive" (2026-09-13, build 107).
+     */
+    private fun ownsClipboard(clip: ClipData?, pending: PendingInsertion): Boolean =
+        when (clipboardOwner(clip, pending)) {
+            ClipboardOwner.OURS -> true
+            ClipboardOwner.OTHER -> false
+            ClipboardOwner.UNREADABLE -> pending.clipboardOverwritten
+        }
 
     private fun finalizeInsertion(pending: PendingInsertion, status: String, result: String, interrupted: Boolean = false) {
         if (pending.transcriptId <= 0L) return

@@ -90,21 +90,34 @@ internal object AccessibilityInsertionRules {
      * line rather than a false success.
      */
     fun judge(verification: Verification, after: EditorRead): Judgement {
-        val before = verification.beforeText ?: return Judgement.UNREADABLE
-        val actual = after.text ?: return Judgement.UNREADABLE
+        val before = verification.beforeText?.let(::foldSpaces) ?: return Judgement.UNREADABLE
+        val actual = after.text?.let(::foldSpaces) ?: return Judgement.UNREADABLE
         if (after.isShowingHintText) return Judgement.UNREADABLE
+        val inserted = foldSpaces(verification.insertedText)
         val selection = verification.selection
         if (selection != null && selection.start != selection.end &&
             (selection.start !in 0..before.length || selection.end !in selection.start..before.length)
         ) {
             return Judgement.UNREADABLE
         }
-        return if (isSingleInsertion(before, selection, verification.insertedText, actual)) {
+        return if (isSingleInsertion(before, selection, inserted, actual)) {
             Judgement.VERIFIED
         } else {
             Judgement.MISS
         }
     }
+
+    /**
+     * The ONE editor transformation the judge tolerates, and only because it was read off the founder's
+     * own draft: Gmail's compose stores a seam space as a NO-BREAK SPACE (U+00A0), so a landed
+     * dictation read back with the same length and failed the exact delta on that one character
+     * (build 107, 2026-09-13: `judgement=MISS actualLen=67 beforeLen=46 insertedLen=21`, the node
+     * text holding `\\xa0` where the payload had a space). Both spaces are folded to U+0020 on every
+     * side of the comparison. Nothing else is normalised: a word, a quote or a full stop the editor
+     * changed is still a MISS, because those are content.
+     */
+    private fun foldSpaces(text: String): String =
+        if (text.indexOf(' ') < 0) text else text.replace(' ', ' ')
 
     /**
      * Whether [after] is [before] with [inserted] spliced in exactly once.

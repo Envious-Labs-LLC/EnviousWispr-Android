@@ -44,6 +44,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import uuid
@@ -1886,6 +1887,56 @@ def hear_on_emulator(serial=None):
     return "host microphone on"
 
 
+CABLE = "BlackHole 2ch"
+SWITCH_AUDIO = "SwitchAudioSource"
+
+
+def _has_tool(name):
+    return shutil.which(name) is not None
+
+
+def _mac_input():
+    return _checked([SWITCH_AUDIO, "-c", "-t", "input"]).strip()
+
+
+@_atomic_change
+def say_into_emulator(sentence):
+    """Speak a sentence straight into the EMULATOR through the virtual audio cable, never the speakers.
+
+    The emulator's microphone is whatever the Mac's CURRENT default input is (measured 2026-09-13: an
+    emulator launched on the cable heard the room once the default input went back to the built-in
+    microphone, and heard the cable once the default was the cable again), so this switches the default
+    input to the cable for the length of the sentence, plays the voice INTO the cable with `say -a`,
+    and puts the input back, read back to prove it. Nothing comes out of the speakers, the room cannot
+    interfere, and no volume is involved: the speaker path was the flaky half of every emulator take
+    (founder 2026-09-13, "the volume wasn't loud enough for the emulator to capture the input").
+
+    Needs `brew install blackhole-2ch switchaudio-osx`; a missing half is reported, never worked around.
+    """
+    if not is_emulator():
+        raise Blocked(f"{device()} is not an emulator; the phone hears through its own microphone")
+    if not _has_tool(SWITCH_AUDIO):
+        raise Blocked(f"{SWITCH_AUDIO} is not installed (brew install switchaudio-osx), so the Mac's input "
+                      "cannot be pointed at the cable")
+    if CABLE not in _checked([SWITCH_AUDIO, "-a", "-t", "input"]):
+        raise Blocked(f"the virtual cable {CABLE!r} is not an input device (brew install blackhole-2ch)")
+    hear_on_emulator()
+    previous = _mac_input()
+    entry = ("mac-input", previous)
+    _owe(entry, serial="host")
+    try:
+        _checked([SWITCH_AUDIO, "-t", "input", "-s", CABLE])
+        now = _mac_input()
+        if now != CABLE:
+            raise Blocked(f"the Mac's input did not switch to {CABLE!r}; it reads {now!r}")
+        started = time.monotonic()
+        _checked(["say", "-v", "Samantha", "-r", "170", "-a", CABLE, "--", sentence], timeout=180)
+        return time.monotonic() - started
+    finally:
+        _restore_one(entry)
+        _settled(entry, serial="host")
+
+
 @_atomic_change
 def say(sentence, volume=25):
     """Speak a sentence out of the MAC's speakers, into the phone's microphone, quietly.
@@ -1900,14 +1951,14 @@ def say(sentence, volume=25):
     **The phone has to be near the Mac.** That is the one precondition this cannot check, so a report
     says it rather than assuming it.
 
-    **On an emulator this is the ONLY voice path** (`say_on_phone` plays through the guest speaker,
-    which no guest microphone hears), and the emulator's host microphone is switched on first
-    ([hear_on_emulator]); with `-allow-host-audio` alone the take records silence.
+    **On an emulator the voice goes through the cable instead** ([say_into_emulator]): `say_on_phone`
+    plays through the guest speaker, which no guest microphone hears, and the speaker-to-microphone
+    path was the flaky half of every emulator take.
     """
     if not isinstance(volume, int) or isinstance(volume, bool) or not 0 <= volume <= 40:
         raise Blocked("volume must be a whole number from 0 to 40; this is a low-volume tool")
     if is_emulator():
-        hear_on_emulator()
+        return say_into_emulator(sentence)
     previous = _checked(["osascript", "-e", "output volume of (get volume settings)"]).strip()
     if not previous.isdigit():
         raise Blocked("could not read the Mac's current volume, so it could not be safely lowered")
@@ -2060,7 +2111,7 @@ def _restore_one(entry):
     his timeout to half an hour and left no trace. "Undo" is only undo when there is something to undo.
     """
     what, previous = entry
-    scope = "host" if what == "mac-volume" else device()
+    scope = "host" if what in ("mac-volume", "mac-input") else device()
     if entry not in _owed(scope):
         raise Blocked(
             f"there is no record of {what!r} having been changed on {scope}, so putting it 'back' to "
@@ -2071,6 +2122,11 @@ def _restore_one(entry):
         now = _checked(["osascript", "-e", "output volume of (get volume settings)"]).strip()
         if now != str(int(previous)):
             raise Blocked(f"the Mac's volume did not go back to {previous}; it reads {now}")
+    elif what == "mac-input":
+        _checked([SWITCH_AUDIO, "-t", "input", "-s", previous])
+        now = _mac_input()
+        if now != previous:
+            raise Blocked(f"the Mac's input did not go back to {previous!r}; it reads {now!r}")
     elif what == "log-buffer":
         # A debt written by the old `clear_log`, which named one buffer out of several. It cannot be
         # settled honestly, so it is not settled. `logcat -G <size>` by hand is the fix.

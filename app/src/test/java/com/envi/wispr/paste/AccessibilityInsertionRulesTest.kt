@@ -312,9 +312,9 @@ class AccessibilityInsertionRulesTest {
 
     // ---- The commit route's window judge: two reads off the same input connection. ----
 
-    private fun commitRecord(before: SurroundingWindow?, inserted: String = " and I will") = Verification(
+    private fun commitRecord(before: SurroundingWindow?, inserted: String = " and I will", nodeText: String? = null) = Verification(
         action = Action.COMMIT,
-        beforeText = null,
+        beforeText = nodeText,
         beforeWasHint = false,
         selection = null,
         insertedText = inserted,
@@ -322,7 +322,7 @@ class AccessibilityInsertionRulesTest {
     )
 
     private fun window(before: String, after: String = "", documentStart: Boolean = true) =
-        SurroundingWindow(before = before, selected = "", after = after, atDocumentStart = documentStart)
+        SurroundingWindow(before = before, selected = "", after = after, offset = if (documentStart) 0 else -1)
 
     /** The everyday case: a short draft, caret at the end, the words appear right before the caret. */
     @Test
@@ -356,22 +356,31 @@ class AccessibilityInsertionRulesTest {
     /** The real S26 Gmail shape: the one space after the caret at the end of the draft is absorbed by the commit. */
     @Test
     fun gmailAbsorbingTheTrailingSpaceAtTheEndOfTheDraftIsStillVerified() {
-        val record = commitRecord(window("Hi team,", after = " "))
+        // The node read "Hi team, " (9 characters) before the write, and the pipe's window covers all 9.
+        val record = commitRecord(window("Hi team,", after = " "), nodeText = "Hi team, ")
         assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judgeWindow(record, window("Hi team, and I will", after = "")))
-        // Only whitespace, and only at the end of a COMPLETE tail: a word is content, a long tail is unknown.
-        assertNull(AccessibilityInsertionRules.judgeWindow(commitRecord(window("Hi team,", after = " x")), window("Hi team, and I will", after = "")))
-        val long = "y".repeat(AccessibilityInsertionRules.WINDOW_CHARS)
-        assertNull(AccessibilityInsertionRules.judgeWindow(commitRecord(window("Hi team,", after = long)), window("Hi team, and I will", after = long.dropLast(1))))
+        // Without the node's length there is no proof the tail was complete: the node judge decides.
+        assertNull(AccessibilityInsertionRules.judgeWindow(commitRecord(window("Hi team,", after = " ")), window("Hi team, and I will", after = "")))
+        // A document longer than the window (a signature beyond it) is not covered: the node judge decides.
+        assertNull(AccessibilityInsertionRules.judgeWindow(
+            commitRecord(window("Hello ", after = "\n\n"), inserted = "world", nodeText = "Hello \n\nSignature"),
+            window("Hello world", after = "\n"),
+        ))
+        // An editor that does not say where its window sits (Chrome, offset -1) proves nothing.
+        val unknownOffset = SurroundingWindow("Hi team,", "", " ", offset = -1)
+        assertNull(AccessibilityInsertionRules.judgeWindow(commitRecord(unknownOffset, nodeText = "Hi team, "), window("Hi team, and I will", after = "")))
+        // A lost WORD is never whitespace.
+        assertNull(AccessibilityInsertionRules.judgeWindow(commitRecord(window("Hi team,", after = " x"), nodeText = "Hi team, x"), window("Hi team, and I will", after = "")))
     }
 
     /** Replacing a selection with the same words is not observable by the windows; the node judge holds the range. */
     @Test
     fun aSelectionHandsOverToTheNodeJudge() {
-        val before = SurroundingWindow(before = "Hello ", selected = "world", after = "", atDocumentStart = true)
+        val before = SurroundingWindow(before = "Hello ", selected = "world", after = "", offset = 0)
         val record = commitRecord(before, inserted = "world")
         assertNull(AccessibilityInsertionRules.judgeWindow(record, window("Hello world")))
         val collapsed = commitRecord(window("Hello "), inserted = "world")
-        val stillSelected = SurroundingWindow(before = "Hello world", selected = "x", after = "", atDocumentStart = true)
+        val stillSelected = SurroundingWindow(before = "Hello world", selected = "x", after = "", offset = 0)
         assertNull(AccessibilityInsertionRules.judgeWindow(collapsed, stillSelected))
     }
 
@@ -422,7 +431,10 @@ class AccessibilityInsertionRulesTest {
     @Test
     fun aSurroundingTextReadBecomesAWindowOnlyWhenItsNumbersAgree() {
         val window = AccessibilityInsertionRules.window("Hi team, |sel| rest", 9, 14, 40)
-        assertEquals(SurroundingWindow("Hi team, ", "|sel|", " rest", atDocumentStart = false), window)
+        assertEquals(SurroundingWindow("Hi team, ", "|sel|", " rest", offset = 40), window)
+        assertFalse(checkNotNull(window).atDocumentStart)
+        assertTrue(window.coversDocumentEnd(40 + 19))
+        assertFalse(window.coversDocumentEnd(40 + 20))
         assertNull(AccessibilityInsertionRules.window("abc", 4, 4, 0))
         assertNull(AccessibilityInsertionRules.window("abc", 2, 1, 0))
         assertNull(AccessibilityInsertionRules.window(null, 0, 0, 0))

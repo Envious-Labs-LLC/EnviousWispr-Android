@@ -65,14 +65,26 @@ internal object AccessibilityInsertionRules {
         val before: String,
         val selected: String,
         val after: String,
-        val atDocumentStart: Boolean,
+        /** Where [before] starts in the document; -1 when the editor does not say (Chrome). */
+        val offset: Int,
     ) {
+        val atDocumentStart: Boolean
+            get() = offset == 0
+
         /**
          * An empty left context that is NOT the document start is an editor that gave nothing back,
          * and the smart composer would read it as a sentence start; such a window composes nothing.
          */
         val composable: Boolean
             get() = atDocumentStart || before.isNotEmpty()
+
+        /**
+         * Whether this read reaches the END of a document of [documentLength] characters. The pipe
+         * never promises a complete tail (an editor may answer with fewer characters than asked), so
+         * completeness is proven from outside: the node's own text length, read at the same moment.
+         */
+        fun coversDocumentEnd(documentLength: Int): Boolean =
+            offset >= 0 && offset + before.length + selected.length + after.length == documentLength
     }
 
     /**
@@ -87,7 +99,7 @@ internal object AccessibilityInsertionRules {
             before = whole.substring(0, selectionStart),
             selected = whole.substring(selectionStart, selectionEnd),
             after = whole.substring(selectionEnd),
-            atDocumentStart = offset == 0,
+            offset = offset,
         )
     }
 
@@ -199,14 +211,20 @@ internal object AccessibilityInsertionRules {
         // The text after the caret must be the same read as before: both windows asked for the same
         // length, so a different length is evidence the windows cannot weigh (a lost or grown tail,
         // or an editor that truncated one read), never a prefix to be waved through. The one
-        // exception is whitespace at the END of a complete tail: Gmail on the S26 absorbs the single
+        // exception is whitespace at the END of the document: Gmail on the S26 absorbs the single
         // space that sat after the caret at the end of the draft (2026-09-13, build 110: `after=1`
         // before the commit, `after=0` after it, 1 dictation in 5), and that space is not content.
+        // The exception needs PROOF that the pre-write tail was the whole tail, and the pipe cannot
+        // give it (Codex chunk 2 round 3): the node's text length read before the write is that
+        // proof. A commit at the caret cannot add words after the caret, so a shorter post-write
+        // tail that trims to the same text has lost nothing but whitespace.
         val tailBefore = foldSpaces(before.after)
         val tailAfter = foldSpaces(after.after)
+        val documentLength = verification.beforeText?.length
         when {
             tailBefore.length == tailAfter.length -> if (tailBefore != tailAfter) return Judgement.MISS
-            tailBefore.length < WINDOW_CHARS && tailAfter.length < WINDOW_CHARS &&
+            documentLength != null && before.coversDocumentEnd(documentLength) &&
+                tailAfter.length < tailBefore.length &&
                 tailBefore.trimEnd() == tailAfter.trimEnd() -> Unit
             else -> return null
         }

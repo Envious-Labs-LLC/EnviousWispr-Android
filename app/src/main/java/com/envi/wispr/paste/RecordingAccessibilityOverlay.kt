@@ -22,6 +22,7 @@ internal class RecordingAccessibilityOverlay(
     private val windowManager = service.getSystemService(WindowManager::class.java)
     private val density = service.resources.displayMetrics.density
     private val timer = TextView(service)
+    private val meter = RecordingLevelMeterView(service)
     private val notice = TextView(service)
     private val root = buildRoot()
     private val layoutParams = WindowManager.LayoutParams(
@@ -39,6 +40,8 @@ internal class RecordingAccessibilityOverlay(
     }
     private var attached = false
     private var active = false
+    /** What the slow half of the recorder was last set to, or null when it is not shown. */
+    private var lastChrome: Chrome? = null
 
     fun start() {
         active = true
@@ -54,9 +57,21 @@ internal class RecordingAccessibilityOverlay(
     override fun onChanged(snapshot: RecordingOverlayState.Snapshot) {
         if (!active) return
         if (!snapshot.visible) {
+            lastChrome = null
             remove()
             return
         }
+        // The meter is the only thing that moves at speaking rate. It redraws itself and touches
+        // nothing else, so it is handled before the early return below.
+        meter.setLevel(snapshot.level)
+
+        // Everything past here changes about once a second at most, and one part of it reads the
+        // window metrics, which is framework work on the main thread. Doing it on every level change
+        // would run it ten times a second to write the same string back.
+        val chrome = Chrome(snapshot.elapsedSeconds, snapshot.notice)
+        if (attached && chrome == lastChrome) return
+        lastChrome = chrome
+
         timer.text = "${snapshot.elapsedSeconds}s"
         timer.contentDescription = "${snapshot.elapsedSeconds} seconds elapsed"
         val line = snapshot.notice
@@ -77,6 +92,9 @@ internal class RecordingAccessibilityOverlay(
             }.onFailure { error -> Log.w(TAG, "Unable to show recording controls", error) }
         }
     }
+
+    /** Everything on the recorder EXCEPT the meter, which moves far faster than the rest. */
+    private data class Chrome(val elapsedSeconds: Int, val notice: String?)
 
     private fun buildRoot(): View {
         val pill = buildPill()
@@ -120,6 +138,12 @@ internal class RecordingAccessibilityOverlay(
             minWidth = dp(36)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
+        // The meter leads, because it is the answer to "is this thing hearing me" and the timer is the
+        // answer to "how long have I been going". Reading order matches which question comes first.
+        container.addView(
+            meter,
+            LinearLayout.LayoutParams(dp(26), dp(28)).apply { marginEnd = dp(8) },
+        )
         container.addView(
             timer,
             LinearLayout.LayoutParams(dp(36), dp(48)).apply { marginEnd = dp(6) },

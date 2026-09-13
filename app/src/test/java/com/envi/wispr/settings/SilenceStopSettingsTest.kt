@@ -109,7 +109,7 @@ class SilenceStopSettingsTest {
         val state = read("shortcuts/RecordingOverlayState.kt")
         assertTrue(
             "updateElapsed must copy the current snapshot rather than build a new one",
-            state.contains("snapshot.copy(elapsedSeconds = seconds.coerceAtLeast(0))"),
+            state.contains("it.copy(elapsedSeconds = safe)"),
         )
         assertFalse(
             state.substringAfter("fun updateElapsed(").substringBefore("fun hide()")

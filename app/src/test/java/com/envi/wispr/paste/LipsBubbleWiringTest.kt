@@ -110,6 +110,13 @@ class LipsBubbleWiringTest {
     }
 
     @Test
+    fun aScreenReaderDoubleTapStartsDictationThroughTheClickAction() {
+        val bubble = overlay.substringAfter("private fun buildBubble()").substringBefore("private fun buildPillColumn()")
+        assertTrue(bubble.contains("setOnClickListener { startDictation() }"))
+        assertTrue(bubble.contains("Double tap to dictate"))
+    }
+
+    @Test
     fun theOverlayIsCreatedOncePerServiceInstance() {
         // A repeat onServiceConnected (any package install triggers one) must not drop the bubble's state.
         assertTrue(service.contains("if (recordingOverlay == null) {"))

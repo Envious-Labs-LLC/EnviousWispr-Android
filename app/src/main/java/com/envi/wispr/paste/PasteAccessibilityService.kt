@@ -814,13 +814,25 @@ class PasteAccessibilityService : AccessibilityService() {
             return true
         }
 
-        override fun paste(): Boolean {
-            val expected = pinnedTarget ?: return false
-            // A node that is no longer present was never asked, so nothing was mutated: the
-            // framework's own "false" is the honest answer.
-            return withPinnedNode(expected) { node ->
-                node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-            } ?: false
+        override fun paste(): PasteOutcome {
+            val expected = pinnedTarget ?: return PasteOutcome.TARGET_GONE
+            // Two throw sites with different meanings: a throw while FINDING the node happened before
+            // any call the editor could act on, and is TARGET_GONE; a throw from performAction itself
+            // may have mutated the editor and is rethrown for the attempt to treat as written.
+            var asked = false
+            return try {
+                withPinnedNode(expected) { node ->
+                    asked = true
+                    if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
+                        PasteOutcome.ACCEPTED
+                    } else {
+                        PasteOutcome.REFUSED
+                    }
+                } ?: PasteOutcome.TARGET_GONE
+            } catch (error: Exception) {
+                if (asked) throw error
+                PasteOutcome.TARGET_GONE
+            }
         }
 
         override fun readTarget(): AccessibilityInsertionRules.EditorRead? {

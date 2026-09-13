@@ -27,6 +27,7 @@ class InsertionAttemptTest {
         var pasteReturns: Boolean = true,
         var pasteMutates: Boolean = true,
         var pasteThrows: Boolean = false,
+        var pasteTargetGoneOnce: Boolean = false,
         var stageReturns: Boolean = true,
         var stageThrows: Boolean = false,
         /** A standard EditText advertises paste only once the clipboard holds something. */
@@ -65,12 +66,16 @@ class InsertionAttemptTest {
             return true
         }
 
-        override fun paste(): Boolean {
+        override fun paste(): PasteOutcome {
+            if (pasteTargetGoneOnce) {
+                pasteTargetGoneOnce = false
+                return PasteOutcome.TARGET_GONE
+            }
             pastes += 1
             if (pasteThrows) throw IllegalStateException("binder died")
-            if (!pasteReturns) return false
+            if (!pasteReturns) return PasteOutcome.REFUSED
             if (pasteMutates) mutate(checkNotNull(staged))
-            return true
+            return PasteOutcome.ACCEPTED
         }
 
         override fun commit(payload: String) {
@@ -218,7 +223,7 @@ class InsertionAttemptTest {
         val editor = FakeEditor()
         // The paste itself is slow: the clock passes the deadline inside the write.
         val slow = object : EditorWrites by editor {
-            override fun paste(): Boolean {
+            override fun paste(): PasteOutcome {
                 editor.clock = 500L
                 return editor.paste()
             }
@@ -264,6 +269,24 @@ class InsertionAttemptTest {
         assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
         assertEquals(1, editor.pastes)
         assertEquals(1, attempt.writeCount)
+    }
+
+    /**
+     * HYPOTHETICAL (Codex code review, round 2): the node vanishes between the read and the paste
+     * call. ACTION_PASTE was never invoked, so nothing was mutated and the next tick may prepare
+     * again. Revert that turns this red: treating a missing node as the editor's own "false".
+     */
+    @Test
+    fun targetGoneAtThePasteCallRetriesPreparationWithoutCountingAWrite() {
+        val editor = FakeEditor(pasteTargetGoneOnce = true)
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(0, attempt.writeCount)
+        assertNull(attempt.verification)
+        assertFalse(attempt.written)
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
+        assertEquals(1, attempt.writeCount)
+        assertEquals(1, editor.pastes)
     }
 
     @Test

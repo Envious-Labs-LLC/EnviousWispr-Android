@@ -17,6 +17,18 @@ internal data class TargetState(
     val canPaste: Boolean,
 )
 
+/** What the editor's paste call reported, classified by the port that made it. */
+internal enum class PasteOutcome {
+    /** `performAction` returned true. */
+    ACCEPTED,
+
+    /** `performAction` returned false: the framework's explicit rejection, nothing mutated. */
+    REFUSED,
+
+    /** The pinned node was not there to be asked; `performAction` was never called. */
+    TARGET_GONE,
+}
+
 /**
  * Everything [InsertionAttempt] may ask the accessibility service to do. The service implements it
  * with its `AccessibilityNodeInfo` and clipboard calls; a test implements it with a fake. Any of these
@@ -35,8 +47,13 @@ internal interface EditorWrites {
      */
     fun stageClipboard(payload: String): Boolean
 
-    /** The editor's own paste on the pinned node: the framework's boolean, verbatim. */
-    fun paste(): Boolean
+    /**
+     * The editor's own paste on the pinned node. [PasteOutcome.TARGET_GONE] means the node could not be
+     * found or refreshed and `ACTION_PASTE` was never called: nothing was mutated, so the attempt may
+     * retry preparation. A throw from `performAction` itself escapes, because that call may have
+     * mutated the editor.
+     */
+    fun paste(): PasteOutcome
 
     /** `commitText` on the captured input connection. Void by contract. */
     fun commit(payload: String)
@@ -188,15 +205,33 @@ internal class InsertionAttempt(
             insertedText = payload,
         )
         verification = record
-        writeCount += 1
-        returned = try {
-            if (editor.paste()) Returned.TRUE else Returned.FALSE
+        val outcome = try {
+            editor.paste()
         } catch (error: Exception) {
-            Returned.THREW
+            writeCount += 1
+            returned = Returned.THREW
+            noteOverrun()
+            return judge(record)
         }
         noteOverrun()
-        if (returned == Returned.FALSE) return Tick.Rejected
-        return judge(record)
+        when (outcome) {
+            PasteOutcome.TARGET_GONE -> {
+                // The node vanished between the read a moment ago and the call; ACTION_PASTE was never
+                // invoked, so nothing was mutated and preparation may run again next tick.
+                verification = null
+                return Tick.Waiting
+            }
+            PasteOutcome.REFUSED -> {
+                writeCount += 1
+                returned = Returned.FALSE
+                return Tick.Rejected
+            }
+            PasteOutcome.ACCEPTED -> {
+                writeCount += 1
+                returned = Returned.TRUE
+                return judge(record)
+            }
+        }
     }
 
     private fun judge(record: Verification): Tick {

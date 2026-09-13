@@ -30,7 +30,6 @@ class AudioCaptureService : Service() {
         private const val SAMPLE_RATE = PcmAudio.SAMPLE_RATE
         private const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
-        private const val MAX_RECORDING_DURATION_MS = 120_000L
         private const val AUDIO_FILENAME = "recording.pcm"
 
         /**
@@ -189,9 +188,6 @@ class AudioCaptureService : Service() {
         }
     }
 
-    /** Callback for recording events (max duration reached). */
-    var onMaxDurationReached: (() -> Unit)? = null
-
     private val binder = object : IAudioCaptureService.Stub() {
         override fun startCapture(): Boolean =
             this@AudioCaptureService.startRecording(autoStopOnSilence = false, pauseSeconds = 0f)
@@ -214,7 +210,7 @@ class AudioCaptureService : Service() {
             } else 0L
         }
 
-        override fun getMaxDurationMs(): Long = MAX_RECORDING_DURATION_MS
+        override fun getMaxDurationMs(): Long = RecordingLimits.MAX_DURATION_MS
         override fun waitForFileReady(timeoutMs: Long): Boolean =
             this@AudioCaptureService.waitForFileReady(timeoutMs)
 
@@ -312,7 +308,7 @@ class AudioCaptureService : Service() {
                 DebugLogger.log(
                     TAG,
                     "Recording started (PID: ${android.os.Process.myPid()}, " +
-                        "max: ${MAX_RECORDING_DURATION_MS}ms, " +
+                        "max: ${RecordingLimits.MAX_DURATION_MS}ms, " +
                         "nativeFrames: ${runCatching { record.bufferSizeInFrames }.getOrDefault(-1)})",
                 )
 
@@ -355,20 +351,37 @@ class AudioCaptureService : Service() {
     }
 
     private fun captureLoop(active: CaptureSession) {
-        var reachedMaxDuration = false
         val buffer = active.readBuffer
         try {
             while (isRecording.get() && session === active) {
                 val elapsed = SystemClock.elapsedRealtime() - active.startedAtMs
-                if (elapsed >= MAX_RECORDING_DURATION_MS) {
-                    reachedMaxDuration = claimEnding(active, TERMINAL_REASON_MAX_DURATION)
+                if (elapsed >= RecordingLimits.MAX_DURATION_MS) {
+                    // The reason is the whole signal. The session owner reads it back through
+                    // getTerminalReason and is what tells the user why their take ended.
+                    claimEnding(active, TERMINAL_REASON_MAX_DURATION)
                     DebugLogger.log(TAG, "Max duration reached (${elapsed}ms), auto-stopping")
+                    break
+                }
+
+                // THE CLOCK CANNOT BOUND THE FILE, because the two measure different things.
+                // `record.startRecording()` runs before `startedAtMs` is taken, so the hardware is
+                // already buffering when the clock starts, and the check above can pass on its last
+                // pass with the file already at the ceiling. One more whole block then goes in.
+                //
+                // That is not a rounding error. `AsrService` REFUSES a file over the ceiling rather
+                // than truncating it, so a few bytes past it discards the entire take: exactly the
+                // long dictation this limit exists to keep. So the read is bounded by what is left.
+                val remaining = RecordingLimits.MAX_AUDIO_BYTES - active.bytesWritten
+                if (remaining <= 0L) {
+                    claimEnding(active, TERMINAL_REASON_MAX_DURATION)
+                    DebugLogger.log(TAG, "Byte ceiling reached (${active.bytesWritten} bytes), auto-stopping")
                     break
                 }
 
                 // Explicit, because the three-argument overload's blocking behaviour is a default
                 // rather than a statement, and this loop's timing depends on it.
-                val bytesRead = active.record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
+                val requested = minOf(buffer.size.toLong(), remaining).toInt()
+                val bytesRead = active.record.read(buffer, 0, requested, AudioRecord.READ_BLOCKING)
                 if (bytesRead < 0) throw IOException("AudioRecord.read failed: $bytesRead")
                 if (bytesRead == 0) continue
 
@@ -396,10 +409,6 @@ class AudioCaptureService : Service() {
             DebugLogger.error(TAG, "Capture thread error", e)
         } finally {
             releaseSession(active)
-            if (reachedMaxDuration) {
-                runCatching { onMaxDurationReached?.invoke() }
-                    .onFailure { DebugLogger.error(TAG, "Max-duration callback failed", it) }
-            }
         }
     }
 

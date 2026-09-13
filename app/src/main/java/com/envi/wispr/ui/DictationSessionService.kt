@@ -24,6 +24,7 @@ import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.AudioLevelScale
 import com.envi.wispr.audio.CaptureEnding
 import com.envi.wispr.audio.IAudioCaptureService
+import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.TextSafety
@@ -94,6 +95,19 @@ class DictationSessionService : Service() {
          * words for a state macOS has already worded is how the two products drift apart.
          */
         private const val SILENCE_UNAVAILABLE_NOTICE = "Auto-stop on silence is unavailable right now"
+
+        /**
+         * Shown on the recorder in the last minute of a take, so the user can finish the sentence
+         * they are in rather than discover the cap by losing the end of it.
+         */
+        private val DURATION_WARNING_NOTICE =
+            "Recording stops in under a minute " +
+                "(${RecordingLimits.MAX_DURATION_MINUTES} minute limit)"
+
+        /** Shown after the cap has stopped a take. The recorder is already gone by then. */
+        private val DURATION_REACHED_NOTICE =
+            "Reached the ${RecordingLimits.MAX_DURATION_MINUTES} minute limit. " +
+                "Working on what you said."
 
         private const val TAG = "DictationSession"
         const val ACTION_START = "com.envi.wispr.action.START_DICTATION"
@@ -191,6 +205,8 @@ class DictationSessionService : Service() {
     @Volatile private var autoStopOnSilence = false
     @Volatile private var silencePauseSeconds = SilenceStopDetector.DEFAULT_PAUSE_SECONDS
     @Volatile private var silenceNoticeShown = false
+    /** One warning per take, latched so the last minute is not announced ten times a second. */
+    @Volatile private var durationWarningShown = false
     private val cleanupPreferencesReady = CompletableDeferred<Unit>()
     private val structuredTermsReady = CompletableDeferred<Unit>()
 
@@ -412,6 +428,7 @@ class DictationSessionService : Service() {
         var captureStarted = false
         try {
             silenceNoticeShown = false
+            durationWarningShown = false
             val started = runCatching {
                 audioService?.startCaptureWithSilenceStop(autoStopOnSilence, silencePauseSeconds)
             }.getOrNull()
@@ -465,7 +482,8 @@ class DictationSessionService : Service() {
             while (state.get() == SessionState.RECORDING) {
                 try {
                     val service = audioService ?: break
-                    val second = (service.elapsedMs / 1_000L).toInt().coerceAtLeast(0)
+                    val elapsedMs = service.elapsedMs
+                    val second = (elapsedMs / 1_000L).toInt().coerceAtLeast(0)
                     if (second != lastElapsedSecond) {
                         lastElapsedSecond = second
                         RecordingOverlayState.updateElapsed(second)
@@ -486,12 +504,29 @@ class DictationSessionService : Service() {
                                 showError("Microphone capture stopped unexpectedly. Try again.")
                             }
 
+                            // The words up to the cap are kept and transcribed. What the user needs
+                            // to be told is why the recording ended without them asking, because a take
+                            // that stops on its own with no sentence reads as a fault.
+                            // Transcribe FIRST, then say why. The words are the thing that must
+                            // survive; the sentence explaining the ending is a limb, and putting it
+                            // ahead of the transition would let a failure in it cost the take.
+                            CaptureEnding.MaxDuration -> {
+                                stopAndTranscribe()
+                                DebugLogger.log(TAG, "Take ended at the duration cap")
+                                sayAfterRecording(DURATION_REACHED_NOTICE)
+                            }
+
                             CaptureEnding.Manual,
-                            CaptureEnding.MaxDuration,
                             CaptureEnding.Silence -> stopAndTranscribe()
                         }
                         break
                     }
+                    // Both of these sit BELOW the terminal check, and the position is the isolation.
+                    // The warning is a limb: it tells the user something useful and nothing depends on
+                    // it, so a failure in it must not carry the loop past the check that starts
+                    // transcription. Above the check, a throw here would cost the take.
+                    publishDurationWarningIfNeeded(elapsedMs)
+
                     // The meter is LAST in the tick, and its position is the isolation. Everything
                     // this take depends on -- the elapsed second, the auto-stop notice, and the
                     // terminal-reason check that starts transcription -- has already happened by the
@@ -531,13 +566,46 @@ class DictationSessionService : Service() {
         val status = runCatching { service.silenceStopStatus }.getOrNull() ?: return
         if (status != AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return
         silenceNoticeShown = true
+        sayWhileRecording(SILENCE_UNAVAILABLE_NOTICE)
+    }
+
+    /**
+     * Warn once, in the last minute of a take, that the cap is about to stop it.
+     *
+     * The moment comes from `RecordingLimits`, the same object the capture process stops the take with.
+     * An earlier revision asked the capture service for it over the binder, for authority across the
+     * process boundary. That bought nothing and cost something: both processes compile the SAME
+     * constant, so there was no drift to catch, while the call added a place this thread could hang
+     * before its loop had started even once (issue #115). The call is gone rather than guarded.
+     */
+    private fun publishDurationWarningIfNeeded(elapsedMs: Long) {
+        if (durationWarningShown || elapsedMs < RecordingLimits.WARNING_AT_MS) return
+        durationWarningShown = true
+        DebugLogger.log(TAG, "Duration warning shown at ${elapsedMs}ms")
+        sayWhileRecording(DURATION_WARNING_NOTICE)
+    }
+
+    /**
+     * Say one line to a user who is mid-dictation, wherever they can actually see it.
+     *
+     * The floating recorder exists only while the accessibility service is bound. In clipboard-only
+     * mode there is no recorder at all, so the same sentence has to arrive as a toast instead. Both
+     * callers want that decision made identically, and making it in one place is what stops the next
+     * message being announced on a surface that is not there.
+     */
+    private fun sayWhileRecording(line: String) {
         if (PasteAccessibilityService.isBound.value) {
-            RecordingOverlayState.showNotice(SILENCE_UNAVAILABLE_NOTICE)
+            RecordingOverlayState.showNotice(line)
         } else {
-            serviceScope.launch(Dispatchers.Main.immediate) {
-                runCatching {
-                    Toast.makeText(applicationContext, SILENCE_UNAVAILABLE_NOTICE, Toast.LENGTH_LONG).show()
-                }
+            sayAfterRecording(line)
+        }
+    }
+
+    /** Say one line when the recorder has already gone. A toast is the only surface left. */
+    private fun sayAfterRecording(line: String) {
+        serviceScope.launch(Dispatchers.Main.immediate) {
+            runCatching {
+                Toast.makeText(applicationContext, line, Toast.LENGTH_LONG).show()
             }
         }
     }

@@ -56,12 +56,30 @@ class SilenceStopSettingsTest {
     fun theNoticeHasASurfaceEvenWithoutTheAccessibilityService() {
         // The floating recorder only exists while PasteAccessibilityService runs. Clipboard-only mode is
         // supported and would otherwise show nothing at all.
-        val body = read("ui/DictationSessionService.kt")
-            .substringAfter("private fun publishSilenceNoticeIfNeeded(")
+        //
+        // That decision now belongs to `sayWhileRecording`, which every mid-dictation message goes
+        // through. Asserting it there is what stops the NEXT message picking a surface that is not on
+        // screen, which asserting it inside this one caller could never do.
+        val source = read("ui/DictationSessionService.kt")
+        val chooser = source
+            .substringAfter("private fun sayWhileRecording(line: String) {")
+            .substringBefore("private fun sayAfterRecording(")
+        assertTrue(chooser.contains("if (PasteAccessibilityService.isBound.value)"))
+        assertTrue(chooser.contains("RecordingOverlayState.showNotice(line)"))
+        assertTrue(chooser.contains("sayAfterRecording(line)"))
+
+        val toast = source
+            .substringAfter("private fun sayAfterRecording(line: String) {")
             .substringBefore("private fun stopAndTranscribe(")
-        assertTrue(body.contains("if (PasteAccessibilityService.isBound.value)"))
-        assertTrue(body.contains("RecordingOverlayState.showNotice(SILENCE_UNAVAILABLE_NOTICE)"))
-        assertTrue(body.contains("Toast.makeText(applicationContext, SILENCE_UNAVAILABLE_NOTICE"))
+        assertTrue(toast.contains("Toast.makeText(applicationContext, line"))
+
+        val notice = source
+            .substringAfter("private fun publishSilenceNoticeIfNeeded(")
+            .substringBefore("private fun publishDurationWarningIfNeeded(")
+        assertTrue(
+            "the silence notice must go through the shared chooser, not pick a surface itself",
+            notice.contains("sayWhileRecording(SILENCE_UNAVAILABLE_NOTICE)"),
+        )
     }
 
     @Test

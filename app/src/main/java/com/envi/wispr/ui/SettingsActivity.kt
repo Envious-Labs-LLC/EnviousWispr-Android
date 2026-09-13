@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class SettingsActivity : ComponentActivity() {
+    private var modelReadinessGeneration = 0L
     private val viewModel: EnviousWisprViewModel by viewModels {
         EnviousWisprViewModel.Factory(
             appPreferences = AppPreferences(applicationContext),
@@ -38,13 +39,13 @@ class SettingsActivity : ComponentActivity() {
     private val microphonePermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
-        refreshReadiness()
+        viewModel.refreshPermissions()
     }
 
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
-        refreshReadiness()
+        viewModel.refreshPermissions()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,13 +66,13 @@ class SettingsActivity : ComponentActivity() {
                         startActivity(Intent(this, VoiceInputActivity::class.java))
                     },
                     onRequestMicrophone = {
-                        microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                        requestPermissionWithRecovery(Manifest.permission.RECORD_AUDIO) { microphonePermission.launch(it) }
                     },
                     onRequestNotifications = {
-                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissionWithRecovery(Manifest.permission.POST_NOTIFICATIONS) { notificationPermission.launch(it) } else refreshReadiness()
                     },
                     onOpenAccessibility = {
-                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        startActivity(Intent(this, AccessibilityGuideActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     },
                     licenseNotices = thirdPartyNotices,
                     onOnboardingStep = viewModel::setOnboardingStep,
@@ -115,10 +116,23 @@ class SettingsActivity : ComponentActivity() {
         refreshReadiness()
     }
 
+    private fun requestPermissionWithRecovery(permission: String, request: (String) -> Unit) {
+        val requested = getSharedPreferences("permission_requests", MODE_PRIVATE)
+        val denied = androidx.core.content.ContextCompat.checkSelfPermission(this, permission) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (denied && requested.getBoolean(permission, false) && !shouldShowRequestPermissionRationale(permission)) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
+        } else {
+            requested.edit().putBoolean(permission, true).apply()
+            request(permission)
+        }
+    }
+
     private fun refreshReadiness() {
+        viewModel.refreshPermissions()
+        val generation = ++modelReadinessGeneration
         lifecycleScope.launch {
             val snapshot = withContext(Dispatchers.IO) { readAppReadiness(this@SettingsActivity) }
-            viewModel.updateReadiness(snapshot)
+            if (generation == modelReadinessGeneration) viewModel.updateVerifiedModels(snapshot)
         }
     }
 }

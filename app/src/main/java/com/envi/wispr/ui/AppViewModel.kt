@@ -295,8 +295,16 @@ class EnviousWisprViewModel(
         }
     }
 
-    fun updateReadiness(snapshot: AppReadiness) {
-        readiness.value = snapshot
+    fun updateVerifiedModels(snapshot: AppReadiness) {
+        readiness.value = readiness.value.withVerifiedModels(snapshot)
+    }
+
+    fun refreshPermissions() {
+        readiness.value = readiness.value.copy(
+            microphoneGranted = ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
+            notificationsGranted = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED,
+            accessibilityPermitted = AccessibilityPermission.isGranted(appContext),
+        )
     }
 
     fun updateCustomTermSearch(value: String) {

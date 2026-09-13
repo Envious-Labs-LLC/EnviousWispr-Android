@@ -17,6 +17,7 @@ class TriggerNameTest {
 
     private val userFacing = listOf(
         "ui/AppShell.kt",
+        "ui/OnboardingScreen.kt",
         "ui/SettingsPages.kt",
         "about/ReleaseNotes.kt",
     ).associateWith { File("src/main/java/com/envi/wispr/$it").readText() }
@@ -32,19 +33,12 @@ class TriggerNameTest {
     }
 
     @Test
-    fun theSetupInstructionNamesTheControlSamsungNames() {
-        val shell = userFacing.getValue("ui/AppShell.kt")
+    fun onboardingUsesItsOwnRecorderWhileSamsungSettingsKeepTheCorrectName() {
+        val onboarding = userFacing.getValue("ui/OnboardingScreen.kt")
+        assertTrue("Practice must provide its own recording action", onboarding.contains("Start dictation"))
+        assertFalse("New users must not be required to own a Samsung phone", onboarding.contains("Double-press the side button"))
         assertTrue(
-            "the insertion setup step must name the side button",
-            shell.contains("Double-press the side button"),
-        )
-        assertTrue(
-            "and both auto-insert lines must agree with it",
-            shell.contains("\"Side-button auto-insert ready\"") &&
-                shell.contains("\"Enable side-button auto-insert\""),
-        )
-        assertTrue(
-            "as must the permissions page",
+            "The existing Samsung shortcut status still uses the phone's control name",
             userFacing.getValue("ui/SettingsPages.kt").contains("\"Ready for side-button dictation\""),
         )
     }

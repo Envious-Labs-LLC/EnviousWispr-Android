@@ -13,6 +13,58 @@ import org.junit.Test
  * that admits without verifying, or a failed update that takes the working model down with it.
  */
 class ModelDeliveryStoreTest {
+    @Test fun pauseCanBeWrittenWhileTheNetworkReadIsBlocked() {
+        val payload = "model payload".toByteArray()
+        val model = descriptor(payload)
+        val root = Files.createTempDirectory("paused-transfer").toFile()
+        val controls = ModelDeliveryControlStore(root)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val paused = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val download = executor.submit<DownloadStatus> {
+                ModelDeliveryStore(root).download(model, ModelTransport { _, _ ->
+                    TransportResponse(object : ByteArrayInputStream(payload) {
+                        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                            entered.countDown()
+                            check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                            return super.read(buffer, offset, length)
+                        }
+                    }, false)
+                }, object : DownloadControl { override fun isPaused() = controls.read(model) == ModelDeliveryControlState.PAUSED })
+            }
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            executor.submit { controls.write(model, ModelDeliveryControlState.PAUSED); paused.countDown() }
+            assertTrue("Pause must not wait for the download to finish", paused.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            release.countDown()
+            assertEquals(DownloadState.PAUSED, download.get(5, java.util.concurrent.TimeUnit.SECONDS).state)
+            assertEquals(payload.size.toLong(), ModelDeliveryStore(root).stagedBytes(model))
+            assertFalse(ModelDeliveryStore(root).isVerified(model))
+        } finally { release.countDown(); executor.shutdown(); executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS); root.deleteRecursively() }
+    }
+
+    @Test fun anotherModelCanFinishWhileOneTransferIsBlocked() {
+        val payload = "payload".toByteArray()
+        val first = descriptor(payload)
+        val second = first.copy(id = "second")
+        val root = Files.createTempDirectory("independent-models").toFile()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            executor.submit {
+                ModelDeliveryStore(root).download(first, ModelTransport { _, _ ->
+                    entered.countDown(); check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                    TransportResponse(ByteArrayInputStream(payload), false)
+                })
+            }
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val other = executor.submit<DownloadStatus> { ModelDeliveryStore(root).download(second, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(payload), false) }) }
+            assertEquals(DownloadState.READY, other.get(2, java.util.concurrent.TimeUnit.SECONDS).state)
+        } finally { release.countDown(); executor.shutdown(); executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS); root.deleteRecursively() }
+    }
+
     @Test fun downloadsVerifiesAndAtomicallyPromotes() {
         val bytes = "model payload".toByteArray()
         val model = descriptor(bytes)

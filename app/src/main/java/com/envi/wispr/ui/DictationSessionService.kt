@@ -62,6 +62,9 @@ import com.envi.wispr.settings.cleanupOptions
 import com.envi.wispr.settings.clipboardInsertionPolicy
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.shortcuts.DictationSurfaceState
+import com.envi.wispr.shortcuts.BubbleRequestLedger
+import com.envi.wispr.shortcuts.BubbleRequestToken
+import com.envi.wispr.shortcuts.BubbleRequests
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.CustomTermRepository
@@ -116,8 +119,12 @@ class DictationSessionService : Service() {
         const val ACTION_CANCEL = "com.envi.wispr.action.CANCEL_DICTATION"
         private const val EXTRA_FOREGROUND_COMMAND = "foreground_command"
 
-        fun sendCommand(context: Context, action: String) {
+        /** The floating bubble's request token (`BubbleRequestToken.encode`), on START, STOP and CANCEL. */
+        const val EXTRA_REQUEST = "bubble_request"
+
+        fun sendCommand(context: Context, action: String, requestToken: String? = null) {
             val intent = Intent(context, DictationSessionService::class.java).setAction(action)
+            if (requestToken != null) intent.putExtra(EXTRA_REQUEST, requestToken)
             if (action == ACTION_START || action == ACTION_TOGGLE) {
                 intent.putExtra(EXTRA_FOREGROUND_COMMAND, true)
                 ContextCompat.startForegroundService(context, intent)
@@ -139,6 +146,7 @@ class DictationSessionService : Service() {
     )
 
     private val state = AtomicReference(SessionState.IDLE)
+    @Volatile private var practiceDelivery: PracticeDelivery? = null
     private val publicationStarted = AtomicBoolean(false)
     /**
      * Reads the dictation's language off the finished transcript for this side's deterministic fallback
@@ -176,6 +184,16 @@ class DictationSessionService : Service() {
     // a value that outlived its session can only ever suppress an announcement, never invent
     // one.
     @Volatile private var targetPinAtStart = DictationTargetPin.NO_TARGET
+
+    /** The bubble request this take was admitted for, or null for a take started elsewhere. */
+    @Volatile private var admittedRequest: BubbleRequestToken? = null
+
+    /**
+     * A release for this take arrived before capture was running. Consumed at the RECORDING
+     * transition: the take stops the moment it can, instead of cancelling as an unmarked STOP would
+     * from STARTING (issue #135 plan §3 "Stop and cancel").
+     */
+    @Volatile private var stopAfterRecording = false
     private var recordingStartedAtMs = 0L
     @Volatile private var recordingDurationMs = 0L
     private var draftCreation: Deferred<Long>? = null
@@ -320,8 +338,29 @@ class DictationSessionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val practiceToken = intent?.getStringExtra(PracticeDelivery.TOKEN)
+        if (practiceToken != null) {
+            if (intent.action == ACTION_START) {
+                val destination = PracticeDelivery.from(intent)
+                if (destination == null) { stopIfIdle(); return START_NOT_STICKY }
+                if (state.get() != SessionState.IDLE) {
+                    destination.update(PracticeDelivery.ERROR, "Another dictation is still active. Finish it, then try again.", terminalEvent = true)
+                    return START_NOT_STICKY
+                }
+                practiceDelivery = destination
+                destination.update(PracticeDelivery.STARTING)
+                beginSession()
+                return START_NOT_STICKY
+            }
+            if (practiceDelivery?.acceptsCommand(practiceToken) != true) { stopIfIdle(); return START_NOT_STICKY }
+        }
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND_COMMAND, false) == true) {
             promoteToForeground(state.get() == SessionState.PROCESSING)
+        }
+        val request = BubbleRequestToken.parse(intent?.getStringExtra(EXTRA_REQUEST))
+        if (request != null && !admitBubbleCommand(intent?.action ?: ACTION_START, request)) {
+            stopIfIdle()
+            return START_NOT_STICKY
         }
         when (intent?.action ?: ACTION_START) {
             ACTION_CANCEL -> when (state.get()) {
@@ -348,13 +387,69 @@ class DictationSessionService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * Resolve a bubble-marked command against the request ledger BEFORE the ordinary dispatch. Returns
+     * true when the ordinary dispatch should now run for this action, false when the command was
+     * consumed (noted, retired, stale, refused) and nothing else must happen.
+     *
+     * Every command reaches this method on the main thread in arrival order, which is the whole
+     * reason the ledger lives here and not in the bubble (issue #135 plan §3 "Requests").
+     */
+    private fun admitBubbleCommand(action: String, request: BubbleRequestToken): Boolean {
+        return when (action) {
+            ACTION_START -> when (val decision = BubbleRequests.resolveStart(request, ownerIdle = state.get() == SessionState.IDLE)) {
+                BubbleRequestLedger.StartDecision.Stale -> {
+                    DebugLogger.log(TAG, "Bubble start refused as stale")
+                    false
+                }
+                BubbleRequestLedger.StartDecision.RefusedBusy -> {
+                    DebugLogger.log(TAG, "Bubble start refused: a take is active")
+                    false
+                }
+                is BubbleRequestLedger.StartDecision.Admitted -> {
+                    admittedRequest = request
+                    stopAfterRecording = decision.stopAfterRecording
+                    beginSession()
+                    if (decision.cancelAtOnce) cancelStarting()
+                    false
+                }
+            }
+            ACTION_STOP, ACTION_CANCEL -> {
+                val cancel = action == ACTION_CANCEL
+                when (BubbleRequests.resolveCommand(request, cancel, admittedSeq = admittedRequest?.seq)) {
+                    BubbleRequestLedger.CommandDecision.ApplyToAdmitted -> {
+                        if (!cancel && state.get() == SessionState.STARTING) {
+                            // The hold was released before capture started: finish, never cancel.
+                            stopAfterRecording = true
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    BubbleRequestLedger.CommandDecision.Noted -> {
+                        DebugLogger.log(TAG, "Bubble ${if (cancel) "cancel" else "release"} noted ahead of its start")
+                        false
+                    }
+                    BubbleRequestLedger.CommandDecision.Ignored,
+                    BubbleRequestLedger.CommandDecision.Rejected -> false
+                }
+            }
+            else -> true
+        }
+    }
+
     private fun beginSession() {
         if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return
+        RecordingOverlayState.showStarting(admittedRequest)
         promoteToForeground(processing = false)
         // Kept for the whole session. Android may rebind the accessibility service while the user
         // is still speaking, so the state insertion finds minutes later cannot say whether this
         // dictation ever had a field to aim at (`InsertionJudgement.handoffToJudge`).
-        targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()
+        if (practiceDelivery == null) {
+            targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()
+        } else {
+            targetPinAtStart = com.envi.wispr.paste.DictationTargetPin.NO_TARGET
+        }
         publicationStarted.set(false)
         teardownStarted.set(false)
         draftId.set(0L)
@@ -460,9 +555,17 @@ class DictationSessionService : Service() {
             }
             DictationSurfaceState.update(this, DictationSurfaceState.Phase.LISTENING)
             RecordingOverlayState.show()
+            practiceDelivery?.update(PracticeDelivery.RECORDING)
             vibrate(HapticCue.SESSION_TRANSITION)
             DebugLogger.log(TAG, "Recording started")
             startPolling()
+            if (stopAfterRecording) {
+                // The bubble's hold was already released. Consumed here, at the one transition the
+                // early release waits for, so a short hold keeps its words instead of losing them.
+                stopAfterRecording = false
+                DebugLogger.log(TAG, "Early release applied: stopping as soon as capture started")
+                stopAndTranscribe()
+            }
         } catch (error: Exception) {
             if (captureStarted) {
                 val capture = audioService
@@ -612,9 +715,10 @@ class DictationSessionService : Service() {
 
     private fun stopAndTranscribe() {
         if (!state.compareAndSet(SessionState.RECORDING, SessionState.PROCESSING)) return
-        RecordingOverlayState.hide()
+        RecordingOverlayState.showProcessing()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.PROCESSING)
         promoteToForeground(processing = true)
+        practiceDelivery?.update(PracticeDelivery.PROCESSING)
         vibrate(HapticCue.SESSION_TRANSITION)
         DebugLogger.log(TAG, "Stopping recording and starting transcription")
 
@@ -683,7 +787,7 @@ class DictationSessionService : Service() {
         rawTranscript = rawText
         if (rawText.isBlank()) {
             discardDraft()
-            PasteAccessibilityService.releasePinnedTarget()
+            if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
             finishSession()
             return
         }
@@ -891,6 +995,23 @@ class DictationSessionService : Service() {
             saveResult.exceptionOrNull()?.let { error ->
                 DebugLogger.warn(TAG, "Unable to save transcript history: ${error.message}")
             }
+            val practice = practiceDelivery
+            if (practice != null) {
+                if (persistedId > 0L) {
+                    runCatching {
+                        transcriptRepository.finalizeInsertionOutcome(
+                            persistedId, TranscriptEntity.STATUS_COMPLETED,
+                            "practice", interrupted = false,
+                        )
+                    }
+                } else {
+                    // Sending to an in-memory receiver cannot prove that the UI displayed the words.
+                    keepOnClipboard(getSystemService(ClipboardManager::class.java), 0L, finalText)
+                }
+                practice.update(PracticeDelivery.FINISHED, finalText, terminalEvent = true)
+                finishSession()
+                return@launch
+            }
             val route = HistoryPublicationPolicy.route(
                 persistedId = persistedId,
                 persistenceSucceeded = saveResult.isSuccess,
@@ -910,7 +1031,7 @@ class DictationSessionService : Service() {
                 },
             )
             if (handoff != InsertionHandoff.SCHEDULED) {
-                PasteAccessibilityService.releasePinnedTarget()
+                if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
                 val mustPreventDataLoss = persistedId <= 0L
                 // Three outcomes, not two. A copy that was never attempted is the user's own
                 // auto-copy setting and History is then the destination; a copy that was attempted
@@ -1055,8 +1176,8 @@ class DictationSessionService : Service() {
 
     private fun cancelRecording() {
         if (!state.compareAndSet(SessionState.RECORDING, SessionState.CANCELLING)) return
-        RecordingOverlayState.hide()
-        PasteAccessibilityService.releasePinnedTarget()
+        RecordingOverlayState.showProcessing()
+        if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
         serviceScope.launch {
@@ -1090,7 +1211,8 @@ class DictationSessionService : Service() {
             DebugLogger.log(TAG, "Cancelled while processing; open polish request: ${polishLedger.openId != null}")
             cancelOpenPolishRequest()
         }
-        PasteAccessibilityService.releasePinnedTarget()
+        RecordingOverlayState.showProcessing()
+        if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
         discardDraft()
@@ -1099,18 +1221,20 @@ class DictationSessionService : Service() {
 
     private fun cancelStarting() {
         if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
-        PasteAccessibilityService.releasePinnedTarget()
+        RecordingOverlayState.showProcessing()
+        if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
         finishSession()
     }
 
     private fun showError(message: String) {
+        practiceDelivery?.update(PracticeDelivery.ERROR, message, terminalEvent = true)
         if (state.getAndSet(SessionState.ERROR) == SessionState.ERROR) return
         publicationStarted.set(true)
         cancelOpenPolishRequest()
-        RecordingOverlayState.hide()
-        PasteAccessibilityService.releasePinnedTarget()
+        RecordingOverlayState.showProcessing()
+        if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.FAILURE)
         mainHandler.post { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
@@ -1124,9 +1248,10 @@ class DictationSessionService : Service() {
     }
 
     private fun finishSession() {
+        practiceDelivery?.update(PracticeDelivery.ENDED, terminalEvent = true)
         if (state.getAndSet(SessionState.FINISHING) == SessionState.FINISHING) return
         cancelOpenPolishRequest()
-        RecordingOverlayState.hide()
+        RecordingOverlayState.showProcessing()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         val historyUpdates = synchronized(pendingHistoryUpdates) { pendingHistoryUpdates.toList() }
         serviceScope.launch {
@@ -1135,6 +1260,11 @@ class DictationSessionService : Service() {
                 unbindPipelineServices()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 DictationNotificationController.dismiss(this@DictationSessionService)
+                // IDLE is published at the last moment this instance can still refuse a start: the
+                // next command creates a fresh instance whose state begins IDLE.
+                admittedRequest = null
+                stopAfterRecording = false
+                RecordingOverlayState.hide()
                 stopSelf()
             }
         }
@@ -1302,6 +1432,7 @@ class DictationSessionService : Service() {
     }
 
     override fun onDestroy() {
+        practiceDelivery?.update(PracticeDelivery.ENDED, terminalEvent = true)
         if (::languageDetector.isInitialized) languageDetector.close()
         RecordingOverlayState.hide()
         publicationStarted.set(true)

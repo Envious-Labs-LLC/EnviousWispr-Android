@@ -6,8 +6,19 @@ import kotlin.math.roundToInt
 
 /** Process-local state bridge between the dictation session and accessibility overlay. */
 object RecordingOverlayState {
+    /**
+     * Where the session owner says the take is. Written by the owner ONLY: the accessibility service
+     * detaches its surface without touching this, so a reconnect renders whatever the owner retained
+     * and a hidden pill never means IDLE (issue #135, review round 1).
+     */
+    enum class Phase { IDLE, STARTING, RECORDING, PROCESSING }
+
     data class Snapshot(
+        /** True exactly while the pill is drawn: the RECORDING phase. */
         val visible: Boolean = false,
+        val phase: Phase = Phase.IDLE,
+        /** The floating bubble's request this take answers, or null for a take started elsewhere. */
+        val requestToken: BubbleRequestToken? = null,
         val elapsedSeconds: Int = 0,
         /**
          * A short line to show under the timer, or null.
@@ -23,6 +34,15 @@ object RecordingOverlayState {
          * meaning silence, not a "not measured yet" sentinel; the recorder draws its resting bars for it.
          */
         val level: Float = 0f,
+        /**
+         * Counts every level poll while the pill is visible, whether or not [level] changed.
+         *
+         * The rail is a HISTORY: each poll pushes one bar. Silence is the one passage where consecutive
+         * levels are identical, so a rail woken only by a change in [level] stops scrolling exactly when
+         * the user stops talking, and the shape of their last words sits frozen until they speak again.
+         * The recorder reads this counter, never the level alone, to decide that a poll happened.
+         */
+        val levelTick: Int = 0,
     )
 
     fun interface Listener {
@@ -48,7 +68,18 @@ object RecordingOverlayState {
         }
     }
 
-    fun show() = change { Snapshot(visible = true, elapsedSeconds = 0) }
+    /** The take was admitted and is binding its services. Not yet interactive. */
+    fun showStarting(token: BubbleRequestToken?) = change {
+        Snapshot(phase = Phase.STARTING, requestToken = token)
+    }
+
+    /** Capture is running: draw the pill. Keeps the token the take was admitted with. */
+    fun show() = change { Snapshot(visible = true, phase = Phase.RECORDING, requestToken = it.requestToken, elapsedSeconds = 0) }
+
+    /** Transcribing, polishing, cancelling, finishing or failing: not accepting a start, pill hidden. */
+    fun showProcessing() = change {
+        if (it.phase == Phase.PROCESSING) it else Snapshot(phase = Phase.PROCESSING, requestToken = it.requestToken)
+    }
 
     /** Show a line under the timer. It survives every later tick until the recorder is hidden. */
     fun showNotice(text: String) = change {
@@ -56,16 +87,18 @@ object RecordingOverlayState {
     }
 
     /**
-     * Publish a new microphone level, already scaled for display.
+     * Publish one poll of the microphone level, already scaled for display.
      *
-     * Quantised to [LEVEL_STEPS] before the comparison. The session owner ticks about ten times a second
-     * and smooths, so consecutive floats are almost never equal; without the quantisation every tick
-     * would wake the recorder to move a bar by a fraction of a pixel.
+     * Every poll wakes the recorder while the pill is visible, EQUAL levels included, because the rail
+     * records one bar per poll (see [Snapshot.levelTick]). That is about ten small redraws a second for
+     * exactly as long as a take is open and nothing at idle (`architecture-rules.md`
+     * RULE: no-idle-cost). Quantised to [LEVEL_STEPS] so the bar heights are a small fixed set rather
+     * than a fresh float every tick.
      */
     fun updateLevel(level: Float) {
         val safe = if (level.isFinite()) level.coerceIn(0f, 1f) else 0f
         val quantised = (safe * LEVEL_STEPS).roundToInt().toFloat() / LEVEL_STEPS
-        change { if (!it.visible || it.level == quantised) it else it.copy(level = quantised) }
+        change { if (!it.visible) it else it.copy(level = quantised, levelTick = it.levelTick + 1) }
     }
 
     fun updateElapsed(seconds: Int) {
@@ -73,6 +106,7 @@ object RecordingOverlayState {
         change { if (!it.visible || it.elapsedSeconds == safe) it else it.copy(elapsedSeconds = safe) }
     }
 
+    /** The owner can accept a new start: IDLE, no pill, no token. */
     fun hide() = change { Snapshot() }
 
     /**

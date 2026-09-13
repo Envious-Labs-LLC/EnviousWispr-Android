@@ -8,12 +8,14 @@ plugins {
 android {
     namespace = "com.envi.wispr"
     compileSdk = 36
+    ndkVersion = "29.0.13113456"
 
     defaultConfig {
         applicationId = "com.envi.wispr"
+        manifestPlaceholders["applicationLabel"] = "@string/app_name"
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
+        versionCode = providers.gradleProperty("playVersionCode").orNull?.toInt() ?: 3
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
@@ -23,6 +25,14 @@ android {
             cmake {
                 cppFlags += "-std=c++17"
             }
+        }
+    }
+
+    // Opt-in separate app for fresh onboarding UAT without wiping a Play-signed daily installation.
+    buildTypes.getByName("debug") {
+        if (providers.gradleProperty("onboardingPreview").orNull == "true") {
+            applicationIdSuffix = ".onboardingpreview"
+            manifestPlaceholders["applicationLabel"] = "EnviousWispr Preview"
         }
     }
 

@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -19,6 +20,8 @@ import android.text.InputType
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
+import android.view.WindowManager
 import android.widget.Toast
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
@@ -31,6 +34,7 @@ import com.envi.wispr.insertion.InsertionText
 import com.envi.wispr.insertion.ServiceFallbackReason
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.shortcuts.RecordingOverlayState
+import com.envi.wispr.ui.DictationSessionService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -101,12 +105,16 @@ class PasteAccessibilityService : AccessibilityService() {
         private const val INSERTION_TIMEOUT_MS = 2_500L
         private const val MAIN_CALL_TIMEOUT_MS = 1_000L
         private const val RETRY_INTERVAL_MS = 125L
+        private const val CONNECT_DISCOVERY_RETRY_MS = 1_000L
         private const val LIFECYCLE_PREFERENCES = "paste_service_lifecycle"
         private const val KEY_STOP_WAS_CLEAN = "stop_was_clean"
         private val STOP_MARKER_LOCK = Any()
+        // TYPE_WINDOWS_CHANGED is how the floating bubble learns a docked keyboard came or went; it
+        // needs FLAG_RETRIEVE_INTERACTIVE_WINDOWS and canRetrieveWindowContent, both already set.
         private const val BASE_EVENT_TYPES = AccessibilityEvent.TYPE_VIEW_FOCUSED or
             AccessibilityEvent.TYPE_VIEW_CLICKED or
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED
 
         // The one liveness answer. The insertion path reads the field and the UI collects the flow,
         // both written by publishBinding alone so they cannot report different health.
@@ -187,6 +195,7 @@ class PasteAccessibilityService : AccessibilityService() {
     private var pendingInsertion: PendingInsertion? = null
     private var retryScheduled = false
     private var recordingOverlay: RecordingAccessibilityOverlay? = null
+    private val bubblePositionStore by lazy { BubblePositionStore(applicationContext) }
     private var pinnedTarget: TargetToken? = null
 
     private val retryRunnable = Runnable {
@@ -198,13 +207,34 @@ class PasteAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         publishBinding(this)
         configureEventMode(includeContentChanges = false)
-        recordingOverlay?.stop()
-        recordingOverlay = RecordingAccessibilityOverlay(this).also { it.start() }
+        // onServiceConnected fires again on the same instance whenever the system recomputes the
+        // accessibility state, for example when ANY package is installed (measured 2026-09-12 on the
+        // emulator: another package's install reconnected this service mid-take). The overlay keeps
+        // its field, keyboard and position state across those, so it is created once per instance.
+        if (recordingOverlay == null) {
+            recordingOverlay = RecordingAccessibilityOverlay(this).also { overlay ->
+                overlay.onPositionChanged = { position -> historyScope.launch { bubblePositionStore.save(position) } }
+                overlay.start()
+            }
+        }
         Log.i(TAG, "Accessibility insertion service connected")
+        // A text box may already hold focus when this service (re)connects: discover it rather than
+        // waiting for the user to tap it again. The window list is not yet populated at the instant of
+        // connect (measured 2026-09-12 on the emulator: an immediate discovery found nothing while the
+        // editor was focused), so the discovery runs once now and once more shortly after. Two
+        // one-shot posts on a connect, never a recurring timer.
+        mainHandler.post { recordingOverlay?.let { revalidateBubbleField(it, discover = true) } }
+        mainHandler.postDelayed({ recordingOverlay?.let { revalidateBubbleField(it, discover = true) } }, CONNECT_DISCOVERY_RETRY_MS)
         // Disk, and this is the connect path of the heart. Liveness is already published above, so
         // a dictation arriving in this window would otherwise pin a target while a synchronous
         // SharedPreferences load held the main thread and before the event mask was installed.
-        historyScope.launch { reportPreviousStop() }
+        historyScope.launch {
+            reportPreviousStop()
+            // The bubble's remembered dock, applied on the main thread once the disk has answered.
+            bubblePositionStore.load()?.let { position ->
+                mainHandler.post { recordingOverlay?.setPosition(position) }
+            }
+        }
     }
 
     private fun configureEventMode(includeContentChanges: Boolean) {
@@ -224,16 +254,133 @@ class PasteAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        rememberEditableTarget(event)
+        val remembered = rememberEditableTarget(event)
+        updateBubbleFromEvent(event, remembered)
 
         if (pendingInsertion != null && event.packageName?.toString() != packageName) {
             scheduleRetry(delayMs = 25L)
         }
     }
 
+    /**
+     * Tell the floating bubble whether another app's editable field is active, and where a docked
+     * keyboard ends. Event-driven only: nothing here runs at idle, and a windows-changed event caused
+     * by our own overlay moving is dropped before any node is touched
+     * (`architecture-rules.md` RULE: no-idle-cost, as read by the #135 adjudication).
+     */
+    private fun updateBubbleFromEvent(event: AccessibilityEvent, remembered: Boolean) {
+        val overlay = recordingOverlay ?: return
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_VIEW_FOCUSED, AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                if (remembered) {
+                    lastTarget?.let { overlay.fieldActivated(fieldKey(it)) }
+                } else {
+                    // Focus or a click went to something that is not an editor, in the same window or
+                    // another. Whether the remembered editor still holds focus is a question, not a
+                    // given: a hardware-keyboard tab to a button produces no window change to catch it
+                    // (Codex code review, round 2).
+                    revalidateBubbleField(overlay)
+                }
+            }
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
+                if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isOwnOverlayWindow(event.windowId)) return
+                revalidateBubbleField(overlay, discover = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
+            }
+            else -> Unit
+        }
+    }
+
+    /**
+     * The bubble's direct route into the session owner: pin the focused editor here, in the process
+     * that already knows it, and start the owner as a foreground service. Returns false when this
+     * process may not do that (no microphone permission, or Android refusing a foreground start from
+     * a bound accessibility service), and the caller falls back to the transparent launcher.
+     *
+     * The direct route exists because launching an activity, even a 1x1 non-focusable one, pauses the
+     * user's app and Chrome then hides its keyboard (measured on the Android 16 emulator, 2026-09-12).
+     */
+    fun startDictationFromBubble(request: String): Boolean {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            return false
+        }
+        pinTarget()
+        return runCatching { DictationSessionService.sendCommand(this, DictationSessionService.ACTION_START, request) }
+            .onFailure { error -> Log.w(TAG, "Direct start from the bubble refused: ${error.javaClass.simpleName}") }
+            .isSuccess
+    }
+
+    /**
+     * Is the remembered editor still focused? When it is not, and [discover] is set, look for the
+     * editor that IS focused right now and adopt it. Discovery is one window traversal, so it runs only
+     * on the rare events: a window state change and a service connect, never on the frequent
+     * windows-changed stream. Without it a service recreated while a text box already had focus (a Play
+     * update, an accessibility toggle) kept the bubble hidden until the user tapped the box again
+     * (Codex review of the Play branch, 2026-09-12).
+     */
+    private fun revalidateBubbleField(overlay: RecordingAccessibilityOverlay, discover: Boolean = false) {
+        var target = lastTarget
+        var stillFocused = target != null &&
+            runCatching { target.node.refresh() && isSafeFocusedEditor(target.node) && isInFocusedWindow(target.windowId) }
+                .getOrDefault(false)
+        if (!stillFocused && discover) {
+            val found = runCatching { findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) } }.getOrNull()
+            // Content-free: counts and booleans only (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
+            Log.d(
+                TAG,
+                "Bubble discovery found=${found != null} activeRoot=${rootInActiveWindow != null} " +
+                    "windows=${runCatching { windows.size }.getOrDefault(-1)}",
+            )
+            if (found != null) {
+                clearTarget()
+                lastTarget = found
+                target = found
+                stillFocused = true
+            }
+        }
+        if (stillFocused) overlay.fieldActivated(fieldKey(target!!)) else overlay.fieldLost()
+        overlay.keyboardBounds(dockedKeyboardTop())
+    }
+
+    /**
+     * The editor's identity for hide-until-the-next-field: window id plus the node's own hash, which
+     * the framework derives from its source node id. Never the window or the view id alone, so two
+     * editors in one window are two keys.
+     */
+    private fun fieldKey(target: TargetSnapshot): Any = FieldKey(target.windowId, target.node.hashCode())
+
+    private data class FieldKey(val windowId: Int, val node: Int)
+
+    /**
+     * Does the window holding the editor have input focus right now? In split screen an editor in
+     * the other pane keeps reporting itself focused after the user moves to this pane, so the node's
+     * own focus flag alone would keep the bubble offering a field the user has left (Codex review of
+     * the Play branch, round 5). The bubble asks the window, and hides until focus returns to it.
+     */
+    private fun isInFocusedWindow(windowId: Int): Boolean = runCatching {
+        windows.any { it.id == windowId && it.isFocused }
+    }.getOrDefault(false)
+
+    private fun isOwnOverlayWindow(windowId: Int): Boolean = runCatching {
+        windows.any { it.id == windowId && it.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY }
+    }.getOrDefault(false)
+
+    /**
+     * The top of a keyboard docked at the bottom edge, in screen pixels, or null. A floating or split
+     * keyboard does not touch the bottom edge and is reported as null on purpose: clamping above it
+     * would push the bubble into the middle of the screen.
+     */
+    private fun dockedKeyboardTop(): Int? = runCatching {
+        val ime = windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } ?: return null
+        val bounds = Rect()
+        ime.getBoundsInScreen(bounds)
+        val screenBottom = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds.bottom
+        if (bounds.bottom >= screenBottom - 1 && bounds.height() > 0) bounds.top else null
+    }.getOrNull()
+
     override fun onInterrupt() {
         Log.w(TAG, "Accessibility insertion service interrupted")
-        RecordingOverlayState.hide()
+        // The surface goes; the session owner's phase does NOT. It alone publishes to the bus, so a
+        // reconnect renders whatever it retained and a hidden pill never reads as IDLE (#135, R1).
         // The words were accepted against a pinned field and are not going to reach it. This used
         // to copy them and say nothing, which is issue #16's silence reached from the one direction
         // where the service dies holding the text.
@@ -261,7 +408,7 @@ class PasteAccessibilityService : AccessibilityService() {
         // Retract the publication FIRST. Teardown below blocks this thread draining Room, and a
         // reader during that window would otherwise see a healthy binding on a dying service.
         if (instance === this) publishBinding(null)
-        RecordingOverlayState.hide()
+        // Detach only; the bus belongs to the session owner (see onInterrupt).
         recordingOverlay?.stop()
         recordingOverlay = null
         mainHandler.removeCallbacks(retryRunnable)
@@ -335,17 +482,18 @@ class PasteAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun rememberEditableTarget(event: AccessibilityEvent) {
+    /** True when the event named a new editable target and it was remembered. */
+    private fun rememberEditableTarget(event: AccessibilityEvent): Boolean {
         val eventPackage = event.packageName?.toString().orEmpty()
-        if (eventPackage.isBlank() || eventPackage == packageName) return
+        if (eventPackage.isBlank() || eventPackage == packageName) return false
 
-        val source = event.source ?: return
+        val source = event.source ?: return false
         try {
             val shouldTrack = source.isEditable &&
                 (source.isFocused ||
                     event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED ||
                     event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED)
-            if (!shouldTrack) return
+            if (!shouldTrack) return false
 
             val snapshot = TargetSnapshot(
                 node = AccessibilityNodeInfo.obtain(source),
@@ -362,6 +510,7 @@ class PasteAccessibilityService : AccessibilityService() {
                 "Remembered editable target package=${snapshot.packageName} " +
                     "window=${snapshot.windowId} class=${source.className}",
             )
+            return true
         } finally {
             source.recycle()
         }

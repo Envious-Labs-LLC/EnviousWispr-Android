@@ -80,8 +80,8 @@ class RecorderBrandTest {
 
     @Test
     fun theAcceptButtonStopsAndTheCancelButtonCancels() {
-        val cancel = overlay.substringAfter("actionButton(\"×\"").substringBefore("},")
-        val accept = overlay.substringAfter("actionButton(\"✓\"").substringBefore("},")
+        val cancel = overlay.substringAfter("actionButton(ActionGlyph.CROSS").substringBefore("},")
+        val accept = overlay.substringAfter("actionButton(ActionGlyph.CHECK").substringBefore("},")
         assertTrue(
             "the X must cancel the dictation",
             cancel.contains("DictationSessionService.ACTION_CANCEL"),
@@ -92,19 +92,51 @@ class RecorderBrandTest {
         )
         assertTrue(
             "the tick is the one filled control, so it must carry the accent",
-            overlay.contains("actionButton(\"✓\", \"Stop and use these words\", BrandPalette.ACCENT)"),
+            overlay.contains("actionButton(ActionGlyph.CHECK, \"Stop and use these words\", BrandPalette.ACCENT)"),
         )
         assertTrue(
             "the X must be the quiet one",
-            overlay.contains("actionButton(\"×\", \"Cancel\", BrandPalette.NEUTRAL_CONTROL)"),
+            overlay.contains("actionButton(ActionGlyph.CROSS, \"Cancel\", BrandPalette.NEUTRAL_CONTROL)"),
         )
+        // Drawn, never typed: a text glyph sits where its font's line box puts it, and the founder saw
+        // the "×" low in its circle on the phone (2026-09-12).
+        assertTrue("the controls must draw their symbols", overlay.contains(") = ActionGlyphView(service, glyph).apply {"))
+        assertTrue("no text glyph may remain", !overlay.contains("\"×\"") && !overlay.contains("\"✓\""))
+    }
+
+    @Test
+    fun theMarkIsTheBrandLipsOnTheSharedGeometry() {
+        // The launcher icon, the onboarding lips, the approved bubble mock and the macOS icon all draw
+        // the same 256-unit lips: nine bars per lip, 14 wide on a 24 step from 24, radius 5. The
+        // founder's first look at the Play build caught a different mark here (2026-09-12).
+        assertEquals(9, BrandMarkView.BAR_COUNT)
+        assertEquals(14f, BrandMarkView.BAR_WIDTH)
+        assertEquals(24f, BrandMarkView.BAR_LEFT)
+        assertEquals(24f, BrandMarkView.BAR_STEP)
+        assertEquals(5f, BrandMarkView.BAR_RADIUS)
+        // The same numbers as res/drawable/ic_launcher_monochrome.xml, whose path is stroked 14 wide
+        // with round caps, so each bar there runs from (y - 7) to (y + 7) around its segment.
+        val icon = File("src/main/res/drawable/ic_launcher_monochrome.xml").readText()
+        val segments = Regex("M(\\d+),([\\d.]+)V([\\d.]+)").findAll(icon).map { m ->
+            Triple(m.groupValues[1].toFloat(), m.groupValues[2].toFloat(), m.groupValues[3].toFloat())
+        }.toList()
+        assertEquals(18, segments.size)
+        segments.forEachIndexed { i, (x, y0, y1) ->
+            val row = if (i < 9) BrandMarkView.UPPER_TOP to BrandMarkView.UPPER_HEIGHT else BrandMarkView.LOWER_TOP to BrandMarkView.LOWER_HEIGHT
+            val index = i % 9
+            assertEquals("bar $i left", BrandMarkView.BAR_LEFT + index * BrandMarkView.BAR_STEP, x - 7f, 0.01f)
+            assertEquals("bar $i top", row.first[index], y0 - 7f, 0.01f)
+            assertEquals("bar $i height", row.second[index], (y1 + 7f) - (y0 - 7f), 0.01f)
+        }
+        // The lower lip runs the rainbow backwards and both lips end in violet.
+        assertEquals(listOf(7, 6, 5, 4, 3, 2, 1, 0, 8), BrandMarkView.LOWER_COLOUR.toList())
     }
 
     @Test
     fun thePillCarriesTheFounderSpecifiedOrder() {
         // From docs/mockups/android-v2/06-floating-recorder.png: mark, time, rail, state, cancel, accept.
         val body = overlay.substringAfter("private fun buildPill()").substringBefore("private fun pillBackground()")
-        val order = listOf("mark,", "timer,", "meter,", "stateLabel,", "\"×\"", "\"✓\"")
+        val order = listOf("mark,", "timer,", "meter,", "stateLabel,", "ActionGlyph.CROSS", "ActionGlyph.CHECK")
             .map { it to body.indexOf(it) }
         order.forEach { (piece, at) -> assertTrue("$piece is not in the pill", at >= 0) }
         assertEquals(
@@ -140,7 +172,7 @@ class RecorderBrandTest {
     fun onlyTheRailMovesWithTheVoice() {
         // Two things moving with the voice read as two meters, and the user cannot then tell which one
         // is the signal.
-        assertTrue("the rail must take a level", meter.contains("fun setLevel(value: Float)"))
-        assertTrue("the mark must not", !mark.contains("fun setLevel"))
+        assertTrue("the rail must take samples", meter.contains("fun pushSample(level: Float)"))
+        assertTrue("the mark must not", !mark.contains("fun pushSample") && !mark.contains("fun setLevel"))
     }
 }

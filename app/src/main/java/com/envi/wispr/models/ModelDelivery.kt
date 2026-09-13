@@ -10,19 +10,20 @@ import java.security.MessageDigest
 
 enum class DownloadState { DOWNLOADING, PAUSED, VERIFYING, READY, FAILED, CANCELLED, REPAIR_NEEDED }
 data class DownloadStatus(val state: DownloadState, val bytes: Long = 0, val total: Long = 0, val message: String? = null)
-private val MODEL_DELIVERY_PROCESS_LOCK = Any()
+private val MODEL_CONTROL_LOCK = Any()
+private val MODEL_OPERATION_LOCKS = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
 enum class ModelDeliveryControlState { ACTIVE, PAUSED, CANCELLED }
 
 /** Small app-private control record shared by the UI, WorkManager, and the downloader. */
 class ModelDeliveryControlStore(private val root: File) {
-    fun read(model: ModelDescriptor): ModelDeliveryControlState = synchronized(MODEL_DELIVERY_PROCESS_LOCK) {
+    fun read(model: ModelDescriptor): ModelDeliveryControlState = synchronized(MODEL_CONTROL_LOCK) {
         runCatching { File(directory(), "${model.id}.state").readText().trim() }
             .mapCatching { ModelDeliveryControlState.valueOf(it) }
             .getOrDefault(ModelDeliveryControlState.ACTIVE)
     }
 
-    fun write(model: ModelDescriptor, state: ModelDeliveryControlState) = synchronized(MODEL_DELIVERY_PROCESS_LOCK) {
+    fun write(model: ModelDescriptor, state: ModelDeliveryControlState) = synchronized(MODEL_CONTROL_LOCK) {
         directory().mkdirs()
         val target = File(directory(), "${model.id}.state")
         val temporary = File(directory(), ".${model.id}.state.tmp")
@@ -33,7 +34,7 @@ class ModelDeliveryControlStore(private val root: File) {
         }
     }
 
-    fun clear(model: ModelDescriptor) = synchronized(MODEL_DELIVERY_PROCESS_LOCK) {
+    fun clear(model: ModelDescriptor) = synchronized(MODEL_CONTROL_LOCK) {
         File(directory(), "${model.id}.state").delete()
     }
 
@@ -50,14 +51,28 @@ data class TransportResponse(val stream: InputStream, val resumed: Boolean)
 fun interface ModelTransport { fun open(url: String, offset: Long): TransportResponse }
 
 class ModelDeliveryStore(private val root: File) {
-    // WorkManager may create separate worker instances in the same process. Use one
-    // process-wide lock so remove/repair cannot overlap a download from another instance.
-    private val lock = MODEL_DELIVERY_PROCESS_LOCK
+    // Mutations of the same canonical model directory serialize across store instances.
+    // Control records have a separate short lock so Pause can interrupt a blocked transfer.
+    private fun lock(model: ModelDescriptor): Any = MODEL_OPERATION_LOCKS.computeIfAbsent(
+        File(root.canonicalFile, model.id).path,
+    ) { Any() }
 
     fun finalDirectory(model: ModelDescriptor) = File(root, model.id)
 
+    /** Saved transfer progress only. Never a readiness or integrity claim; no mutation lock needed. */
+    fun stagedBytes(model: ModelDescriptor): Long = runCatching {
+        if (!model.isAvailable) return@runCatching 0L
+        val staging = File(root, ".${model.id}.download")
+        if (File(staging, STAGING_REVISION).readText() != model.pinnedRevision) return@runCatching 0L
+        model.files.sumOf { entry ->
+            val verifiedPart = File(staging, entry.name)
+            val partial = File(staging, entry.name + ".part")
+            (if (verifiedPart.isFile) verifiedPart.length() else partial.length()).coerceIn(0L, entry.expectedBytes)
+        }
+    }.getOrDefault(0L)
+
     /** Full receipt verification. Call from a worker or service executor, never the UI thread. */
-    fun isVerified(model: ModelDescriptor): Boolean = synchronized(lock) {
+    fun isVerified(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
         val receipt = File(finalDirectory(model), RECEIPT)
         val names = finalDirectory(model).listFiles()?.map { it.name }?.toSet()
         model.isAvailable && !Files.isSymbolicLink(finalDirectory(model).toPath()) && names == (model.files.map { it.name }.toSet() + RECEIPT) && receipt.isFile && receipt.readText() == receiptText(model) && model.files.all { entry ->
@@ -67,14 +82,14 @@ class ModelDeliveryStore(private val root: File) {
     }
 
     /** True when an admitted model belongs to an older pinned manifest revision. */
-    fun needsUpdate(model: ModelDescriptor): Boolean = synchronized(lock) {
+    fun needsUpdate(model: ModelDescriptor): Boolean = runCatching {
         val final = finalDirectory(model)
         val receipt = File(final, RECEIPT)
         final.isDirectory && !Files.isSymbolicLink(final.toPath()) && receipt.isFile &&
             runCatching { receipt.readText() != receiptText(model) }.getOrDefault(false)
-    }
+    }.getOrDefault(false)
 
-    fun download(model: ModelDescriptor, transport: ModelTransport, control: DownloadControl = object : DownloadControl {}, now: () -> Long = { System.currentTimeMillis() }, onProgress: (DownloadStatus) -> Unit = {}): DownloadStatus = synchronized(lock) {
+    fun download(model: ModelDescriptor, transport: ModelTransport, control: DownloadControl = object : DownloadControl {}, now: () -> Long = { System.currentTimeMillis() }, onProgress: (DownloadStatus) -> Unit = {}): DownloadStatus = synchronized(lock(model)) {
         if (!model.isAvailable) return DownloadStatus(DownloadState.FAILED, message = "model manifest is unavailable")
         root.mkdirs()
         val staging = File(root, ".${model.id}.download")
@@ -176,18 +191,18 @@ class ModelDeliveryStore(private val root: File) {
         }
     }
 
-    fun remove(model: ModelDescriptor): Boolean = synchronized(lock) {
+    fun remove(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
         val removedFinal = !finalDirectory(model).exists() || finalDirectory(model).deleteRecursively()
         removedFinal && cleanupArtifacts(model)
     }
-    fun repair(model: ModelDescriptor): Boolean = synchronized(lock) {
+    fun repair(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
         val removed = remove(model)
         val cleaned = cleanupArtifacts(model)
         removed && cleaned
     }
 
     /** Verifies and copies an existing legacy model without modifying its source. */
-    fun adoptExisting(model: ModelDescriptor, legacyDirectory: File, now: () -> Long = { System.currentTimeMillis() }): DownloadStatus = synchronized(lock) {
+    fun adoptExisting(model: ModelDescriptor, legacyDirectory: File, now: () -> Long = { System.currentTimeMillis() }): DownloadStatus = synchronized(lock(model)) {
         if (!model.isAvailable || !legacyDirectory.isDirectory || Files.isSymbolicLink(legacyDirectory.toPath())) {
             return DownloadStatus(DownloadState.REPAIR_NEEDED, message = "legacy model is unavailable")
         }

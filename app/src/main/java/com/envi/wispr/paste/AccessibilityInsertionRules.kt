@@ -181,6 +181,10 @@ internal object AccessibilityInsertionRules {
      */
     fun judgeWindow(verification: Verification, after: SurroundingWindow): Judgement? {
         val before = verification.beforeWindow ?: return null
+        // A selection is replaced by the commit, and the windows cannot tell "replaced with the same
+        // words" from "nothing happened and the selection collapsed": the node judge, which holds
+        // the range, decides those (Codex code review round 1 of chunk 2).
+        if (before.selected.isNotEmpty() || after.selected.isNotEmpty()) return null
         val inserted = foldSpaces(verification.insertedText)
         if (inserted.isEmpty()) return null
         val pre = foldSpaces(before.before)
@@ -192,8 +196,11 @@ internal object AccessibilityInsertionRules {
             return if (after.atDocumentStart) Judgement.MISS else null
         }
         if (!actual.endsWith(expected)) return Judgement.MISS
-        val shared = minOf(before.after.length, after.after.length)
-        if (foldSpaces(before.after.take(shared)) != foldSpaces(after.after.take(shared))) return Judgement.MISS
+        // The text after the caret must be the same read as before: both windows asked for the same
+        // length, so a different length is evidence the windows cannot weigh (a lost or grown tail,
+        // or an editor that truncated one read), never a prefix to be waved through.
+        if (before.after.length != after.after.length) return null
+        if (foldSpaces(before.after) != foldSpaces(after.after)) return Judgement.MISS
         return Judgement.VERIFIED
     }
 

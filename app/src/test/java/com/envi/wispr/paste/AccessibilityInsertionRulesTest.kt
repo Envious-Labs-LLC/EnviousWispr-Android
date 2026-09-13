@@ -341,8 +341,27 @@ class AccessibilityInsertionRulesTest {
         )
         assertEquals(
             Judgement.MISS,
-            AccessibilityInsertionRules.judgeWindow(record, window("Hi team, and I will", after = "Thanks")),
+            AccessibilityInsertionRules.judgeWindow(record, window("Hi team, and I will", after = "\n\nThank!")),
         )
+    }
+
+    /** A tail that shrank or grew is not the windows' to weigh: the node judge, which sees the field, decides. */
+    @Test
+    fun aLostOrGrownTailHandsOverToTheNodeJudge() {
+        val record = commitRecord(window("Hello ", after = "TAIL"), inserted = "world")
+        assertNull(AccessibilityInsertionRules.judgeWindow(record, window("Hello world", after = "")))
+        assertNull(AccessibilityInsertionRules.judgeWindow(record, window("Hello world", after = "TAIL more")))
+    }
+
+    /** Replacing a selection with the same words is not observable by the windows; the node judge holds the range. */
+    @Test
+    fun aSelectionHandsOverToTheNodeJudge() {
+        val before = SurroundingWindow(before = "Hello ", selected = "world", after = "", atDocumentStart = true)
+        val record = commitRecord(before, inserted = "world")
+        assertNull(AccessibilityInsertionRules.judgeWindow(record, window("Hello world")))
+        val collapsed = commitRecord(window("Hello "), inserted = "world")
+        val stillSelected = SurroundingWindow(before = "Hello world", selected = "x", after = "", atDocumentStart = true)
+        assertNull(AccessibilityInsertionRules.judgeWindow(collapsed, stillSelected))
     }
 
     /** Nothing landed: the whole field is visible (document start) and it does not hold the words. */

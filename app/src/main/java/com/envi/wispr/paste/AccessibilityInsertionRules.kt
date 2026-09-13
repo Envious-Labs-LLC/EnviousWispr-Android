@@ -143,9 +143,33 @@ internal object AccessibilityInsertionRules {
         }
         val lowest = maxOf(0, before.length - suffix)
         val highest = minOf(prefix, before.length)
-        for (index in lowest..highest) {
-            if (after.regionMatches(index, inserted, 0, inserted.length)) return true
+        // The candidate indices are a contiguous window, so this is one substring search inside
+        // `after[lowest, highest + inserted.length)`, done with a failure table so a repetitive draft
+        // ("aaaa…" with an insertion that differs only at its last character) costs the window plus the
+        // payload, never their product. A naive scan re-compared most of the payload at every index.
+        return firstOccurrence(after, inserted, lowest, highest + inserted.length) in lowest..highest
+    }
+
+    /**
+     * Knuth-Morris-Pratt: the first index in `[from, to)` of [text] at which [pattern] starts, or -1.
+     * Linear in the window plus the pattern, whatever the text looks like.
+     */
+    private fun firstOccurrence(text: String, pattern: String, from: Int, to: Int): Int {
+        val end = minOf(to, text.length)
+        if (pattern.isEmpty() || end - from < pattern.length) return -1
+        val failure = IntArray(pattern.length)
+        var k = 0
+        for (i in 1 until pattern.length) {
+            while (k > 0 && pattern[i] != pattern[k]) k = failure[k - 1]
+            if (pattern[i] == pattern[k]) k++
+            failure[i] = k
         }
-        return false
+        var matched = 0
+        for (i in from until end) {
+            while (matched > 0 && text[i] != pattern[matched]) matched = failure[matched - 1]
+            if (text[i] == pattern[matched]) matched++
+            if (matched == pattern.length) return i - pattern.length + 1
+        }
+        return -1
     }
 }

@@ -207,6 +207,14 @@ class AccessibilityInsertionRulesTest {
                 before + "thanks, talk soon! ",
             ),
         )
+        // Codex code review round 5: a payload that differs from the draft only at its last character
+        // makes every candidate index a near-miss. Correct answers on both sides, in linear time.
+        val run = "a".repeat(20_000)
+        val nearMiss = "a".repeat(999) + "b"
+        assertFalse(AccessibilityInsertionRules.isSingleInsertion(run, EditorSelection(0, 0), nearMiss, "a".repeat(21_000)))
+        assertTrue(
+            AccessibilityInsertionRules.isSingleInsertion(run, EditorSelection(0, 0), nearMiss, "a".repeat(5_000) + nearMiss + "a".repeat(15_000)),
+        )
     }
 
     /** "Cannot see" is not "not there": a null read, a failed baseline, or a hint after the write. */

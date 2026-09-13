@@ -15,7 +15,7 @@ android {
         manifestPlaceholders["applicationLabel"] = "@string/app_name"
         minSdk = 30
         targetSdk = 36
-        versionCode = providers.gradleProperty("playVersionCode").orNull?.toInt() ?: 2
+        versionCode = providers.gradleProperty("playVersionCode").orNull?.toInt() ?: 3
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {

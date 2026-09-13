@@ -27,7 +27,7 @@ key. There is no Envious Labs server in that path. Envious Labs receives no dict
 
 ## Requirements
 
-- Android 11 (API 30) or later, 64-bit ARM.
+- Android 13 (API 33) or later, 64-bit ARM.
 - The on-device polish path currently targets Qualcomm Snapdragon hardware.
 - Developed and tested on a Samsung Galaxy S26 Ultra.
 

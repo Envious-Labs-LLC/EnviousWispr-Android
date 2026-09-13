@@ -17,6 +17,12 @@ object InsertionResults {
     /** The session owner wrote the words to the clipboard itself; the service was never reached. */
     const val CLIPBOARD = "clipboard"
 
+    /** The editor's own paste placed the words and the field showed them once (#141). */
+    const val PASTED = "pasted"
+
+    /** The accessibility input connection committed the words and the field showed them once (#141). */
+    const val COMMITTED = "committed"
+
     /** The service tried, gave up, and the clipboard took the words. */
     const val COPY_ONLY = "copy_only"
 

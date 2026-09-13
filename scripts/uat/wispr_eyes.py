@@ -1853,6 +1853,39 @@ def say_on_phone(sentence, volume=3, seconds=30, use_fixture=True):
         unstage_phone_speech()
 
 
+def is_emulator(serial=None):
+    """Whether the driven device is an Android emulator (its serial is what adb names them)."""
+    return (serial or device()).startswith("emulator-")
+
+
+def hear_on_emulator(serial=None):
+    """Turn the EMULATOR's host microphone on, and prove it, before any sentence is spoken at it.
+
+    Two switches gate emulator audio input and only one of them is on the command line.
+    `-allow-host-audio` PERMITS the host microphone; the emulator's own toggle for it (Extended controls
+    > Microphone > "Virtual microphone uses host audio input") defaults to OFF, is not persisted across
+    launches, and is flipped only from the emulator console: `adb emu avd hostmicon`. With the flag and
+    without the toggle every take records silence and the recogniser returns zero characters while the
+    rest of the pipeline reports success, which reads exactly like a product that heard nothing.
+
+    Measured 2026-09-13: seven silent takes across the built-in microphone, a loopback device, a cold
+    boot and the AVD.conf key, then 34 characters decoded on the first take after this one console
+    command (#141 chunk 1 UAT).
+
+    The console answers `OK` on success; anything else is a refusal and this function says so.
+    """
+    target = serial or device()
+    if not is_emulator(target):
+        raise Blocked(f"{target} is not an emulator; the phone hears through its own microphone")
+    code, out, err = _run([ADB, "-s", target, "emu", "avd", "hostmicon"], timeout=20)
+    if code != 0 or not out.strip().startswith("OK"):
+        raise Blocked(
+            f"could not turn the emulator's host microphone on: {out.strip() or err.strip() or 'no answer'}. "
+            "Was it started with -allow-host-audio? (scripts/enviouswispr-emulator.sh does both.)"
+        )
+    return "host microphone on"
+
+
 @_atomic_change
 def say(sentence, volume=25):
     """Speak a sentence out of the MAC's speakers, into the phone's microphone, quietly.
@@ -1866,9 +1899,15 @@ def say(sentence, volume=25):
 
     **The phone has to be near the Mac.** That is the one precondition this cannot check, so a report
     says it rather than assuming it.
+
+    **On an emulator this is the ONLY voice path** (`say_on_phone` plays through the guest speaker,
+    which no guest microphone hears), and the emulator's host microphone is switched on first
+    ([hear_on_emulator]); with `-allow-host-audio` alone the take records silence.
     """
     if not isinstance(volume, int) or isinstance(volume, bool) or not 0 <= volume <= 40:
         raise Blocked("volume must be a whole number from 0 to 40; this is a low-volume tool")
+    if is_emulator():
+        hear_on_emulator()
     previous = _checked(["osascript", "-e", "output volume of (get volume settings)"]).strip()
     if not previous.isdigit():
         raise Blocked("could not read the Mac's current volume, so it could not be safely lowered")

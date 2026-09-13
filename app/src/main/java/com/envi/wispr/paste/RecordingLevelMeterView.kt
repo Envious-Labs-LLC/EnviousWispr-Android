@@ -9,17 +9,25 @@ import android.graphics.Shader
 import android.view.View
 
 /**
- * The live level rail: a row of thin bars across the full brand rainbow, rising with the microphone.
+ * The live level rail: a row of thin bars across the full brand rainbow, showing the last couple of
+ * seconds of the microphone, oldest on the left and the newest sample on the right.
  *
  * It answers one question the timer cannot: is the app hearing me. A running clock proves only that a
  * take is open, so a dead microphone and a working one look the same until an empty transcript comes
  * back.
  *
+ * **It is a record, not a level.** Each bar is one poll of the microphone, and a new poll pushes the
+ * picture one bar to the left. The rail must be fed EVERY poll, including one whose level equals the
+ * last: silence is the one passage where consecutive samples are identical, and a rail fed only on
+ * change stops scrolling exactly when the user stops talking, leaving the shape of their last words
+ * frozen until they speak again (the macOS `RainbowLevelMeter` records the same trap).
+ *
  * **The rainbow belongs here specifically.** Recording is the one moment the product is doing the thing
  * it exists to do, and this is the only surface a user sees while not looking at the app
  * (`design-language.md` RULE: the-recorder-is-the-face-of-the-product). The gradient is painted ACROSS
- * the whole rail rather than per bar, so the colour of a bar depends on where it sits and not on how
- * loud it is: the rail must not look like a warning when someone speaks up.
+ * the whole rail rather than per bar, so a colour belongs to a position and never to a loudness: the
+ * rail must not look like a warning when someone speaks up, and colours crawling sideways would read
+ * as a progress bar rather than as our spectrum.
  *
  * Decorative to a screen reader. Everything it conveys is already announced by the timer and by the
  * recorder's own label, so it is hidden rather than read out several times a second.
@@ -31,7 +39,8 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         color = BrandPalette.METER_RESTING
     }
     private val bar = RectF()
-    private var level = 0f
+    private val history = LevelHistory(BAR_COUNT)
+    private var levels = FloatArray(BAR_COUNT)
 
     /**
      * The rainbow, rebuilt in LAYOUT and never while drawing.
@@ -46,11 +55,20 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
-    /** [value] is the already-scaled 0..1 level from `AudioLevelScale`, never a raw amplitude. */
-    fun setLevel(value: Float) {
-        val safe = if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
-        if (safe == level) return
-        level = safe
+    /**
+     * Record one poll of the microphone. [level] is the already-scaled 0..1 level from
+     * `AudioLevelScale`, never a raw amplitude. Called once per poll whether or not the level changed.
+     */
+    fun pushSample(level: Float) {
+        history.push(level)
+        levels = history.bars(BAR_COUNT)
+        invalidate()
+    }
+
+    /** A new take starts with an empty record, not the tail of the last one. */
+    fun reset() {
+        history.clear()
+        levels = FloatArray(BAR_COUNT)
         invalidate()
     }
 
@@ -85,43 +103,36 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         val barWidth = usableWidth / (BAR_COUNT + (BAR_COUNT - 1) * GAP_RATIO)
         val step = barWidth * (1f + GAP_RATIO)
         val radius = barWidth / 2f
-        // A resting bar is a dot rather than nothing: an empty rail and a hidden rail must not look
-        // alike, or a silent room reads as a broken recorder.
-        val restingHeight = barWidth.coerceAtMost(usableHeight)
         val centreY = paddingTop + usableHeight / 2f
 
         for (index in 0 until BAR_COUNT) {
-            val reach = (level * weightAt(index)).coerceIn(0f, 1f)
-            val barHeight = restingHeight + (usableHeight - restingHeight) * reach
+            val level = levels[index]
+            // Symmetric about the centre line rather than growing off a floor, so the rail's visual
+            // weight does not shift down the pill as the level drops. A silent sample is a short bar,
+            // never nothing: a rail that collapses between words reads as "it stopped hearing me".
+            val barHeight = usableHeight * fill(level)
             val left = paddingLeft + index * step
             bar.set(left, centreY - barHeight / 2f, left + barWidth, centreY + barHeight / 2f)
-            // A bar at rest is drawn in the resting grey, so silence reads as silence rather than as a
-            // rainbow sitting at its floor.
-            canvas.drawRoundRect(bar, radius, radius, if (reach > 0f) paint else restingPaint)
+            // A silent sample is drawn in the resting grey, so silence reads as silence rather than as
+            // a rainbow sitting at its floor.
+            canvas.drawRoundRect(bar, radius, radius, if (level > 0f) paint else restingPaint)
         }
     }
 
-    /**
-     * How tall the bar at [index] goes at a given level.
-     *
-     * A rail whose bars all move together reads as one block sliding up and down. The shape here is a
-     * shallow arch, tallest in the middle, which is what makes it read as a voice. It is a fixed
-     * function of position, so the rail does not shimmer at a steady level.
-     */
-    private fun weightAt(index: Int): Float {
-        val middle = (BAR_COUNT - 1) / 2f
-        val distance = kotlin.math.abs(index - middle) / middle
-        return MIN_WEIGHT + (1f - MIN_WEIGHT) * (1f - distance * distance)
-    }
-
-    private companion object {
-        /** Enough bars to read as a rail rather than as a handful of blocks. */
+    companion object {
+        /** About 2.2 seconds at the owner's 100 ms poll: long enough to read as a shape, short enough to be what you just said. */
         const val BAR_COUNT = 22
 
         /** A gap is this fraction of one bar's width. */
         const val GAP_RATIO = 0.55f
 
-        /** How much of the full height the outermost bars reach. */
-        const val MIN_WEIGHT = 0.35f
+        /** A silent sample's share of the rail's height. */
+        const val SILENCE_FRACTION = 0.14f
+
+        /** The additional share available at full level. */
+        const val PEAK_FRACTION = 0.86f
+
+        /** The share of the rail's height a sample at [level] occupies. Pure, so it can be asserted without a canvas. */
+        fun fill(level: Float): Float = SILENCE_FRACTION + PEAK_FRACTION * level.coerceIn(0f, 1f)
     }
 }

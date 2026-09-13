@@ -770,16 +770,11 @@ class PasteAccessibilityService : AccessibilityService() {
             val expected = pinnedTarget ?: return null
             return withPinnedNode(expected) { node ->
                 val hint = node.isShowingHintText
-                val baseline = AccessibilityInsertionRules.observableEditorText(node.text, hint)
+                val snapshot = snapshotOf(node)
                 TargetState(
                     read = AccessibilityInsertionRules.EditorRead(node.text?.toString(), hint),
-                    selection = AccessibilityInsertionRules.normalizedSelection(
-                        baseline,
-                        node.textSelectionStart,
-                        node.textSelectionEnd,
-                    ),
+                    selection = snapshot.selection,
                     sensitive = isSensitive(node),
-                    canPaste = node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_PASTE },
                 )
             }
         }
@@ -794,14 +789,25 @@ class PasteAccessibilityService : AccessibilityService() {
         override fun stageClipboard(payload: String): Boolean {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             if (pending.clipboardOverwritten) {
-                if (!ownsClipboard(clipboard.primaryClip, pending)) {
-                    Log.w(TAG, "Clipboard changed during retry; refusing to overwrite newer content")
-                    return false
+                // A staging on a later tick needs CONFIRMED ownership. A refused read is neither a
+                // licence to write over a clip the user may have copied since nor a licence to paste
+                // whatever is there now, so both the write and the paste that would follow are refused.
+                return when (clipboardOwner(clipboard.primaryClip, pending)) {
+                    ClipboardOwner.OTHER -> {
+                        Log.w(TAG, "Clipboard changed during retry; refusing to overwrite newer content")
+                        false
+                    }
+                    ClipboardOwner.UNREADABLE -> {
+                        Log.w(TAG, "Clipboard unreadable on retry; refusing to paste an unconfirmed clip")
+                        false
+                    }
+                    ClipboardOwner.OURS -> {
+                        if (pending.clipboardPayload != payload) {
+                            writeTranscriptClipboard(clipboard, pending, payload)
+                        }
+                        true
+                    }
                 }
-                if (pending.clipboardPayload != payload) {
-                    writeTranscriptClipboard(clipboard, pending, payload)
-                }
-                return true
             }
             if (pending.policy.restoreClipboardAfterPaste && !pending.previousClipboardCaptured) {
                 // Immediately before the first write, never earlier. A null read is "unreadable or
@@ -814,19 +820,38 @@ class PasteAccessibilityService : AccessibilityService() {
             return true
         }
 
-        override fun paste(): PasteOutcome {
+        override fun paste(
+            expectedBaseline: String?,
+            expectedSelection: AccessibilityInsertionRules.EditorSelection?,
+        ): PasteOutcome {
             val expected = pinnedTarget ?: return PasteOutcome.TARGET_GONE
-            // Two throw sites with different meanings: a throw while FINDING the node happened before
-            // any call the editor could act on, and is TARGET_GONE; a throw from performAction itself
-            // may have mutated the editor and is rethrown for the attempt to treat as written.
+            // Two throw sites with different meanings: a throw while FINDING or READING the node
+            // happened before any call the editor could act on, and is TARGET_GONE; a throw from
+            // performAction itself may have mutated the editor and is rethrown for the attempt to
+            // treat as written.
             var asked = false
             return try {
                 withPinnedNode(expected) { node ->
-                    asked = true
-                    if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
-                        PasteOutcome.ACCEPTED
-                    } else {
-                        PasteOutcome.REFUSED
+                    // The SAME derivation as locateTarget, so a null text compares equal to itself.
+                    val now = snapshotOf(node)
+                    when {
+                        // The payload was composed against a snapshot; a moved caret or a changed
+                        // draft since then means a smart seam repair may now be wrong, so nothing
+                        // is written and the attempt prepares again.
+                        now.baseline != expectedBaseline || now.selection != expectedSelection ->
+                            PasteOutcome.CONTEXT_CHANGED
+                        // Read AFTER staging: a standard EditText advertises ACTION_PASTE only
+                        // while the clipboard holds something.
+                        node.actionList.none { it.id == AccessibilityNodeInfo.ACTION_PASTE } ->
+                            PasteOutcome.REFUSED
+                        else -> {
+                            asked = true
+                            if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
+                                PasteOutcome.ACCEPTED
+                            } else {
+                                PasteOutcome.REFUSED
+                            }
+                        }
                     }
                 } ?: PasteOutcome.TARGET_GONE
             } catch (error: Exception) {
@@ -844,6 +869,15 @@ class PasteAccessibilityService : AccessibilityService() {
 
         override fun now(): Long = SystemClock.elapsedRealtime()
     }
+
+    /** One derivation for both the composing read and the write-boundary read. */
+    private fun snapshotOf(node: AccessibilityNodeInfo): AccessibilityInsertionRules.Snapshot =
+        AccessibilityInsertionRules.snapshot(
+            node.text,
+            node.isShowingHintText,
+            node.textSelectionStart,
+            node.textSelectionEnd,
+        )
 
     /**
      * Runs [block] against the pinned editor if it is present right now, else returns null.
@@ -942,9 +976,18 @@ class PasteAccessibilityService : AccessibilityService() {
     private fun restorePreviousClipboardIfSafe(pending: PendingInsertion) {
         if (!pending.clipboardOverwritten) return
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        if (!ownsClipboard(clipboard.primaryClip, pending)) {
-            Log.i(TAG, "Clipboard changed during insertion; preserving the newer clipboard")
-            return
+        // Restoring is the one direction where a guess can destroy something: an older clip written
+        // over one we cannot see. OURS is the only answer that permits it.
+        when (clipboardOwner(clipboard.primaryClip, pending)) {
+            ClipboardOwner.OURS -> Unit
+            ClipboardOwner.OTHER -> {
+                Log.i(TAG, "Clipboard changed during insertion; preserving the newer clipboard")
+                return
+            }
+            ClipboardOwner.UNREADABLE -> {
+                Log.i(TAG, "Clipboard unreadable after insertion; leaving the words on it")
+                return
+            }
         }
 
         // The clip being restored came from another app and can carry a URI this process has no
@@ -970,12 +1013,21 @@ class PasteAccessibilityService : AccessibilityService() {
     private fun keepTranscriptOnClipboard(pending: PendingInsertion): Boolean {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         if (pending.clipboardOverwritten) {
-            if (!ownsClipboard(clipboard.primaryClip, pending)) {
-                Log.w(TAG, "Newer clipboard content detected; leaving it unchanged")
-                return false
-            }
-            if (pending.clipboardPayload != pending.text) {
-                return runCatching { writeTranscriptClipboard(clipboard, pending, pending.text) }.isSuccess
+            when (clipboardOwner(clipboard.primaryClip, pending)) {
+                ClipboardOwner.OTHER -> {
+                    Log.w(TAG, "Newer clipboard content detected; leaving it unchanged")
+                    return false
+                }
+                // Our staging is the last write this service knows of, so the words ARE on the
+                // clipboard as far as anything can tell, and that is what the user is told. It is
+                // not permission to write again: a refused read never authorises a mutation.
+                ClipboardOwner.UNREADABLE -> {
+                    Log.i(TAG, "Clipboard unreadable; the staged words are counted as still there")
+                    return true
+                }
+                ClipboardOwner.OURS -> if (pending.clipboardPayload != pending.text) {
+                    return runCatching { writeTranscriptClipboard(clipboard, pending, pending.text) }.isSuccess
+                }
             }
         } else {
             if (!runCatching {
@@ -1000,12 +1052,25 @@ class PasteAccessibilityService : AccessibilityService() {
         pending.clipboardPayload = text
     }
 
-    private fun ownsClipboard(clip: ClipData?, pending: PendingInsertion): Boolean {
-        return clip.isOwnedBy(
+    /** What a clipboard read said about who wrote it last. Three answers, because the read can be refused. */
+    private enum class ClipboardOwner { OURS, OTHER, UNREADABLE }
+
+    /**
+     * Android 10+ refuses `primaryClip` to any app that is not in focus or the default keyboard, and
+     * this service is neither while the editor has focus (`ClipboardService: Denying clipboard access
+     * to com.envi.wispr`, measured on the S26 and the emulator 2026-09-13). A null read is therefore
+     * "cannot see", not "somebody else's clip", and each caller says what it does with that.
+     */
+    private fun clipboardOwner(clip: ClipData?, pending: PendingInsertion): ClipboardOwner = when {
+        clip == null -> ClipboardOwner.UNREADABLE
+        clip.isOwnedBy(
             token = pending.clipboardOwnershipToken,
             fingerprint = pending.ownedClipboardFingerprint,
-        )
+        ) -> ClipboardOwner.OURS
+        else -> ClipboardOwner.OTHER
     }
+
+
 
     private fun finalizeInsertion(pending: PendingInsertion, status: String, result: String, interrupted: Boolean = false) {
         if (pending.transcriptId <= 0L) return

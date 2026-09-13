@@ -14,7 +14,6 @@ internal data class TargetState(
     val read: EditorRead,
     val selection: EditorSelection?,
     val sensitive: Boolean,
-    val canPaste: Boolean,
 )
 
 /** What the editor's paste call reported, classified by the port that made it. */
@@ -27,6 +26,12 @@ internal enum class PasteOutcome {
 
     /** The pinned node was not there to be asked; `performAction` was never called. */
     TARGET_GONE,
+
+    /**
+     * The editor's text or selection no longer matches the snapshot the payload was composed against;
+     * `performAction` was never called. The attempt prepares again on its next tick.
+     */
+    CONTEXT_CHANGED,
 }
 
 /**
@@ -42,18 +47,22 @@ internal interface EditorWrites {
 
     /**
      * Puts [payload] on the clipboard for the paste route, taking the restore snapshot immediately
-     * before the first write. `false` means nothing is staged: the clipboard is no longer ours, or
-     * the write failed.
+     * before the first write. The FIRST staging of an attempt needs no read. Any later staging needs
+     * CONFIRMED ownership of the clipboard: a read Android refuses is not a licence to write over a
+     * clip the user may have copied since, and it is not a licence to paste an unknown clip either,
+     * so `false` there ends the attempt with the words kept wherever they are.
      */
     fun stageClipboard(payload: String): Boolean
 
     /**
-     * The editor's own paste on the pinned node. [PasteOutcome.TARGET_GONE] means the node could not be
-     * found or refreshed and `ACTION_PASTE` was never called: nothing was mutated, so the attempt may
-     * retry preparation. A throw from `performAction` itself escapes, because that call may have
-     * mutated the editor.
+     * The editor's own paste on the pinned node, at the write boundary and in ONE call: refresh the
+     * node, compare its text and selection with the snapshot the payload was composed against
+     * ([expectedBaseline], [expectedSelection]), confirm `ACTION_PASTE` is advertised, then paste.
+     * [PasteOutcome.TARGET_GONE] and [PasteOutcome.CONTEXT_CHANGED] mean `performAction` was never
+     * called and nothing was mutated. A throw from `performAction` itself escapes, because that call
+     * may have mutated the editor.
      */
-    fun paste(): PasteOutcome
+    fun paste(expectedBaseline: String?, expectedSelection: EditorSelection?): PasteOutcome
 
     /** `commitText` on the captured input connection. Void by contract. */
     fun commit(payload: String)
@@ -175,38 +184,27 @@ internal class InsertionAttempt(
 
     private fun writePaste(
         located: TargetState,
-        composedAgainst: String?,
+        baseline: String?,
         plan: InsertionText.SmartPayloadPlan,
     ): Tick {
+        // The first staging of the attempt writes without a read; a staging on a later tick (after
+        // TARGET_GONE or CONTEXT_CHANGED) needs confirmed ownership inside the port, and refuses
+        // otherwise, so ACTION_PASTE can never deliver a clip that is not ours.
         if (!stage(plan.text)) return Tick.StagingFailed
-        // Re-read immediately before the paste. Two reasons. A standard EditText advertises
-        // ACTION_PASTE only while the clipboard holds something, so a clipboard that was empty until
-        // the staging a moment ago reads as "cannot paste" on the FIRST read and "can paste" now. And
-        // if the user moved the caret while the smart payload was being prepared, fall back to their
-        // literal words, staged again, and snapshot once more so the record describes the field the
-        // paste actually lands in.
-        var before = locate() ?: return Tick.Waiting
-        if (!before.canPaste) return Tick.Rejected
-        var payload = plan.text
-        if (plan.changesDictatedText &&
-            (AccessibilityInsertionRules.baseline(before.read) != composedAgainst ||
-                before.selection != located.selection)
-        ) {
-            payload = text
-            if (!stage(payload)) return Tick.StagingFailed
-            before = locate() ?: return Tick.Waiting
-        }
         if (expired()) return Tick.Expired(false)
         val record = Verification(
             action = AccessibilityInsertionRules.Action.PASTE,
-            beforeText = AccessibilityInsertionRules.baseline(before.read),
-            beforeWasHint = before.read.isShowingHintText,
-            selection = before.selection,
-            insertedText = payload,
+            beforeText = baseline,
+            beforeWasHint = located.read.isShowingHintText,
+            selection = located.selection,
+            insertedText = plan.text,
         )
         verification = record
         val outcome = try {
-            editor.paste()
+            // One call at the write boundary: refresh, compare with the snapshot the payload was
+            // composed against, check the action is advertised, paste. A stale smart payload can
+            // never be pasted at a caret it was not composed for.
+            editor.paste(baseline, located.selection)
         } catch (error: Exception) {
             writeCount += 1
             returned = Returned.THREW
@@ -215,9 +213,9 @@ internal class InsertionAttempt(
         }
         noteOverrun()
         when (outcome) {
-            PasteOutcome.TARGET_GONE -> {
-                // The node vanished between the read a moment ago and the call; ACTION_PASTE was never
-                // invoked, so nothing was mutated and preparation may run again next tick.
+            PasteOutcome.TARGET_GONE, PasteOutcome.CONTEXT_CHANGED -> {
+                // ACTION_PASTE was never invoked: nothing was mutated, so the next tick prepares again
+                // from a fresh read. Its staging then needs confirmed clipboard ownership.
                 verification = null
                 return Tick.Waiting
             }

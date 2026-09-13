@@ -30,6 +30,10 @@ class InsertionAttemptTest {
         var pasteTargetGoneOnce: Boolean = false,
         var stageReturns: Boolean = true,
         var stageThrows: Boolean = false,
+        /** Android refuses the read-back: a second staging must then be refused, never guessed. */
+        var clipboardUnreadableAfterFirstStaging: Boolean = false,
+        /** The caret moves between the composing read and the paste call, once. */
+        var caretMovesBeforePasteOnce: Boolean = false,
         /** A standard EditText advertises paste only once the clipboard holds something. */
         var pasteAdvertisedOnlyAfterStaging: Boolean = false,
         var readThrowsAfterWrite: Boolean = false,
@@ -52,8 +56,7 @@ class InsertionAttemptTest {
                 throw IllegalStateException("node went away")
             }
             if (!present) return null
-            val advertisesPaste = if (pasteAdvertisedOnlyAfterStaging) staged != null else canPaste
-            return TargetState(EditorRead(field, hint), selection, sensitive, advertisesPaste)
+            return TargetState(EditorRead(field, hint), selection, sensitive)
         }
 
         override fun commitEligible(): Boolean = commitEligible
@@ -62,15 +65,24 @@ class InsertionAttemptTest {
             if (stageThrows) throw IllegalStateException("clipboard denied")
             stagings += 1
             if (!stageReturns) return false
+            if (staged != null && clipboardUnreadableAfterFirstStaging) return false
             staged = payload
             return true
         }
 
-        override fun paste(): PasteOutcome {
+        override fun paste(expectedBaseline: String?, expectedSelection: EditorSelection?): PasteOutcome {
             if (pasteTargetGoneOnce) {
                 pasteTargetGoneOnce = false
                 return PasteOutcome.TARGET_GONE
             }
+            if (caretMovesBeforePasteOnce) {
+                caretMovesBeforePasteOnce = false
+                selection = EditorSelection(3, 3)
+            }
+            val now = AccessibilityInsertionRules.snapshot(field, hint, selection?.start ?: -1, selection?.end ?: -1)
+            if (now.baseline != expectedBaseline || now.selection != expectedSelection) return PasteOutcome.CONTEXT_CHANGED
+            val advertisesPaste = if (pasteAdvertisedOnlyAfterStaging) staged != null else canPaste
+            if (!advertisesPaste) return PasteOutcome.REFUSED
             pastes += 1
             if (pasteThrows) throw IllegalStateException("binder died")
             if (!pasteReturns) return PasteOutcome.REFUSED
@@ -223,9 +235,9 @@ class InsertionAttemptTest {
         val editor = FakeEditor()
         // The paste itself is slow: the clock passes the deadline inside the write.
         val slow = object : EditorWrites by editor {
-            override fun paste(): PasteOutcome {
+            override fun paste(expectedBaseline: String?, expectedSelection: EditorSelection?): PasteOutcome {
                 editor.clock = 500L
-                return editor.paste()
+                return editor.paste(expectedBaseline, expectedSelection)
             }
         }
         val slowAttempt = InsertionAttempt(slow, "and I will", smartInsertion = false, deadlineMs = 100L)
@@ -289,6 +301,21 @@ class InsertionAttemptTest {
         assertEquals(1, editor.pastes)
     }
 
+    /**
+     * Round 9: an editor that exposes null text and no hint (some web views) still gets its paste;
+     * the boundary comparison is null-to-null, not null-to-empty. The fake derives its baseline the
+     * way the service does, through AccessibilityInsertionRules.snapshot.
+     */
+    @Test
+    fun nullTextEditorStillGetsThePaste() {
+        val editor = FakeEditor(field = null, selection = EditorSelection(0, 0), pasteMutates = false)
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(1, editor.pastes)
+        assertEquals(1, attempt.writeCount)
+        assertEquals(Judgement.UNREADABLE, attempt.lastJudgement)
+    }
+
     @Test
     fun pasteNotAdvertisedIsRejectedWithTheWordsStaged() {
         val editor = FakeEditor(canPaste = false)
@@ -307,29 +334,47 @@ class InsertionAttemptTest {
         assertEquals(1, attempt.writeCount)
     }
 
+    /**
+     * The caret moves between the composing read and the paste call. The write boundary sees it
+     * (CONTEXT_CHANGED), nothing is written, and the next tick composes against the new caret and
+     * stages the literal words, which then land. Round 8 of the code review: a stale smart payload
+     * can drop a seam word, so it is never pasted at a caret it was not composed for.
+     */
     @Test
-    fun smartPayloadIsReplacedByTheLiteralWordsWhenTheCaretMovedBeforeThePaste() {
-        // Smart insertion adds a leading space after "team,"; the user then moves the caret, so the
-        // literal words are staged instead and the record describes the field at paste time.
-        val editor = FakeEditor(field = "Hi team,", selection = EditorSelection(8, 8))
-        val moving = object : EditorWrites by editor {
-            var locates = 0
-            override fun locateTarget(): TargetState? {
-                locates += 1
-                if (locates == 2) editor.selection = EditorSelection(3, 3)
-                return editor.locateTarget()
-            }
-        }
-        val movingAttempt = InsertionAttempt(moving, "and I will", smartInsertion = true, deadlineMs = 2_500L)
-        movingAttempt.tick()
-        assertEquals("and I will", editor.staged)
+    fun caretMovedAtTheWriteBoundaryIsNeverPastedWithTheStalePayload() {
+        val editor = FakeEditor(field = "Hi team,", selection = EditorSelection(8, 8), caretMovesBeforePasteOnce = true)
+        val attempt = InsertionAttempt(editor, "and I will", smartInsertion = true, deadlineMs = 2_500L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(0, editor.pastes)
+        assertEquals(0, attempt.writeCount)
+        assertNull(attempt.verification)
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
+        assertEquals(1, editor.pastes)
+        // Composed for the NEW caret (3/3, after "Hi "): no leading space, a trailing one before "team,".
+        assertEquals("and I will ", editor.staged)
+        assertEquals("and I will ", attempt.verification?.insertedText)
         assertEquals(2, editor.stagings)
-        assertEquals("and I will", movingAttempt.verification?.insertedText)
+
         // Two-way control: with the caret still, the smart payload (a space on each side, because the
-        // caret sits after a comma at the end of the field) is what is staged.
+        // caret sits after a comma at the end of the field) is what is staged and pasted.
         val still = FakeEditor(field = "Hi team,", selection = EditorSelection(8, 8))
-        InsertionAttempt(still, "and I will", smartInsertion = true, deadlineMs = 2_500L).tick()
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), InsertionAttempt(still, "and I will", smartInsertion = true, deadlineMs = 2_500L).tick())
         assertEquals(" and I will ", still.staged)
         assertEquals(1, still.stagings)
+    }
+
+    /**
+     * Round 8 of the code review: a paste on a later tick delivers whatever the clipboard holds
+     * THEN, so it needs confirmed ownership. Android refuses the read-back on the founder's phone;
+     * the second staging is refused and nothing is pasted rather than an unknown clip.
+     */
+    @Test
+    fun retryWithAnUnreadableClipboardNeverPastes() {
+        val editor = FakeEditor(pasteTargetGoneOnce = true, clipboardUnreadableAfterFirstStaging = true)
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(InsertionAttempt.Tick.StagingFailed, attempt.tick())
+        assertEquals(0, editor.pastes)
+        assertEquals(0, attempt.writeCount)
     }
 }

@@ -770,14 +770,10 @@ class PasteAccessibilityService : AccessibilityService() {
             val expected = pinnedTarget ?: return null
             return withPinnedNode(expected) { node ->
                 val hint = node.isShowingHintText
-                val baseline = AccessibilityInsertionRules.observableEditorText(node.text, hint)
+                val snapshot = snapshotOf(node)
                 TargetState(
                     read = AccessibilityInsertionRules.EditorRead(node.text?.toString(), hint),
-                    selection = AccessibilityInsertionRules.normalizedSelection(
-                        baseline,
-                        node.textSelectionStart,
-                        node.textSelectionEnd,
-                    ),
+                    selection = snapshot.selection,
                     sensitive = isSensitive(node),
                 )
             }
@@ -836,18 +832,13 @@ class PasteAccessibilityService : AccessibilityService() {
             var asked = false
             return try {
                 withPinnedNode(expected) { node ->
-                    val hint = node.isShowingHintText
-                    val baseline = AccessibilityInsertionRules.observableEditorText(node.text, hint)
-                    val selection = AccessibilityInsertionRules.normalizedSelection(
-                        baseline,
-                        node.textSelectionStart,
-                        node.textSelectionEnd,
-                    )
+                    // The SAME derivation as locateTarget, so a null text compares equal to itself.
+                    val now = snapshotOf(node)
                     when {
                         // The payload was composed against a snapshot; a moved caret or a changed
                         // draft since then means a smart seam repair may now be wrong, so nothing
                         // is written and the attempt prepares again.
-                        baseline != expectedBaseline || selection != expectedSelection ->
+                        now.baseline != expectedBaseline || now.selection != expectedSelection ->
                             PasteOutcome.CONTEXT_CHANGED
                         // Read AFTER staging: a standard EditText advertises ACTION_PASTE only
                         // while the clipboard holds something.
@@ -878,6 +869,15 @@ class PasteAccessibilityService : AccessibilityService() {
 
         override fun now(): Long = SystemClock.elapsedRealtime()
     }
+
+    /** One derivation for both the composing read and the write-boundary read. */
+    private fun snapshotOf(node: AccessibilityNodeInfo): AccessibilityInsertionRules.Snapshot =
+        AccessibilityInsertionRules.snapshot(
+            node.text,
+            node.isShowingHintText,
+            node.textSelectionStart,
+            node.textSelectionEnd,
+        )
 
     /**
      * Runs [block] against the pinned editor if it is present right now, else returns null.

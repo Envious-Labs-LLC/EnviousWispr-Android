@@ -79,8 +79,8 @@ class InsertionAttemptTest {
                 caretMovesBeforePasteOnce = false
                 selection = EditorSelection(3, 3)
             }
-            val baseline = if (hint) "" else field
-            if (baseline != expectedBaseline || selection != expectedSelection) return PasteOutcome.CONTEXT_CHANGED
+            val now = AccessibilityInsertionRules.snapshot(field, hint, selection?.start ?: -1, selection?.end ?: -1)
+            if (now.baseline != expectedBaseline || now.selection != expectedSelection) return PasteOutcome.CONTEXT_CHANGED
             val advertisesPaste = if (pasteAdvertisedOnlyAfterStaging) staged != null else canPaste
             if (!advertisesPaste) return PasteOutcome.REFUSED
             pastes += 1
@@ -299,6 +299,21 @@ class InsertionAttemptTest {
         assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
         assertEquals(1, attempt.writeCount)
         assertEquals(1, editor.pastes)
+    }
+
+    /**
+     * Round 9: an editor that exposes null text and no hint (some web views) still gets its paste;
+     * the boundary comparison is null-to-null, not null-to-empty. The fake derives its baseline the
+     * way the service does, through AccessibilityInsertionRules.snapshot.
+     */
+    @Test
+    fun nullTextEditorStillGetsThePaste() {
+        val editor = FakeEditor(field = null, selection = EditorSelection(0, 0), pasteMutates = false)
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(1, editor.pastes)
+        assertEquals(1, attempt.writeCount)
+        assertEquals(Judgement.UNREADABLE, attempt.lastJudgement)
     }
 
     @Test

@@ -239,6 +239,24 @@ class AccessibilityInsertionRulesTest {
         )
     }
 
+    /**
+     * Codex code review round 9: the composing read and the write-boundary read must derive the
+     * baseline the same way, or a null text (no hint) compares as changed against itself and no
+     * paste ever happens in that editor. One function, so it cannot diverge.
+     */
+    @Test
+    fun nullTextSnapshotsEqualThemselvesAtTheWriteBoundary() {
+        val prepared = AccessibilityInsertionRules.snapshot(null, false, -1, -1)
+        val boundary = AccessibilityInsertionRules.snapshot(null, false, -1, -1)
+        assertEquals(prepared, boundary)
+        assertEquals(null, prepared.baseline)
+        assertEquals(EditorSelection(0, 0), prepared.selection)
+        val hint = AccessibilityInsertionRules.snapshot("Write something", true, 0, 0)
+        assertEquals("", hint.baseline)
+        val text = AccessibilityInsertionRules.snapshot("Hi team,", false, 8, 8)
+        assertEquals(AccessibilityInsertionRules.Snapshot("Hi team,", EditorSelection(8, 8)), text)
+    }
+
     /** A positively identified hint before the write IS an empty baseline. */
     @Test
     fun hintBeforeTheWriteIsAnEmptyBaseline() {

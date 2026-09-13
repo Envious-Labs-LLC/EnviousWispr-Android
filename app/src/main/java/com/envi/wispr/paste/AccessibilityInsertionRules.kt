@@ -68,6 +68,22 @@ internal object AccessibilityInsertionRules {
     /** The baseline a pre-write read establishes: `""` for a hint, the text otherwise, null when unread. */
     fun baseline(read: EditorRead): String? = if (read.isShowingHintText) "" else read.text
 
+    /**
+     * The ONE way a node read becomes the `(baseline, selection)` pair the paste route composes against
+     * and compares at the write boundary. Two call sites deriving it separately disagreed on a null
+     * text (one kept null, one folded it to `""`), which made every boundary check report a changed
+     * context on editors that expose no text (Codex code review round 9).
+     */
+    data class Snapshot(val baseline: String?, val selection: EditorSelection?)
+
+    fun snapshot(text: CharSequence?, isShowingHintText: Boolean, selectionStart: Int, selectionEnd: Int): Snapshot {
+        val read = EditorRead(text?.toString(), isShowingHintText)
+        return Snapshot(
+            baseline = baseline(read),
+            selection = normalizedSelection(observableEditorText(text, isShowingHintText), selectionStart, selectionEnd),
+        )
+    }
+
     /** Samsung reports -1/-1 for some focused empty editors. Treat that as the start. */
     fun normalizedSelection(text: String, selectionStart: Int, selectionEnd: Int): EditorSelection? {
         if (selectionStart < 0 || selectionEnd < 0) {

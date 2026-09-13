@@ -4,9 +4,11 @@ import com.envi.wispr.paste.AccessibilityInsertionRules.Action
 import com.envi.wispr.paste.AccessibilityInsertionRules.EditorRead
 import com.envi.wispr.paste.AccessibilityInsertionRules.EditorSelection
 import com.envi.wispr.paste.AccessibilityInsertionRules.Judgement
+import com.envi.wispr.paste.AccessibilityInsertionRules.SurroundingWindow
 import com.envi.wispr.paste.AccessibilityInsertionRules.Verification
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -306,5 +308,95 @@ class AccessibilityInsertionRulesTest {
             insertedText = "don't",
         )
         assertEquals(Judgement.MISS, AccessibilityInsertionRules.judge(record, EditorRead("don’t", false)))
+    }
+
+    // ---- The commit route's window judge: two reads off the same input connection. ----
+
+    private fun commitRecord(before: SurroundingWindow?, inserted: String = " and I will") = Verification(
+        action = Action.COMMIT,
+        beforeText = null,
+        beforeWasHint = false,
+        selection = null,
+        insertedText = inserted,
+        beforeWindow = before,
+    )
+
+    private fun window(before: String, after: String = "", documentStart: Boolean = true) =
+        SurroundingWindow(before = before, selected = "", after = after, atDocumentStart = documentStart)
+
+    /** The everyday case: a short draft, caret at the end, the words appear right before the caret. */
+    @Test
+    fun aCommitThatLandedAtTheCaretIsVerifiedByTheWindows() {
+        val record = commitRecord(window("Hi team,"))
+        assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judgeWindow(record, window("Hi team, and I will")))
+    }
+
+    /** Mid-draft: the text after the caret must be untouched. */
+    @Test
+    fun aCommitInTheMiddleKeepsTheTextAfterTheCaret() {
+        val record = commitRecord(window("Hi team,", after = "\n\nThanks"))
+        assertEquals(
+            Judgement.VERIFIED,
+            AccessibilityInsertionRules.judgeWindow(record, window("Hi team, and I will", after = "\n\nThanks")),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(record, window("Hi team, and I will", after = "Thanks")),
+        )
+    }
+
+    /** Nothing landed: the whole field is visible (document start) and it does not hold the words. */
+    @Test
+    fun anUnchangedFieldReadFromTheDocumentStartIsAMiss() {
+        val record = commitRecord(window("Hi team,"))
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judgeWindow(record, window("Hi team,")))
+    }
+
+    /** The editor cut the post-write read short of the payload and it is not the document start: the node decides. */
+    @Test
+    fun aTruncatedPostWriteReadHandsOverToTheNodeJudge() {
+        val long = "x".repeat(80)
+        val record = commitRecord(window(long, documentStart = false))
+        assertNull(AccessibilityInsertionRules.judgeWindow(record, window("will", documentStart = false)))
+    }
+
+    /** A pre-write read too short to show what the draft ended with cannot rule out a false match. */
+    @Test
+    fun aTruncatedPreWriteReadHandsOverToTheNodeJudge() {
+        val record = commitRecord(window("Hi team,", documentStart = false))
+        assertNull(AccessibilityInsertionRules.judgeWindow(record, window("Hi team, and I will", documentStart = false)))
+    }
+
+    /** A repetitive draft that already ended in the expected shape cannot be judged by shape. */
+    @Test
+    fun aDraftThatAlreadyEndedWithTheExpectedShapeHandsOverToTheNodeJudge() {
+        val periodic = "ab".repeat(60)
+        val record = commitRecord(window(periodic), inserted = "ab")
+        assertNull(AccessibilityInsertionRules.judgeWindow(record, window(periodic + "ab")))
+    }
+
+    /** The judge never runs against a windowless record (the paste route). */
+    @Test
+    fun aRecordWithoutAPreWriteWindowIsNotJudgedByWindows() {
+        assertNull(AccessibilityInsertionRules.judgeWindow(commitRecord(null), window("anything")))
+    }
+
+    /** Gmail's no-break seam space is folded on the window path too. */
+    @Test
+    fun gmailNoBreakSpaceIsFoldedInTheWindowJudge() {
+        val record = commitRecord(window("Hi team,"))
+        assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judgeWindow(record, window("Hi team,\u00a0and\u00a0I will")))
+    }
+
+    /** The one derivation from what getSurroundingText reports. */
+    @Test
+    fun aSurroundingTextReadBecomesAWindowOnlyWhenItsNumbersAgree() {
+        val window = AccessibilityInsertionRules.window("Hi team, |sel| rest", 9, 14, 40)
+        assertEquals(SurroundingWindow("Hi team, ", "|sel|", " rest", atDocumentStart = false), window)
+        assertNull(AccessibilityInsertionRules.window("abc", 4, 4, 0))
+        assertNull(AccessibilityInsertionRules.window("abc", 2, 1, 0))
+        assertNull(AccessibilityInsertionRules.window(null, 0, 0, 0))
+        assertTrue(checkNotNull(AccessibilityInsertionRules.window("", 0, 0, 0)).composable)
+        assertFalse(checkNotNull(AccessibilityInsertionRules.window("", 0, 0, 12)).composable)
     }
 }

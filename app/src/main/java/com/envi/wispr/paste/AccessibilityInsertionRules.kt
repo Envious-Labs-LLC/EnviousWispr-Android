@@ -46,7 +46,50 @@ internal object AccessibilityInsertionRules {
         val beforeWasHint: Boolean,
         val selection: EditorSelection?,
         val insertedText: String,
+        /** The commit route's pre-write read off the input connection; null on the paste route. */
+        val beforeWindow: SurroundingWindow? = null,
     )
+
+    /**
+     * How many characters the commit route reads on each side of the caret: the same window the smart
+     * composer inspects (`InsertionText` CONTEXT_LIMIT), so a seam it repairs was really seen.
+     */
+    const val WINDOW_CHARS = 64
+
+    /**
+     * A read off the input connection: the text before the caret, the selected text, the text after
+     * it, and whether [before] starts at the document start. The commit route composes against this
+     * and judges against a second one, so it never depends on the node exposing its text.
+     */
+    data class SurroundingWindow(
+        val before: String,
+        val selected: String,
+        val after: String,
+        val atDocumentStart: Boolean,
+    ) {
+        /**
+         * An empty left context that is NOT the document start is an editor that gave nothing back,
+         * and the smart composer would read it as a sentence start; such a window composes nothing.
+         */
+        val composable: Boolean
+            get() = atDocumentStart || before.isNotEmpty()
+    }
+
+    /**
+     * The one derivation of a [SurroundingWindow] from what `getSurroundingText` reports: the text
+     * with the selection inside it, the selection relative to that text, and the text's offset in the
+     * document. Inconsistent numbers give null, which the caller treats as "no window".
+     */
+    fun window(text: CharSequence?, selectionStart: Int, selectionEnd: Int, offset: Int): SurroundingWindow? {
+        val whole = text?.toString() ?: return null
+        if (selectionStart !in 0..whole.length || selectionEnd !in selectionStart..whole.length) return null
+        return SurroundingWindow(
+            before = whole.substring(0, selectionStart),
+            selected = whole.substring(selectionStart, selectionEnd),
+            after = whole.substring(selectionEnd),
+            atDocumentStart = offset == 0,
+        )
+    }
 
     fun isExpectedWindow(
         packageName: String?,
@@ -121,6 +164,37 @@ internal object AccessibilityInsertionRules {
         } else {
             Judgement.MISS
         }
+    }
+
+    /**
+     * Judges a commit against a second read off the same input connection, or answers null when the
+     * windows cannot decide and the node judge must.
+     *
+     * The write landed when the text immediately before the caret went from `tail` to
+     * `tail + inserted` and the text immediately after the caret is unchanged, where `tail` is the
+     * last [WINDOW_CHARS] characters the pre-write read held before the caret. Three cases hand over
+     * to the node judge: a pre-write read too short to show whether the draft ALREADY ended with
+     * `tail + inserted`; a draft that did (a repetitive one, where a landed write and no write look
+     * the same); and a post-write read too short to hold `tail + inserted` that is not the document
+     * start (the editor truncated it). A too-short post-write read that IS the document start is a
+     * complete read of a field that does not hold the words: MISS.
+     */
+    fun judgeWindow(verification: Verification, after: SurroundingWindow): Judgement? {
+        val before = verification.beforeWindow ?: return null
+        val inserted = foldSpaces(verification.insertedText)
+        if (inserted.isEmpty()) return null
+        val pre = foldSpaces(before.before)
+        val expected = pre.takeLast(WINDOW_CHARS) + inserted
+        if (!before.atDocumentStart && pre.length < expected.length) return null
+        if (pre.endsWith(expected)) return null
+        val actual = foldSpaces(after.before)
+        if (actual.length < expected.length) {
+            return if (after.atDocumentStart) Judgement.MISS else null
+        }
+        if (!actual.endsWith(expected)) return Judgement.MISS
+        val shared = minOf(before.after.length, after.after.length)
+        if (foldSpaces(before.after.take(shared)) != foldSpaces(after.after.take(shared))) return Judgement.MISS
+        return Judgement.VERIFIED
     }
 
     /**

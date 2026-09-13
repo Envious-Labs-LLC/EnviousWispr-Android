@@ -40,11 +40,24 @@ class InsertionAttemptTest {
         var locateThrowsOnce: Boolean = false,
         var commitEligible: Boolean = false,
         var commitThrows: Boolean = false,
+        /** The pipe answers its surrounding-text read; false is an editor like Chromium that gives null. */
+        var surroundingAvailable: Boolean = true,
+        /** Input finishes on the pipe between the eligibility check and the commit call, once. */
+        var sessionChangesBeforeCommitOnce: Boolean = false,
+        /** The editor applies the commit only when [applyLateCommit] is called, as a slow editor would. */
+        var commitAppliesLate: Boolean = false,
         var readCostMs: Long = 0L,
     ) : EditorWrites {
         var clock: Long = 0L
         var pastes = 0
         var commits = 0
+        var surroundingReads = 0
+        private var lateCommit: String? = null
+
+        fun applyLateCommit() {
+            lateCommit?.let(::mutate)
+            lateCommit = null
+        }
         var stagings = 0
         var staged: String? = null
         var written = false
@@ -60,6 +73,19 @@ class InsertionAttemptTest {
         }
 
         override fun commitEligible(): Boolean = commitEligible
+
+        /**
+         * The pipe reads the editor's TRUE caret, which in this fake is the end of the field even
+         * while the node reports 0/0 (Gmail's shape).
+         */
+        override fun readSurrounding(beforeChars: Int, afterChars: Int): AccessibilityInsertionRules.SurroundingWindow? {
+            clock += readCostMs
+            surroundingReads += 1
+            if (!surroundingAvailable || !present) return null
+            val whole = field ?: ""
+            val before = whole.takeLast(beforeChars)
+            return AccessibilityInsertionRules.window(before, before.length, before.length, whole.length - before.length)
+        }
 
         override fun stageClipboard(payload: String): Boolean {
             if (stageThrows) throw IllegalStateException("clipboard denied")
@@ -90,10 +116,16 @@ class InsertionAttemptTest {
             return PasteOutcome.ACCEPTED
         }
 
-        override fun commit(payload: String) {
+        override fun commit(payload: String): CommitOutcome {
+            if (sessionChangesBeforeCommitOnce) {
+                sessionChangesBeforeCommitOnce = false
+                commitEligible = false
+                return CommitOutcome.SESSION_CHANGED
+            }
             commits += 1
             if (commitThrows) throw IllegalStateException("connection gone")
-            mutate(payload)
+            if (commitAppliesLate) lateCommit = payload else mutate(payload)
+            return CommitOutcome.SENT
         }
 
         private fun mutate(payload: String) {
@@ -207,6 +239,57 @@ class InsertionAttemptTest {
         val attempt = attempt(editor)
         assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), attempt.tick())
         assertEquals(InsertionAttempt.Returned.VOID, attempt.returned)
+        assertEquals(InsertionAttempt.Evidence.SURROUNDING, attempt.evidence)
+        assertEquals(0, editor.stagings)
+        assertEquals(1, attempt.writeCount)
+        assertEquals("Hi team, and I will", editor.field)
+    }
+
+    @Test
+    fun commitComposesTheSeamFromThePipeNotFromTheNodeCaret() {
+        // The node says 0/0 (Gmail); the pipe says the caret is at the end after "Hi team, ". The
+        // smart seam is repaired against the pipe's read: no leading space, one trailing space.
+        val editor = FakeEditor(commitEligible = true)
+        val attempt = InsertionAttempt(editor, "and I will", smartInsertion = true, deadlineMs = 2_500L)
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), attempt.tick())
+        assertEquals("Hi team, and I will ", editor.field)
+        assertEquals(2, editor.surroundingReads)
+    }
+
+    @Test
+    fun commitWithoutASurroundingReadIsJudgedByTheNode() {
+        val editor = FakeEditor(commitEligible = true, surroundingAvailable = false)
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), attempt.tick())
+        assertEquals(InsertionAttempt.Evidence.NODE, attempt.evidence)
+        assertEquals(1, editor.commits)
+    }
+
+    @Test
+    fun aSessionThatMovesBeforeTheCommitWritesNothingAndTheNextTickPastes() {
+        val editor = FakeEditor(commitEligible = true, sessionChangesBeforeCommitOnce = true)
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(0, attempt.writeCount)
+        assertEquals(null, attempt.verification)
+        assertEquals(0, editor.commits)
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
+        assertEquals(0, editor.commits)
+        assertEquals(1, editor.pastes)
+        assertEquals(1, attempt.writeCount)
+    }
+
+    @Test
+    fun aCommitTheEditorHasNotAppliedYetKeepsJudgingWithoutASecondWrite() {
+        val editor = FakeEditor(commitEligible = true, commitAppliesLate = true)
+        val attempt = attempt(editor, deadline = 500L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(AccessibilityInsertionRules.Judgement.MISS, attempt.lastJudgement)
+        assertEquals(1, editor.commits)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        editor.applyLateCommit()
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), attempt.tick())
+        assertEquals(1, editor.commits)
         assertEquals(0, editor.stagings)
         assertEquals(1, attempt.writeCount)
     }

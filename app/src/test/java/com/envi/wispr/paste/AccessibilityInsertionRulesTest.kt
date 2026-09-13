@@ -353,6 +353,17 @@ class AccessibilityInsertionRulesTest {
         assertNull(AccessibilityInsertionRules.judgeWindow(record, window("Hello world", after = "TAIL more")))
     }
 
+    /** The real S26 Gmail shape: the one space after the caret at the end of the draft is absorbed by the commit. */
+    @Test
+    fun gmailAbsorbingTheTrailingSpaceAtTheEndOfTheDraftIsStillVerified() {
+        val record = commitRecord(window("Hi team,", after = " "))
+        assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judgeWindow(record, window("Hi team, and I will", after = "")))
+        // Only whitespace, and only at the end of a COMPLETE tail: a word is content, a long tail is unknown.
+        assertNull(AccessibilityInsertionRules.judgeWindow(commitRecord(window("Hi team,", after = " x")), window("Hi team, and I will", after = "")))
+        val long = "y".repeat(AccessibilityInsertionRules.WINDOW_CHARS)
+        assertNull(AccessibilityInsertionRules.judgeWindow(commitRecord(window("Hi team,", after = long)), window("Hi team, and I will", after = long.dropLast(1))))
+    }
+
     /** Replacing a selection with the same words is not observable by the windows; the node judge holds the range. */
     @Test
     fun aSelectionHandsOverToTheNodeJudge() {

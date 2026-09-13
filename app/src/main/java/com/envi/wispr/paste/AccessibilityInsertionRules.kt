@@ -198,9 +198,18 @@ internal object AccessibilityInsertionRules {
         if (!actual.endsWith(expected)) return Judgement.MISS
         // The text after the caret must be the same read as before: both windows asked for the same
         // length, so a different length is evidence the windows cannot weigh (a lost or grown tail,
-        // or an editor that truncated one read), never a prefix to be waved through.
-        if (before.after.length != after.after.length) return null
-        if (foldSpaces(before.after) != foldSpaces(after.after)) return Judgement.MISS
+        // or an editor that truncated one read), never a prefix to be waved through. The one
+        // exception is whitespace at the END of a complete tail: Gmail on the S26 absorbs the single
+        // space that sat after the caret at the end of the draft (2026-09-13, build 110: `after=1`
+        // before the commit, `after=0` after it, 1 dictation in 5), and that space is not content.
+        val tailBefore = foldSpaces(before.after)
+        val tailAfter = foldSpaces(after.after)
+        when {
+            tailBefore.length == tailAfter.length -> if (tailBefore != tailAfter) return Judgement.MISS
+            tailBefore.length < WINDOW_CHARS && tailAfter.length < WINDOW_CHARS &&
+                tailBefore.trimEnd() == tailAfter.trimEnd() -> Unit
+            else -> return null
+        }
         return Judgement.VERIFIED
     }
 

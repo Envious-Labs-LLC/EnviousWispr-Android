@@ -222,8 +222,16 @@ internal class RecordingAccessibilityOverlay(
             snapshot.visible -> {
                 val bubbleBox = BubblePlacement.bubbleBox(position, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
                     ?: Box(bounds.usable.right - dp(MARGIN_DP) - dp(BUBBLE_DP), bounds.usable.top + dp(MARGIN_DP), bounds.usable.right - dp(MARGIN_DP), bounds.usable.top + dp(MARGIN_DP) + dp(BUBBLE_DP))
-                val pill = BubblePlacement.pillBox(position, bubbleBox, bounds, bounds.usable.width - 2 * dp(MARGIN_DP), dp(PILL_HEIGHT_DP), dp(MARGIN_DP))
-                showShape(pill = true, box = pill, width = pill.width, height = WindowManager.LayoutParams.WRAP_CONTENT)
+                // Measure the whole column, notice line included, so a warning that grows it is
+                // placed above the keyboard rather than hanging over the keys (Play-branch review).
+                val width = bounds.usable.width - 2 * dp(MARGIN_DP)
+                pillColumn.measure(
+                    View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                )
+                val height = pillColumn.measuredHeight.coerceAtLeast(dp(PILL_HEIGHT_DP))
+                val pill = BubblePlacement.pillBox(position, bubbleBox, bounds, width, height, dp(MARGIN_DP))
+                showShape(pill = true, box = pill, width = pill.width, height = pill.height)
             }
             dragBox != null -> {
                 val box = dragBox ?: return

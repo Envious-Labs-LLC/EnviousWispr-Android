@@ -307,7 +307,7 @@ internal class InsertionAttempt(
                 Judgement.VERIFIED -> null
                 else -> "judgement=${byWindow.name} evidence=SURROUNDING " +
                     "beforeLen=${window.before.length} afterLen=${window.after.length} " +
-                    "insertedLen=${record.insertedText.length} documentStart=${window.atDocumentStart}"
+                    "insertedLen=${record.insertedText.length} offset=${window.offset}"
             }
             return verdict(byWindow)
         }

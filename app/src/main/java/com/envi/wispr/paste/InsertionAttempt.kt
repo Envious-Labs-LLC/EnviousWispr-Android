@@ -162,11 +162,14 @@ internal class InsertionAttempt(
         plan: InsertionText.SmartPayloadPlan,
     ): Tick {
         if (!stage(plan.text)) return Tick.StagingFailed
-        if (!located.canPaste) return Tick.Rejected
-        // Re-read immediately before the paste. If the user moved the caret while the smart payload
-        // was being prepared, fall back to their literal words, staged again, and snapshot once more so
-        // the record describes the field the paste actually lands in.
+        // Re-read immediately before the paste. Two reasons. A standard EditText advertises
+        // ACTION_PASTE only while the clipboard holds something, so a clipboard that was empty until
+        // the staging a moment ago reads as "cannot paste" on the FIRST read and "can paste" now. And
+        // if the user moved the caret while the smart payload was being prepared, fall back to their
+        // literal words, staged again, and snapshot once more so the record describes the field the
+        // paste actually lands in.
         var before = locate() ?: return Tick.Waiting
+        if (!before.canPaste) return Tick.Rejected
         var payload = plan.text
         if (plan.changesDictatedText &&
             (AccessibilityInsertionRules.baseline(before.read) != composedAgainst ||

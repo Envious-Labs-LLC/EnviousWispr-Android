@@ -29,6 +29,8 @@ class InsertionAttemptTest {
         var pasteThrows: Boolean = false,
         var stageReturns: Boolean = true,
         var stageThrows: Boolean = false,
+        /** A standard EditText advertises paste only once the clipboard holds something. */
+        var pasteAdvertisedOnlyAfterStaging: Boolean = false,
         var readThrowsAfterWrite: Boolean = false,
         var locateThrowsOnce: Boolean = false,
         var commitEligible: Boolean = false,
@@ -49,7 +51,8 @@ class InsertionAttemptTest {
                 throw IllegalStateException("node went away")
             }
             if (!present) return null
-            return TargetState(EditorRead(field, hint), selection, sensitive, canPaste)
+            val advertisesPaste = if (pasteAdvertisedOnlyAfterStaging) staged != null else canPaste
+            return TargetState(EditorRead(field, hint), selection, sensitive, advertisesPaste)
         }
 
         override fun commitEligible(): Boolean = commitEligible
@@ -247,6 +250,20 @@ class InsertionAttemptTest {
         assertEquals(InsertionAttempt.Tick.Sensitive, attempt(editor).tick())
         assertEquals(0, editor.stagings)
         assertEquals(0, editor.pastes)
+    }
+
+    /**
+     * REPRODUCIBLE (Codex code review, round 1): a standard EditText reports ACTION_PASTE only while
+     * the clipboard holds something, so on an empty clipboard the first read says "cannot paste" and
+     * the read after staging says "can". Revert that turns this red: checking the pre-staging read.
+     */
+    @Test
+    fun pasteAdvertisedOnlyAfterStagingStillLands() {
+        val editor = FakeEditor(pasteAdvertisedOnlyAfterStaging = true)
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
+        assertEquals(1, editor.pastes)
+        assertEquals(1, attempt.writeCount)
     }
 
     @Test

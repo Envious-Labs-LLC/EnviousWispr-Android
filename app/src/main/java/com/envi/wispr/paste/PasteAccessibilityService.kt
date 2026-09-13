@@ -281,16 +281,37 @@ class PasteAccessibilityService : AccessibilityService() {
                     // Focus or a click went to something that is not an editor, in the same window or
                     // another. Whether the remembered editor still holds focus is a question, not a
                     // given: a hardware-keyboard tab to a button produces no window change to catch it
-                    // (Codex code review, round 2).
-                    revalidateBubbleField(overlay)
+                    // (Codex code review, round 2). A focus that lands unremembered can also be the
+                    // return to an app whose editor is already focused (no fresh focus event for the
+                    // editor itself): discover on focus so the bubble adopts it. A click stays cheap
+                    // (Codex review, BUG 1, 2026-09-13).
+                    revalidateBubbleField(overlay, discover = event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED)
                 }
             }
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isOwnOverlayWindow(event.windowId)) return
-                revalidateBubbleField(overlay, discover = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
+                revalidateBubbleField(overlay, discover = discoveryWarranted(event))
             }
             else -> Unit
         }
+    }
+
+    /**
+     * Whether this window event should run field discovery (one traversal). Always on a window state
+     * change; on a windows-changed only when it carries a focus, active, added or removed change, i.e.
+     * a genuine app switch or window replacement, never a cosmetic reshuffle. Returning to an app whose
+     * editor was already focused emits a windows-changed with the FOCUSED/ACTIVE bit but no state change,
+     * which the old state-change-only gate missed and left the bubble hidden (BUG 1, Codex 2026-09-13).
+     * ADDED/REMOVED are included because AOSP can expose a returning window with ADDED alone.
+     */
+    private fun discoveryWarranted(event: AccessibilityEvent): Boolean {
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return true
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return false
+        val relevant = AccessibilityEvent.WINDOWS_CHANGE_FOCUSED or
+            AccessibilityEvent.WINDOWS_CHANGE_ACTIVE or
+            AccessibilityEvent.WINDOWS_CHANGE_ADDED or
+            AccessibilityEvent.WINDOWS_CHANGE_REMOVED
+        return (event.windowChanges and relevant) != 0
     }
 
     /**
@@ -583,14 +604,18 @@ class PasteAccessibilityService : AccessibilityService() {
     private fun pinTarget(): DictationTargetPin {
         if (pendingInsertion != null) return DictationTargetPin.INSERTION_BUSY
         pinnedTarget?.let { existing ->
-            if (existing.node.refresh() && isSafeFocusedEditor(existing.node)) {
+            if (existing.node.refresh() && isSafeFocusedEditor(existing.node) && isInFocusedWindow(existing.windowId)) {
                 return DictationTargetPin.PINNED
             }
             clearPinnedTarget()
         }
 
+        // The window-focus check matches revalidateBubbleField: a remembered editor in the app the user
+        // just left keeps its own focus flag, so node focus alone would pin the departed field and the
+        // words would land there. Only reuse a target whose window still owns input focus; otherwise
+        // rediscover the one that does (Codex review, BUG 1, 2026-09-13).
         var target = lastTarget
-        if (target == null || !target.node.refresh() || !isSafeFocusedEditor(target.node)) {
+        if (target == null || !target.node.refresh() || !isSafeFocusedEditor(target.node) || !isInFocusedWindow(target.windowId)) {
             clearTarget()
             target = findFocusedEditableTarget()
             lastTarget = target
@@ -608,15 +633,23 @@ class PasteAccessibilityService : AccessibilityService() {
     }
 
     private fun findFocusedEditableTarget(): TargetSnapshot? {
+        // Only the window that currently holds input focus may supply the pin. An editor in a background
+        // window keeps its own focus flag, so an unfiltered search could rediscover a stale editor in an
+        // unfocused window and pin it, sending the words to the app the user just left (Codex review,
+        // BUG 1 fast-follow, 2026-09-13). The filter is applied DURING the search, not after, so a match
+        // in the focused window is never overlooked because an unfocused one answered first.
         val activeRoot = rootInActiveWindow
-        findFocusedEditableTarget(activeRoot)?.let { target ->
-            activeRoot?.recycle()
-            return target
+        activeRoot?.takeIf { isInFocusedWindow(it.windowId) }?.let { root ->
+            findFocusedEditableTarget(root)?.let { target ->
+                activeRoot.recycle()
+                return target
+            }
         }
         val activeWindowId = activeRoot?.windowId
         activeRoot?.recycle()
 
         for (window in windows) {
+            if (!window.isFocused) continue
             if (window.id == activeWindowId) continue
             val root = window.root ?: continue
             val target = findFocusedEditableTarget(root)

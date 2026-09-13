@@ -60,7 +60,9 @@ class LipsBubbleWiringTest {
     fun focusLeavingTheEditorForANonEditableControlIsRevalidated() {
         val branch = service.substringAfter("AccessibilityEvent.TYPE_VIEW_FOCUSED, AccessibilityEvent.TYPE_VIEW_CLICKED ->").substringBefore("AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED")
         assertTrue(branch.contains("if (remembered) {"))
-        assertTrue(branch.contains("revalidateBubbleField(overlay)"))
+        // An unremembered focus discovers (the return to an app whose editor is already focused emits no
+        // fresh focus event for the editor); a click does not, to stay cheap (BUG 1, 2026-09-13).
+        assertTrue(branch.contains("revalidateBubbleField(overlay, discover = event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED)"))
     }
 
     @Test
@@ -110,10 +112,18 @@ class LipsBubbleWiringTest {
 
     @Test
     fun aReconnectAndAWindowSwitchDiscoverAnAlreadyFocusedEditor() {
-        // Discovery is a traversal, so it is allowed only on connect and on a window state change,
-        // never on the frequent windows-changed stream.
+        // Discovery is a traversal, so it is allowed on connect, on a window state change, and on a
+        // windows-changed that carries a focus/active/added/removed change (a real app switch), never on
+        // the cosmetic windows-changed stream (BUG 1, 2026-09-13).
         assertTrue(service.contains("revalidateBubbleField(it, discover = true)"))
-        assertTrue(service.contains("discover = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED"))
+        assertTrue(service.contains("revalidateBubbleField(overlay, discover = discoveryWarranted(event))"))
+        val gate = service.substringAfter("private fun discoveryWarranted(").substringBefore("\n    /**")
+        assertTrue(gate.contains("event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return true"))
+        assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_FOCUSED"))
+        assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_ACTIVE"))
+        assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_ADDED"))
+        assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_REMOVED"))
+        assertTrue(gate.contains("event.windowChanges and relevant) != 0"))
         val body = service.substringAfter("private fun revalidateBubbleField(").substringBefore("\n    /**")
         assertTrue(body.contains("if (!stillFocused && discover)"))
         assertTrue(body.contains("findFocusedEditableTarget()"))
@@ -122,6 +132,27 @@ class LipsBubbleWiringTest {
         assertTrue(body.contains("isSafeFocusedEditor(target.node) && isInFocusedWindow(target.windowId)"))
         assertTrue(body.contains("findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) }"))
         assertTrue(service.contains("windows.any { it.id == windowId && it.isFocused }"))
+    }
+
+    @Test
+    fun discoverySearchesOnlyTheInputFocusedWindow() {
+        // findFocusedEditableTarget must not return an editor from an unfocused window, or pinTarget could
+        // rediscover the stale editor it just rejected and pin the departed app (Codex fast-follow,
+        // 2026-09-13). The filter is applied during the search: the active-root shortcut is gated on
+        // window focus, and the windows loop skips unfocused windows.
+        val body = service.substringAfter("private fun findFocusedEditableTarget(): TargetSnapshot?").substringBefore("private fun findFocusedEditableTarget(root")
+        assertTrue(body.contains("activeRoot?.takeIf { isInFocusedWindow(it.windowId) }"))
+        assertTrue(body.contains("if (!window.isFocused) continue"))
+    }
+
+    @Test
+    fun pinningReusesATargetOnlyWhileItsWindowStillHasFocus() {
+        // A remembered editor in the app the user just left keeps its own focus flag; node focus alone
+        // would pin the departed field and the words would land there. Both reuse checks in pinTarget
+        // require the target's window to still own input focus (Codex review, BUG 1, 2026-09-13).
+        val body = service.substringAfter("private fun pinTarget(").substringBefore("private fun findFocusedEditableTarget(")
+        assertTrue(body.contains("existing.node.refresh() && isSafeFocusedEditor(existing.node) && isInFocusedWindow(existing.windowId)"))
+        assertTrue(body.contains("!isSafeFocusedEditor(target.node) || !isInFocusedWindow(target.windowId)"))
     }
 
     @Test

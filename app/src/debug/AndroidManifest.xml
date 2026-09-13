@@ -7,5 +7,12 @@
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:theme="@style/Theme.EnviousWispr.Overlay" />
+        <receiver
+            android:name=".debug.DebugInsertReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.envi.wispr.debug.INSERT" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

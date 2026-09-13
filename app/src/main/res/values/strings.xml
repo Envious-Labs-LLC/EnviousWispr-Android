@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">EnviousWispr</string>
-    <string name="accessibility_service_description">EnviousWispr uses accessibility to paste transcribed text into the active text field.</string>
+    <string name="accessibility_service_description">EnviousWispr uses accessibility to detect the text field you are typing in, show its floating dictation button beside it, and paste transcribed text into that field after you start a dictation. It never operates the phone on its own, and nothing you type is sent to Envious Labs.</string>
 </resources>

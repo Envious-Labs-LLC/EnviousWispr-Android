@@ -779,7 +779,6 @@ class PasteAccessibilityService : AccessibilityService() {
                         node.textSelectionEnd,
                     ),
                     sensitive = isSensitive(node),
-                    canPaste = node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_PASTE },
                 )
             }
         }
@@ -791,26 +790,26 @@ class PasteAccessibilityService : AccessibilityService() {
             throw UnsupportedOperationException("The commit route is not wired yet (#141 chunk 2)")
         }
 
-        override fun stageClipboard(payload: String): String? {
+        override fun stageClipboard(payload: String): Boolean {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             if (pending.clipboardOverwritten) {
-                // A second write needs CONFIRMED ownership. A refused read is not a licence to write
-                // over a clip the user may have copied a moment ago; what is already staged stays,
-                // and the caller is told so it pastes and judges that text.
+                // A staging on a later tick needs CONFIRMED ownership. A refused read is neither a
+                // licence to write over a clip the user may have copied since nor a licence to paste
+                // whatever is there now, so both the write and the paste that would follow are refused.
                 return when (clipboardOwner(clipboard.primaryClip, pending)) {
                     ClipboardOwner.OTHER -> {
                         Log.w(TAG, "Clipboard changed during retry; refusing to overwrite newer content")
-                        null
+                        false
                     }
                     ClipboardOwner.UNREADABLE -> {
-                        Log.i(TAG, "Clipboard unreadable; keeping the payload already staged")
-                        pending.clipboardPayload
+                        Log.w(TAG, "Clipboard unreadable on retry; refusing to paste an unconfirmed clip")
+                        false
                     }
                     ClipboardOwner.OURS -> {
                         if (pending.clipboardPayload != payload) {
                             writeTranscriptClipboard(clipboard, pending, payload)
                         }
-                        payload
+                        true
                     }
                 }
             }
@@ -822,22 +821,46 @@ class PasteAccessibilityService : AccessibilityService() {
             }
             writeTranscriptClipboard(clipboard, pending, payload)
             pending.clipboardOverwritten = true
-            return payload
+            return true
         }
 
-        override fun paste(): PasteOutcome {
+        override fun paste(
+            expectedBaseline: String?,
+            expectedSelection: AccessibilityInsertionRules.EditorSelection?,
+        ): PasteOutcome {
             val expected = pinnedTarget ?: return PasteOutcome.TARGET_GONE
-            // Two throw sites with different meanings: a throw while FINDING the node happened before
-            // any call the editor could act on, and is TARGET_GONE; a throw from performAction itself
-            // may have mutated the editor and is rethrown for the attempt to treat as written.
+            // Two throw sites with different meanings: a throw while FINDING or READING the node
+            // happened before any call the editor could act on, and is TARGET_GONE; a throw from
+            // performAction itself may have mutated the editor and is rethrown for the attempt to
+            // treat as written.
             var asked = false
             return try {
                 withPinnedNode(expected) { node ->
-                    asked = true
-                    if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
-                        PasteOutcome.ACCEPTED
-                    } else {
-                        PasteOutcome.REFUSED
+                    val hint = node.isShowingHintText
+                    val baseline = AccessibilityInsertionRules.observableEditorText(node.text, hint)
+                    val selection = AccessibilityInsertionRules.normalizedSelection(
+                        baseline,
+                        node.textSelectionStart,
+                        node.textSelectionEnd,
+                    )
+                    when {
+                        // The payload was composed against a snapshot; a moved caret or a changed
+                        // draft since then means a smart seam repair may now be wrong, so nothing
+                        // is written and the attempt prepares again.
+                        baseline != expectedBaseline || selection != expectedSelection ->
+                            PasteOutcome.CONTEXT_CHANGED
+                        // Read AFTER staging: a standard EditText advertises ACTION_PASTE only
+                        // while the clipboard holds something.
+                        node.actionList.none { it.id == AccessibilityNodeInfo.ACTION_PASTE } ->
+                            PasteOutcome.REFUSED
+                        else -> {
+                            asked = true
+                            if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
+                                PasteOutcome.ACCEPTED
+                            } else {
+                                PasteOutcome.REFUSED
+                            }
+                        }
                     }
                 } ?: PasteOutcome.TARGET_GONE
             } catch (error: Exception) {

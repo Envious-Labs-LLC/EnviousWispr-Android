@@ -38,6 +38,26 @@ class PasteServiceProcessManifestTest {
         assertEquals(":asr", service.getAttribute("android:process"))
     }
 
+    /**
+     * DRIFT GUARD for the Android 13 floor (founder decision 2026-09-13, #141). The accessibility
+     * input-method route is unconditional in the service, so lowering `minSdk` below 33 would ship a
+     * class that does not load on the oldest phone, with no compile error.
+     */
+    @Test
+    fun theFloorIsAndroid13() {
+        val gradle = gradleFile().readText()
+        val minSdk = Regex("""minSdk\s*=\s*(\d+)""").find(gradle)?.groupValues?.get(1)?.toInt()
+        assertEquals("minSdk in ${gradleFile().absolutePath}", 33, minSdk)
+    }
+
+    private fun gradleFile(): File {
+        val candidates = listOf(File("build.gradle.kts"), File("app/build.gradle.kts"))
+        return candidates.firstOrNull { it.isFile && it.readText().contains("minSdk") }
+            ?: throw AssertionError(
+                "app/build.gradle.kts was not found from working directory ${File(".").absolutePath}",
+            )
+    }
+
     private fun serviceElement(name: String): Element {
         val manifest = manifestFile()
         val document = DocumentBuilderFactory.newInstance()

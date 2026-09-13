@@ -465,6 +465,10 @@ internal class RecordingAccessibilityOverlay(
             isClickable = true
             isFocusable = false
             addView(bubbleMark, FrameLayout.LayoutParams(MATCH, MATCH))
+            // The accessibility click action (a TalkBack double tap) arrives here, never through the
+            // touch listener below, which consumes every real touch and resolves taps itself. So the
+            // two routes cannot fire twice for one gesture (Codex review of the Play branch, round 3).
+            setOnClickListener { startDictation() }
             setOnTouchListener { _, event ->
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                     downRawX = event.rawX

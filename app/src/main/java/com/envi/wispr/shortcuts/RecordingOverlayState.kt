@@ -34,6 +34,15 @@ object RecordingOverlayState {
          * meaning silence, not a "not measured yet" sentinel; the recorder draws its resting bars for it.
          */
         val level: Float = 0f,
+        /**
+         * Counts every level poll while the pill is visible, whether or not [level] changed.
+         *
+         * The rail is a HISTORY: each poll pushes one bar. Silence is the one passage where consecutive
+         * levels are identical, so a rail woken only by a change in [level] stops scrolling exactly when
+         * the user stops talking, and the shape of their last words sits frozen until they speak again.
+         * The recorder reads this counter, never the level alone, to decide that a poll happened.
+         */
+        val levelTick: Int = 0,
     )
 
     fun interface Listener {
@@ -78,16 +87,18 @@ object RecordingOverlayState {
     }
 
     /**
-     * Publish a new microphone level, already scaled for display.
+     * Publish one poll of the microphone level, already scaled for display.
      *
-     * Quantised to [LEVEL_STEPS] before the comparison. The session owner ticks about ten times a second
-     * and smooths, so consecutive floats are almost never equal; without the quantisation every tick
-     * would wake the recorder to move a bar by a fraction of a pixel.
+     * Every poll wakes the recorder while the pill is visible, EQUAL levels included, because the rail
+     * records one bar per poll (see [Snapshot.levelTick]). That is about ten small redraws a second for
+     * exactly as long as a take is open and nothing at idle (`architecture-rules.md`
+     * RULE: no-idle-cost). Quantised to [LEVEL_STEPS] so the bar heights are a small fixed set rather
+     * than a fresh float every tick.
      */
     fun updateLevel(level: Float) {
         val safe = if (level.isFinite()) level.coerceIn(0f, 1f) else 0f
         val quantised = (safe * LEVEL_STEPS).roundToInt().toFloat() / LEVEL_STEPS
-        change { if (!it.visible || it.level == quantised) it else it.copy(level = quantised) }
+        change { if (!it.visible) it else it.copy(level = quantised, levelTick = it.levelTick + 1) }
     }
 
     fun updateElapsed(seconds: Int) {

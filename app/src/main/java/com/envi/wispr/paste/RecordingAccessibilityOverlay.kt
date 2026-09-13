@@ -2,7 +2,6 @@ package com.envi.wispr.paste
 
 import android.content.Intent
 import android.content.res.Configuration
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -97,6 +96,7 @@ internal class RecordingAccessibilityOverlay(
     private var snapshot = RecordingOverlayState.Snapshot()
     /** What the slow half of the recorder was last set to. -1 and null mean it is not shown. */
     private var lastElapsedSeconds = -1
+    private var lastLevelTick = -1
     private var lastNotice: String? = null
 
     /** The service's word on whether another app's editable field is focused, and which one. */
@@ -168,12 +168,19 @@ internal class RecordingAccessibilityOverlay(
         if (!snapshot.visible) {
             lastElapsedSeconds = -1
             lastNotice = null
+            lastLevelTick = -1
             if (previous.visible != snapshot.visible || previous.phase != snapshot.phase) render()
             return
         }
-        // The meter is the only thing that moves at speaking rate. It redraws itself and touches
-        // nothing else, so it is handled before the early return below.
-        meter.setLevel(snapshot.level)
+        // A new take starts with an empty record, not the tail of the last one.
+        if (!previous.visible) meter.reset()
+        // The rail is the only thing that moves at speaking rate. It redraws itself and touches
+        // nothing else, so it is handled before the early return below. One bar per POLL, read off
+        // the tick rather than the level, so a silent stretch scrolls out instead of freezing.
+        if (snapshot.levelTick != lastLevelTick) {
+            lastLevelTick = snapshot.levelTick
+            meter.pushSample(snapshot.level)
+        }
 
         // Everything past here changes about once a second at most, and one part of it reads the
         // window metrics, which is framework work on the main thread. Doing it on every level change
@@ -459,7 +466,8 @@ internal class RecordingAccessibilityOverlay(
 
     /** The idle lips: the brand mark in a 56 dp violet-outlined circle. */
     private fun buildBubble(): View {
-        bubbleMark.setPadding(dp(13), dp(16), dp(13), dp(16))
+        // The lips fill a 34 dp square inside the 56 dp bubble, as in the approved mock.
+        bubbleMark.setPadding(dp(11), dp(11), dp(11), dp(11))
         return FrameLayout(service).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
@@ -559,7 +567,7 @@ internal class RecordingAccessibilityOverlay(
 
         container.addView(
             mark,
-            LinearLayout.LayoutParams(dp(22), dp(20)).apply { marginEnd = dp(10) },
+            LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) },
         )
         container.addView(
             timer,
@@ -576,13 +584,13 @@ internal class RecordingAccessibilityOverlay(
             LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(10) },
         )
         container.addView(
-            actionButton("×", "Cancel", BrandPalette.NEUTRAL_CONTROL) {
+            actionButton(ActionGlyph.CROSS, "Cancel", BrandPalette.NEUTRAL_CONTROL) {
                 DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL)
             },
             LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(8) },
         )
         container.addView(
-            actionButton("✓", "Stop and use these words", BrandPalette.ACCENT) {
+            actionButton(ActionGlyph.CHECK, "Stop and use these words", BrandPalette.ACCENT) {
                 DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP)
             },
             LinearLayout.LayoutParams(dp(40), dp(40)),
@@ -646,17 +654,13 @@ internal class RecordingAccessibilityOverlay(
         setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)
     }
 
+    /** A round control whose symbol is drawn, not typed: a text glyph sits where its font puts it, not at the centre. */
     private fun actionButton(
-        glyph: String,
+        glyph: ActionGlyph,
         accessibilityLabel: String,
         color: Int,
         action: () -> Unit,
-    ) = TextView(service).apply {
-        text = glyph
-        typeface = brandTypeface(R.font.plus_jakarta_sans_semibold)
-        textSize = if (glyph == "×") 22f else 17f
-        setTextColor(Color.WHITE)
-        gravity = Gravity.CENTER
+    ) = ActionGlyphView(service, glyph).apply {
         contentDescription = accessibilityLabel
         isClickable = true
         isFocusable = false

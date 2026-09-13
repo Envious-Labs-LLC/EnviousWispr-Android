@@ -74,20 +74,25 @@ class LiveAudioMeterWiringTest {
     }
 
     @Test
-    fun theSnapshotCarriesALevelAndPublishingItIsCheap() {
+    fun theSnapshotCarriesALevelAndEveryPollReachesTheRail() {
         assertTrue("the snapshot must carry a level", overlayState.contains("val level: Float"))
-        assertTrue(
-            "a repeated level must not wake the recorder again",
-            overlayState.contains("it.level == quantised"),
-        )
+        assertTrue("and a per-poll tick", overlayState.contains("val levelTick: Int"))
         assertTrue(
             "a level published while the recorder is hidden must be dropped",
-            overlayState.contains("if (!it.visible || it.level == quantised) it"),
+            overlayState.contains("if (!it.visible) it else"),
+        )
+        // The rail is a history: one bar per poll. A poll whose level equals the last one MUST still
+        // wake the recorder, or a silent stretch freezes the last words on screen instead of scrolling
+        // them out (the macOS RainbowLevelMeter records the same trap).
+        assertTrue(
+            "every poll must produce a new snapshot, equal levels included",
+            overlayState.contains("it.copy(level = quantised, levelTick = it.levelTick + 1)"),
         )
         assertTrue(
-            "a level tick must carry the notice forward, not replace the snapshot",
-            overlayState.contains("it.copy(level = quantised)"),
+            "the recorder must push a sample per tick, never per level change",
+            overlay.contains("if (snapshot.levelTick != lastLevelTick) {") && overlay.contains("meter.pushSample(snapshot.level)"),
         )
+        assertTrue("a new take starts with an empty record", overlay.contains("if (!previous.visible) meter.reset()"))
     }
 
     @Test
@@ -123,7 +128,7 @@ class LiveAudioMeterWiringTest {
             "the pill must contain the meter",
             Regex("addView\\(\\s*meter,").containsMatchIn(overlay),
         )
-        assertTrue("the meter must be driven by the snapshot", overlay.contains("meter.setLevel(snapshot.level)"))
+        assertTrue("the meter must be driven by the snapshot", overlay.contains("meter.pushSample(snapshot.level)"))
     }
 
     @Test

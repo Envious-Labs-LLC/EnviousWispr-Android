@@ -82,6 +82,19 @@ class BubblePlacementTest {
     }
 
     @Test
+    fun aTallerPillWithAWarningLineStaysAboveTheKeyboard() {
+        // Bubble at the default dock, just above a keyboard at 1200. A 60 px pill fits on the bubble's
+        // row; a 110 px column (pill plus a notice) must move up so its bottom stays above the keyboard.
+        val bounds = BubbleBounds(usable, keyboardTop = 1200)
+        val bubble = BubblePlacement.bubbleBox(BubblePosition.DEFAULT, bounds, size, margin)!!
+        val plain = BubblePlacement.pillBox(BubblePosition.DEFAULT, bubble, bounds, 976, 60, margin)
+        val withNotice = BubblePlacement.pillBox(BubblePosition.DEFAULT, bubble, bounds, 976, 110, margin)
+        assertEquals(true, plain.bottom <= 1200 - margin)
+        assertEquals(true, withNotice.bottom <= 1200 - margin)
+        assertEquals(110, withNotice.height)
+    }
+
+    @Test
     fun thePillIsPulledInsideTheScreenWhenTheBubbleSitsAtTheVeryTop() {
         val bounds = BubbleBounds(usable, null)
         val bubble = BubblePlacement.bubbleBox(BubblePosition(BubbleSide.RIGHT, 0f), bounds, size, margin)!!

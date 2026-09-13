@@ -91,7 +91,10 @@ internal object BubblePlacement {
             BubbleSide.RIGHT -> bubble.right - width
         }
         val minTop = usable.top + marginPx
-        val maxTop = (usable.bottom - marginPx - heightPx).coerceAtLeast(minTop)
+        // [heightPx] is the WHOLE measured column, notice line included, and the floor is the keyboard
+        // when one is docked: a warning line that grew the column must never hang over the keys.
+        val floor = bounds.keyboardTop ?: usable.bottom
+        val maxTop = (floor - marginPx - heightPx).coerceAtLeast(minTop)
         val top = (bubble.centerY - heightPx / 2).coerceIn(minTop, maxTop)
         return Box(left, top, left + width, top + heightPx)
     }

@@ -41,6 +41,19 @@ if [[ "$("$ADB" -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null || tru
   exit 1
 fi
 
+# -allow-host-audio only PERMITS the host microphone; the emulator's own switch for it (Extended
+# controls > Microphone > "Virtual microphone uses host audio input") defaults to OFF and is not
+# persisted, so without this console command every take records silence and the recogniser returns
+# zero characters while the whole pipeline reports success. Measured 2026-09-13: seven silent takes
+# across the built-in mic, a loopback device, a cold boot and the AVD.conf key, until this one line.
+# Idempotent; safe on a running emulator. Captured, then tested: `producer | grep -q` under pipefail
+# fails on a MATCH (validation-discipline.md FACT: silent-empty-traps).
+HOSTMIC="$("$ADB" -s "$SERIAL" emu avd hostmicon 2>&1 || true)"
+case "$HOSTMIC" in
+  OK*) ;;
+  *) echo "Could not turn the emulator's host microphone on (adb emu avd hostmicon): $HOSTMIC" >&2; exit 1 ;;
+esac
+
 if [[ "${1:-}" == "--build" || ! -f "$APK_PATH" ]]; then
   "$PROJECT_ROOT/gradlew" -p "$PROJECT_ROOT" :app:assembleDebug --no-daemon
 fi

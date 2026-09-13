@@ -407,6 +407,39 @@ def main():
         check("a non-numeric line count refuses", True)
     restore_adb(original)
 
+    # ---- the emulator hears only after hostmicon --------------------------------------------------
+    # Measured 2026-09-13 (#141): with -allow-host-audio alone every take recorded silence; the console
+    # command is the switch. These rows keep the tool from speaking at an emulator that cannot hear.
+    original_run = eyes._run
+    console = []
+
+    def fake_run(args, timeout=60):
+        if len(args) >= 5 and args[3:5] == ["emu", "avd"]:
+            console.append(args[5])
+            return (0, "OK\nOK\n", "") if console_answer[0] else (0, "KO: unknown\n", "")
+        return original_run(args, timeout)
+
+    console_answer = [True]
+    eyes._run = fake_run
+    eyes._STATE["serial"] = "emulator-5554"
+    check("an emulator serial is recognised", eyes.is_emulator("emulator-5554"))
+    check("a phone serial is not", not eyes.is_emulator("100.94.206.47:5555"))
+    check("hear_on_emulator turns the host mic on through the console",
+          eyes.hear_on_emulator() == "host microphone on" and console == ["hostmicon"])
+    console_answer[0] = False
+    try:
+        eyes.hear_on_emulator()
+        check("a console refusal is reported, never swallowed", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("a console refusal is reported, never swallowed", "hostmicon" not in str(refusal) or "KO" in str(refusal))
+    try:
+        eyes.hear_on_emulator("100.94.206.47:5555")
+        check("a phone is refused by hear_on_emulator", False, "it returned")
+    except eyes.Blocked:
+        check("a phone is refused by hear_on_emulator", True)
+    eyes._run = original_run
+    eyes._STATE["serial"] = None
+
     # ---- the "put it back" book -------------------------------------------------------------------
     # Every row here drives the REAL journal, pointed at a throwaway file. The rows exist because the
     # book used to live in memory, and this tool runs one process per errand.

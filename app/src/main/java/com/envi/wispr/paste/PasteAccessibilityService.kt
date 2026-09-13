@@ -8,12 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
-import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
 import android.text.InputType
@@ -30,7 +28,6 @@ import com.envi.wispr.insertion.ClipboardInsertionPolicy
 import com.envi.wispr.insertion.ClipboardOutcome
 import com.envi.wispr.insertion.FallbackAnnouncement
 import com.envi.wispr.insertion.InsertionResults
-import com.envi.wispr.insertion.InsertionText
 import com.envi.wispr.insertion.ServiceFallbackReason
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.shortcuts.RecordingOverlayState
@@ -50,14 +47,6 @@ import java.util.UUID
 
 class PasteAccessibilityService : AccessibilityService() {
 
-    enum class InsertResult {
-        PASTED,
-        SET_TEXT,
-        RETRY,
-        REJECTED_SENSITIVE,
-        COPIED_ONLY,
-    }
-
     private data class TargetSnapshot(
         val node: AccessibilityNodeInfo,
         val packageName: String,
@@ -75,30 +64,31 @@ class PasteAccessibilityService : AccessibilityService() {
         val viewId: String?,
     )
 
-    private data class PendingInsertion(
+    /**
+     * One dictation's insertion, from request to terminal outcome. The write itself, the judging and
+     * the deadline live in [attempt]; this holds what the service owns around it: the History row, the
+     * clipboard staging state and the restore snapshot.
+     *
+     * `previousClipboard` is taken immediately before the FIRST clipboard staging, never at request
+     * time, so a clip the user copied during the wait is never overwritten by an older one on restore.
+     * A null snapshot means "unreadable or empty" and either way the restore leaves the clipboard
+     * alone: it never clears.
+     */
+    private class PendingInsertion(
         val transcriptId: Long,
         val text: String,
-        val previousClipboard: ClipData?,
         val policy: ClipboardInsertionPolicy,
+        val startedAtMs: Long,
         val deadlineMs: Long,
         val clipboardOwnershipToken: String = UUID.randomUUID().toString(),
-        var attempts: Int = 0,
-        var clipboardOverwritten: Boolean = false,
-        var ownedClipboardFingerprint: ClipboardFingerprint? = null,
-        var clipboardPayload: String? = null,
-        var verification: AccessibilityInsertionRules.Verification? = null,
-        // Why the last verification attempt said no, in SHAPES only: lengths and caret
-        // positions, never text (`kotlin-patterns.md` RULE: no-content-in-diagnostics). A
-        // give-up that names only its attempt count cannot tell an editor that never
-        // received the words from one that received them and will not report a caret.
-        var lastVerifyMiss: String? = null,
-    )
-
-    private data class SmartInsertionContext(
-        val text: String,
-        val selectionStart: Int,
-        val selectionEnd: Int,
-    )
+    ) {
+        lateinit var attempt: InsertionAttempt
+        var previousClipboard: ClipData? = null
+        var previousClipboardCaptured: Boolean = false
+        var clipboardOverwritten: Boolean = false
+        var ownedClipboardFingerprint: ClipboardFingerprint? = null
+        var clipboardPayload: String? = null
+    }
 
     companion object {
         private const val TAG = "PasteService"
@@ -385,6 +375,7 @@ class PasteAccessibilityService : AccessibilityService() {
         // to copy them and say nothing, which is issue #16's silence reached from the one direction
         // where the service dies holding the text.
         pendingInsertion?.let { pending ->
+            logOutcome(pending, InsertionOutcomeLine.Outcome.INTERRUPTED, pinnedTarget?.packageName)
             recordAndAnnounce(ServiceFallbackReason.SERVICE_INTERRUPTED, pending)
         }
         pendingInsertion = null
@@ -417,6 +408,7 @@ class PasteAccessibilityService : AccessibilityService() {
         // recordAndAnnounce: what survives this teardown is the durable notification, and it only
         // survives if it is handed to the system while this process is still alive.
         pendingInsertion?.let { pending ->
+            logOutcome(pending, InsertionOutcomeLine.Outcome.DESTROYED, pinnedTarget?.packageName)
             recordAndAnnounce(ServiceFallbackReason.SERVICE_DESTROYED, pending)
         }
         pendingInsertion = null
@@ -536,22 +528,29 @@ class PasteAccessibilityService : AccessibilityService() {
             Log.w(TAG, "No editor was pinned for this dictation; clipboard only")
             return InsertionHandoff.NO_PINNED_TARGET
         }
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         mainHandler.removeCallbacks(retryRunnable)
         retryScheduled = false
-        pendingInsertion = PendingInsertion(
+        val now = SystemClock.elapsedRealtime()
+        val pending = PendingInsertion(
             transcriptId = transcriptId,
             text = text,
-            // Read private clipboard contents only when the frozen setting requires a restore.
-            // A background session service cannot reliably perform this read.
-            previousClipboard = if (policy.restoreClipboardAfterPaste) {
-                previousClipboard ?: clipboard.primaryClip
-            } else {
-                null
-            },
             policy = policy,
-            deadlineMs = SystemClock.elapsedRealtime() + INSERTION_TIMEOUT_MS,
+            startedAtMs = now,
+            deadlineMs = now + INSERTION_TIMEOUT_MS,
         )
+        // A caller-supplied snapshot is honoured; otherwise the paste route takes its own immediately
+        // before the first staging (#141, review round 3).
+        if (previousClipboard != null) {
+            pending.previousClipboard = previousClipboard
+            pending.previousClipboardCaptured = true
+        }
+        pending.attempt = InsertionAttempt(
+            editor = ServiceEditor(pending),
+            text = text,
+            smartInsertion = policy.smartInsertion,
+            deadlineMs = pending.deadlineMs,
+        )
+        pendingInsertion = pending
         configureEventMode(includeContentChanges = true)
         Log.i(TAG, "Insertion requested; waiting for the original editor")
         tryPendingInsertion()
@@ -664,62 +663,96 @@ class PasteAccessibilityService : AccessibilityService() {
 
     private fun tryPendingInsertion() {
         val pending = pendingInsertion ?: return
-        pending.attempts += 1
-
-        when (val result = performInsertion(pending)) {
-            InsertResult.PASTED, InsertResult.SET_TEXT -> {
-                Log.i(TAG, "Insertion completed via $result after ${pending.attempts} attempt(s)")
-                pendingInsertion = null
-                clearPinnedTarget()
-                configureEventMode(includeContentChanges = false)
+        val attempt = pending.attempt
+        when (val tick = attempt.tick()) {
+            InsertionAttempt.Tick.Waiting -> scheduleRetry(RETRY_INTERVAL_MS)
+            is InsertionAttempt.Tick.Verified -> {
+                Log.i(TAG, "Insertion completed via ${tick.route} after ${attempt.attempts} attempt(s)")
+                finish(pending, InsertionOutcomeLine.Outcome.VERIFIED)
                 if (pending.policy.restoreClipboardAfterPaste) {
                     restorePreviousClipboardIfSafe(pending)
                 }
-                finalizeInsertion(pending, TranscriptEntity.STATUS_COMPLETED, if (result == InsertResult.SET_TEXT) "set_text" else "pasted")
+                finalizeInsertion(
+                    pending,
+                    TranscriptEntity.STATUS_COMPLETED,
+                    when (tick.route) {
+                        InsertionRoute.COMMIT -> InsertionResults.COMMITTED
+                        InsertionRoute.PASTE -> InsertionResults.PASTED
+                    },
+                )
                 performResultHaptic(success = true)
             }
-            InsertResult.REJECTED_SENSITIVE -> {
+            InsertionAttempt.Tick.Sensitive -> {
                 Log.w(TAG, "Insertion refused for a password or sensitive field; clipboard only")
-                pendingInsertion = null
-                clearPinnedTarget()
-                configureEventMode(includeContentChanges = false)
+                finish(pending, InsertionOutcomeLine.Outcome.SENSITIVE)
                 recordAndAnnounce(ServiceFallbackReason.SENSITIVE_FIELD, pending)
             }
-            InsertResult.RETRY -> {
-                if (SystemClock.elapsedRealtime() < pending.deadlineMs) {
-                    scheduleRetry(RETRY_INTERVAL_MS)
-                } else {
-                    val unverified = pending.verification != null
-                    Log.w(
-                        TAG,
-                        if (unverified) {
-                            "Editor action could not be verified after ${pending.attempts} attempts; " +
-                                "clipboard only (${pending.lastVerifyMiss ?: "no attempt recorded"})"
-                        } else {
-                            "Original editor did not return after ${pending.attempts} attempts; clipboard only"
-                        },
-                    )
-                    pendingInsertion = null
-                    clearPinnedTarget()
-                    configureEventMode(includeContentChanges = false)
-                    recordAndAnnounce(
-                        reason = if (unverified) {
-                            ServiceFallbackReason.UNVERIFIED
-                        } else {
-                            ServiceFallbackReason.TARGET_NEVER_RETURNED
-                        },
-                        pending = pending,
-                    )
-                }
-            }
-            InsertResult.COPIED_ONLY -> {
-                Log.w(TAG, "No safe insertion action was available; clipboard only")
-                pendingInsertion = null
-                clearPinnedTarget()
-                configureEventMode(includeContentChanges = false)
+            InsertionAttempt.Tick.Rejected -> {
+                Log.w(TAG, "The editor refused the paste; clipboard only")
+                finish(pending, InsertionOutcomeLine.Outcome.REJECTED)
                 recordAndAnnounce(ServiceFallbackReason.NO_INSERTION_ACTION, pending)
             }
+            InsertionAttempt.Tick.StagingFailed -> {
+                Log.w(TAG, "The clipboard could not be staged; nothing written")
+                finish(pending, InsertionOutcomeLine.Outcome.STAGING_FAILED)
+                recordAndAnnounce(ServiceFallbackReason.NO_INSERTION_ACTION, pending)
+            }
+            is InsertionAttempt.Tick.Expired -> {
+                Log.w(
+                    TAG,
+                    if (tick.written) {
+                        "Editor action could not be verified after ${attempt.attempts} attempts; " +
+                            "clipboard only (${attempt.lastMissShape ?: "no judgement recorded"})"
+                    } else {
+                        "Original editor did not return after ${attempt.attempts} attempts; clipboard only"
+                    },
+                )
+                finish(
+                    pending,
+                    if (tick.written) {
+                        InsertionOutcomeLine.Outcome.UNVERIFIED
+                    } else {
+                        InsertionOutcomeLine.Outcome.NEVER_RETURNED
+                    },
+                )
+                recordAndAnnounce(
+                    reason = if (tick.written) {
+                        ServiceFallbackReason.UNVERIFIED
+                    } else {
+                        ServiceFallbackReason.TARGET_NEVER_RETURNED
+                    },
+                    pending = pending,
+                )
+            }
         }
+    }
+
+    /** Ends the attempt, releases the pin, and writes the ONE content-free outcome line. */
+    private fun finish(pending: PendingInsertion, outcome: InsertionOutcomeLine.Outcome) {
+        pendingInsertion = null
+        val target = pinnedTarget?.packageName
+        clearPinnedTarget()
+        configureEventMode(includeContentChanges = false)
+        logOutcome(pending, outcome, target)
+    }
+
+    private fun logOutcome(pending: PendingInsertion, outcome: InsertionOutcomeLine.Outcome, target: String?) {
+        val attempt = pending.attempt
+        Log.i(
+            TAG,
+            InsertionOutcomeLine.format(
+                api = Build.VERSION.SDK_INT,
+                route = attempt.route,
+                written = attempt.written,
+                returned = attempt.returned,
+                evidence = attempt.evidence,
+                outcome = outcome,
+                attempts = attempt.attempts,
+                elapsedMs = SystemClock.elapsedRealtime() - pending.startedAtMs,
+                overrun = attempt.overrun,
+                targetPackage = target,
+            ),
+        )
     }
 
     private fun scheduleRetry(delayMs: Long) {
@@ -728,17 +761,90 @@ class PasteAccessibilityService : AccessibilityService() {
         mainHandler.postDelayed(retryRunnable, delayMs)
     }
 
-    private fun performInsertion(pending: PendingInsertion): InsertResult {
-        val expected = pinnedTarget ?: return InsertResult.RETRY
-        val pinnedWindowRoot = findPinnedWindowRoot(expected) ?: return InsertResult.RETRY
-        var reacquiredNode: AccessibilityNodeInfo? = null
+    /**
+     * The accessibility calls behind [InsertionAttempt], with every framework read and write in one
+     * place. Throws are allowed to escape: the attempt classifies them by when they happened.
+     */
+    private inner class ServiceEditor(private val pending: PendingInsertion) : EditorWrites {
+        override fun locateTarget(): TargetState? {
+            val expected = pinnedTarget ?: return null
+            return withPinnedNode(expected) { node ->
+                val hint = node.isShowingHintText
+                val baseline = AccessibilityInsertionRules.observableEditorText(node.text, hint)
+                TargetState(
+                    read = AccessibilityInsertionRules.EditorRead(node.text?.toString(), hint),
+                    selection = AccessibilityInsertionRules.normalizedSelection(
+                        baseline,
+                        node.textSelectionStart,
+                        node.textSelectionEnd,
+                    ),
+                    sensitive = isSensitive(node),
+                    canPaste = node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_PASTE },
+                )
+            }
+        }
 
+        // Chunk 2 of #141 wires the accessibility input method; until then the route is always paste.
+        override fun commitEligible(): Boolean = false
+
+        override fun commit(payload: String) {
+            throw UnsupportedOperationException("The commit route is not wired yet (#141 chunk 2)")
+        }
+
+        override fun stageClipboard(payload: String): Boolean {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            if (pending.clipboardOverwritten) {
+                if (!ownsClipboard(clipboard.primaryClip, pending)) {
+                    Log.w(TAG, "Clipboard changed during retry; refusing to overwrite newer content")
+                    return false
+                }
+                if (pending.clipboardPayload != payload) {
+                    writeTranscriptClipboard(clipboard, pending, payload)
+                }
+                return true
+            }
+            if (pending.policy.restoreClipboardAfterPaste && !pending.previousClipboardCaptured) {
+                // Immediately before the first write, never earlier. A null read is "unreadable or
+                // empty", and the restore treats both as "leave the clipboard alone".
+                pending.previousClipboard = clipboard.primaryClip
+                pending.previousClipboardCaptured = pending.previousClipboard != null
+            }
+            writeTranscriptClipboard(clipboard, pending, payload)
+            pending.clipboardOverwritten = true
+            return true
+        }
+
+        override fun paste(): Boolean {
+            val expected = pinnedTarget ?: return false
+            // A node that is no longer present was never asked, so nothing was mutated: the
+            // framework's own "false" is the honest answer.
+            return withPinnedNode(expected) { node ->
+                node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+            } ?: false
+        }
+
+        override fun readTarget(): AccessibilityInsertionRules.EditorRead? {
+            val expected = pinnedTarget ?: return null
+            return withPinnedNode(expected) { node ->
+                AccessibilityInsertionRules.EditorRead(node.text?.toString(), node.isShowingHintText)
+            }
+        }
+
+        override fun now(): Long = SystemClock.elapsedRealtime()
+    }
+
+    /**
+     * Runs [block] against the pinned editor if it is present right now, else returns null.
+     *
+     * Uses the exact copied node captured before dictation. Metadata alone is ambiguous for Compose
+     * editors where several fields can have no view ID. Samsung can invalidate that copied object
+     * while a temporary Activity is above the editor; in that case reacquire only a focused node whose
+     * framework identity is equal to the originally pinned node.
+     */
+    private fun <T> withPinnedNode(expected: TargetToken, block: (AccessibilityNodeInfo) -> T): T? {
+        val pinnedWindowRoot = findPinnedWindowRoot(expected) ?: return null
+        var reacquiredNode: AccessibilityNodeInfo? = null
         try {
-            // Use the exact copied node captured before dictation. Metadata alone is
-            // ambiguous for Compose editors where several fields can have no view ID.
-            // Samsung can invalidate that copied object while a temporary Activity is
-            // above the editor. In that case, reacquire only a focused node whose
-            // framework identity is equal to the originally pinned node.
             val originalRefreshed = expected.node.refresh()
             val originalReady = originalRefreshed &&
                 expected.node.isVisibleToUser && expected.node.isEditable &&
@@ -748,7 +854,7 @@ class PasteAccessibilityService : AccessibilityService() {
             } else {
                 pinnedWindowRoot.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.also {
                     reacquiredNode = it
-                } ?: return InsertResult.RETRY
+                } ?: return null
             }
             if (node.isVisibleToUser && node.isEditable && node.isFocused &&
                 matchesPinnedTarget(node, expected) &&
@@ -757,19 +863,13 @@ class PasteAccessibilityService : AccessibilityService() {
                 if (node !== expected.node) {
                     Log.d(TAG, "Reacquired the pinned editor after its node became stale")
                 }
-                pending.verification?.let { verification ->
-                    return verificationResult(node, pending, verification)
-                }
-                return insertIntoNode(node, pending)
+                return block(node)
             }
-        } catch (exception: Exception) {
-            Log.w(TAG, "Insertion attempt failed safely", exception)
+            return null
         } finally {
             reacquiredNode?.recycle()
             pinnedWindowRoot.recycle()
         }
-
-        return InsertResult.RETRY
     }
 
     private fun findPinnedWindowRoot(token: TargetToken): AccessibilityNodeInfo? {
@@ -801,224 +901,6 @@ class PasteAccessibilityService : AccessibilityService() {
         if (node.windowId != token.windowId) return false
         if (node.className?.toString().orEmpty() != token.className) return false
         return token.viewId == null || node.viewIdResourceName == token.viewId
-    }
-
-    private fun insertIntoNode(
-        node: AccessibilityNodeInfo,
-        pending: PendingInsertion,
-    ): InsertResult {
-        if (!node.isEditable || !node.isVisibleToUser || !node.isFocused) {
-            return InsertResult.RETRY
-        }
-        if (isSensitive(node)) return InsertResult.REJECTED_SENSITIVE
-
-        val existing = AccessibilityInsertionRules.observableEditorText(
-            node.text,
-            node.isShowingHintText,
-        )
-        val selection = AccessibilityInsertionRules.normalizedSelection(
-            existing,
-            node.textSelectionStart,
-            node.textSelectionEnd,
-        ) ?: return pasteIntoNode(node, pending)
-        val start = selection.start
-        val end = selection.end
-        val plan = if (pending.policy.smartInsertion) {
-            InsertionText.smartPayloadPlan(existing, pending.text, start, end)
-        } else {
-            InsertionText.SmartPayloadPlan(pending.text, false)
-        }
-        val insertionText = plan.text
-        val updated = InsertionText.mergeAtSelection(
-            existing,
-            insertionText,
-            start,
-            end,
-        )
-
-        val arguments = Bundle().apply {
-            putCharSequence(
-                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                updated,
-            )
-        }
-        // ACTION_SET_TEXT replaces the whole exposed value. Never let a stale snapshot erase
-        // an edit made after we read the node.
-        if (!node.refresh()) return InsertResult.RETRY
-        val refreshedText = AccessibilityInsertionRules.observableEditorText(
-            node.text,
-            node.isShowingHintText,
-        )
-        val refreshedSelection = AccessibilityInsertionRules.normalizedSelection(
-            refreshedText,
-            node.textSelectionStart,
-            node.textSelectionEnd,
-        )
-        if (refreshedText != existing || refreshedSelection != selection) {
-            return InsertResult.RETRY
-        }
-        if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
-            return pasteIntoNode(
-                node = node,
-                pending = pending,
-                payload = insertionText,
-                smartContext = if (plan.changesDictatedText) {
-                    SmartInsertionContext(existing, start, end)
-                } else {
-                    null
-                },
-            )
-        }
-
-        val caret = start + insertionText.length
-        node.performAction(
-            AccessibilityNodeInfo.ACTION_SET_SELECTION,
-            Bundle().apply {
-                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, caret)
-                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, caret)
-            },
-        )
-        pending.verification = AccessibilityInsertionRules.Verification(
-            action = AccessibilityInsertionRules.Action.SET_TEXT,
-            beforeText = existing,
-            insertedText = insertionText,
-            expectedText = updated,
-            expectedCaret = caret,
-        )
-        return verifyAcceptedAction(node, pending)
-    }
-
-    private fun pasteIntoNode(
-        node: AccessibilityNodeInfo,
-        pending: PendingInsertion,
-        payload: String = pending.text,
-        smartContext: SmartInsertionContext? = null,
-    ): InsertResult {
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        var committedPayload = payload
-
-        if (pending.clipboardOverwritten) {
-            if (!ownsClipboard(clipboard.primaryClip, pending)) {
-                Log.w(TAG, "Clipboard changed during retry; refusing to overwrite newer content")
-                return InsertResult.COPIED_ONLY
-            }
-            if (pending.clipboardPayload != committedPayload) {
-                writeTranscriptClipboard(clipboard, pending, committedPayload)
-            }
-        } else {
-            writeTranscriptClipboard(clipboard, pending, committedPayload)
-            pending.clipboardOverwritten = true
-        }
-
-        // Re-read after the clipboard write, immediately before ACTION_PASTE. If the user moved
-        // the caret while we were preparing the smart payload, fall back to their literal words.
-        if (!node.refresh()) return InsertResult.RETRY
-        var existing = AccessibilityInsertionRules.observableEditorText(
-            node.text,
-            node.isShowingHintText,
-        )
-        var selection = AccessibilityInsertionRules.normalizedSelection(
-            existing,
-            node.textSelectionStart,
-            node.textSelectionEnd,
-        )
-
-        if (smartContext != null &&
-            (existing != smartContext.text ||
-                selection != AccessibilityInsertionRules.EditorSelection(
-                    smartContext.selectionStart,
-                    smartContext.selectionEnd,
-                ))
-        ) {
-            if (!ownsClipboard(clipboard.primaryClip, pending)) {
-                return InsertResult.COPIED_ONLY
-            }
-            committedPayload = pending.text
-            writeTranscriptClipboard(clipboard, pending, committedPayload)
-
-            // Capture the exact selection that immediately precedes ACTION_PASTE so verification
-            // cannot approve a paste using an older caret snapshot.
-            if (!node.refresh()) return InsertResult.RETRY
-            existing = AccessibilityInsertionRules.observableEditorText(
-                node.text,
-                node.isShowingHintText,
-            )
-            selection = AccessibilityInsertionRules.normalizedSelection(
-                existing,
-                node.textSelectionStart,
-                node.textSelectionEnd,
-            )
-        }
-
-        if (!node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return InsertResult.RETRY
-
-        val expectedText = selection?.let {
-            InsertionText.mergeAtSelection(existing, committedPayload, it.start, it.end)
-        }
-        val expectedCaret = selection?.let { it.start + committedPayload.length }
-        pending.verification = AccessibilityInsertionRules.Verification(
-            action = AccessibilityInsertionRules.Action.PASTE,
-            beforeText = existing,
-            insertedText = committedPayload,
-            expectedText = expectedText,
-            expectedCaret = expectedCaret,
-        )
-        return verifyAcceptedAction(node, pending)
-    }
-
-    private fun verifyAcceptedAction(
-        node: AccessibilityNodeInfo,
-        pending: PendingInsertion,
-    ): InsertResult {
-        val verification = pending.verification ?: return InsertResult.RETRY
-        if (!node.refresh()) {
-            pending.lastVerifyMiss = "node-refresh-failed"
-            return InsertResult.RETRY
-        }
-        return verificationResult(node, pending, verification)
-    }
-
-    /**
-     * The ONE place an accepted action is judged against the editor.
-     *
-     * Both the immediate post-action check and every retry inside `performInsertion` asked this
-     * question with their own copy of the comparison. Two copies of one decision diverge, and here
-     * they already had: instrumenting one of them showed a single attempt while twenty more were
-     * being judged silently by the other (`code-design-rules.md`
-     * RULE: port-proven-patterns-wholesale).
-     *
-     * The miss is recorded in SHAPES only, never text
-     * (`kotlin-patterns.md` RULE: no-content-in-diagnostics). An attempt count on its own cannot
-     * tell an editor that never received the words from one that received them and will not say so.
-     */
-    private fun verificationResult(
-        node: AccessibilityNodeInfo,
-        pending: PendingInsertion,
-        verification: AccessibilityInsertionRules.Verification,
-    ): InsertResult {
-        val actual = AccessibilityInsertionRules.observableEditorText(
-            node.text,
-            node.isShowingHintText,
-        )
-        val caretStart = node.textSelectionStart
-        val caretEnd = node.textSelectionEnd
-        if (AccessibilityInsertionRules.isVerified(verification, actual, caretStart, caretEnd)) {
-            return if (verification.action == AccessibilityInsertionRules.Action.SET_TEXT) {
-                InsertResult.SET_TEXT
-            } else {
-                InsertResult.PASTED
-            }
-        }
-        pending.lastVerifyMiss = buildString {
-            append("action=").append(verification.action)
-            append(" textMatched=").append(actual == verification.expectedText)
-            append(" actualLen=").append(actual.length)
-            append(" expectedLen=").append(verification.expectedText?.length ?: -1)
-            append(" caret=").append(caretStart).append('/').append(caretEnd)
-            append(" expectedCaret=").append(verification.expectedCaret ?: -1)
-        }
-        Log.i(TAG, "verify miss #${pending.attempts}: ${pending.lastVerifyMiss}")
-        return InsertResult.RETRY
     }
 
     private fun isSensitive(node: AccessibilityNodeInfo): Boolean {
@@ -1057,13 +939,14 @@ class PasteAccessibilityService : AccessibilityService() {
         // grant for. Every other clipboard write in this file is already guarded; this one runs on
         // the SUCCESS path, where a throw would kill the shared process right after a dictation the
         // user believes worked.
+        // A snapshot that could not be read (or was empty) is not restored and NEVER cleared: the
+        // words stay on the clipboard, which is the same place the keep path leaves them.
+        val previous = pending.previousClipboard ?: run {
+            Log.i(TAG, "No readable clipboard snapshot; leaving the clipboard as it is")
+            return
+        }
         runCatching {
-            val previous = pending.previousClipboard
-            if (previous == null) {
-                clipboard.clearPrimaryClip()
-            } else {
-                clipboard.setPrimaryClip(previous)
-            }
+            clipboard.setPrimaryClip(previous)
         }.fold(
             onSuccess = { Log.i(TAG, "Previous clipboard restored after successful insertion") },
             onFailure = { error ->
@@ -1180,16 +1063,10 @@ class PasteAccessibilityService : AccessibilityService() {
         ) {
             return
         }
-        // VibratorManager is API 31 and minSdk is 30, so the unguarded call throws on the oldest
-        // supported phone. This runs on the accessibility service's main thread, where an uncaught
-        // throw kills the shared default process and takes auto-paste down with it.
+        // This runs on the accessibility service's main thread, where an uncaught throw kills the
+        // shared default process and takes auto-paste down with it, so a missing vibrator is caught.
         runCatching {
-            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                getSystemService(VibratorManager::class.java)?.defaultVibrator
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Vibrator::class.java)
-            } ?: return
+            val vibrator = getSystemService(VibratorManager::class.java)?.defaultVibrator ?: return
             val effect = if (success) {
                 VibrationEffect.EFFECT_TICK
             } else {

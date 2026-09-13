@@ -30,6 +30,7 @@ class InsertionAttemptTest {
         var pasteTargetGoneOnce: Boolean = false,
         var stageReturns: Boolean = true,
         var stageThrows: Boolean = false,
+        var clipboardUnreadableAfterFirstStaging: Boolean = false,
         /** A standard EditText advertises paste only once the clipboard holds something. */
         var pasteAdvertisedOnlyAfterStaging: Boolean = false,
         var readThrowsAfterWrite: Boolean = false,
@@ -58,12 +59,14 @@ class InsertionAttemptTest {
 
         override fun commitEligible(): Boolean = commitEligible
 
-        override fun stageClipboard(payload: String): Boolean {
+        override fun stageClipboard(payload: String): String? {
             if (stageThrows) throw IllegalStateException("clipboard denied")
             stagings += 1
-            if (!stageReturns) return false
+            if (!stageReturns) return null
+            // A refused read-back after the first staging keeps what is already there.
+            if (staged != null && clipboardUnreadableAfterFirstStaging) return staged
             staged = payload
-            return true
+            return payload
         }
 
         override fun paste(): PasteOutcome {
@@ -325,6 +328,23 @@ class InsertionAttemptTest {
         assertEquals("and I will", editor.staged)
         assertEquals(2, editor.stagings)
         assertEquals("and I will", movingAttempt.verification?.insertedText)
+        // Codex code review round 7: a refused clipboard read is never a licence to write over it. With
+        // the caret moved AND the clipboard unreadable, the smart payload already staged is what gets
+        // pasted, and the record names it so the judge looks for the right text.
+        val unreadable = FakeEditor(field = "Hi team,", selection = EditorSelection(8, 8), clipboardUnreadableAfterFirstStaging = true)
+        val movingUnreadable = object : EditorWrites by unreadable {
+            var locates = 0
+            override fun locateTarget(): TargetState? {
+                locates += 1
+                if (locates == 2) unreadable.selection = EditorSelection(3, 3)
+                return unreadable.locateTarget()
+            }
+        }
+        val kept = InsertionAttempt(movingUnreadable, "and I will", smartInsertion = true, deadlineMs = 2_500L)
+        kept.tick()
+        assertEquals(" and I will ", unreadable.staged)
+        assertEquals(" and I will ", kept.verification?.insertedText)
+        assertEquals(1, unreadable.pastes)
         // Two-way control: with the caret still, the smart payload (a space on each side, because the
         // caret sits after a comma at the end of the field) is what is staged.
         val still = FakeEditor(field = "Hi team,", selection = EditorSelection(8, 8))

@@ -42,10 +42,12 @@ internal interface EditorWrites {
 
     /**
      * Puts [payload] on the clipboard for the paste route, taking the restore snapshot immediately
-     * before the first write. `false` means nothing is staged: the clipboard is no longer ours, or
-     * the write failed.
+     * before the first write, and returns WHAT IS STAGED: [payload] after a write, the previously
+     * staged text when the clipboard cannot be read back and so must not be written over again, or
+     * `null` when nothing is staged (the clipboard is somebody else's, or the write failed). The
+     * attempt records the returned text as the inserted text, so the judge looks for what was pasted.
      */
-    fun stageClipboard(payload: String): Boolean
+    fun stageClipboard(payload: String): String?
 
     /**
      * The editor's own paste on the pinned node. [PasteOutcome.TARGET_GONE] means the node could not be
@@ -178,7 +180,7 @@ internal class InsertionAttempt(
         composedAgainst: String?,
         plan: InsertionText.SmartPayloadPlan,
     ): Tick {
-        if (!stage(plan.text)) return Tick.StagingFailed
+        var payload = stage(plan.text) ?: return Tick.StagingFailed
         // Re-read immediately before the paste. Two reasons. A standard EditText advertises
         // ACTION_PASTE only while the clipboard holds something, so a clipboard that was empty until
         // the staging a moment ago reads as "cannot paste" on the FIRST read and "can paste" now. And
@@ -187,13 +189,13 @@ internal class InsertionAttempt(
         // paste actually lands in.
         var before = locate() ?: return Tick.Waiting
         if (!before.canPaste) return Tick.Rejected
-        var payload = plan.text
         if (plan.changesDictatedText &&
             (AccessibilityInsertionRules.baseline(before.read) != composedAgainst ||
                 before.selection != located.selection)
         ) {
-            payload = text
-            if (!stage(payload)) return Tick.StagingFailed
+            // The port may keep the smart payload when it cannot read the clipboard back (a refused
+            // read is never a licence to write over it); the record then names what is really staged.
+            payload = stage(text) ?: return Tick.StagingFailed
             before = locate() ?: return Tick.Waiting
         }
         if (expired()) return Tick.Expired(false)
@@ -277,10 +279,10 @@ internal class InsertionAttempt(
         false
     }
 
-    private fun stage(payload: String): Boolean = try {
+    private fun stage(payload: String): String? = try {
         editor.stageClipboard(payload)
     } catch (error: Exception) {
-        false
+        null
     }
 
     private fun expired(): Boolean = editor.now() >= deadlineMs

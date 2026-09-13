@@ -791,17 +791,28 @@ class PasteAccessibilityService : AccessibilityService() {
             throw UnsupportedOperationException("The commit route is not wired yet (#141 chunk 2)")
         }
 
-        override fun stageClipboard(payload: String): Boolean {
+        override fun stageClipboard(payload: String): String? {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             if (pending.clipboardOverwritten) {
-                if (!ownsClipboard(clipboard.primaryClip, pending)) {
-                    Log.w(TAG, "Clipboard changed during retry; refusing to overwrite newer content")
-                    return false
+                // A second write needs CONFIRMED ownership. A refused read is not a licence to write
+                // over a clip the user may have copied a moment ago; what is already staged stays,
+                // and the caller is told so it pastes and judges that text.
+                return when (clipboardOwner(clipboard.primaryClip, pending)) {
+                    ClipboardOwner.OTHER -> {
+                        Log.w(TAG, "Clipboard changed during retry; refusing to overwrite newer content")
+                        null
+                    }
+                    ClipboardOwner.UNREADABLE -> {
+                        Log.i(TAG, "Clipboard unreadable; keeping the payload already staged")
+                        pending.clipboardPayload
+                    }
+                    ClipboardOwner.OURS -> {
+                        if (pending.clipboardPayload != payload) {
+                            writeTranscriptClipboard(clipboard, pending, payload)
+                        }
+                        payload
+                    }
                 }
-                if (pending.clipboardPayload != payload) {
-                    writeTranscriptClipboard(clipboard, pending, payload)
-                }
-                return true
             }
             if (pending.policy.restoreClipboardAfterPaste && !pending.previousClipboardCaptured) {
                 // Immediately before the first write, never earlier. A null read is "unreadable or
@@ -811,7 +822,7 @@ class PasteAccessibilityService : AccessibilityService() {
             }
             writeTranscriptClipboard(clipboard, pending, payload)
             pending.clipboardOverwritten = true
-            return true
+            return payload
         }
 
         override fun paste(): PasteOutcome {
@@ -979,12 +990,21 @@ class PasteAccessibilityService : AccessibilityService() {
     private fun keepTranscriptOnClipboard(pending: PendingInsertion): Boolean {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         if (pending.clipboardOverwritten) {
-            if (!ownsClipboard(clipboard.primaryClip, pending)) {
-                Log.w(TAG, "Newer clipboard content detected; leaving it unchanged")
-                return false
-            }
-            if (pending.clipboardPayload != pending.text) {
-                return runCatching { writeTranscriptClipboard(clipboard, pending, pending.text) }.isSuccess
+            when (clipboardOwner(clipboard.primaryClip, pending)) {
+                ClipboardOwner.OTHER -> {
+                    Log.w(TAG, "Newer clipboard content detected; leaving it unchanged")
+                    return false
+                }
+                // Our staging is the last write this service knows of, so the words ARE on the
+                // clipboard as far as anything can tell, and that is what the user is told. It is
+                // not permission to write again: a refused read never authorises a mutation.
+                ClipboardOwner.UNREADABLE -> {
+                    Log.i(TAG, "Clipboard unreadable; the staged words are counted as still there")
+                    return true
+                }
+                ClipboardOwner.OURS -> if (pending.clipboardPayload != pending.text) {
+                    return runCatching { writeTranscriptClipboard(clipboard, pending, pending.text) }.isSuccess
+                }
             }
         } else {
             if (!runCatching {
@@ -1027,18 +1047,7 @@ class PasteAccessibilityService : AccessibilityService() {
         else -> ClipboardOwner.OTHER
     }
 
-    /**
-     * Whether the transcript we staged is still what the clipboard holds. An UNREADABLE clipboard is
-     * counted as still ours when we wrote it during this same attempt: nothing observed says otherwise,
-     * and treating a refused read as "someone else's clip" reported every successful copy on the
-     * founder's phone as "Saved in History too, if it did not arrive" (2026-09-13, build 107).
-     */
-    private fun ownsClipboard(clip: ClipData?, pending: PendingInsertion): Boolean =
-        when (clipboardOwner(clip, pending)) {
-            ClipboardOwner.OURS -> true
-            ClipboardOwner.OTHER -> false
-            ClipboardOwner.UNREADABLE -> pending.clipboardOverwritten
-        }
+
 
     private fun finalizeInsertion(pending: PendingInsertion, status: String, result: String, interrupted: Boolean = false) {
         if (pending.transcriptId <= 0L) return

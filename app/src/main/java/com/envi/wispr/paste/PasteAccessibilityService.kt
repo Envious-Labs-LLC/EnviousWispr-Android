@@ -320,9 +320,10 @@ class PasteAccessibilityService : AccessibilityService() {
     private fun revalidateBubbleField(overlay: RecordingAccessibilityOverlay, discover: Boolean = false) {
         var target = lastTarget
         var stillFocused = target != null &&
-            runCatching { target.node.refresh() && isSafeFocusedEditor(target.node) }.getOrDefault(false)
+            runCatching { target.node.refresh() && isSafeFocusedEditor(target.node) && isInFocusedWindow(target.windowId) }
+                .getOrDefault(false)
         if (!stillFocused && discover) {
-            val found = runCatching { findFocusedEditableTarget() }.getOrNull()
+            val found = runCatching { findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) } }.getOrNull()
             // Content-free: counts and booleans only (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
             Log.d(
                 TAG,
@@ -348,6 +349,16 @@ class PasteAccessibilityService : AccessibilityService() {
     private fun fieldKey(target: TargetSnapshot): Any = FieldKey(target.windowId, target.node.hashCode())
 
     private data class FieldKey(val windowId: Int, val node: Int)
+
+    /**
+     * Does the window holding the editor have input focus right now? In split screen an editor in
+     * the other pane keeps reporting itself focused after the user moves to this pane, so the node's
+     * own focus flag alone would keep the bubble offering a field the user has left (Codex review of
+     * the Play branch, round 5). The bubble asks the window, and hides until focus returns to it.
+     */
+    private fun isInFocusedWindow(windowId: Int): Boolean = runCatching {
+        windows.any { it.id == windowId && it.isFocused }
+    }.getOrDefault(false)
 
     private fun isOwnOverlayWindow(windowId: Int): Boolean = runCatching {
         windows.any { it.id == windowId && it.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY }

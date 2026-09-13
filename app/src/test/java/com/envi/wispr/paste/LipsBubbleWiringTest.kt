@@ -107,6 +107,11 @@ class LipsBubbleWiringTest {
         val body = service.substringAfter("private fun revalidateBubbleField(").substringBefore("\n    /**")
         assertTrue(body.contains("if (!stillFocused && discover)"))
         assertTrue(body.contains("findFocusedEditableTarget()"))
+        // Split screen: an editor in the other pane keeps its focus flag. Both the remembered editor
+        // and a discovered one must sit in the window that has input focus, or the bubble hides.
+        assertTrue(body.contains("isSafeFocusedEditor(target.node) && isInFocusedWindow(target.windowId)"))
+        assertTrue(body.contains("findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) }"))
+        assertTrue(service.contains("windows.any { it.id == windowId && it.isFocused }"))
     }
 
     @Test

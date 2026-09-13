@@ -128,10 +128,23 @@ internal object AccessibilityInsertionRules {
             return after == before.substring(0, selection.start) + inserted + before.substring(selection.end)
         }
         if (after.length != before.length + inserted.length) return false
-        var index = after.indexOf(inserted)
-        while (index >= 0) {
-            if (after.removeRange(index, index + inserted.length) == before) return true
-            index = after.indexOf(inserted, startIndex = index + 1)
+        // Linear, on the accessibility service's main thread: `after` is `before` with `inserted`
+        // spliced at index i exactly when the first i characters and the last (before.length - i)
+        // characters are shared, and `inserted` sits between them. The shared prefix and suffix are
+        // measured once; the candidate indices are the overlap of the two, and each is checked in
+        // place without rebuilding the field.
+        var prefix = 0
+        while (prefix < before.length && before[prefix] == after[prefix]) prefix++
+        var suffix = 0
+        while (suffix < before.length &&
+            before[before.length - 1 - suffix] == after[after.length - 1 - suffix]
+        ) {
+            suffix++
+        }
+        val lowest = maxOf(0, before.length - suffix)
+        val highest = minOf(prefix, before.length)
+        for (index in lowest..highest) {
+            if (after.regionMatches(index, inserted, 0, inserted.length)) return true
         }
         return false
     }

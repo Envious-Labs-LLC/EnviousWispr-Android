@@ -174,6 +174,41 @@ class AccessibilityInsertionRulesTest {
         assertTrue(AccessibilityInsertionRules.isSingleInsertion("ab", EditorSelection(2, 2), "ab", "abab"))
     }
 
+    /** The splice may sit anywhere in the field, and the judge finds it without the caret. */
+    @Test
+    fun insertionInTheMiddleOfTheFieldIsVerified() {
+        val before = "one two three"
+        assertTrue(
+            AccessibilityInsertionRules.isSingleInsertion(before, EditorSelection(0, 0), "and a half ", "one two and a half three"),
+        )
+        assertFalse(
+            AccessibilityInsertionRules.isSingleInsertion(before, EditorSelection(0, 0), "and a half ", "one and a half two three x"),
+        )
+    }
+
+    /**
+     * A long draft made of repeats of the dictated phrase: every repeat is a candidate splice point.
+     * The judge is correct on it, and (Codex code review round 3) linear rather than one whole-field
+     * copy per candidate; no wall-clock assertion, because a timing bound flakes under machine load
+     * (#110) and the linearity is a property of the code, not of this run.
+     */
+    @Test
+    fun longRepetitiveDraftIsJudgedCorrectly() {
+        val phrase = "thanks, talk soon. "
+        val before = phrase.repeat(5_000)
+        assertTrue(
+            AccessibilityInsertionRules.isSingleInsertion(before, EditorSelection(0, 0), phrase, before + phrase),
+        )
+        assertFalse(
+            AccessibilityInsertionRules.isSingleInsertion(
+                before,
+                EditorSelection(0, 0),
+                phrase,
+                before + "thanks, talk soon! ",
+            ),
+        )
+    }
+
     /** "Cannot see" is not "not there": a null read, a failed baseline, or a hint after the write. */
     @Test
     fun unreadableReadsAreNeverJudgedAsMissOrVerified() {

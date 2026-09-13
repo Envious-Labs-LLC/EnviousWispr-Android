@@ -99,7 +99,9 @@ class PasteAccessibilityService : AccessibilityService() {
         private const val INSERTION_TIMEOUT_MS = 2_500L
         private const val MAIN_CALL_TIMEOUT_MS = 1_000L
         private const val RETRY_INTERVAL_MS = 125L
-        private const val CONNECT_DISCOVERY_RETRY_MS = 1_000L
+        // Offsets from the first discovery attempt for the bubble-discovery retries. Reaches past the ~2 s
+        // a real Samsung takes to expose a returning editor without churning a no-field screen (#141).
+        private val DISCOVERY_RETRY_DELAYS_MS = longArrayOf(250L, 750L, 2_250L)
         private const val LIFECYCLE_PREFERENCES = "paste_service_lifecycle"
         private const val KEY_STOP_WAS_CLEAN = "stop_was_clean"
         private val STOP_MARKER_LOCK = Any()
@@ -192,6 +194,18 @@ class PasteAccessibilityService : AccessibilityService() {
     private val bubblePositionStore by lazy { BubblePositionStore(applicationContext) }
     private var pinnedTarget: TargetToken? = null
 
+    // Bubble-discovery retry: when a return to a focused field warrants discovery but the editor is not
+    // accessible yet (the window is still coming up: ~2 s on a real Samsung, #141 phone pass 2026-09-13),
+    // the first look finds nothing. Re-look a few times so the user never has to re-tap the field. One
+    // sequence at a time, guarded by a generation so a superseding transition or teardown cancels it, and
+    // coalesced per focused window so a stream of windows-changed events cannot postpone the retries
+    // indefinitely (Codex review, 2026-09-13). Separate from retryRunnable, which serves insertion.
+    private var discoveryGeneration = 0
+    private var discoveryAttempt = 0
+    private var discoveryWindowId = -1
+    private var discoveryStartUptime = 0L
+    private var discoveryRetryRunnable: Runnable? = null
+
     private val retryRunnable = Runnable {
         retryScheduled = false
         tryPendingInsertion()
@@ -213,12 +227,15 @@ class PasteAccessibilityService : AccessibilityService() {
         }
         Log.i(TAG, "Accessibility insertion service connected")
         // A text box may already hold focus when this service (re)connects: discover it rather than
-        // waiting for the user to tap it again. The window list is not yet populated at the instant of
-        // connect (measured 2026-09-12 on the emulator: an immediate discovery found nothing while the
-        // editor was focused), so the discovery runs once now and once more shortly after. Two
-        // one-shot posts on a connect, never a recurring timer.
-        mainHandler.post { recordingOverlay?.let { revalidateBubbleField(it, discover = true) } }
-        mainHandler.postDelayed({ recordingOverlay?.let { revalidateBubbleField(it, discover = true) } }, CONNECT_DISCOVERY_RETRY_MS)
+        // waiting for the user to tap it again. The window list is not populated at the instant of connect
+        // (measured 2026-09-12: an immediate discovery found nothing while the editor was focused), so this
+        // uses the same discover-with-retry sequence as an app-switch return, under the one cancellation
+        // mechanism. It starts fresh: a prior sequence is invalidated first.
+        cancelDiscoveryRetries()
+        val connectGeneration = discoveryGeneration
+        // Generation-guard the post itself: an unbind/destroy between here and the looper turn bumps the
+        // generation, so a torn-down service never starts a fresh sequence (Codex review, 2026-09-13).
+        mainHandler.post { if (connectGeneration == discoveryGeneration) discoverFieldWithRetry() }
         // Disk, and this is the connect path of the heart. Liveness is already published above, so
         // a dictation arriving in this window would otherwise pin a target while a synchronous
         // SharedPreferences load held the main thread and before the event mask was installed.
@@ -276,21 +293,25 @@ class PasteAccessibilityService : AccessibilityService() {
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED, AccessibilityEvent.TYPE_VIEW_CLICKED -> {
                 if (remembered) {
+                    // The field is found the direct way; stop any discovery-retry sequence still chasing it.
+                    cancelDiscoveryRetries()
                     lastTarget?.let { overlay.fieldActivated(fieldKey(it)) }
+                } else if (event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
+                    // A focus that lands unremembered can be the return to an app whose editor is already
+                    // focused (no fresh focus event for the editor itself): discover, and retry until it is
+                    // accessible. A click stays cheap (Codex review, BUG 1, 2026-09-13).
+                    discoverFieldWithRetry()
                 } else {
-                    // Focus or a click went to something that is not an editor, in the same window or
-                    // another. Whether the remembered editor still holds focus is a question, not a
-                    // given: a hardware-keyboard tab to a button produces no window change to catch it
-                    // (Codex code review, round 2). A focus that lands unremembered can also be the
-                    // return to an app whose editor is already focused (no fresh focus event for the
-                    // editor itself): discover on focus so the bubble adopts it. A click stays cheap
-                    // (Codex review, BUG 1, 2026-09-13).
-                    revalidateBubbleField(overlay, discover = event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED)
+                    // A click on a non-editor: whether the remembered editor still holds focus is a question,
+                    // not a given (a hardware-keyboard tab to a button; Codex round 2). Re-check without a
+                    // traversal; if the field is still here, a pending retry sequence has done its job.
+                    if (revalidateBubbleField(overlay)) cancelDiscoveryRetries()
                 }
             }
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isOwnOverlayWindow(event.windowId)) return
-                revalidateBubbleField(overlay, discover = discoveryWarranted(event))
+                // A cosmetic windows-changed that finds the field present cancels any pending retry.
+                if (discoveryWarranted(event)) discoverFieldWithRetry() else if (revalidateBubbleField(overlay)) cancelDiscoveryRetries()
             }
             else -> Unit
         }
@@ -341,7 +362,7 @@ class PasteAccessibilityService : AccessibilityService() {
      * update, an accessibility toggle) kept the bubble hidden until the user tapped the box again
      * (Codex review of the Play branch, 2026-09-12).
      */
-    private fun revalidateBubbleField(overlay: RecordingAccessibilityOverlay, discover: Boolean = false) {
+    private fun revalidateBubbleField(overlay: RecordingAccessibilityOverlay, discover: Boolean = false): Boolean {
         var target = lastTarget
         var stillFocused = target != null &&
             runCatching { target.node.refresh() && isSafeFocusedEditor(target.node) && isInFocusedWindow(target.windowId) }
@@ -351,8 +372,7 @@ class PasteAccessibilityService : AccessibilityService() {
             // Content-free: counts and booleans only (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
             Log.d(
                 TAG,
-                "Bubble discovery found=${found != null} activeRoot=${rootInActiveWindow != null} " +
-                    "windows=${runCatching { windows.size }.getOrDefault(-1)}",
+                "Bubble discovery found=${found != null} windows=${runCatching { windows.size }.getOrDefault(-1)}",
             )
             if (found != null) {
                 clearTarget()
@@ -363,7 +383,64 @@ class PasteAccessibilityService : AccessibilityService() {
         }
         if (stillFocused) overlay.fieldActivated(fieldKey(target!!)) else overlay.fieldLost()
         overlay.keyboardBounds(dockedKeyboardTop())
+        return stillFocused
     }
+
+    /**
+     * Discover the focused editor now, and if none is accessible yet, re-look at [DISCOVERY_RETRY_DELAYS_MS]
+     * so a returning field that the framework exposes a second or two late still lights the bubble without a
+     * re-tap (#141 phone pass). Coalesced per focused window: a stream of windows-changed events for the same
+     * return does not restart the schedule (which would postpone the retries forever); a genuinely different
+     * focused window starts one fresh sequence. Stops the moment a field is found.
+     */
+    private fun discoverFieldWithRetry() {
+        val overlay = recordingOverlay ?: return
+        val focusedId = focusedWindowId()
+        // A sequence already chasing this same focused window keeps running; do not restart it, or a burst
+        // of events would postpone the retries forever. A still-unknown focused window (-1) coalesces the
+        // same way, so a burst during the exact window-unavailable state being repaired does not churn
+        // (Codex review, 2026-09-13).
+        if (discoveryRetryRunnable != null && focusedId == discoveryWindowId) return
+        cancelDiscoveryRetries()
+        discoveryWindowId = focusedId
+        // Captured BEFORE the first look, so the retry deadlines measure from the transition, not from after
+        // a slow initial traversal (Codex proviso, 2026-09-13).
+        discoveryStartUptime = SystemClock.uptimeMillis()
+        if (revalidateBubbleField(overlay, discover = true)) return
+        scheduleDiscoveryRetry(discoveryGeneration)
+    }
+
+    private fun scheduleDiscoveryRetry(generation: Int) {
+        if (discoveryAttempt >= DISCOVERY_RETRY_DELAYS_MS.size) return
+        val runnable = Runnable {
+            // A newer transition or a teardown bumped the generation: this attempt is stale.
+            if (generation != discoveryGeneration) return@Runnable
+            discoveryRetryRunnable = null
+            val overlay = recordingOverlay ?: return@Runnable
+            discoveryAttempt++
+            if (revalidateBubbleField(overlay, discover = true)) {
+                cancelDiscoveryRetries()
+                return@Runnable
+            }
+            scheduleDiscoveryRetry(generation)
+        }
+        discoveryRetryRunnable = runnable
+        // Absolute offsets from the first attempt (uptime timebase), so a slow traversal cannot stretch the
+        // schedule past the ~2 s window it is meant to cover.
+        mainHandler.postAtTime(runnable, discoveryStartUptime + DISCOVERY_RETRY_DELAYS_MS[discoveryAttempt])
+    }
+
+    /** Invalidate any pending discovery-retry sequence. Bumps the generation so an in-flight runnable that
+     *  already left the handler queue sees itself superseded and does nothing. */
+    private fun cancelDiscoveryRetries() {
+        discoveryGeneration++
+        discoveryRetryRunnable?.let { mainHandler.removeCallbacks(it) }
+        discoveryRetryRunnable = null
+        discoveryAttempt = 0
+    }
+
+    private fun focusedWindowId(): Int =
+        runCatching { windows.firstOrNull { it.isFocused }?.id ?: -1 }.getOrDefault(-1)
 
     /**
      * The editor's identity for hide-until-the-next-field: window id plus the node's own hash, which
@@ -416,6 +493,7 @@ class PasteAccessibilityService : AccessibilityService() {
         clearPinnedTarget()
         mainHandler.removeCallbacks(retryRunnable)
         retryScheduled = false
+        cancelDiscoveryRetries()
     }
 
     /**
@@ -426,6 +504,7 @@ class PasteAccessibilityService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         if (instance === this) publishBinding(null)
         markStopWasClean()
+        cancelDiscoveryRetries()
         return super.onUnbind(intent)
     }
 
@@ -438,6 +517,7 @@ class PasteAccessibilityService : AccessibilityService() {
         recordingOverlay = null
         mainHandler.removeCallbacks(retryRunnable)
         retryScheduled = false
+        cancelDiscoveryRetries()
         // Announced BEFORE the blocking Room drain below, for the reason spelled out on
         // recordAndAnnounce: what survives this teardown is the durable notification, and it only
         // survives if it is handed to the system while this process is still alive.

@@ -180,7 +180,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
                 current.copy(held = current.held ?: snapshot.requestToken?.held)
             }
         } else {
-            current?.copy(ended = true)
+            current?.let { if (it.ended) it else it.copy(endedAtMs = System.currentTimeMillis()) }
         }
         takeHeld = take?.takeIf { !it.ended }?.held
         judge()

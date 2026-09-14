@@ -38,7 +38,8 @@ class OnboardingPolicyTest {
     // ---- practice is judged from the take's own History row, and nothing else ----
 
     private val takeStart = 1_000_000L
-    private val ended = PracticeTake(startedAtMs = takeStart, held = false, ended = true)
+    private val takeEnd = takeStart + 8_000L
+    private val ended = PracticeTake(startedAtMs = takeStart, held = false, endedAtMs = takeEnd)
 
     /** Binds the take to its row the way the screen does, then judges. */
     private fun judge(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>) =
@@ -50,7 +51,7 @@ class OnboardingPolicyTest {
     )
 
     @Test fun aRunningTakeHasNoVerdictYet() {
-        assertNull(judge(ended.copy(ended = false), PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED))))
+        assertNull(judge(ended.copy(endedAtMs = null), PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED))))
     }
 
     @Test fun wordsThatReachedTheBoxByEitherRouteLand() {
@@ -99,6 +100,17 @@ class OnboardingPolicyTest {
         assertEquals(PracticeOutcome.LANDED, judge(ended.copy(held = true), PracticeLesson.HOLD, landed))
         // The tap lesson does not care how the take was started.
         assertEquals(PracticeOutcome.LANDED, judge(ended.copy(held = true), PracticeLesson.TAP, landed))
+    }
+
+    @Test fun anEndedTakeWithNoRowNeverAdoptsALaterOne() {
+        // Cancelled before a draft existed, then the user dictated in Gmail and came back: that row was
+        // created after this take ended, so it is not this take's (Codex review round 6).
+        val later = row(takeEnd + 30_000, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED)
+        assertEquals(null, bindPracticeRow(ended, listOf(later)).rowId)
+        assertEquals(PracticeOutcome.NOTHING_LANDED, judge(ended, PracticeLesson.TAP, listOf(later)))
+        // A row that arrives late but was created during the take is still bound (round 3's ordering).
+        val own = row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED)
+        assertEquals(own.id, bindPracticeRow(ended, listOf(later, own)).rowId)
     }
 
     @Test fun theEarliestRowAfterTheTakeBeganIsTheTakesOwn() {

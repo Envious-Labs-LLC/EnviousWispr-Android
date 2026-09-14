@@ -12,15 +12,19 @@ internal enum class PracticeLesson { TAP, HOLD }
 /**
  * One take the practice screen is following, from the moment the session owner left IDLE.
  * [held] is the gesture the owner's snapshot named, or null for a take that carried no bubble token.
- * [rowId] is the History row this take wrote, bound the first time one is seen and never rebound, so
- * a later dictation cannot be mistaken for this take (Codex review, round 2).
+ * [endedAtMs] is when the owner returned to IDLE, or null while it is busy. [rowId] is the History row
+ * this take wrote, bound the first time one is seen and never rebound. The owner writes that row when
+ * capture starts, so it was created between the take's start and its end: a row created after the end
+ * belongs to a later dictation and is never this take's (Codex reviews, rounds 2 and 6).
  */
 internal data class PracticeTake(
     val startedAtMs: Long,
     val held: Boolean?,
-    val ended: Boolean = false,
+    val endedAtMs: Long? = null,
     val rowId: Long? = null,
-)
+) {
+    val ended: Boolean get() = endedAtMs != null
+}
 
 /**
  * Three answers, read off ONE fact: this take's own History row. Earlier rounds judged more (the box's
@@ -47,12 +51,14 @@ internal enum class PracticeOutcome {
 private const val TAKE_ROW_SLACK_MS = 1_000L
 
 /**
- * Bind [take] to its own History row: the EARLIEST row created after the take began, because the owner
- * writes the draft row the moment capture starts. Once bound, the id never changes.
+ * Bind [take] to its own History row: the EARLIEST row created after the take began and, once the take
+ * has ended, no later than that end. Once bound, the id never changes.
  */
 internal fun bindPracticeRow(take: PracticeTake, rows: List<TranscriptEntity>): PracticeTake {
     if (take.rowId != null) return take
-    val own = rows.filter { it.createdAtMs >= take.startedAtMs - TAKE_ROW_SLACK_MS }.minByOrNull { it.createdAtMs } ?: return take
+    val own = rows
+        .filter { it.createdAtMs >= take.startedAtMs - TAKE_ROW_SLACK_MS && (take.endedAtMs == null || it.createdAtMs <= take.endedAtMs) }
+        .minByOrNull { it.createdAtMs } ?: return take
     return take.copy(rowId = own.id)
 }
 

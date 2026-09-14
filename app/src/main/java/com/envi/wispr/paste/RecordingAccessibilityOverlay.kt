@@ -52,6 +52,12 @@ internal class RecordingAccessibilityOverlay(
     private val stateLabel = TextView(service)
     private val notice = TextView(service)
     private val bubbleMark = BrandMarkView(service)
+    private val cancelButton = actionButton(ActionGlyph.CROSS, "Cancel", BrandPalette.NEUTRAL_CONTROL) {
+        DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL)
+    }
+    private val acceptButton = actionButton(ActionGlyph.CHECK, "Stop and use these words", BrandPalette.ACCENT) {
+        DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP)
+    }
     private val bubble = buildBubble()
     private val pillColumn = buildPillColumn()
     private val root = buildRoot()
@@ -231,7 +237,9 @@ internal class RecordingAccessibilityOverlay(
                     ?: Box(bounds.usable.right - dp(MARGIN_DP) - dp(BUBBLE_DP), bounds.usable.top + dp(MARGIN_DP), bounds.usable.right - dp(MARGIN_DP), bounds.usable.top + dp(MARGIN_DP) + dp(BUBBLE_DP))
                 // Measure the whole column, notice line included, so a warning that grows it is
                 // placed above the keyboard rather than hanging over the keys (Play-branch review).
-                val width = bounds.usable.width - 2 * dp(MARGIN_DP)
+                val compact = snapshot.requestToken != null && snapshot.requestToken == heldTake
+                layOutPill(compact)
+                val width = if (compact) dp(COMPACT_PILL_DP) else bounds.usable.width - 2 * dp(MARGIN_DP)
                 pillColumn.measure(
                     View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
@@ -249,9 +257,13 @@ internal class RecordingAccessibilityOverlay(
                 if (box == null) {
                     remove()
                 } else {
-                    // STARTING and PROCESSING: the bubble stays, dimmed, and ignores taps. The mock's
-                    // working state; the owner is not accepting a start yet.
-                    bubble.alpha = if (snapshot.phase == RecordingOverlayState.Phase.IDLE) 1f else WORKING_ALPHA
+                    // STARTING and PROCESSING: the bubble stays and ignores taps, and the lips roll
+                    // their rainbow to say the words are being worked on (founder 2026-09-13, after
+                    // Wispr Flow's spinning icon). Where animations are off at the system level the
+                    // mock's dimmed working state stands in for the motion.
+                    val working = snapshot.phase != RecordingOverlayState.Phase.IDLE
+                    val animated = bubbleMark.setBusy(working)
+                    bubble.alpha = if (working && !animated) WORKING_ALPHA else 1f
                     showShape(pill = false, box = box, width = box.width, height = box.height)
                 }
             }
@@ -260,6 +272,7 @@ internal class RecordingAccessibilityOverlay(
     }
 
     private fun showShape(pill: Boolean, box: Box, width: Int, height: Int) {
+        if (pill) bubbleMark.setBusy(false)
         pillColumn.visibility = if (pill) View.VISIBLE else View.GONE
         bubble.visibility = if (pill) View.GONE else View.VISIBLE
         val unchanged = layoutParams.x == box.left && layoutParams.y == box.top &&
@@ -283,6 +296,7 @@ internal class RecordingAccessibilityOverlay(
     }
 
     private fun remove() {
+        bubbleMark.setBusy(false)
         if (!attached) return
         runCatching { windowManager.removeViewImmediate(root) }
         attached = false
@@ -349,6 +363,16 @@ internal class RecordingAccessibilityOverlay(
      */
     private var holdRequest: BubbleRequestToken? = null
 
+    /**
+     * The request the LAST hold created, kept past its release. The pill drawn for that request is the
+     * compact one (just the level rail), and it must stay compact between the finger lifting and the
+     * owner hearing the STOP, which is why this is not [holdRequest]. Tokens are unique per request, so
+     * a later take, from a tap or from the side button, never matches it.
+     */
+    private var heldTake: BubbleRequestToken? = null
+    /** What the pill's parts were last laid out for; null until the first pill. */
+    private var pillCompact: Boolean? = null
+
     private fun onGesture(gesture: BubbleGesture) {
         when (gesture) {
             BubbleGesture.Nothing -> Unit
@@ -362,6 +386,7 @@ internal class RecordingAccessibilityOverlay(
                 // on the dimmed bubble during an earlier take mints nothing, so its release cannot stop
                 // that take (Codex code review, round 2).
                 holdRequest = startDictation()
+                heldTake = holdRequest ?: heldTake
             }
             BubbleGesture.HoldRelease -> {
                 // Sent at once, whatever the snapshot shows: the owner's ledger orders it against the
@@ -577,25 +602,43 @@ internal class RecordingAccessibilityOverlay(
         // being pinned to one width that is wrong on two of them.
         container.addView(
             meter,
-            LinearLayout.LayoutParams(0, dp(22), 1f).apply { marginEnd = dp(10) },
+            LinearLayout.LayoutParams(0, dp(RAIL_HEIGHT_DP), 1f).apply { marginEnd = dp(10) },
         )
         container.addView(
             stateLabel,
             LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(10) },
         )
-        container.addView(
-            actionButton(ActionGlyph.CROSS, "Cancel", BrandPalette.NEUTRAL_CONTROL) {
-                DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL)
-            },
-            LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(8) },
-        )
-        container.addView(
-            actionButton(ActionGlyph.CHECK, "Stop and use these words", BrandPalette.ACCENT) {
-                DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP)
-            },
-            LinearLayout.LayoutParams(dp(40), dp(40)),
-        )
+        container.addView(cancelButton, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(8) })
+        container.addView(acceptButton, LinearLayout.LayoutParams(dp(40), dp(40)))
+        pill = container
         return container
+    }
+
+    private lateinit var pill: LinearLayout
+
+    /**
+     * Two layouts of the one pill. Full: mark, time, rail, LISTENING, cancel, accept, across the screen.
+     * Compact, for a hold: the rail alone in a short pill at the bubble's edge, because the finger is
+     * already the control and everything else was noise while it was down (founder 2026-09-13, from
+     * Wispr Flow's hold pill). Same height either way, so the pill never jumps between the two.
+     */
+    private fun layOutPill(compact: Boolean) {
+        if (pillCompact == compact) return
+        pillCompact = compact
+        val partsVisibility = if (compact) View.GONE else View.VISIBLE
+        mark.visibility = partsVisibility
+        timer.visibility = partsVisibility
+        stateLabel.visibility = partsVisibility
+        cancelButton.visibility = partsVisibility
+        acceptButton.visibility = partsVisibility
+        (meter.layoutParams as LinearLayout.LayoutParams).apply {
+            height = if (compact) dp(COMPACT_RAIL_HEIGHT_DP) else dp(RAIL_HEIGHT_DP)
+            marginEnd = if (compact) 0 else dp(10)
+        }
+        meter.layoutParams = meter.layoutParams
+        val vertical = if (compact) dp(COMPACT_PILL_PADDING_DP) else dp(8)
+        pill.setPadding(if (compact) dp(16) else dp(10), vertical, if (compact) dp(16) else dp(10), vertical)
+        pill.contentDescription = if (compact) "Recording. Let go to finish." else "Recording controls"
     }
 
     /** "Drop to hide", in its own untouchable window, shown only while a drag is in progress. */
@@ -697,6 +740,13 @@ internal class RecordingAccessibilityOverlay(
         const val BUBBLE_DP = 56
         const val MARGIN_DP = 12
         const val PILL_HEIGHT_DP = 60
+        const val RAIL_HEIGHT_DP = 22
+
+        /** The hold pill: the rail alone, about the width of the finger's neighbourhood. */
+        const val COMPACT_PILL_DP = 168
+        /** A taller rail, padded so the compact pill stands exactly [PILL_HEIGHT_DP] tall. */
+        const val COMPACT_RAIL_HEIGHT_DP = 28
+        const val COMPACT_PILL_PADDING_DP = 16
         const val HIDE_STRIP_DP = 72
 
         /** How far outside the drawn hide label a drop still counts as on it. */

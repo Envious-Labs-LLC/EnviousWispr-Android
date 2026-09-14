@@ -33,6 +33,7 @@ import com.envi.wispr.insertion.ServiceFallbackReason
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import com.envi.wispr.ui.DictationSessionService
+import com.envi.wispr.settings.AppPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -184,6 +185,8 @@ class PasteAccessibilityService : AccessibilityService() {
         startTimeoutMs = MAIN_CALL_TIMEOUT_MS,
     )
     private val historyScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** Holds the one never-ending preference collect for the bubble's look; cancelled first in onDestroy. */
+    private val lookScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val transcriptRepository by lazy {
         TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao())
     }
@@ -223,6 +226,14 @@ class PasteAccessibilityService : AccessibilityService() {
             recordingOverlay = RecordingAccessibilityOverlay(this).also { overlay ->
                 overlay.onPositionChanged = { position -> historyScope.launch { bubblePositionStore.save(position) } }
                 overlay.start()
+            }
+            // The chosen look, and every later change to it, applied on the main thread. Its own scope:
+            // this collect never completes, and onDestroy joins historyScope's children before
+            // cancelling them, so it must not be one of those.
+            lookScope.launch {
+                AppPreferences(applicationContext).state.collect { preferences ->
+                    mainHandler.post { recordingOverlay?.setLook(preferences.bubbleLook) }
+                }
             }
         }
         Log.i(TAG, "Accessibility insertion service connected")
@@ -512,6 +523,7 @@ class PasteAccessibilityService : AccessibilityService() {
         // Retract the publication FIRST. Teardown below blocks this thread draining Room, and a
         // reader during that window would otherwise see a healthy binding on a dying service.
         if (instance === this) publishBinding(null)
+        lookScope.cancel()
         // Detach only; the bus belongs to the session owner (see onInterrupt).
         recordingOverlay?.stop()
         recordingOverlay = null

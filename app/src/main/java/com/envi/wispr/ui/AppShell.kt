@@ -108,6 +108,7 @@ import com.envi.wispr.models.modelUiState
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.shortcuts.DictationNotificationController
+import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderConfiguration
@@ -208,6 +209,7 @@ internal fun EnviousWisprApp(
     onRestoreClipboardChanged: (Boolean) -> Unit,
     onSmartInsertionChanged: (Boolean) -> Unit,
     onDynamicColorChanged: (Boolean) -> Unit,
+    onBubbleLookChanged: (BubbleLook) -> Unit,
     onSetPolishMode: (PolishMode) -> Int,
     onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol, Int?) -> Int,
     onClearProviderSettings: (Provider) -> Int,
@@ -396,6 +398,7 @@ internal fun EnviousWisprApp(
                         SettingsPage.Appearance -> AppearancePage(
                             preferences = uiState.preferences,
                             onDynamicColorChanged = onDynamicColorChanged,
+                            onBubbleLookChanged = onBubbleLookChanged,
                         )
                         SettingsPage.Microphone -> MicrophonePage(
                             readiness = uiState.readiness,

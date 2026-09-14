@@ -620,6 +620,7 @@ internal class RecordingAccessibilityOverlay(
             marginEnd = if (compact) 0 else dp(10)
         }
         meter.layoutParams = meter.layoutParams
+        meter.barCount = if (compact) RecordingLevelMeterView.BAR_COUNT else FULL_PILL_BARS
         val vertical = if (compact) dp(COMPACT_PILL_PADDING_DP) else dp(8)
         pill.setPadding(if (compact) dp(16) else dp(10), vertical, if (compact) dp(16) else dp(10), vertical)
         pill.contentDescription = if (compact) "Recording. Let go to finish." else "Recording controls"
@@ -723,8 +724,13 @@ internal class RecordingAccessibilityOverlay(
         const val PILL_HEIGHT_DP = 60
         const val RAIL_HEIGHT_DP = 22
 
-        /** The tap pill: clock, rail, cancel, accept. Narrow enough to leave the text it types into visible. */
-        const val FULL_PILL_DP = 300
+        /**
+         * The tap pill: clock, rail, cancel, accept. The rail gets half the hold pill's reach, so the
+         * pill is 232 dp: 166 dp of fixed parts plus a 66 dp rail of [FULL_PILL_BARS] bars, the same
+         * bar width as the hold pill's 22 bars in 134 dp (founder 2026-09-13, build 116 phone pass).
+         */
+        const val FULL_PILL_DP = 232
+        const val FULL_PILL_BARS = 11
         /** The hold pill: the rail alone, about the width of the finger's neighbourhood. */
         const val COMPACT_PILL_DP = 168
         /** A taller rail, padded so the compact pill stands exactly [PILL_HEIGHT_DP] tall. */

@@ -2,19 +2,12 @@
 set -euo pipefail
 : "${ANDROID_HOME:?Android SDK required}"
 : "${PLAY_VERSION_CODE:?Release version code required}"
-mkdir -p app/libs
-curl --fail --location --silent --show-error --retry 3 \
-  https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.29/sherpa-onnx-1.12.29.aar \
-  -o app/libs/sherpa-onnx.aar
-printf '%s  %s\n' 2beeb891a6f07043a7993d9957fdd4d6a67ec9b8ccdb573cb9fe57c4834f3376 app/libs/sherpa-onnx.aar | sha256sum --check
-# Accept the SDK licences only for the explicitly requested toolchain packages.
-"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;29.0.13113456' 'cmake;3.31.6' <<'SDK_LICENSES'
-y
-y
-y
-y
-SDK_LICENSES
-printf 'sdk.dir=%s\ncmake.dir=%s/cmake/3.31.6\n' "$ANDROID_HOME" "$ANDROID_HOME" > local.properties
+# Install the shared, pinned dependencies: the sherpa-onnx AAR, the SDK toolchain
+# (platform, build-tools, NDK, CMake) and local.properties. Shared with the PR
+# check (pr-check.yml) via scripts/ci/setup-android-deps.sh so a PR builds against
+# exactly the toolchain that ships.
+# shellcheck source=../ci/setup-android-deps.sh
+source "$(dirname "$0")/../ci/setup-android-deps.sh"
 ./gradlew :app:testReleaseUnitTest :app:bundleRelease --rerun-tasks --console=plain --max-workers=2 -PplayVersionCode="$PLAY_VERSION_CODE"
 python3 scripts/release/test_receipt.py
 mkdir -p dist

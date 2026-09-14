@@ -41,6 +41,9 @@ class OnboardingDemoScriptTest {
         assertTrue(demo.contains("private const val MAX_FRAME_SECONDS = 0.1f"))
         // A window too short for the header, the real bubble and a keyboard scales the whole scene down.
         assertTrue(demo.contains("val fit = (maxHeight / GMAIL_MIN_HEIGHT).coerceAtMost(1f)"))
+        // The card must be measured at its full height before it is scaled: a plain size is clamped by the parent.
+        assertTrue(demo.contains("Modifier.wrapContentSize(Alignment.TopStart, unbounded = true)"))
+        assertTrue(demo.contains("Modifier.requiredSize(width / fit, GMAIL_MIN_HEIGHT)"))
         assertTrue(demo.contains("private fun keyboardHeight(height: Dp): Dp = minOf(KEYBOARD, height * 0.4f)"))
     }
 

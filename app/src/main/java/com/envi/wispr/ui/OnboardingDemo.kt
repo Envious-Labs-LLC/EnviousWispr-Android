@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -42,6 +44,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
@@ -411,9 +414,15 @@ private fun GmailScene(t: Float, held: Boolean, look: BubbleLook, palette: DemoP
     // scaled down rather than a scene with its bubble clipped away (Codex review 1, 2026-09-14).
     BoxWithConstraints(modifier.fillMaxSize()) {
         val fit = (maxHeight / GMAIL_MIN_HEIGHT).coerceAtMost(1f)
+        val width = maxWidth
         if (fit < 1f) {
-            Box(Modifier.size(maxWidth / fit, GMAIL_MIN_HEIGHT).graphicsLayer { scaleX = fit; scaleY = fit; transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f) }) {
-                GmailCard(t, held, look, palette, frozen)
+            // The card is laid out at its full minimum height, outside the short parent's limits
+            // (`requiredSize` inside an unbounded wrapper), and only then drawn scaled to fit (Codex
+            // review 2, 2026-09-14: a plain `size` was clamped to the parent and shrunk twice).
+            Box(Modifier.wrapContentSize(Alignment.TopStart, unbounded = true)) {
+                Box(Modifier.requiredSize(width / fit, GMAIL_MIN_HEIGHT).graphicsLayer { scaleX = fit; scaleY = fit; transformOrigin = TransformOrigin(0f, 0f) }) {
+                    GmailCard(t, held, look, palette, frozen)
+                }
             }
         } else GmailCard(t, held, look, palette, frozen)
     }
@@ -435,8 +444,8 @@ private fun GmailCard(t: Float, held: Boolean, look: BubbleLook, palette: DemoPa
                 Box(Modifier.fillMaxWidth().padding(start = 13.dp, top = 11.dp, end = 13.dp)) {
                 Row {
                     if (frame.landed) Text(if (held) DemoScript.HOLD_EMAIL else DemoScript.TAP_EMAIL, color = GMAIL_INK, fontSize = 13.sp, lineHeight = 19.sp)
-                    // The cursor: at the left of the empty body, then after the words.
-                    Box(Modifier.padding(top = 2.dp).size(1.5.dp, 15.dp).alpha(if (floor(t * 3).toInt() % 2 == 0) 1f else 0f).background(GMAIL_INK))
+                    // The cursor blinks at the left of the empty body; the landed email replaces it.
+                    if (!frame.landed) Box(Modifier.padding(top = 2.dp).size(1.5.dp, 15.dp).alpha(if (floor(t * 3).toInt() % 2 == 0) 1f else 0f).background(GMAIL_INK))
                 }
                 }
             }

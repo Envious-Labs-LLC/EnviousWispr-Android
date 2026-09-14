@@ -59,6 +59,9 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     /** The verdict on the last take, or null before the first take and while one is running. */
     var practiceOutcome by mutableStateOf<PracticeOutcome?>(null)
         private set
+    /** The gesture behind the take in progress, or null when there is none or it carried no bubble token. */
+    var takeHeld by mutableStateOf<Boolean?>(null)
+        private set
     var downloadMessage by mutableStateOf("")
         private set
     private var take: PracticeTake? = null
@@ -118,13 +121,17 @@ internal class OnboardingViewModel(application: Application, private val saved: 
 
     /** Every edit is accepted, the words the service puts in the box included: the box is a real editor. */
     fun editDraft(value: TextFieldValue) {
+        val changed = value.text != draft.text
         draft = value
         saved["practice_draft"] = value.text
+        if (changed) judge()
     }
 
     /**
-     * The practice box is on screen: admit it to the accessibility service and follow the owner and
-     * History until [leavePractice]. Idempotent, so a recomposition costs nothing.
+     * The practice box is on screen AND in front: admit it to the accessibility service and follow the
+     * owner and History until [leavePractice]. Called on resume and undone on pause, so a take the user
+     * makes in another app while setup waits in the background is never adopted as practice (Codex
+     * review, 2026-09-14). Idempotent, so a recomposition costs nothing.
      */
     fun enterPractice() {
         if (watching?.isActive == true) return
@@ -156,19 +163,20 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         take = if (snapshot.phase != RecordingOverlayState.Phase.IDLE) {
             val processing = snapshot.phase == RecordingOverlayState.Phase.PROCESSING
             if (current == null || current.ended) {
-                PracticeTake(startedAtMs = System.currentTimeMillis(), held = snapshot.requestToken?.held, processed = processing)
+                PracticeTake(startedAtMs = System.currentTimeMillis(), held = snapshot.requestToken?.held, boxTextAtStart = draft.text, processed = processing)
             } else {
                 current.copy(held = current.held ?: snapshot.requestToken?.held, processed = current.processed || processing)
             }
         } else {
             current?.copy(ended = true)
         }
+        takeHeld = take?.takeIf { !it.ended }?.held
         judge()
     }
 
     private fun judge() {
         val current = take ?: return
-        val outcome = judgePracticeTake(current, lesson, rows)
+        val outcome = judgePracticeTake(current, lesson, rows, draft.text)
         practiceOutcome = outcome
         when (outcome) {
             PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {

@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.envi.wispr.models.ModelHealth
@@ -65,10 +66,11 @@ internal fun OnboardingScreen(
         else onStepChange(OnboardingStage.WELCOME.ordinal)
     }
     // The practice box is admitted to the accessibility service only while the practice stage is on
-    // screen, so the floating lips can appear beside it and nowhere else in the app.
-    DisposableEffect(stage) {
+    // screen AND in front, so the floating lips can appear beside it and nowhere else in the app, and a
+    // take made in another app while setup waits in the background is never counted as practice.
+    LifecycleResumeEffect(stage) {
         if (stage == OnboardingStage.PRACTICE) model.enterPractice()
-        onDispose { if (stage == OnboardingStage.PRACTICE) model.leavePractice() }
+        onPauseOrDispose { if (stage == OnboardingStage.PRACTICE) model.leavePractice() }
     }
     val practiceBox = remember { FocusRequester() }
     // Test tags are exported as accessibility view ids so the service can name the practice box.
@@ -123,10 +125,13 @@ internal fun OnboardingScreen(
                         val hold = model.lesson == PracticeLesson.HOLD
                         val outcome = model.practiceOutcome
                         val landed = outcome == PracticeOutcome.LANDED || outcome == PracticeOutcome.LANDED_BY_TAP
+                        // While a take runs, the instruction follows the gesture actually in use, not the lesson: a
+                        // held take has no check to tap, and a tapped take does not stop on release.
+                        val holding = model.takeHeld == true
                         val (title, line) = when (model.practicePhase) {
-                            RecordingOverlayState.Phase.STARTING -> "Getting ready to listen…" to (if (hold) "Keep holding." else "One moment.")
+                            RecordingOverlayState.Phase.STARTING -> "Getting ready to listen…" to (if (holding) "Keep holding." else "One moment.")
                             RecordingOverlayState.Phase.RECORDING ->
-                                if (hold) "Keep holding. We’re listening." to "Let go when you’re done."
+                                if (holding) "Keep holding. We’re listening." to "Let go when you’re done."
                                 else "Go ahead. We’re listening." to "Speak naturally. Tap the check when you’re done."
                             RecordingOverlayState.Phase.PROCESSING -> "Tidying your words…" to "Your words will appear in the text box."
                             RecordingOverlayState.Phase.IDLE -> when (outcome) {

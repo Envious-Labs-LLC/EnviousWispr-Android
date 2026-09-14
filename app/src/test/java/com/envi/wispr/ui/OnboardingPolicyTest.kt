@@ -38,7 +38,12 @@ class OnboardingPolicyTest {
     // ---- practice is judged from the History row the take wrote ----
 
     private val takeStart = 1_000_000L
-    private val ended = PracticeTake(startedAtMs = takeStart, held = false, processed = true, ended = true)
+    private val ended = PracticeTake(startedAtMs = takeStart, held = false, boxTextAtStart = "", processed = true, ended = true)
+    /** The box after words landed in it. */
+    private val landedBox = "Words."
+
+    private fun judge(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>, box: String = landedBox) =
+        judgePracticeTake(take, lesson, rows, box)
 
     private fun row(createdAt: Long, status: String, result: String) = TranscriptEntity(
         id = createdAt, originalText = "um words", finalText = "Words.", createdAtMs = createdAt, durationMs = 1_000L,
@@ -46,43 +51,54 @@ class OnboardingPolicyTest {
     )
 
     @Test fun aRunningTakeHasNoVerdictYet() {
-        assertNull(judgePracticeTake(ended.copy(ended = false), PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED))))
+        assertNull(judge(ended.copy(ended = false), PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED))))
     }
 
     @Test fun wordsThatReachedTheBoxByEitherRouteLand() {
-        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED))))
-        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.PASTED))))
+        assertEquals(PracticeOutcome.LANDED, judge(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED))))
+        assertEquals(PracticeOutcome.LANDED, judge(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.PASTED))))
     }
 
     @Test fun aRowFromAnEarlierTakeIsNotThisTakesVerdict() {
         // The tap lesson's row is older than this take; with no row of its own the take produced no words.
         val earlier = row(takeStart - 5_000, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED)
-        assertEquals(PracticeOutcome.NO_WORDS, judgePracticeTake(ended, PracticeLesson.HOLD, listOf(earlier)))
+        assertEquals(PracticeOutcome.NO_WORDS, judge(ended, PracticeLesson.HOLD, listOf(earlier)))
     }
 
     @Test fun noRowMeansNoWordsWhenTranscribedAndNothingAddedWhenNot() {
-        assertEquals(PracticeOutcome.NO_WORDS, judgePracticeTake(ended, PracticeLesson.TAP, emptyList()))
-        assertEquals(PracticeOutcome.NOTHING_ADDED, judgePracticeTake(ended.copy(processed = false), PracticeLesson.TAP, emptyList()))
+        assertEquals(PracticeOutcome.NO_WORDS, judge(ended, PracticeLesson.TAP, emptyList()))
+        assertEquals(PracticeOutcome.NOTHING_ADDED, judge(ended.copy(processed = false), PracticeLesson.TAP, emptyList()))
     }
 
     @Test fun anInsertionStillRunningKeepsTheScreenWorking() {
         listOf(TranscriptEntity.STATUS_DRAFT, TranscriptEntity.STATUS_PROCESSING, TranscriptEntity.STATUS_READY_FOR_INSERTION).forEach { status ->
-            assertEquals(status, PracticeOutcome.WORKING, judgePracticeTake(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, status, "pending"))))
+            assertEquals(status, PracticeOutcome.WORKING, judge(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, status, "pending"))))
         }
     }
 
     @Test fun wordsSavedButNotInTheBoxAreAMiss() {
-        assertEquals(PracticeOutcome.MISSED_BOX, judgePracticeTake(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COPY_ONLY))))
-        assertEquals(PracticeOutcome.MISSED_BOX, judgePracticeTake(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_INSERTION_INTERRUPTED, InsertionResults.INSERTION_INTERRUPTED))))
+        assertEquals(PracticeOutcome.MISSED_BOX, judge(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COPY_ONLY))))
+        assertEquals(PracticeOutcome.MISSED_BOX, judge(ended, PracticeLesson.TAP, listOf(row(takeStart + 10, TranscriptEntity.STATUS_INSERTION_INTERRUPTED, InsertionResults.INSERTION_INTERRUPTED))))
     }
 
     @Test fun theHoldLessonTellsATapFromAHold() {
         val landed = listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED))
-        assertEquals(PracticeOutcome.LANDED_BY_TAP, judgePracticeTake(ended.copy(held = false), PracticeLesson.HOLD, landed))
-        assertEquals(PracticeOutcome.LANDED_BY_TAP, judgePracticeTake(ended.copy(held = null), PracticeLesson.HOLD, landed))
-        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(ended.copy(held = true), PracticeLesson.HOLD, landed))
+        assertEquals(PracticeOutcome.LANDED_BY_TAP, judge(ended.copy(held = false), PracticeLesson.HOLD, landed))
+        assertEquals(PracticeOutcome.LANDED_BY_TAP, judge(ended.copy(held = null), PracticeLesson.HOLD, landed))
+        assertEquals(PracticeOutcome.LANDED, judge(ended.copy(held = true), PracticeLesson.HOLD, landed))
         // The tap lesson does not care how the take was started.
-        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(ended.copy(held = true), PracticeLesson.TAP, landed))
+        assertEquals(PracticeOutcome.LANDED, judge(ended.copy(held = true), PracticeLesson.TAP, landed))
+    }
+
+    @Test fun aLandedRowWhoseWordsWentToAnotherAppsBoxIsAMiss() {
+        // Setup left in the background while the user dictated into Gmail: the row landed, the box did not change.
+        val landed = listOf(row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED))
+        assertEquals(PracticeOutcome.MISSED_BOX, judge(ended, PracticeLesson.TAP, landed, box = ""))
+        assertEquals(PracticeOutcome.LANDED, judge(ended, PracticeLesson.TAP, landed, box = "Words."))
+        // The box holding earlier words counts only when the new words changed it.
+        val second = ended.copy(boxTextAtStart = "Earlier words.")
+        assertEquals(PracticeOutcome.MISSED_BOX, judge(second, PracticeLesson.TAP, landed, box = "Earlier words."))
+        assertEquals(PracticeOutcome.LANDED, judge(second, PracticeLesson.TAP, landed, box = "Earlier words. Words."))
     }
 
     @Test fun theNewestRowOfTheTakeIsTheOneJudged() {
@@ -90,6 +106,6 @@ class OnboardingPolicyTest {
             row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COPY_ONLY),
             row(takeStart + 20, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED),
         )
-        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(ended, PracticeLesson.TAP, rows))
+        assertEquals(PracticeOutcome.LANDED, judge(ended, PracticeLesson.TAP, rows))
     }
 }

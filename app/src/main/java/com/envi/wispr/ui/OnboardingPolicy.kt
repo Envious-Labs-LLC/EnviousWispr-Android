@@ -12,10 +12,13 @@ internal enum class PracticeLesson { TAP, HOLD }
 /**
  * One take the practice screen is following, from the moment the session owner left IDLE.
  * [held] is the gesture the owner's snapshot named, or null for a take that carried no bubble token.
+ * [boxTextAtStart] is what the practice box held when the take began: words that landed must have
+ * changed it, which is how a take aimed at some other app's field is kept from passing practice.
  */
 internal data class PracticeTake(
     val startedAtMs: Long,
     val held: Boolean?,
+    val boxTextAtStart: String,
     val processed: Boolean = false,
     val ended: Boolean = false,
 )
@@ -39,11 +42,12 @@ internal enum class PracticeOutcome {
 private const val TAKE_ROW_SLACK_MS = 1_000L
 
 /**
- * What the practice screen says about [take], judged from the History row the take wrote, never from
- * the text in the box: typing is allowed there, and a row is the one record the box did not write.
- * Null while the owner is still busy with the take.
+ * What the practice screen says about [take], judged from the History row the take wrote AND from the
+ * box: a landed row proves words were inserted somewhere, and [boxText] having changed since the take
+ * began proves the somewhere was this box. Typing alone writes no row; a take into another app's field
+ * changes no box; only the practice take does both. Null while the owner is still busy with the take.
  */
-internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>): PracticeOutcome? {
+internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>, boxText: String): PracticeOutcome? {
     if (!take.ended) return null
     val row = rows.filter { it.createdAtMs >= take.startedAtMs - TAKE_ROW_SLACK_MS }.maxByOrNull { it.createdAtMs }
         ?: return if (take.processed) PracticeOutcome.NO_WORDS else PracticeOutcome.NOTHING_ADDED
@@ -52,10 +56,11 @@ internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows:
         TranscriptEntity.STATUS_PROCESSING,
         TranscriptEntity.STATUS_READY_FOR_INSERTION,
         -> PracticeOutcome.WORKING
-        TranscriptEntity.STATUS_COMPLETED -> when (row.insertionResult) {
-            InsertionResults.COMMITTED, InsertionResults.PASTED ->
-                if (lesson == PracticeLesson.HOLD && take.held != true) PracticeOutcome.LANDED_BY_TAP else PracticeOutcome.LANDED
-            else -> PracticeOutcome.MISSED_BOX
+        TranscriptEntity.STATUS_COMPLETED -> when {
+            row.insertionResult != InsertionResults.COMMITTED && row.insertionResult != InsertionResults.PASTED -> PracticeOutcome.MISSED_BOX
+            boxText == take.boxTextAtStart -> PracticeOutcome.MISSED_BOX
+            lesson == PracticeLesson.HOLD && take.held != true -> PracticeOutcome.LANDED_BY_TAP
+            else -> PracticeOutcome.LANDED
         }
         else -> PracticeOutcome.MISSED_BOX
     }

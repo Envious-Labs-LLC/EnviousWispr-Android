@@ -39,14 +39,15 @@ class OnboardingPolicyTest {
 
     private val takeStart = 1_000_000L
     private val takeEnd = takeStart + 8_000L
-    private val ended = PracticeTake(startedAtMs = takeStart, held = false, endedAtMs = takeEnd)
+    /** The newest row when the take began carried id 5; the take's own row is a higher id. */
+    private val ended = PracticeTake(newestRowAtStart = 5L, held = false, endedAtMs = takeEnd)
 
     /** Binds the take to its row the way the screen does, then judges. */
     private fun judge(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>) =
         judgePracticeTake(bindPracticeRow(take, rows), lesson, rows)
 
-    private fun row(createdAt: Long, status: String, result: String) = TranscriptEntity(
-        id = createdAt, originalText = "um words", finalText = "Words.", createdAtMs = createdAt, durationMs = 1_000L,
+    private fun row(createdAt: Long, status: String, result: String, id: Long = 6L) = TranscriptEntity(
+        id = id, originalText = "um words", finalText = "Words.", createdAtMs = createdAt, durationMs = 1_000L,
         speechEngine = "Parakeet", polishEngine = "none", polishLatencyMs = 0L, insertionResult = result, status = status,
     )
 
@@ -60,9 +61,13 @@ class OnboardingPolicyTest {
     }
 
     @Test fun aRowFromAnEarlierTakeIsNotThisTakesVerdict() {
-        val earlier = row(takeStart - 5_000, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED)
+        // By identity, not by time: the earlier take's row is id 5 however recently it was written
+        // (a failed short take retried within a second, Codex review round 8).
+        val earlier = row(takeStart - 5, TranscriptEntity.STATUS_ASR_ERROR, "pending", id = 5L)
         assertEquals(PracticeOutcome.NOTHING_LANDED, judge(ended, PracticeLesson.HOLD, listOf(earlier)))
         assertEquals(PracticeOutcome.NOTHING_LANDED, judge(ended, PracticeLesson.TAP, emptyList()))
+        val own = row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, id = 6L)
+        assertEquals(PracticeOutcome.LANDED, judge(ended, PracticeLesson.TAP, listOf(earlier, own)))
     }
 
     @Test fun theVerdictStaysOnTheTakesOwnRowWhateverIsDictatedLater() {
@@ -70,7 +75,7 @@ class OnboardingPolicyTest {
         val own = row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED)
         val bound = bindPracticeRow(ended, listOf(own))
         assertEquals(own.id, bound.rowId)
-        val later = row(takeStart + 60_000, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COPY_ONLY)
+        val later = row(takeStart + 60_000, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COPY_ONLY, id = 7L)
         assertEquals(bound, bindPracticeRow(bound, listOf(own, later)))
         assertEquals(PracticeOutcome.LANDED, judgePracticeTake(bound, PracticeLesson.TAP, listOf(own, later)))
         // The owner deleted the row (a silent or cancelled take): nothing landed.
@@ -105,7 +110,7 @@ class OnboardingPolicyTest {
     @Test fun anEndedTakeWithNoRowNeverAdoptsALaterOne() {
         // Cancelled before a draft existed, then the user dictated in Gmail and came back: that row was
         // created after this take ended, so it is not this take's (Codex review round 6).
-        val later = row(takeEnd + 30_000, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED)
+        val later = row(takeEnd + 30_000, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, id = 7L)
         assertEquals(null, bindPracticeRow(ended, listOf(later)).rowId)
         assertEquals(PracticeOutcome.NOTHING_LANDED, judge(ended, PracticeLesson.TAP, listOf(later)))
         // A row that arrives late but was created during the take is still bound (round 3's ordering).
@@ -113,10 +118,10 @@ class OnboardingPolicyTest {
         assertEquals(own.id, bindPracticeRow(ended, listOf(later, own)).rowId)
     }
 
-    @Test fun theEarliestRowAfterTheTakeBeganIsTheTakesOwn() {
+    @Test fun theFirstRowWrittenAfterTheTakeBeganIsTheTakesOwn() {
         val rows = listOf(
-            row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED),
-            row(takeStart + 20_000, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COPY_ONLY),
+            row(takeStart + 20_000, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COPY_ONLY, id = 7L),
+            row(takeStart + 10, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, id = 6L),
         )
         assertEquals(PracticeOutcome.LANDED, judge(ended, PracticeLesson.TAP, rows))
     }

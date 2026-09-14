@@ -68,6 +68,12 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     private var take: PracticeTake? = null
     private var rows: List<TranscriptEntity> = emptyList()
     private var watching: Job? = null
+    /**
+     * False from entry until the owner has been seen IDLE once. A take already running when the screen
+     * comes (back) to the front is nobody's: not this screen's to judge and not a new one to adopt
+     * (Codex review round 8). Only a take that begins while the screen watches is followed.
+     */
+    private var sawIdle = false
     private val engines = EngineWarmUp(context, viewModelScope)
     val practicing: Boolean get() = practicePhase != RecordingOverlayState.Phase.IDLE || practiceOutcome == PracticeOutcome.WORKING
 
@@ -148,6 +154,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun enterPractice() {
         if (watching?.isActive == true) return
         OwnFieldAdmission.admit(PRACTICE_FIELD_ID)
+        sawIdle = false
         watching = viewModelScope.launch {
             launch { RecordingOverlayState.snapshots.collect { snapshot -> followOwner(snapshot) } }
             launch { transcripts.transcripts.collect { latest -> rows = latest; judge() } }
@@ -182,11 +189,15 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     }
 
     private fun followOwner(snapshot: RecordingOverlayState.Snapshot) {
+        if (!sawIdle) {
+            if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return
+            sawIdle = true
+        }
         practicePhase = snapshot.phase
         val current = take
         take = if (snapshot.phase != RecordingOverlayState.Phase.IDLE) {
             if (current == null || current.ended) {
-                PracticeTake(startedAtMs = System.currentTimeMillis(), held = snapshot.requestToken?.held)
+                PracticeTake(newestRowAtStart = rows.maxOfOrNull { it.id } ?: 0L, held = snapshot.requestToken?.held)
             } else {
                 current.copy(held = current.held ?: snapshot.requestToken?.held)
             }

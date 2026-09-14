@@ -12,13 +12,14 @@ internal enum class PracticeLesson { TAP, HOLD }
 /**
  * One take the practice screen is following, from the moment the session owner left IDLE.
  * [held] is the gesture the owner's snapshot named, or null for a take that carried no bubble token.
- * [endedAtMs] is when the owner returned to IDLE, or null while it is busy. [rowId] is the History row
- * this take wrote, bound the first time one is seen and never rebound. The owner writes that row when
- * capture starts, so it was created between the take's start and its end: a row created after the end
- * belongs to a later dictation and is never this take's (Codex reviews, rounds 2 and 6).
+ * [newestRowAtStart] is the highest History row id that existed when the take began: ids only grow, so
+ * the take's own row has a higher id, and every earlier take's row, however recent, is excluded by
+ * identity rather than by a time window (Codex review round 8). [endedAtMs] is when the owner returned
+ * to IDLE, or null while it is busy; the own row was created no later than that, so a row created after
+ * the end belongs to a later dictation (round 6). [rowId] is bound once and never rebound (round 2).
  */
 internal data class PracticeTake(
-    val startedAtMs: Long,
+    val newestRowAtStart: Long,
     val held: Boolean?,
     val endedAtMs: Long? = null,
     val rowId: Long? = null,
@@ -47,18 +48,15 @@ internal enum class PracticeOutcome {
     NOTHING_LANDED,
 }
 
-/** How far before the take was first seen a History row may have been created and still be its row. */
-private const val TAKE_ROW_SLACK_MS = 1_000L
-
 /**
- * Bind [take] to its own History row: the EARLIEST row created after the take began and, once the take
- * has ended, no later than that end. Once bound, the id never changes.
+ * Bind [take] to its own History row: the LOWEST id above the newest row that existed when the take
+ * began and, once the take has ended, created no later than that end. Once bound, the id never changes.
  */
 internal fun bindPracticeRow(take: PracticeTake, rows: List<TranscriptEntity>): PracticeTake {
     if (take.rowId != null) return take
     val own = rows
-        .filter { it.createdAtMs >= take.startedAtMs - TAKE_ROW_SLACK_MS && (take.endedAtMs == null || it.createdAtMs <= take.endedAtMs) }
-        .minByOrNull { it.createdAtMs } ?: return take
+        .filter { it.id > take.newestRowAtStart && (take.endedAtMs == null || it.createdAtMs <= take.endedAtMs) }
+        .minByOrNull { it.id } ?: return take
     return take.copy(rowId = own.id)
 }
 

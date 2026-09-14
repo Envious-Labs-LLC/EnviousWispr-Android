@@ -39,7 +39,7 @@ class OnboardingWiringTest {
     @Test
     fun theDemoPlaysBetweenThePermissionsAndPractice() {
         // "Try dictation" opens the demo; the demo's end and its Skip both open practice.
-        assertTrue(screen.contains("SetupButton(\"Try dictation\", fill, ready) { onStepChange(OnboardingStage.DEMO.ordinal) }"))
+        assertTrue(screen.contains("SetupButton(\"See how it works\", fill, ready) { onStepChange(OnboardingStage.DEMO.ordinal) }"))
         assertTrue(screen.contains("onStepChange(OnboardingStage.PRACTICE.ordinal)"))
         // Setup calls the button one thing, the founder's word (2026-09-14).
         val copy = Regex("\"[^\"]*\"").findAll(screen).map { it.value }.joinToString("\n")

@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.util.Log
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -46,10 +47,10 @@ internal class RecordingAccessibilityOverlay(
 ) : RecordingOverlayState.Listener {
     private val windowManager = service.getSystemService(WindowManager::class.java)
     private val density = service.resources.displayMetrics.density
-    private val mark = BrandMarkView(service)
-    private val timer = TextView(service)
+    /** Declared before the views: `buildPill` applies it while the views are still being built. */
+    private var look = BubbleLook.DEFAULT
+    private val timer = InkEdgedTextView(service)
     private val meter = RecordingLevelMeterView(service)
-    private val stateLabel = TextView(service)
     private val notice = TextView(service)
     private val bubbleMark = BrandMarkView(service)
     private val cancelButton = actionButton(ActionGlyph.CROSS, "Cancel", BrandPalette.NEUTRAL_CONTROL) {
@@ -165,6 +166,47 @@ internal class RecordingAccessibilityOverlay(
     /** What the service persists after a drag. Set by the service so the store stays out of this class. */
     var onPositionChanged: ((BubblePosition) -> Unit)? = null
 
+    /** The look the user chose in Settings > Appearance, delivered by the service on the main thread. */
+    fun setLook(look: BubbleLook) {
+        if (this.look == look) return
+        this.look = look
+        applyLook()
+    }
+
+    /**
+     * Paint the three surfaces for [look]. One ground colour and one shadow depth shared by the bubble
+     * and both pills, no outline on any of them; the lips, the rail and the clock carry the look's ink
+     * edge, so all three read on a white page and a dark one alike. The values are
+     * Codex's from `docs/mockups/android-bubble-v2/README.md`, ported one to one.
+     */
+    private fun applyLook() {
+        val ground = look.surfaceFill
+        val shadow = dp(look.surfaceElevationDp).toFloat()
+        // The bubble's visible ground is a 48 dp square inside the 56 dp touch target.
+        bubble.background = if (ground ushr 24 == 0) {
+            null
+        } else {
+            InsetDrawable(roundedBackground(ground, dp(BUBBLE_RADIUS_DP).toFloat()), dp(BUBBLE_INSET_DP))
+        }
+        bubble.elevation = shadow
+        bubble.outlineSpotShadowColor = BrandPalette.PILL_BACKGROUND
+        bubble.outlineAmbientShadowColor = BrandPalette.PILL_BACKGROUND
+        val lipsInset = dp((BUBBLE_DP - look.lipsDp) / 2)
+        bubbleMark.setPadding(lipsInset, lipsInset, lipsInset, lipsInset)
+        bubbleMark.inkEdgePx = look.inkEdgeDp * density
+        pill.background = if (ground ushr 24 == 0) null else roundedBackground(ground, dp(PILL_RADIUS_DP).toFloat())
+        pill.elevation = shadow
+        pill.outlineSpotShadowColor = BrandPalette.PILL_BACKGROUND
+        pill.outlineAmbientShadowColor = BrandPalette.PILL_BACKGROUND
+        meter.inkEdgePx = look.inkEdgeDp * density
+        // The clock's edge is heavier than the bars': 1.5 dp, Codex's value, so the digits hold their
+        // shape on a white page at 15 sp.
+        timer.inkEdgePx = if (look.inkEdgeDp > 0f) CLOCK_INK_EDGE_DP * density else 0f
+        // The two controls are see-through like the ground they sit on; only their glyphs are solid.
+        cancelButton.background = roundedBackground(look.cancelFill, dp(CONTROL_RADIUS_DP).toFloat())
+        acceptButton.background = roundedBackground(look.acceptFill, dp(CONTROL_RADIUS_DP).toFloat())
+    }
+
     // ---- what the session owner tells the overlay ----
 
     override fun onChanged(snapshot: RecordingOverlayState.Snapshot) {
@@ -238,8 +280,8 @@ internal class RecordingAccessibilityOverlay(
                 // Measure the whole column, notice line included, so a warning that grows it is
                 // placed above the keyboard rather than hanging over the keys (Play-branch review).
                 val compact = snapshot.requestToken != null && snapshot.requestToken == heldTake
-                layOutPill(compact)
-                val width = if (compact) dp(COMPACT_PILL_DP) else bounds.usable.width - 2 * dp(MARGIN_DP)
+                layOutPill(compact, mirrored = position.side == BubbleSide.LEFT)
+                val width = if (compact) dp(COMPACT_PILL_DP) else dp(FULL_PILL_DP)
                 pillColumn.measure(
                     View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
@@ -489,19 +531,14 @@ internal class RecordingAccessibilityOverlay(
         }
     }
 
-    /** The idle lips: the brand mark in a 56 dp violet-outlined circle. */
+    /**
+     * The idle lips on a 56 dp touch target. Ground, shadow, lips size and ink edge come from the
+     * chosen [BubbleLook] through [applyLook]; nothing here paints. The founder dropped the
+     * violet-ringed dark circle on 2026-09-14 for Wispr Flow's lighter shape and then chose to
+     * offer three looks rather than one.
+     */
     private fun buildBubble(): View {
-        // The lips fill a 34 dp square inside the 56 dp bubble, as in the approved mock.
-        bubbleMark.setPadding(dp(11), dp(11), dp(11), dp(11))
         return FrameLayout(service).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(BrandPalette.PILL_BACKGROUND)
-                setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)
-            }
-            elevation = dp(10).toFloat()
-            outlineSpotShadowColor = BrandPalette.VIOLET
-            outlineAmbientShadowColor = BrandPalette.VIOLET
             contentDescription = "EnviousWispr. Double tap to dictate. Touch and hold to talk. Drag to move."
             isClickable = true
             isFocusable = false
@@ -546,22 +583,21 @@ internal class RecordingAccessibilityOverlay(
     }
 
     /**
-     * The pill, in the founder's own order: mark, elapsed time, level rail, state, cancel, accept.
+     * The pill: elapsed time, level rail, cancel, accept, in that order from the far edge towards the
+     * dock, so the accept control is always the one nearest the thumb that docked the bubble.
      *
-     * Layout from `docs/mockups/android-v2/06-floating-recorder.png` and that folder's README.
+     * Layout from `docs/mockups/android-v2/06-floating-recorder.png` and that folder's README, minus the
+     * mark and the LISTENING word: the founder dropped both on 2026-09-13 after using build 114, so the
+     * bar is smaller and less in the way. The lips are on the bubble; the pill does not need them twice.
      */
     private fun buildPill(): View {
         val container = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(10), dp(8), dp(10), dp(8))
-            elevation = dp(12).toFloat()
-            // A violet outline and a soft violet glow on a fully rounded pill. The glow is the
-            // elevation's own shadow tinted violet, which is what makes the recorder read as ours
-            // rather than as a system chip.
-            background = pillBackground()
-            outlineSpotShadowColor = BrandPalette.VIOLET
-            outlineAmbientShadowColor = BrandPalette.VIOLET
+            // Ground and shadow come from the chosen look through applyLook. The violet outline and
+            // violet glow of the first recorder are retired (founder 2026-09-14): none of the three
+            // looks carries a border.
             contentDescription = "Recording controls"
         }
 
@@ -574,61 +610,45 @@ internal class RecordingAccessibilityOverlay(
             // it does not shift every second.
             typeface = brandTypeface(R.font.plus_jakarta_sans_semibold)
             minWidth = dp(48)
+            // The clock reads left to right whichever way the pill is mirrored.
+            textDirection = View.TEXT_DIRECTION_LTR
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
 
-        stateLabel.apply {
-            // STATIC, and it can only be right. The pill exists while `visible` is true, which is
-            // exactly the listening phase; every later phase has already hidden it.
-            text = LISTENING_LABEL
-            gravity = Gravity.CENTER
-            setTextColor(BrandPalette.TEXT_MUTED)
-            textSize = 10f
-            letterSpacing = 0.14f
-            typeface = brandTypeface(R.font.plus_jakarta_sans_bold)
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-            contentDescription = "Listening"
-        }
-
-        container.addView(
-            mark,
-            LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) },
-        )
         container.addView(
             timer,
             LinearLayout.LayoutParams(WRAP, dp(44)).apply { marginEnd = dp(10) },
         )
-        // The rail takes the room that is left, so the pill grows with the screen rather than the rail
-        // being pinned to one width that is wrong on two of them.
+        // The rail takes the room the fixed parts leave, so the two pill widths share one layout.
         container.addView(
             meter,
             LinearLayout.LayoutParams(0, dp(RAIL_HEIGHT_DP), 1f).apply { marginEnd = dp(10) },
         )
-        container.addView(
-            stateLabel,
-            LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(10) },
-        )
         container.addView(cancelButton, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(8) })
         container.addView(acceptButton, LinearLayout.LayoutParams(dp(40), dp(40)))
         pill = container
+        applyLook()
         return container
     }
 
     private lateinit var pill: LinearLayout
 
     /**
-     * Two layouts of the one pill. Full: mark, time, rail, LISTENING, cancel, accept, across the screen.
-     * Compact, for a hold: the rail alone in a short pill at the bubble's edge, because the finger is
-     * already the control and everything else was noise while it was down (founder 2026-09-13, from
-     * Wispr Flow's hold pill). Same height either way, so the pill never jumps between the two.
+     * Two layouts of the one pill, either of them mirrored. Full: time, rail, cancel, accept, at the
+     * bubble's edge. Compact, for a hold: the rail alone in a shorter pill, because the finger is already
+     * the control and everything else was noise while it was down (founder 2026-09-13, from Wispr Flow's
+     * hold pill). Same height either way, so the pill never jumps between the two.
+     *
+     * [mirrored] flips the row for a bubble docked on the LEFT, so accept sits at the left edge under
+     * the thumb that put the bubble there, rather than across the pill (founder 2026-09-13). The row's
+     * layout direction does the flipping, which keeps every margin between the same two neighbours.
      */
-    private fun layOutPill(compact: Boolean) {
+    private fun layOutPill(compact: Boolean, mirrored: Boolean) {
+        pill.layoutDirection = if (mirrored) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
         if (pillCompact == compact) return
         pillCompact = compact
         val partsVisibility = if (compact) View.GONE else View.VISIBLE
-        mark.visibility = partsVisibility
         timer.visibility = partsVisibility
-        stateLabel.visibility = partsVisibility
         cancelButton.visibility = partsVisibility
         acceptButton.visibility = partsVisibility
         (meter.layoutParams as LinearLayout.LayoutParams).apply {
@@ -636,6 +656,7 @@ internal class RecordingAccessibilityOverlay(
             marginEnd = if (compact) 0 else dp(10)
         }
         meter.layoutParams = meter.layoutParams
+        meter.barCount = if (compact) RecordingLevelMeterView.BAR_COUNT else FULL_PILL_BARS
         val vertical = if (compact) dp(COMPACT_PILL_PADDING_DP) else dp(8)
         pill.setPadding(if (compact) dp(16) else dp(10), vertical, if (compact) dp(16) else dp(10), vertical)
         pill.contentDescription = if (compact) "Recording. Let go to finish." else "Recording controls"
@@ -689,14 +710,6 @@ internal class RecordingAccessibilityOverlay(
         hideTargetAttached = false
     }
 
-    /** The pill's ground plus its violet outline, as one drawable. */
-    private fun pillBackground() = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = dp(28).toFloat()
-        setColor(BrandPalette.PILL_BACKGROUND)
-        setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)
-    }
-
     /** A round control whose symbol is drawn, not typed: a text glyph sits where its font puts it, not at the centre. */
     private fun actionButton(
         glyph: ActionGlyph,
@@ -707,7 +720,7 @@ internal class RecordingAccessibilityOverlay(
         contentDescription = accessibilityLabel
         isClickable = true
         isFocusable = false
-        background = roundedBackground(color, dp(20).toFloat())
+        background = roundedBackground(color, dp(CONTROL_RADIUS_DP).toFloat())
         setOnClickListener { action() }
     }
 
@@ -734,14 +747,27 @@ internal class RecordingAccessibilityOverlay(
         /** Unchanged on purpose: the device harness finds the window by this title. */
         const val WINDOW_TITLE = "EnviousWispr recording controls"
 
-        /** What the recorder says it is doing. The mockup's own word, in quiet caps. */
-        const val LISTENING_LABEL = "LISTENING"
-
         const val BUBBLE_DP = 56
+        /** The bubble's visible ground sits this far inside the 56 dp touch target: a 48 dp square. */
+        const val BUBBLE_INSET_DP = 4
+        /** The ground's corner, a rounded square rather than a circle. */
+        const val BUBBLE_RADIUS_DP = 14
+        /** Both pills are fully rounded at their 60 dp height. */
+        const val PILL_RADIUS_DP = 30
+        /** The 40 dp cancel and accept circles. */
+        const val CONTROL_RADIUS_DP = 20
+        const val CLOCK_INK_EDGE_DP = 1.5f
         const val MARGIN_DP = 12
         const val PILL_HEIGHT_DP = 60
         const val RAIL_HEIGHT_DP = 22
 
+        /**
+         * The tap pill: clock, rail, cancel, accept. The rail gets half the hold pill's reach, so the
+         * pill is 232 dp: 166 dp of fixed parts plus a 66 dp rail of [FULL_PILL_BARS] bars, the same
+         * bar width as the hold pill's 22 bars in 134 dp (founder 2026-09-13, build 116 phone pass).
+         */
+        const val FULL_PILL_DP = 232
+        const val FULL_PILL_BARS = 11
         /** The hold pill: the rail alone, about the width of the finger's neighbourhood. */
         const val COMPACT_PILL_DP = 168
         /** A taller rail, padded so the compact pill stands exactly [PILL_HEIGHT_DP] tall. */

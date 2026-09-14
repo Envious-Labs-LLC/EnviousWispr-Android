@@ -1,6 +1,7 @@
 package com.envi.wispr.paste
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -134,9 +135,13 @@ class RecorderBrandTest {
 
     @Test
     fun thePillCarriesTheFounderSpecifiedOrder() {
-        // From docs/mockups/android-v2/06-floating-recorder.png: mark, time, rail, state, cancel, accept.
+        // From docs/mockups/android-v2/06-floating-recorder.png: time, rail, cancel, accept. The mockup's
+        // mark and LISTENING word were dropped by the founder on 2026-09-13 (build 114 phone pass): the
+        // lips are on the bubble already, and the bar is smaller without them.
         val body = overlay.substringAfter("private fun buildPill()").substringBefore("private fun pillBackground()")
-        val order = listOf("mark,", "timer,", "meter,", "stateLabel,", "cancelButton,", "acceptButton,")
+        assertFalse("the pill carries no mark", body.contains("mark,"))
+        assertFalse("the pill carries no state label", body.contains("stateLabel"))
+        val order = listOf("timer,", "meter,", "cancelButton,", "acceptButton,")
             .map { it to body.indexOf(it) }
         order.forEach { (piece, at) -> assertTrue("$piece is not in the pill", at >= 0) }
         assertEquals(
@@ -147,13 +152,17 @@ class RecorderBrandTest {
     }
 
     @Test
-    fun theRecorderCarriesTheVioletOutlineAndGlow() {
-        assertTrue("the pill needs its violet outline", overlay.contains("setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)"))
-        assertTrue(
-            "and its violet glow, which is the shadow tinted",
-            overlay.contains("outlineSpotShadowColor = BrandPalette.VIOLET") &&
-                overlay.contains("outlineAmbientShadowColor = BrandPalette.VIOLET"),
-        )
+    fun noSurfaceCarriesAnOutlineAndTheLookPaintsAllThree() {
+        // Founder 2026-09-14: the violet outline and violet glow are retired; none of the three looks
+        // has a border, and one ground colour is shared by the bubble and both pills.
+        assertFalse("no bubble or pill may draw the violet stroke", overlay.contains("setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)"))
+        val painters = overlay.substringAfter("private fun applyLook()").substringBefore("private fun buildHideTarget()")
+        assertFalse("no bubble or pill may draw any stroke", painters.contains("setStroke("))
+        assertFalse("no violet glow remains", overlay.contains("ShadowColor = BrandPalette.VIOLET"))
+        val apply = overlay.substringAfter("private fun applyLook()").substringBefore("\n    }\n")
+        listOf("bubble.background", "bubble.elevation", "pill.background", "pill.elevation", "bubbleMark.inkEdgePx", "meter.inkEdgePx", "cancelButton.background", "acceptButton.background")
+            .forEach { assertTrue("applyLook must set $it", apply.contains(it)) }
+        assertTrue("the look is applied once the pill exists", overlay.contains("pill = container\n        applyLook()"))
     }
 
     @Test

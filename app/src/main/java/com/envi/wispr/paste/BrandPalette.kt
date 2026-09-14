@@ -47,4 +47,6 @@ internal object BrandPalette {
 
     /** A resting meter bar, dim enough to read as "nothing heard" without reading as broken. */
     const val METER_RESTING = 0xFF3A3547.toInt()
+
+    /** The bubble's and the pills' grounds per look: `BubbleLook.surfaceFill`. */
 }

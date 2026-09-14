@@ -39,8 +39,32 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         color = BrandPalette.METER_RESTING
     }
     private val bar = RectF()
+    private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = BrandMarkView.INK }
     private val history = LevelHistory(BAR_COUNT)
+
+    /** A dark edge behind every bar, in pixels; 0 draws none. See `BrandMarkView.inkEdgePx`. */
+    var inkEdgePx: Float = 0f
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
     private var levels = FloatArray(BAR_COUNT)
+
+    /**
+     * How many of the newest bars the rail draws, at most [BAR_COUNT]. The history keeps every
+     * sample either way, so the bars keep their width and only the rail's reach changes: the tap
+     * pill shows half the hold pill's reach (founder 2026-09-13, build 116 phone pass: "half the
+     * size of the audio bar ... the length is fine for the push to talk").
+     */
+    var barCount: Int = BAR_COUNT
+        set(value) {
+            val clamped = value.coerceIn(1, BAR_COUNT)
+            if (field == clamped) return
+            field = clamped
+            levels = history.bars(clamped)
+            invalidate()
+        }
 
     /**
      * The rainbow, rebuilt in LAYOUT and never while drawing.
@@ -61,14 +85,14 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
      */
     fun pushSample(level: Float) {
         history.push(level)
-        levels = history.bars(BAR_COUNT)
+        levels = history.bars(barCount)
         invalidate()
     }
 
     /** A new take starts with an empty record, not the tail of the last one. */
     fun reset() {
         history.clear()
-        levels = FloatArray(BAR_COUNT)
+        levels = FloatArray(barCount)
         invalidate()
     }
 
@@ -100,12 +124,22 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
 
         // The bars and the gaps between them share the width, so the rail keeps its shape at whatever
         // size the pill gives it and nothing here depends on a measured density.
-        val barWidth = usableWidth / (BAR_COUNT + (BAR_COUNT - 1) * GAP_RATIO)
+        val count = barCount
+        val barWidth = usableWidth / (count + (count - 1) * GAP_RATIO)
         val step = barWidth * (1f + GAP_RATIO)
         val radius = barWidth / 2f
         val centreY = paddingTop + usableHeight / 2f
 
-        for (index in 0 until BAR_COUNT) {
+        val edge = inkEdgePx
+        if (edge > 0f) {
+            for (index in 0 until count) {
+                val barHeight = usableHeight * fill(levels[index])
+                val left = paddingLeft + index * step
+                bar.set(left - edge, centreY - barHeight / 2f - edge, left + barWidth + edge, centreY + barHeight / 2f + edge)
+                canvas.drawRoundRect(bar, radius + edge, radius + edge, inkPaint)
+            }
+        }
+        for (index in 0 until count) {
             val level = levels[index]
             // Symmetric about the centre line rather than growing off a floor, so the rail's visual
             // weight does not shift down the pill as the level drops. A silent sample is a short bar,

@@ -157,8 +157,8 @@ do_report() {
         done <<< "$gone_list"
 
         echo "  $n branch candidate(s). Nothing was deleted. Clear a worktree with:"
-        echo "    .claude/scripts/cleanup-merged-worktrees.sh --apply <path> [<path>...]"
-        echo "  A branch with no worktree: .claude/scripts/cleanup-local-branches.sh --apply <branch>."
+        echo "    scripts/cleanup-merged-worktrees.sh --apply <path> [<path>...]"
+        echo "  A branch with no worktree: scripts/cleanup-local-branches.sh --apply <branch>."
     fi
 
     # UNREGISTERED CHILD FOLDERS under .claude/worktrees/. These are the empty

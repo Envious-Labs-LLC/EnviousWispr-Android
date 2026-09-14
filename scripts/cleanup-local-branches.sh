@@ -99,7 +99,7 @@ do_report() {
     done <<< "$(gone_upstream_branches)"
     if [ "$n" -gt 0 ]; then
         echo "  $n candidate(s). Nothing was deleted. Clear them with:"
-        echo "    .claude/scripts/cleanup-local-branches.sh --apply <branch> [<branch>...]"
+        echo "    scripts/cleanup-local-branches.sh --apply <branch> [<branch>...]"
     fi
     return 0
 }

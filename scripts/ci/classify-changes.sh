@@ -11,7 +11,11 @@ set -uo pipefail
 base="${1:-}"
 [ -n "$base" ] || { echo build; exit 0; }
 
-files=$(git diff --name-only "$base"...HEAD 2>/dev/null) || { echo build; exit 0; }
+# --no-renames so a rename is reported as BOTH its deletion and its addition.
+# With rename detection on, moving app/build.gradle.kts to docs/build.gradle.kts
+# would print only the docs-side path and wrongly classify as skip, even though
+# the app lost its build config.
+files=$(git diff --no-renames --name-only "$base"...HEAD 2>/dev/null) || { echo build; exit 0; }
 [ -n "$files" ] || { echo build; exit 0; }
 
 while IFS= read -r f; do

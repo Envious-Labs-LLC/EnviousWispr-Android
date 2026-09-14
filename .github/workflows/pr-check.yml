@@ -2,6 +2,10 @@ name: PR check
 on:
   pull_request:
     branches: [main]
+    # `edited` so RETARGETING a PR onto main starts the check without needing a
+    # new push; the default set (opened, synchronize, reopened) would otherwise
+    # leave the required check missing on a base-branch change.
+    types: [opened, synchronize, reopened, edited]
 permissions:
   contents: read
 concurrency:

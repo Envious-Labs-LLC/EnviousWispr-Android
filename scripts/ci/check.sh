@@ -24,15 +24,17 @@ files = glob.glob('app/build/test-results/testDebugUnitTest/**/*.xml', recursive
 if not files:
     print('CI FAIL: no unit-test result XML was produced; the tests did not run.')
     sys.exit(1)
-tests = failures = errors = 0
+tests = failures = errors = skipped = 0
 for f in files:
     root = ET.parse(f).getroot()
     tests += int(root.get('tests', '0'))
     failures += int(root.get('failures', '0'))
     errors += int(root.get('errors', '0'))
-print(f'CI: {tests} tests across {len(files)} suite file(s), {failures} failures, {errors} errors.')
-if tests == 0:
-    print('CI FAIL: the suite ran zero tests; refusing to pass a gutted test configuration.')
+    skipped += int(root.get('skipped', '0'))
+executed = tests - skipped
+print(f'CI: {tests} tests ({skipped} skipped, {executed} executed) across {len(files)} suite file(s), {failures} failures, {errors} errors.')
+if executed <= 0:
+    print('CI FAIL: zero tests actually executed (all skipped or none found); refusing to pass a gutted test configuration.')
     sys.exit(1)
 if failures or errors:
     sys.exit(1)

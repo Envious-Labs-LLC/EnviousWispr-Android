@@ -1,62 +1,79 @@
 package com.envi.wispr.ui
 
 import android.app.Application
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.os.ResultReceiver
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkManager
+import com.envi.wispr.history.EnviousWisprDatabase
+import com.envi.wispr.history.TranscriptEntity
+import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.models.ModelUiState
+import com.envi.wispr.paste.OwnFieldAdmission
 import com.envi.wispr.settings.AppPreferences
-import java.util.UUID
+import com.envi.wispr.shortcuts.RecordingOverlayState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.mapLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-internal enum class PracticePhase { IDLE, STARTING, RECORDING, PROCESSING }
-
-/** Owns only onboarding interaction state; engines and delivery remain in their existing owners. */
+/**
+ * Owns only onboarding interaction state; engines and delivery remain in their existing owners.
+ *
+ * Practice is a REAL dictation: the floating lips appear beside the practice box because the box is
+ * the one field of our own the accessibility service admits ([OwnFieldAdmission]), a tap or a hold
+ * on them runs the session owner exactly as a Gmail field would, and the words land through the
+ * normal insertion path. This model only watches: the owner's published phase for the headline, and
+ * the History row the take wrote for the verdict ([judgePracticeTake]).
+ */
 internal class OnboardingViewModel(application: Application, private val saved: SavedStateHandle) : AndroidViewModel(application) {
     private val context = application.applicationContext
     private val preferences = AppPreferences(context)
     private val refresh = MutableStateFlow(0)
     private val work = WorkManager.getInstance(context)
-    private var requestToken: String? = null
-    var practicePhase by mutableStateOf(PracticePhase.IDLE)
+    private val transcripts by lazy { TranscriptRepository(EnviousWisprDatabase.get(context).transcriptDao()) }
+    var practicePhase by mutableStateOf(RecordingOverlayState.Phase.IDLE)
+        private set
+    var lesson by mutableStateOf(if (saved.get<Boolean>("practice_hold_lesson") == true) PracticeLesson.HOLD else PracticeLesson.TAP)
         private set
     var draft by mutableStateOf(TextFieldValue(saved.get<String>("practice_draft").orEmpty()))
         private set
+    /** The tap lesson landed once: Finish setup is available. */
     var practiceComplete by mutableStateOf(saved.get<Boolean>("practice_complete") ?: false)
         private set
-    var practiceMessage by mutableStateOf(if (saved.get<Boolean>("practice_active") == true) "Practice was interrupted. Your text is saved. Try again." else "")
+    var holdComplete by mutableStateOf(saved.get<Boolean>("practice_hold_complete") ?: false)
+        private set
+    /** The verdict on the last take, or null before the first take and while one is running. */
+    var practiceOutcome by mutableStateOf<PracticeOutcome?>(null)
+        private set
+    /** The gesture behind the take in progress, or null when there is none or it carried no bubble token. */
+    var takeHeld by mutableStateOf<Boolean?>(null)
         private set
     var downloadMessage by mutableStateOf("")
         private set
-    private var insertionDraft = draft
-    val practicing: Boolean get() = practicePhase != PracticePhase.IDLE
-
-    init { saved["practice_active"] = false }
+    private var take: PracticeTake? = null
+    private var rows: List<TranscriptEntity> = emptyList()
+    /**
+     * False from the moment following (re)starts until History has answered once. The owner's IDLE can
+     * arrive before Room's first emission on a resume, and a verdict locked on that stale list would
+     * say "no words" about a saved dictation (Codex review, round 3). No verdict is final until fresh.
+     */
+    private var rowsFresh = false
+    private var watching: Job? = null
+    val practicing: Boolean get() = practicePhase != RecordingOverlayState.Phase.IDLE || practiceOutcome == PracticeOutcome.WORKING
 
     private fun modelFlow(model: com.envi.wispr.models.ModelDescriptor): kotlinx.coroutines.flow.Flow<ModelUiState> {
         val observations = combine(
@@ -108,59 +125,101 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         }
     }
 
+    /** Every edit is accepted, the words the service puts in the box included: the box is a real editor. */
     fun editDraft(value: TextFieldValue) {
-        if (practicing) return
+        val changed = value.text != draft.text
         draft = value
         saved["practice_draft"] = value.text
+        if (changed) judge()
     }
 
-    fun startPractice() {
-        if (practicing) return
-        val token = UUID.randomUUID().toString()
-        requestToken = token
-        insertionDraft = draft
-        practicePhase = PracticePhase.STARTING
-        practiceMessage = ""
-        saved["practice_active"] = true
-        val receiver = object : ResultReceiver(Handler(Looper.getMainLooper())) {
-            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
-                if (requestToken != token || resultData?.getString(PracticeDelivery.TOKEN) != token) return
-                when (resultCode) {
-                    PracticeDelivery.STARTING -> practicePhase = PracticePhase.STARTING
-                    PracticeDelivery.RECORDING -> practicePhase = PracticePhase.RECORDING
-                    PracticeDelivery.PROCESSING -> practicePhase = PracticePhase.PROCESSING
-                    PracticeDelivery.FINISHED -> {
-                        val result = resultData.getString(PracticeDelivery.TEXT).orEmpty()
-                        if (result.isNotBlank()) {
-                            val (text, caret) = mergePracticeText(insertionDraft.text, insertionDraft.selection.start, insertionDraft.selection.end, result)
-                            draft = TextFieldValue(text, TextRange(caret))
-                            saved["practice_draft"] = text
-                            practiceComplete = true
-                            saved["practice_complete"] = true
-                        }
-                        endPractice(if (result.isBlank()) "No words were detected. Try again." else "")
-                    }
-                    PracticeDelivery.ENDED -> endPractice("No new text was added. Try again when you’re ready.")
-                    PracticeDelivery.ERROR -> endPractice(resultData.getString(PracticeDelivery.TEXT) ?: "Couldn’t finish that dictation. Please try again.")
-                }
-            }
+    /**
+     * The practice box is on screen AND in front: admit it to the accessibility service and follow the
+     * owner and History until [leavePractice]. Called on resume and undone on pause, so a take the user
+     * makes in another app while setup waits in the background is never adopted as practice (Codex
+     * review, 2026-09-14). Idempotent, so a recomposition costs nothing.
+     */
+    fun enterPractice() {
+        if (watching?.isActive == true) return
+        OwnFieldAdmission.admit(PRACTICE_FIELD_ID)
+        rowsFresh = false
+        watching = viewModelScope.launch {
+            launch { RecordingOverlayState.snapshots.collect { snapshot -> followOwner(snapshot) } }
+            launch { transcripts.transcripts.collect { latest -> rows = latest; rowsFresh = true; judge() } }
         }
-        runCatching { PracticeDelivery.start(context, token, receiver) }
-            .onFailure { endPractice("Couldn’t start recording. Please try again.") }
     }
 
-    fun stopPractice() { requestToken?.let { PracticeDelivery.command(context, it, DictationSessionService.ACTION_STOP) } }
-    fun cancelPractice() { requestToken?.let { runCatching { PracticeDelivery.command(context, it, DictationSessionService.ACTION_CANCEL) } } }
+    fun leavePractice() {
+        watching?.cancel()
+        watching = null
+        OwnFieldAdmission.withdraw(PRACTICE_FIELD_ID)
+    }
 
-    private fun endPractice(message: String) {
-        requestToken = null
-        practicePhase = PracticePhase.IDLE
-        saved["practice_active"] = false
-        practiceMessage = message
+    /** After the tap lesson landed: teach the hold. */
+    fun startHoldLesson() {
+        if (practicing) return
+        lesson = PracticeLesson.HOLD
+        saved["practice_hold_lesson"] = true
+        take = null
+        practiceOutcome = null
+    }
+
+    private fun followOwner(snapshot: RecordingOverlayState.Snapshot) {
+        practicePhase = snapshot.phase
+        val current = take
+        take = if (snapshot.phase != RecordingOverlayState.Phase.IDLE) {
+            if (current == null || current.ended) {
+                PracticeTake(startedAtMs = System.currentTimeMillis(), held = snapshot.requestToken?.held, boxTextAtStart = draft.text)
+            } else {
+                current.copy(held = current.held ?: snapshot.requestToken?.held)
+            }
+        } else {
+            current?.copy(ended = true)
+        }
+        takeHeld = take?.takeIf { !it.ended }?.held
+        judge()
+    }
+
+    /**
+     * Re-judge the current take. A verdict, once terminal, stands until the next take: the row it was
+     * judged on is bound to the take, so nothing dictated later can rewrite it. Until History has
+     * answered once since following started, an ended take reads as still WORKING rather than judged.
+     */
+    private fun judge() {
+        val current = take ?: return
+        if (current.ended && practiceOutcome != null && practiceOutcome != PracticeOutcome.WORKING) return
+        if (current.ended && !rowsFresh) {
+            practiceOutcome = PracticeOutcome.WORKING
+            return
+        }
+        val bound = bindPracticeRow(current, rows)
+        take = bound
+        val outcome = judgePracticeTake(bound, lesson, rows, draft.text)
+        practiceOutcome = outcome
+        when (outcome) {
+            PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {
+                holdComplete = true
+                saved["practice_hold_complete"] = true
+            } else {
+                practiceComplete = true
+                saved["practice_complete"] = true
+            }
+            // A tap answered the hold lesson: still a landed take, so Finish setup is earned.
+            PracticeOutcome.LANDED_BY_TAP -> {
+                practiceComplete = true
+                saved["practice_complete"] = true
+            }
+            else -> Unit
+        }
     }
 
     override fun onCleared() {
-        cancelPractice()
+        leavePractice()
         super.onCleared()
+    }
+
+    companion object {
+        /** The practice box's accessibility view id: its Compose test tag, exported as a resource id. */
+        const val PRACTICE_FIELD_ID = "envious_practice_field"
     }
 }

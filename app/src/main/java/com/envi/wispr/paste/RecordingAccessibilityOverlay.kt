@@ -420,14 +420,14 @@ internal class RecordingAccessibilityOverlay(
             BubbleGesture.Nothing -> Unit
             BubbleGesture.Tap -> {
                 root.removeCallbacks(holdRunnable)
-                startDictation()
+                startDictation(held = false)
             }
             BubbleGesture.HoldStart -> {
                 bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                 // Only THIS gesture's own request may be released or cancelled by this gesture. A hold
                 // on the dimmed bubble during an earlier take mints nothing, so its release cannot stop
                 // that take (Codex code review, round 2).
-                holdRequest = startDictation()
+                holdRequest = startDictation(held = true)
                 heldTake = holdRequest ?: heldTake
             }
             BubbleGesture.HoldRelease -> {
@@ -493,10 +493,10 @@ internal class RecordingAccessibilityOverlay(
      * Chrome hide its keyboard, so the direct route is tried first.
      */
     /** Returns the request this gesture created, or null when the owner was not IDLE and nothing was sent. */
-    private fun startDictation(): BubbleRequestToken? {
+    private fun startDictation(held: Boolean): BubbleRequestToken? {
         // Only an IDLE owner takes a new request; a tap while starting or processing does nothing.
         if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return null
-        val request = BubbleRequests.mint()
+        val request = BubbleRequests.mint(held)
         if (!service.startDictationFromBubble(request.encode())) {
             val intent = Intent(service, VoiceInputActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -546,7 +546,7 @@ internal class RecordingAccessibilityOverlay(
             // The accessibility click action (a TalkBack double tap) arrives here, never through the
             // touch listener below, which consumes every real touch and resolves taps itself. So the
             // two routes cannot fire twice for one gesture (Codex review of the Play branch, round 3).
-            setOnClickListener { startDictation() }
+            setOnClickListener { startDictation(held = false) }
             setOnTouchListener { _, event ->
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                     downRawX = event.rawX

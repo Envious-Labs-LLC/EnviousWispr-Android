@@ -3,20 +3,33 @@ package com.envi.wispr.shortcuts
 import java.util.UUID
 
 /**
- * A request the floating bubble made: which process it came from and where it sits in that process's
- * order. Carried as one string on the launcher and service intents.
+ * A request the floating bubble made: which process it came from, where it sits in that process's
+ * order, and whether the finger is still on the bubble ([held]: a hold-to-talk take, released to
+ * finish). Carried as one string on the launcher and service intents. The ledger orders by [epoch] and
+ * [seq] alone; [held] rides along so the owner's published snapshot can say which gesture a take
+ * answers, which the onboarding practice reads to tell a tap lesson from a hold lesson.
  */
-data class BubbleRequestToken(val epoch: String, val seq: Long) {
-    fun encode(): String = "$epoch:$seq"
+data class BubbleRequestToken(val epoch: String, val seq: Long, val held: Boolean = false) {
+    fun encode(): String = "$epoch:$seq:${if (held) HELD else TAPPED}"
 
     companion object {
+        private const val HELD = "h"
+        private const val TAPPED = "t"
+
         fun parse(value: String?): BubbleRequestToken? {
             if (value.isNullOrBlank()) return null
-            val at = value.lastIndexOf(':')
-            if (at <= 0) return null
-            val seq = value.substring(at + 1).toLongOrNull() ?: return null
+            val parts = value.split(':')
+            if (parts.size != 3) return null
+            val epoch = parts[0]
+            if (epoch.isEmpty()) return null
+            val seq = parts[1].toLongOrNull() ?: return null
             if (seq <= 0) return null
-            return BubbleRequestToken(value.substring(0, at), seq)
+            val held = when (parts[2]) {
+                HELD -> true
+                TAPPED -> false
+                else -> return null
+            }
+            return BubbleRequestToken(epoch, seq, held)
         }
     }
 }
@@ -73,10 +86,10 @@ open class BubbleRequestLedger internal constructor(private val epoch: String) {
     private var highWater = 0L
     private var note: Note? = null
 
-    /** A fresh token for a new bubble request. */
-    fun mint(): BubbleRequestToken = synchronized(lock) {
+    /** A fresh token for a new bubble request; [held] marks a hold-to-talk take. */
+    fun mint(held: Boolean = false): BubbleRequestToken = synchronized(lock) {
         counter += 1
-        BubbleRequestToken(epoch, counter)
+        BubbleRequestToken(epoch, counter, held)
     }
 
     /** A START with [token] arrived; [ownerIdle] is the owner's state at that moment. */

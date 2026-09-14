@@ -288,7 +288,10 @@ class PasteAccessibilityService : AccessibilityService() {
         val remembered = rememberEditableTarget(event)
         updateBubbleFromEvent(event, remembered)
 
-        if (pendingInsertion != null && event.packageName?.toString() != packageName) {
+        // An event from the target's own package can be the editor coming back. That is any other
+        // package, or ours when the pinned target is the admitted practice field.
+        val eventPackage = event.packageName?.toString()
+        if (pendingInsertion != null && (eventPackage != packageName || pinnedTarget?.packageName == packageName)) {
             scheduleRetry(delayMs = 25L)
         }
     }
@@ -603,11 +606,12 @@ class PasteAccessibilityService : AccessibilityService() {
     /** True when the event named a new editable target and it was remembered. */
     private fun rememberEditableTarget(event: AccessibilityEvent): Boolean {
         val eventPackage = event.packageName?.toString().orEmpty()
-        if (eventPackage.isBlank() || eventPackage == packageName) return false
+        if (!OwnFieldAdmission.searches(packageName, eventPackage)) return false
 
         val source = event.source ?: return false
         try {
             val shouldTrack = source.isEditable &&
+                OwnFieldAdmission.accepts(packageName, eventPackage, source.viewIdResourceName) &&
                 (source.isFocused ||
                     event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED ||
                     event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED)
@@ -754,7 +758,7 @@ class PasteAccessibilityService : AccessibilityService() {
     private fun findFocusedEditableTarget(root: AccessibilityNodeInfo?): TargetSnapshot? {
         root ?: return null
         val rootPackage = root.packageName?.toString().orEmpty()
-        if (rootPackage.isBlank() || rootPackage == packageName) return null
+        if (!OwnFieldAdmission.searches(packageName, rootPackage)) return null
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return null
         return try {
             val focusedPackage = focused.packageName?.toString().orEmpty()
@@ -780,7 +784,7 @@ class PasteAccessibilityService : AccessibilityService() {
 
     private fun isSafeFocusedEditor(node: AccessibilityNodeInfo): Boolean =
         node.isEditable && node.isFocused && node.isVisibleToUser &&
-            node.packageName?.toString().orEmpty().let { it.isNotBlank() && it != packageName }
+            OwnFieldAdmission.accepts(packageName, node.packageName?.toString(), node.viewIdResourceName)
 
     /**
      * Hands work to this service's main thread. The claim, the single deadline and the reason

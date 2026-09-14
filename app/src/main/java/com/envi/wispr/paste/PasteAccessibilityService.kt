@@ -176,6 +176,22 @@ class PasteAccessibilityService : AccessibilityService() {
                 if (service.pendingInsertion == null) service.clearPinnedTarget()
             }
         }
+
+        /** The accessibility view id of the pinned editor, or null when nothing is pinned or it has none. */
+        fun pinnedFieldId(): String? {
+            val service = instance ?: return null
+            return service.callOnMain(null) { service.pinnedTarget?.viewId }
+        }
+
+        /**
+         * An admitted field of our own was withdrawn ([OwnFieldAdmission.withdraw]) without any
+         * accessibility event to say so (setup left its practice screen): re-check the remembered
+         * editor, so the bubble leaves with the field instead of lingering on the next screen.
+         */
+        fun refreshBubble() {
+            val service = instance ?: return
+            service.mainHandler.post { service.recordingOverlay?.let { overlay -> service.revalidateBubbleField(overlay) } }
+        }
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())

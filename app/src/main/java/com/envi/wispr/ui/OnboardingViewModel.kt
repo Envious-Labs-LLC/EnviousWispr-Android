@@ -18,6 +18,7 @@ import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.paste.OwnFieldAdmission
+import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import kotlinx.coroutines.Dispatchers
@@ -66,13 +67,8 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         private set
     private var take: PracticeTake? = null
     private var rows: List<TranscriptEntity> = emptyList()
-    /**
-     * False from the moment following (re)starts until History has answered once. The owner's IDLE can
-     * arrive before Room's first emission on a resume, and a verdict locked on that stale list would
-     * say "no words" about a saved dictation (Codex review, round 3). No verdict is final until fresh.
-     */
-    private var rowsFresh = false
     private var watching: Job? = null
+    private val engines = EngineWarmUp(context, viewModelScope)
     val practicing: Boolean get() = practicePhase != RecordingOverlayState.Phase.IDLE || practiceOutcome == PracticeOutcome.WORKING
 
     private fun modelFlow(model: com.envi.wispr.models.ModelDescriptor): kotlinx.coroutines.flow.Flow<ModelUiState> {
@@ -127,11 +123,21 @@ internal class OnboardingViewModel(application: Application, private val saved: 
 
     /** Every edit is accepted, the words the service puts in the box included: the box is a real editor. */
     fun editDraft(value: TextFieldValue) {
-        val changed = value.text != draft.text
         draft = value
         saved["practice_draft"] = value.text
-        if (changed) judge()
     }
+
+    /**
+     * The permissions or practice screen is showing AND the app is started: load the engines now, so
+     * the first take is quick. Released when the screen moves on or the app stops (Home, lock), because a
+     * heavy model held while nothing is on screen is idle cost (`architecture-rules.md` RULE: no-idle-cost;
+     * Codex review round 5). A trip to Android Settings for the Accessibility grant stops the app too, so
+     * the engines reload when the user comes back; that reload starts on the permissions screen, before
+     * practice, which is still earlier than the first take.
+     */
+    fun warmEngines() = engines.start()
+
+    fun coolEngines() = engines.stop()
 
     /**
      * The practice box is on screen AND in front: admit it to the accessibility service and follow the
@@ -142,17 +148,28 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun enterPractice() {
         if (watching?.isActive == true) return
         OwnFieldAdmission.admit(PRACTICE_FIELD_ID)
-        rowsFresh = false
         watching = viewModelScope.launch {
             launch { RecordingOverlayState.snapshots.collect { snapshot -> followOwner(snapshot) } }
-            launch { transcripts.transcripts.collect { latest -> rows = latest; rowsFresh = true; judge() } }
+            launch { transcripts.transcripts.collect { latest -> rows = latest; judge() } }
         }
     }
 
+    /**
+     * Stop following. A take the screen stopped watching mid-way is dropped, not resumed: its end was
+     * not observed, so a row seen on return could belong to a dictation made elsewhere in between
+     * (Codex review round 7). The words, if they landed, are in the box; the lesson simply asks for
+     * a take it can watch from start to end.
+     */
     fun leavePractice() {
         watching?.cancel()
         watching = null
+        if (take?.ended == false) {
+            take = null
+            practiceOutcome = null
+            takeHeld = null
+        }
         OwnFieldAdmission.withdraw(PRACTICE_FIELD_ID)
+        PasteAccessibilityService.refreshBubble()
     }
 
     /** After the tap lesson landed: teach the hold. */
@@ -164,37 +181,40 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         practiceOutcome = null
     }
 
+    /**
+     * Follow the owner's take of the PRACTICE BOX. A take aimed anywhere else (the owner names its
+     * target once pinned) is not this screen's: it is not shown and not judged, whatever window is in
+     * front (split screen keeps two apps resumed; Codex review round 9).
+     */
     private fun followOwner(snapshot: RecordingOverlayState.Snapshot) {
-        practicePhase = snapshot.phase
+        val busy = snapshot.phase != RecordingOverlayState.Phase.IDLE
+        val ours = busy && snapshot.targetFieldId == PRACTICE_FIELD_ID
         val current = take
-        take = if (snapshot.phase != RecordingOverlayState.Phase.IDLE) {
+        if (busy && !ours) {
+            // Someone else's take, or ours before the owner has named its target: nothing to show yet.
+            if (current?.ended == false) return
+            practicePhase = RecordingOverlayState.Phase.IDLE
+            return
+        }
+        practicePhase = snapshot.phase
+        take = if (ours) {
+            val transcript = snapshot.transcriptId.takeIf { it > 0L }
             if (current == null || current.ended) {
-                PracticeTake(startedAtMs = System.currentTimeMillis(), held = snapshot.requestToken?.held, boxTextAtStart = draft.text)
+                PracticeTake(held = snapshot.requestToken?.held, transcriptId = transcript)
             } else {
-                current.copy(held = current.held ?: snapshot.requestToken?.held)
+                current.copy(held = current.held ?: snapshot.requestToken?.held, transcriptId = current.transcriptId ?: transcript)
             }
         } else {
-            current?.copy(ended = true)
+            current?.let { if (it.ended) it else it.copy(ended = true) }
         }
         takeHeld = take?.takeIf { !it.ended }?.held
         judge()
     }
 
-    /**
-     * Re-judge the current take. A verdict, once terminal, stands until the next take: the row it was
-     * judged on is bound to the take, so nothing dictated later can rewrite it. Until History has
-     * answered once since following started, an ended take reads as still WORKING rather than judged.
-     */
+    /** Re-judge the current take off the row the owner named for it. */
     private fun judge() {
         val current = take ?: return
-        if (current.ended && practiceOutcome != null && practiceOutcome != PracticeOutcome.WORKING) return
-        if (current.ended && !rowsFresh) {
-            practiceOutcome = PracticeOutcome.WORKING
-            return
-        }
-        val bound = bindPracticeRow(current, rows)
-        take = bound
-        val outcome = judgePracticeTake(bound, lesson, rows, draft.text)
+        val outcome = judgePracticeTake(current, lesson, rows)
         practiceOutcome = outcome
         when (outcome) {
             PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {
@@ -215,6 +235,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
 
     override fun onCleared() {
         leavePractice()
+        engines.stop()
         super.onCleared()
     }
 

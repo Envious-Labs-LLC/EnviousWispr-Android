@@ -1008,6 +1008,34 @@ else
     if [ -n "$OUT" ]; then PASS=$((PASS+1)); echo "  ok    leftovers reported ($DIRTY dirty, $AHEAD unpushed)"
     else FAIL=$((FAIL+1)); echo "  FAIL  $DIRTY dirty and $AHEAD unpushed, reported nothing"; fi
 fi
+echo
+echo "post-sync-cleanup.sh — reports on fetch/pull, silent otherwise, and NEVER removes"
+# Silent on a command that is not a fetch/pull.
+PSC_OUT=$(printf '%s' '{"tool_input":{"command":"ls -la"}}' | "$HOOKS/post-sync-cleanup.sh" 2>&1); PSC_RC=$?
+if [ -z "$PSC_OUT" ] && [ "$PSC_RC" -eq 0 ]; then
+    PASS=$((PASS+1)); echo "  ok    a non-git command is silent and exits 0"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a non-git command printed '${PSC_OUT}' rc=$PSC_RC"
+fi
+# A pull is handled and must never block (exit 0). Output depends on repo state, so it is not asserted.
+printf '%s' '{"tool_input":{"command":"git pull"}}' | "$HOOKS/post-sync-cleanup.sh" >/dev/null 2>&1; PSC_RC=$?
+if [ "$PSC_RC" -eq 0 ]; then
+    PASS=$((PASS+1)); echo "  ok    a git pull is handled and never blocks (exit 0)"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a git pull payload exited $PSC_RC"
+fi
+# THE SAFETY PROPERTY: a fetch/pull is a READ, so the hook must leave every worktree in place. Count the
+# registered worktrees around a pull payload; the report path may print, but it may not remove.
+WT_BEFORE=$(git worktree list 2>/dev/null | wc -l | tr -d ' ')
+printf '%s' '{"tool_input":{"command":"git fetch --prune"}}' | "$HOOKS/post-sync-cleanup.sh" >/dev/null 2>&1 || true
+WT_AFTER=$(git worktree list 2>/dev/null | wc -l | tr -d ' ')
+if [ "$WT_BEFORE" = "$WT_AFTER" ]; then
+    PASS=$((PASS+1)); echo "  ok    a fetch/pull removes no worktree ($WT_BEFORE before and after)"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  worktree count moved from $WT_BEFORE to $WT_AFTER across a fetch payload"
+fi
+echo
+
 echo "change-digest.sh — the fingerprint a validation receipt is pinned to"
 # Every digest invocation is checked. Comparing two EMPTY strings reports "same", so a script that had
 # stopped working entirely would pass the two controls that assert sameness.

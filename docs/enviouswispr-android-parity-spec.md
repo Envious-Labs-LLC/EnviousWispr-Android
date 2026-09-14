@@ -130,7 +130,7 @@ The initial Android proof targets one offline speech engine, one offline polish 
 |---|---|---|
 | PAR-075 | Copy completed text automatically when enabled | Auto-copy toggle |
 | PAR-076 | Insert directly into the current editor | Accessibility target tracking plus bounded retries after the floating recorder closes |
-| PAR-077 | Paste into an editor without changing keyboards | `ACTION_PASTE`, selection-preserving `ACTION_SET_TEXT`, and copy-only fallbacks with eligibility checks |
+| PAR-077 | Paste into an editor without changing keyboards | One route, one write: on API 33+ with an eligible field, commit through the accessibility input connection (no clipboard); otherwise `ACTION_PASTE`; otherwise copy-only. No `ACTION_SET_TEXT`. Success is judged by the editor, not the caret |
 | PAR-078 | Preserve and restore the previous clipboard | Guarded snapshot with change detection before restoration |
 | PAR-079 | Match spacing, capitalization, trailing space, and seam words to cursor context | Smart insertion using bounded Accessibility node text and selection, with sensitive-field and unsafe-context fallback |
 | PAR-080 | Keep the target field stable from recording start through insertion | Editor identity snapshot and guarded retargeting |

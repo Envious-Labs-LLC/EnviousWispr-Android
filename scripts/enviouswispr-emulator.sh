@@ -3,6 +3,10 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_PROPERTIES="$PROJECT_ROOT/local.properties"
+# Default AVD is Android 16 (the daily speech-path emulator). The app's floor is minSdk 33, so once an
+# API 33 system image is installed on disk (no cloud spend), create an AVD named EnviousWispr_Android_33
+# and run this floor check with: EW_AVD_NAME=EnviousWispr_Android_33 scripts/enviouswispr-emulator.sh
+# That run is a bind-and-insert check at the floor, not a speech check.
 AVD_NAME="${EW_AVD_NAME:-EnviousWispr_Android_16}"
 SERIAL="${EW_EMULATOR_SERIAL:-emulator-5554}"
 APK_PATH="$PROJECT_ROOT/app/build/outputs/apk/debug/app-debug.apk"

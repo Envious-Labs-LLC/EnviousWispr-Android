@@ -44,6 +44,19 @@ class LipsBubbleWiringTest {
     }
 
     @Test
+    fun theOwnerPublishesTheTakesTargetAndRowSoNoReaderGuessesThem() {
+        // The onboarding practice judges ONLY the row the owner names, for a take aimed at ITS box.
+        val begin = session.substringAfter("private fun beginSession()").substringBefore("\n    private fun ")
+        assertTrue(begin.contains("RecordingOverlayState.nameTarget("))
+        assertTrue(begin.indexOf("nameTarget(") > begin.indexOf("pinTargetForDictation()"))
+        assertTrue(session.contains("RecordingOverlayState.attachTranscript(id)"))
+        val viewModel = File("src/main/java/com/envi/wispr/ui/OnboardingViewModel.kt").readText()
+        assertTrue(viewModel.contains("snapshot.targetFieldId == PRACTICE_FIELD_ID"))
+        assertTrue(viewModel.contains("snapshot.transcriptId"))
+        assertFalse(viewModel.contains("System.currentTimeMillis"))
+    }
+
+    @Test
     fun theBubbleMintsATokenAndSendsReleaseAndCancelWithIt() {
         assertTrue(overlay.contains("BubbleRequests.mint(held)"))
         // The gesture is on the token, so the owner's snapshot can say which one a take answers.

@@ -429,6 +429,8 @@ class DictationSessionService : Service() {
         // is still speaking, so the state insertion finds minutes later cannot say whether this
         // dictation ever had a field to aim at (`InsertionJudgement.handoffToJudge`).
         targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()
+        // Name the field this take aims at, for a reader that only wants takes aimed at ITS field.
+        RecordingOverlayState.nameTarget(if (targetPinAtStart == DictationTargetPin.PINNED) PasteAccessibilityService.pinnedFieldId() else null)
         publicationStarted.set(false)
         teardownStarted.set(false)
         draftId.set(0L)
@@ -518,7 +520,7 @@ class DictationSessionService : Service() {
             }
             recordingStartedAtMs = System.currentTimeMillis()
             draftCreation = serviceScope.async {
-                transcriptRepository.insert(
+                val id = transcriptRepository.insert(
                     TranscriptEntity(
                         originalText = "",
                         finalText = "",
@@ -531,6 +533,10 @@ class DictationSessionService : Service() {
                         status = TranscriptEntity.STATUS_DRAFT,
                     ),
                 )
+                // The row's identity goes out on the bridge so a reader judges THIS take's row, never a
+                // row it guessed at by time or order (onboarding practice; Codex reviews 2 to 9).
+                RecordingOverlayState.attachTranscript(id)
+                id
             }
             DictationSurfaceState.update(this, DictationSurfaceState.Phase.LISTENING)
             RecordingOverlayState.show()

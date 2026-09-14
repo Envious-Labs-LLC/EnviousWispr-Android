@@ -68,12 +68,6 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     private var take: PracticeTake? = null
     private var rows: List<TranscriptEntity> = emptyList()
     private var watching: Job? = null
-    /**
-     * False from entry until the owner has been seen IDLE once. A take already running when the screen
-     * comes (back) to the front is nobody's: not this screen's to judge and not a new one to adopt
-     * (Codex review round 8). Only a take that begins while the screen watches is followed.
-     */
-    private var sawIdle = false
     private val engines = EngineWarmUp(context, viewModelScope)
     val practicing: Boolean get() = practicePhase != RecordingOverlayState.Phase.IDLE || practiceOutcome == PracticeOutcome.WORKING
 
@@ -154,7 +148,6 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun enterPractice() {
         if (watching?.isActive == true) return
         OwnFieldAdmission.admit(PRACTICE_FIELD_ID)
-        sawIdle = false
         watching = viewModelScope.launch {
             launch { RecordingOverlayState.snapshots.collect { snapshot -> followOwner(snapshot) } }
             launch { transcripts.transcripts.collect { latest -> rows = latest; judge() } }
@@ -188,32 +181,40 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         practiceOutcome = null
     }
 
+    /**
+     * Follow the owner's take of the PRACTICE BOX. A take aimed anywhere else (the owner names its
+     * target once pinned) is not this screen's: it is not shown and not judged, whatever window is in
+     * front (split screen keeps two apps resumed; Codex review round 9).
+     */
     private fun followOwner(snapshot: RecordingOverlayState.Snapshot) {
-        if (!sawIdle) {
-            if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return
-            sawIdle = true
+        val busy = snapshot.phase != RecordingOverlayState.Phase.IDLE
+        val ours = busy && snapshot.targetFieldId == PRACTICE_FIELD_ID
+        val current = take
+        if (busy && !ours) {
+            // Someone else's take, or ours before the owner has named its target: nothing to show yet.
+            if (current?.ended == false) return
+            practicePhase = RecordingOverlayState.Phase.IDLE
+            return
         }
         practicePhase = snapshot.phase
-        val current = take
-        take = if (snapshot.phase != RecordingOverlayState.Phase.IDLE) {
+        take = if (ours) {
+            val transcript = snapshot.transcriptId.takeIf { it > 0L }
             if (current == null || current.ended) {
-                PracticeTake(newestRowAtStart = rows.maxOfOrNull { it.id } ?: 0L, held = snapshot.requestToken?.held)
+                PracticeTake(held = snapshot.requestToken?.held, transcriptId = transcript)
             } else {
-                current.copy(held = current.held ?: snapshot.requestToken?.held)
+                current.copy(held = current.held ?: snapshot.requestToken?.held, transcriptId = current.transcriptId ?: transcript)
             }
         } else {
-            current?.let { if (it.ended) it else it.copy(endedAtMs = System.currentTimeMillis()) }
+            current?.let { if (it.ended) it else it.copy(ended = true) }
         }
         takeHeld = take?.takeIf { !it.ended }?.held
         judge()
     }
 
-    /** Re-judge the current take off its own row; the row is bound once and the verdict follows it. */
+    /** Re-judge the current take off the row the owner named for it. */
     private fun judge() {
         val current = take ?: return
-        val bound = bindPracticeRow(current, rows)
-        take = bound
-        val outcome = judgePracticeTake(bound, lesson, rows)
+        val outcome = judgePracticeTake(current, lesson, rows)
         practiceOutcome = outcome
         when (outcome) {
             PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {

@@ -10,22 +10,17 @@ internal enum class OnboardingStage { WELCOME, DOWNLOADS, PERMISSIONS, PRACTICE 
 internal enum class PracticeLesson { TAP, HOLD }
 
 /**
- * One take the practice screen is following, from the moment the session owner left IDLE.
- * [held] is the gesture the owner's snapshot named, or null for a take that carried no bubble token.
- * [newestRowAtStart] is the highest History row id that existed when the take began: ids only grow, so
- * the take's own row has a higher id, and every earlier take's row, however recent, is excluded by
- * identity rather than by a time window (Codex review round 8). [endedAtMs] is when the owner returned
- * to IDLE, or null while it is busy; the own row was created no later than that, so a row created after
- * the end belongs to a later dictation (round 6). [rowId] is bound once and never rebound (round 2).
+ * One take of the PRACTICE BOX the screen is following, from the moment the session owner left IDLE
+ * with the box as its target. Everything here is copied off the owner's published snapshot: [held]
+ * is the gesture its token named (null for a take with no bubble token), [transcriptId] is the History
+ * row the owner created for it (null until it has), [ended] is the owner back at IDLE. Nothing is
+ * inferred from time or from the order of rows (Codex reviews 2 to 9, 2026-09-14).
  */
 internal data class PracticeTake(
-    val newestRowAtStart: Long,
     val held: Boolean?,
-    val endedAtMs: Long? = null,
-    val rowId: Long? = null,
-) {
-    val ended: Boolean get() = endedAtMs != null
-}
+    val transcriptId: Long? = null,
+    val ended: Boolean = false,
+)
 
 /**
  * Three answers, read off ONE fact: this take's own History row. Earlier rounds judged more (the box's
@@ -49,25 +44,13 @@ internal enum class PracticeOutcome {
 }
 
 /**
- * Bind [take] to its own History row: the LOWEST id above the newest row that existed when the take
- * began and, once the take has ended, created no later than that end. Once bound, the id never changes.
- */
-internal fun bindPracticeRow(take: PracticeTake, rows: List<TranscriptEntity>): PracticeTake {
-    if (take.rowId != null) return take
-    val own = rows
-        .filter { it.id > take.newestRowAtStart && (take.endedAtMs == null || it.createdAtMs <= take.endedAtMs) }
-        .minByOrNull { it.id } ?: return take
-    return take.copy(rowId = own.id)
-}
-
-/**
  * What the practice screen says about [take]: null while the owner is busy with it; otherwise read
- * off the take's own History row. The practice screen follows the owner only while it is in front, and
- * then the pinned target is the practice box, so a landed row IS words in the box.
+ * off the row whose id the owner published. A take the owner never gave a row (cancelled before
+ * capture), or whose row the owner deleted (silent, cancelled), landed nothing.
  */
 internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>): PracticeOutcome? {
     if (!take.ended) return null
-    val row = take.rowId?.let { id -> rows.firstOrNull { it.id == id } } ?: return PracticeOutcome.NOTHING_LANDED
+    val row = take.transcriptId?.let { id -> rows.firstOrNull { it.id == id } } ?: return PracticeOutcome.NOTHING_LANDED
     return when (row.status) {
         TranscriptEntity.STATUS_DRAFT,
         TranscriptEntity.STATUS_PROCESSING,

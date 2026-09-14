@@ -1054,8 +1054,8 @@ class DictationSessionService : Service() {
                         ClipboardOutcome.NOT_ATTEMPTED
                     }
                 // Nothing was handed to the accessibility service on this branch, so it will never
-                // speak: the announcement has to originate here
-                // (`architecture-rules.md` RULE: insertion-fails-safe-never-silently). The routes
+                // speak: the announcement has to originate here so insertion fails safe, never
+                // silently (enviouswispr-android-parity-spec.md PAR-081). The routes
                 // where the service DID accept the text and then failed announce themselves, in
                 // PasteAccessibilityService.recordAndAnnounce.
                 announceInsertionFallback(

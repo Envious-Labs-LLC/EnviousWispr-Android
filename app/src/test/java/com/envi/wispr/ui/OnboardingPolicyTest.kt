@@ -12,15 +12,18 @@ class OnboardingPolicyTest {
     private val ready = AppReadiness(microphoneGranted = true, speechModelReady = true, polishModelReady = true)
 
     @Test fun restoredPracticeReturnsToDownloadsWhenAModelIsMissing() {
-        assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(3, ready.copy(polishModelReady = false), AutoPasteAvailability.LIVE))
+        assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(4, ready.copy(polishModelReady = false), AutoPasteAvailability.LIVE))
     }
 
     @Test fun enabledButDisconnectedAccessibilityDoesNotAllowPractice() {
+        assertEquals(OnboardingStage.PERMISSIONS, onboardingStage(4, ready, AutoPasteAvailability.PERMITTED_NOT_RUNNING))
         assertEquals(OnboardingStage.PERMISSIONS, onboardingStage(3, ready, AutoPasteAvailability.PERMITTED_NOT_RUNNING))
     }
 
     @Test fun notificationsAreOptionalButMicrophoneIsRequired() {
-        assertEquals(OnboardingStage.PRACTICE, onboardingStage(3, ready, AutoPasteAvailability.LIVE))
+        assertEquals(OnboardingStage.PRACTICE, onboardingStage(4, ready, AutoPasteAvailability.LIVE))
+        assertEquals(OnboardingStage.DEMO, onboardingStage(3, ready, AutoPasteAvailability.LIVE))
+        assertEquals(OnboardingStage.PERMISSIONS, onboardingStage(4, ready.copy(microphoneGranted = false), AutoPasteAvailability.LIVE))
         assertEquals(OnboardingStage.PERMISSIONS, onboardingStage(3, ready.copy(microphoneGranted = false), AutoPasteAvailability.LIVE))
     }
 

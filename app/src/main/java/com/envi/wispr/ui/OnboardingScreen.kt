@@ -30,11 +30,12 @@ import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.shortcuts.RecordingOverlayState
 
 /** The Accessibility card says what the service does, in the words of the Android service description. */
 internal const val ACCESSIBILITY_CARD_COPY =
-    "To find your text box, show the floating lips button beside it, and paste your words after you start a dictation."
+    "To find your text box, show the floating bubble beside it, and paste your words after you start a dictation."
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -48,6 +49,7 @@ internal fun OnboardingScreen(
     onRequestNotifications: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onComplete: () -> Unit,
+    look: BubbleLook = BubbleLook.DEFAULT,
 ) {
     val model: OnboardingViewModel = viewModel()
     val downloads by model.downloads.collectAsStateWithLifecycle()
@@ -60,15 +62,20 @@ internal fun OnboardingScreen(
     val accent = if (dark) Color(0xFFA78BFA) else Color(0xFF7544CE)
     val fill = if (dark) Color(0xFF6B4FD1) else Color(0xFF241432)
     val green = if (dark) Color(0xFF5CC99A) else Color(0xFF087D55)
+    val border = if (dark) Color(0xFF463957) else Color(0xFFE7DFF2)
     // Back goes ONE screen back, and at the welcome it is Android's own back (the app closes); it never
     // skips setup (founder, phone pass of build 121). "Set up later" is the one way to dismiss setup.
     BackHandler(enabled = stage != OnboardingStage.WELCOME) {
-        onStepChange(if (stage == OnboardingStage.PRACTICE) OnboardingStage.PERMISSIONS.ordinal else OnboardingStage.WELCOME.ordinal)
+        onStepChange(when (stage) {
+            OnboardingStage.PRACTICE -> OnboardingStage.DEMO.ordinal
+            OnboardingStage.DEMO -> OnboardingStage.PERMISSIONS.ordinal
+            else -> OnboardingStage.WELCOME.ordinal
+        })
     }
     // Load the speech and polish models while the user reads and grants the permissions, so the first
     // practice take does not pay their cold start (founder, phone pass of build 121). Held only while
     // the app is started: Home or the lock screen releases them.
-    val warming = stage == OnboardingStage.PERMISSIONS || stage == OnboardingStage.PRACTICE
+    val warming = stage == OnboardingStage.PERMISSIONS || stage == OnboardingStage.DEMO || stage == OnboardingStage.PRACTICE
     LifecycleStartEffect(warming) {
         if (warming) model.warmEngines()
         onStopOrDispose { if (warming) model.coolEngines() }
@@ -80,16 +87,26 @@ internal fun OnboardingScreen(
         if (stage == OnboardingStage.PRACTICE) model.enterPractice()
         onPauseOrDispose { if (stage == OnboardingStage.PRACTICE) model.leavePractice() }
     }
+    // The demo's first scene is a wall of the phone's own app icons; they load while the permissions show.
+    LaunchedEffect(stage) { if (stage == OnboardingStage.PERMISSIONS || stage == OnboardingStage.DEMO) model.loadDemoIcons() }
+    val demoIcons by model.demoIcons.collectAsStateWithLifecycle()
     val practiceBox = remember { FocusRequester() }
     // Test tags are exported as accessibility view ids so the service can name the practice box.
     Surface(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }, color = background, contentColor = foreground) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()
             .padding(horizontal = 24.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            OnboardingLips(Modifier.size(if (stage == OnboardingStage.PRACTICE) 84.dp else 140.dp),
+            OnboardingLips(Modifier.size(if (stage == OnboardingStage.PRACTICE || stage == OnboardingStage.DEMO) 84.dp else 140.dp),
                 energetic = stage == OnboardingStage.DOWNLOADS || model.practicePhase == RecordingOverlayState.Phase.RECORDING)
-            Column(Modifier.weight(1f).widthIn(max = 480.dp).fillMaxWidth().verticalScroll(rememberScrollState()),
+            if (stage == OnboardingStage.DEMO) {
+                Box(Modifier.weight(1f).widthIn(max = 480.dp).fillMaxWidth().padding(top = 8.dp)) {
+                    OnboardingDemo(demoIcons, look, DemoPalette(background, surface, foreground, muted, accent, border)) {
+                        onStepChange(OnboardingStage.PRACTICE.ordinal)
+                    }
+                }
+            } else Column(Modifier.weight(1f).widthIn(max = 480.dp).fillMaxWidth().verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally) {
                 when (stage) {
+                    OnboardingStage.DEMO -> Unit
                     OnboardingStage.WELCOME -> {
                         SetupHeading("Speak naturally.\nGet polished text.", "Turn messy speech into clear, ready-to-send writing.", muted)
                         OnboardingWelcomeStory(surface, foreground, muted, accent)
@@ -145,12 +162,12 @@ internal fun OnboardingScreen(
                             RecordingOverlayState.Phase.IDLE -> when (outcome) {
                                 PracticeOutcome.WORKING -> "Tidying your words…" to "Your words will appear in the text box."
                                 PracticeOutcome.LANDED -> "Nice, that worked!" to
-                                    (if (hold) "You can tap to dictate or hold to talk." else "Your words are in the box. Try holding the lips next.")
-                                PracticeOutcome.LANDED_BY_TAP -> "Nice, that worked!" to "That was a tap. Now hold the lips while you talk, and let go when you are done."
+                                    (if (hold) "You can tap to dictate or hold to talk." else "Your words are in the box. Try holding the bubble next.")
+                                PracticeOutcome.LANDED_BY_TAP -> "Nice, that worked!" to "That was a tap. Now hold the bubble while you talk, and let go when you are done."
                                 PracticeOutcome.NOTHING_LANDED -> "No words landed in the box." to
-                                    (if (hold) "Hold the lips and speak, then let go." else "Tap the lips and speak, then tap the check.")
-                                null -> if (hold) "Try holding the lips." to "Now hold the lips and talk; let go when you are done."
-                                    else "Try your first dictation." to "Tap the lips and say…"
+                                    (if (hold) "Hold the bubble and speak, then let go." else "Tap the bubble and speak, then tap the check.")
+                                null -> if (hold) "Try holding the bubble." to "Now hold the bubble and talk; let go when you are done."
+                                    else "Try your first dictation." to "Tap the bubble and say…"
                             }
                         }
                         SetupHeading(title, line, muted)
@@ -162,7 +179,7 @@ internal fun OnboardingScreen(
                             modifier = Modifier.fillMaxWidth().heightIn(min = 150.dp).focusRequester(practiceBox).testTag(OnboardingViewModel.PRACTICE_FIELD_ID),
                             placeholder = { Text("Your words will appear here.") }, shape = RoundedCornerShape(15.dp),
                             colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = surface, unfocusedContainerColor = surface))
-                        if (landed) Text("In any app, the lips appear when a text box is active, just above the keyboard at the edge you chose.",
+                        if (landed) Text("In any app, the bubble appears when a text box is active, just above the keyboard at the edge you chose.",
                             Modifier.padding(top = 14.dp), color = muted, fontSize = 12.sp, lineHeight = 18.sp, textAlign = TextAlign.Center)
                         // The lips appear beside a FOCUSED box. Ask for focus once the box is on screen.
                         LaunchedEffect(Unit) { practiceBox.requestFocus() }
@@ -171,6 +188,7 @@ internal fun OnboardingScreen(
             }
             Column(Modifier.widthIn(max = 480.dp).fillMaxWidth().padding(top = 12.dp)) {
                 when (stage) {
+                    OnboardingStage.DEMO -> Unit
                     OnboardingStage.WELCOME -> SetupButton("Get Started!", fill, action = model::startSetup)
                     OnboardingStage.DOWNLOADS -> {
                         val active = downloads.getOrNull(if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0)
@@ -182,7 +200,7 @@ internal fun OnboardingScreen(
                     }
                     OnboardingStage.PERMISSIONS -> {
                         val ready = readiness.microphoneGranted && autoPaste == AutoPasteAvailability.LIVE
-                        SetupButton("Try dictation", fill, ready) { onStepChange(OnboardingStage.PRACTICE.ordinal) }
+                        SetupButton("Try dictation", fill, ready) { onStepChange(OnboardingStage.DEMO.ordinal) }
                         if (!ready) Text("Enable Microphone and Accessibility to try dictation.", Modifier.padding(top = 10.dp).align(Alignment.CenterHorizontally), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
                         TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Set up later", color = accent, fontSize = 12.sp) }
                     }

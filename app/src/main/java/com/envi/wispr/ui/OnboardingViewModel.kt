@@ -1,6 +1,10 @@
 package com.envi.wispr.ui
 
 import android.app.Application
+import android.content.Intent
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -25,6 +29,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -69,6 +74,10 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     private var rows: List<TranscriptEntity> = emptyList()
     private var watching: Job? = null
     private val engines = EngineWarmUp(context, viewModelScope)
+    /** The phone's own launcher icons for the demo's first scene; empty until [loadDemoIcons] has run. */
+    val demoIcons: StateFlow<List<ImageBitmap>> get() = icons
+    private val icons = MutableStateFlow<List<ImageBitmap>>(emptyList())
+    private var iconsLoading = false
     val practicing: Boolean get() = practicePhase != RecordingOverlayState.Phase.IDLE || practiceOutcome == PracticeOutcome.WORKING
 
     private fun modelFlow(model: com.envi.wispr.models.ModelDescriptor): kotlinx.coroutines.flow.Flow<ModelUiState> {
@@ -136,6 +145,25 @@ internal class OnboardingViewModel(application: Application, private val saved: 
      * practice, which is still earlier than the first take.
      */
     fun warmEngines() = engines.start()
+
+    /**
+     * Load up to [DEMO_ICON_LIMIT] launcher icons, once, off the main thread. Only apps a launcher
+     * would list (the manifest declares that query); a phone with few of them repeats the wall.
+     */
+    fun loadDemoIcons() {
+        if (iconsLoading) return
+        iconsLoading = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val pm = context.packageManager
+            val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val size = (DEMO_ICON_PX * context.resources.displayMetrics.density).toInt().coerceAtLeast(48)
+            val loaded = pm.queryIntentActivities(launcher, 0)
+                .filter { it.activityInfo.packageName != context.packageName }
+                .take(DEMO_ICON_LIMIT)
+                .mapNotNull { info -> runCatching { info.loadIcon(pm).toBitmap(size, size).asImageBitmap() }.getOrNull() }
+            icons.value = loaded
+        }
+    }
 
     fun coolEngines() = engines.stop()
 
@@ -242,5 +270,8 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     companion object {
         /** The practice box's accessibility view id: its Compose test tag, exported as a resource id. */
         const val PRACTICE_FIELD_ID = "envious_practice_field"
+        const val DEMO_ICON_LIMIT = 120
+        /** Icons draw at 56 dp; 64 dp of pixels keeps them crisp at that size. */
+        const val DEMO_ICON_PX = 64
     }
 }

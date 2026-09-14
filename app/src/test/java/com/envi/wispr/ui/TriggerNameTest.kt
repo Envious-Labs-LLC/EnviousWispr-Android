@@ -35,8 +35,8 @@ class TriggerNameTest {
     @Test
     fun onboardingUsesItsOwnRecorderWhileSamsungSettingsKeepTheCorrectName() {
         val onboarding = userFacing.getValue("ui/OnboardingScreen.kt")
-        // Practice is done with the floating lips, the control every later dictation uses (2026-09-14).
-        assertTrue("Practice must teach the floating lips", onboarding.contains("Tap the lips"))
+        // Practice is done with the floating bubble, the control every later dictation uses (2026-09-14).
+        assertTrue("Practice must teach the floating bubble", onboarding.contains("Tap the bubble"))
         assertFalse("Practice must not offer a control the user never sees again", onboarding.contains("Start dictation"))
         assertFalse("New users must not be required to own a Samsung phone", onboarding.contains("Double-press the side button"))
         assertTrue(

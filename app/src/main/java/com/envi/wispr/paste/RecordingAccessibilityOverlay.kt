@@ -741,7 +741,8 @@ internal class RecordingAccessibilityOverlay(
 
     private fun dp(value: Int): Int = (value * density).toInt()
 
-    private companion object {
+    /** Sizes are read by the setup demo (`ui/OnboardingDemo.kt`), so it draws the bubble and the pill at their real size. */
+    internal companion object {
         const val TAG = "RecordingOverlay"
 
         /** Unchanged on purpose: the device harness finds the window by this title. */

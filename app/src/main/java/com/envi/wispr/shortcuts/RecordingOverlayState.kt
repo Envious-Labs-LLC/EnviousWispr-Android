@@ -3,6 +3,9 @@ package com.envi.wispr.shortcuts
 import android.os.Handler
 import android.os.Looper
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /** Process-local state bridge between the dictation session and accessibility overlay. */
 object RecordingOverlayState {
@@ -56,6 +59,14 @@ object RecordingOverlayState {
     private val lock = Any()
     private var snapshot = Snapshot()
     private var listener: Listener? = null
+    private val snapshotFlow = MutableStateFlow(Snapshot())
+
+    /**
+     * The same state the overlay is handed, as a flow for a second reader that only wants the phase
+     * (the onboarding practice screen). Written under the lock in commit order; a collector sees every
+     * committed value or a later one, never an earlier one.
+     */
+    val snapshots: StateFlow<Snapshot> = snapshotFlow.asStateFlow()
 
     fun attach(listener: Listener) {
         synchronized(lock) { this.listener = listener }
@@ -128,6 +139,7 @@ object RecordingOverlayState {
             val next = transform(snapshot)
             if (next == snapshot) return
             snapshot = next
+            snapshotFlow.value = next
         }
         notifyListener()
     }

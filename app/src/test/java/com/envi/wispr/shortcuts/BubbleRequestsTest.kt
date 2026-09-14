@@ -3,7 +3,9 @@ package com.envi.wispr.shortcuts
 import com.envi.wispr.shortcuts.BubbleRequestLedger.CommandDecision
 import com.envi.wispr.shortcuts.BubbleRequestLedger.StartDecision
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -109,12 +111,18 @@ class BubbleRequestsTest {
     fun mintedTokensRiseAndRoundTripThroughTheirStringForm() {
         val l = Ledger()
         val a = l.mint()
-        val b = l.mint()
+        val b = l.mint(held = true)
         assertEquals(a.seq + 1, b.seq)
         assertEquals(a, BubbleRequestToken.parse(a.encode()))
+        assertEquals(b, BubbleRequestToken.parse(b.encode()))
+        assertFalse(a.held)
+        assertTrue(b.held)
         assertNull(BubbleRequestToken.parse(null))
         assertNull(BubbleRequestToken.parse("epoch:"))
-        assertNull(BubbleRequestToken.parse("epoch:0"))
+        assertNull(BubbleRequestToken.parse("epoch:0:t"))
+        assertNull(BubbleRequestToken.parse("epoch:1"))
+        assertNull(BubbleRequestToken.parse("epoch:1:x"))
+        assertNull(BubbleRequestToken.parse(":1:t"))
         assertNull(BubbleRequestToken.parse("nocolon"))
     }
 }

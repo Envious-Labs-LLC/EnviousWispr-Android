@@ -91,8 +91,8 @@ private fun AccessibilityDisclosure(onAgree: () -> Unit, onDecline: () -> Unit) 
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             OnboardingLips(Modifier.size(110.dp).align(Alignment.CenterHorizontally))
-            Text("Let EnviousWispr\npaste for you", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("EnviousWispr uses Android’s Accessibility service to find the text field you’re using. It accesses the field’s text, cursor position and app information to insert your dictation in the right place and check that it appeared.")
+            Text("Let the lips float\nbeside your text box", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("EnviousWispr finds the text box you’re using, shows the floating lips button beside it, and pastes your words after you start a dictation. It uses Android’s Accessibility service to read the field’s text, cursor position and app information, put your words in the right place, and check that they appeared.")
             Text("This field information is processed on your phone. Field contents are not sent to Envious Labs.")
             Text("Insertion happens after you start a dictation. EnviousWispr does not operate your phone on its own.")
             Text("You can turn this access off in Android Settings at any time.")

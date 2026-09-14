@@ -45,13 +45,15 @@ class LipsBubbleWiringTest {
 
     @Test
     fun theBubbleMintsATokenAndSendsReleaseAndCancelWithIt() {
-        assertTrue(overlay.contains("BubbleRequests.mint()"))
+        assertTrue(overlay.contains("BubbleRequests.mint(held)"))
+        // The gesture is on the token, so the owner's snapshot can say which one a take answers.
+        assertTrue(overlay.contains("startDictation(held = false)"))
         assertTrue(overlay.contains("DictationSessionService.ACTION_STOP, it.encode())"))
         assertTrue(overlay.contains("DictationSessionService.ACTION_CANCEL, it.encode())"))
         // A tap starts a new request only at IDLE.
         assertTrue(overlay.contains("if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return null"))
         // A hold's release and cancel go to the request THAT hold created, never to an earlier take.
-        assertTrue(overlay.contains("holdRequest = startDictation()"))
+        assertTrue(overlay.contains("holdRequest = startDictation(held = true)"))
         assertTrue(overlay.contains("holdRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP, it.encode()) }"))
         assertFalse(overlay.contains("currentRequest"))
     }
@@ -192,7 +194,7 @@ class LipsBubbleWiringTest {
     @Test
     fun aScreenReaderDoubleTapStartsDictationThroughTheClickAction() {
         val bubble = overlay.substringAfter("private fun buildBubble()").substringBefore("private fun buildPillColumn()")
-        assertTrue(bubble.contains("setOnClickListener { startDictation() }"))
+        assertTrue(bubble.contains("setOnClickListener { startDictation(held = false) }"))
         assertTrue(bubble.contains("Double tap to dictate"))
     }
 

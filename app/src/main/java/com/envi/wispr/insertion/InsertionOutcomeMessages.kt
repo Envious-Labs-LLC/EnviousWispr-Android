@@ -172,10 +172,10 @@ object InsertionOutcomeMessages {
  * `AppReadiness.coreReady` excludes accessibility. Nothing that happens afterwards is the failure of
  * a feature the user never connected.
  *
- * Then the handoff, which says whether there was ever a field in play. Four of the five entry points
- * cannot pin one: the tile, the app's microphone button, onboarding practice and the side button
- * pressed outside an editor. For all four the clipboard is the DESIGNED destination and the dictation worked, so
- * speaking there reports an event that is not news, on the ordinary use of the product.
+ * Then the handoff, which says whether there was ever a field in play. The tile, the app's microphone
+ * button and the side button pressed outside an editor cannot pin one (onboarding practice pins its
+ * own box, `OwnFieldAdmission`). For those the clipboard is the DESIGNED destination and the dictation
+ * worked, so speaking there reports an event that is not news, on the ordinary use of the product.
  *
  * This is not the whole decision. Words that missed the destination this dictation aimed at are
  * announced whatever this returns; [wordsMissedTheirDestination] owns that half.

@@ -39,6 +39,23 @@ if [ ! -d "$wt" ]; then
     exit 2
 fi
 
+# REFUSE A DESTINATION INSIDE THE WORKTREE. Rescuing into the tree that is about
+# to be deleted would destroy the backup along with the originals, and the caller
+# would then read this script's exit 0 as licence to delete. Compare RESOLVED
+# paths (pwd -P collapses symlink aliases); dest_root may not exist yet, so
+# resolve its deepest existing ancestor.
+wt_abs=$(cd "$wt" 2>/dev/null && pwd -P) || { echo "rescue: cannot resolve $wt" >&2; exit 2; }
+dr_probe="$dest_root"
+while [ -n "$dr_probe" ] && [ "$dr_probe" != "/" ] && [ ! -d "$dr_probe" ]; do
+    dr_probe=$(dirname "$dr_probe")
+done
+dr_abs=$(cd "$dr_probe" 2>/dev/null && pwd -P || echo "$dest_root")
+case "$dr_abs/" in
+    "$wt_abs"/*)
+        echo "rescue: destination '$dest_root' is inside the worktree '$wt'; refusing so the backup is not deleted with it." >&2
+        exit 1 ;;
+esac
+
 # A text artifact is never this big. A file over the cap is NOT silently
 # dropped: it is reported and forces exit 1, so the worktree survives and a
 # human decides. UAT evidence can be larger than a plan, so the floor is higher

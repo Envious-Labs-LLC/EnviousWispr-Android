@@ -43,7 +43,11 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 # so worktrees are always created as siblings under the primary checkout even
 # when this is invoked from inside another worktree.
 main_root=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10); exit}')
-[ -n "$main_root" ] || main_root="$ROOT"
+if [ -z "$main_root" ]; then
+    echo "ERROR: could not determine the primary checkout (git worktree list failed);" >&2
+    echo "       refusing to guess a location and risk nesting a worktree inside another." >&2
+    exit 1
+fi
 
 dest="$main_root/.claude/worktrees/$name"
 if [ -e "$dest" ]; then

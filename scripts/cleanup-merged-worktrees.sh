@@ -89,7 +89,29 @@ if [ -z "$REPO" ]; then
     REPO=$(git rev-parse --show-toplevel 2>/dev/null) || {
         echo "ERROR: not inside a git repository and no --repo given." >&2; exit 2; }
 fi
+
+# Resolve relative --apply targets against the INVOCATION directory BEFORE the cd
+# into the repo. A later cd would silently re-anchor a relative path to $REPO and
+# select a different worktree than the caller named.
+if [ "$MODE" = "apply" ]; then
+    declare -a _resolved=()
+    for _t in "${TARGETS[@]}"; do
+        case "$_t" in
+            /*) _resolved+=("$_t") ;;
+            *)  _resolved+=("${CALLER_PWD:-$PWD}/$_t") ;;
+        esac
+    done
+    TARGETS=("${_resolved[@]}")
+fi
+
 cd "$REPO" || { echo "ERROR: cannot enter repo '$REPO'." >&2; exit 2; }
+
+# The primary checkout, resolved once. Rescued gitignored work is written HERE,
+# never under a target worktree — a rescue destination inside the tree being
+# deleted would be destroyed along with the originals.
+MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10); exit}')
+[ -n "$MAIN_ROOT" ] || MAIN_ROOT="$REPO"
+MAIN_ROOT=$(cd "$MAIN_ROOT" 2>/dev/null && pwd -P || echo "$MAIN_ROOT")
 
 # Branch checked out in a given worktree path, via --porcelain (path-safe).
 branch_for_worktree() {
@@ -202,10 +224,13 @@ apply_one() {
         return 1
     fi
 
-    # 2. SELF-GUARD. Never remove the worktree the caller is standing in. With
-    #    harness ownership the active session runs INSIDE its worktree; deleting
-    #    the caller's own tree would pull the ground out from under it. The
-    #    correct order is ExitWorktree(keep) to leave first, THEN remove.
+    # 2. SELF-GUARD. Never remove the worktree the caller is standing in, and
+    #    never one that CONTAINS the caller directory. With harness ownership the
+    #    active session runs inside its worktree; deleting it (or an ancestor of
+    #    it) pulls the ground out from under the caller. This does NOT fail open:
+    #    the git-toplevel check is a nicety, but the physical-containment test
+    #    below is what actually decides, so a failed or nested git lookup cannot
+    #    turn the guard off.
     if [ -n "$CALLER_PWD" ]; then
         local caller_wt
         caller_wt=$(git -C "$CALLER_PWD" rev-parse --show-toplevel 2>/dev/null || echo "")
@@ -216,6 +241,14 @@ apply_one() {
                 return 1
             fi
         fi
+        # Physical containment: the caller directory is the target or sits inside
+        # it. The trailing slashes stop a sibling whose name merely starts the
+        # same (".../wt2" is not inside ".../wt") from matching.
+        case "$CALLER_PWD/" in
+            "$wt"/*)
+                echo "SKIPPED: $wt — you are standing inside this worktree; leave it first (ExitWorktree keep)." >&2
+                return 1 ;;
+        esac
     fi
 
     # 3. REGISTRATION. An unregistered directory is refused whatever it looks
@@ -241,9 +274,12 @@ apply_one() {
         return 1
     fi
 
-    sha=$(git rev-parse "$branch" 2>/dev/null) || sha=""
+    # Resolve the BRANCH ref explicitly (refs/heads/), never the bare name: a
+    # same-named lightweight tag pointing at the merged commit could otherwise
+    # satisfy the proof while the branch itself carries unshipped commits.
+    sha=$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null) || sha=""
     if [ -z "$sha" ]; then
-        echo "SKIPPED: $wt — could not resolve '$branch' to a SHA." >&2
+        echo "SKIPPED: $wt — could not resolve 'refs/heads/$branch' to a SHA." >&2
         return 1
     fi
 
@@ -306,57 +342,56 @@ for r in rows:
     #    work carried by no commit is invisible to step 5. A PARTIAL RESCUE SKIPS
     #    THE REMOVAL.
     if ! "$(dirname "${BASH_SOURCE[0]}")/rescue-worktree-artifacts.sh" \
-            "$wt" "$branch" "$REPO/.claude/_rescued-worktrees"; then
+            "$wt" "$branch" "$MAIN_ROOT/.claude/_rescued-worktrees"; then
         echo "SKIPPED: $wt — could not fully rescue gitignored files. Keeping it so nothing is lost." >&2
         return 1
     fi
 
-    # 7. ORDINARY REMOVE, ONCE. NEVER --force.
-    #    `git worktree remove` performs git's own final dirty-tree, submodule and
-    #    lock refusal, which closes the race between the status read at step 5 and
-    #    this delete, and honors the `llama.cpp` submodule restriction. `--force`
+    # 7. RE-VERIFY, then ORDINARY REMOVE, ONCE. NEVER --force.
+    #    Between the merged-PR proof and here, a concurrent commit could have moved
+    #    the branch, so require it to STILL point at the proven SHA. `git worktree
+    #    remove` then performs git's own final dirty-tree, submodule and lock
+    #    refusal (honoring the `llama.cpp` submodule restriction); `--force`
     #    bypasses exactly that refusal.
+    if [ "$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null)" != "$sha" ]; then
+        echo "SKIPPED: $wt — '$branch' moved since it was verified; refusing. Recovery SHA: $sha" >&2
+        return 1
+    fi
     remove_rc=0
     git worktree remove "$wt" || remove_rc=$?
 
-    # 8. SAME-PROCESS OBSERVATION. The filesystem and the registration decide the
-    #    outcome; the remove exit code separates "git unregistered this tree and
-    #    left files" from "something else unregistered it while I was mid-call".
+    # 8. SAME-PROCESS OBSERVATION, AND UNEXPECTED LEFTOVERS ARE RETAINED. Once git
+    #    has unregistered the tree, any files that remain cannot be PROVEN to be
+    #    the removed tree's rather than a replacement created in the window, so a
+    #    blind delete could destroy unrelated work. macOS completed such a
+    #    leftover with a bounded delete; here the safer choice is to retain it and
+    #    let a human look, because the payoff of auto-completing a rare partial
+    #    removal is not worth the tail risk of deleting a replacement.
     worktree_registration_state "$wt"
     registration_rc=$?
     if [ "$registration_rc" -eq 2 ]; then
         echo "FAILED: $wt — removal ran, but registration could not be read. Keeping '$branch' at $sha." >&2
         return 2
     fi
-
-    local still_registered=0
-    [ "$registration_rc" -eq 0 ] && still_registered=1
-
+    if [ "$registration_rc" -eq 0 ]; then
+        echo "FAILED: $wt — removal refused or failed; still registered (submodule, lock or dirty tree?). Keeping '$branch' at $sha." >&2
+        return 2
+    fi
     if [ -e "$wt" ] || [ -L "$wt" ]; then
-        if [ "$still_registered" -eq 1 ]; then
-            echo "FAILED: $wt — removal refused or failed; still registered (submodule or lock?). Keeping '$branch' at $sha." >&2
-            return 2
-        fi
-        if [ "$remove_rc" -ne 0 ]; then
-            echo "FAILED: $wt — git returned $remove_rc and the worktree became unregistered; causation is unproven. Keeping '$branch' at $sha." >&2
-            return 2
-        fi
-        echo "NOTE: git unregistered $wt but left files; completing it with a bounded delete." >&2
-        /usr/bin/find "$wt" -xdev -depth -delete 2>/dev/null || true
-        if [ -e "$wt" ] || [ -L "$wt" ]; then
-            echo "FAILED: $wt — partial worktree remains after bounded deletion. Keeping '$branch' at $sha." >&2
-            return 2
-        fi
+        echo "FAILED: $wt — git unregistered the tree but files remain; retaining them rather than a blind delete. Inspect $wt by hand. Keeping '$branch' at $sha." >&2
+        return 2
     fi
 
-    git worktree prune --expire now >/dev/null 2>&1 || true
-
-    # 9. RECOVERY SHA captured before deletion, printed after it succeeds.
-    if git branch -D "$branch" >/dev/null 2>&1; then
+    # 9. ATOMIC BRANCH DELETE against the proven SHA. `update-ref -d <ref> <old>`
+    #    deletes ONLY if the ref still points at <old>, so a branch that moved
+    #    after verification is never deleted. The recovery SHA is printed either
+    #    way. No unscoped `worktree prune` — removing this one tree is the whole
+    #    job, and a repo-wide prune could unregister unrelated missing worktrees.
+    if git update-ref -d "refs/heads/$branch" "$sha" 2>/dev/null; then
         echo "REMOVED: $wt  ('$branch' at $sha; restore the branch with: git branch $branch $sha)"
         return 0
     fi
-    echo "FAILED: $wt — directory is gone but branch '$branch' could not be deleted. Recovery SHA: $sha" >&2
+    echo "FAILED: $wt — directory is gone but '$branch' was not at $sha or could not be deleted. Recovery SHA: $sha" >&2
     return 2
 }
 

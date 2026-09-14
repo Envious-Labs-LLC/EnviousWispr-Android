@@ -49,15 +49,17 @@ command -v git >/dev/null 2>&1 || exit 0
 [ -x "$ROOT/scripts/cleanup-merged-worktrees.sh" ] || exit 0
 
 # Both reports are read-only and cheap by contract (git worktree list + git
-# branch -vv, no find/du). Bound them anyway so a wedged git never eats the
-# hook's budget.
+# branch -vv, no find/du). Bound the WHOLE sequence with ONE overall deadline, so
+# a wedged git cannot spend two budgets or, without `timeout`, hang unbounded.
+report_seq='
+"$1/scripts/cleanup-merged-worktrees.sh" --repo "$1" --report 2>/dev/null || true
+if [ -x "$1/scripts/cleanup-local-branches.sh" ]; then
+    ( cd "$1" && "$1/scripts/cleanup-local-branches.sh" --report 2>/dev/null ) || true
+fi
+'
 if command -v timeout >/dev/null 2>&1; then
-    timeout 15 "$ROOT/scripts/cleanup-merged-worktrees.sh" --repo "$ROOT" --report 2>/dev/null || true
-    [ -x "$ROOT/scripts/cleanup-local-branches.sh" ] && \
-        ( cd "$ROOT" && timeout 15 "$ROOT/scripts/cleanup-local-branches.sh" --report 2>/dev/null ) || true
+    timeout 20 bash -c "$report_seq" _ "$ROOT" || true
 else
-    "$ROOT/scripts/cleanup-merged-worktrees.sh" --repo "$ROOT" --report 2>/dev/null || true
-    [ -x "$ROOT/scripts/cleanup-local-branches.sh" ] && \
-        ( cd "$ROOT" && "$ROOT/scripts/cleanup-local-branches.sh" --report 2>/dev/null ) || true
+    bash -c "$report_seq" _ "$ROOT" || true
 fi
 exit 0

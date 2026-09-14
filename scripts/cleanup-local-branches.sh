@@ -94,7 +94,7 @@ do_report() {
         if in_a_worktree "$b"; then
             echo "  $b  (checked out in a worktree; reap the worktree first)"
         else
-            echo "  $b  ($(git rev-parse --short "$b" 2>/dev/null))"
+            echo "  $b  ($(git rev-parse --short "refs/heads/$b" 2>/dev/null))"
         fi
     done <<< "$(gone_upstream_branches)"
     if [ "$n" -gt 0 ]; then
@@ -125,9 +125,11 @@ apply_one() {
         return 1
     fi
 
-    sha=$(git rev-parse "$b" 2>/dev/null) || sha=""
+    # Resolve the BRANCH ref explicitly, never the bare name: a same-named tag at
+    # the merged commit must not be able to satisfy the proof for the branch.
+    sha=$(git rev-parse --verify "refs/heads/$b" 2>/dev/null) || sha=""
     if [ -z "$sha" ]; then
-        echo "SKIPPED: $b — could not resolve to a SHA." >&2
+        echo "SKIPPED: $b — could not resolve 'refs/heads/$b' to a SHA." >&2
         return 1
     fi
 
@@ -167,11 +169,14 @@ for r in rows:
         return 1
     fi
 
-    if git branch -D "$b" >/dev/null 2>&1; then
+    # ATOMIC DELETE against the proven SHA: `update-ref -d <ref> <old>` deletes
+    # only if the branch still points at <old>, so a branch that received a new
+    # commit between verification and here is never deleted.
+    if git update-ref -d "refs/heads/$b" "$sha" 2>/dev/null; then
         echo "REMOVED: $b  (was $sha; restore with: git branch $b $sha)"
         return 0
     fi
-    echo "FAILED: $b — could not delete. Recovery SHA: $sha" >&2
+    echo "FAILED: $b — '$b' moved since it was verified, or could not be deleted. Recovery SHA: $sha" >&2
     return 2
 }
 

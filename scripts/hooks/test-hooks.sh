@@ -81,7 +81,7 @@ echo
 # EVERY `mktemp` IN THIS FILE, enumerated with `grep mktemp` rather than from the block I happened to be
 # editing. The previous version registered the six in this block and left four allocated hundreds of
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
-MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
+MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""; DWT_REPO=""
 GATE_EXP=""; GATE_PAY=""; VICTIM=""; STAGE_B=""; STAGE_A=""
 HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
@@ -99,6 +99,7 @@ cleanup() {
     # NEVER a `scripts/.digest-control-*` glob here: it would take a concurrent run's directory too.
     [ -n "$DIG_DIR" ]    && rm -rf "$DIG_DIR"
     [ -n "$NOHOOKS" ]    && rm -rf "$NOHOOKS"
+    [ -n "$DWT_REPO" ] && rm -rf "$DWT_REPO"
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
@@ -1033,6 +1034,31 @@ if [ "$WT_BEFORE" = "$WT_AFTER" ]; then
     PASS=$((PASS+1)); echo "  ok    a fetch/pull removes no worktree ($WT_BEFORE before and after)"
 else
     FAIL=$((FAIL+1)); echo "  FAIL  worktree count moved from $WT_BEFORE to $WT_AFTER across a fetch payload"
+fi
+echo
+
+echo "cleanup-merged-worktrees.sh — an unproven worktree is REFUSED, never deleted (end to end)"
+# The destructive path, exercised for real: a genuine worktree in a throwaway repo with NO GitHub remote,
+# so the merged-PR proof cannot pass. --apply must refuse and the worktree must survive. This is the
+# property that matters most, and read-only unit assertions could not reach it.
+DWT_REPO=$(mktemp -d) || exit 2
+git init -q -b main "$DWT_REPO" >/dev/null 2>&1 || exit 2
+( cd "$DWT_REPO" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m base ) >/dev/null 2>&1 || exit 2
+DWT_WT="$DWT_REPO/.claude/worktrees/task"
+git -C "$DWT_REPO" worktree add -q "$DWT_WT" -b feat/task >/dev/null 2>&1 || exit 2
+# cwd here is this checkout (not inside the throwaway worktree), so the self-guard does not fire; the
+# refusal must come from the merged-PR proof failing on a repo with no remote.
+"$PWD/scripts/cleanup-merged-worktrees.sh" --repo "$DWT_REPO" --apply "$DWT_WT" >/dev/null 2>&1 || true
+if [ -d "$DWT_WT" ]; then
+    PASS=$((PASS+1)); echo "  ok    a worktree with no merged PR survives --apply"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a worktree with no merged PR was DELETED by --apply"
+fi
+# And an unscoped --apply is refused with a nonzero usage exit, deleting nothing.
+if "$PWD/scripts/cleanup-merged-worktrees.sh" --repo "$DWT_REPO" --apply >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); echo "  FAIL  an unscoped --apply was accepted"
+else
+    PASS=$((PASS+1)); echo "  ok    an unscoped --apply is refused"
 fi
 echo
 

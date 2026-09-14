@@ -487,19 +487,17 @@ internal class RecordingAccessibilityOverlay(
         }
     }
 
-    /** The idle lips: the brand mark in a 56 dp violet-outlined circle. */
+    /**
+     * The idle lips: the brand mark on a 56 dp frosted rounded square with no outline. The founder
+     * dropped the violet-ringed dark circle on 2026-09-14 for Wispr Flow's lighter shape: "transparent,
+     * rounded square, no border". A small neutral shadow keeps it separate from a light page.
+     */
     private fun buildBubble(): View {
         // The lips fill a 34 dp square inside the 56 dp bubble, as in the approved mock.
         bubbleMark.setPadding(dp(11), dp(11), dp(11), dp(11))
         return FrameLayout(service).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(BrandPalette.PILL_BACKGROUND)
-                setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)
-            }
-            elevation = dp(10).toFloat()
-            outlineSpotShadowColor = BrandPalette.VIOLET
-            outlineAmbientShadowColor = BrandPalette.VIOLET
+            background = roundedBackground(BrandPalette.BUBBLE_BACKGROUND, dp(BUBBLE_RADIUS_DP).toFloat())
+            elevation = dp(4).toFloat()
             contentDescription = "EnviousWispr. Double tap to dictate. Touch and hold to talk. Drag to move."
             isClickable = true
             isFocusable = false
@@ -720,6 +718,8 @@ internal class RecordingAccessibilityOverlay(
         const val WINDOW_TITLE = "EnviousWispr recording controls"
 
         const val BUBBLE_DP = 56
+        /** The bubble's corner, a rounded square rather than a circle. */
+        const val BUBBLE_RADIUS_DP = 16
         const val MARGIN_DP = 12
         const val PILL_HEIGHT_DP = 60
         const val RAIL_HEIGHT_DP = 22

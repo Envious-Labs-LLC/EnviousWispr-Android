@@ -1,0 +1,53 @@
+name: PR check
+on:
+  pull_request:
+    branches: [main]
+    # `edited` so RETARGETING a PR onto main starts the check without needing a
+    # new push; the default set (opened, synchronize, reopened) would otherwise
+    # leave the required check missing on a base-branch change.
+    types: [opened, synchronize, reopened, edited]
+permissions:
+  contents: read
+concurrency:
+  # One run per PR; a new push cancels the superseded run.
+  group: pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  # The single required status. It ALWAYS reports (docs-only PRs report a skip and
+  # pass), so branch protection can require exactly this one check.
+  build-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Classify changes
+        id: classify
+        run: |
+          CLASS=$(bash scripts/ci/classify-changes.sh "${{ github.event.pull_request.base.sha }}")
+          echo "class=$CLASS" >> "$GITHUB_OUTPUT"
+          echo "Change class: $CLASS"
+      - name: Install pinned Android dependencies
+        if: steps.classify.outputs.class == 'build'
+        run: bash scripts/ci/setup-android-deps.sh
+      - name: Debug unit tests and assemble
+        if: steps.classify.outputs.class == 'build'
+        run: bash scripts/ci/check.sh
+      - name: Documentation-only change
+        if: steps.classify.outputs.class == 'skip'
+        run: echo "Only documentation changed; the Android build is not needed."
+      - name: Save test reports
+        if: always() && steps.classify.outputs.class == 'build'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-debug-test-results
+          path: app/build/test-results/testDebugUnitTest/
+          if-no-files-found: warn
+          retention-days: 14

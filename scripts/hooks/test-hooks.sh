@@ -81,7 +81,7 @@ echo
 # EVERY `mktemp` IN THIS FILE, enumerated with `grep mktemp` rather than from the block I happened to be
 # editing. The previous version registered the six in this block and left four allocated hundreds of
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
-MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""
+MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""; DWT_REPO=""
 GATE_EXP=""; GATE_PAY=""; VICTIM=""; STAGE_B=""; STAGE_A=""
 HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
@@ -99,6 +99,7 @@ cleanup() {
     # NEVER a `scripts/.digest-control-*` glob here: it would take a concurrent run's directory too.
     [ -n "$DIG_DIR" ]    && rm -rf "$DIG_DIR"
     [ -n "$NOHOOKS" ]    && rm -rf "$NOHOOKS"
+    [ -n "$DWT_REPO" ] && rm -rf "$DWT_REPO"
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
@@ -1008,6 +1009,59 @@ else
     if [ -n "$OUT" ]; then PASS=$((PASS+1)); echo "  ok    leftovers reported ($DIRTY dirty, $AHEAD unpushed)"
     else FAIL=$((FAIL+1)); echo "  FAIL  $DIRTY dirty and $AHEAD unpushed, reported nothing"; fi
 fi
+echo
+echo "post-sync-cleanup.sh — reports on fetch/pull, silent otherwise, and NEVER removes"
+# Silent on a command that is not a fetch/pull.
+PSC_OUT=$(printf '%s' '{"tool_input":{"command":"ls -la"}}' | "$HOOKS/post-sync-cleanup.sh" 2>&1); PSC_RC=$?
+if [ -z "$PSC_OUT" ] && [ "$PSC_RC" -eq 0 ]; then
+    PASS=$((PASS+1)); echo "  ok    a non-git command is silent and exits 0"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a non-git command printed '${PSC_OUT}' rc=$PSC_RC"
+fi
+# A pull is handled and must never block (exit 0). Output depends on repo state, so it is not asserted.
+printf '%s' '{"tool_input":{"command":"git pull"}}' | "$HOOKS/post-sync-cleanup.sh" >/dev/null 2>&1; PSC_RC=$?
+if [ "$PSC_RC" -eq 0 ]; then
+    PASS=$((PASS+1)); echo "  ok    a git pull is handled and never blocks (exit 0)"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a git pull payload exited $PSC_RC"
+fi
+# THE SAFETY PROPERTY: a fetch/pull is a READ, so the hook must leave every worktree in place. Count the
+# registered worktrees around a pull payload; the report path may print, but it may not remove.
+WT_BEFORE=$(git worktree list 2>/dev/null | wc -l | tr -d ' ')
+printf '%s' '{"tool_input":{"command":"git fetch --prune"}}' | "$HOOKS/post-sync-cleanup.sh" >/dev/null 2>&1 || true
+WT_AFTER=$(git worktree list 2>/dev/null | wc -l | tr -d ' ')
+if [ "$WT_BEFORE" = "$WT_AFTER" ]; then
+    PASS=$((PASS+1)); echo "  ok    a fetch/pull removes no worktree ($WT_BEFORE before and after)"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  worktree count moved from $WT_BEFORE to $WT_AFTER across a fetch payload"
+fi
+echo
+
+echo "cleanup-merged-worktrees.sh — an unproven worktree is REFUSED, never deleted (end to end)"
+# The destructive path, exercised for real: a genuine worktree in a throwaway repo with NO GitHub remote,
+# so the merged-PR proof cannot pass. --apply must refuse and the worktree must survive. This is the
+# property that matters most, and read-only unit assertions could not reach it.
+DWT_REPO=$(mktemp -d) || exit 2
+git init -q -b main "$DWT_REPO" >/dev/null 2>&1 || exit 2
+( cd "$DWT_REPO" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m base ) >/dev/null 2>&1 || exit 2
+DWT_WT="$DWT_REPO/.claude/worktrees/task"
+git -C "$DWT_REPO" worktree add -q "$DWT_WT" -b feat/task >/dev/null 2>&1 || exit 2
+# cwd here is this checkout (not inside the throwaway worktree), so the self-guard does not fire; the
+# refusal must come from the merged-PR proof failing on a repo with no remote.
+"$PWD/scripts/cleanup-merged-worktrees.sh" --repo "$DWT_REPO" --apply "$DWT_WT" >/dev/null 2>&1 || true
+if [ -d "$DWT_WT" ]; then
+    PASS=$((PASS+1)); echo "  ok    a worktree with no merged PR survives --apply"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a worktree with no merged PR was DELETED by --apply"
+fi
+# And an unscoped --apply is refused with a nonzero usage exit, deleting nothing.
+if "$PWD/scripts/cleanup-merged-worktrees.sh" --repo "$DWT_REPO" --apply >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); echo "  FAIL  an unscoped --apply was accepted"
+else
+    PASS=$((PASS+1)); echo "  ok    an unscoped --apply is refused"
+fi
+echo
+
 echo "change-digest.sh — the fingerprint a validation receipt is pinned to"
 # Every digest invocation is checked. Comparing two EMPTY strings reports "same", so a script that had
 # stopped working entirely would pass the two controls that assert sameness.

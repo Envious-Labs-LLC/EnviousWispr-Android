@@ -48,6 +48,9 @@ fi
 # across the built-in mic, a loopback device, a cold boot and the AVD.conf key, until this one line.
 # Idempotent; safe on a running emulator. Captured, then tested: `producer | grep -q` under pipefail
 # fails on a MATCH (validation-discipline.md FACT: silent-empty-traps).
+# What the microphone HEARS is the Mac's default input at record time, not at launch, so the voice
+# path is chosen per take: scripts/uat/wispr_eyes.py say_into_emulator() plays into the virtual cable
+# (BlackHole 2ch) and switches the input for the sentence. Nothing about the cable is needed here.
 HOSTMIC="$("$ADB" -s "$SERIAL" emu avd hostmicon 2>&1 || true)"
 case "$HOSTMIC" in
   OK*) ;;

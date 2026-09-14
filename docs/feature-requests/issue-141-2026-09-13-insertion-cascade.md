@@ -235,6 +235,14 @@ not the whole field, so the macOS order is not evidence for `SET_TEXT` first.
   commit call. The connection captured at the check is the one used to commit and to judge; the loop
   never substitutes the current connection later. A generation change after the write yields
   `UNREADABLE`, never a write. When correspondence cannot be established the paste route is selected.
+  **Built (chunk 2, 2026-09-13):** the `FOCUS_INPUT` search from the window root is NOT the node test.
+  On Chrome (Android 16 AVD) it answers a node other than the pinned editor, which sent every dictation
+  to paste. The node half of the predicate is the service's own `withPinnedNode` proof (present in the
+  pinned window, focused, editable, framework-equal to the pin), which is also what the write relies
+  on; a window holds one focused view, so with input focus in the pinned window the session belongs
+  to that view. The window judge hands any selection, and a changed after-caret length, to the node
+  judge (Codex chunk 2 round 1). A generation change AFTER the write makes the windows unreadable and
+  the node judge decides, which is the `UNREADABLE`-never-a-write intent with the node's evidence kept.
 - **Dispatched vs unknown:** `pending.verification != null` already means "a write was sent" and the
   loop never re-dispatches (`performInsertion`, `:757-759`). What the loop does NOT do today is survive a
   throw: the catch at `:765-767` returns `RETRY` with `verification` unset, so the next tick re-enters

@@ -46,7 +46,62 @@ internal object AccessibilityInsertionRules {
         val beforeWasHint: Boolean,
         val selection: EditorSelection?,
         val insertedText: String,
+        /** The commit route's pre-write read off the input connection; null on the paste route. */
+        val beforeWindow: SurroundingWindow? = null,
     )
+
+    /**
+     * How many characters the commit route reads on each side of the caret: the same window the smart
+     * composer inspects (`InsertionText` CONTEXT_LIMIT), so a seam it repairs was really seen.
+     */
+    const val WINDOW_CHARS = 64
+
+    /**
+     * A read off the input connection: the text before the caret, the selected text, the text after
+     * it, and whether [before] starts at the document start. The commit route composes against this
+     * and judges against a second one, so it never depends on the node exposing its text.
+     */
+    data class SurroundingWindow(
+        val before: String,
+        val selected: String,
+        val after: String,
+        /** Where [before] starts in the document; -1 when the editor does not say (Chrome). */
+        val offset: Int,
+    ) {
+        val atDocumentStart: Boolean
+            get() = offset == 0
+
+        /**
+         * An empty left context that is NOT the document start is an editor that gave nothing back,
+         * and the smart composer would read it as a sentence start; such a window composes nothing.
+         */
+        val composable: Boolean
+            get() = atDocumentStart || before.isNotEmpty()
+
+        /**
+         * Whether this read reaches the END of a document of [documentLength] characters. The pipe
+         * never promises a complete tail (an editor may answer with fewer characters than asked), so
+         * completeness is proven from outside: the node's own text length, read at the same moment.
+         */
+        fun coversDocumentEnd(documentLength: Int): Boolean =
+            offset >= 0 && offset + before.length + selected.length + after.length == documentLength
+    }
+
+    /**
+     * The one derivation of a [SurroundingWindow] from what `getSurroundingText` reports: the text
+     * with the selection inside it, the selection relative to that text, and the text's offset in the
+     * document. Inconsistent numbers give null, which the caller treats as "no window".
+     */
+    fun window(text: CharSequence?, selectionStart: Int, selectionEnd: Int, offset: Int): SurroundingWindow? {
+        val whole = text?.toString() ?: return null
+        if (selectionStart !in 0..whole.length || selectionEnd !in selectionStart..whole.length) return null
+        return SurroundingWindow(
+            before = whole.substring(0, selectionStart),
+            selected = whole.substring(selectionStart, selectionEnd),
+            after = whole.substring(selectionEnd),
+            offset = offset,
+        )
+    }
 
     fun isExpectedWindow(
         packageName: String?,
@@ -121,6 +176,59 @@ internal object AccessibilityInsertionRules {
         } else {
             Judgement.MISS
         }
+    }
+
+    /**
+     * Judges a commit against a second read off the same input connection, or answers null when the
+     * windows cannot decide and the node judge must.
+     *
+     * The write landed when the text immediately before the caret went from `tail` to
+     * `tail + inserted` and the text immediately after the caret is unchanged, where `tail` is the
+     * last [WINDOW_CHARS] characters the pre-write read held before the caret. Three cases hand over
+     * to the node judge: a pre-write read too short to show whether the draft ALREADY ended with
+     * `tail + inserted`; a draft that did (a repetitive one, where a landed write and no write look
+     * the same); and a post-write read too short to hold `tail + inserted` that is not the document
+     * start (the editor truncated it). A too-short post-write read that IS the document start is a
+     * complete read of a field that does not hold the words: MISS.
+     */
+    fun judgeWindow(verification: Verification, after: SurroundingWindow): Judgement? {
+        val before = verification.beforeWindow ?: return null
+        // A selection is replaced by the commit, and the windows cannot tell "replaced with the same
+        // words" from "nothing happened and the selection collapsed": the node judge, which holds
+        // the range, decides those (Codex code review round 1 of chunk 2).
+        if (before.selected.isNotEmpty() || after.selected.isNotEmpty()) return null
+        val inserted = foldSpaces(verification.insertedText)
+        if (inserted.isEmpty()) return null
+        val pre = foldSpaces(before.before)
+        val expected = pre.takeLast(WINDOW_CHARS) + inserted
+        if (!before.atDocumentStart && pre.length < expected.length) return null
+        if (pre.endsWith(expected)) return null
+        val actual = foldSpaces(after.before)
+        if (actual.length < expected.length) {
+            return if (after.atDocumentStart) Judgement.MISS else null
+        }
+        if (!actual.endsWith(expected)) return Judgement.MISS
+        // The text after the caret must be the same read as before: both windows asked for the same
+        // length, so a different length is evidence the windows cannot weigh (a lost or grown tail,
+        // or an editor that truncated one read), never a prefix to be waved through. The one
+        // exception is whitespace at the END of the document: Gmail on the S26 absorbs the single
+        // space that sat after the caret at the end of the draft (2026-09-13, build 110: `after=1`
+        // before the commit, `after=0` after it, 1 dictation in 5), and that space is not content.
+        // The exception needs PROOF that the pre-write tail was the whole tail, and the pipe cannot
+        // give it (Codex chunk 2 round 3): the node's text length read before the write is that
+        // proof. A commit at the caret cannot add words after the caret, so a shorter post-write
+        // tail that trims to the same text has lost nothing but whitespace.
+        val tailBefore = foldSpaces(before.after)
+        val tailAfter = foldSpaces(after.after)
+        val documentLength = verification.beforeText?.length
+        when {
+            tailBefore.length == tailAfter.length -> if (tailBefore != tailAfter) return Judgement.MISS
+            documentLength != null && before.coversDocumentEnd(documentLength) &&
+                tailAfter.length < tailBefore.length &&
+                tailBefore.trimEnd() == tailAfter.trimEnd() -> Unit
+            else -> return null
+        }
+        return Judgement.VERIFIED
     }
 
     /**

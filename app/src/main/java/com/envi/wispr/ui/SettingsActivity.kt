@@ -94,6 +94,7 @@ class SettingsActivity : ComponentActivity() {
                     onRestoreClipboardChanged = viewModel::setRestoreClipboardAfterPaste,
                     onSmartInsertionChanged = viewModel::setSmartInsertionEnabled,
                     onDynamicColorChanged = viewModel::setDynamicColorEnabled,
+                    onBubbleLookChanged = viewModel::setBubbleLook,
                     onSetPolishMode = viewModel::setPolishMode,
                     onSaveProviderSettings = viewModel::saveProviderSettings,
                     onClearProviderSettings = viewModel::removeProviderKey,

@@ -39,7 +39,16 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         color = BrandPalette.METER_RESTING
     }
     private val bar = RectF()
+    private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = BrandMarkView.INK }
     private val history = LevelHistory(BAR_COUNT)
+
+    /** A dark edge behind every bar, in pixels; 0 draws none. See `BrandMarkView.inkEdgePx`. */
+    var inkEdgePx: Float = 0f
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
     private var levels = FloatArray(BAR_COUNT)
 
     /**
@@ -121,6 +130,15 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         val radius = barWidth / 2f
         val centreY = paddingTop + usableHeight / 2f
 
+        val edge = inkEdgePx
+        if (edge > 0f) {
+            for (index in 0 until count) {
+                val barHeight = usableHeight * fill(levels[index])
+                val left = paddingLeft + index * step
+                bar.set(left - edge, centreY - barHeight / 2f - edge, left + barWidth + edge, centreY + barHeight / 2f + edge)
+                canvas.drawRoundRect(bar, radius + edge, radius + edge, inkPaint)
+            }
+        }
         for (index in 0 until count) {
             val level = levels[index]
             // Symmetric about the centre line rather than growing off a floor, so the rail's visual

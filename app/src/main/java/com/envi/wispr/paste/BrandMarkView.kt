@@ -36,6 +36,18 @@ internal class BrandMarkView(context: Context) : View(context) {
 
     /** How far the rainbow has rolled along the bars, in bars; 0 is the brand drawing. */
     private var colourShift = 0
+
+    /**
+     * A dark edge drawn behind every bar, in pixels; 0 draws none. The look's way of keeping the
+     * bright bars readable on a white page without a ground under them.
+     */
+    var inkEdgePx: Float = 0f
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+    private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = INK }
     private var roll: ValueAnimator? = null
 
     init {
@@ -92,6 +104,17 @@ internal class BrandMarkView(context: Context) : View(context) {
         val originY = paddingTop + (usableHeight - DRAWING_SIZE * unit) / 2f
         val radius = BAR_RADIUS * unit
 
+        val edge = inkEdgePx
+        // Every edge first, then every bar, so no bar's colour is dimmed by its neighbour's edge.
+        if (edge > 0f) {
+            for (index in 0 until BAR_COUNT) {
+                val left = originX + (BAR_LEFT + index * BAR_STEP) * unit
+                bar.set(left - edge, originY + UPPER_TOP[index] * unit - edge, left + BAR_WIDTH * unit + edge, originY + (UPPER_TOP[index] + UPPER_HEIGHT[index]) * unit + edge)
+                canvas.drawRoundRect(bar, radius + edge, radius + edge, inkPaint)
+                bar.set(left - edge, originY + LOWER_TOP[index] * unit - edge, left + BAR_WIDTH * unit + edge, originY + (LOWER_TOP[index] + LOWER_HEIGHT[index]) * unit + edge)
+                canvas.drawRoundRect(bar, radius + edge, radius + edge, inkPaint)
+            }
+        }
         for (index in 0 until BAR_COUNT) {
             val left = originX + (BAR_LEFT + index * BAR_STEP) * unit
             paint.color = BrandPalette.RAINBOW[(index + colourShift) % BAR_COUNT]
@@ -110,6 +133,9 @@ internal class BrandMarkView(context: Context) : View(context) {
 
         /** One full roll of the rainbow across the nine bars. */
         const val ROLL_MS = 1080L
+
+        /** The ink edge's colour: the recorder ground at 85 percent. */
+        const val INK = 0xD9131019.toInt()
         const val BAR_WIDTH = 14f
         const val BAR_RADIUS = 5f
         const val BAR_LEFT = 24f

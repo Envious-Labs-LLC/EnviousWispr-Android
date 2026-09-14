@@ -6,9 +6,11 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
+import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.vad.SilenceStopDetector
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -26,6 +28,8 @@ data class AppPreferencesState(
     // The two defaults have to agree: this one is what the UI renders before DataStore has delivered,
     // and `mapState` is what it settles on. They disagreed once and the app flashed the wrong theme.
     val dynamicColorEnabled: Boolean = false,
+    /** How the floating button and its recorder pills look. Same default here and in `mapState`. */
+    val bubbleLook: BubbleLook = BubbleLook.DEFAULT,
     val fillerRemovalEnabled: Boolean = true,
     val emojiFormatterEnabled: Boolean = true,
     val spokenPunctuationEnabled: Boolean = false,
@@ -71,6 +75,7 @@ class AppPreferences(context: Context) {
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
         onboardingDismissed = preferences[Keys.ONBOARDING_DISMISSED] ?: false,
         dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: false,
+        bubbleLook = BubbleLook.fromStorage(preferences[Keys.BUBBLE_LOOK]),
         fillerRemovalEnabled = preferences[Keys.FILLER_REMOVAL] ?: true,
         emojiFormatterEnabled = preferences[Keys.EMOJI_FORMATTER] ?: true,
         spokenPunctuationEnabled = preferences[Keys.SPOKEN_PUNCTUATION] ?: false,
@@ -122,6 +127,10 @@ class AppPreferences(context: Context) {
         }
     }
 
+    suspend fun setBubbleLook(look: BubbleLook) {
+        dataStore.edit { preferences -> preferences[Keys.BUBBLE_LOOK] = look.storageKey }
+    }
+
     suspend fun setFillerRemovalEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[Keys.FILLER_REMOVAL] = enabled
@@ -169,6 +178,7 @@ class AppPreferences(context: Context) {
         val ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         val ONBOARDING_DISMISSED = booleanPreferencesKey("onboarding_dismissed")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
+        val BUBBLE_LOOK = stringPreferencesKey("bubble_look")
         val FILLER_REMOVAL = booleanPreferencesKey("filler_removal_enabled")
         val EMOJI_FORMATTER = booleanPreferencesKey("emoji_formatter_enabled")
         val SPOKEN_PUNCTUATION = booleanPreferencesKey("spoken_punctuation_enabled")

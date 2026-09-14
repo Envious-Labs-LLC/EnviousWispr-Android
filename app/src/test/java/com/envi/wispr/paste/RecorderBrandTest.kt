@@ -152,13 +152,17 @@ class RecorderBrandTest {
     }
 
     @Test
-    fun theRecorderCarriesTheVioletOutlineAndGlow() {
-        assertTrue("the pill needs its violet outline", overlay.contains("setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)"))
-        assertTrue(
-            "and its violet glow, which is the shadow tinted",
-            overlay.contains("outlineSpotShadowColor = BrandPalette.VIOLET") &&
-                overlay.contains("outlineAmbientShadowColor = BrandPalette.VIOLET"),
-        )
+    fun noSurfaceCarriesAnOutlineAndTheLookPaintsAllThree() {
+        // Founder 2026-09-14: the violet outline and violet glow are retired; none of the three looks
+        // has a border, and one ground colour is shared by the bubble and both pills.
+        assertFalse("no bubble or pill may draw the violet stroke", overlay.contains("setStroke(dp(1).coerceAtLeast(1), BrandPalette.VIOLET)"))
+        val painters = overlay.substringAfter("private fun applyLook()").substringBefore("private fun buildHideTarget()")
+        assertFalse("no bubble or pill may draw any stroke", painters.contains("setStroke("))
+        assertFalse("no violet glow remains", overlay.contains("ShadowColor = BrandPalette.VIOLET"))
+        val apply = overlay.substringAfter("private fun applyLook()").substringBefore("\n    }\n")
+        listOf("bubble.background", "bubble.elevation", "pill.background", "pill.elevation", "bubbleMark.inkEdgePx", "meter.inkEdgePx", "cancelButton.background", "acceptButton.background")
+            .forEach { assertTrue("applyLook must set $it", apply.contains(it)) }
+        assertTrue("the look is applied once the pill exists", overlay.contains("pill = container\n        applyLook()"))
     }
 
     @Test

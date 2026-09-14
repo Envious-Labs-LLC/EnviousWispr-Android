@@ -48,10 +48,5 @@ internal object BrandPalette {
     /** A resting meter bar, dim enough to read as "nothing heard" without reading as broken. */
     const val METER_RESTING = 0xFF3A3547.toInt()
 
-    /**
-     * The idle bubble's ground: a frosted light grey at 80 percent, so the app underneath shows through
-     * and the lips read on a dark screen and a light one alike. No outline (founder 2026-09-14, after
-     * Wispr Flow's bubble: "transparent, rounded square, no border").
-     */
-    const val BUBBLE_BACKGROUND = 0xCCDDDDE4.toInt()
+    /** The bubble's and the pills' grounds per look: `BubbleLook.surfaceFill`. */
 }

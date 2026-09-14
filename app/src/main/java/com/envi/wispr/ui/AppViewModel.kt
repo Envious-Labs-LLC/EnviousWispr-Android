@@ -32,6 +32,7 @@ import com.envi.wispr.polish.PolishFailure
 import kotlinx.coroutines.flow.asStateFlow
 import com.envi.wispr.providers.SelfHostedProtocol
 import com.envi.wispr.providers.capabilities
+import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.settings.AppPreferencesState
 import com.envi.wispr.vocabulary.CustomTerm
@@ -394,6 +395,12 @@ class EnviousWisprViewModel(
     fun setDynamicColorEnabled(enabled: Boolean) {
         viewModelScope.launch {
             appPreferences.setDynamicColorEnabled(enabled)
+        }
+    }
+
+    fun setBubbleLook(look: BubbleLook) {
+        viewModelScope.launch {
+            appPreferences.setBubbleLook(look)
         }
     }
 

@@ -46,10 +46,8 @@ internal class RecordingAccessibilityOverlay(
 ) : RecordingOverlayState.Listener {
     private val windowManager = service.getSystemService(WindowManager::class.java)
     private val density = service.resources.displayMetrics.density
-    private val mark = BrandMarkView(service)
     private val timer = TextView(service)
     private val meter = RecordingLevelMeterView(service)
-    private val stateLabel = TextView(service)
     private val notice = TextView(service)
     private val bubbleMark = BrandMarkView(service)
     private val cancelButton = actionButton(ActionGlyph.CROSS, "Cancel", BrandPalette.NEUTRAL_CONTROL) {
@@ -238,8 +236,8 @@ internal class RecordingAccessibilityOverlay(
                 // Measure the whole column, notice line included, so a warning that grows it is
                 // placed above the keyboard rather than hanging over the keys (Play-branch review).
                 val compact = snapshot.requestToken != null && snapshot.requestToken == heldTake
-                layOutPill(compact)
-                val width = if (compact) dp(COMPACT_PILL_DP) else bounds.usable.width - 2 * dp(MARGIN_DP)
+                layOutPill(compact, mirrored = position.side == BubbleSide.LEFT)
+                val width = if (compact) dp(COMPACT_PILL_DP) else dp(FULL_PILL_DP)
                 pillColumn.measure(
                     View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
@@ -546,9 +544,12 @@ internal class RecordingAccessibilityOverlay(
     }
 
     /**
-     * The pill, in the founder's own order: mark, elapsed time, level rail, state, cancel, accept.
+     * The pill: elapsed time, level rail, cancel, accept, in that order from the far edge towards the
+     * dock, so the accept control is always the one nearest the thumb that docked the bubble.
      *
-     * Layout from `docs/mockups/android-v2/06-floating-recorder.png` and that folder's README.
+     * Layout from `docs/mockups/android-v2/06-floating-recorder.png` and that folder's README, minus the
+     * mark and the LISTENING word: the founder dropped both on 2026-09-13 after using build 114, so the
+     * bar is smaller and less in the way. The lips are on the bubble; the pill does not need them twice.
      */
     private fun buildPill(): View {
         val container = LinearLayout(service).apply {
@@ -574,39 +575,19 @@ internal class RecordingAccessibilityOverlay(
             // it does not shift every second.
             typeface = brandTypeface(R.font.plus_jakarta_sans_semibold)
             minWidth = dp(48)
+            // The clock reads left to right whichever way the pill is mirrored.
+            textDirection = View.TEXT_DIRECTION_LTR
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
 
-        stateLabel.apply {
-            // STATIC, and it can only be right. The pill exists while `visible` is true, which is
-            // exactly the listening phase; every later phase has already hidden it.
-            text = LISTENING_LABEL
-            gravity = Gravity.CENTER
-            setTextColor(BrandPalette.TEXT_MUTED)
-            textSize = 10f
-            letterSpacing = 0.14f
-            typeface = brandTypeface(R.font.plus_jakarta_sans_bold)
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-            contentDescription = "Listening"
-        }
-
-        container.addView(
-            mark,
-            LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) },
-        )
         container.addView(
             timer,
             LinearLayout.LayoutParams(WRAP, dp(44)).apply { marginEnd = dp(10) },
         )
-        // The rail takes the room that is left, so the pill grows with the screen rather than the rail
-        // being pinned to one width that is wrong on two of them.
+        // The rail takes the room the fixed parts leave, so the two pill widths share one layout.
         container.addView(
             meter,
             LinearLayout.LayoutParams(0, dp(RAIL_HEIGHT_DP), 1f).apply { marginEnd = dp(10) },
-        )
-        container.addView(
-            stateLabel,
-            LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(10) },
         )
         container.addView(cancelButton, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(8) })
         container.addView(acceptButton, LinearLayout.LayoutParams(dp(40), dp(40)))
@@ -617,18 +598,21 @@ internal class RecordingAccessibilityOverlay(
     private lateinit var pill: LinearLayout
 
     /**
-     * Two layouts of the one pill. Full: mark, time, rail, LISTENING, cancel, accept, across the screen.
-     * Compact, for a hold: the rail alone in a short pill at the bubble's edge, because the finger is
-     * already the control and everything else was noise while it was down (founder 2026-09-13, from
-     * Wispr Flow's hold pill). Same height either way, so the pill never jumps between the two.
+     * Two layouts of the one pill, either of them mirrored. Full: time, rail, cancel, accept, at the
+     * bubble's edge. Compact, for a hold: the rail alone in a shorter pill, because the finger is already
+     * the control and everything else was noise while it was down (founder 2026-09-13, from Wispr Flow's
+     * hold pill). Same height either way, so the pill never jumps between the two.
+     *
+     * [mirrored] flips the row for a bubble docked on the LEFT, so accept sits at the left edge under
+     * the thumb that put the bubble there, rather than across the pill (founder 2026-09-13). The row's
+     * layout direction does the flipping, which keeps every margin between the same two neighbours.
      */
-    private fun layOutPill(compact: Boolean) {
+    private fun layOutPill(compact: Boolean, mirrored: Boolean) {
+        pill.layoutDirection = if (mirrored) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
         if (pillCompact == compact) return
         pillCompact = compact
         val partsVisibility = if (compact) View.GONE else View.VISIBLE
-        mark.visibility = partsVisibility
         timer.visibility = partsVisibility
-        stateLabel.visibility = partsVisibility
         cancelButton.visibility = partsVisibility
         acceptButton.visibility = partsVisibility
         (meter.layoutParams as LinearLayout.LayoutParams).apply {
@@ -734,14 +718,13 @@ internal class RecordingAccessibilityOverlay(
         /** Unchanged on purpose: the device harness finds the window by this title. */
         const val WINDOW_TITLE = "EnviousWispr recording controls"
 
-        /** What the recorder says it is doing. The mockup's own word, in quiet caps. */
-        const val LISTENING_LABEL = "LISTENING"
-
         const val BUBBLE_DP = 56
         const val MARGIN_DP = 12
         const val PILL_HEIGHT_DP = 60
         const val RAIL_HEIGHT_DP = 22
 
+        /** The tap pill: clock, rail, cancel, accept. Narrow enough to leave the text it types into visible. */
+        const val FULL_PILL_DP = 300
         /** The hold pill: the rail alone, about the width of the finger's neighbourhood. */
         const val COMPACT_PILL_DP = 168
         /** A taller rail, padded so the compact pill stands exactly [PILL_HEIGHT_DP] tall. */

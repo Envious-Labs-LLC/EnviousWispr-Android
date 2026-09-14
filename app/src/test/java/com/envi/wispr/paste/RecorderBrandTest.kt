@@ -1,6 +1,7 @@
 package com.envi.wispr.paste
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -134,9 +135,13 @@ class RecorderBrandTest {
 
     @Test
     fun thePillCarriesTheFounderSpecifiedOrder() {
-        // From docs/mockups/android-v2/06-floating-recorder.png: mark, time, rail, state, cancel, accept.
+        // From docs/mockups/android-v2/06-floating-recorder.png: time, rail, cancel, accept. The mockup's
+        // mark and LISTENING word were dropped by the founder on 2026-09-13 (build 114 phone pass): the
+        // lips are on the bubble already, and the bar is smaller without them.
         val body = overlay.substringAfter("private fun buildPill()").substringBefore("private fun pillBackground()")
-        val order = listOf("mark,", "timer,", "meter,", "stateLabel,", "cancelButton,", "acceptButton,")
+        assertFalse("the pill carries no mark", body.contains("mark,"))
+        assertFalse("the pill carries no state label", body.contains("stateLabel"))
+        val order = listOf("timer,", "meter,", "cancelButton,", "acceptButton,")
             .map { it to body.indexOf(it) }
         order.forEach { (piece, at) -> assertTrue("$piece is not in the pill", at >= 0) }
         assertEquals(

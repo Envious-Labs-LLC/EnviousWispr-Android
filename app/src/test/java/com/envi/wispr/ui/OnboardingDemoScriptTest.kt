@@ -34,6 +34,16 @@ class OnboardingDemoScriptTest {
         assertEquals(listOf(0, 1, 2), listOf(5f, 5.6f, 6.5f).map(DemoScript::bubbleLookIndex))
     }
 
+    @Test fun aStalledFrameIsNotDemoTimeAndAShortWindowScalesTheScene() {
+        val demo = java.io.File("src/main/java/com/envi/wispr/ui/OnboardingDemo.kt").readText()
+        // Home and back resumes the demo where it left off: one frame carries at most a tenth of a second.
+        assertTrue(demo.contains("coerceAtMost(MAX_FRAME_SECONDS)"))
+        assertTrue(demo.contains("private const val MAX_FRAME_SECONDS = 0.1f"))
+        // A window too short for the header, the real bubble and a keyboard scales the whole scene down.
+        assertTrue(demo.contains("val fit = (maxHeight / GMAIL_MIN_HEIGHT).coerceAtMost(1f)"))
+        assertTrue(demo.contains("private fun keyboardHeight(height: Dp): Dp = minOf(KEYBOARD, height * 0.4f)"))
+    }
+
     @Test fun betweenIsClampedAndSmooth() {
         assertEquals(0f, DemoScript.between(0f, 1f, 2f))
         assertEquals(1f, DemoScript.between(3f, 1f, 2f))

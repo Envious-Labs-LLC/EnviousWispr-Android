@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -91,7 +92,11 @@ internal fun OnboardingDemo(
         var last = withFrameNanos { it }
         while (elapsed < DemoScript.total) {
             withFrameNanos { now ->
-                elapsed = (elapsed + (now - last) / 1_000_000_000f).coerceAtMost(DemoScript.total)
+                // Frames stop while the app is in the background; the gap they leave is not demo time. A
+                // frame can carry at most a tenth of a second, so Home and back resumes where it left off
+                // (Codex review 1, 2026-09-14).
+                val step = ((now - last) / 1_000_000_000f).coerceAtMost(MAX_FRAME_SECONDS)
+                elapsed = (elapsed + step).coerceAtMost(DemoScript.total)
                 last = now
             }
         }
@@ -129,9 +134,10 @@ private fun DemoCaption(moment: DemoMoment, palette: DemoPalette) {
         val beatStart = if (t < 2.3f) 0.1f else if (t < 4.6f) 2.3f else 4.6f
         DemoScript.between(t, beatStart, beatStart + 0.4f)
     } else 1f
-    Column(Modifier.fillMaxWidth().height(96.dp).alpha(fade), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text(title, fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, color = palette.foreground)
-        if (sub.isNotEmpty()) Text(sub, Modifier.padding(top = 6.dp), fontSize = 13.sp, lineHeight = 18.sp, color = palette.muted, textAlign = TextAlign.Center)
+    val compact = LocalConfiguration.current.screenHeightDp < 560
+    Column(Modifier.fillMaxWidth().height(if (compact) 60.dp else 96.dp).alpha(fade), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Text(title, fontSize = if (compact) 17.sp else 22.sp, lineHeight = if (compact) 21.sp else 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, color = palette.foreground)
+        if (sub.isNotEmpty() && !compact) Text(sub, Modifier.padding(top = 6.dp), fontSize = 13.sp, lineHeight = 18.sp, color = palette.muted, textAlign = TextAlign.Center)
     }
 }
 
@@ -155,6 +161,17 @@ private val FULL_PILL = RecordingAccessibilityOverlay.FULL_PILL_DP.dp
 private val COMPACT_PILL = RecordingAccessibilityOverlay.COMPACT_PILL_DP.dp
 private val KEYBOARD = 236.dp
 private val BUBBLE_ABOVE_KEYBOARD = 18.dp
+/** The Gmail card's rows above the body: bar, To, Subject. */
+private val GMAIL_HEADER = 34.dp + 37.dp + 37.dp
+/** The shortest Gmail scene that still fits the header, a line of body, the real bubble and a keyboard. */
+private val GMAIL_MIN_HEIGHT = 300.dp
+private const val MAX_FRAME_SECONDS = 0.1f
+
+/** How tall the drawn keyboard is in a scene [height] tall: 236 dp with room, at most 40% of a short one. */
+private fun keyboardHeight(height: Dp): Dp = minOf(KEYBOARD, height * 0.4f)
+
+/** The number row goes first when the keyboard is short (Gboard's own default keeps it hidden). */
+private fun keyboardHasNumberRow(keyboard: Dp): Boolean = keyboard >= 200.dp
 
 private fun argb(value: Int): Color = Color(value.toLong() and 0xFFFFFFFFL)
 
@@ -390,15 +407,30 @@ private fun holdFrame(t: Float): GmailFrame {
 
 @Composable
 private fun GmailScene(t: Float, held: Boolean, look: BubbleLook, palette: DemoPalette, modifier: Modifier = Modifier, frozen: Boolean = false) {
+    // A window shorter than the scene's minimum (landscape, a split screen) shows the whole scene
+    // scaled down rather than a scene with its bubble clipped away (Codex review 1, 2026-09-14).
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val fit = (maxHeight / GMAIL_MIN_HEIGHT).coerceAtMost(1f)
+        if (fit < 1f) {
+            Box(Modifier.size(maxWidth / fit, GMAIL_MIN_HEIGHT).graphicsLayer { scaleX = fit; scaleY = fit; transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f) }) {
+                GmailCard(t, held, look, palette, frozen)
+            }
+        } else GmailCard(t, held, look, palette, frozen)
+    }
+}
+
+@Composable
+private fun GmailCard(t: Float, held: Boolean, look: BubbleLook, palette: DemoPalette, frozen: Boolean) {
     val frame = if (frozen) GmailFrame(0f, 0, 0f, 0f, 0f, false, 0f, true) else if (held) holdFrame(t) else tapFrame(t)
-    BoxWithConstraints(modifier.fillMaxSize().shadow(16.dp, RoundedCornerShape(22.dp)).background(GMAIL_GROUND, RoundedCornerShape(22.dp)).border(1.dp, Color(0xFF2C2C2C), RoundedCornerShape(22.dp)).clip(RoundedCornerShape(22.dp))) {
+    BoxWithConstraints(Modifier.fillMaxSize().shadow(16.dp, RoundedCornerShape(22.dp)).background(GMAIL_GROUND, RoundedCornerShape(22.dp)).border(1.dp, Color(0xFF2C2C2C), RoundedCornerShape(22.dp)).clip(RoundedCornerShape(22.dp))) {
         val w = maxWidth
         val h = maxHeight
+        val keyboard = keyboardHeight(h)
         Column(Modifier.fillMaxSize()) {
             GmailBar()
             GmailRow { Text("To", color = GMAIL_INK, fontSize = 13.sp); Spacer(Modifier.width(14.dp)); Text("Priya Shah", Modifier.background(Color(0xFF2E3238), RoundedCornerShape(100.dp)).padding(horizontal = 9.dp, vertical = 3.dp), color = GMAIL_INK, fontSize = 12.sp); Spacer(Modifier.weight(1f)); Text("⌄", color = GMAIL_INK, fontSize = 15.sp) }
             GmailRow { Text(if (held) "Re: Our call this week" else "Our call this week", color = GMAIL_INK, fontSize = 13.sp) }
-            Column(Modifier.fillMaxWidth().weight(1f)) {
+            Column(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(0.dp))) {
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF2E2E2E)))
                 Box(Modifier.fillMaxWidth().padding(start = 13.dp, top = 11.dp, end = 13.dp)) {
                 Row {
@@ -408,11 +440,11 @@ private fun GmailScene(t: Float, held: Boolean, look: BubbleLook, palette: DemoP
                 }
                 }
             }
-            GmailKeyboard()
+            GmailKeyboard(keyboard)
         }
         // The bubble: 12 dp from the edge, just above the keyboard, as the overlay places it.
         val bubbleLeft = w - EDGE_MARGIN - BUBBLE
-        val bubbleTop = h - KEYBOARD - BUBBLE_ABOVE_KEYBOARD - BUBBLE
+        val bubbleTop = h - keyboard - BUBBLE_ABOVE_KEYBOARD - BUBBLE
         val center = Offset((bubbleLeft + BUBBLE / 2).value, (bubbleTop + BUBBLE / 2).value)
         DemoBubble(look, Modifier.offset(bubbleLeft, bubbleTop).alpha(1 - frame.open))
         if (frame.open > 0f) {
@@ -459,23 +491,27 @@ private fun GmailRow(content: @Composable () -> Unit) {
 
 /** A Samsung-style keyboard, drawn: toolbar, number row, three letter rows, the bottom row. */
 @Composable
-private fun GmailKeyboard() {
-    Column(Modifier.fillMaxWidth().height(KEYBOARD).background(KEY_GROUND).padding(horizontal = 4.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+private fun GmailKeyboard(height: Dp) {
+    val numbers = keyboardHasNumberRow(height)
+    // Toolbar plus four or five rows, each the same share of what is left after the paddings and gaps.
+    val rows = if (numbers) 5 else 4
+    val row = (height - 8.dp - 4.dp * rows - 30.dp) / rows
+    Column(Modifier.fillMaxWidth().height(height).background(KEY_GROUND).padding(horizontal = 4.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth().height(30.dp), horizontalArrangement = Arrangement.SpaceAround, verticalAlignment = Alignment.CenterVertically) {
             for (glyph in listOf("▦", "GIF", "✦", "▤", "⚙")) Text(glyph, color = GMAIL_INK, fontSize = if (glyph == "GIF") 9.sp else 13.sp, fontWeight = FontWeight.Bold)
             Box(Modifier.size(26.dp).background(KEY, CircleShape), contentAlignment = Alignment.Center) { Text("🎙", fontSize = 12.sp) }
         }
-        KeyRow("1234567890".map { it.toString() })
-        KeyRow("QWERTYUIOP".map { it.toString() })
-        KeyRow("ASDFGHJKL".map { it.toString() }, inset = 16.dp)
-        KeyRow(listOf("⇧") + "ZXCVBNM".map { it.toString() } + "⌫", wide = setOf("⇧", "⌫"))
-        KeyRow(listOf("?123", ",", "☺", " ", ".", "↵"), wide = setOf("?123", "↵"), fn = setOf("?123", ",", "☺", ".", "↵"), space = " ")
+        if (numbers) KeyRow("1234567890".map { it.toString() }, row)
+        KeyRow("QWERTYUIOP".map { it.toString() }, row)
+        KeyRow("ASDFGHJKL".map { it.toString() }, row, inset = 16.dp)
+        KeyRow(listOf("⇧") + "ZXCVBNM".map { it.toString() } + "⌫", row, wide = setOf("⇧", "⌫"))
+        KeyRow(listOf("?123", ",", "☺", " ", ".", "↵"), row, wide = setOf("?123", "↵"), fn = setOf("?123", ",", "☺", ".", "↵"), space = " ")
     }
 }
 
 @Composable
-private fun KeyRow(keys: List<String>, inset: Dp = 0.dp, wide: Set<String> = emptySet(), fn: Set<String> = emptySet(), space: String? = null) {
-    Row(Modifier.fillMaxWidth().height(36.dp).padding(horizontal = inset), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+private fun KeyRow(keys: List<String>, height: Dp, inset: Dp = 0.dp, wide: Set<String> = emptySet(), fn: Set<String> = emptySet(), space: String? = null) {
+    Row(Modifier.fillMaxWidth().height(height).padding(horizontal = inset), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         for (key in keys) {
             val weight = when (key) { space -> 5f; in wide -> 1.5f; else -> 1f }
             Box(Modifier.weight(weight).fillMaxHeight().background(if (key in fn) KEY_FN else KEY, RoundedCornerShape(5.dp)), contentAlignment = Alignment.Center) {

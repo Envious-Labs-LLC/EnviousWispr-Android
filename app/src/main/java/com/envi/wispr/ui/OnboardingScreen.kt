@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
@@ -95,7 +96,9 @@ internal fun OnboardingScreen(
     Surface(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }, color = background, contentColor = foreground) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()
             .padding(horizontal = 24.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            OnboardingLips(Modifier.size(if (stage == OnboardingStage.PRACTICE || stage == OnboardingStage.DEMO) 84.dp else 140.dp),
+            // In a short window (landscape, a split screen) the demo gives its height to the scenes.
+            val shortWindow = LocalConfiguration.current.screenHeightDp < 560
+            if (!(stage == OnboardingStage.DEMO && shortWindow)) OnboardingLips(Modifier.size(if (stage == OnboardingStage.PRACTICE || stage == OnboardingStage.DEMO) 84.dp else 140.dp),
                 energetic = stage == OnboardingStage.DOWNLOADS || model.practicePhase == RecordingOverlayState.Phase.RECORDING)
             if (stage == OnboardingStage.DEMO) {
                 Box(Modifier.weight(1f).widthIn(max = 480.dp).fillMaxWidth().padding(top = 8.dp)) {

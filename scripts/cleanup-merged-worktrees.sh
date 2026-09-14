@@ -347,14 +347,19 @@ for r in rows:
         return 1
     fi
 
-    # 7. RE-VERIFY, then ORDINARY REMOVE, ONCE. NEVER --force.
-    #    Between the merged-PR proof and here, a concurrent commit could have moved
-    #    the branch, so require it to STILL point at the proven SHA. `git worktree
-    #    remove` then performs git's own final dirty-tree, submodule and lock
-    #    refusal (honoring the `llama.cpp` submodule restriction); `--force`
-    #    bypasses exactly that refusal.
-    if [ "$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null)" != "$sha" ]; then
-        echo "SKIPPED: $wt — '$branch' moved since it was verified; refusing. Recovery SHA: $sha" >&2
+    # 7. RE-VERIFY THE TARGET'S OWN IDENTITY, then ORDINARY REMOVE, ONCE. NEVER
+    #    --force. Between the proof and here the target could have switched to a
+    #    different (unmerged) branch, or the branch could have moved, so checking
+    #    only the captured NAME is not enough: verify the target worktree's ACTUAL
+    #    symbolic HEAD is still refs/heads/$branch AND its HEAD is still $sha. A
+    #    failed read refuses. `git worktree remove` then performs git's own final
+    #    dirty-tree, submodule and lock refusal (honoring the `llama.cpp` submodule
+    #    restriction); `--force` bypasses exactly that.
+    local cur_ref cur_head
+    cur_ref=$(git -C "$wt" symbolic-ref --quiet HEAD 2>/dev/null) || cur_ref=""
+    cur_head=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || cur_head=""
+    if [ "$cur_ref" != "refs/heads/$branch" ] || [ "$cur_head" != "$sha" ]; then
+        echo "SKIPPED: $wt — its HEAD is no longer '$branch' at $sha (now ${cur_ref:-?} at ${cur_head:-?}); refusing. Recovery SHA: $sha" >&2
         return 1
     fi
     remove_rc=0
@@ -382,11 +387,28 @@ for r in rows:
         return 2
     fi
 
-    # 9. ATOMIC BRANCH DELETE against the proven SHA. `update-ref -d <ref> <old>`
-    #    deletes ONLY if the ref still points at <old>, so a branch that moved
-    #    after verification is never deleted. The recovery SHA is printed either
-    #    way. No unscoped `worktree prune` — removing this one tree is the whole
-    #    job, and a repo-wide prune could unregister unrelated missing worktrees.
+    # 9a. CHECKED-OUT-BRANCH PROTECTION, which `update-ref -d` lacks (unlike
+    #     `git branch -D`). After removing this worktree the branch should be free
+    #     (git allows a branch in at most one worktree), but a new worktree could
+    #     have claimed it in the window. Re-check and refuse if it is checked out
+    #     anywhere, or if the worktree list cannot be read — a failed read is not
+    #     "not checked out".
+    local wt_listing wtl_rc
+    wt_listing=$(git worktree list --porcelain 2>/dev/null); wtl_rc=$?
+    if [ "$wtl_rc" -ne 0 ]; then
+        echo "FAILED: $wt — directory is gone but '$branch' checkout state could not be read; not deleting the ref. Recovery SHA: $sha" >&2
+        return 2
+    fi
+    if printf '%s\n' "$wt_listing" | awk '/^branch refs\/heads\//{print substr($0,19)}' | "$GREP" -qxF "$branch"; then
+        echo "FAILED: $wt — '$branch' is checked out in another worktree; not deleting the ref. Recovery SHA: $sha" >&2
+        return 2
+    fi
+
+    # 9b. ATOMIC BRANCH DELETE against the proven SHA. `update-ref -d <ref> <old>`
+    #     deletes ONLY if the ref still points at <old>, so a branch that moved
+    #     after verification is never deleted. The recovery SHA is printed either
+    #     way. No unscoped `worktree prune` — removing this one tree is the whole
+    #     job, and a repo-wide prune could unregister unrelated missing worktrees.
     if git update-ref -d "refs/heads/$branch" "$sha" 2>/dev/null; then
         echo "REMOVED: $wt  ('$branch' at $sha; restore the branch with: git branch $branch $sha)"
         return 0

@@ -106,7 +106,7 @@ do_report() {
 
 # Returns 0 removed, 1 kept (bypass), 2 failed.
 apply_one() {
-    local b="$1" sha pr_json merged_count pr_oid
+    local b="$1" sha pr_json merged_count pr_oid wt_listing wtl_rc
 
     if is_protected "$b"; then
         echo "SKIPPED: $b — protected branch, never reaped." >&2
@@ -166,6 +166,19 @@ for r in rows:
     if [ "$pr_oid" != "$sha" ]; then
         echo "SKIPPED: $b — merged PR head ($pr_oid) is not this branch's SHA ($sha)." >&2
         echo "         The branch holds commits that did not ship. Recovery SHA: $sha" >&2
+        return 1
+    fi
+
+    # CHECKED-OUT-BRANCH PROTECTION, re-checked immediately before deletion, since
+    # `update-ref -d` (unlike `git branch -D`) does not refuse a checked-out
+    # branch. A failed worktree-list read is NOT "not checked out": refuse it.
+    wt_listing=$(git worktree list --porcelain 2>/dev/null); wtl_rc=$?
+    if [ "$wtl_rc" -ne 0 ]; then
+        echo "SKIPPED: $b — could not read worktree checkout state; refusing. Recovery SHA: $sha" >&2
+        return 1
+    fi
+    if printf '%s\n' "$wt_listing" | awk '/^branch refs\/heads\//{print substr($0,19)}' | "$GREP" -qxF "$b"; then
+        echo "SKIPPED: $b — checked out in a worktree; reap the worktree first. Recovery SHA: $sha" >&2
         return 1
     fi
 

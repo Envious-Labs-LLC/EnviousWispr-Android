@@ -60,6 +60,9 @@ fi
 if command -v timeout >/dev/null 2>&1; then
     timeout 20 bash -c "$report_seq" _ "$ROOT" || true
 else
-    bash -c "$report_seq" _ "$ROOT" || true
+    # No `timeout`: SKIP the report rather than risk an unbounded wait inside a
+    # hook. The report is only a convenience; nothing about cleanup depends on it
+    # firing here, and the --apply path is unaffected.
+    :
 fi
 exit 0

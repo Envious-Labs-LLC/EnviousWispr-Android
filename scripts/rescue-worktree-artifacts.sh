@@ -41,18 +41,22 @@ fi
 
 # REFUSE A DESTINATION INSIDE THE WORKTREE. Rescuing into the tree that is about
 # to be deleted would destroy the backup along with the originals, and the caller
-# would then read this script's exit 0 as licence to delete. Compare RESOLVED
-# paths (pwd -P collapses symlink aliases); dest_root may not exist yet, so
-# resolve its deepest existing ancestor.
+# would then read this script's exit 0 as licence to delete. Resolve the FULL
+# destination with `pwd -P`, which collapses `..` segments and symlink aliases,
+# and refuse if it lands inside the worktree. dest_root may not exist yet, so
+# CREATE it first and resolve the real thing: a `..` in a not-yet-existing path
+# (e.g. /a/missing/../<wt>/x) would slip past a check of only the existing
+# ancestor, then mkdir -p would place the backup inside the worktree.
 wt_abs=$(cd "$wt" 2>/dev/null && pwd -P) || { echo "rescue: cannot resolve $wt" >&2; exit 2; }
-dr_probe="$dest_root"
-while [ -n "$dr_probe" ] && [ "$dr_probe" != "/" ] && [ ! -d "$dr_probe" ]; do
-    dr_probe=$(dirname "$dr_probe")
-done
-dr_abs=$(cd "$dr_probe" 2>/dev/null && pwd -P || echo "$dest_root")
+if ! mkdir -p "$dest_root" 2>/dev/null; then
+    echo "rescue: failed to create destination root: $dest_root" >&2
+    exit 1
+fi
+dr_abs=$(cd "$dest_root" 2>/dev/null && pwd -P) || {
+    echo "rescue: cannot resolve destination '$dest_root'" >&2; exit 1; }
 case "$dr_abs/" in
     "$wt_abs"/*)
-        echo "rescue: destination '$dest_root' is inside the worktree '$wt'; refusing so the backup is not deleted with it." >&2
+        echo "rescue: destination '$dest_root' resolves inside the worktree '$wt'; refusing so the backup is not deleted with it." >&2
         exit 1 ;;
 esac
 

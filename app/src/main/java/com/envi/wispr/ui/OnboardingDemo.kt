@@ -119,7 +119,7 @@ internal fun OnboardingDemo(
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             DemoProgress(moment.scene, palette)
-            TextButton(onClick = onFinished) { Text("Skip demo", color = palette.accent, fontSize = 12.sp) }
+            TextButton(onClick = onFinished) { Text("Skip to practice", color = palette.accent, fontSize = 12.sp) }
         }
     }
 }

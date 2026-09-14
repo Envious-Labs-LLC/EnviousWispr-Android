@@ -203,8 +203,8 @@ internal fun OnboardingScreen(
                     }
                     OnboardingStage.PERMISSIONS -> {
                         val ready = readiness.microphoneGranted && autoPaste == AutoPasteAvailability.LIVE
-                        SetupButton("Try dictation", fill, ready) { onStepChange(OnboardingStage.DEMO.ordinal) }
-                        if (!ready) Text("Enable Microphone and Accessibility to try dictation.", Modifier.padding(top = 10.dp).align(Alignment.CenterHorizontally), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                        SetupButton("See how it works", fill, ready) { onStepChange(OnboardingStage.DEMO.ordinal) }
+                        if (!ready) Text("Enable Microphone and Accessibility to continue.", Modifier.padding(top = 10.dp).align(Alignment.CenterHorizontally), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
                         TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Set up later", color = accent, fontSize = 12.sp) }
                     }
                     OnboardingStage.PRACTICE -> {

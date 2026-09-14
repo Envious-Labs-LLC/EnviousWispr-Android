@@ -4,7 +4,12 @@ import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.paste.AutoPasteAvailability
 
-internal enum class OnboardingStage { WELCOME, DOWNLOADS, PERMISSIONS, PRACTICE }
+/**
+ * The setup screens in order. DEMO (founder 2026-09-14) is the drawn walkthrough of the bubble that
+ * plays once the permissions are granted, before the real practice; it is skippable and needs the
+ * same facts as practice, so a restored step can never show it without them.
+ */
+internal enum class OnboardingStage { WELCOME, DOWNLOADS, PERMISSIONS, DEMO, PRACTICE }
 
 /** The two gestures practice teaches, in this order: a tap first, then press and hold. */
 internal enum class PracticeLesson { TAP, HOLD }
@@ -71,7 +76,7 @@ internal fun onboardingStage(step: Int, readiness: AppReadiness, autoPaste: Auto
     if (requested == OnboardingStage.WELCOME) return requested
     if (!readiness.requiredModelsReady) return OnboardingStage.DOWNLOADS
     if (requested == OnboardingStage.DOWNLOADS) return OnboardingStage.PERMISSIONS
-    if (requested == OnboardingStage.PRACTICE &&
+    if ((requested == OnboardingStage.DEMO || requested == OnboardingStage.PRACTICE) &&
         (!readiness.microphoneGranted || autoPaste != AutoPasteAvailability.LIVE)
     ) return OnboardingStage.PERMISSIONS
     return requested

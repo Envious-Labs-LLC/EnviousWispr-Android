@@ -140,9 +140,8 @@ internal fun OnboardingScreen(
                                     (if (hold) "You can tap to dictate or hold to talk." else "Your words are in the box. Try holding the lips next.")
                                 PracticeOutcome.LANDED_BY_TAP -> "Nice, that worked!" to "That was a tap. Now hold the lips while you talk, and let go when you are done."
                                 PracticeOutcome.MISSED_BOX -> "Your words are saved in History." to "They did not reach the box this time. Try again."
-                                PracticeOutcome.NO_WORDS -> "No words were detected." to
+                                PracticeOutcome.NOTHING_ADDED -> "No words were added." to
                                     (if (hold) "Hold the lips and speak, then let go." else "Tap the lips and speak, then tap the check.")
-                                PracticeOutcome.NOTHING_ADDED -> "No new text was added." to "Try again when you’re ready."
                                 null -> if (hold) "Try holding the lips." to "Now hold the lips and talk; let go when you are done."
                                     else "Try your first dictation." to "Tap the lips and say…"
                             }

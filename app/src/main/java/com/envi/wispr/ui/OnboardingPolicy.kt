@@ -14,13 +14,15 @@ internal enum class PracticeLesson { TAP, HOLD }
  * [held] is the gesture the owner's snapshot named, or null for a take that carried no bubble token.
  * [boxTextAtStart] is what the practice box held when the take began: words that landed must have
  * changed it, which is how a take aimed at some other app's field is kept from passing practice.
+ * [rowId] is the History row this take wrote, bound the first time one is seen and never rebound, so
+ * a later dictation elsewhere cannot replace this take's verdict (Codex review, round 2).
  */
 internal data class PracticeTake(
     val startedAtMs: Long,
     val held: Boolean?,
     val boxTextAtStart: String,
-    val processed: Boolean = false,
     val ended: Boolean = false,
+    val rowId: Long? = null,
 )
 
 internal enum class PracticeOutcome {
@@ -32,9 +34,11 @@ internal enum class PracticeOutcome {
     LANDED_BY_TAP,
     /** A finished take whose words did not reach the box. */
     MISSED_BOX,
-    /** The take was transcribed and produced no words. */
-    NO_WORDS,
-    /** The take ended before transcription: cancelled or lost. */
+    /**
+     * The take ended with no row: nothing was heard, or it was cancelled, or it failed. The owner
+     * deletes the draft row on every one of those, and the phase it publishes cannot tell them apart,
+     * so the screen says the one thing true of all three: no words were added.
+     */
     NOTHING_ADDED,
 }
 
@@ -42,15 +46,26 @@ internal enum class PracticeOutcome {
 private const val TAKE_ROW_SLACK_MS = 1_000L
 
 /**
+ * Bind [take] to its own History row: the EARLIEST row created after the take began, because the owner
+ * writes the draft row the moment capture starts. Once bound, the id never changes.
+ */
+internal fun bindPracticeRow(take: PracticeTake, rows: List<TranscriptEntity>): PracticeTake {
+    if (take.rowId != null) return take
+    val own = rows.filter { it.createdAtMs >= take.startedAtMs - TAKE_ROW_SLACK_MS }.minByOrNull { it.createdAtMs } ?: return take
+    return take.copy(rowId = own.id)
+}
+
+/**
  * What the practice screen says about [take], judged from the History row the take wrote AND from the
  * box: a landed row proves words were inserted somewhere, and [boxText] having changed since the take
  * began proves the somewhere was this box. Typing alone writes no row; a take into another app's field
  * changes no box; only the practice take does both. Null while the owner is still busy with the take.
+ * A take whose row is gone (the owner deletes the draft of a silent, cancelled or failed take) added
+ * nothing.
  */
 internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>, boxText: String): PracticeOutcome? {
     if (!take.ended) return null
-    val row = rows.filter { it.createdAtMs >= take.startedAtMs - TAKE_ROW_SLACK_MS }.maxByOrNull { it.createdAtMs }
-        ?: return if (take.processed) PracticeOutcome.NO_WORDS else PracticeOutcome.NOTHING_ADDED
+    val row = take.rowId?.let { id -> rows.firstOrNull { it.id == id } } ?: return PracticeOutcome.NOTHING_ADDED
     return when (row.status) {
         TranscriptEntity.STATUS_DRAFT,
         TranscriptEntity.STATUS_PROCESSING,

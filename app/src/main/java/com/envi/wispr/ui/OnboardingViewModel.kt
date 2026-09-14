@@ -161,11 +161,10 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         practicePhase = snapshot.phase
         val current = take
         take = if (snapshot.phase != RecordingOverlayState.Phase.IDLE) {
-            val processing = snapshot.phase == RecordingOverlayState.Phase.PROCESSING
             if (current == null || current.ended) {
-                PracticeTake(startedAtMs = System.currentTimeMillis(), held = snapshot.requestToken?.held, boxTextAtStart = draft.text, processed = processing)
+                PracticeTake(startedAtMs = System.currentTimeMillis(), held = snapshot.requestToken?.held, boxTextAtStart = draft.text)
             } else {
-                current.copy(held = current.held ?: snapshot.requestToken?.held, processed = current.processed || processing)
+                current.copy(held = current.held ?: snapshot.requestToken?.held)
             }
         } else {
             current?.copy(ended = true)
@@ -174,9 +173,16 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         judge()
     }
 
+    /**
+     * Re-judge the current take. A verdict, once terminal, stands until the next take: the row it was
+     * judged on is bound to the take, so nothing dictated later can rewrite it.
+     */
     private fun judge() {
         val current = take ?: return
-        val outcome = judgePracticeTake(current, lesson, rows, draft.text)
+        if (current.ended && practiceOutcome != null && practiceOutcome != PracticeOutcome.WORKING) return
+        val bound = bindPracticeRow(current, rows)
+        take = bound
+        val outcome = judgePracticeTake(bound, lesson, rows, draft.text)
         practiceOutcome = outcome
         when (outcome) {
             PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {

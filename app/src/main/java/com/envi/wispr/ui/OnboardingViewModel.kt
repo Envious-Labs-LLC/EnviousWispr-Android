@@ -18,6 +18,7 @@ import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.paste.OwnFieldAdmission
+import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import kotlinx.coroutines.Dispatchers
@@ -73,6 +74,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
      */
     private var rowsFresh = false
     private var watching: Job? = null
+    private val engines = EngineWarmUp(context, viewModelScope)
     val practicing: Boolean get() = practicePhase != RecordingOverlayState.Phase.IDLE || practiceOutcome == PracticeOutcome.WORKING
 
     private fun modelFlow(model: com.envi.wispr.models.ModelDescriptor): kotlinx.coroutines.flow.Flow<ModelUiState> {
@@ -133,6 +135,11 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         if (changed) judge()
     }
 
+    /** The permissions or practice screen is showing: load the engines now, so the first take is quick. */
+    fun warmEngines() = engines.start()
+
+    fun coolEngines() = engines.stop()
+
     /**
      * The practice box is on screen AND in front: admit it to the accessibility service and follow the
      * owner and History until [leavePractice]. Called on resume and undone on pause, so a take the user
@@ -153,6 +160,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         watching?.cancel()
         watching = null
         OwnFieldAdmission.withdraw(PRACTICE_FIELD_ID)
+        PasteAccessibilityService.refreshBubble()
     }
 
     /** After the tap lesson landed: teach the hold. */
@@ -215,6 +223,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
 
     override fun onCleared() {
         leavePractice()
+        engines.stop()
         super.onCleared()
     }
 

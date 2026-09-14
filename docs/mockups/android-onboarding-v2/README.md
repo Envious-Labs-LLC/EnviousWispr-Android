@@ -180,7 +180,11 @@ Welcome and Downloads are expressly static placeholders because the v1 story vid
 
 ## Built 2026-09-14 (founder approved the mock the same night)
 
-The app follows this mock with three differences, each a deliberate call at build time:
+The app follows this mock with these differences:
+
+- **No "How it works" picture on the Permissions screen.** Founder, phone pass of build 121: the fake "Write a message…" box on a permissions page is "terrible UX", and it pushed the Notifications card off screen. Removed; the heading is back to "Your models are ready. Let's try them." The lips are introduced where they are real, beside the practice box. The Accessibility card and disclosure keep the new words.
+- **The engines warm up during permissions.** Same phone pass: the first practice take paid the speech model's cold start and the polish model's first-ever load and read as a slow app. The speech and polish services are bound while the permissions and practice screens are on screen (`ui/EngineWarmUp.kt`).
+- **Back goes one screen back, never out of setup.** Same phone pass: back used to jump to the welcome and a second back skipped setup into the app. Now practice goes back to permissions, permissions to the welcome, and at the welcome Android's own back closes the app. "Set up later" stays the one way to dismiss setup.
 
 - **A tap during the hold lesson still records.** The mock's practice-only guard would have taught the overlay about lessons; instead the take runs and lands, and the screen says "That was a tap. Now hold the lips while you talk, and let go when you are done." Finish setup is earned either way.
 - **No "Practice was interrupted" state.** The draft text is saved across the interruption, and the screen returns to the lesson prompt; there is no reliable signal that distinguishes an interruption from a cancel.

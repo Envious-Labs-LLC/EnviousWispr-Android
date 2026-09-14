@@ -29,11 +29,9 @@ import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.paste.AutoPasteAvailability
-import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.shortcuts.RecordingOverlayState
 
-/** The floating button's own words, shared by the setup screen and the Accessibility disclosure. */
-internal const val HOW_THE_LIPS_WORK = "Tap the lips to dictate. Hold them to talk. They appear beside any text box."
+/** The Accessibility card says what the service does, in the words of the Android service description. */
 internal const val ACCESSIBILITY_CARD_COPY =
     "To find your text box, show the floating lips button beside it, and paste your words after you start a dictation."
 
@@ -61,9 +59,17 @@ internal fun OnboardingScreen(
     val accent = if (dark) Color(0xFFA78BFA) else Color(0xFF7544CE)
     val fill = if (dark) Color(0xFF6B4FD1) else Color(0xFF241432)
     val green = if (dark) Color(0xFF5CC99A) else Color(0xFF087D55)
-    BackHandler {
-        if (stage == OnboardingStage.WELCOME) onDismiss()
-        else onStepChange(OnboardingStage.WELCOME.ordinal)
+    // Back goes ONE screen back, and at the welcome it is Android's own back (the app closes); it never
+    // skips setup (founder, phone pass of build 121). "Set up later" is the one way to dismiss setup.
+    BackHandler(enabled = stage != OnboardingStage.WELCOME) {
+        onStepChange(if (stage == OnboardingStage.PRACTICE) OnboardingStage.PERMISSIONS.ordinal else OnboardingStage.WELCOME.ordinal)
+    }
+    // Load the speech and polish models while the user reads and grants the permissions, so the first
+    // practice take does not pay their cold start (founder, phone pass of build 121).
+    val warming = stage == OnboardingStage.PERMISSIONS || stage == OnboardingStage.PRACTICE
+    DisposableEffect(warming) {
+        if (warming) model.warmEngines()
+        onDispose { if (warming) model.coolEngines() }
     }
     // The practice box is admitted to the accessibility service only while the practice stage is on
     // screen AND in front, so the floating lips can appear beside it and nowhere else in the app, and a
@@ -112,10 +118,10 @@ internal fun OnboardingScreen(
                         if (model.downloadMessage.isNotEmpty()) Text(model.downloadMessage, Modifier.padding(top = 12.dp), color = muted)
                     }
                     OnboardingStage.PERMISSIONS -> {
-                        SetupHeading("How it works", HOW_THE_LIPS_WORK, muted)
-                        HowTheLipsWork(surface, muted)
-                        Text("Allow EnviousWispr to hear your words and put the polished text where you need it.",
-                            Modifier.padding(top = 22.dp, bottom = 14.dp), fontSize = 13.sp, lineHeight = 21.sp, color = muted, textAlign = TextAlign.Center)
+                        // No picture of the lips here: the founder's phone pass (2026-09-14) called the mock's
+                        // fake text box on a permissions page terrible. The lips are introduced where they are
+                        // real, beside the practice box.
+                        SetupHeading("Your models are ready.\nLet’s try them.", "Allow EnviousWispr to hear your words and put the polished text where you need it.", muted)
                         PermissionRow("Microphone", "To hear your voice for transcription.", SetupPermission.MICROPHONE, readiness.microphoneGranted, surface, muted, accent, green, onRequestMicrophone)
                         PermissionRow("Accessibility", if (autoPaste == AutoPasteAvailability.PERMITTED_NOT_RUNNING) "Access is on. Waiting for the service to connect." else ACCESSIBILITY_CARD_COPY, SetupPermission.ACCESSIBILITY, autoPaste == AutoPasteAvailability.LIVE, surface, muted, accent, green, onOpenAccessibility)
                         PermissionRow("Notifications", "Recording controls in your notification panel.", SetupPermission.NOTIFICATIONS, readiness.notificationsGranted, surface, muted, accent, green, onRequestNotifications)
@@ -195,23 +201,6 @@ internal fun OnboardingScreen(
                     }
                 }
             }
-        }
-    }
-}
-
-/** A text box with the floating lips beside it, in the default look, so the user recognises them later. */
-@Composable
-private fun HowTheLipsWork(surface: Color, muted: Color) {
-    Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Surface(color = surface, shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1f).height(48.dp)) {
-            Row(Modifier.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Box(Modifier.width(2.dp).height(18.dp).background(Color(0xFF7C3AED)))
-                Text("Write a message…", color = muted, fontSize = 14.sp)
-            }
-        }
-        val look = BubbleLook.DEFAULT
-        Box(Modifier.size(48.dp).background(Color(look.surfaceFill), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
-            OnboardingLips(Modifier.size(look.lipsDp.dp))
         }
     }
 }

@@ -154,9 +154,20 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         }
     }
 
+    /**
+     * Stop following. A take the screen stopped watching mid-way is dropped, not resumed: its end was
+     * not observed, so a row seen on return could belong to a dictation made elsewhere in between
+     * (Codex review round 7). The words, if they landed, are in the box; the lesson simply asks for
+     * a take it can watch from start to end.
+     */
     fun leavePractice() {
         watching?.cancel()
         watching = null
+        if (take?.ended == false) {
+            take = null
+            practiceOutcome = null
+            takeHeld = null
+        }
         OwnFieldAdmission.withdraw(PRACTICE_FIELD_ID)
         PasteAccessibilityService.refreshBubble()
     }

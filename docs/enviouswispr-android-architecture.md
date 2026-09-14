@@ -152,7 +152,7 @@ Every stage returns both text and an outcome. A stage may enrich text but may no
 4. Optional polish receives bounded instructions, vocabulary, and allowed editor context.
 5. Output safety rejects blank, truncated, duplicated, structurally unsafe, or meaning-shifted results and falls back.
 6. Smart insertion plans capitalization, prefix/suffix spacing, trailing space, seam de-duplication, and replacement range.
-7. Accessibility returns to the tracked editor and first requests `ACTION_PASTE`. If the editor refuses paste, guarded `ACTION_SET_TEXT` preserves existing text and selection. Copy-only is the final safe fallback.
+7. Accessibility returns to the tracked editor and picks exactly one insertion route before it writes. On API 33+ with an eligible field it commits the text through the accessibility input connection, which needs no clipboard and shows no "Copied" toast. Otherwise it requests `ACTION_PASTE`. If neither route is eligible, copy-only is the final safe fallback with a clear Paste action. It writes once and judges success from the editor's own text, never from the caret. It never uses `ACTION_SET_TEXT`.
 
 The selected target editor is represented by a non-content identity token. Password, payment, OTP, and other sensitive fields default to copy-only or no-context behavior.
 

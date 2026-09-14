@@ -136,7 +136,7 @@ class RecorderBrandTest {
     fun thePillCarriesTheFounderSpecifiedOrder() {
         // From docs/mockups/android-v2/06-floating-recorder.png: mark, time, rail, state, cancel, accept.
         val body = overlay.substringAfter("private fun buildPill()").substringBefore("private fun pillBackground()")
-        val order = listOf("mark,", "timer,", "meter,", "stateLabel,", "ActionGlyph.CROSS", "ActionGlyph.CHECK")
+        val order = listOf("mark,", "timer,", "meter,", "stateLabel,", "cancelButton,", "acceptButton,")
             .map { it to body.indexOf(it) }
         order.forEach { (piece, at) -> assertTrue("$piece is not in the pill", at >= 0) }
         assertEquals(

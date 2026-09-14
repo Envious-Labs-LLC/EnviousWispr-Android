@@ -1,5 +1,6 @@
 package com.envi.wispr.paste
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -16,10 +17,15 @@ import android.view.View
  * `RainbowLipsIcon`. The founder's first look at the Play build (2026-09-12) caught a seven-bar
  * waveform here instead of the lips: "why did you not use our token lips".
  *
- * Deliberately STATIC, and that is the difference between it and the level rail beside it. Two things
- * moving with the voice read as two meters, and the user then cannot tell which one is the signal. It
- * also costs nothing while the bubble idles over the keyboard (`architecture-rules.md`
- * RULE: no-idle-cost).
+ * STATIC while the voice is being captured, and that is the difference between it and the level rail
+ * beside it. Two things moving with the voice read as two meters, and the user then cannot tell which
+ * one is the signal. It also costs nothing while the bubble idles over the keyboard
+ * (`architecture-rules.md` RULE: no-idle-cost).
+ *
+ * The one motion it has is [setBusy]: while the owner is starting or working on the words, the rainbow
+ * rolls along the bars, the lips' own version of Wispr Flow's spinning icon (founder 2026-09-13). The
+ * geometry never moves, so it still reads as the mark, and the roll runs only between the finger lifting
+ * and the words landing.
  *
  * Decorative to a screen reader: the bubble's and the recorder's own labels already say what they are.
  */
@@ -28,8 +34,50 @@ internal class BrandMarkView(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bar = RectF()
 
+    /** How far the rainbow has rolled along the bars, in bars; 0 is the brand drawing. */
+    private var colourShift = 0
+    private var roll: ValueAnimator? = null
+
     init {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    /**
+     * Roll the rainbow while [busy], and rest on the brand colours otherwise. Idempotent. Returns
+     * whether the lips are now moving: false when the system has animations off, so the caller can
+     * show its still working state instead.
+     */
+    fun setBusy(busy: Boolean): Boolean {
+        if (!busy) {
+            roll?.cancel()
+            roll = null
+            if (colourShift != 0) {
+                colourShift = 0
+                invalidate()
+            }
+            return false
+        }
+        if (roll != null) return true
+        if (!ValueAnimator.areAnimatorsEnabled()) return false
+        roll = ValueAnimator.ofInt(0, BAR_COUNT).apply {
+            duration = ROLL_MS
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.RESTART
+            addUpdateListener { animator ->
+                val shift = (animator.animatedValue as Int) % BAR_COUNT
+                if (shift != colourShift) {
+                    colourShift = shift
+                    invalidate()
+                }
+            }
+            start()
+        }
+        return true
+    }
+
+    override fun onDetachedFromWindow() {
+        setBusy(false)
+        super.onDetachedFromWindow()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -46,10 +94,10 @@ internal class BrandMarkView(context: Context) : View(context) {
 
         for (index in 0 until BAR_COUNT) {
             val left = originX + (BAR_LEFT + index * BAR_STEP) * unit
-            paint.color = BrandPalette.RAINBOW[index]
+            paint.color = BrandPalette.RAINBOW[(index + colourShift) % BAR_COUNT]
             bar.set(left, originY + UPPER_TOP[index] * unit, left + BAR_WIDTH * unit, originY + (UPPER_TOP[index] + UPPER_HEIGHT[index]) * unit)
             canvas.drawRoundRect(bar, radius, radius, paint)
-            paint.color = BrandPalette.RAINBOW[LOWER_COLOUR[index]]
+            paint.color = BrandPalette.RAINBOW[(LOWER_COLOUR[index] + colourShift) % BAR_COUNT]
             bar.set(left, originY + LOWER_TOP[index] * unit, left + BAR_WIDTH * unit, originY + (LOWER_TOP[index] + LOWER_HEIGHT[index]) * unit)
             canvas.drawRoundRect(bar, radius, radius, paint)
         }
@@ -59,6 +107,9 @@ internal class BrandMarkView(context: Context) : View(context) {
         /** The brand drawing is authored on a 256 by 256 grid. */
         const val DRAWING_SIZE = 256f
         const val BAR_COUNT = 9
+
+        /** One full roll of the rainbow across the nine bars. */
+        const val ROLL_MS = 1080L
         const val BAR_WIDTH = 14f
         const val BAR_RADIUS = 5f
         const val BAR_LEFT = 24f

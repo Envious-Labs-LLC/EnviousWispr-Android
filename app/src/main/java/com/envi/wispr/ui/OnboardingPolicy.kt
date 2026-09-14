@@ -12,34 +12,35 @@ internal enum class PracticeLesson { TAP, HOLD }
 /**
  * One take the practice screen is following, from the moment the session owner left IDLE.
  * [held] is the gesture the owner's snapshot named, or null for a take that carried no bubble token.
- * [boxTextAtStart] is what the practice box held when the take began: words that landed must have
- * changed it, which is how a take aimed at some other app's field is kept from passing practice.
  * [rowId] is the History row this take wrote, bound the first time one is seen and never rebound, so
- * a later dictation elsewhere cannot replace this take's verdict (Codex review, round 2).
+ * a later dictation cannot be mistaken for this take (Codex review, round 2).
  */
 internal data class PracticeTake(
     val startedAtMs: Long,
     val held: Boolean?,
-    val boxTextAtStart: String,
     val ended: Boolean = false,
     val rowId: Long? = null,
 )
 
+/**
+ * Three answers, read off ONE fact: this take's own History row. Earlier rounds judged more (the box's
+ * text, a freshness flag, a lock on the verdict) and each round found one more ordering in which the
+ * extra reads lied; the fourth deleted them (Codex reviews 1 to 5, 2026-09-14). The row is the one
+ * record the insertion path writes about where the words went, so it is the one thing judged.
+ */
 internal enum class PracticeOutcome {
-    /** The owner is idle but the words are still being put in the box (the insertion has a deadline). */
+    /** The take's row is still being written: transcribing, polishing, or inserting (bounded by the owner). */
     WORKING,
     /** The words are in the practice box, by the route any other app gets. */
     LANDED,
     /** Landed, but the hold lesson was answered with a tap. Still a success; the hint asks for a hold. */
     LANDED_BY_TAP,
-    /** A finished take whose words did not reach the box. */
-    MISSED_BOX,
     /**
-     * The take ended with no row: nothing was heard, or it was cancelled, or it failed. The owner
-     * deletes the draft row on every one of those, and the phase it publishes cannot tell them apart,
-     * so the screen says the one thing true of all three: no words were added.
+     * Nothing landed: silent, cancelled, failed, or the words missed the box. The owner records those
+     * differently (some delete the row, one keeps an empty error row, one keeps a copy-only row) and
+     * none of them put words in the box, so the screen says that one thing and asks for another try.
      */
-    NOTHING_ADDED,
+    NOTHING_LANDED,
 }
 
 /** How far before the take was first seen a History row may have been created and still be its row. */
@@ -56,28 +57,24 @@ internal fun bindPracticeRow(take: PracticeTake, rows: List<TranscriptEntity>): 
 }
 
 /**
- * What the practice screen says about [take], judged from the History row the take wrote AND from the
- * box: a landed row proves words were inserted somewhere, and [boxText] having changed since the take
- * began proves the somewhere was this box. Typing alone writes no row; a take into another app's field
- * changes no box; only the practice take does both. Null while the owner is still busy with the take.
- * A take whose row is gone (the owner deletes the draft of a silent, cancelled or failed take) added
- * nothing.
+ * What the practice screen says about [take]: null while the owner is busy with it; otherwise read
+ * off the take's own History row. The practice screen follows the owner only while it is in front, and
+ * then the pinned target is the practice box, so a landed row IS words in the box.
  */
-internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>, boxText: String): PracticeOutcome? {
+internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>): PracticeOutcome? {
     if (!take.ended) return null
-    val row = take.rowId?.let { id -> rows.firstOrNull { it.id == id } } ?: return PracticeOutcome.NOTHING_ADDED
+    val row = take.rowId?.let { id -> rows.firstOrNull { it.id == id } } ?: return PracticeOutcome.NOTHING_LANDED
     return when (row.status) {
         TranscriptEntity.STATUS_DRAFT,
         TranscriptEntity.STATUS_PROCESSING,
         TranscriptEntity.STATUS_READY_FOR_INSERTION,
         -> PracticeOutcome.WORKING
         TranscriptEntity.STATUS_COMPLETED -> when {
-            row.insertionResult != InsertionResults.COMMITTED && row.insertionResult != InsertionResults.PASTED -> PracticeOutcome.MISSED_BOX
-            boxText == take.boxTextAtStart -> PracticeOutcome.MISSED_BOX
+            row.insertionResult != InsertionResults.COMMITTED && row.insertionResult != InsertionResults.PASTED -> PracticeOutcome.NOTHING_LANDED
             lesson == PracticeLesson.HOLD && take.held != true -> PracticeOutcome.LANDED_BY_TAP
             else -> PracticeOutcome.LANDED
         }
-        else -> PracticeOutcome.MISSED_BOX
+        else -> PracticeOutcome.NOTHING_LANDED
     }
 }
 

@@ -23,8 +23,10 @@ class OnboardingWiringTest {
     @Test
     fun theEnginesWarmWhileThePermissionsAndPracticeScreensShow() {
         assertTrue(screen.contains("stage == OnboardingStage.PERMISSIONS || stage == OnboardingStage.PRACTICE"))
+        // Started and stopped with the app, not only with the screen: Home or the lock releases both.
+        assertTrue(screen.contains("LifecycleStartEffect(warming)"))
         assertTrue(screen.contains("if (warming) model.warmEngines()"))
-        assertTrue(screen.contains("onDispose { if (warming) model.coolEngines() }"))
+        assertTrue(screen.contains("onStopOrDispose { if (warming) model.coolEngines() }"))
         // Both engines, by binding, in their own processes; the polish load follows the user's policy.
         assertTrue(warmUp.contains("Intent(context, AsrService::class.java)"))
         assertTrue(warmUp.contains("Intent(context, PolishService::class.java)"))

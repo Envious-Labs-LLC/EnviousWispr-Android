@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.envi.wispr.models.ModelHealth
@@ -65,11 +66,12 @@ internal fun OnboardingScreen(
         onStepChange(if (stage == OnboardingStage.PRACTICE) OnboardingStage.PERMISSIONS.ordinal else OnboardingStage.WELCOME.ordinal)
     }
     // Load the speech and polish models while the user reads and grants the permissions, so the first
-    // practice take does not pay their cold start (founder, phone pass of build 121).
+    // practice take does not pay their cold start (founder, phone pass of build 121). Held only while
+    // the app is started: Home or the lock screen releases them.
     val warming = stage == OnboardingStage.PERMISSIONS || stage == OnboardingStage.PRACTICE
-    DisposableEffect(warming) {
+    LifecycleStartEffect(warming) {
         if (warming) model.warmEngines()
-        onDispose { if (warming) model.coolEngines() }
+        onStopOrDispose { if (warming) model.coolEngines() }
     }
     // The practice box is admitted to the accessibility service only while the practice stage is on
     // screen AND in front, so the floating lips can appear beside it and nowhere else in the app, and a
@@ -145,8 +147,7 @@ internal fun OnboardingScreen(
                                 PracticeOutcome.LANDED -> "Nice, that worked!" to
                                     (if (hold) "You can tap to dictate or hold to talk." else "Your words are in the box. Try holding the lips next.")
                                 PracticeOutcome.LANDED_BY_TAP -> "Nice, that worked!" to "That was a tap. Now hold the lips while you talk, and let go when you are done."
-                                PracticeOutcome.MISSED_BOX -> "Your words are saved in History." to "They did not reach the box this time. Try again."
-                                PracticeOutcome.NOTHING_ADDED -> "No words were added." to
+                                PracticeOutcome.NOTHING_LANDED -> "No words landed in the box." to
                                     (if (hold) "Hold the lips and speak, then let go." else "Tap the lips and speak, then tap the check.")
                                 null -> if (hold) "Try holding the lips." to "Now hold the lips and talk; let go when you are done."
                                     else "Try your first dictation." to "Tap the lips and say…"

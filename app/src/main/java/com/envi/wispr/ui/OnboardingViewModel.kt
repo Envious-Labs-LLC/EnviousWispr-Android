@@ -67,12 +67,6 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         private set
     private var take: PracticeTake? = null
     private var rows: List<TranscriptEntity> = emptyList()
-    /**
-     * False from the moment following (re)starts until History has answered once. The owner's IDLE can
-     * arrive before Room's first emission on a resume, and a verdict locked on that stale list would
-     * say "no words" about a saved dictation (Codex review, round 3). No verdict is final until fresh.
-     */
-    private var rowsFresh = false
     private var watching: Job? = null
     private val engines = EngineWarmUp(context, viewModelScope)
     val practicing: Boolean get() = practicePhase != RecordingOverlayState.Phase.IDLE || practiceOutcome == PracticeOutcome.WORKING
@@ -129,13 +123,18 @@ internal class OnboardingViewModel(application: Application, private val saved: 
 
     /** Every edit is accepted, the words the service puts in the box included: the box is a real editor. */
     fun editDraft(value: TextFieldValue) {
-        val changed = value.text != draft.text
         draft = value
         saved["practice_draft"] = value.text
-        if (changed) judge()
     }
 
-    /** The permissions or practice screen is showing: load the engines now, so the first take is quick. */
+    /**
+     * The permissions or practice screen is showing AND the app is started: load the engines now, so
+     * the first take is quick. Released when the screen moves on or the app stops (Home, lock), because a
+     * heavy model held while nothing is on screen is idle cost (`architecture-rules.md` RULE: no-idle-cost;
+     * Codex review round 5). A trip to Android Settings for the Accessibility grant stops the app too, so
+     * the engines reload when the user comes back; that reload starts on the permissions screen, before
+     * practice, which is still earlier than the first take.
+     */
     fun warmEngines() = engines.start()
 
     fun coolEngines() = engines.stop()
@@ -149,10 +148,9 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun enterPractice() {
         if (watching?.isActive == true) return
         OwnFieldAdmission.admit(PRACTICE_FIELD_ID)
-        rowsFresh = false
         watching = viewModelScope.launch {
             launch { RecordingOverlayState.snapshots.collect { snapshot -> followOwner(snapshot) } }
-            launch { transcripts.transcripts.collect { latest -> rows = latest; rowsFresh = true; judge() } }
+            launch { transcripts.transcripts.collect { latest -> rows = latest; judge() } }
         }
     }
 
@@ -177,7 +175,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         val current = take
         take = if (snapshot.phase != RecordingOverlayState.Phase.IDLE) {
             if (current == null || current.ended) {
-                PracticeTake(startedAtMs = System.currentTimeMillis(), held = snapshot.requestToken?.held, boxTextAtStart = draft.text)
+                PracticeTake(startedAtMs = System.currentTimeMillis(), held = snapshot.requestToken?.held)
             } else {
                 current.copy(held = current.held ?: snapshot.requestToken?.held)
             }
@@ -188,21 +186,12 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         judge()
     }
 
-    /**
-     * Re-judge the current take. A verdict, once terminal, stands until the next take: the row it was
-     * judged on is bound to the take, so nothing dictated later can rewrite it. Until History has
-     * answered once since following started, an ended take reads as still WORKING rather than judged.
-     */
+    /** Re-judge the current take off its own row; the row is bound once and the verdict follows it. */
     private fun judge() {
         val current = take ?: return
-        if (current.ended && practiceOutcome != null && practiceOutcome != PracticeOutcome.WORKING) return
-        if (current.ended && !rowsFresh) {
-            practiceOutcome = PracticeOutcome.WORKING
-            return
-        }
         val bound = bindPracticeRow(current, rows)
         take = bound
-        val outcome = judgePracticeTake(bound, lesson, rows, draft.text)
+        val outcome = judgePracticeTake(bound, lesson, rows)
         practiceOutcome = outcome
         when (outcome) {
             PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {

@@ -250,8 +250,10 @@ keeps its meaning (now the mean over 32 ms) for the appended-AIDL rule; nothing 
 this change.
 
 `SpectrumAnalyzer`: a 1024-sample window (the newest two chunks, so 64 ms of context at a 32 ms hop), a
-Hann window, a radix-2 real FFT with tables built in the constructor, 11 log-spaced bands from 100 Hz to
-6.4 kHz (bin width 15.625 Hz; the lowest band spans 3 bins), per-band RMS magnitude normalised so a
+Hann window, a radix-2 real FFT with tables built in the constructor, 11 bands: the first one octave wide,
+85 to 170 Hz, so the fundamental of nearly every speaking voice lands in the CENTRE bar (an equal log split
+stopped it at 146 Hz and left the middle dark for a higher voice on the emulator's first spoken take,
+2026-09-14), then ten log-spaced bands up to 6.4 kHz (bin width 15.625 Hz), per-band RMS magnitude normalised so a
 full-scale sine reads 0 dBFS in its band, a mild tilt (+3 dB per octave above 300 Hz, so fricatives at the
 edges show against the natural fall-off of speech), then the same dB-window shape as today's
 `AudioLevelScale.display` with per-band constants (`QUIET_DBFS = -62`, `LOUD_DBFS = -18`, measured on the

@@ -65,6 +65,9 @@ class SpectrumAnalyzerTest {
 
     @Test
     fun theBandsRunFromLowToHighSoTheRailCanPutLowInTheMiddle() {
+        // The first band holds every speaking voice's fundamental, so the middle bar swells for anyone.
+        assertTrue("a low male voice", bandOf(95f) == 0)
+        assertTrue("a high female voice", bandOf(165f) == 0)
         assertTrue(bandOf(120f) == 0)
         assertTrue(bandOf(6_000f) == SpectrumAnalyzer.BAND_COUNT - 1)
         for (band in 0 until SpectrumAnalyzer.BAND_COUNT) {

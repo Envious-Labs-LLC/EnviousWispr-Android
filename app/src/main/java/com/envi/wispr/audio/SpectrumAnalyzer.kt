@@ -168,7 +168,7 @@ class SpectrumAnalyzer {
         private const val BIN_HZ = PcmAudio.SAMPLE_RATE.toFloat() / FFT_SIZE
 
         /** The lowest band starts here: below it is rumble, not voice. */
-        const val LOW_EDGE_HZ = 100f
+        const val LOW_EDGE_HZ = 85f
 
         /** The highest band ends here: the sibilants live below it and the microphone's own hiss above. */
         const val HIGH_EDGE_HZ = 6_400f
@@ -185,9 +185,22 @@ class SpectrumAnalyzer {
 
         private const val NO_POSITION = Long.MIN_VALUE
 
-        /** The lower edge of [band], log-spaced from [LOW_EDGE_HZ] to [HIGH_EDGE_HZ]; band [BAND_COUNT] is the top edge. */
-        fun bandEdgeHz(band: Int): Float =
-            LOW_EDGE_HZ * (HIGH_EDGE_HZ / LOW_EDGE_HZ).toDouble().pow(band.toDouble() / BAND_COUNT).toFloat()
+        /**
+         * Where the first band ends. One octave wide on purpose: it holds the fundamental of nearly every
+         * speaking voice, low or high, so the CENTRE of the rail is what swells when anyone talks. With
+         * eleven equal log bands the first one stopped at 146 Hz, and a higher voice left the middle bar
+         * dark while its neighbours lit (measured on the emulator's spoken take, 2026-09-14).
+         */
+        const val VOICE_BAND_TOP_HZ = 170f
+
+        /**
+         * The lower edge of [band]: [LOW_EDGE_HZ] to [VOICE_BAND_TOP_HZ] for band 0, then log-spaced up to
+         * [HIGH_EDGE_HZ]; band [BAND_COUNT] is the top edge.
+         */
+        fun bandEdgeHz(band: Int): Float = when {
+            band <= 0 -> LOW_EDGE_HZ
+            else -> VOICE_BAND_TOP_HZ * (HIGH_EDGE_HZ / VOICE_BAND_TOP_HZ).toDouble().pow((band - 1).toDouble() / (BAND_COUNT - 1)).toFloat()
+        }
 
         /**
          * Map one band amplitude (1.0 is a full-scale sine) plus its tilt gain to the fraction of the bar

@@ -523,6 +523,14 @@ No new user-facing sentence; the picture's failure state is the resting rail, wh
   silence, three tones, a sweep, flat hiss and 4 Hz bursts into the emulator over `injectAudio`,
   screen-records the pill, measures every bar per frame and judges each; all seven pass on the tree
   this plan ships with (2026-09-15).
+- Founder's phone pass on build 130 (2026-09-15): only the middle five bars ever lit, three lit in
+  silence, and the hold pill ran the rail under his thumb. Fixed on the branch as the standard speech
+  visualiser shape (`SpectrumAnalyzer` doc): pre-emphasis of +6 dB per octave above 250 Hz so consonants
+  reach the outer bars, and a per-band noise floor (the quietest reading of the last 1.5 s, never below
+  `QUIET_DBFS`) with an 8 dB margin and a 30 dB range, so hiss and rumble go dark and only sound above the
+  room lights a bar. The hold pill now carries a recording mark (`RecordMarkView`) under the thumb and
+  the rail to its left, after Wispr Flow's hold pill; `COMPACT_PILL_DP` is 216. The battery's hiss row
+  now proves the floor: a hiss that starts mid-take lights and goes dark within the window.
 - Found by that battery and fixed in the same branch: the tap pill's eleven bars mapped each bar to ONE
   nearest band, leaving five bands with no bar, so a steady 1 kHz tone drew nothing; every bar now shows
   the loudest of a contiguous band range and every band lands on a bar (`RecordingLevelMeterView.barBands`).

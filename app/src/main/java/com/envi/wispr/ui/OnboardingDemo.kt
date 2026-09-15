@@ -61,6 +61,7 @@ import com.envi.wispr.paste.BrandPalette
 import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.audio.SpectrumAnalyzer
 import com.envi.wispr.paste.RecordingAccessibilityOverlay
+import com.envi.wispr.paste.RecordMarkView
 import com.envi.wispr.paste.RecordingLevelMeterView
 import kotlin.math.PI
 import kotlin.math.floor
@@ -218,13 +219,27 @@ private fun DemoPill(look: BubbleLook, held: Boolean, seconds: Int, t: Float, mo
             )
             Spacer(Modifier.width(10.dp))
         }
-        DemoRail(t, Modifier.weight(1f).height(if (held) 28.dp else 22.dp), bars = if (held) 16 else RecordingAccessibilityOverlay.FULL_PILL_BARS)
-        if (!held) {
-            Spacer(Modifier.width(10.dp))
+        DemoRail(t, Modifier.weight(1f).height(if (held) 28.dp else 22.dp), bars = if (held) RecordingLevelMeterView.BAR_COUNT else RecordingAccessibilityOverlay.FULL_PILL_BARS)
+        Spacer(Modifier.width(10.dp))
+        if (held) {
+            // The recording mark under the thumb, as the real hold pill draws it.
+            DemoRecordMark()
+        } else {
             DemoControl(argb(look.cancelFill), cross = true)
             Spacer(Modifier.width(8.dp))
             DemoControl(argb(look.acceptFill), cross = false)
         }
+    }
+}
+
+/** The hold pill's recording mark: a ring with a dot, in the thumb's slot, as `RecordMarkView` draws it. */
+@Composable
+private fun DemoRecordMark() {
+    Canvas(Modifier.size(RecordingAccessibilityOverlay.RECORD_MARK_DP.dp, 40.dp)) {
+        val ink = argb(BrandPalette.TEXT)
+        val c = Offset(size.width / 2, size.height / 2)
+        drawCircle(ink, RecordMarkView.RING_RADIUS_DP.dp.toPx(), c, style = Stroke(RecordMarkView.RING_STROKE_DP.dp.toPx()))
+        drawCircle(ink, RecordMarkView.DOT_RADIUS_DP.dp.toPx(), c)
     }
 }
 

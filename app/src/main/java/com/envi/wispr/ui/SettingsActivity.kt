@@ -96,6 +96,7 @@ class SettingsActivity : ComponentActivity() {
                     onDynamicColorChanged = viewModel::setDynamicColorEnabled,
                     onBubbleLookChanged = viewModel::setBubbleLook,
                     onSetPolishMode = viewModel::setPolishMode,
+                    onSetS1Control = viewModel::setS1Control,
                     onSaveProviderSettings = viewModel::saveProviderSettings,
                     onClearProviderSettings = viewModel::removeProviderKey,
                     providerDiscovery = providerDiscovery,

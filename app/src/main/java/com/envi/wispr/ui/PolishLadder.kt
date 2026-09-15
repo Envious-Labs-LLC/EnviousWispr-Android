@@ -26,6 +26,9 @@ import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.providers.DiscoveredModel
 import com.envi.wispr.providers.ModelAccess
+import com.envi.wispr.polish.S1Context
+import com.envi.wispr.polish.S1Structure
+import com.envi.wispr.polish.S1Styling
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderPolishClient
@@ -441,4 +444,45 @@ internal fun relativeAge(fetchedAt: Long, now: Long = System.currentTimeMillis()
         minutes < 60 * 24 -> "${minutes / 60} h ago"
         else -> "${minutes / (60 * 24)} d ago"
     }
+}
+
+/**
+ * Every user-facing string on the Writing style card (#152), in one place so a test can read them and
+ * the no-dash rule can be checked on the whole set. The sentences are the Mac's, verbatim from the
+ * catalog, so the two products cannot drift. The option labels are a total function over each enum
+ * (no `else`), so adding a trained value cannot leave a chip without a name.
+ */
+object S1ControlCopy {
+    const val EYEBROW = "WRITING STYLE"
+    const val INTRO = "Superwhisper trained S1-mini on these three settings. Change them any time; a new pick applies to your next dictation."
+
+    /** The Styling axis is labelled Tone on screen, as on the Mac; the wire token stays Styling. */
+    const val STYLING_LABEL = "Tone"
+    const val STYLING_HINT = "Semi-formal keeps capitals and full stops. Casual and semi-casual write the way you would text."
+    const val STRUCTURE_LABEL = "Structure"
+    const val STRUCTURE_HINT = "Lists turns a spoken run of items into bullet points. Prose keeps everything as sentences."
+    const val CONTEXT_LABEL = "Context"
+    const val CONTEXT_HINT = "Email lays out a greeting line and a sign-off block when you dictate them. It changes nothing else."
+
+    fun label(styling: S1Styling): String = when (styling) {
+        S1Styling.CASUAL -> "Casual"
+        S1Styling.SEMI_CASUAL -> "Semi-casual"
+        S1Styling.SEMI_FORMAL -> "Semi-formal"
+        S1Styling.FORMAL -> "Formal"
+    }
+
+    fun label(structure: S1Structure): String = when (structure) {
+        S1Structure.PROSE -> "Prose"
+        S1Structure.LISTS -> "Lists"
+    }
+
+    fun label(context: S1Context): String = when (context) {
+        S1Context.GENERAL -> "General"
+        S1Context.EMAIL -> "Email"
+    }
+
+    /** Everything a user can read on the card, for the drift guard. */
+    fun allStrings(): List<String> =
+        listOf(EYEBROW, INTRO, STYLING_LABEL, STYLING_HINT, STRUCTURE_LABEL, STRUCTURE_HINT, CONTEXT_LABEL, CONTEXT_HINT) +
+            S1Styling.entries.map(::label) + S1Structure.entries.map(::label) + S1Context.entries.map(::label)
 }

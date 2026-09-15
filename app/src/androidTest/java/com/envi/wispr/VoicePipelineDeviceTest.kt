@@ -193,13 +193,13 @@ class VoicePipelineDeviceTest {
 
     /**
      * PRODUCT OUTCOME. When this fails, every dictation from the Quick Settings tile, the app's
-     * microphone button, onboarding practice and the side button pressed outside a text field ends in a
-     * failure haptic, a long toast and a shade notification saying auto-paste did not reach the
-     * field. Four of the five entry points cannot pin a target, so that is ordinary use of the
-     * product being reported as broken.
+     * microphone button and the side button pressed outside a text field ends in a failure haptic, a
+     * long toast and a shade notification saying auto-paste did not reach the field. Those entry
+     * points cannot pin a target, so that is ordinary use of the product being reported as broken.
      *
      * Stages the alive-but-nothing-pinned case: only our own launcher is on screen, and the paste
-     * service excludes our own package unconditionally, so nothing is pinned and the handoff is
+     * service excludes our own package except the onboarding practice box, which is not admitted
+     * here (`OwnFieldAdmission`), so nothing is pinned and the handoff is
      * NO_PINNED_TARGET while the service is perfectly alive. There was no field, so the clipboard
      * is the designed destination and the dictation SUCCEEDED.
      *

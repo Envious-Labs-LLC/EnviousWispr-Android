@@ -246,6 +246,7 @@ internal fun EnviousWisprApp(
             onRequestNotifications = onRequestNotifications,
             onOpenAccessibility = onOpenAccessibility,
             onComplete = onCompleteOnboarding,
+            look = uiState.preferences.bubbleLook,
         )
         return
     }

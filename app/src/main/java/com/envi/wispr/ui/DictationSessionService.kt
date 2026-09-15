@@ -146,7 +146,6 @@ class DictationSessionService : Service() {
     )
 
     private val state = AtomicReference(SessionState.IDLE)
-    @Volatile private var practiceDelivery: PracticeDelivery? = null
     private val publicationStarted = AtomicBoolean(false)
     /**
      * Reads the dictation's language off the finished transcript for this side's deterministic fallback
@@ -338,22 +337,6 @@ class DictationSessionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val practiceToken = intent?.getStringExtra(PracticeDelivery.TOKEN)
-        if (practiceToken != null) {
-            if (intent.action == ACTION_START) {
-                val destination = PracticeDelivery.from(intent)
-                if (destination == null) { stopIfIdle(); return START_NOT_STICKY }
-                if (state.get() != SessionState.IDLE) {
-                    destination.update(PracticeDelivery.ERROR, "Another dictation is still active. Finish it, then try again.", terminalEvent = true)
-                    return START_NOT_STICKY
-                }
-                practiceDelivery = destination
-                destination.update(PracticeDelivery.STARTING)
-                beginSession()
-                return START_NOT_STICKY
-            }
-            if (practiceDelivery?.acceptsCommand(practiceToken) != true) { stopIfIdle(); return START_NOT_STICKY }
-        }
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND_COMMAND, false) == true) {
             promoteToForeground(state.get() == SessionState.PROCESSING)
         }
@@ -445,11 +428,9 @@ class DictationSessionService : Service() {
         // Kept for the whole session. Android may rebind the accessibility service while the user
         // is still speaking, so the state insertion finds minutes later cannot say whether this
         // dictation ever had a field to aim at (`InsertionJudgement.handoffToJudge`).
-        if (practiceDelivery == null) {
-            targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()
-        } else {
-            targetPinAtStart = com.envi.wispr.paste.DictationTargetPin.NO_TARGET
-        }
+        targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()
+        // Name the field this take aims at, for a reader that only wants takes aimed at ITS field.
+        RecordingOverlayState.nameTarget(if (targetPinAtStart == DictationTargetPin.PINNED) PasteAccessibilityService.pinnedFieldId() else null)
         publicationStarted.set(false)
         teardownStarted.set(false)
         draftId.set(0L)
@@ -539,7 +520,7 @@ class DictationSessionService : Service() {
             }
             recordingStartedAtMs = System.currentTimeMillis()
             draftCreation = serviceScope.async {
-                transcriptRepository.insert(
+                val id = transcriptRepository.insert(
                     TranscriptEntity(
                         originalText = "",
                         finalText = "",
@@ -552,10 +533,13 @@ class DictationSessionService : Service() {
                         status = TranscriptEntity.STATUS_DRAFT,
                     ),
                 )
+                // The row's identity goes out on the bridge so a reader judges THIS take's row, never a
+                // row it guessed at by time or order (onboarding practice; Codex reviews 2 to 9).
+                RecordingOverlayState.attachTranscript(id)
+                id
             }
             DictationSurfaceState.update(this, DictationSurfaceState.Phase.LISTENING)
             RecordingOverlayState.show()
-            practiceDelivery?.update(PracticeDelivery.RECORDING)
             vibrate(HapticCue.SESSION_TRANSITION)
             DebugLogger.log(TAG, "Recording started")
             startPolling()
@@ -718,7 +702,6 @@ class DictationSessionService : Service() {
         RecordingOverlayState.showProcessing()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.PROCESSING)
         promoteToForeground(processing = true)
-        practiceDelivery?.update(PracticeDelivery.PROCESSING)
         vibrate(HapticCue.SESSION_TRANSITION)
         DebugLogger.log(TAG, "Stopping recording and starting transcription")
 
@@ -787,7 +770,7 @@ class DictationSessionService : Service() {
         rawTranscript = rawText
         if (rawText.isBlank()) {
             discardDraft()
-            if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
+            PasteAccessibilityService.releasePinnedTarget()
             finishSession()
             return
         }
@@ -995,23 +978,6 @@ class DictationSessionService : Service() {
             saveResult.exceptionOrNull()?.let { error ->
                 DebugLogger.warn(TAG, "Unable to save transcript history: ${error.message}")
             }
-            val practice = practiceDelivery
-            if (practice != null) {
-                if (persistedId > 0L) {
-                    runCatching {
-                        transcriptRepository.finalizeInsertionOutcome(
-                            persistedId, TranscriptEntity.STATUS_COMPLETED,
-                            "practice", interrupted = false,
-                        )
-                    }
-                } else {
-                    // Sending to an in-memory receiver cannot prove that the UI displayed the words.
-                    keepOnClipboard(getSystemService(ClipboardManager::class.java), 0L, finalText)
-                }
-                practice.update(PracticeDelivery.FINISHED, finalText, terminalEvent = true)
-                finishSession()
-                return@launch
-            }
             val route = HistoryPublicationPolicy.route(
                 persistedId = persistedId,
                 persistenceSucceeded = saveResult.isSuccess,
@@ -1031,7 +997,7 @@ class DictationSessionService : Service() {
                 },
             )
             if (handoff != InsertionHandoff.SCHEDULED) {
-                if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
+                PasteAccessibilityService.releasePinnedTarget()
                 val mustPreventDataLoss = persistedId <= 0L
                 // Three outcomes, not two. A copy that was never attempted is the user's own
                 // auto-copy setting and History is then the destination; a copy that was attempted
@@ -1177,7 +1143,7 @@ class DictationSessionService : Service() {
     private fun cancelRecording() {
         if (!state.compareAndSet(SessionState.RECORDING, SessionState.CANCELLING)) return
         RecordingOverlayState.showProcessing()
-        if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
+        PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
         serviceScope.launch {
@@ -1212,7 +1178,7 @@ class DictationSessionService : Service() {
             cancelOpenPolishRequest()
         }
         RecordingOverlayState.showProcessing()
-        if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
+        PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
         discardDraft()
@@ -1222,19 +1188,18 @@ class DictationSessionService : Service() {
     private fun cancelStarting() {
         if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
         RecordingOverlayState.showProcessing()
-        if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
+        PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
         finishSession()
     }
 
     private fun showError(message: String) {
-        practiceDelivery?.update(PracticeDelivery.ERROR, message, terminalEvent = true)
         if (state.getAndSet(SessionState.ERROR) == SessionState.ERROR) return
         publicationStarted.set(true)
         cancelOpenPolishRequest()
         RecordingOverlayState.showProcessing()
-        if (practiceDelivery == null) PasteAccessibilityService.releasePinnedTarget()
+        PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.FAILURE)
         mainHandler.post { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
@@ -1248,7 +1213,6 @@ class DictationSessionService : Service() {
     }
 
     private fun finishSession() {
-        practiceDelivery?.update(PracticeDelivery.ENDED, terminalEvent = true)
         if (state.getAndSet(SessionState.FINISHING) == SessionState.FINISHING) return
         cancelOpenPolishRequest()
         RecordingOverlayState.showProcessing()
@@ -1432,7 +1396,6 @@ class DictationSessionService : Service() {
     }
 
     override fun onDestroy() {
-        practiceDelivery?.update(PracticeDelivery.ENDED, terminalEvent = true)
         if (::languageDetector.isInitialized) languageDetector.close()
         RecordingOverlayState.hide()
         publicationStarted.set(true)

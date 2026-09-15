@@ -11,6 +11,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
 import com.envi.wispr.paste.BubbleLook
+import com.envi.wispr.ui.OnboardingStage
 import com.envi.wispr.vad.SilenceStopDetector
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -92,7 +93,9 @@ class AppPreferences(context: Context) {
 
     suspend fun setOnboardingStep(step: Int) {
         dataStore.edit { preferences ->
-            preferences[Keys.ONBOARDING_STEP] = step.coerceIn(0, 3)
+            // The last stage, read off the enum: a literal here silently pinned setup to its old last screen
+            // when the demo stage was added (emulator, 2026-09-14).
+            preferences[Keys.ONBOARDING_STEP] = step.coerceIn(0, OnboardingStage.entries.lastIndex)
             preferences[Keys.ONBOARDING_VERSION] = 2
             preferences[Keys.ONBOARDING_DISMISSED] = false
         }

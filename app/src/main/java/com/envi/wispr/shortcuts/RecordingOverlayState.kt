@@ -3,6 +3,9 @@ package com.envi.wispr.shortcuts
 import android.os.Handler
 import android.os.Looper
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /** Process-local state bridge between the dictation session and accessibility overlay. */
 object RecordingOverlayState {
@@ -19,6 +22,14 @@ object RecordingOverlayState {
         val phase: Phase = Phase.IDLE,
         /** The floating bubble's request this take answers, or null for a take started elsewhere. */
         val requestToken: BubbleRequestToken? = null,
+        /**
+         * The accessibility view id of the editor the take was pinned to, or null when the pin named no
+         * field or the field carries no id. Published by the owner once it has pinned, so a reader can
+         * tell a take aimed at ITS field from one aimed anywhere else (the onboarding practice box).
+         */
+        val targetFieldId: String? = null,
+        /** The History row this take writes, once the owner has created it; 0 before that. */
+        val transcriptId: Long = 0L,
         val elapsedSeconds: Int = 0,
         /**
          * A short line to show under the timer, or null.
@@ -56,6 +67,14 @@ object RecordingOverlayState {
     private val lock = Any()
     private var snapshot = Snapshot()
     private var listener: Listener? = null
+    private val snapshotFlow = MutableStateFlow(Snapshot())
+
+    /**
+     * The same state the overlay is handed, as a flow for a second reader that only wants the phase
+     * (the onboarding practice screen). Written under the lock in commit order; a collector sees every
+     * committed value or a later one, never an earlier one.
+     */
+    val snapshots: StateFlow<Snapshot> = snapshotFlow.asStateFlow()
 
     fun attach(listener: Listener) {
         synchronized(lock) { this.listener = listener }
@@ -73,12 +92,24 @@ object RecordingOverlayState {
         Snapshot(phase = Phase.STARTING, requestToken = token)
     }
 
-    /** Capture is running: draw the pill. Keeps the token the take was admitted with. */
-    fun show() = change { Snapshot(visible = true, phase = Phase.RECORDING, requestToken = it.requestToken, elapsedSeconds = 0) }
+    /** The take was pinned to an editor: name it. A no-op at IDLE, where there is no take to name. */
+    fun nameTarget(fieldId: String?) = change {
+        if (it.phase == Phase.IDLE || it.targetFieldId == fieldId) it else it.copy(targetFieldId = fieldId)
+    }
+
+    /** The take's History row exists: carry its id. A no-op at IDLE. */
+    fun attachTranscript(id: Long) = change {
+        if (it.phase == Phase.IDLE || it.transcriptId == id) it else it.copy(transcriptId = id)
+    }
+
+    /** Capture is running: draw the pill. Keeps the token and identity the take was admitted with. */
+    fun show() = change {
+        Snapshot(visible = true, phase = Phase.RECORDING, requestToken = it.requestToken, targetFieldId = it.targetFieldId, transcriptId = it.transcriptId, elapsedSeconds = 0)
+    }
 
     /** Transcribing, polishing, cancelling, finishing or failing: not accepting a start, pill hidden. */
     fun showProcessing() = change {
-        if (it.phase == Phase.PROCESSING) it else Snapshot(phase = Phase.PROCESSING, requestToken = it.requestToken)
+        if (it.phase == Phase.PROCESSING) it else Snapshot(phase = Phase.PROCESSING, requestToken = it.requestToken, targetFieldId = it.targetFieldId, transcriptId = it.transcriptId)
     }
 
     /** Show a line under the timer. It survives every later tick until the recorder is hidden. */
@@ -128,6 +159,7 @@ object RecordingOverlayState {
             val next = transform(snapshot)
             if (next == snapshot) return
             snapshot = next
+            snapshotFlow.value = next
         }
         notifyListener()
     }

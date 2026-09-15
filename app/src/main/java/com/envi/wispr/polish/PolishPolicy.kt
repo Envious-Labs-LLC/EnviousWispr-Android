@@ -21,8 +21,12 @@ sealed class PolishPolicy : Parcelable {
     /** AI Polish is off; the deterministic rules run alone. */
     object Off : PolishPolicy()
 
-    /** Polish on this phone with the local S1 model. */
-    object LocalS1 : PolishPolicy()
+    /**
+     * Polish on this phone with the local S1 model, under the user's three control-line picks (#152).
+     * No default argument on purpose: the one place that supplies [S1ControlSettings.DEFAULT] is
+     * `ProviderConfigurationRepository.decodePolicy`, so every other constructor call is visible.
+     */
+    data class LocalS1(val control: S1ControlSettings) : PolishPolicy()
 
     /** The user chose a cloud mode but no valid provider selection exists. Fails open to rules. */
     object CloudUnconfigured : PolishPolicy()
@@ -39,7 +43,12 @@ sealed class PolishPolicy : Parcelable {
     override fun writeToParcel(dest: Parcel, flags: Int) {
         when (this) {
             Off -> dest.writeByte(TAG_OFF)
-            LocalS1 -> dest.writeByte(TAG_LOCAL_S1)
+            is LocalS1 -> {
+                dest.writeByte(TAG_LOCAL_S1)
+                dest.writeString(control.styling.token)
+                dest.writeString(control.structure.token)
+                dest.writeString(control.context.token)
+            }
             CloudUnconfigured -> dest.writeByte(TAG_CLOUD_UNCONFIGURED)
             is Cloud -> {
                 dest.writeByte(TAG_CLOUD)
@@ -61,7 +70,16 @@ sealed class PolishPolicy : Parcelable {
         val CREATOR: Parcelable.Creator<PolishPolicy> = object : Parcelable.Creator<PolishPolicy> {
             override fun createFromParcel(source: Parcel): PolishPolicy = when (val tag = source.readByte()) {
                 TAG_OFF -> Off
-                TAG_LOCAL_S1 -> LocalS1
+                // Writer and reader are one class in one APK, so a null or unknown token is never
+                // produced; mapping it to the default is ordinary defensive decoding, not a
+                // compatibility promise.
+                TAG_LOCAL_S1 -> LocalS1(
+                    S1ControlSettings(
+                        styling = S1Styling.fromToken(source.readString()),
+                        structure = S1Structure.fromToken(source.readString()),
+                        context = S1Context.fromToken(source.readString()),
+                    ),
+                )
                 TAG_CLOUD_UNCONFIGURED -> CloudUnconfigured
                 TAG_CLOUD -> Cloud(
                     provider = Provider.valueOf(checkNotNull(source.readString())),

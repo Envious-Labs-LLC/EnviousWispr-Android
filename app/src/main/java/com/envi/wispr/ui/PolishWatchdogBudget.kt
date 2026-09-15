@@ -13,7 +13,7 @@ object PolishWatchdogBudget {
     const val CLOUD_MS = 35_000L
 
     fun forPolicy(policy: PolishPolicy): Long = when (policy) {
-        PolishPolicy.Off, PolishPolicy.LocalS1, PolishPolicy.CloudUnconfigured -> LOCAL_MS
+        PolishPolicy.Off, is PolishPolicy.LocalS1, PolishPolicy.CloudUnconfigured -> LOCAL_MS
         is PolishPolicy.Cloud -> CLOUD_MS
     }
 }

@@ -3,6 +3,10 @@ package com.envi.wispr.providers
 import android.content.Context
 import android.content.SharedPreferences
 import com.envi.wispr.polish.PolishPolicy
+import com.envi.wispr.polish.S1Context
+import com.envi.wispr.polish.S1ControlSettings
+import com.envi.wispr.polish.S1Structure
+import com.envi.wispr.polish.S1Styling
 
 /** Explicit polish policy persisted independently from the selected provider credentials. */
 enum class PolishMode {
@@ -101,6 +105,22 @@ class ProviderConfigurationRepository internal constructor(
      * and the credential is never read here. A store that cannot be read yields [PolishPolicy.Off].
      */
     fun loadPolicy(): PolishPolicy = readPolicy { preferences.all }
+
+    /** The persisted S1-mini picks for the screen (#152). The engine never calls this; it reads [loadPolicy]. */
+    fun loadS1Control(): S1ControlSettings = decodeS1Control(preferences.all)
+
+    /**
+     * All three axes in ONE commit, so a session snapshot can never see two of the new picks with one
+     * old one. Stores the trained wire token, which is the closed value set the enum owns.
+     */
+    fun setS1Control(control: S1ControlSettings) {
+        val committed = preferences.edit()
+            .putString(KEY_S1_STYLING, control.styling.token)
+            .putString(KEY_S1_STRUCTURE, control.structure.token)
+            .putString(KEY_S1_CONTEXT, control.context.token)
+            .commit()
+        check(committed) { "could not persist S1 control settings" }
+    }
 
     /** Saves metadata and the optional key without ever putting the key in preferences. */
     fun saveProvider(
@@ -234,11 +254,21 @@ class ProviderConfigurationRepository internal constructor(
          */
         fun decodePolicy(values: Map<String, *>): PolishPolicy = when (decodeMode(values)) {
             PolishMode.OFF -> PolishPolicy.Off
-            PolishMode.OFFLINE_S1 -> PolishPolicy.LocalS1
+            PolishMode.OFFLINE_S1 -> PolishPolicy.LocalS1(decodeS1Control(values))
             PolishMode.PROVIDER -> decodeSelection(values)?.let { selection ->
                 PolishPolicy.Cloud(selection.provider, selection.model, selection.endpoint, selection.protocol)
             } ?: PolishPolicy.CloudUnconfigured
         }
+
+        /**
+         * An absent or unknown pick reads as the shipped default, per axis, so an install from before
+         * #152 produces the same control line it always did.
+         */
+        fun decodeS1Control(values: Map<String, *>): S1ControlSettings = S1ControlSettings(
+            styling = S1Styling.fromToken(values[KEY_S1_STYLING] as? String),
+            structure = S1Structure.fromToken(values[KEY_S1_STRUCTURE] as? String),
+            context = S1Context.fromToken(values[KEY_S1_CONTEXT] as? String),
+        )
 
         /** An absent or unparseable mode reads as the offline default, as it always has. */
         fun decodeMode(values: Map<String, *>): PolishMode = (values[KEY_MODE] as? String)?.let { name ->
@@ -272,6 +302,9 @@ class ProviderConfigurationRepository internal constructor(
         private const val KEY_MODEL = "model"
         private const val KEY_ENDPOINT = "endpoint"
         private const val KEY_PROTOCOL = "protocol"
+        private const val KEY_S1_STYLING = "s1_styling"
+        private const val KEY_S1_STRUCTURE = "s1_structure"
+        private const val KEY_S1_CONTEXT = "s1_context"
         private const val MAX_MODEL_CHARS = 256
     }
 }

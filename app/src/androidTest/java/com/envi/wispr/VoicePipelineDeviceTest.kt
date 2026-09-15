@@ -23,6 +23,7 @@ import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
 import com.envi.wispr.polish.PolishOutcome
 import com.envi.wispr.polish.PolishPolicy
+import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.polish.PolishService
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.vocabulary.BuiltinVocabulary
@@ -94,7 +95,7 @@ class VoicePipelineDeviceTest {
         assertTrue("ASR service did not connect", asrConnected.await(15, TimeUnit.SECONDS))
         assertTrue("Polish service did not connect", polishConnected.await(15, TimeUnit.SECONDS))
 
-        polishService?.warmUpWithPolicy(PolishPolicy.LocalS1)
+        polishService?.warmUpWithPolicy(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT))
         val deadline = System.currentTimeMillis() + 30_000
         while (polishService?.isLocalModelReady != true && System.currentTimeMillis() < deadline) {
             Thread.sleep(250)
@@ -136,7 +137,7 @@ class VoicePipelineDeviceTest {
         var polishedText = ""
         var engine = ""
         var latencyMs = -1L
-        polishService?.polishRequest(1L, matcher.restore(rawText), true, true, false, PolishPolicy.LocalS1, object : IPolishCallback.Stub() {
+        polishService?.polishRequest(1L, matcher.restore(rawText), true, true, false, PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), object : IPolishCallback.Stub() {
             override fun onOutcome(outcome: PolishOutcome?) {
                 polishedText = matcher.restore(outcome?.text.orEmpty())
                 engine = outcome?.engine.orEmpty()

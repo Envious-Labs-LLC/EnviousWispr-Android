@@ -29,6 +29,7 @@ import com.envi.wispr.providers.ProviderKeyCheck
 import com.envi.wispr.providers.ProviderModelDiscoverer
 import com.envi.wispr.providers.ProviderPolishClient
 import com.envi.wispr.polish.PolishFailure
+import com.envi.wispr.polish.S1ControlSettings
 import kotlinx.coroutines.flow.asStateFlow
 import com.envi.wispr.providers.SelfHostedProtocol
 import com.envi.wispr.providers.capabilities
@@ -66,6 +67,8 @@ data class ProviderSettingsUiState(
      * the active one.
      */
     val storedProviders: Set<Provider> = emptySet(),
+    /** The PERSISTED S1-mini picks (#152); the chips never show an unsaved draft. */
+    val s1Control: S1ControlSettings = S1ControlSettings.DEFAULT,
     val message: String = "",
     val error: String? = null,
     /** The request sequence of the LAST COMPLETED write, success or failure; 0 before any write (#67). */
@@ -452,6 +455,12 @@ class EnviousWisprViewModel(
         ""
     }
 
+    /** A chip tap on the Writing style card (#152). Returns the request sequence of the write it queued. */
+    fun setS1Control(control: S1ControlSettings): Int = updateProviderSettings {
+        providerRepository.setS1Control(control)
+        ""
+    }
+
     /** The Ladder's save (#81): an accepted key with its starting model, or a model change. Returns the request sequence the tab waits for. */
     fun saveProviderSettings(
         provider: Provider,
@@ -664,6 +673,7 @@ class EnviousWisprViewModel(
                 ?: SelfHostedProtocol.OPENAI_COMPATIBLE,
             configured = selected != null,
             storedProviders = providerRepository.storedProviders(),
+            s1Control = providerRepository.loadS1Control(),
             message = message,
             error = error,
             writeSequence = sequence,

@@ -8,6 +8,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -71,6 +74,10 @@ import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.polish.S1Config
+import com.envi.wispr.polish.S1Context
+import com.envi.wispr.polish.S1ControlSettings
+import com.envi.wispr.polish.S1Structure
+import com.envi.wispr.polish.S1Styling
 import com.envi.wispr.providers.ModelAccess
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
@@ -78,7 +85,7 @@ import com.envi.wispr.providers.capabilities
 import com.envi.wispr.providers.disclosure
 
 /** Which write the tab is waiting on, so its failure lands under the rung that started it. */
-private enum class WriteKind { MODE, KEY, MODEL, REMOVE }
+private enum class WriteKind { MODE, KEY, MODEL, REMOVE, S1_CONTROL }
 
 /**
  * The AI Polish tab as the founder's Ladder (#81): four numbered rungs on one page, each unlocking the
@@ -96,6 +103,7 @@ internal fun PolishScreen(
     s1State: ModelUiState,
     discovery: ProviderDiscoveryUiState,
     onSetMode: (PolishMode) -> Int,
+    onSetS1Control: (S1ControlSettings) -> Int,
     onSave: (Provider, String, String?, Int?) -> Int,
     onClearProvider: (Provider) -> Int,
     onCheckKey: (Provider, String?) -> Int,
@@ -189,6 +197,12 @@ internal fun PolishScreen(
                 RungOne.OFF -> QuietCard("No language model runs. Deterministic cleanup still removes obvious filler and spacing issues.")
                 RungOne.THIS_PHONE -> {
                     S1Card(s1State, onRefreshReadiness)
+                    S1ControlCard(
+                        control = settings.s1Control,
+                        enabled = !saving,
+                        error = writeError?.takeIf { errorKind == WriteKind.S1_CONTROL },
+                        onPick = { next -> start(WriteKind.S1_CONTROL) { onSetS1Control(next) } },
+                    )
                     DevelopmentModelCard()
                 }
                 RungOne.CLOUD -> CloudRungs(
@@ -524,6 +538,70 @@ private fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
         onPause = { ModelDeliveryWorker.pause(context, ModelManifest.s1) },
         onResume = { ModelDeliveryWorker.resume(context, ModelManifest.s1) },
     )
+}
+
+/**
+ * The Writing style card (#152): S1-mini's three trained control-line axes as chips, rendered from the
+ * PERSISTED picks only. A tap writes the whole triple through the tab's one-write-at-a-time tracking, so
+ * the chips are disabled while a write is in flight and a failure lands under this card. `FlowRow` so
+ * the four Tone chips wrap at phone width rather than clipping.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun S1ControlCard(
+    control: S1ControlSettings,
+    enabled: Boolean,
+    error: String?,
+    onPick: (S1ControlSettings) -> Unit,
+) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(S1ControlCopy.EYEBROW, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(S1ControlCopy.INTRO, style = MaterialTheme.typography.bodyMedium)
+            ControlAxis(S1ControlCopy.STYLING_LABEL, S1ControlCopy.STYLING_HINT) {
+                S1Styling.entries.forEach { option ->
+                    FilterChip(
+                        selected = control.styling == option,
+                        enabled = enabled,
+                        onClick = { if (control.styling != option) onPick(control.copy(styling = option)) },
+                        label = { Text(S1ControlCopy.label(option)) },
+                    )
+                }
+            }
+            ControlAxis(S1ControlCopy.STRUCTURE_LABEL, S1ControlCopy.STRUCTURE_HINT) {
+                S1Structure.entries.forEach { option ->
+                    FilterChip(
+                        selected = control.structure == option,
+                        enabled = enabled,
+                        onClick = { if (control.structure != option) onPick(control.copy(structure = option)) },
+                        label = { Text(S1ControlCopy.label(option)) },
+                    )
+                }
+            }
+            ControlAxis(S1ControlCopy.CONTEXT_LABEL, S1ControlCopy.CONTEXT_HINT) {
+                S1Context.entries.forEach { option ->
+                    FilterChip(
+                        selected = control.context == option,
+                        enabled = enabled,
+                        onClick = { if (control.context != option) onPick(control.copy(context = option)) },
+                        label = { Text(S1ControlCopy.label(option)) },
+                    )
+                }
+            }
+            if (error != null) ErrorLine(error)
+        }
+    }
+}
+
+/** One axis: its label, a wrapping row of chips, and the one-sentence hint under them. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ControlAxis(label: String, hint: String, chips: @Composable () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { chips() }
+        Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 /**

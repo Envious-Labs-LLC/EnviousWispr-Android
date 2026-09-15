@@ -2,6 +2,7 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.polish.LocalPolishBudget
 import com.envi.wispr.polish.PolishPolicy
+import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.SelfHostedProtocol
 import org.junit.Assert.assertEquals
@@ -17,7 +18,7 @@ class PolishWatchdogBudgetTest {
     private val cloud = PolishPolicy.Cloud(Provider.OPENAI, "gpt-test", null, SelfHostedProtocol.OPENAI_COMPATIBLE)
 
     @Test fun localPoliciesGetTheLocalBudgetAndCloudTheCloudBudget() {
-        assertEquals(15_000L, PolishWatchdogBudget.forPolicy(PolishPolicy.LocalS1))
+        assertEquals(15_000L, PolishWatchdogBudget.forPolicy(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT)))
         assertEquals(15_000L, PolishWatchdogBudget.forPolicy(PolishPolicy.Off))
         assertEquals(15_000L, PolishWatchdogBudget.forPolicy(PolishPolicy.CloudUnconfigured))
         assertEquals(35_000L, PolishWatchdogBudget.forPolicy(cloud))

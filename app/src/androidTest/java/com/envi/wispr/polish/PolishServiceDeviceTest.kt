@@ -48,7 +48,7 @@ class PolishServiceDeviceTest {
             Context.BIND_AUTO_CREATE
         )
         assertTrue("PolishService did not connect", connected.await(10, TimeUnit.SECONDS))
-        service?.warmUpWithPolicy(PolishPolicy.LocalS1)
+        service?.warmUpWithPolicy(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT))
 
         val deadline = System.currentTimeMillis() + 30_000
         while (service?.isLocalModelReady != true && System.currentTimeMillis() < deadline) {
@@ -73,7 +73,7 @@ class PolishServiceDeviceTest {
             true,
             true,
             false,
-            PolishPolicy.LocalS1,
+            PolishPolicy.LocalS1(S1ControlSettings.DEFAULT),
             object : IPolishCallback.Stub() {
                 override fun onOutcome(delivered: PolishOutcome?) {
                     outcome = delivered

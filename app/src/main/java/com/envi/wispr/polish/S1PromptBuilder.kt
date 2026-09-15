@@ -6,14 +6,15 @@ object S1PromptBuilder {
     private const val MAX_CUSTOM_WORDS = 50
     private const val MAX_CUSTOM_WORD_LENGTH = 50
 
-    fun buildUserPrompt(rawText: String): String {
-        // S1-mini was trained with a closed control-line vocabulary. Custom terms are restored
-        // after generation, so adding them to Context makes the prompt unsupported and less stable.
-        // The trained `lists` mode is conservative: it formats clear enumerations of at least
-        // three items, while ordinary dictation remains prose. Using `prose` here disabled list
-        // formatting for every phone dictation regardless of what the user said.
-        return "[Styling: semi-formal] [Structure: lists] [Context: general]\n${rawText.trim()}"
-    }
+    /**
+     * The control line is the caller's choice, carried on the session's latched
+     * [PolishPolicy.LocalS1]; this builder never picks a value itself (#152).
+     *
+     * S1-mini was trained with a closed control-line vocabulary. Custom terms are restored after
+     * generation, so adding them to Context makes the prompt unsupported and less stable.
+     */
+    fun buildUserPrompt(rawText: String, control: S1ControlSettings): String =
+        "${control.controlLine()}\n${rawText.trim()}"
 
     fun maxOutputTokens(rawText: String): Int {
         val estimatedInputTokens = (rawText.length / 3.5).roundToInt().coerceAtLeast(1)

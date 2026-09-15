@@ -159,6 +159,32 @@ class SpectrumAnalyzerTest {
     }
 
     @Test
+    fun flatHissReadsAboutTheSameInEveryBand() {
+        // The founder's first phone look at build 127: "the two side bars are spiking a good amount".
+        // The top band is 128 bins wide and the first is five, so a band TOTAL made the same hiss read
+        // 14 dB louder at the edges. Per-bin, every band sees the same hiss, give or take the gentle tilt.
+        val analyzer = SpectrumAnalyzer()
+        val random = java.util.Random(7)
+        fun noise(): ByteArray = ByteArray(1024).also {
+            for (i in it.indices step 2) {
+                // Loud hiss, -20 dBFS: spread over 512 bins it sits mid-rail per bin, where a bias shows.
+                val v = (random.nextGaussian() * 0.1 * 32767).toInt().coerceIn(-32768, 32767)
+                it[i] = (v and 0xFF).toByte(); it[i + 1] = ((v shr 8) and 0xFF).toByte()
+            }
+        }
+        val sum = FloatArray(SpectrumAnalyzer.BAND_COUNT)
+        var position = 0L
+        repeat(40) {
+            analyzer.analyze(noise(), 1024, position, bands); position += 1024
+            for (b in bands.indices) sum[b] += bands[b]
+        }
+        val mean = sum.map { it / 40 }
+        assertTrue("the hiss is visible at all in this test (${mean[0]})", mean[0] > 0.2f)
+        val spread = mean.max() - mean.min()
+        assertTrue("bands within a fifth of the rail of each other on flat hiss, spread $spread: $mean", spread < 0.2f)
+    }
+
+    @Test
     fun theDisplayScaleIsMonotonicAndClamped() {
         assertEquals(0f, SpectrumAnalyzer.display(0f, 0f), 0f)
         assertEquals(0f, SpectrumAnalyzer.display(Float.NaN, 0f), 0f)

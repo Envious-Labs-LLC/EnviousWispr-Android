@@ -115,11 +115,16 @@ def added_lines(base: str) -> list[str]:
     trusted and wrong. Diffing against the merge-base with no second revision includes the working tree.
     """
     merge_base = run("git", "merge-base", base, "HEAD").strip() if base != "HEAD" else "HEAD"
-    diff = run("git", "diff", "--unified=0", merge_base)
+    # A verbatim audit archive (docs/audits/<run>/before, after) carries the superseded names on
+    # purpose; reading it as new prose reports every corrected citation as unresolved. Excluded from
+    # the tracked diff AND from the untracked walk, or staging the archive re-admits it.
+    diff = run("git", "diff", "--unified=0", merge_base, "--", ".", ":(exclude)docs/audits")
     untracked = run("git", "ls-files", "--others", "--exclude-standard").split()
     extra = []
     for path in untracked:
         full = os.path.join(ROOT, path)
+        if path.startswith("docs/audits/"):
+            continue
         if os.path.isfile(full) and path.endswith((".md", ".kt", ".kts", ".py", ".sh")):
             try:
                 extra.extend(open(full, encoding="utf-8", errors="replace").read().splitlines())

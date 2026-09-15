@@ -46,6 +46,8 @@ class InsertionAttemptTest {
         var sessionChangesBeforeCommitOnce: Boolean = false,
         /** The editor applies the commit only when [applyLateCommit] is called, as a slow editor would. */
         var commitAppliesLate: Boolean = false,
+        /** The captured input session is still the pipe's live one; false models focus leaving the field. */
+        var commitSessionLive: Boolean = true,
         var readCostMs: Long = 0L,
     ) : EditorWrites {
         var clock: Long = 0L
@@ -140,6 +142,8 @@ class InsertionAttemptTest {
             if (!present) return null
             return EditorRead(field, hint)
         }
+
+        override fun commitSessionLive(): Boolean = commitSessionLive
 
         override fun now(): Long = clock
     }
@@ -415,6 +419,102 @@ class InsertionAttemptTest {
         editor.clock = 300L
         assertEquals(InsertionAttempt.Tick.Expired(written = true), attempt.tick())
         assertEquals(1, attempt.writeCount)
+    }
+
+    @Test
+    fun aCleanCommitIntoAnUnreadableFieldIsTrustedOnExpiryNotDroppedToClipboard() {
+        // Chrome's web input: the commit is accepted through the connection, but every read-back is
+        // null (surrounding pipe gives nothing, the node throws), so the field stays UNREADABLE to the
+        // deadline. The words are in the box; the app must trust the commit, not warn and copy (issue).
+        val editor = FakeEditor(commitEligible = true, surroundingAvailable = false, readThrowsAfterWrite = true)
+        val attempt = attempt(editor, deadline = 300L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(Judgement.UNREADABLE, attempt.lastJudgement)
+        editor.clock = 300L
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), attempt.tick())
+        assertEquals(InsertionAttempt.Evidence.COMMIT_TRUSTED, attempt.evidence)
+        assertEquals(1, editor.commits)
+        assertEquals(1, attempt.writeCount)
+        assertEquals(0, editor.stagings)
+    }
+
+    @Test
+    fun aCleanCommitIntoAnUnreadableFieldIsTrustedWellBeforeTheDeadline() {
+        // The point of the whole change: Chrome's unreadable box is trusted after a short grace, not
+        // after the full 2.5 s deadline, so the recorder does not stall. Deadline is the real 2500 ms.
+        val editor = FakeEditor(commitEligible = true, surroundingAvailable = false, readThrowsAfterWrite = true)
+        val attempt = attempt(editor, deadline = 2_500L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(Judgement.UNREADABLE, attempt.lastJudgement)
+        editor.clock = 250L
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), attempt.tick())
+        assertEquals(InsertionAttempt.Evidence.COMMIT_TRUSTED, attempt.evidence)
+        assertTrue("trusted long before the 2500ms deadline", editor.clock < 2_500L)
+    }
+
+    @Test
+    fun aCommitStillUnreadableButInsideTheGraceIsNotYetTrusted() {
+        // Before the grace elapses, a slow editor still has the chance to reveal a readable text or a
+        // MISS, so we keep waiting rather than trusting instantly.
+        val editor = FakeEditor(commitEligible = true, surroundingAvailable = false, readThrowsAfterWrite = true)
+        val attempt = attempt(editor, deadline = 2_500L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        editor.clock = 125L
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+    }
+
+    @Test
+    fun aCommitThatEverReadBackAMissIsNeverTrustedOnExpiry() {
+        // A MISS is real evidence the editor changed or dropped the payload, so a later unreadable tick
+        // must not launder it into a trusted commit: the clipboard fallback stays.
+        val editor = FakeEditor(commitEligible = true, surroundingAvailable = false, commitAppliesLate = true)
+        val attempt = attempt(editor, deadline = 300L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(Judgement.MISS, attempt.lastJudgement)
+        editor.clock = 300L
+        assertEquals(InsertionAttempt.Tick.Expired(written = true), attempt.tick())
+    }
+
+    @Test
+    fun anUnreadablePasteIsNeverTrustedOnExpiry() {
+        // Only the COMMIT route (the input connection) is trusted; a clipboard PASTE that cannot be
+        // read back keeps the clipboard fallback.
+        val editor = FakeEditor(readThrowsAfterWrite = true)
+        val attempt = attempt(editor, deadline = 300L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(InsertionRoute.PASTE, attempt.route)
+        assertEquals(Judgement.UNREADABLE, attempt.lastJudgement)
+        editor.clock = 300L
+        assertEquals(InsertionAttempt.Tick.Expired(written = true), attempt.tick())
+    }
+
+    @Test
+    fun aCommitIntoADeadSessionIsNeverTrustedEvenWhenUnreadable() {
+        // The connection can be discarded server-side just after the local liveness check, so commit
+        // still returns SENT into nothing (Codex review 2026-09-15). If the session is no longer live
+        // at expiry, focus left the field and nothing vouches for delivery: the clipboard fallback stands.
+        val editor = FakeEditor(
+            commitEligible = true,
+            surroundingAvailable = false,
+            readThrowsAfterWrite = true,
+            commitSessionLive = false,
+        )
+        val attempt = attempt(editor, deadline = 300L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(Judgement.UNREADABLE, attempt.lastJudgement)
+        editor.clock = 300L
+        assertEquals(InsertionAttempt.Tick.Expired(written = true), attempt.tick())
+    }
+
+    @Test
+    fun aCommitThatThrewIsNeverTrustedOnExpiry() {
+        // THREW means the connection was gone, so the write most likely never landed: never trust it.
+        val editor = FakeEditor(commitEligible = true, surroundingAvailable = false, commitThrows = true)
+        val attempt = attempt(editor, deadline = 300L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(InsertionAttempt.Returned.THREW, attempt.returned)
+        editor.clock = 300L
+        assertEquals(InsertionAttempt.Tick.Expired(written = true), attempt.tick())
     }
 
     /**

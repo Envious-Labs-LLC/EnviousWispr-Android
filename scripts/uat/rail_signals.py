@@ -54,6 +54,12 @@ BAND_COUNT = 11
 EDGES = [85.0, 170.0] + [170.0 * (6400.0 / 170.0) ** (k / 10) for k in range(1, 11)]
 TAP_PILL_BARS = 11
 
+# The rail's resting dot and full bar as shares of the pill's height, measured 2026-09-15 on the
+# 720x1600 emulator recording (96 px pill: 6 px at rest, 36 px full). The rail draws SILENCE_FRACTION
+# (0.14) of its height at rest, so these two pin the rail at 3/8 of the pill.
+REST_SHARE = 6 / 96
+PEAK_SHARE = 36 / 96
+
 
 def band_of(hz):
     for b in range(BAND_COUNT):
@@ -310,8 +316,14 @@ def measure(video, name):
     drawn = [h for h in series if h]
     if not drawn:
         return series, 0, 0
-    rest = min(min(h) for h in drawn)
-    peak = max(max(h) for h in drawn)
+    # The resting height and the full height come from the PILL'S GEOMETRY, never from the recording
+    # under test: a recording whose bars all sat at the same wrong height would otherwise calibrate
+    # itself to "nothing lit" (Codex review, 2026-09-15). The rail fills SILENCE_FRACTION of its height
+    # at rest and all of it at full level; its height is a fixed share of the pill's, measured once on
+    # the 720x1600 emulator recording: a 96 px pill draws a 6 px resting dot and a 36 px full bar.
+    pill_height = box[3] - box[1]
+    rest = round(pill_height * REST_SHARE)
+    peak = round(pill_height * PEAK_SHARE)
     return series, rest, peak
 
 
@@ -348,7 +360,9 @@ def judge(name, series, rest, peak):
         hz = {"tone120": 120, "tone1k": 1000, "tone5k": 5000}[name]
         want_band = band_of(hz)
         want = expected_bars(hz)
-        hits = sum(1 for h in active if set(loudest_bars(h)) <= set(want) or set(want) <= set(loudest_bars(h)))
+        # EVERY expected bar must be among the loudest, and nothing outside the pair may join them: a
+        # rail with one dead half would otherwise pass on the other (Codex review, 2026-09-15).
+        hits = sum(1 for h in active if set(loudest_bars(h)) == set(want))
         lines.append(f"  expected bars {want} (band {want_band}); {hits}/{len(active)} active frames agree")
         far = 0
         for h in active:

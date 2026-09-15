@@ -1,6 +1,6 @@
 # Issue #152 — S1-mini Tone, Structure and Context pickers — 2026-09-14
 
-GitHub issue: `#152`. Tier: MEDIUM. Status: DRAFT.
+GitHub issue: `#152`. Tier: MEDIUM. Status: SHIPPED (PR #153, squash `27a3828`, founder phone pass on build 126, 2026-09-15).
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -63,7 +63,7 @@ one.
 ## 0. TL;DR
 
 **Consolidation:** the dominant root is "who decides the S1 control line". Today `S1PromptBuilder` decides
-it alone with a literal. After this change the one owner is `S1ControlSettings` (proposed):
+it alone with a literal. After this change the one owner is `S1ControlSettings`:
 `S1PromptBuilder` composes from it, `PolishPolicy` carries it, `ProviderConfigurationRepository` stores
 it, `PolishLadder` labels it. The consolidation site is the single literal at `S1PromptBuilder.kt:15`,
 which is deleted; no second site composes the line.
@@ -152,7 +152,7 @@ Capability: "a per-session snapshot of polish choices that crosses to `:polish`"
 the-engine-holds-no-settings). Not a new authority.
 
 Capability: "closed set of trained tokens". `grep -rn "semi-formal\|Styling:" app/src/main` → only
-`S1PromptBuilder.kt:15`. No enum exists. `new authority proposed`: `S1ControlSettings` (proposed) with
+`S1PromptBuilder.kt:15`. No enum exists. `new authority proposed`: `S1ControlSettings` with
 three enums, mirroring the Mac's `S1ControlSettings.swift`.
 
 Capability: "a segmented single-choice control on a settings screen". `grep -rn "SegmentedButton\|FilterChip"
@@ -216,9 +216,9 @@ No Codex problem-only consult: every premise above is a grep result, not a lifec
 
 ## 3. Design
 
-**Type.** `S1ControlSettings` (proposed) in `com.envi.wispr.polish`: three enums `S1Styling` (proposed), `S1Structure` (proposed),
-`S1Context` (proposed) with a `token` property that is the wire string, a data class holding one of each,
-`DEFAULT` (proposed) = (semiFormal, lists, general), and `controlLine()` (proposed) returning the bracketed line. This is the
+**Type.** `S1ControlSettings` in `com.envi.wispr.polish`: three enums `S1Styling`, `S1Structure`,
+`S1Context` with a `token` property that is the wire string, a data class holding one of each,
+`DEFAULT` = (semiFormal, lists, general), and `controlLine()` returning the bracketed line. This is the
 one place the line is composed; `S1PromptBuilder.buildUserPrompt(rawText, control)` prepends
 `control.controlLine()`.
 
@@ -227,21 +227,21 @@ one place the line is composed; `S1PromptBuilder.buildUserPrompt(rawText, contro
 default for null or unknown. The tag byte and every other variant are untouched, so the wire is
 append-only within the variant.
 
-**Persistence.** Three keys in the provider-configuration preferences, `s1_styling` (proposed), `s1_structure` (proposed) and
-`s1_context` (proposed), storing the enum `name`. `decodePolicy` reads them from the same `values` map it already
-decodes mode from. A new `setS1Control` (proposed) writes all three in one `commit()`.
+**Persistence.** Three keys in the provider-configuration preferences, `s1_styling`, `s1_structure` and
+`s1_context`, storing the enum `name`. `decodePolicy` reads them from the same `values` map it already
+decodes mode from. A new `setS1Control` writes all three in one `commit()`.
 
-**Screen.** `ProviderSettingsUiState` gains `s1Control` (proposed) populated by
+**Screen.** `ProviderSettingsUiState` gains `s1Control` populated by
 `refreshProviderSettings`. `PolishScreen`'s `RungOne.THIS_PHONE` branch gains a card after `S1Card`:
 eyebrow "WRITING STYLE", the Mac intro sentence, then three rows, each a label, a wrapping
 `FlowRow` (external, Compose foundation, BOM 2026.02.01) of `FilterChip`s (one per enum member,
 selected = current value), and the Mac helper sentence. The Dictionary precedent (`DictionaryScreen.kt:655`)
 uses a plain `Row`; the wrap is this card's own, needed for four Tone chips at phone width. A tap calls
-`onSetS1Control` (proposed) with the changed copy through the tab's existing write tracking
+`onSetS1Control` with the changed copy through the tab's existing write tracking
 (`PolishScreen.kt:106-160`): `start(WriteKind.S1_CONTROL) { onSetS1Control(next) }` records the saveable
 `target` and `targetKindName`, the chips are disabled while `saving` is true, completion is observed
 through `settings.writeSequence` exactly as a mode tap is, and a failure's `settings.error` is shown
-under this card when the recorded kind is `S1_CONTROL` (proposed). No second tracking mechanism.
+under this card when the recorded kind is `S1_CONTROL`. No second tracking mechanism.
 
 **Alternatives rejected.**
 - Store in `AppPreferences` (DataStore): the policy snapshot is one `preferences.all` read of the provider preferences
@@ -336,28 +336,28 @@ Staleness: not present in this change (the snapshot is re-read at every session 
 ## 10. File-by-file changes
 
 - `app/src/main/java/com/envi/wispr/polish/S1ControlSettings.kt` (proposed, new): three enums with
-  `token` (proposed), `fromToken` (proposed), default on miss, the data class, `DEFAULT`, `controlLine()`. Label text lives in
+  `token`, `fromToken`, default on miss, the data class, `DEFAULT`, `controlLine()`. Label text lives in
   `PolishLadder` beside the other tab copy, not here (the engine process never needs labels).
 - `S1PromptBuilder.kt`: `buildUserPrompt(rawText, control)`; the literal becomes `control.controlLine()`.
   The comment about custom terms stays; the comment explaining why `lists` was chosen moves to the enum.
 - `PolishPolicy.kt`: `LocalS1` data class; parcel write/read as §3.
 - `PolishService.kt`: four sites as §6; `polishWithS1(rawText, control, cooperativeMs, record)`.
 - `PolishContext.kt`, `PolishReason.kt`, `PolishWatchdogBudget.kt`: `is` arms.
-- `ProviderConfigurationRepository.kt`: three keys, `setS1Control`, `decodeS1Control(values)` (proposed),
-  `decodePolicy` uses it. `loadS1Control()` (proposed) for the screen refresh.
+- `ProviderConfigurationRepository.kt`: three keys, `setS1Control`, `decodeS1Control(values)`,
+  `decodePolicy` uses it. `loadS1Control()` for the screen refresh.
 - `AppViewModel.kt`: `s1Control` on the state, `refreshProviderSettings` populates it, `setS1Control(control): Int`.
 - `PolishLadder.kt`: labels for each enum member (a total `when`, no `else`), the intro and three helper
   sentences.
-- `PolishScreen.kt`: `WriteKind.S1_CONTROL`, `S1ControlCard` (proposed) after `S1Card` inside
+- `PolishScreen.kt`: `WriteKind.S1_CONTROL`, `S1ControlCard` after `S1Card` inside
   `RungOne.THIS_PHONE`, `onSetS1Control` parameter.
 - `AppShell.kt`: wire the callback.
 - Tests: §11.
 
 ## 11. Testing
 
-1. **Class.** `S1ControlSettingsTest` (proposed) (product outcome: the line bytes for every member; when it fails the
+1. **Class.** `S1ControlSettingsTest` (product outcome: the line bytes for every member; when it fails the
    user's pick is not what reaches the model). `PolishPolicyTest` additions (product outcome: decode of
-   absent, valid and unknown keys). `PolishPolicyParcelTest` (proposed) (androidTest; harness contract on the parcel:
+   absent, valid and unknown keys). `PolishPolicyParcelTest` (androidTest; harness contract on the parcel:
    when it fails the engine polishes with the wrong tone). `S1PromptBuilderTest` update (drift guard on the
    exact prompt bytes for the default, proving the untouched-install promise). `PolishLadderTest` (drift
    guard: every enum member has a label and no user string contains a dash).
@@ -399,13 +399,13 @@ Staleness: not present in this change (the snapshot is re-read at every session 
 
 ## 13. Ship criteria specific to THIS change
 
-- [ ] Three pickers appear under This phone on the AI Polish tab and nowhere else.
+- [x] Three pickers appear under This phone on the AI Polish tab and nowhere else.
 - [ ] With every pick at default, the `:polish` log shows the exact line the app sent before this change.
-- [ ] Structure prose: "buy milk, buy eggs, buy bread" lands in Keep as one sentence. Structure lists:
+- [x] Structure prose: "buy milk, buy eggs, buy bread" lands in Keep as one sentence. Structure lists:
       the same lands as bullets.
-- [ ] Context email: a dictated greeting and sign-off land on their own lines in Gmail.
+- [x] Context email: a dictated greeting and sign-off land on their own lines in Gmail.
 - [ ] A pick changed during a recording does not affect that recording.
-- [ ] Founder phone pass on the Play internal build.
+- [x] Founder phone pass on the Play internal build (126, approved 2026-09-15). The log-line check and the mid-recording freeze were not observed on the phone by this session; the freeze is the #69 snapshot shape and the parcel test covers transport.
 
 ## 14. Open questions
 
@@ -425,4 +425,4 @@ catalog `s1-mini-polish`, `writing-style-presets`, `PAR-065`.
 - [x] §2.5 grounded in real code before §3 was written
 - [x] §4-9 answered
 - [x] Lane declared and matching detection
-- [ ] Self-reviewed to all-clear before any reviewer saw it
+- [x] Self-reviewed to all-clear before any reviewer saw it

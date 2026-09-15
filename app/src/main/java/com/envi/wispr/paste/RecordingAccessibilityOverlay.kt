@@ -625,7 +625,9 @@ internal class RecordingAccessibilityOverlay(
         container.addView(acceptButton, LinearLayout.LayoutParams(dp(40), dp(40)))
         // The hold pill's thumb end: the pill is anchored to the bubble, so this slot plus the end
         // padding is exactly the bubble's footprint, under the finger that is holding it.
-        container.addView(recordMark, LinearLayout.LayoutParams(dp(RECORD_MARK_DP), dp(40)))
+        // As tall as the compact rail, so the compact pill's 16 dp paddings still make exactly
+        // PILL_HEIGHT_DP: a 40 dp child would grow the hold pill to 72 dp (Codex review, 2026-09-15).
+        container.addView(recordMark, LinearLayout.LayoutParams(dp(RECORD_MARK_DP), dp(COMPACT_RAIL_HEIGHT_DP)))
         recordMark.visibility = View.GONE
         pill = container
         applyLook()

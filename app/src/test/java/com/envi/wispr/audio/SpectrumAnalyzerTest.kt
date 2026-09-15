@@ -110,12 +110,13 @@ class SpectrumAnalyzerTest {
         // Build 130 on the founder's phone: the outer bars never lit on speech, and the three middle
         // bars lit in silence. The fix is the standard pair: pre-emphasis lifts the high bands so
         // consonants reach them, and a per-band floor learns the room so hiss and rumble go dark.
-        // A phone's hiss is there from the first chunk, so the floor starts on it and it is dark at once.
+        // A phone's hiss, about -55 dBFS broadband, is there from the first chunk: under the prior floor
+        // in every band, so it is dark at once and stays dark.
         val analyzer = SpectrumAnalyzer()
         var position = 0L
         val early = FloatArray(SpectrumAnalyzer.BAND_COUNT)
         repeat(25) {
-            analyzer.analyze(hiss(0.02), 1024, position, bands); position += 1024
+            analyzer.analyze(hiss(0.0018), 1024, position, bands); position += 1024
             if (it >= 5) for (b in bands.indices) early[b] += bands[b] / 20
         }
         for (b in early.indices) assertTrue("band $b dark on the room's own hiss, got ${early[b]}", early[b] < 0.1f)
@@ -138,6 +139,15 @@ class SpectrumAnalyzerTest {
             if (it >= SpectrumAnalyzer.FLOOR_WINDOW_CHUNKS + 5) for (b in bands.indices) late[b] += bands[b] / 15
         }
         for (b in late.indices) assertTrue("band $b dark once the fan is learned, got ${late[b]}", late[b] < 0.1f)
+    }
+
+    @Test
+    fun aWordOnTheVeryFirstChunkShowsAtOnce() {
+        // Capture does not promise a quiet chunk before the first word (Codex review, 2026-09-15). The
+        // floor starts from a typical quiet room, not from whatever the first chunk holds.
+        val analyzer = SpectrumAnalyzer()
+        val picture = steady(analyzer, 300f, amplitude = 0.05f, position = 0L)
+        assertTrue("the first word lights its band (${picture[bandOf(300f)]})", picture[bandOf(300f)] > 0.3f)
     }
 
     @Test

@@ -77,10 +77,16 @@ class SpectrumAnalyzer {
     /** Pre-emphasis per band, in dB: +6 per octave above [PRE_EMPHASIS_FROM_HZ]. */
     private val preEmphasisDb = FloatArray(BAND_COUNT)
 
-    /** Each band's last [FLOOR_WINDOW_CHUNKS] readings in dB (after pre-emphasis), a ring per band. */
-    private val recent = Array(BAND_COUNT) { FloatArray(FLOOR_WINDOW_CHUNKS) }
+    /**
+     * Each band's last [FLOOR_WINDOW_CHUNKS] readings in dB (after pre-emphasis), a ring per band.
+     *
+     * Seeded with [PRIOR_FLOOR_DB], a typical quiet room, so a take that opens on a word is not judged
+     * against that word: the first chunk would otherwise be the whole window and set the floor at the
+     * voice itself, and the bar would stay dark until the first gap between words (Codex review,
+     * 2026-09-15). The seed expires as real readings replace it, within the window.
+     */
+    private val recent = Array(BAND_COUNT) { FloatArray(FLOOR_WINDOW_CHUNKS) { PRIOR_FLOOR_DB } }
     private var recentIndex = 0
-    private var recentCount = 0
 
 
     init {
@@ -99,8 +105,8 @@ class SpectrumAnalyzer {
     /** Forget every sample and every floor. The next chunk is analysed against silence. */
     fun reset() {
         history.fill(0f)
+        for (ring in recent) ring.fill(PRIOR_FLOOR_DB)
         recentIndex = 0
-        recentCount = 0
         expectedPosition = NO_POSITION
     }
 
@@ -158,11 +164,10 @@ class SpectrumAnalyzer {
             // ordinary hiss reads as a voice.
             recent[band][recentIndex] = db
             var floor = db
-            for (i in 0 until recentCount) floor = minOf(floor, recent[band][i])
+            for (value in recent[band]) floor = minOf(floor, value)
             out[band] = display(db, maxOf(floor, QUIET_DBFS))
         }
         recentIndex = (recentIndex + 1) % FLOOR_WINDOW_CHUNKS
-        if (recentCount < FLOOR_WINDOW_CHUNKS) recentCount++
     }
 
     /** In-place radix-2 FFT of [re] and [im]. */
@@ -226,6 +231,13 @@ class SpectrumAnalyzer {
 
         /** Above the floor by less than this a band is dark: the hiss's own wobble never shows. */
         const val FLOOR_MARGIN_DB = 8f
+
+        /**
+         * A typical quiet room per bin after pre-emphasis, the floor a take starts from. Real readings
+         * replace it within the window. A phone's own hiss sits under it and stays dark; a word that
+         * begins on the first chunk sits well above it and shows at once.
+         */
+        const val PRIOR_FLOOR_DB = QUIET_DBFS + 12f
 
         /** From dark to full: the dynamic range a voice is drawn across. */
         const val RANGE_DB = 30f

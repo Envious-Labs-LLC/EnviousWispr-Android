@@ -235,7 +235,7 @@ private fun DemoPill(look: BubbleLook, held: Boolean, seconds: Int, t: Float, mo
 /** The hold pill's recording mark: a ring with a dot, in the thumb's slot, as `RecordMarkView` draws it. */
 @Composable
 private fun DemoRecordMark() {
-    Canvas(Modifier.size(RecordingAccessibilityOverlay.RECORD_MARK_DP.dp, 40.dp)) {
+    Canvas(Modifier.size(RecordingAccessibilityOverlay.RECORD_MARK_DP.dp, RecordingAccessibilityOverlay.COMPACT_RAIL_HEIGHT_DP.dp)) {
         val ink = argb(BrandPalette.TEXT)
         val c = Offset(size.width / 2, size.height / 2)
         drawCircle(ink, RecordMarkView.RING_RADIUS_DP.dp.toPx(), c, style = Stroke(RecordMarkView.RING_STROKE_DP.dp.toPx()))

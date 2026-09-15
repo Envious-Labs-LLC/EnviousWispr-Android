@@ -45,7 +45,7 @@ class SpectrumAnalyzer {
         for (i in table.indices) table[i] = Integer.reverse(i) ushr (32 - bits)
     }
 
-    /** Amplitude normalisation: a full-scale sine reads 1.0 in its bin. */
+    /** Amplitude normalisation: a full-scale sine reads 1.0 in its bin, before the per-bin mean of its band. */
     private val amplitudeScale = 2f / window.sum()
 
     private val bandLowBin = IntArray(BAND_COUNT)
@@ -116,7 +116,13 @@ class SpectrumAnalyzer {
             for (bin in bandLowBin[band]..bandHighBin[band]) {
                 energy += re[bin] * re[bin] + im[bin] * im[bin]
             }
-            val amplitude = sqrt(energy) * amplitudeScale
+            // Mean power per bin, not the band's total. The top band is 128 bins wide and the first is
+            // five, so summing made the edges read 14 dB louder than the centre on the same flat hiss:
+            // the founder's first phone look at build 127 (2026-09-14) was "the two side bars are
+            // spiking a good amount". Per bin, a flat noise reads the same in every band, and an "s",
+            // which is broadband where it lives, still lifts the edges.
+            val bins = bandHighBin[band] - bandLowBin[band] + 1
+            val amplitude = sqrt(energy / bins) * amplitudeScale
             out[band] = display(amplitude, bandGainDb[band])
         }
     }
@@ -179,8 +185,12 @@ class SpectrumAnalyzer {
         /** At or above this a band is full. A raised voice reaches it in its strongest band (first set 2026-09-14). */
         const val LOUD_DBFS = -18f
 
-        /** Speech falls off with pitch; this lifts the high bands so an "s" shows at the edges (first set 2026-09-14). */
-        const val TILT_DB_PER_OCTAVE = 3f
+        /**
+         * Speech falls off with pitch; this lifts the high bands so an "s" shows at the edges. Gentle on
+         * purpose: it also lifts the microphone's own hiss, and 3 dB per octave (build 127) was part of
+         * why the edge bars spiked on the founder's phone (2026-09-14).
+         */
+        const val TILT_DB_PER_OCTAVE = 1.5f
         const val TILT_FROM_HZ = 300f
 
         private const val NO_POSITION = Long.MIN_VALUE

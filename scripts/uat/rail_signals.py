@@ -135,7 +135,7 @@ SIGNALS = {
     "tone1k": ("1 kHz", lambda: tone(1000, 2.0)),
     "tone5k": ("5 kHz, the sibilant band", lambda: tone(5000, 2.0)),
     "sweep": ("100 Hz to 6 kHz in three seconds", lambda: sweep(100, 6000, 3.0)),
-    "noise": ("flat hiss", lambda: noise(2.0)),
+    "noise": ("flat hiss that starts mid-take, four seconds", lambda: noise(4.0)),
     "bursts": ("300 Hz switched on and off four times a second", lambda: bursts(300, 2.5)),
 }
 
@@ -388,16 +388,25 @@ def judge(name, series, rest, peak):
         else:
             lines.append("ISSUE: too few active frames to read the sweep")
     elif name == "noise":
-        spreads = [max(h) - min(h) for h in active]
-        if spreads:
-            mean_spread = sum(spreads) / len(spreads)
-            lines.append(f"  mean bar spread on flat hiss {mean_spread:.2f} of the rail")
-            edges_over_centre = sum(1 for h in active if max(h[0], h[-1]) > h[TAP_PILL_BARS // 2] + 0.3)
-            lines.append(f"  frames with an edge bar a third above the centre: {edges_over_centre}")
-            ok = mean_spread < 0.45 and edges_over_centre <= 0.1 * len(active)
-            lines.append("PASS: flat hiss reads roughly flat" if ok else "ISSUE: flat hiss is lopsided")
-        else:
+        # A steady sound that starts mid-take: the bars light, then each band's floor climbs to it and
+        # the rail goes dark within about three seconds (the analyser's adaptive floor). A phone's own
+        # hiss is there from the first chunk and never lights at all; a fan switched on is this case.
+        lit = [i for i, h in enumerate(drawn) if max(h) > 0.25]
+        if not lit:
             lines.append("ISSUE: the hiss did not light the rail at all")
+        else:
+            # The first lit stretch is the hiss arriving; its end is the floor having learned it. The
+            # hiss ending, later, is its own small event (the room's own source returns) and not this.
+            first_lit = lit[0]
+            end = first_lit
+            while end + 1 < len(drawn) and max(drawn[end + 1]) > 0.25:
+                end += 1
+            span = (end - first_lit + 1) / FPS
+            dark_after = sum(1 for h in drawn[end + 1:end + 1 + FPS] if max(h) <= 0.25)
+            lines.append(f"  hiss lit the rail for {span:.1f} s from its start, then {dark_after} of the next {FPS} frames were dark")
+            # The floor's window is 1.5 s of chunks; allow the view's own settle on top.
+            ok = span < 2.2 and dark_after >= FPS * 0.8
+            lines.append("PASS: a steady hiss is learned and goes dark" if ok else "ISSUE: the hiss stayed lit")
     elif name == "bursts":
         # Four bursts a second, each 125 ms on: the centre-band bars should rise and fall with them.
         # A beat is a peak above 0.85 followed by a dip below 0.6 before the next peak. The window and

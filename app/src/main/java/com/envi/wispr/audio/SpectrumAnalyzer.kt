@@ -3,6 +3,7 @@ package com.envi.wispr.audio
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.log10
+import kotlin.math.log2
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -26,11 +27,28 @@ import kotlin.math.sqrt
  * short silence.
  *
  * The scale is a DISPLAY choice and nothing downstream reads it: transcription, the silence detector
- * and the stored audio never see these numbers. The two dB constants were first set on 2026-09-14
- * against the emulator and are tuned on the founder's phone pass. Every band is scaled the same way,
- * per bin: a high-band lift was tried (3, then 1.5 dB per octave) and both made the microphone's own
- * hiss spike the edge bars, on the founder's phone (build 127) and in the emulator's flat-hiss run
- * (2026-09-15). An "s" is loud enough where it lives to show without one.
+ * and the stored audio never see these numbers. It is the standard shape of a speech visualiser, and
+ * every piece of it answers a phone finding:
+ *
+ * 1. **Log-spaced bands, mean power per bin.** A band total made wide bands read louder on the same
+ *    hiss (build 127: the edge bars spiked).
+ * 2. **Pre-emphasis, +6 dB per octave above [PRE_EMPHASIS_FROM_HZ].** Speech falls off with pitch at
+ *    about that rate, so without it the high bands never leave the floor: on build 130 only the middle
+ *    five bars ever lit and the outer bars never did (founder 2026-09-15). This is the speech-processing
+ *    pre-emphasis filter, applied per band.
+ * 3. **An adaptive noise floor per band.** The lift in step 2 lifts the microphone's hiss too, which is
+ *    why it was removed once. Instead of removing it, each band's floor is the QUIETEST reading of its
+ *    last [FLOOR_WINDOW_CHUNKS] chunks (about 1.5 s), never below [QUIET_DBFS]: a steady hiss, or a
+ *    phone's own gain creeping up in silence, becomes the floor within that window, a pause between
+ *    words shows the room at once, and only sound ABOVE the floor lights the bar. In a quiet room the
+ *    three middle bars that lit on build 130 go dark for the same reason. A rate-limited floor was
+ *    tried first and lagged the emulator's own source ramping up after the microphone opened, which lit
+ *    every bar for a second at the start of a take (2026-09-15); a windowed minimum follows a ramp as
+ *    fast as the window.
+ * 4. **A fixed range above the floor.** [FLOOR_MARGIN_DB] above the floor is dark, [RANGE_DB] above that
+ *    is full, so a normal voice fills the rail whatever the phone's gain.
+ *
+ * The per-take state (the floor) lives on the instance, which the capture service creates per take.
  */
 class SpectrumAnalyzer {
 
@@ -56,6 +74,21 @@ class SpectrumAnalyzer {
     /** The byte position the next chunk should carry, or [NO_POSITION] before the first chunk. */
     private var expectedPosition = NO_POSITION
 
+    /** Pre-emphasis per band, in dB: +6 per octave above [PRE_EMPHASIS_FROM_HZ]. */
+    private val preEmphasisDb = FloatArray(BAND_COUNT)
+
+    /**
+     * Each band's last [FLOOR_WINDOW_CHUNKS] readings in dB (after pre-emphasis), a ring per band.
+     *
+     * Seeded with [PRIOR_FLOOR_DB], a typical quiet room, so a take that opens on a word is not judged
+     * against that word: the first chunk would otherwise be the whole window and set the floor at the
+     * voice itself, and the bar would stay dark until the first gap between words (Codex review,
+     * 2026-09-15). The seed expires as real readings replace it, within the window.
+     */
+    private val recent = Array(BAND_COUNT) { FloatArray(FLOOR_WINDOW_CHUNKS) { PRIOR_FLOOR_DB } }
+    private var recentIndex = 0
+
+
     init {
         for (band in 0 until BAND_COUNT) {
             val low = bandEdgeHz(band)
@@ -64,12 +97,16 @@ class SpectrumAnalyzer {
             val highBin = maxOf(lowBin, Math.round(high / BIN_HZ) - 1)
             bandLowBin[band] = lowBin.coerceIn(1, FFT_SIZE / 2 - 1)
             bandHighBin[band] = highBin.coerceIn(bandLowBin[band], FFT_SIZE / 2 - 1)
+            val centre = sqrt(low * high)
+            preEmphasisDb[band] = if (centre > PRE_EMPHASIS_FROM_HZ) PRE_EMPHASIS_DB_PER_OCTAVE * log2(centre / PRE_EMPHASIS_FROM_HZ) else 0f
         }
     }
 
-    /** Forget every sample. The next chunk is analysed against silence. */
+    /** Forget every sample and every floor. The next chunk is analysed against silence. */
     fun reset() {
         history.fill(0f)
+        for (ring in recent) ring.fill(PRIOR_FLOOR_DB)
+        recentIndex = 0
         expectedPosition = NO_POSITION
     }
 
@@ -120,8 +157,17 @@ class SpectrumAnalyzer {
             // which is broadband where it lives, still lifts the edges.
             val bins = bandHighBin[band] - bandLowBin[band] + 1
             val amplitude = sqrt(energy / bins) * amplitudeScale
-            out[band] = display(amplitude)
+            val db = decibels(amplitude) + preEmphasisDb[band]
+            // The floor is the quietest reading in the window, so a pause between words shows the room
+            // at once and a steady sound is learned within the window. Never below QUIET_DBFS: digital
+            // silence (a muted or switching microphone) must not set a floor so low that the next
+            // ordinary hiss reads as a voice.
+            recent[band][recentIndex] = db
+            var floor = db
+            for (value in recent[band]) floor = minOf(floor, value)
+            out[band] = display(db, maxOf(floor, QUIET_DBFS))
         }
+        recentIndex = (recentIndex + 1) % FLOOR_WINDOW_CHUNKS
     }
 
     /** In-place radix-2 FFT of [re] and [im]. */
@@ -176,11 +222,35 @@ class SpectrumAnalyzer {
         /** The highest band ends here: the sibilants live below it and the microphone's own hiss above. */
         const val HIGH_EDGE_HZ = 6_400f
 
-        /** At or below this a band is dark. A quiet room measures under it (first set 2026-09-14). */
+        /**
+         * The lowest a band's floor can be, per bin after pre-emphasis: readings below it are a quiet
+         * room or digital silence, and a floor that followed them down would make the next ordinary hiss
+         * read as a voice (first set 2026-09-14).
+         */
         const val QUIET_DBFS = -62f
 
-        /** At or above this a band is full. A raised voice reaches it in its strongest band (first set 2026-09-14). */
-        const val LOUD_DBFS = -18f
+        /** Above the floor by less than this a band is dark: the hiss's own wobble never shows. */
+        const val FLOOR_MARGIN_DB = 8f
+
+        /**
+         * A typical quiet room per bin after pre-emphasis, the floor a take starts from. Real readings
+         * replace it within the window. A phone's own hiss sits under it and stays dark; a word that
+         * begins on the first chunk sits well above it and shows at once.
+         */
+        const val PRIOR_FLOOR_DB = QUIET_DBFS + 12f
+
+        /** From dark to full: the dynamic range a voice is drawn across. */
+        const val RANGE_DB = 30f
+
+        /**
+         * How many chunks the floor looks back over: 48 of 32 ms is about 1.5 s, longer than any gap
+         * between words in a sentence, shorter than a sound that has become part of the room.
+         */
+        const val FLOOR_WINDOW_CHUNKS = 48
+
+        /** Speech's own fall-off with pitch, undone so the outer bars can light on consonants. */
+        const val PRE_EMPHASIS_DB_PER_OCTAVE = 6f
+        const val PRE_EMPHASIS_FROM_HZ = 250f
 
         private const val NO_POSITION = Long.MIN_VALUE
 
@@ -201,16 +271,23 @@ class SpectrumAnalyzer {
             else -> VOICE_BAND_TOP_HZ * (HIGH_EDGE_HZ / VOICE_BAND_TOP_HZ).toDouble().pow((band - 1).toDouble() / (BAND_COUNT - 1)).toFloat()
         }
 
+        /** One band amplitude (1.0 is a full-scale sine) in dB; silence and anything not finite read as very quiet. */
+        fun decibels(amplitude: Float): Float =
+            if (!amplitude.isFinite() || amplitude <= 0f) SILENT_DB else 20f * log10(amplitude)
+
         /**
-         * Map one band amplitude (1.0 is a full-scale sine) to the fraction of the bar that should be
-         * lit. Pure, so it can be asserted without audio. Anything not finite reads as silence: a meter
-         * that jumps to full when the arithmetic misbehaves is worse than one that stops.
+         * Map one band's level in dB against its floor to the fraction of the bar that should be lit:
+         * dark up to [FLOOR_MARGIN_DB] above the floor, full [RANGE_DB] above that. Pure, so it can be
+         * asserted without audio. Anything not finite reads as silence: a meter that jumps to full when
+         * the arithmetic misbehaves is worse than one that stops.
          */
-        fun display(amplitude: Float): Float {
-            if (!amplitude.isFinite() || amplitude <= 0f) return 0f
-            val dbfs = 20f * log10(amplitude)
-            val level = (dbfs - QUIET_DBFS) / (LOUD_DBFS - QUIET_DBFS)
+        fun display(db: Float, floor: Float): Float {
+            if (!db.isFinite() || !floor.isFinite()) return 0f
+            val level = (db - floor - FLOOR_MARGIN_DB) / RANGE_DB
             return if (level.isFinite()) level.coerceIn(0f, 1f) else 0f
         }
+
+        /** Well under any floor: what a band reads with no energy at all. */
+        private const val SILENT_DB = -160f
     }
 }

@@ -139,9 +139,11 @@ class RecorderBrandTest {
         // mark and LISTENING word were dropped by the founder on 2026-09-13 (build 114 phone pass): the
         // lips are on the bubble already, and the bar is smaller without them.
         val body = overlay.substringAfter("private fun buildPill()").substringBefore("private fun pillBackground()")
-        assertFalse("the pill carries no mark", body.contains("mark,"))
+        assertFalse("the pill carries no lips mark", body.contains("BrandMarkView("))
         assertFalse("the pill carries no state label", body.contains("stateLabel"))
-        val order = listOf("timer,", "meter,", "cancelButton,", "acceptButton,")
+        // The recording mark is the hold pill's thumb-end slot (founder 2026-09-15), last in the row and
+        // hidden on the tap pill.
+        val order = listOf("timer,", "meter,", "cancelButton,", "acceptButton,", "recordMark,")
             .map { it to body.indexOf(it) }
         order.forEach { (piece, at) -> assertTrue("$piece is not in the pill", at >= 0) }
         assertEquals(

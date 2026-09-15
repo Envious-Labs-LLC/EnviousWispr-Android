@@ -2,6 +2,7 @@ package com.envi.wispr.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.envi.wispr.audio.SpectrumAnalyzer
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -87,14 +88,15 @@ class RecordingOverlayStateTest {
     }
 
     @Test
-    fun aMicrophoneLevelPreparedBeforeAStopCannotBringTheRecorderBack() {
-        // The defect this exists for: the level is published about ten times a second, so a stop lands
-        // in the middle of one. If a level decided before the stop can be committed after it, the
-        // recorder reappears over whatever app the user is now in, with the take already over and
+    fun aMicrophonePicturePreparedBeforeAStopCannotBringTheRecorderBack() {
+        // The defect this exists for: the picture is published about thirty times a second, so a stop
+        // lands in the middle of one. If a picture decided before the stop can be committed after it,
+        // the recorder reappears over whatever app the user is now in, with the take already over and
         // nothing left running to hide it again.
         attachAndWaitForFirstDelivery()
 
         expect("the recorder to appear", { it.visible }) { RecordingOverlayState.show() }
+        val serial = RecordingOverlayState.snapshots.value.takeSerial
 
         val racers = 8
         val ready = CountDownLatch(racers)
@@ -103,8 +105,8 @@ class RecordingOverlayStateTest {
             Thread({
                 ready.countDown()
                 go.await()
-                repeat(60) { RecordingOverlayState.updateLevel(((index + it) % 32) / 32f) }
-            }, "LevelRacer$index")
+                repeat(60) { RecordingOverlayState.updateBands(serial, FloatArray(SpectrumAnalyzer.BAND_COUNT) { band -> ((index + it + band) % 32) / 32f }) }
+            }, "PictureRacer$index")
         }
         threads.forEach { it.start() }
         assertTrue("racers did not start", ready.await(5, TimeUnit.SECONDS))
@@ -118,16 +120,39 @@ class RecordingOverlayStateTest {
 
         drainMainThread()
         assertFalse(
-            "a level published across the stop reopened the recorder. Received: $received",
+            "a picture published across the stop reopened the recorder. Received: $received",
             received.last().visible,
         )
 
         // And one arriving strictly after the stop must be refused as well.
-        RecordingOverlayState.updateLevel(0.5f)
+        RecordingOverlayState.updateBands(serial, FloatArray(SpectrumAnalyzer.BAND_COUNT) { 0.5f })
         drainMainThread()
         assertFalse(
-            "a level published after the stop reopened the recorder. Received: $received",
+            "a picture published after the stop reopened the recorder. Received: $received",
             received.last().visible,
         )
+    }
+
+    @Test
+    fun aPictureFromThePreviousTakeCannotPaintTheNextOne() {
+        // A reading blocked in the audio process during take N can return during take N+1. It carries
+        // N's serial, and the snapshot's serial is N+1's, so the locked change refuses it whole.
+        attachAndWaitForFirstDelivery()
+        expect("the first take to appear", { it.visible }) { RecordingOverlayState.show() }
+        val stale = RecordingOverlayState.snapshots.value.takeSerial
+        expect("the first take to end", { !it.visible }) { RecordingOverlayState.hide() }
+        expect("the second take to appear", { it.visible }) { RecordingOverlayState.show() }
+        val before = RecordingOverlayState.snapshots.value
+        assertTrue("show() must stamp a new serial", before.takeSerial != stale)
+
+        RecordingOverlayState.updateBands(stale, FloatArray(SpectrumAnalyzer.BAND_COUNT) { 1f })
+        drainMainThread()
+        val after = RecordingOverlayState.snapshots.value
+        assertTrue("a stale picture must change nothing", after === before)
+
+        RecordingOverlayState.updateBands(before.takeSerial, FloatArray(SpectrumAnalyzer.BAND_COUNT) { 1f })
+        drainMainThread()
+        assertTrue("a current picture lands", RecordingOverlayState.snapshots.value.bands.all { it == 1f })
+        RecordingOverlayState.hide()
     }
 }

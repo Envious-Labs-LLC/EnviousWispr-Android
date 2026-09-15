@@ -27,23 +27,36 @@ internal class BlockRing(
     private val slots = Array(capacity) { ByteArray(blockBytes) }
     private val lengths = IntArray(capacity)
 
+    /**
+     * One tag per slot, carried beside the bytes and never interpreted here. The spectrum analyser
+     * reads it as the block's position in the take, so a block the ring REFUSED shows up as a jump in
+     * the positions of the blocks around it; a full ring could otherwise drop audio silently and the
+     * consumer would join samples that were never adjacent.
+     */
+    private val tags = LongArray(capacity)
+
+    /** The tag of the block the last successful [poll] copied out. Consumer side only. */
+    var lastPolledTag: Long = 0L
+        private set
+
     private val writeIndex = AtomicLong(0)
     private val readIndex = AtomicLong(0)
 
     val size: Int get() = (writeIndex.get() - readIndex.get()).toInt()
 
     /**
-     * Producer side. Copies one block in.
+     * Producer side. Copies one block in, with its [tag].
      *
      * @return false when the ring is full. The producer must carry on regardless.
      */
-    fun offer(source: ByteArray, length: Int): Boolean {
+    fun offer(source: ByteArray, length: Int, tag: Long): Boolean {
         require(length in 0..blockBytes) { "a block does not exceed its slot" }
         val write = writeIndex.get()
         if (write - readIndex.get() >= capacity) return false
         val slot = (write % capacity).toInt()
         System.arraycopy(source, 0, slots[slot], 0, length)
         lengths[slot] = length
+        tags[slot] = tag
         // Published last: the consumer only sees the index move after the bytes are in place.
         writeIndex.set(write + 1)
         return true
@@ -60,7 +73,8 @@ internal class BlockRing(
         val slot = (read % capacity).toInt()
         val length = lengths[slot]
         System.arraycopy(slots[slot], 0, destination, 0, length)
-        // Released last: the producer only reuses this slot after the bytes are out.
+        lastPolledTag = tags[slot]
+        // Released last: the producer only reuses this slot after the bytes and the tag are out.
         readIndex.set(read + 1)
         return length
     }

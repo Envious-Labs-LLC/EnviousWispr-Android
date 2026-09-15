@@ -181,7 +181,10 @@ class RecorderBrandTest {
     fun onlyTheRailMovesWithTheVoice() {
         // Two things moving with the voice read as two meters, and the user cannot then tell which one
         // is the signal.
-        assertTrue("the rail must take samples", meter.contains("fun pushSample(level: Float)"))
-        assertTrue("the mark must not", !mark.contains("fun pushSample") && !mark.contains("fun setLevel"))
+        assertTrue("the rail must take the picture", meter.contains("fun setBands(bands: FloatArray)"))
+        assertTrue(
+            "the mark must not",
+            !mark.contains("fun setBands") && !mark.contains("fun pushSample") && !mark.contains("fun setLevel"),
+        )
     }
 }

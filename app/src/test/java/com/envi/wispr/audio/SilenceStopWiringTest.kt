@@ -71,7 +71,7 @@ class SilenceStopWiringTest {
         // inside the gap could read as silence. The flag is what the feeder actually reads: setting a
         // status the feeder never checks would look like giving up while still processing stale blocks.
         val offer = bodyOf("private fun offerToDetector(")
-        assertTrue(offer.contains("if (!ring.offer(pending, READ_BLOCK_BYTES)) {"))
+        assertTrue(offer.contains("if (!ring.offer(pending, READ_BLOCK_BYTES, active.pendingPosition)) {"))
         assertTrue("the flag the feeder reads, not a status it ignores", offer.contains("abandonDetector(active)"))
         assertTrue("and it stops feeding immediately", offer.contains("if (active.detectorAbandoned.get()) return"))
 

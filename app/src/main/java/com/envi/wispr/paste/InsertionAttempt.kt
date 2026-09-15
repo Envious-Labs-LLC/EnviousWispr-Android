@@ -100,6 +100,15 @@ internal interface EditorWrites {
     /** A fresh raw read of the pinned node; `null` when it cannot be refreshed. */
     fun readTarget(): EditorRead?
 
+    /**
+     * Whether the input session captured for the commit is STILL the pipe's current live one. A commit
+     * accepts (`SENT`) even when the connection is discarded server-side just after the local liveness
+     * check, so a `SENT` return is not proof the words landed. Trusting an unconfirmed commit on expiry
+     * requires the session to still be live here: a dead session means focus left the field around the
+     * write and nothing can vouch for the delivery, so the clipboard fallback must stand.
+     */
+    fun commitSessionLive(): Boolean
+
     fun now(): Long
 }
 
@@ -124,7 +133,7 @@ internal class InsertionAttempt(
 ) {
     enum class Returned { NONE, TRUE, FALSE, VOID, THREW }
 
-    enum class Evidence { NONE, SURROUNDING, NODE, UNREADABLE }
+    enum class Evidence { NONE, SURROUNDING, NODE, UNREADABLE, COMMIT_TRUSTED }
 
     sealed interface Tick {
         /** Nothing terminal happened; tick again after the retry interval. */
@@ -161,6 +170,18 @@ internal class InsertionAttempt(
     var writeCount: Int = 0
         private set
 
+    // A read at any point returned a complete but wrong field (the editor changed or dropped the
+    // payload). It latches, because a single MISS is real evidence of failure that a later unreadable
+    // tick must not erase: a commit is trusted on expiry ONLY when every judgement was UNREADABLE.
+    private var sawMiss: Boolean = false
+
+    // The clock at the FIRST UNREADABLE judgement, or -1 before one. A structurally unreadable field
+    // (Chrome's web inputs) never becomes readable, so waiting the full deadline to trust a landed
+    // commit is a 2.5 s stall the user feels. Trust it after UNREADABLE_COMMIT_TRUST_MS of unbroken
+    // unreadability instead: long enough to let a merely-slow editor reveal a readable text or a MISS,
+    // short enough to feel instant.
+    private var unreadableSinceMs: Long = -1L
+
     /** Why the last judgement said no, in SHAPES only (`kotlin-patterns.md` RULE: no-content-in-diagnostics). */
     var lastMissShape: String? = null
         private set
@@ -171,7 +192,7 @@ internal class InsertionAttempt(
 
     fun tick(): Tick {
         attempts += 1
-        if (expired()) return Tick.Expired(written)
+        if (expired()) return expiredTick()
         verification?.let { return judge(it) }
         return prepareAndWrite()
     }
@@ -302,6 +323,7 @@ internal class InsertionAttempt(
         val byWindow = window?.let { AccessibilityInsertionRules.judgeWindow(record, it) }
         if (byWindow != null) {
             lastJudgement = byWindow
+            if (byWindow == Judgement.MISS) sawMiss = true
             evidence = Evidence.SURROUNDING
             lastMissShape = when (byWindow) {
                 Judgement.VERIFIED -> null
@@ -318,6 +340,8 @@ internal class InsertionAttempt(
         }
         val judgement = if (read == null) Judgement.UNREADABLE else AccessibilityInsertionRules.judge(record, read)
         lastJudgement = judgement
+        if (judgement == Judgement.MISS) sawMiss = true
+        if (judgement == Judgement.UNREADABLE && unreadableSinceMs < 0) unreadableSinceMs = editor.now()
         evidence = if (judgement == Judgement.UNREADABLE) Evidence.UNREADABLE else Evidence.NODE
         lastMissShape = when (judgement) {
             Judgement.VERIFIED -> null
@@ -332,9 +356,50 @@ internal class InsertionAttempt(
 
     private fun verdict(judgement: Judgement): Tick = when {
         judgement == Judgement.VERIFIED -> Tick.Verified(checkNotNull(route))
-        expired() -> Tick.Expired(written)
+        // Trust a landed-but-unreadable commit EARLY, once the field has been unreadable long enough
+        // that it is structural rather than slow: this is what removes the 2.5 s stall in Chrome, not
+        // the expiry path below.
+        commitLandedButUnreadable() && unreadableGraceElapsed() -> trustedCommit()
+        expired() -> expiredTick()
         else -> Tick.Waiting
     }
+
+    /** A landed-but-unreadable commit reported as delivered, tagged so the outcome line stays honest. */
+    private fun trustedCommit(): Tick {
+        evidence = Evidence.COMMIT_TRUSTED
+        return Tick.Verified(InsertionRoute.COMMIT)
+    }
+
+    private fun unreadableGraceElapsed(): Boolean =
+        unreadableSinceMs >= 0 && editor.now() - unreadableSinceMs >= UNREADABLE_COMMIT_TRUST_MS
+
+    /**
+     * The outcome when the deadline passes with no VERIFIED judgement. A commit sent cleanly through
+     * the input connection into a field that stayed UNREADABLE the whole time is trusted as delivered
+     * rather than dropped to the clipboard: `commitText` is how a keyboard types, the field took it,
+     * and the write happened exactly once (`tick` re-judges without re-writing), so there is no
+     * double-insert risk. Chrome's web inputs answer every read with null, and clipboard-with-a-warning
+     * on every such take is worse than trusting a write that landed. The trust is narrow on purpose,
+     * see [commitLandedButUnreadable]; every other expiry keeps the clipboard fallback. The early
+     * path in [verdict] normally trusts first; this covers a deadline reached before the grace.
+     */
+    private fun expiredTick(): Tick =
+        if (commitLandedButUnreadable()) trustedCommit() else Tick.Expired(written)
+
+    /**
+     * Trust a commit on expiry ONLY when it was the COMMIT route, the input connection accepted it
+     * cleanly (`VOID`, never `THREW` or a refusal), a write was sent, and every judgement across the
+     * attempt was UNREADABLE. A single MISS ([sawMiss]) is real evidence the editor changed or dropped
+     * the payload and always keeps the clipboard fallback; the PASTE route and a throw are never
+     * trusted.
+     */
+    private fun commitLandedButUnreadable(): Boolean =
+        route == InsertionRoute.COMMIT &&
+            returned == Returned.VOID &&
+            written &&
+            !sawMiss &&
+            lastJudgement == Judgement.UNREADABLE &&
+            editor.commitSessionLive()
 
     /**
      * The same window on both sides of the write: enough before the caret to hold the payload plus
@@ -376,5 +441,13 @@ internal class InsertionAttempt(
 
     private fun noteOverrun() {
         if (editor.now() > deadlineMs) overrun = true
+    }
+
+    companion object {
+        // How long a committed field must stay UNREADABLE before the commit is trusted as delivered.
+        // Well under the insertion deadline: a slow-but-readable editor answers a real read inside this
+        // window and verifies normally; a structurally unreadable one (Chrome) is trusted here instead
+        // of stalling to the deadline. Two to three 125 ms retries.
+        private const val UNREADABLE_COMMIT_TRUST_MS = 250L
     }
 }

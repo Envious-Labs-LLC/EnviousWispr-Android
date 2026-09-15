@@ -44,7 +44,7 @@ sealed class PolishContext {
 
         fun from(policy: PolishPolicy): PolishContext = when (policy) {
             PolishPolicy.Off -> Off
-            PolishPolicy.LocalS1 -> Local
+            is PolishPolicy.LocalS1 -> Local
             PolishPolicy.CloudUnconfigured -> CloudUnconfigured
             is PolishPolicy.Cloud -> Cloud(
                 policy.provider,

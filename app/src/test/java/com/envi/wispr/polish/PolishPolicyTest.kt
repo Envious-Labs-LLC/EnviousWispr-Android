@@ -18,13 +18,13 @@ class PolishPolicyTest {
 
     @Test fun everyModeWithNoSelectionMapsExactly() {
         assertEquals(PolishPolicy.Off, decode("mode" to PolishMode.OFF.name))
-        assertEquals(PolishPolicy.LocalS1, decode("mode" to PolishMode.OFFLINE_S1.name))
+        assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), decode("mode" to PolishMode.OFFLINE_S1.name))
         assertEquals(PolishPolicy.CloudUnconfigured, decode("mode" to PolishMode.PROVIDER.name))
     }
 
     @Test fun anAbsentOrUnreadableModeIsTheOfflineDefaultLikeLoadMode() {
-        assertEquals(PolishPolicy.LocalS1, decode())
-        assertEquals(PolishPolicy.LocalS1, decode("mode" to "garbage"))
+        assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), decode())
+        assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), decode("mode" to "garbage"))
         assertEquals(PolishMode.OFFLINE_S1, ProviderConfigurationRepository.decodeMode(mapOf("mode" to "garbage")))
     }
 
@@ -66,6 +66,31 @@ class PolishPolicyTest {
 
     @Test fun anUnreadableStoreFailsClosedToOff() {
         assertEquals(PolishPolicy.Off, ProviderConfigurationRepository.readPolicy { error("preference store unavailable") })
+    }
+
+    @Test fun storedS1PicksRideOnTheLocalPolicy() {
+        assertEquals(
+            PolishPolicy.LocalS1(S1ControlSettings(S1Styling.CASUAL, S1Structure.PROSE, S1Context.EMAIL)),
+            decode("mode" to PolishMode.OFFLINE_S1.name, "s1_styling" to "casual", "s1_structure" to "prose", "s1_context" to "email"),
+        )
+    }
+
+    @Test fun anAbsentOrUnknownS1PickReadsAsTheShippedDefaultPerAxis() {
+        assertEquals(
+            "one axis set, the other two absent",
+            PolishPolicy.LocalS1(S1ControlSettings(S1Styling.SEMI_FORMAL, S1Structure.PROSE, S1Context.GENERAL)),
+            decode("mode" to PolishMode.OFFLINE_S1.name, "s1_structure" to "prose"),
+        )
+        assertEquals(
+            "an unknown token is never sent to the model",
+            PolishPolicy.LocalS1(S1ControlSettings.DEFAULT),
+            decode("mode" to PolishMode.OFFLINE_S1.name, "s1_styling" to "shouty", "s1_structure" to "LISTS", "s1_context" to ""),
+        )
+    }
+
+    @Test fun s1PicksUnderACloudOrOffModeDoNotChangeThePolicy() {
+        assertEquals(PolishPolicy.Off, decode("mode" to PolishMode.OFF.name, "s1_styling" to "casual"))
+        assertEquals(PolishPolicy.CloudUnconfigured, decode("mode" to PolishMode.PROVIDER.name, "s1_styling" to "casual"))
     }
 
     @Test fun aSelectionUnderAnOffModeIsIgnored() {

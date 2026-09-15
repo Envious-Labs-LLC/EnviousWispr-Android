@@ -1007,6 +1007,8 @@ class PasteAccessibilityService : AccessibilityService() {
             return captured.takeIf { session.isLive(it) }
         }
 
+        override fun commitSessionLive(): Boolean = liveCommitSession() != null
+
         override fun stageClipboard(payload: String): Boolean {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             if (pending.clipboardOverwritten) {

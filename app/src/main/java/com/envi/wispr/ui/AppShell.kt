@@ -98,6 +98,7 @@ import com.envi.wispr.BuildConfig
 import com.envi.wispr.ui.theme.brandButtonColors
 import com.envi.wispr.about.ReleaseNotes
 import com.envi.wispr.polish.S1Config
+import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelDeliveryControlStore
 import com.envi.wispr.models.ModelManifest
@@ -211,6 +212,7 @@ internal fun EnviousWisprApp(
     onDynamicColorChanged: (Boolean) -> Unit,
     onBubbleLookChanged: (BubbleLook) -> Unit,
     onSetPolishMode: (PolishMode) -> Int,
+    onSetS1Control: (S1ControlSettings) -> Int,
     onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol, Int?) -> Int,
     onClearProviderSettings: (Provider) -> Int,
     providerDiscovery: ProviderDiscoveryUiState,
@@ -384,6 +386,7 @@ internal fun EnviousWisprApp(
                             s1State = polishS1State,
                             discovery = providerDiscovery,
                             onSetMode = onSetPolishMode,
+                            onSetS1Control = onSetS1Control,
                             onSave = { provider, model, apiKey, discoverySequence ->
                                 onSaveProviderSettings(provider, model, null, apiKey, SelfHostedProtocol.OPENAI_COMPATIBLE, discoverySequence)
                             },

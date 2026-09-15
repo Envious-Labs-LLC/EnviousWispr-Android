@@ -91,7 +91,7 @@ enum class PolishReason {
         fun resolve(policy: PolishPolicy, outcome: PipelineOutcome, attempt: PolishReason?): PolishReason = when (policy) {
             PolishPolicy.Off -> OFF
             PolishPolicy.CloudUnconfigured -> CLOUD_NOT_CONFIGURED
-            PolishPolicy.LocalS1, is PolishPolicy.Cloud -> when (outcome) {
+            is PolishPolicy.LocalS1, is PolishPolicy.Cloud -> when (outcome) {
                 PipelineOutcome.MODEL_ACCEPTED -> POLISHED
                 PipelineOutcome.CLEANUP_RECOVERED -> CLEANUP_RECOVERED
                 PipelineOutcome.EMPTY_AFTER_CLEANUP -> EMPTY_AFTER_CLEANUP

@@ -50,25 +50,25 @@ class PolishReasonTest {
     }
 
     @Test fun theTimeoutReasonsAreRecordedReasonsAndSurviveResolution() {
-        assertEquals(PolishReason.LOCAL_TIMEOUT, PolishReason.resolve(PolishPolicy.LocalS1, PipelineOutcome.MODEL_DECLINED, PolishReason.LOCAL_TIMEOUT))
+        assertEquals(PolishReason.LOCAL_TIMEOUT, PolishReason.resolve(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), PipelineOutcome.MODEL_DECLINED, PolishReason.LOCAL_TIMEOUT))
         assertTrue(PolishReason.entries.containsAll(listOf(PolishReason.LOCAL_TIMEOUT, PolishReason.WATCHDOG_TIMEOUT)))
     }
 
     @Test fun aRecordedAdapterReasonWinsOverThePipelineShape() {
         assertEquals(PolishReason.NO_API_KEY, PolishReason.resolve(cloud, PipelineOutcome.MODEL_DECLINED, PolishReason.NO_API_KEY))
-        assertEquals(PolishReason.LOCAL_NOT_READY, PolishReason.resolve(PolishPolicy.LocalS1, PipelineOutcome.MODEL_DECLINED, PolishReason.LOCAL_NOT_READY))
-        assertEquals(PolishReason.LOCAL_FAILED, PolishReason.resolve(PolishPolicy.LocalS1, PipelineOutcome.MODEL_DECLINED, PolishReason.LOCAL_FAILED))
+        assertEquals(PolishReason.LOCAL_NOT_READY, PolishReason.resolve(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), PipelineOutcome.MODEL_DECLINED, PolishReason.LOCAL_NOT_READY))
+        assertEquals(PolishReason.LOCAL_FAILED, PolishReason.resolve(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), PipelineOutcome.MODEL_DECLINED, PolishReason.LOCAL_FAILED))
     }
 
     @Test fun aDeclinedOrRejectedModelWithNothingRecordedIsAnOutputProblemNeverAnInferredCloudKind() {
         assertEquals(PolishReason.OUTPUT_REJECTED, PolishReason.resolve(cloud, PipelineOutcome.MODEL_DECLINED, null))
         assertEquals(PolishReason.OUTPUT_REJECTED, PolishReason.resolve(cloud, PipelineOutcome.MODEL_REJECTED, null))
-        assertEquals(PolishReason.OUTPUT_REJECTED, PolishReason.resolve(PolishPolicy.LocalS1, PipelineOutcome.MODEL_REJECTED, null))
+        assertEquals(PolishReason.OUTPUT_REJECTED, PolishReason.resolve(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), PipelineOutcome.MODEL_REJECTED, null))
     }
 
     @Test fun pipelineShapesBeforeTheModelKeepTheirOwnReasons() {
         assertEquals(PolishReason.POLISHED, PolishReason.resolve(cloud, PipelineOutcome.MODEL_ACCEPTED, null))
-        assertEquals(PolishReason.CLEANUP_RECOVERED, PolishReason.resolve(PolishPolicy.LocalS1, PipelineOutcome.CLEANUP_RECOVERED, null))
+        assertEquals(PolishReason.CLEANUP_RECOVERED, PolishReason.resolve(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), PipelineOutcome.CLEANUP_RECOVERED, null))
         assertEquals(PolishReason.EMPTY_AFTER_CLEANUP, PolishReason.resolve(cloud, PipelineOutcome.EMPTY_AFTER_CLEANUP, null))
         assertEquals(PolishReason.UNEXPECTED, PolishReason.resolve(cloud, PipelineOutcome.NO_MODEL, null))
     }

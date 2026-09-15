@@ -148,7 +148,7 @@ class PolishService : Service() {
                 return
             }
             val budget = localBudget()
-            val tracksLocal = effectivePolicy == PolishPolicy.LocalS1
+            val tracksLocal = effectivePolicy is PolishPolicy.LocalS1
             if (tracksLocal) activeLocalRequests.incrementAndGet()
             try {
                 executor.execute { work(entry, callback, requestId, raw, options, effectivePolicy, budget, tracksLocal) }
@@ -160,7 +160,7 @@ class PolishService : Service() {
         }
 
         override fun warmUpWithPolicy(policy: PolishPolicy?) {
-            if (policy == PolishPolicy.LocalS1) ensureModelLoaded()
+            if (policy is PolishPolicy.LocalS1) ensureModelLoaded()
         }
 
         override fun cancel(requestId: Long) {
@@ -185,7 +185,7 @@ class PolishService : Service() {
     ) {
         val started = SystemClock.elapsedRealtime()
         // Armed only for a local generation: the cloud client bounds itself and honours cancel.
-        val armed = if (effectivePolicy == PolishPolicy.LocalS1 && !poisoned.get()) {
+        val armed = if (effectivePolicy is PolishPolicy.LocalS1 && !poisoned.get()) {
             deadline.arm(budget.hardMs) { expireLocal(entry, callback, requestId, raw, options, started) }
         } else null
         // The count guards a WEDGED generation. It is released before a healthy delivery: the client may
@@ -343,12 +343,12 @@ class PolishService : Service() {
         val language = detectLanguage(raw)
         val pipeline = when (policy) {
             PolishPolicy.Off, PolishPolicy.CloudUnconfigured -> PolishPipeline.run(raw, options, language)
-            PolishPolicy.LocalS1 -> PolishPipeline.run(raw, options, language) { cleaned ->
+            is PolishPolicy.LocalS1 -> PolishPipeline.run(raw, options, language) { cleaned ->
                 if (!modelReady) {
                     attempt = PolishReason.LOCAL_NOT_READY
                     null
                 } else {
-                    polishWithS1(cleaned, budget.cooperativeMs) { reason -> attempt = reason }
+                    polishWithS1(cleaned, policy.control, budget.cooperativeMs) { reason -> attempt = reason }
                 }
             }
             is PolishPolicy.Cloud -> PolishPipeline.run(raw, options, language) { cleaned ->
@@ -455,12 +455,18 @@ class PolishService : Service() {
      * generation is [PolishReason.LOCAL_FAILED]; a blank or unsafe answer is
      * [PolishReason.OUTPUT_REJECTED].
      */
-    private fun polishWithS1(rawText: String, cooperativeMs: Long, record: (PolishReason) -> Unit): String? {
+    private fun polishWithS1(
+        rawText: String,
+        control: S1ControlSettings,
+        cooperativeMs: Long,
+        record: (PolishReason) -> Unit,
+    ): String? {
         debugStall()
+        DebugLogger.log(TAG, "S1 control line: ${control.controlLine()}")
         val output = try {
             val generated = s1Runtime.generate(
                 S1Config.SYSTEM_PROMPT,
-                S1PromptBuilder.buildUserPrompt(rawText),
+                S1PromptBuilder.buildUserPrompt(rawText, control),
                 S1PromptBuilder.maxOutputTokens(rawText),
                 cooperativeMs,
             )

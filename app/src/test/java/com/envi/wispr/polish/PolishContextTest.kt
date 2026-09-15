@@ -14,7 +14,7 @@ class PolishContextTest {
     @Test fun everyPolicyRoundTripsThroughItsToken() {
         val policies = listOf(
             PolishPolicy.Off to "off",
-            PolishPolicy.LocalS1 to "local",
+            PolishPolicy.LocalS1(S1ControlSettings.DEFAULT) to "local",
             PolishPolicy.CloudUnconfigured to "cloud-unconfigured",
             PolishPolicy.Cloud(Provider.GEMINI, "m", null, SelfHostedProtocol.OPENAI_COMPATIBLE) to "cloud:GEMINI",
             PolishPolicy.Cloud(Provider.SELF_HOSTED_POLISH, "m", "http://h:1", SelfHostedProtocol.OLLAMA) to "cloud:SELF_HOSTED_POLISH:ollama",

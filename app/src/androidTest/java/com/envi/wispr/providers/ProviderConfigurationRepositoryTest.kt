@@ -4,6 +4,10 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.envi.wispr.polish.PolishPolicy
+import com.envi.wispr.polish.S1Context
+import com.envi.wispr.polish.S1ControlSettings
+import com.envi.wispr.polish.S1Structure
+import com.envi.wispr.polish.S1Styling
 import java.util.concurrent.ConcurrentHashMap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -288,7 +292,7 @@ class ProviderConfigurationRepositoryTest {
      * unreadable-store branch is `readPolicy`, staged on the JVM in `PolishPolicyTest`.
      */
     @Test fun loadPolicyReadsTheStoredSnapshotWithoutTheKey() {
-        assertEquals(PolishPolicy.LocalS1, repository.loadPolicy())
+        assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), repository.loadPolicy())
 
         repository.setMode(PolishMode.OFF)
         assertEquals(PolishPolicy.Off, repository.loadPolicy())
@@ -303,7 +307,25 @@ class ProviderConfigurationRepositoryTest {
         )
 
         repository.clearSelection()
-        assertEquals(PolishPolicy.LocalS1, repository.loadPolicy())
+        assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), repository.loadPolicy())
+    }
+
+    /**
+     * Product Outcome (#152): when this fails, the tone the user picked is not the tone the next
+     * dictation polishes under. Also proves the picks survive a Cloud detour: `clearSelection` puts the
+     * mode back on This phone and must not touch the three S1 keys.
+     */
+    @Test fun s1PicksPersistAndRideOnTheLocalPolicy() {
+        val picked = S1ControlSettings(S1Styling.CASUAL, S1Structure.PROSE, S1Context.EMAIL)
+        repository.setS1Control(picked)
+
+        assertEquals(picked, repository.loadS1Control())
+        assertEquals(PolishPolicy.LocalS1(picked), repository.loadPolicy())
+
+        repository.save(Provider.OPENAI, "gpt-test", apiKey = "openai-secret")
+        assertEquals("a cloud mode carries no S1 picks", true, repository.loadPolicy() is PolishPolicy.Cloud)
+        repository.clearSelection()
+        assertEquals(PolishPolicy.LocalS1(picked), repository.loadPolicy())
     }
 
     /** Records every ask and answers with [verdict]; Accepted by default so the older cases still save. */

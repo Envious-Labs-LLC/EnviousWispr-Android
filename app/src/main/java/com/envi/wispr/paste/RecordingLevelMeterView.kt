@@ -59,6 +59,10 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
     private val target = FloatArray(BAR_COUNT)
     private val shown = FloatArray(BAR_COUNT)
 
+    /** Each bar's bands for the current [barCount], rebuilt only when the count changes. */
+    private val ranges = Array(BAR_COUNT) { IntRange.EMPTY }
+    private var rangesFor = -1
+
     /**
      * How many bars the rail draws, at most [BAR_COUNT]. The picture is mapped onto whatever count the
      * pill gives it, so the tap pill shows half the hold pill's reach (founder 2026-09-13, build 116
@@ -96,10 +100,18 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
      * picture of silence is what lets the bars settle.
      */
     fun setBands(bands: FloatArray) {
+        val count = barCount
+        if (count != rangesFor) {
+            for (index in 0 until BAR_COUNT) ranges[index] = barBands(index, count)
+            rangesFor = count
+        }
         for (index in 0 until BAR_COUNT) {
-            val band = barBand(index, barCount)
-            val level = bands.getOrElse(band) { 0f }
-            target[index] = if (level.isFinite()) level.coerceIn(0f, 1f) else 0f
+            var level = 0f
+            for (band in ranges[index]) {
+                val value = bands.getOrElse(band) { 0f }
+                if (value.isFinite() && value > level) level = value
+            }
+            target[index] = level.coerceIn(0f, 1f)
         }
         startAnimating()
     }
@@ -227,8 +239,14 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         /** How fast a bar rises toward a louder band: the time constant, so a syllable lands within a frame or two. */
         const val ATTACK_MS = 35f
 
-        /** How fast a bar falls toward a quieter band: slower, so the gaps between words read as breath. */
-        const val RELEASE_MS = 110f
+        /**
+         * How fast a bar falls toward a quieter band: slower than the rise, so the gaps between words
+         * read as breath, but not so slow that syllables blur into one. Measured on the emulator
+         * 2026-09-15 with a 300 Hz tone switched four times a second: at 110 ms the bar only fell to
+         * about half between bursts, because the analyser's 64 ms window already holds the last burst's
+         * tail; at 75 ms the dip is deep enough to read as a beat.
+         */
+        const val RELEASE_MS = 75f
 
         /** The step assumed for the first frame, before a real frame interval exists. */
         private const val FRAME_MS = 16f
@@ -237,16 +255,49 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         fun fill(level: Float): Float = SILENCE_FRACTION + PEAK_FRACTION * level.coerceIn(0f, 1f)
 
         /**
-         * Which band bar [index] of [count] shows: band 0 in the middle, the last band at both edges,
-         * mirrored, whatever the count. Pure, so the mapping can be asserted without a view.
+         * Which bar of [count] shows [band] on the RIGHT half of the rail (the left half mirrors it): band 0
+         * in the middle, the last band at the edge. Pure, so the mapping can be asserted without a view.
          */
+        fun barForBand(band: Int, count: Int): Int {
+            val safe = band.coerceIn(0, SpectrumAnalyzer.BAND_COUNT - 1)
+            if (count <= 2) return count - 1
+            return if (count % 2 == 1) {
+                val mid = (count - 1) / 2
+                mid + (safe.toFloat() / (SpectrumAnalyzer.BAND_COUNT - 1) * mid).roundToInt()
+            } else {
+                // Two middle bars, half a bar either side of the centre; the right one is count / 2.
+                val side = count / 2 - 1
+                count / 2 + (safe.toFloat() / (SpectrumAnalyzer.BAND_COUNT - 1) * side).roundToInt()
+            }
+        }
+
+        /**
+         * The bands bar [index] of [count] shows, as an inclusive range; a bar draws the LOUDEST of them.
+         *
+         * Every band lands on some bar, whatever the count: the hold pill has a bar per band and the
+         * tap pill, with half as many, gives most bars two. The first version picked ONE nearest band per
+         * bar, which left five of the eleven bands with no bar at all on the tap pill, so a steady 1 kHz
+         * tone drew NOTHING (measured on the emulator, 2026-09-15, with the published picture reading
+         * 0.88 in band 5 the whole time). Pure, so the coverage can be asserted without a view.
+         */
+        fun barBands(index: Int, count: Int): IntRange {
+            if (count <= 2) return 0 until SpectrumAnalyzer.BAND_COUNT
+            val mirrored = if (index < count / 2f) count - 1 - index else index
+            var low = -1
+            var high = -1
+            for (band in 0 until SpectrumAnalyzer.BAND_COUNT) {
+                if (barForBand(band, count) == mirrored) {
+                    if (low < 0) low = band
+                    high = band
+                }
+            }
+            return if (low < 0) IntRange.EMPTY else low..high
+        }
+
+        /** The band bar [index] of [count] is named after: the middle of its range. For the demo's shape. */
         fun barBand(index: Int, count: Int): Int {
-            if (count <= 2) return 0
-            val half = (count - 1) / 2f
-            // An even count has two middle bars, half a bar either side of the centre; both read band 0.
-            val reach = half - 0.5f
-            val distance = (abs(index - half) - 0.5f).coerceAtLeast(0f) / reach
-            return (distance * (SpectrumAnalyzer.BAND_COUNT - 1)).roundToInt().coerceIn(0, SpectrumAnalyzer.BAND_COUNT - 1)
+            val range = barBands(index, count)
+            return if (range.isEmpty()) 0 else (range.first + range.last) / 2
         }
 
         /**

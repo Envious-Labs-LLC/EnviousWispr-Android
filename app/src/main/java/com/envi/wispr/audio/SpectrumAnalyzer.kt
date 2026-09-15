@@ -2,7 +2,6 @@ package com.envi.wispr.audio
 
 import kotlin.math.PI
 import kotlin.math.cos
-import kotlin.math.ln
 import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.math.sin
@@ -27,8 +26,11 @@ import kotlin.math.sqrt
  * short silence.
  *
  * The scale is a DISPLAY choice and nothing downstream reads it: transcription, the silence detector
- * and the stored audio never see these numbers. The two dB constants and the tilt were first set on
- * 2026-09-14 against the emulator and are tuned on the founder's phone pass.
+ * and the stored audio never see these numbers. The two dB constants were first set on 2026-09-14
+ * against the emulator and are tuned on the founder's phone pass. Every band is scaled the same way,
+ * per bin: a high-band lift was tried (3, then 1.5 dB per octave) and both made the microphone's own
+ * hiss spike the edge bars, on the founder's phone (build 127) and in the emulator's flat-hiss run
+ * (2026-09-15). An "s" is loud enough where it lives to show without one.
  */
 class SpectrumAnalyzer {
 
@@ -51,9 +53,6 @@ class SpectrumAnalyzer {
     private val bandLowBin = IntArray(BAND_COUNT)
     private val bandHighBin = IntArray(BAND_COUNT)
 
-    /** Per-band gain in dB: the tilt that keeps fricatives at the edges visible against speech's fall-off. */
-    private val bandGainDb = FloatArray(BAND_COUNT)
-
     /** The byte position the next chunk should carry, or [NO_POSITION] before the first chunk. */
     private var expectedPosition = NO_POSITION
 
@@ -65,8 +64,6 @@ class SpectrumAnalyzer {
             val highBin = maxOf(lowBin, Math.round(high / BIN_HZ) - 1)
             bandLowBin[band] = lowBin.coerceIn(1, FFT_SIZE / 2 - 1)
             bandHighBin[band] = highBin.coerceIn(bandLowBin[band], FFT_SIZE / 2 - 1)
-            val centre = sqrt(low * high)
-            bandGainDb[band] = if (centre > TILT_FROM_HZ) TILT_DB_PER_OCTAVE * (ln(centre / TILT_FROM_HZ) / ln(2f)) else 0f
         }
     }
 
@@ -123,7 +120,7 @@ class SpectrumAnalyzer {
             // which is broadband where it lives, still lifts the edges.
             val bins = bandHighBin[band] - bandLowBin[band] + 1
             val amplitude = sqrt(energy / bins) * amplitudeScale
-            out[band] = display(amplitude, bandGainDb[band])
+            out[band] = display(amplitude)
         }
     }
 
@@ -185,14 +182,6 @@ class SpectrumAnalyzer {
         /** At or above this a band is full. A raised voice reaches it in its strongest band (first set 2026-09-14). */
         const val LOUD_DBFS = -18f
 
-        /**
-         * Speech falls off with pitch; this lifts the high bands so an "s" shows at the edges. Gentle on
-         * purpose: it also lifts the microphone's own hiss, and 3 dB per octave (build 127) was part of
-         * why the edge bars spiked on the founder's phone (2026-09-14).
-         */
-        const val TILT_DB_PER_OCTAVE = 1.5f
-        const val TILT_FROM_HZ = 300f
-
         private const val NO_POSITION = Long.MIN_VALUE
 
         /**
@@ -213,13 +202,13 @@ class SpectrumAnalyzer {
         }
 
         /**
-         * Map one band amplitude (1.0 is a full-scale sine) plus its tilt gain to the fraction of the bar
-         * that should be lit. Pure, so it can be asserted without audio. Anything not finite reads as
-         * silence: a meter that jumps to full when the arithmetic misbehaves is worse than one that stops.
+         * Map one band amplitude (1.0 is a full-scale sine) to the fraction of the bar that should be
+         * lit. Pure, so it can be asserted without audio. Anything not finite reads as silence: a meter
+         * that jumps to full when the arithmetic misbehaves is worse than one that stops.
          */
-        fun display(amplitude: Float, gainDb: Float): Float {
+        fun display(amplitude: Float): Float {
             if (!amplitude.isFinite() || amplitude <= 0f) return 0f
-            val dbfs = 20f * log10(amplitude) + gainDb
+            val dbfs = 20f * log10(amplitude)
             val level = (dbfs - QUIET_DBFS) / (LOUD_DBFS - QUIET_DBFS)
             return if (level.isFinite()) level.coerceIn(0f, 1f) else 0f
         }

@@ -59,7 +59,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.envi.wispr.paste.BrandPalette
 import com.envi.wispr.paste.BubbleLook
+import com.envi.wispr.audio.SpectrumAnalyzer
 import com.envi.wispr.paste.RecordingAccessibilityOverlay
+import com.envi.wispr.paste.RecordMarkView
+import com.envi.wispr.paste.RecordingLevelMeterView
 import kotlin.math.PI
 import kotlin.math.floor
 import kotlin.math.roundToInt
@@ -216,13 +219,27 @@ private fun DemoPill(look: BubbleLook, held: Boolean, seconds: Int, t: Float, mo
             )
             Spacer(Modifier.width(10.dp))
         }
-        DemoRail(t, Modifier.weight(1f).height(if (held) 28.dp else 22.dp), bars = if (held) 16 else RecordingAccessibilityOverlay.FULL_PILL_BARS)
-        if (!held) {
-            Spacer(Modifier.width(10.dp))
+        DemoRail(t, Modifier.weight(1f).height(if (held) 28.dp else 22.dp), bars = if (held) RecordingLevelMeterView.BAR_COUNT else RecordingAccessibilityOverlay.FULL_PILL_BARS)
+        Spacer(Modifier.width(10.dp))
+        if (held) {
+            // The recording mark under the thumb, as the real hold pill draws it.
+            DemoRecordMark()
+        } else {
             DemoControl(argb(look.cancelFill), cross = true)
             Spacer(Modifier.width(8.dp))
             DemoControl(argb(look.acceptFill), cross = false)
         }
+    }
+}
+
+/** The hold pill's recording mark: a ring with a dot, in the thumb's slot, as `RecordMarkView` draws it. */
+@Composable
+private fun DemoRecordMark() {
+    Canvas(Modifier.size(RecordingAccessibilityOverlay.RECORD_MARK_DP.dp, RecordingAccessibilityOverlay.COMPACT_RAIL_HEIGHT_DP.dp)) {
+        val ink = argb(BrandPalette.TEXT)
+        val c = Offset(size.width / 2, size.height / 2)
+        drawCircle(ink, RecordMarkView.RING_RADIUS_DP.dp.toPx(), c, style = Stroke(RecordMarkView.RING_STROKE_DP.dp.toPx()))
+        drawCircle(ink, RecordMarkView.DOT_RADIUS_DP.dp.toPx(), c)
     }
 }
 
@@ -244,19 +261,37 @@ private fun DemoControl(fill: Color, cross: Boolean) {
     }
 }
 
-private val LEVEL_SAMPLES = floatArrayOf(0f, 0f, 0f, .22f, .48f, .85f, .6f, .34f, 0f, .2f, 0f, 0f, .42f, .75f, 1f, .64f, .31f, 0f, 0f, .3f, .55f, .2f)
+/**
+ * A drawn voice for the demo rail: the loudness of a spoken phrase over time, 0..1, with syllables about
+ * six a second and a breath between phrases. Deterministic in [t], so the demo reads the same every time.
+ */
+private fun demoVoice(t: Float): Float {
+    val phrase = t % 2.6f
+    if (phrase > 1.9f) return 0f
+    val syllable = 0.55f + 0.45f * sin(phrase * 2f * PI.toFloat() * 5.5f)
+    val envelope = (phrase * 4f).coerceAtMost(1f) * ((1.9f - phrase) * 3f).coerceAtMost(1f)
+    return (syllable * envelope).coerceIn(0f, 1f)
+}
 
-/** The level rail: the newest bar at the right, scrolling ten a second, rainbow when there is sound. */
+/**
+ * The live voice rail as the recorder draws it: every bar a pitch band of the sound right now, the lowest
+ * band in the middle and the highest at the edges, rainbow when there is sound. The demo's voice is
+ * drawn, so its bands are shaped from one loudness: strong in the middle, thinning to the edges, with a
+ * flick at the ends on the loud syllables the way an "s" would.
+ */
 @Composable
 private fun DemoRail(t: Float, modifier: Modifier, bars: Int) {
     Canvas(modifier) {
         val gap = 0.55f
         val barWidth = size.width / (bars + (bars - 1) * gap)
-        val step = floor(t * 10).toInt()
+        val voice = demoVoice(t)
         for (i in 0 until bars) {
-            val level = LEVEL_SAMPLES[(LEVEL_SAMPLES.size - bars + i + step).mod(LEVEL_SAMPLES.size)]
-            val height = size.height * (0.14f + 0.86f * level)
-            val color = if (level > 0f) argb(BrandPalette.RAINBOW[i % BrandPalette.RAINBOW.size]) else argb(BrandPalette.METER_RESTING)
+            val band = RecordingLevelMeterView.barBand(i, bars).toFloat() / (SpectrumAnalyzer.BAND_COUNT - 1)
+            val body = voice * (1f - 0.75f * band)
+            val flick = if (voice > 0.8f) (band - 0.6f).coerceAtLeast(0f) * 1.5f * voice else 0f
+            val level = (body + flick).coerceIn(0f, 1f)
+            val height = size.height * (RecordingLevelMeterView.fill(level))
+            val color = if (level > RecordingLevelMeterView.RESTING_EPSILON) argb(BrandPalette.RAINBOW[i % BrandPalette.RAINBOW.size]) else argb(BrandPalette.METER_RESTING)
             drawRoundRect(color, Offset(i * barWidth * (1 + gap), (size.height - height) / 2), Size(barWidth, height), CornerRadius(barWidth / 2))
         }
     }

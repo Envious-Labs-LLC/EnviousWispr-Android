@@ -139,9 +139,11 @@ class RecorderBrandTest {
         // mark and LISTENING word were dropped by the founder on 2026-09-13 (build 114 phone pass): the
         // lips are on the bubble already, and the bar is smaller without them.
         val body = overlay.substringAfter("private fun buildPill()").substringBefore("private fun pillBackground()")
-        assertFalse("the pill carries no mark", body.contains("mark,"))
+        assertFalse("the pill carries no lips mark", body.contains("BrandMarkView("))
         assertFalse("the pill carries no state label", body.contains("stateLabel"))
-        val order = listOf("timer,", "meter,", "cancelButton,", "acceptButton,")
+        // The recording mark is the hold pill's thumb-end slot (founder 2026-09-15), last in the row and
+        // hidden on the tap pill.
+        val order = listOf("timer,", "meter,", "cancelButton,", "acceptButton,", "recordMark,")
             .map { it to body.indexOf(it) }
         order.forEach { (piece, at) -> assertTrue("$piece is not in the pill", at >= 0) }
         assertEquals(
@@ -181,7 +183,10 @@ class RecorderBrandTest {
     fun onlyTheRailMovesWithTheVoice() {
         // Two things moving with the voice read as two meters, and the user cannot then tell which one
         // is the signal.
-        assertTrue("the rail must take samples", meter.contains("fun pushSample(level: Float)"))
-        assertTrue("the mark must not", !mark.contains("fun pushSample") && !mark.contains("fun setLevel"))
+        assertTrue("the rail must take the picture", meter.contains("fun setBands(bands: FloatArray)"))
+        assertTrue(
+            "the mark must not",
+            !mark.contains("fun setBands") && !mark.contains("fun pushSample") && !mark.contains("fun setLevel"),
+        )
     }
 }

@@ -21,7 +21,6 @@ import androidx.core.content.ContextCompat
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
-import com.envi.wispr.audio.AudioLevelScale
 import com.envi.wispr.audio.CaptureEnding
 import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.audio.RecordingLimits
@@ -113,6 +112,9 @@ class DictationSessionService : Service() {
                 "Working on what you said."
 
         private const val TAG = "DictationSession"
+
+        /** About thirty pictures a second: a syllable is about 100 ms and the analyser refreshes every 32 ms. */
+        private const val METER_INTERVAL_MS = 33L
         const val ACTION_START = "com.envi.wispr.action.START_DICTATION"
         const val ACTION_TOGGLE = "com.envi.wispr.action.TOGGLE_DICTATION"
         const val ACTION_STOP = "com.envi.wispr.action.STOP_DICTATION"
@@ -197,8 +199,6 @@ class DictationSessionService : Service() {
     @Volatile private var recordingDurationMs = 0L
     private var draftCreation: Deferred<Long>? = null
     private var lastElapsedSecond = -1
-    /** The meter position the recorder was last told, so each tick smooths from the drawn value. */
-    private var lastMeterLevel = 0f
     @Volatile private var structuredTerms: List<CustomTerm> = emptyList()
     @Volatile private var cleanupOptions = CleanupOptions()
     /**
@@ -438,7 +438,6 @@ class DictationSessionService : Service() {
         rawTranscript = ""
         recordingDurationMs = 0L
         lastElapsedSecond = -1
-        lastMeterLevel = 0f
         serviceScope.launch {
             val ready = withTimeoutOrNull(10_000L) {
                 cleanupPreferencesReady.await()
@@ -613,32 +612,47 @@ class DictationSessionService : Service() {
                     // it, so a failure in it must not carry the loop past the check that starts
                     // transcription. Above the check, a throw here would cost the take.
                     publishDurationWarningIfNeeded(elapsedMs)
-
-                    // The meter is LAST in the tick, and its position is the isolation. Everything
-                    // this take depends on -- the elapsed second, the auto-stop notice, and the
-                    // terminal-reason check that starts transcription -- has already happened by the
-                    // time the level is read, so a slow, throwing or dead reading costs the meter and
-                    // nothing else (architecture-rules.md RULE: isolate-limbs).
-                    //
-                    // It is also read HERE and nowhere else. The recorder is pushed a finished number
-                    // rather than reaching for the capture service itself, so a second surface cannot
-                    // become a second reader (RULE: no-idle-cost). The loop exists only while a take
-                    // is open, so idle cost is unchanged.
-                    //
-                    // A failed reading falls to silence rather than holding the last value, so a dead
-                    // microphone looks dead instead of looking like a held note.
-                    val amplitude = runCatching { service.currentAmplitude }.getOrDefault(0f)
-                    lastMeterLevel = AudioLevelScale.smooth(
-                        lastMeterLevel,
-                        AudioLevelScale.display(amplitude),
-                    )
-                    RecordingOverlayState.updateLevel(lastMeterLevel)
                 } catch (_: Exception) {
                     // A binder disconnect is handled by its ServiceConnection callback.
                 }
                 Thread.sleep(100)
             }
         }, "DictationPollingThread").start()
+        startMeter()
+    }
+
+    /**
+     * The recorder's live picture, on its own thread, for exactly as long as the take is open.
+     *
+     * Its own thread rather than a step in the polling tick, because the picture is a limb and the
+     * tick is the heart: a slow, throwing or blocked reading here can delay nothing the take depends on
+     * (`architecture-rules.md` RULE: isolate-limbs). It is also the ONLY reader of the picture in the
+     * app. The recorder is pushed finished numbers rather than reaching for the capture service, so a
+     * second surface cannot become a second reader (RULE: no-idle-cost); the thread exists only while a
+     * take is open, so idle cost is unchanged.
+     *
+     * Take identity is the snapshot's serial, captured here after `show()` stamped it. A reading that
+     * returns after the take ended carries a stale serial, which `updateBands` refuses under its lock,
+     * and the loop leaves as soon as it sees the serial move on. A THROWING reading publishes the empty
+     * picture so the rail rests; a reading that never returns (a wedged audio process, #115) reaches no
+     * branch at all and the rail holds its last picture until the pill hides, as the timer holds its
+     * last second.
+     *
+     * Failing to start this thread costs the picture only: the take and its polling thread carry on.
+     */
+    private fun startMeter() {
+        val takeSerial = RecordingOverlayState.snapshots.value.takeSerial
+        runCatching {
+            Thread({
+                while (state.get() == SessionState.RECORDING) {
+                    val service = audioService ?: break
+                    val bands = runCatching { service.spectrumBands }.getOrElse { RecordingOverlayState.NO_BANDS }
+                    if (RecordingOverlayState.snapshots.value.takeSerial != takeSerial) break
+                    RecordingOverlayState.updateBands(takeSerial, bands)
+                    Thread.sleep(METER_INTERVAL_MS)
+                }
+            }, "DictationMeterThread").start()
+        }.onFailure { DebugLogger.warn(TAG, "Live picture unavailable for this take: ${it.message}") }
     }
 
     /**

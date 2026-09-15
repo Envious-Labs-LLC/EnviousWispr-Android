@@ -51,6 +51,7 @@ internal class RecordingAccessibilityOverlay(
     private var look = BubbleLook.DEFAULT
     private val timer = InkEdgedTextView(service)
     private val meter = RecordingLevelMeterView(service)
+    private val recordMark = RecordMarkView(service)
     private val notice = TextView(service)
     private val bubbleMark = BrandMarkView(service)
     private val cancelButton = actionButton(ActionGlyph.CROSS, "Cancel", BrandPalette.NEUTRAL_CONTROL) {
@@ -103,7 +104,6 @@ internal class RecordingAccessibilityOverlay(
     private var snapshot = RecordingOverlayState.Snapshot()
     /** What the slow half of the recorder was last set to. -1 and null mean it is not shown. */
     private var lastElapsedSeconds = -1
-    private var lastLevelTick = -1
     private var lastNotice: String? = null
 
     /** The service's word on whether another app's editable field is focused, and which one. */
@@ -216,23 +216,20 @@ internal class RecordingAccessibilityOverlay(
         if (!snapshot.visible) {
             lastElapsedSeconds = -1
             lastNotice = null
-            lastLevelTick = -1
             if (previous.visible != snapshot.visible || previous.phase != snapshot.phase) render()
             return
         }
-        // A new take starts with an empty record, not the tail of the last one.
+        // A new take starts at rest, not at the last picture of the previous one.
         if (!previous.visible) meter.reset()
         // The rail is the only thing that moves at speaking rate. It redraws itself and touches
-        // nothing else, so it is handled before the early return below. One bar per POLL, read off
-        // the tick rather than the level, so a silent stretch scrolls out instead of freezing.
-        if (snapshot.levelTick != lastLevelTick) {
-            lastLevelTick = snapshot.levelTick
-            meter.pushSample(snapshot.level)
-        }
+        // nothing else, so it is handled before the early return below. Every delivery hands it the
+        // latest picture, equal pictures included: the rail eases toward what it is given, and a
+        // silent picture is what lets it settle to rest.
+        meter.setBands(snapshot.bands)
 
         // Everything past here changes about once a second at most, and one part of it reads the
-        // window metrics, which is framework work on the main thread. Doing it on every level change
-        // would run it ten times a second to write the same string back.
+        // window metrics, which is framework work on the main thread. Doing it on every picture
+        // would run it thirty times a second to write the same string back.
         if (attached && previous.visible &&
             snapshot.elapsedSeconds == lastElapsedSeconds &&
             snapshot.notice == lastNotice
@@ -626,6 +623,12 @@ internal class RecordingAccessibilityOverlay(
         )
         container.addView(cancelButton, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(8) })
         container.addView(acceptButton, LinearLayout.LayoutParams(dp(40), dp(40)))
+        // The hold pill's thumb end: the pill is anchored to the bubble, so this slot plus the end
+        // padding is exactly the bubble's footprint, under the finger that is holding it.
+        // As tall as the compact rail, so the compact pill's 16 dp paddings still make exactly
+        // PILL_HEIGHT_DP: a 40 dp child would grow the hold pill to 72 dp (Codex review, 2026-09-15).
+        container.addView(recordMark, LinearLayout.LayoutParams(dp(RECORD_MARK_DP), dp(COMPACT_RAIL_HEIGHT_DP)))
+        recordMark.visibility = View.GONE
         pill = container
         applyLook()
         return container
@@ -635,9 +638,11 @@ internal class RecordingAccessibilityOverlay(
 
     /**
      * Two layouts of the one pill, either of them mirrored. Full: time, rail, cancel, accept, at the
-     * bubble's edge. Compact, for a hold: the rail alone in a shorter pill, because the finger is already
+     * bubble's edge. Compact, for a hold: the rail and a recording mark, because the finger is already
      * the control and everything else was noise while it was down (founder 2026-09-13, from Wispr Flow's
-     * hold pill). Same height either way, so the pill never jumps between the two.
+     * hold pill). The mark sits at the thumb end, under the finger, and the rail keeps the rest: build
+     * 130 ran the rail under the thumb and half of it was hidden (founder 2026-09-15). Same height
+     * either way, so the pill never jumps between the two.
      *
      * [mirrored] flips the row for a bubble docked on the LEFT, so accept sits at the left edge under
      * the thumb that put the bubble there, rather than across the pill (founder 2026-09-13). The row's
@@ -651,9 +656,10 @@ internal class RecordingAccessibilityOverlay(
         timer.visibility = partsVisibility
         cancelButton.visibility = partsVisibility
         acceptButton.visibility = partsVisibility
+        recordMark.visibility = if (compact) View.VISIBLE else View.GONE
         (meter.layoutParams as LinearLayout.LayoutParams).apply {
             height = if (compact) dp(COMPACT_RAIL_HEIGHT_DP) else dp(RAIL_HEIGHT_DP)
-            marginEnd = if (compact) 0 else dp(10)
+            marginEnd = dp(10)
         }
         meter.layoutParams = meter.layoutParams
         meter.barCount = if (compact) RecordingLevelMeterView.BAR_COUNT else FULL_PILL_BARS
@@ -769,8 +775,13 @@ internal class RecordingAccessibilityOverlay(
          */
         const val FULL_PILL_DP = 232
         const val FULL_PILL_BARS = 11
-        /** The hold pill: the rail alone, about the width of the finger's neighbourhood. */
-        const val COMPACT_PILL_DP = 168
+        /**
+         * The hold pill: 16 dp padding, the 134 dp rail of [RecordingLevelMeterView.BAR_COUNT] bars at the
+         * tap pill's bar width, a 10 dp gap, then the [RECORD_MARK_DP] mark and 16 dp padding, which
+         * together are the [BUBBLE_DP] footprint of the thumb holding the bubble.
+         */
+        const val COMPACT_PILL_DP = 216
+        const val RECORD_MARK_DP = 40
         /** A taller rail, padded so the compact pill stands exactly [PILL_HEIGHT_DP] tall. */
         const val COMPACT_RAIL_HEIGHT_DP = 28
         const val COMPACT_PILL_PADDING_DP = 16

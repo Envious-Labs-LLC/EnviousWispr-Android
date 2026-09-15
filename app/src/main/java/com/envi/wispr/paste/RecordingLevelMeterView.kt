@@ -7,27 +7,33 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
 import android.view.View
+import com.envi.wispr.audio.SpectrumAnalyzer
+import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.roundToInt
 
 /**
- * The live level rail: a row of thin bars across the full brand rainbow, showing the last couple of
- * seconds of the microphone, oldest on the left and the newest sample on the right.
+ * The live voice rail: a row of thin bars across the full brand rainbow, each one a pitch band of the
+ * sound RIGHT NOW. The lowest band sits in the middle and the highest at the two edges, so a voice
+ * swells from the centre and an "s" flicks at the ends.
  *
  * It answers one question the timer cannot: is the app hearing me. A running clock proves only that a
  * take is open, so a dead microphone and a working one look the same until an empty transcript comes
  * back.
  *
- * **It is a record, not a level.** Each bar is one poll of the microphone, and a new poll pushes the
- * picture one bar to the left. The rail must be fed EVERY poll, including one whose level equals the
- * last: silence is the one passage where consecutive samples are identical, and a rail fed only on
- * change stops scrolling exactly when the user stops talking, leaving the shape of their last words
- * frozen until they speak again (the macOS `RainbowLevelMeter` records the same trap).
+ * **It is a picture, not a record.** The rail this replaced scrolled a history of one loudness number,
+ * and that number was a quarter-second average, so it could not follow a syllable and did not look
+ * like a voice (founder 2026-09-14, #151: "I can see my actual voice in their bars"). Here every
+ * delivery is the newest picture and every bar EASES toward its band on each frame: it rises fast, so
+ * a syllable lands on time, and falls slower, so the gaps between words read as breath rather than as
+ * a fault. The frame loop runs only while a bar is still moving and stops by itself, so a silent rail
+ * costs nothing.
  *
  * **The rainbow belongs here specifically.** Recording is the one moment the product is doing the thing
  * it exists to do, and this is the only surface a user sees while not looking at the app
  * (`design-language.md` RULE: the-recorder-is-the-face-of-the-product). The gradient is painted ACROSS
  * the whole rail rather than per bar, so a colour belongs to a position and never to a loudness: the
- * rail must not look like a warning when someone speaks up, and colours crawling sideways would read
- * as a progress bar rather than as our spectrum.
+ * rail must not look like a warning when someone speaks up.
  *
  * Decorative to a screen reader. Everything it conveys is already announced by the timer and by the
  * recorder's own label, so it is hidden rather than read out several times a second.
@@ -40,7 +46,6 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
     }
     private val bar = RectF()
     private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = BrandMarkView.INK }
-    private val history = LevelHistory(BAR_COUNT)
 
     /** A dark edge behind every bar, in pixels; 0 draws none. See `BrandMarkView.inkEdgePx`. */
     var inkEdgePx: Float = 0f
@@ -49,20 +54,26 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
             field = value
             invalidate()
         }
-    private var levels = FloatArray(BAR_COUNT)
+
+    /** Where each bar is heading, and where it is drawn now. Both sized to [BAR_COUNT]; [barCount] bars are used. */
+    private val target = FloatArray(BAR_COUNT)
+    private val shown = FloatArray(BAR_COUNT)
+
+    /** Each bar's bands for the current [barCount], rebuilt only when the count changes. */
+    private val ranges = Array(BAR_COUNT) { IntRange.EMPTY }
+    private var rangesFor = -1
 
     /**
-     * How many of the newest bars the rail draws, at most [BAR_COUNT]. The history keeps every
-     * sample either way, so the bars keep their width and only the rail's reach changes: the tap
-     * pill shows half the hold pill's reach (founder 2026-09-13, build 116 phone pass: "half the
-     * size of the audio bar ... the length is fine for the push to talk").
+     * How many bars the rail draws, at most [BAR_COUNT]. The picture is mapped onto whatever count the
+     * pill gives it, so the tap pill shows half the hold pill's reach (founder 2026-09-13, build 116
+     * phone pass: "half the size of the audio bar ... the length is fine for the push to talk") with
+     * the same centre-out shape.
      */
     var barCount: Int = BAR_COUNT
         set(value) {
             val clamped = value.coerceIn(1, BAR_COUNT)
             if (field == clamped) return
             field = clamped
-            levels = history.bars(clamped)
             invalidate()
         }
 
@@ -75,25 +86,78 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
     private var gradientLeft = Float.NaN
     private var gradientRight = Float.NaN
 
+    private var animating = false
+    private var lastFrameNanos = 0L
+    private val frame = Runnable { step() }
+
     init {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
     /**
-     * Record one poll of the microphone. [level] is the already-scaled 0..1 level from
-     * `AudioLevelScale`, never a raw amplitude. Called once per poll whether or not the level changed.
+     * Hand the rail the newest picture: `SpectrumAnalyzer.BAND_COUNT` levels 0..1, lowest band first,
+     * already scaled for display. Called on every delivery whether or not the picture changed; a
+     * picture of silence is what lets the bars settle.
      */
-    fun pushSample(level: Float) {
-        history.push(level)
-        levels = history.bars(barCount)
+    fun setBands(bands: FloatArray) {
+        val count = barCount
+        if (count != rangesFor) {
+            for (index in 0 until BAR_COUNT) ranges[index] = barBands(index, count)
+            rangesFor = count
+        }
+        for (index in 0 until BAR_COUNT) {
+            var level = 0f
+            for (band in ranges[index]) {
+                val value = bands.getOrElse(band) { 0f }
+                if (value.isFinite() && value > level) level = value
+            }
+            target[index] = level.coerceIn(0f, 1f)
+        }
+        startAnimating()
+    }
+
+    /** A new take starts at rest, not at the last picture of the previous one. */
+    fun reset() {
+        target.fill(0f)
+        shown.fill(0f)
+        stopAnimating()
         invalidate()
     }
 
-    /** A new take starts with an empty record, not the tail of the last one. */
-    fun reset() {
-        history.clear()
-        levels = FloatArray(barCount)
+    override fun onDetachedFromWindow() {
+        stopAnimating()
+        super.onDetachedFromWindow()
+    }
+
+    private fun startAnimating() {
+        if (animating || !isAttachedToWindow) return
+        animating = true
+        lastFrameNanos = 0L
+        postOnAnimation(frame)
+    }
+
+    private fun stopAnimating() {
+        animating = false
+        removeCallbacks(frame)
+    }
+
+    /**
+     * One frame: move every bar toward its target by a time-constant step, redraw, and book the next
+     * frame only while something is still moving.
+     */
+    private fun step() {
+        if (!animating) return
+        val now = System.nanoTime()
+        val dtMs = if (lastFrameNanos == 0L) FRAME_MS else ((now - lastFrameNanos) / 1_000_000f).coerceIn(1f, 100f)
+        lastFrameNanos = now
+        var moving = false
+        for (index in 0 until BAR_COUNT) {
+            val next = ease(shown[index], target[index], dtMs)
+            shown[index] = next
+            if (abs(target[index] - next) > SETTLED) moving = true else shown[index] = target[index]
+        }
         invalidate()
+        if (moving && isAttachedToWindow) postOnAnimation(frame) else animating = false
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
@@ -133,40 +197,117 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         val edge = inkEdgePx
         if (edge > 0f) {
             for (index in 0 until count) {
-                val barHeight = usableHeight * fill(levels[index])
+                val barHeight = usableHeight * fill(shown[index])
                 val left = paddingLeft + index * step
                 bar.set(left - edge, centreY - barHeight / 2f - edge, left + barWidth + edge, centreY + barHeight / 2f + edge)
                 canvas.drawRoundRect(bar, radius + edge, radius + edge, inkPaint)
             }
         }
         for (index in 0 until count) {
-            val level = levels[index]
+            val level = shown[index]
             // Symmetric about the centre line rather than growing off a floor, so the rail's visual
-            // weight does not shift down the pill as the level drops. A silent sample is a short bar,
+            // weight does not shift down the pill as the level drops. A silent band is a short bar,
             // never nothing: a rail that collapses between words reads as "it stopped hearing me".
             val barHeight = usableHeight * fill(level)
             val left = paddingLeft + index * step
             bar.set(left, centreY - barHeight / 2f, left + barWidth, centreY + barHeight / 2f)
-            // A silent sample is drawn in the resting grey, so silence reads as silence rather than as
+            // A bar at rest is drawn in the resting grey, so silence reads as silence rather than as
             // a rainbow sitting at its floor.
-            canvas.drawRoundRect(bar, radius, radius, if (level > 0f) paint else restingPaint)
+            canvas.drawRoundRect(bar, radius, radius, if (level > RESTING_EPSILON) paint else restingPaint)
         }
     }
 
     companion object {
-        /** About 2.2 seconds at the owner's 100 ms poll: long enough to read as a shape, short enough to be what you just said. */
-        const val BAR_COUNT = 22
+        /** The hold pill's full reach: every band twice, mirrored about the centre. */
+        const val BAR_COUNT = 2 * SpectrumAnalyzer.BAND_COUNT
 
         /** A gap is this fraction of one bar's width. */
         const val GAP_RATIO = 0.55f
 
-        /** A silent sample's share of the rail's height. */
+        /** A silent band's share of the rail's height. */
         const val SILENCE_FRACTION = 0.14f
 
         /** The additional share available at full level. */
         const val PEAK_FRACTION = 0.86f
 
-        /** The share of the rail's height a sample at [level] occupies. Pure, so it can be asserted without a canvas. */
+        /** Below this a bar is at rest and drawn grey. */
+        const val RESTING_EPSILON = 0.02f
+
+        /** A bar within this of its target has arrived, and the frame loop may stop. */
+        const val SETTLED = 0.005f
+
+        /** How fast a bar rises toward a louder band: the time constant, so a syllable lands within a frame or two. */
+        const val ATTACK_MS = 35f
+
+        /**
+         * How fast a bar falls toward a quieter band: slower than the rise, so the gaps between words
+         * read as breath, but not so slow that syllables blur into one. Measured on the emulator
+         * 2026-09-15 with a 300 Hz tone switched four times a second: at 110 ms the bar only fell to
+         * about half between bursts, because the analyser's 64 ms window already holds the last burst's
+         * tail; at 75 ms the dip is deep enough to read as a beat.
+         */
+        const val RELEASE_MS = 75f
+
+        /** The step assumed for the first frame, before a real frame interval exists. */
+        private const val FRAME_MS = 16f
+
+        /** The share of the rail's height a band at [level] occupies. Pure, so it can be asserted without a canvas. */
         fun fill(level: Float): Float = SILENCE_FRACTION + PEAK_FRACTION * level.coerceIn(0f, 1f)
+
+        /**
+         * Which bar of [count] shows [band] on the RIGHT half of the rail (the left half mirrors it): band 0
+         * in the middle, the last band at the edge. Pure, so the mapping can be asserted without a view.
+         */
+        fun barForBand(band: Int, count: Int): Int {
+            val safe = band.coerceIn(0, SpectrumAnalyzer.BAND_COUNT - 1)
+            if (count <= 2) return count - 1
+            return if (count % 2 == 1) {
+                val mid = (count - 1) / 2
+                mid + (safe.toFloat() / (SpectrumAnalyzer.BAND_COUNT - 1) * mid).roundToInt()
+            } else {
+                // Two middle bars, half a bar either side of the centre; the right one is count / 2.
+                val side = count / 2 - 1
+                count / 2 + (safe.toFloat() / (SpectrumAnalyzer.BAND_COUNT - 1) * side).roundToInt()
+            }
+        }
+
+        /**
+         * The bands bar [index] of [count] shows, as an inclusive range; a bar draws the LOUDEST of them.
+         *
+         * Every band lands on some bar, whatever the count: the hold pill has a bar per band and the
+         * tap pill, with half as many, gives most bars two. The first version picked ONE nearest band per
+         * bar, which left five of the eleven bands with no bar at all on the tap pill, so a steady 1 kHz
+         * tone drew NOTHING (measured on the emulator, 2026-09-15, with the published picture reading
+         * 0.88 in band 5 the whole time). Pure, so the coverage can be asserted without a view.
+         */
+        fun barBands(index: Int, count: Int): IntRange {
+            if (count <= 2) return 0 until SpectrumAnalyzer.BAND_COUNT
+            val mirrored = if (index < count / 2f) count - 1 - index else index
+            var low = -1
+            var high = -1
+            for (band in 0 until SpectrumAnalyzer.BAND_COUNT) {
+                if (barForBand(band, count) == mirrored) {
+                    if (low < 0) low = band
+                    high = band
+                }
+            }
+            return if (low < 0) IntRange.EMPTY else low..high
+        }
+
+        /** The band bar [index] of [count] is named after: the middle of its range. For the demo's shape. */
+        fun barBand(index: Int, count: Int): Int {
+            val range = barBands(index, count)
+            return if (range.isEmpty()) 0 else (range.first + range.last) / 2
+        }
+
+        /**
+         * Move [from] toward [to] over [dtMs] with a time-constant easing, faster up than down. Pure and
+         * frame-rate independent: two 8 ms steps land where one 16 ms step does.
+         */
+        fun ease(from: Float, to: Float, dtMs: Float): Float {
+            val tau = if (to > from) ATTACK_MS else RELEASE_MS
+            val rate = 1f - exp(-dtMs / tau)
+            return from + (to - from) * rate
+        }
     }
 }

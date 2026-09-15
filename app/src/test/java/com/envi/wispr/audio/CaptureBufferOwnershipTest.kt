@@ -43,15 +43,36 @@ class CaptureBufferOwnershipTest {
     }
 
     @Test
-    fun theReadBlockIsTwoHundredAndFiftySixMilliseconds() {
+    fun theDetectorBlockIsTwoHundredAndFiftySixMilliseconds() {
         // 4096 samples at 16 kHz, 2 bytes each. The same 256 ms the silence state machine ticks on.
         assertEquals(
             SilenceStopDetectorBlockBytes,
             8_192,
         )
         assertTrue(
-            "the read block is a named constant, not a literal at the call site",
+            "the detector block is a named constant, not a literal at the call site",
             source.contains("private const val READ_BLOCK_BYTES = 8_192"),
+        )
+    }
+
+    @Test
+    fun theReadIsThirtyTwoMillisecondsAndIsNotTheDetectorBlock() {
+        // 512 samples at 16 kHz, 2 bytes each: short enough that the recorder's picture follows a
+        // syllable (#151). The detector still receives whole 256 ms blocks, staged from eight reads,
+        // so shrinking the read while keeping the block constant is exactly what must be true here and
+        // exactly what the block test above cannot see on its own.
+        assertTrue(source.contains("private const val READ_CHUNK_BYTES = 1_024"))
+        assertTrue(
+            "the session's read buffer is one chunk",
+            source.contains("readBuffer = ByteArray(READ_CHUNK_BYTES),"),
+        )
+        assertFalse(
+            "and never the detector block",
+            source.contains("readBuffer = ByteArray(READ_BLOCK_BYTES),"),
+        )
+        assertTrue(
+            "the detector ring and its staging keep the block",
+            source.contains("BlockRing(RING_BLOCKS, READ_BLOCK_BYTES)") && source.contains("pendingBlock = if (detectorEnabled) ByteArray(READ_BLOCK_BYTES)"),
         )
     }
 
@@ -78,7 +99,7 @@ class CaptureBufferOwnershipTest {
     fun theRealBufferNumbersAreLoggedRatherThanAssumed() {
         // Whether the one-second floor binds cannot be settled from source, so the phone answers it.
         assertTrue(
-            source.contains("Buffer sizes: minimum=\$minimum coerced=\$coerced read=\$READ_BLOCK_BYTES"),
+            source.contains("Buffer sizes: minimum=\$minimum coerced=\$coerced read=\$READ_CHUNK_BYTES block=\$READ_BLOCK_BYTES"),
         )
         assertTrue(
             "and what Android actually allocated, which can exceed what was requested",

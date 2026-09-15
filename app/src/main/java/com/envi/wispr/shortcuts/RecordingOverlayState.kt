@@ -2,7 +2,7 @@ package com.envi.wispr.shortcuts
 
 import android.os.Handler
 import android.os.Looper
-import kotlin.math.roundToInt
+import com.envi.wispr.audio.SpectrumAnalyzer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,29 +39,31 @@ object RecordingOverlayState {
          */
         val notice: String? = null,
         /**
-         * How much of the microphone meter is lit, 0 for nothing and 1 for full.
-         *
-         * Already scaled for display by `AudioLevelScale`, never a raw amplitude. 0 is a real reading
-         * meaning silence, not a "not measured yet" sentinel; the recorder draws its resting bars for it.
+         * Which take this snapshot belongs to: a fresh number per [show]. The owner's meter thread
+         * captures it when the take starts and hands it back with every picture, so a picture read for
+         * an earlier take, however late it arrives, is refused inside the same locked change that would
+         * have committed it. Take identity lives HERE, not on the thread that publishes.
          */
-        val level: Float = 0f,
+        val takeSerial: Long = 0L,
         /**
-         * Counts every level poll while the pill is visible, whether or not [level] changed.
-         *
-         * The rail is a HISTORY: each poll pushes one bar. Silence is the one passage where consecutive
-         * levels are identical, so a rail woken only by a change in [level] stops scrolling exactly when
-         * the user stops talking, and the shape of their last words sits frozen until they speak again.
-         * The recorder reads this counter, never the level alone, to decide that a poll happened.
+         * The recorder's live picture: `SpectrumAnalyzer.BAND_COUNT` pitch levels 0..1, lowest band
+         * first, of the newest 64 ms of the take. Read-only by contract: a fresh array per publish, so
+         * two snapshots never share a picture that one of them could mutate. All zeros is a real reading
+         * meaning silence, and also the value before the first reading; the recorder draws its resting
+         * bars for both, which is the honest picture of a microphone that has said nothing yet.
          */
-        val levelTick: Int = 0,
+        val bands: FloatArray = NO_BANDS,
     )
+
+    /** The picture before any reading, and after a failed one. Shared and never written. */
+    val NO_BANDS = FloatArray(SpectrumAnalyzer.BAND_COUNT)
 
     fun interface Listener {
         fun onChanged(snapshot: Snapshot)
     }
 
-    /** How many distinct meter positions exist. The recorder cannot show more than this many. */
-    private const val LEVEL_STEPS = 32f
+    /** Hands out [Snapshot.takeSerial]; only [show] advances it, under the lock. */
+    private var lastTakeSerial = 0L
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val lock = Any()
@@ -104,7 +106,8 @@ object RecordingOverlayState {
 
     /** Capture is running: draw the pill. Keeps the token and identity the take was admitted with. */
     fun show() = change {
-        Snapshot(visible = true, phase = Phase.RECORDING, requestToken = it.requestToken, targetFieldId = it.targetFieldId, transcriptId = it.transcriptId, elapsedSeconds = 0)
+        lastTakeSerial += 1
+        Snapshot(visible = true, phase = Phase.RECORDING, requestToken = it.requestToken, targetFieldId = it.targetFieldId, transcriptId = it.transcriptId, elapsedSeconds = 0, takeSerial = lastTakeSerial)
     }
 
     /** Transcribing, polishing, cancelling, finishing or failing: not accepting a start, pill hidden. */
@@ -118,18 +121,25 @@ object RecordingOverlayState {
     }
 
     /**
-     * Publish one poll of the microphone level, already scaled for display.
+     * Publish one picture of the microphone, already scaled for display, for the take [takeSerial].
      *
-     * Every poll wakes the recorder while the pill is visible, EQUAL levels included, because the rail
-     * records one bar per poll (see [Snapshot.levelTick]). That is about ten small redraws a second for
-     * exactly as long as a take is open and nothing at idle (`architecture-rules.md`
-     * RULE: no-idle-cost). Quantised to [LEVEL_STEPS] so the bar heights are a small fixed set rather
-     * than a fresh float every tick.
+     * Every publish wakes the recorder while the pill is visible, EQUAL pictures included: the recorder
+     * eases its bars toward whatever it is handed, and silence is a picture too. That is about thirty
+     * small deliveries a second for exactly as long as a take is open and nothing at idle
+     * (`architecture-rules.md` RULE: no-idle-cost); the main-thread post reads the latest snapshot, so a
+     * burst coalesces into one redraw.
+     *
+     * A picture for a take that is not the visible one, or for no take at all, changes nothing. The
+     * serial is compared under the same lock that commits, so a publisher that checked and then paused
+     * cannot slip its stale picture in afterwards. Copied on the way in and clamped, so a bad reading
+     * cannot sit in the snapshot and a publisher cannot mutate what it already published.
      */
-    fun updateLevel(level: Float) {
-        val safe = if (level.isFinite()) level.coerceIn(0f, 1f) else 0f
-        val quantised = (safe * LEVEL_STEPS).roundToInt().toFloat() / LEVEL_STEPS
-        change { if (!it.visible) it else it.copy(level = quantised, levelTick = it.levelTick + 1) }
+    fun updateBands(takeSerial: Long, bands: FloatArray) {
+        val safe = FloatArray(SpectrumAnalyzer.BAND_COUNT) { index ->
+            val value = bands.getOrElse(index) { 0f }
+            if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
+        }
+        change { if (!it.visible || it.takeSerial != takeSerial) it else it.copy(bands = safe) }
     }
 
     fun updateElapsed(seconds: Int) {
@@ -145,11 +155,11 @@ object RecordingOverlayState {
      * in between.
      *
      * Splitting that into two lock acquisitions leaves the recorder able to come back from the dead.
-     * The session owner's polling thread reads a visible snapshot, the user presses Stop, `hide` writes
-     * the invisible one, and then the polling thread commits the visible copy it prepared before the
-     * stop. Nothing hides it again, because the take is already over. The level moves about ten times a
-     * second against a stop that can land on any of them, which is the pairing that makes the window
-     * worth closing rather than documenting.
+     * The session owner's meter thread reads a visible snapshot, the user presses Stop, `hide` writes
+     * the invisible one, and then the meter thread commits the visible copy it prepared before the
+     * stop. Nothing hides it again, because the take is already over. The picture moves about thirty
+     * times a second against a stop that can land on any of them, which is the pairing that makes the
+     * window worth closing rather than documenting.
      *
      * The transform must be pure: it runs under the lock, so it may not call back into a listener,
      * block, or touch anything that takes another lock.
@@ -171,7 +181,7 @@ object RecordingOverlayState {
      * Posting a captured snapshot reopens the same defect from the delivery side: two changes can commit
      * in the right order and still be posted in the wrong one, because a thread can be descheduled
      * between releasing the lock and posting. Reading at delivery time has no such ordering to get
-     * wrong, and it coalesces a burst of level changes into one redraw for free.
+     * wrong, and it coalesces a burst of picture changes into one redraw for free.
      */
     private fun notifyListener() {
         val target = synchronized(lock) { listener } ?: return

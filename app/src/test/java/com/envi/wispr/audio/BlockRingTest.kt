@@ -14,7 +14,7 @@ class BlockRingTest {
     @Test
     fun blocksComeOutInTheOrderTheyWentIn() {
         val ring = BlockRing(capacity = 4, blockBytes = 16)
-        (1..4).forEach { assertTrue(ring.offer(block(it.toByte()), 16)) }
+        (1..4).forEach { assertTrue(ring.offer(block(it.toByte()), 16, 0L)) }
 
         val out = ByteArray(16)
         (1..4).forEach { expected ->
@@ -29,9 +29,9 @@ class BlockRingTest {
         // The capture thread cannot wait, and it cannot be allowed to clobber a block the detector has
         // not read. Refusing is what lets the caller give up on auto-stop instead of losing audio.
         val ring = BlockRing(capacity = 2, blockBytes = 16)
-        assertTrue(ring.offer(block(1), 16))
-        assertTrue(ring.offer(block(2), 16))
-        assertFalse("the third offer must be refused", ring.offer(block(3), 16))
+        assertTrue(ring.offer(block(1), 16, 0L))
+        assertTrue(ring.offer(block(2), 16, 0L))
+        assertFalse("the third offer must be refused", ring.offer(block(3), 16, 0L))
 
         val out = ByteArray(16)
         ring.poll(out)
@@ -43,28 +43,65 @@ class BlockRingTest {
     @Test
     fun makingRoomLetsTheProducerContinue() {
         val ring = BlockRing(capacity = 2, blockBytes = 16)
-        ring.offer(block(1), 16)
-        ring.offer(block(2), 16)
-        assertFalse(ring.offer(block(3), 16))
+        ring.offer(block(1), 16, 0L)
+        ring.offer(block(2), 16, 0L)
+        assertFalse(ring.offer(block(3), 16, 0L))
 
         val out = ByteArray(16)
         ring.poll(out)
-        assertTrue("a freed slot is reusable", ring.offer(block(3), 16))
+        assertTrue("a freed slot is reusable", ring.offer(block(3), 16, 0L))
     }
 
     @Test
     fun clearingDropsTheQueueWithoutLosingLaterBlocks() {
         val ring = BlockRing(capacity = 4, blockBytes = 16)
-        ring.offer(block(1), 16)
-        ring.offer(block(2), 16)
+        ring.offer(block(1), 16, 0L)
+        ring.offer(block(2), 16, 0L)
         ring.clear()
         assertEquals(0, ring.size)
 
         val out = ByteArray(16)
         assertEquals(-1, ring.poll(out))
-        assertTrue(ring.offer(block(9), 16))
+        assertTrue(ring.offer(block(9), 16, 0L))
         assertEquals(16, ring.poll(out))
         assertEquals(9.toByte(), out[0])
+    }
+
+    @Test
+    fun eachBlockComesOutWithTheTagItWentInWithAcrossAWrap() {
+        // The analyser reads the tag as the block's position in the take. A tag on the wrong block would
+        // reset its window at the wrong moment, or fail to reset it at the right one.
+        val ring = BlockRing(capacity = 3, blockBytes = 16)
+        val out = ByteArray(16)
+        var expected = 0L
+        repeat(7) { round ->
+            assertTrue(ring.offer(block(round.toByte()), 16, round * 1024L))
+            if (round % 2 == 1) {
+                repeat(2) {
+                    assertEquals(16, ring.poll(out))
+                    assertEquals("the block's own tag", expected * 1024L, ring.lastPolledTag)
+                    assertEquals("and its own bytes", expected.toByte(), out[0])
+                    expected++
+                }
+            }
+        }
+        assertEquals(16, ring.poll(out))
+        assertEquals(6 * 1024L, ring.lastPolledTag)
+    }
+
+    @Test
+    fun theTagIsPublishedWithTheBytesNotAfterThem() {
+        // A sequential test cannot see publication order (validation-discipline.md
+        // RULE: a-single-threaded-test-cannot-distinguish-atomic-from-check-then-act), so it is asserted
+        // at the source: bytes, length and tag land before the write index moves, and the consumer copies
+        // bytes and tag out before the read index moves.
+        val source = java.io.File("src/main/java/com/envi/wispr/audio/BlockRing.kt").readText()
+        val offer = source.substringAfter("fun offer(").substringBefore("\n    }")
+        assertTrue(offer.indexOf("tags[slot] = tag") < offer.indexOf("writeIndex.set(write + 1)"))
+        assertTrue(offer.indexOf("System.arraycopy(source") < offer.indexOf("writeIndex.set(write + 1)"))
+        val poll = source.substringAfter("fun poll(").substringBefore("\n    }")
+        assertTrue(poll.indexOf("lastPolledTag = tags[slot]") < poll.indexOf("readIndex.set(read + 1)"))
+        assertTrue(poll.indexOf("System.arraycopy(slots[slot]") < poll.indexOf("readIndex.set(read + 1)"))
     }
 
     @Test
@@ -85,7 +122,7 @@ class BlockRingTest {
             var sent = 0
             while (sent < total) {
                 // Every byte of a block carries the same value, so any mixture is a tear.
-                if (ring.offer(ByteArray(blockBytes) { value.toByte() }, blockBytes)) {
+                if (ring.offer(ByteArray(blockBytes) { value.toByte() }, blockBytes, 0L)) {
                     sent++
                     value = if (value == 127) 1 else value + 1
                 }

@@ -27,4 +27,10 @@ interface IAudioCaptureService {
      * Only 3 is worth telling the user about: 4 means the recording is still correct.
      */
     int getSilenceStopStatus();
+
+    /**
+     * The recorder's live picture: SpectrumAnalyzer.BAND_COUNT pitch levels 0..1, lowest band first,
+     * from the newest 64 ms of the open take. Always that many, never empty; all zeros when no take is open.
+     */
+    float[] getSpectrumBands();
 }

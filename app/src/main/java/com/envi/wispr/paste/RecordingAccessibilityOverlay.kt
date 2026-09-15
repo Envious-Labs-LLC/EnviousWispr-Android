@@ -103,7 +103,6 @@ internal class RecordingAccessibilityOverlay(
     private var snapshot = RecordingOverlayState.Snapshot()
     /** What the slow half of the recorder was last set to. -1 and null mean it is not shown. */
     private var lastElapsedSeconds = -1
-    private var lastLevelTick = -1
     private var lastNotice: String? = null
 
     /** The service's word on whether another app's editable field is focused, and which one. */
@@ -216,23 +215,20 @@ internal class RecordingAccessibilityOverlay(
         if (!snapshot.visible) {
             lastElapsedSeconds = -1
             lastNotice = null
-            lastLevelTick = -1
             if (previous.visible != snapshot.visible || previous.phase != snapshot.phase) render()
             return
         }
-        // A new take starts with an empty record, not the tail of the last one.
+        // A new take starts at rest, not at the last picture of the previous one.
         if (!previous.visible) meter.reset()
         // The rail is the only thing that moves at speaking rate. It redraws itself and touches
-        // nothing else, so it is handled before the early return below. One bar per POLL, read off
-        // the tick rather than the level, so a silent stretch scrolls out instead of freezing.
-        if (snapshot.levelTick != lastLevelTick) {
-            lastLevelTick = snapshot.levelTick
-            meter.pushSample(snapshot.level)
-        }
+        // nothing else, so it is handled before the early return below. Every delivery hands it the
+        // latest picture, equal pictures included: the rail eases toward what it is given, and a
+        // silent picture is what lets it settle to rest.
+        meter.setBands(snapshot.bands)
 
         // Everything past here changes about once a second at most, and one part of it reads the
-        // window metrics, which is framework work on the main thread. Doing it on every level change
-        // would run it ten times a second to write the same string back.
+        // window metrics, which is framework work on the main thread. Doing it on every picture
+        // would run it thirty times a second to write the same string back.
         if (attached && previous.visible &&
             snapshot.elapsedSeconds == lastElapsedSeconds &&
             snapshot.notice == lastNotice

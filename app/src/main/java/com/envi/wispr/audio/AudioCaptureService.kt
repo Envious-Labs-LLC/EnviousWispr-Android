@@ -20,6 +20,7 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.LockSupport
 import kotlin.math.abs
 
 /** Audio capture service running in a separate process (:audio). */
@@ -33,18 +34,33 @@ class AudioCaptureService : Service() {
         private const val AUDIO_FILENAME = "recording.pcm"
 
         /**
-         * How much audio one `AudioRecord.read` asks for: 4096 samples, 256 ms at 16 kHz.
+         * How much audio one `AudioRecord.read` asks for: 512 samples, 32 ms at 16 kHz.
          *
          * **This is a different quantity from the buffer the AudioRecord is constructed with**, and the
          * two want opposite things. The native buffer is the margin that stops an overrun when the
          * capture thread is descheduled, so it wants to be large. This is the loop's decision
-         * granularity, so it wants to be small: the duration ceiling can only fire on a block boundary,
+         * granularity, so it wants to be small: the duration ceiling can only fire on a read boundary,
          * and so can a silence stop. Reading the whole native buffer made both coarse to about a second.
          *
          * Android's own guidance is to read in short frequent chunks rather than waiting for the buffer
-         * to fill. 256 ms is macOS's detector chunk, which is what the silence state machine ticks on.
+         * to fill. 32 ms is what the recorder's live picture needs: a syllable is about 100 ms, and the
+         * 256 ms read this replaced handed the meter one averaged number per quarter second, which
+         * cannot show a voice (#151).
+         */
+        private const val READ_CHUNK_BYTES = 1_024
+
+        /**
+         * The silence detector's block: 4096 samples, 256 ms at 16 kHz, macOS's detector chunk and what
+         * the silence state machine ticks on. Reads are staged into whole blocks; the detector never
+         * sees a partial one.
          */
         private const val READ_BLOCK_BYTES = 8_192
+
+        /** Eight chunks of picture backlog, 256 ms: the analyser drains it every wake, so it never fills in practice. */
+        private const val SPECTRUM_RING_CHUNKS = 8
+
+        /** The analyser's longest sleep: it re-checks whether its take is over at least this often, unpark or not. */
+        private const val ANALYSER_PARK_NS = 50_000_000L
 
         /**
          * Eight blocks, 2.048 seconds of audio, and the detector's own call deadline is set against it.
@@ -55,9 +71,6 @@ class AudioCaptureService : Service() {
 
         /** How long the feeder waits when there is nothing to do. It is not the capture thread. */
         private const val FEEDER_IDLE_MS = 20L
-
-        /** A bounded wait, never an unbounded one: the feeder must not be able to hold up a stop. */
-        private const val FEEDER_JOIN_MS = 250L
 
         const val SILENCE_STATUS_DISABLED = 0
         const val SILENCE_STATUS_PREPARING = 1
@@ -101,6 +114,20 @@ class AudioCaptureService : Service() {
     ) {
         /** Capture thread only. */
         var pendingBytes: Int = 0
+
+        /** Capture thread only. The take position of the first byte staged in [pendingBlock]. */
+        var pendingPosition: Long = 0L
+
+        /**
+         * The picture path. The capture thread offers every read here with its position; the analyser
+         * thread drains it and publishes into [publishedBands] under [bandsLock], which the binder getter
+         * shares and the capture thread never touches. All of it belongs to THIS take: a thread that
+         * outlives its take writes into a dead session's array, and the getter reads the live one.
+         */
+        val spectrumRing = BlockRing(SPECTRUM_RING_CHUNKS, READ_CHUNK_BYTES)
+        val publishedBands = FloatArray(SpectrumAnalyzer.BAND_COUNT)
+        val bandsLock = Any()
+        @Volatile var analyserThread: Thread? = null
 
         /**
          * Everything about the detector belongs to the take that started it.
@@ -201,6 +228,12 @@ class AudioCaptureService : Service() {
         override fun isCapturing(): Boolean = this@AudioCaptureService.isRecording.get()
         override fun getTerminalReason(): Int = this@AudioCaptureService.terminalReason
         override fun getCurrentAmplitude(): Float = this@AudioCaptureService.currentAmplitude
+
+        override fun getSpectrumBands(): FloatArray {
+            // Always BAND_COUNT long, never empty: the length is the contract. Zeros when no take is open.
+            val active = this@AudioCaptureService.session ?: return FloatArray(SpectrumAnalyzer.BAND_COUNT)
+            return synchronized(active.bandsLock) { active.publishedBands.copyOf() }
+        }
         override fun getAudioFilePath(): String? = this@AudioCaptureService.lastAudioFile?.absolutePath
 
         override fun getElapsedMs(): Long {
@@ -252,7 +285,7 @@ class AudioCaptureService : Service() {
                 // allocates, which getBufferSizeInFrames reports once the recorder exists.
                 DebugLogger.log(
                     TAG,
-                    "Buffer sizes: minimum=$minimum coerced=$coerced read=$READ_BLOCK_BYTES",
+                    "Buffer sizes: minimum=$minimum coerced=$coerced read=$READ_CHUNK_BYTES block=$READ_BLOCK_BYTES",
                 )
                 coerced
             } catch (e: Exception) {
@@ -293,7 +326,7 @@ class AudioCaptureService : Service() {
                     startedAtMs = SystemClock.elapsedRealtime(),
                     // Allocated HERE, before the thread starts, and never inside the capture loop. The
                     // capture thread may not allocate: it must do nothing that can make it late.
-                    readBuffer = ByteArray(READ_BLOCK_BYTES),
+                    readBuffer = ByteArray(READ_CHUNK_BYTES),
                     token = nextCaptureToken(),
                     ring = if (detectorEnabled) BlockRing(RING_BLOCKS, READ_BLOCK_BYTES) else null,
                     pendingBlock = if (detectorEnabled) ByteArray(READ_BLOCK_BYTES) else null,
@@ -333,6 +366,7 @@ class AudioCaptureService : Service() {
                     DebugLogger.error(TAG, "Failed to start capture thread", e)
                     return false
                 }
+                startSpectrumAnalysis(newSession)
                 return thread.isAlive && session === newSession && isRecording.get()
             } catch (e: SecurityException) {
                 DebugLogger.error(TAG, "RECORD_AUDIO permission not granted", e)
@@ -385,9 +419,14 @@ class AudioCaptureService : Service() {
                 if (bytesRead < 0) throw IOException("AudioRecord.read failed: $bytesRead")
                 if (bytesRead == 0) continue
 
+                val position = active.bytesWritten
                 active.output.write(buffer, 0, bytesRead)
                 active.bytesWritten += bytesRead
-                offerToDetector(active, buffer, bytesRead)
+                offerToDetector(active, buffer, bytesRead, position)
+                // The picture is a limb: a refused offer drops this chunk and nothing else. The analyser
+                // sees the drop as a jump in position and starts its window afresh (SpectrumAnalyzer).
+                active.spectrumRing.offer(buffer, bytesRead, position)
+                LockSupport.unpark(active.analyserThread)
 
                 var sum = 0L
                 for (i in 0 until bytesRead step PcmAudio.BYTES_PER_SAMPLE) {
@@ -422,13 +461,14 @@ class AudioCaptureService : Service() {
      * abandoned for the rest of the take and never resumed: resuming across dropped audio breaks the
      * model's recurrent continuity, and speech that resumed inside the gap could then read as silence.
      */
-    private fun offerToDetector(active: CaptureSession, buffer: ByteArray, bytesRead: Int) {
+    private fun offerToDetector(active: CaptureSession, buffer: ByteArray, bytesRead: Int, position: Long) {
         val ring = active.ring ?: return
         val pending = active.pendingBlock ?: return
         if (active.detectorAbandoned.get()) return
 
         var consumed = 0
         while (consumed < bytesRead) {
+            if (active.pendingBytes == 0) active.pendingPosition = position + consumed
             val room = READ_BLOCK_BYTES - active.pendingBytes
             val take = minOf(room, bytesRead - consumed)
             System.arraycopy(buffer, consumed, pending, active.pendingBytes, take)
@@ -436,12 +476,69 @@ class AudioCaptureService : Service() {
             consumed += take
             if (active.pendingBytes == READ_BLOCK_BYTES) {
                 active.pendingBytes = 0
-                if (!ring.offer(pending, READ_BLOCK_BYTES)) {
+                if (!ring.offer(pending, READ_BLOCK_BYTES, active.pendingPosition)) {
                     // Flag only. The feeder notices and does the logging, off this thread.
                     abandonDetector(active)
                     return
                 }
             }
+        }
+    }
+
+    /**
+     * Start the one thread that turns this take's audio into the recorder's picture.
+     *
+     * Runs AFTER the capture thread is up, and its own failure is its own: a thread that cannot be
+     * constructed or started leaves the take with no picture (the published bands stay zero, the pill
+     * shows its resting rail) and touches none of the capture resources. The picture is a limb.
+     */
+    private fun startSpectrumAnalysis(active: CaptureSession) {
+        runCatching {
+            val thread = Thread({ analyserLoop(active) }, "SpectrumAnalyserThread")
+            active.analyserThread = thread
+            thread.start()
+        }.onFailure {
+            active.analyserThread = null
+            DebugLogger.warn(TAG, "Live picture unavailable for this take: ${it.message}")
+        }
+    }
+
+    /**
+     * Analyser thread only. Drains the picture ring, analyses every queued chunk in order and publishes
+     * once per wake, so what the recorder reads is always the newest audio the ring held.
+     *
+     * Exits when its take is no longer the live one, when its ending has been claimed, or when it is
+     * interrupted, and checks all three at least every [ANALYSER_PARK_NS] whether or not the capture
+     * thread unparks it. Never joined: it holds nothing a stop waits for.
+     *
+     * A failure publishes the zero picture before leaving, so the rail rests rather than holding the
+     * last shape it was given, and it costs the picture only: the take does not know this thread exists.
+     */
+    private fun analyserLoop(active: CaptureSession) {
+        val chunk = ByteArray(READ_CHUNK_BYTES)
+        val bands = FloatArray(SpectrumAnalyzer.BAND_COUNT)
+        try {
+            val analyzer = SpectrumAnalyzer()
+            while (session === active && !active.stopRequested && !Thread.currentThread().isInterrupted) {
+                var analysed = false
+                while (true) {
+                    val length = active.spectrumRing.poll(chunk)
+                    if (length < 0) break
+                    analyzer.analyze(chunk, length, active.spectrumRing.lastPolledTag, bands)
+                    analysed = true
+                }
+                if (analysed) {
+                    synchronized(active.bandsLock) {
+                        System.arraycopy(bands, 0, active.publishedBands, 0, SpectrumAnalyzer.BAND_COUNT)
+                    }
+                }
+                LockSupport.parkNanos(ANALYSER_PARK_NS)
+            }
+        } catch (e: Exception) {
+            synchronized(active.bandsLock) { active.publishedBands.fill(0f) }
+            DebugLogger.warn(TAG, "Live picture stopped for this take: ${e.message}")
+        } finally {
+            if (active.analyserThread === Thread.currentThread()) active.analyserThread = null
         }
     }
 
@@ -694,6 +791,7 @@ class AudioCaptureService : Service() {
         // to a later take.
         active.detectorAbandoned.set(true)
         active.feederThread?.interrupt()
+        active.analyserThread?.interrupt()
         stopSelf()
     }
 
@@ -728,6 +826,7 @@ class AudioCaptureService : Service() {
         session?.let { active ->
             active.detectorAbandoned.set(true)
             active.feederThread?.interrupt()
+            active.analyserThread?.interrupt()
             unbindVad(active)
         }
         val thread = captureThread

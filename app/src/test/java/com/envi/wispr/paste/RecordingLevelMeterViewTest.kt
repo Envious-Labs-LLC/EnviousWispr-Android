@@ -14,24 +14,28 @@ class RecordingLevelMeterViewTest {
     @Test
     fun theLowestBandSitsInTheMiddleAndTheHighestAtBothEdges() {
         for (count in listOf(RecordingLevelMeterView.BAR_COUNT, RecordingAccessibilityOverlay.FULL_PILL_BARS, 16)) {
-            val bands = (0 until count).map { RecordingLevelMeterView.barBand(it, count) }
-            assertEquals("edge bar, count $count", SpectrumAnalyzer.BAND_COUNT - 1, bands.first())
-            assertEquals("other edge, count $count", SpectrumAnalyzer.BAND_COUNT - 1, bands.last())
+            val ranges = (0 until count).map { RecordingLevelMeterView.barBands(it, count) }
+            assertTrue("edge bar holds the top band, count $count", SpectrumAnalyzer.BAND_COUNT - 1 in ranges.first())
+            assertTrue("other edge too, count $count", SpectrumAnalyzer.BAND_COUNT - 1 in ranges.last())
             val middle = (count - 1) / 2
-            assertEquals("middle bar, count $count", 0, bands[middle])
-            assertEquals("mirrored, count $count", bands, bands.reversed())
-            for (i in 1..middle) assertTrue("bands fall toward the middle, count $count", bands[i] <= bands[i - 1])
+            assertTrue("middle bar holds band 0, count $count", 0 in ranges[middle])
+            assertEquals("mirrored, count $count", ranges, ranges.reversed())
+            for (i in 1..middle) {
+                assertTrue("bands fall toward the middle, count $count", ranges[i].last <= ranges[i - 1].first || ranges[i].isEmpty())
+            }
         }
     }
 
     @Test
-    fun theHoldPillShowsEveryBandAndTheTapPillShowsSixOfThem() {
-        val hold = (0 until RecordingLevelMeterView.BAR_COUNT).map { RecordingLevelMeterView.barBand(it, RecordingLevelMeterView.BAR_COUNT) }.toSet()
-        assertEquals((0 until SpectrumAnalyzer.BAND_COUNT).toSet(), hold)
-        val tap = (0 until RecordingAccessibilityOverlay.FULL_PILL_BARS).map { RecordingLevelMeterView.barBand(it, RecordingAccessibilityOverlay.FULL_PILL_BARS) }.toSet()
-        assertEquals("six distinct bands on the tap pill", 6, tap.size)
-        assertTrue("from the lowest", 0 in tap)
-        assertTrue("to the highest", SpectrumAnalyzer.BAND_COUNT - 1 in tap)
+    fun everyBandLandsOnSomeBarWhateverTheCount() {
+        // Five of the eleven bands had no bar on the tap pill, so a steady 1 kHz tone drew nothing
+        // (emulator, 2026-09-15). A bar shows the loudest of its bands, so the union must be everything.
+        for (count in listOf(RecordingLevelMeterView.BAR_COUNT, RecordingAccessibilityOverlay.FULL_PILL_BARS, 16, 3)) {
+            val covered = (0 until count).flatMap { RecordingLevelMeterView.barBands(it, count).toList() }.toSet()
+            assertEquals("count $count", (0 until SpectrumAnalyzer.BAND_COUNT).toSet(), covered)
+        }
+        val hold = (0 until RecordingLevelMeterView.BAR_COUNT).map { RecordingLevelMeterView.barBands(it, RecordingLevelMeterView.BAR_COUNT) }
+        assertTrue("the hold pill gives every band its own bar", hold.all { it.count() == 1 })
     }
 
     @Test

@@ -82,7 +82,7 @@ Measured from the tree at d96e7d7:
    three reads in a row see the same value), smooths it (`AudioLevelScale.smooth`), and
    `RecordingOverlayState.updateLevel` (`RecordingOverlayState.kt:130`) quantises it to 32 steps.
 3. `RecordingLevelMeterView.pushSample` (`RecordingLevelMeterView.kt:86`) pushes one bar per poll into a
-   `LevelHistory` and redraws with no motion between polls: ten discrete steps a second.
+   `LevelHistory` (removed) and redraws with no motion between polls: ten discrete steps a second.
 
 ## 2. Goals & non-goals
 
@@ -127,7 +127,7 @@ Command: `/usr/bin/grep -rn "LevelHistory\|RecordingLevelMeterView\|updateLevel\
 | Overlay | `RecordingAccessibilityOverlay.onChanged`: on `levelTick` change, `meter.pushSample(snapshot.level)`; `barCount` 22 (hold pill) or `FULL_PILL_BARS = 11` (tap pill) | `RecordingAccessibilityOverlay.kt:224-231, 654-659` |
 | Draw | `RecordingLevelMeterView`: `LevelHistory.push`, `bars(count)`, `onDraw` with the positional rainbow shader and the resting grey for a zero sample | `RecordingLevelMeterView.kt:86-97, 130-160` |
 | Second reader of snapshots | `OnboardingViewModel.enterPractice` collects `snapshots` and reads phase, target and transcript id only | `OnboardingViewModel.kt:180, 217-235` |
-| Drawn demo | `OnboardingDemo.DemoRail` draws a scrolling tape from `LEVEL_SAMPLES` | `OnboardingDemo.kt:219, 242-255` |
+| Drawn demo | `OnboardingDemo.DemoRail` draws a scrolling tape from `LEVEL_SAMPLES` (removed) | `OnboardingDemo.kt:219, 242-255` |
 
 Both processes are confirmed in the manifest: `AudioCaptureService` `android:process=":audio"`
 (`AndroidManifest.xml:79-80`); `DictationSessionService` and `PasteAccessibilityService` carry no
@@ -155,7 +155,7 @@ Both processes are confirmed in the manifest: `AudioCaptureService` `android:pro
 ### 3. Read prior attempts and live direction
 
 Posted as the Gate 0 comment on #151. In short: the history rail is the port of the Mac's
-`RainbowLevelMeter` (PR #137, build 105); the tap pill's half reach is build 116; no catalog `decision`
+`RainbowLevelMeter` (external) (PR #137, build 105); the tap pill's half reach is build 116; no catalog `decision`
 row fixes the meter's form; #44 is stale and is closed when this ships. The founder's option B decision is
 the live direction and the Mac is explicitly not changed.
 
@@ -187,17 +187,17 @@ the live direction and the Mac is explicitly not changed.
   constructor keeps `nativeBufferBytes` (`AudioCaptureService.kt:244-256`, the platform minimum floored at
   one second, untouched by this change), `READ_BLOCK_BYTES` stays the detector block only, and the read
   allocation and request become `READ_CHUNK_BYTES` (proposed).
-- **`LEVEL_STEPS` quantisation has no consumer beyond the rail:** `/usr/bin/grep -rn LEVEL_STEPS app/src`
+- **`LEVEL_STEPS` (removed) quantisation has no consumer beyond the rail:** `/usr/bin/grep -rn LEVEL_STEPS app/src`
   → `RecordingOverlayState.kt:64, 132` only.
 - **Codex problem-only consult** run before §3 was finalised (answer file
   `codex-consult-151.txt.last` in this session's scratchpad). Findings and their dispositions:
   - *The AudioRecord native buffer is sized separately* (`nativeBufferBytes`, `AudioCaptureService.kt:244-256`);
     only the read allocation (`:296`) and the request (`:383`) use `READ_BLOCK_BYTES`. Adopted: the chunk
     constant replaces those two sites and the log line at `:255` names both sizes.
-  - *`CaptureBufferOwnershipTest.theReadBlockIsTwoHundredAndFiftySixMilliseconds` asserts the detector
+  - *`theReadBlockIsTwoHundredAndFiftySixMilliseconds` (removed) in `CaptureBufferOwnershipTest`, now `theDetectorBlockIsTwoHundredAndFiftySixMilliseconds`, asserts the detector
     block, not the read* (`:46-55`), so shrinking the read while keeping the constant would pass it
     silently. Adopted: a sibling assertion pins the READ to `READ_CHUNK_BYTES = 1_024` at the call site.
-  - *There is no feeder join; `FEEDER_JOIN_MS` is unused (`:60`); a feeder may outlive `releaseSession`.*
+  - *There is no feeder join; `FEEDER_JOIN_MS` (removed) is unused (`:60`); a feeder may outlive `releaseSession`.*
     Adopted for the analyser: its published arrays live on the `CaptureSession`, so a thread outliving
     its take writes into a dead session's arrays and `getSpectrumBands` reads only the LIVE session's.
     `FEEDER_JOIN_MS` is deleted as dead code in passing.
@@ -254,8 +254,10 @@ Hann window, a radix-2 real FFT with tables built in the constructor, 11 bands: 
 85 to 170 Hz, so the fundamental of nearly every speaking voice lands in the CENTRE bar (an equal log split
 stopped it at 146 Hz and left the middle dark for a higher voice on the emulator's first spoken take,
 2026-09-14), then ten log-spaced bands up to 6.4 kHz (bin width 15.625 Hz), per-band RMS magnitude normalised so a
-full-scale sine reads 0 dBFS in its band, a mild tilt (+3 dB per octave above 300 Hz, so fricatives at the
-edges show against the natural fall-off of speech), then the same dB-window shape as today's
+full-scale sine reads 0 dBFS in its band, then divided by the band's bin count (the top band is 128 bins
+wide and the first five; a band TOTAL made the same hiss read 14 dB louder at the edges, the founder's first
+phone look at build 127), no high-band tilt (3 and then 1.5 dB per octave both spiked the edges on hiss),
+then the same dB-window shape as today's
 `AudioLevelScale.display` with per-band constants (`QUIET_DBFS = -62`, `LOUD_DBFS = -18`, measured on the
 emulator and re-tuned on the founder's phone pass; the numbers carry their date). Output: 11 floats in
 0..1, low band first. No allocation after construction; a non-finite input reads as silence.
@@ -279,7 +281,7 @@ owned by the snapshot, not by the thread: `RecordingOverlayState.show()` stamps 
 is `updateBands(serial, bands)`, and the serial is compared INSIDE the same locked `change` that commits
 the bands, so a stale thread's picture is refused atomically however late it arrives; after each read the
 thread also compares the serial with the current snapshot's and exits when it differs, so no second loop
-lives on into a later take. `lastMeterLevel`, the meter block in the tick, and `AudioLevelScale` go.
+lives on into a later take. `lastMeterLevel` (removed), the meter block in the tick, and `AudioLevelScale` go.
 
 **Snapshot.** `Snapshot.level` and `levelTick` (removed) become `bands` (proposed), a `FloatArray` with a shared zero
 default; `updateLevel` (removed) becomes `updateBands` (proposed), which copies the array, keeps the
@@ -426,7 +428,7 @@ No new user-facing sentence; the picture's failure state is the resting rail, wh
   `updateBands`; remove `level`, `levelTick`, `LEVEL_STEPS`, `updateLevel`; rewrite the snapshot,
   publication, stop-race and delivery comments (`:44, :49, :121, :150, :174`) for band arrays at ~30 Hz.
 - `app/src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt` — `setBands` on delivery;
-  the `lastLevelTick` field and its hidden-branch reset (`:219`) go; the two meter-delivery comments
+  the `lastLevelTick` (removed) field and its hidden-branch reset (`:219`) go; the two meter-delivery comments
   (`:225, :233`) describe band publication; `reset()` on show stays.
 - `app/src/main/java/com/envi/wispr/paste/RecordingLevelMeterView.kt` — targets, shown, `barBand`, the
   frame loop, `setBands`; `pushSample` and the history go; the class and method documentation (`:12-33,
@@ -438,7 +440,7 @@ No new user-facing sentence; the picture's failure state is the resting rail, wh
   and the scrolling-rail comment (`:249`) go.
 - Tests: `SpectrumAnalyzerTest` (proposed), `RecordingLevelMeterViewTest` (proposed) (pure functions),
   `LiveAudioMeterWiringTest` (rewritten), `CaptureBufferOwnershipTest` (updated strings),
-  `RecorderBrandTest` (update if it names `pushSample`), `LevelHistoryTest` and `AudioLevelScaleTest`
+  `RecorderBrandTest` (update if it names `pushSample`), `LevelHistoryTest` (removed) and `AudioLevelScaleTest` (removed)
   (deleted), `androidTest/RecordingOverlayStateTest` (`updateBands`).
 
 ## 11. Testing
@@ -487,7 +489,7 @@ No new user-facing sentence; the picture's failure state is the resting rail, wh
 | `RecordingLevelMeterViewTest` rest | product | from non-zero targets, `setBands` of zeros eases every bar to the floor | hold the last target on zeros |
 | `RecordingLevelMeterViewTest` `barBand` | product | centre = band 0, edges = last band, symmetric, for 22 and 11 | drop the mirror |
 | `RecordingLevelMeterViewTest` easing | product | rises faster than falls; two 8 ms steps ≈ one 16 ms step | one τ |
-| `LiveAudioMeterWiringTest` | drift guard | own thread, caught, reaches snapshot, no reopen after stop; `spectrumBands` is read in the session owner ONCE and in neither surface (the band form of `theMeterIsOnlyEverReadInOnePlace`); every mutator the test inspects is asserted to EXIST before its body is read, so a renamed method fails loudly instead of `substringAfter` scanning unrelated text | move the read into the tick; add a read to the overlay |
+| `LiveAudioMeterWiringTest` | drift guard | own thread, caught, reaches snapshot, no reopen after stop; `spectrumBands` is read in the session owner ONCE and in neither surface (the band form of `theMeterIsOnlyEverReadInOnePlace` (removed)); every mutator the test inspects is asserted to EXIST before its body is read, so a renamed method fails loudly instead of `substringAfter` scanning unrelated text | move the read into the tick; add a read to the overlay |
 | `RecorderBrandTest.onlyTheRailMovesWithTheVoice` | drift guard | the rail declares `setBands`; the brand mark declares neither `setBands`, `pushSample` nor `setLevel` | give the mark a `setBands` |
 | `SpectrumAnalyzerTest` gap reset | product | chunks A (position 0), B (1024) analysed, C (2048) never offered, D (3072) analysed: D's picture equals the picture of D analysed after `reset()` alone, and B's older half is not in it (a tone only in B reads 0 in D's bands) | join B and D |
 | `BlockRingTest` (proposed) tags | contract | `lastPolledTag` after `poll` is the tag given to the matching `offer`, in order, across a wrap of the ring | store the tag in the wrong slot |
@@ -516,8 +518,14 @@ No new user-facing sentence; the picture's failure state is the resting rail, wh
 
 ## 14. Open questions
 
-- The per-band dB constants and the tilt are a first guess; the founder's phone pass tunes them. Named
-  here so the review does not treat them as measured.
+- The per-band dB constants are a first guess; the founder's phone pass tunes them. Named here so the
+  review does not treat them as measured. Emulator evidence since: `scripts/uat/rail_signals.py` plays
+  silence, three tones, a sweep, flat hiss and 4 Hz bursts into the emulator over `injectAudio`,
+  screen-records the pill, measures every bar per frame and judges each; all seven pass on the tree
+  this plan ships with (2026-09-15).
+- Found by that battery and fixed in the same branch: the tap pill's eleven bars mapped each bar to ONE
+  nearest band, leaving five bands with no bar, so a steady 1 kHz tone drew nothing; every bar now shows
+  the loudest of a contiguous band range and every band lands on a bar (`RecordingLevelMeterView.barBands`).
 
 ## 15. Related
 

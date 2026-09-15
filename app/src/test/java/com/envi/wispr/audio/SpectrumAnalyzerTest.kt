@@ -50,7 +50,9 @@ class SpectrumAnalyzerTest {
             // Mid-scale on purpose: a loud tone clamps its own band AND its neighbour at 1.0, and the
             // comparison below would then be between two ceilings.
             val picture = steady(analyzer, hz, amplitude = 0.05f)
-            assertTrue("$hz Hz must light band $own, got ${picture[own]}", picture[own] > 0.4f)
+            // The top band is 128 bins wide, so a pure tone's per-bin mean reads lower there than in the
+            // narrow low bands; a third of the rail is still plainly lit.
+            assertTrue("$hz Hz must light band $own, got ${picture[own]}", picture[own] > 0.3f)
             for (band in picture.indices) {
                 if (band == own) continue
                 if (kotlin.math.abs(band - own) == 1) {
@@ -162,7 +164,7 @@ class SpectrumAnalyzerTest {
     fun flatHissReadsAboutTheSameInEveryBand() {
         // The founder's first phone look at build 127: "the two side bars are spiking a good amount".
         // The top band is 128 bins wide and the first is five, so a band TOTAL made the same hiss read
-        // 14 dB louder at the edges. Per-bin, every band sees the same hiss, give or take the gentle tilt.
+        // 14 dB louder at the edges. Per-bin, every band sees the same hiss.
         val analyzer = SpectrumAnalyzer()
         val random = java.util.Random(7)
         fun noise(): ByteArray = ByteArray(1024).also {
@@ -186,11 +188,10 @@ class SpectrumAnalyzerTest {
 
     @Test
     fun theDisplayScaleIsMonotonicAndClamped() {
-        assertEquals(0f, SpectrumAnalyzer.display(0f, 0f), 0f)
-        assertEquals(0f, SpectrumAnalyzer.display(Float.NaN, 0f), 0f)
-        assertEquals(0f, SpectrumAnalyzer.display(-1f, 0f), 0f)
-        assertEquals(1f, SpectrumAnalyzer.display(1f, 0f), 0f)
-        assertTrue(SpectrumAnalyzer.display(0.01f, 0f) < SpectrumAnalyzer.display(0.1f, 0f))
-        assertTrue("the tilt lifts a band", SpectrumAnalyzer.display(0.01f, 6f) > SpectrumAnalyzer.display(0.01f, 0f))
+        assertEquals(0f, SpectrumAnalyzer.display(0f), 0f)
+        assertEquals(0f, SpectrumAnalyzer.display(Float.NaN), 0f)
+        assertEquals(0f, SpectrumAnalyzer.display(-1f), 0f)
+        assertEquals(1f, SpectrumAnalyzer.display(1f), 0f)
+        assertTrue(SpectrumAnalyzer.display(0.01f) < SpectrumAnalyzer.display(0.1f))
     }
 }

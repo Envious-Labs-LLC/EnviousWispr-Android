@@ -1,0 +1,67 @@
+Physical Samsung SM-S948U1; Android 16/API 36; installed Play build 133 unchanged.
+2026-09-16, New York time.
+Media volume read before=7 after=7. No volume writes.
+Expected and actual editor text: The purple lantern is beside the quiet garden.
+
+READY uid=10583 route=REMOTE_SUBMIX type=25 flags=2 render=false
+ARMED
+09-16 00:59:39.733  9883  9896 I AudioCapture: Recording started (PID: 9883, max: 600000ms, nativeFrames: 16000)
+INJECTED bytes=84722 route=REMOTE_SUBMIX render=false
+09-16 00:59:43.377  9887 14285 I AsrService: Transcribing 104832 bytes (3.3s) (PID: 9887)
+09-16 00:59:43.510  9887 14285 I AsrService: Decode: 132ms, RTF=0.04, textChars=46
+09-16 00:59:43.740 19156 19156 I PasteService: insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=9 overrun=false target=com.envi.wispr.test
+CLEANED policy=unregistered
+
+ Inputs (1):
+  1. Port ID: 1280; 0x0000 (AUDIO_INPUT_FLAG_NONE); I/O handle: 1118
+     AUDIO_FORMAT_PCM_16_BIT; 16000; Channel mask: 0xc
+     Devices: AUDIO_DEVICE_IN_REMOTE_SUBMIX, @:1184238636:ap:7mixr:0
+     AudioRecord Clients (1):
+      1. Port ID: 1281; Session ID: 6793; uid 10583; State: Active
+         AUDIO_FORMAT_PCM_16_BIT; 16000; Channel mask: 0x10
+         Attributes: { Content type: AUDIO_CONTENT_TYPE_UNKNOWN Usage: AUDIO_USAGE_UNKNOWN Source: AUDIO_SOURCE_VOICE_RECOGNITION Flags: 0x800 Tags:  }
+         Source: 6; Flags: 00000000; is soundtrigger: 0
+
+ Audio Policy Mix:
+  Audio Policy Mix 1 (0xb400007816e22250):
+  - mix type: MIX_TYPE_RECORDERS
+  - Route Flags: MIX_ROUTE_FLAG_LOOP_BACK
+  - device type: AUDIO_DEVICE_IN_REMOTE_SUBMIX
+  - device address: 1184238636:ap:7mixr:0
+  - virtual device id: 0
+  - output: 157
+  - input: 0
+  - Sec Mix Flags: Unknown enum value 0
+    - Criterion 0: RULE_MATCH_UID 10583
+
+
+Editor receipt:
+[
+  {
+    "text": "The purple lantern is beside the quiet garden. ",
+    "desc": "",
+    "package": "com.envi.wispr.test",
+    "kind": "EditText",
+    "id": "",
+    "clickable": true,
+    "enabled": true,
+    "selected": false,
+    "scrollable": false,
+    "focused": true,
+    "checkable": false,
+    "on": null,
+    "bounds": [
+      0,
+      0,
+      1080,
+      2207
+    ],
+    "centre": [
+      540,
+      1103
+    ],
+    "parent": 3
+  }
+]
+
+Post-cleanup dynamic Audio Policy Mix entries: 0

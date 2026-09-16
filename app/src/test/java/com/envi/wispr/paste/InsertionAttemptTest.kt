@@ -42,6 +42,13 @@ class InsertionAttemptTest {
         var commitThrows: Boolean = false,
         /** The pipe answers its surrounding-text read; false is an editor like Chromium that gives null. */
         var surroundingAvailable: Boolean = true,
+        /**
+         * Chrome's web input answers the surrounding read from a FROZEN pre-write snapshot: the
+         * post-write read never grows to show the payload. When set, every surrounding read returns
+         * this text at offset 0 (document start), while the node ([readTarget]) still holds the live
+         * field. This is the stale-pipe MISS the node rescue exists for.
+         */
+        var frozenSurrounding: String? = null,
         /** Input finishes on the pipe between the eligibility check and the commit call, once. */
         var sessionChangesBeforeCommitOnce: Boolean = false,
         /** The editor applies the commit only when [applyLateCommit] is called, as a slow editor would. */
@@ -84,7 +91,7 @@ class InsertionAttemptTest {
             clock += readCostMs
             surroundingReads += 1
             if (!surroundingAvailable || !present) return null
-            val whole = field ?: ""
+            val whole = frozenSurrounding ?: (field ?: "")
             val before = whole.takeLast(beforeChars)
             return AccessibilityInsertionRules.window(before, before.length, before.length, whole.length - before.length)
         }
@@ -266,6 +273,37 @@ class InsertionAttemptTest {
         val attempt = attempt(editor)
         assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), attempt.tick())
         assertEquals(InsertionAttempt.Evidence.NODE, attempt.evidence)
+        assertEquals(1, editor.commits)
+    }
+
+
+    @Test
+    fun aChromeStalePipeMissIsRescuedByTheNodeAndDeliveredByCommit() {
+        // Chrome answers the post-write surrounding read with the PRE-write text at offset 0, so
+        // judgeWindow sees a document-start read too short to hold the payload and returns MISS. The
+        // node holds the field's real text and verifies it: the take is delivered by COMMIT through the
+        // node, never dropped to the clipboard, with exactly one write.
+        val editor = FakeEditor(commitEligible = true, frozenSurrounding = "Hi team, ")
+        val attempt = attempt(editor)
+        val tick = attempt.tick()
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), tick)
+        assertEquals(InsertionAttempt.Evidence.NODE, attempt.evidence)
+        assertEquals(Judgement.VERIFIED, attempt.lastJudgement)
+        assertEquals(1, editor.commits)
+        assertEquals(0, editor.pastes)
+        assertEquals("Hi team, and I will", editor.field)
+    }
+
+    @Test
+    fun aGenuineCommitMissWithTheSameStalePipeIsNotRescuedAndKeepsTheClipboardFallback() {
+        // The pipe is stale AND the field truly does not hold the words (a real dropped write): the
+        // node reads a MISS too, the rescue declines, and the take keeps judging toward the clipboard
+        // fallback rather than trusting a write that never landed. Still exactly one write.
+        val editor = FakeEditor(commitEligible = true, frozenSurrounding = "Hi team, ", commitAppliesLate = true)
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(Judgement.MISS, attempt.lastJudgement)
+        assertEquals(InsertionAttempt.Evidence.SURROUNDING, attempt.evidence)
         assertEquals(1, editor.commits)
     }
 

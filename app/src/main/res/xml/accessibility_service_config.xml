@@ -6,5 +6,6 @@
     android:accessibilityFlags="flagIncludeNotImportantViews|flagRetrieveInteractiveWindows|flagReportViewIds|flagInputMethodEditor"
     android:canRetrieveWindowContent="true"
     android:description="@string/accessibility_service_description"
+    android:isAccessibilityTool="false"
     android:notificationTimeout="50"
     android:settingsActivity="com.envi.wispr.ui.SettingsActivity" />

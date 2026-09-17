@@ -2,7 +2,11 @@
 
 A founder decision (`.claude/knowledge/play-store-readiness.md` RULE: device-support-is-a-decision-not-a-default).
 It changes the listing, the store filters, and the test matrix. This doc holds the options and a
-recommendation grounded in the shipping path and web research (council 2026-09-15). It does not decide.
+recommendation grounded in the shipping path and web research (council 2026-09-15).
+
+**Decided 2026-09-16 by the founder: Option A.** Version one ships to phones with 6 GB of RAM or more,
+Android Go excluded, arm64 only, no chipset restriction. The same day he decided there is no closed beta:
+internal testing goes straight to a public release.
 
 ## FACT: the-shipped-path-is-CPU-only-and-not-Snapdragon-locked
 The speech model (Parakeet on sherpa-onnx) and the local polish model (S1-mini on llama.cpp) both run on
@@ -28,7 +32,7 @@ system killing the app under memory pressure.
 Both add a runtime pre-flight that needs ~1.5 to 2 GB free storage before the first download.
 
 ## RULE: the-recommendation
-Launch on **Option A (6 GB minimum, Android Go excluded, arm64 only, no chipset restriction)**, then lower
+Adopted 2026-09-16. Launch on **Option A (6 GB minimum, Android Go excluded, arm64 only, no chipset restriction)**, then lower
 to 4 GB after real 4 GB testing and Play vitals show acceptable crash and ANR rates. The device-catalog
 exclusions are revisable without adding a hardware dependency, so starting strict costs nothing but reach
 and buys clean early reviews.

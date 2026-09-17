@@ -25,19 +25,30 @@ closed beta: internal testing goes straight to a public release (`docs/device-su
 2. **Say "yes R2"** (or not) on `model-hosting-proposal.md`. Under $1/month.
 3. **Say "publish the policy"**: the Android paragraph goes onto https://enviouswispr.com/privacy-policy/
    through the macOS repo's website process (its own PR and review).
-4. **Play Console, Store presence > Main store listing:** paste from `store-listing.md`; upload the icon,
-   feature graphic and screenshots from `graphics/` and `screenshots/` beside this file.
+4. **Play Console, Store presence > Main store listing:** paste from `store-listing.md`; upload the icon
+   and feature graphic from `graphics/` (both exist) and the screenshots from `screenshots/`.
+   **Screenshots are OUTSTANDING**: captured on the emulator by Claude before the founder wakes if the
+   emulator cooperates, otherwise the first item of the morning (owner: Claude; 4 to 6 portrait shots:
+   History, the recorder pill mid-dictation over Gmail, Your Words, Microphone settings, AI Polish).
 5. **Play Console, Policy > App content:** answer from `console-declarations.md` and
-   `docs/play-data-safety-answers.md`; upload the accessibility video from `video/`.
+   `docs/play-data-safety-answers.md`. **The accessibility review video is OUTSTANDING** (owner: Claude,
+   emulator screen recording): it must show, in one take, the disclosure screen, tapping "Not now" and
+   returning, the disclosure again, tapping "Agree and open Settings", the Android toggle, the return to
+   the app, and one dictation from the bubble landing in a Gmail or Chrome field
+   (`.claude/knowledge/play-store-readiness.md` RULE: the-accessibility-declaration-is-the-highest-review-risk).
+   Until both exist this checklist stops at step 3.
 6. **Reach and devices > Device catalogue:** the two exclusion rules in `console-declarations.md` §7.
 7. **Production track:** create the release from the same bundle as the internal build that passed the
-   phone pass (promote from internal testing, never a fresh upload), countries: all, rollout: staged at
-   20 percent, then send for review.
+   phone pass (promote from internal testing, never a fresh upload). **A first release cannot be staged**:
+   Google offers staged rollouts only for updates, so the exposure control on a first release is the
+   country list. Recommendation: **United States only** for the first release, then add countries from
+   the Console after the first week of reviews and vitals (adding countries needs no new review). Send
+   for review.
 
 ## What Google's review will take
 
-Expect 1 to 7 days for a first review with an Accessibility API declaration. The staged 20 percent
-rollout can be raised from the Console at any time after approval without another review.
+Expect 1 to 7 days for a first review with an Accessibility API declaration. Later updates can use a
+staged percentage rollout; the first release is all-or-nothing within the chosen countries.
 
 ## Left open on purpose
 

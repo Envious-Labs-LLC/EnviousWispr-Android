@@ -28,19 +28,34 @@ verifies byte count and SHA-256 before admitting a model, so switching the HOST 
 hostname we own. Keep the pinned Hugging Face URL in the manifest as the SECOND source so a bucket outage
 never blocks a first run.
 
-Approval needed: Cloudflare R2 on the existing account, expected under $1/month, hard cap by usage alert
-at $5/month. Say "yes R2" and this becomes a SMALL change.
+Approval needed: Cloudflare R2 on the existing account, expected under $1/month. There is NO hard spending
+cap on R2: a Cloudflare billing alert at $5/month notifies, it does not stop requests or charges. The
+bound is the price sheet, not a switch: even 100,000 installs in one month is about 500,000 object reads
+(five files each) at $0.36 per million, under $0.20, plus $0.02 storage and $0 egress. Say "yes R2" and
+this becomes a MEDIUM change (it touches model delivery, the heart's model-loading path).
 
 ## What the change is, once approved
 
-1. Create bucket `enviouswispr-models`, upload the five files under `parakeet/<revision>/…` and
-   `s1-mini/<revision>/…`, attach the custom domain `models.enviouswispr.com`.
-2. `models/ModelManifest.kt`: primary URL on our host, Hugging Face as the fallback; sizes and hashes
-   unchanged (the same bytes). `ModelManifestTest` pins both.
-3. `docs/play-data-safety-answers.md` and the privacy addendum already say "a model host"; the listing
+Changing only the URLs would make both models unavailable (Codex review, 2026-09-17): the delivery code
+accepts a source only when `validateModelSource` (`models/ModelDelivery.kt:263`) passes, which today
+requires host `huggingface.co` and a path containing `/resolve/`, and the availability check reads the
+revision out of a `/resolve/<revision>/` path. Each `ModelFile` carries ONE `sourceUrl` and delivery has
+no alternate-source fallback. So the scope is:
+
+1. Create bucket `enviouswispr-models`, upload the five files under `parakeet/resolve/<revision>/…` and
+   `s1-mini/resolve/<revision>/…` (keeping the `/resolve/<revision>/` path contract so the availability
+   check needs no new parser), attach the custom domain `models.enviouswispr.com`.
+2. `validateModelSource`: accept exactly two hosts, `models.enviouswispr.com` and `huggingface.co`, HTTPS,
+   path containing `/resolve/`; a test pins the allow-list in both directions.
+3. `ModelFile`: a primary `sourceUrl` plus a `fallbackUrl` (proposed); the download worker tries the primary and, on
+   a refused or failed response before any byte lands, the fallback, logging which host served the file.
+   A partial download resumes only against the host it started on (ranges differ per host).
+4. `models/ModelManifest.kt`: primary on our host, Hugging Face as the fallback; sizes and hashes
+   unchanged (the same bytes). `ModelManifestTest` pins both URLs per file.
+5. `docs/play-data-safety-answers.md` and the privacy addendum already say "a model host"; the listing
    says nothing host-specific. Nothing else to change.
-4. Verify on the emulator: a clean install downloads from the new host (log line names the URL) and both
-   models verify.
+6. Verify on the emulator: a clean install downloads from the new host (the log line names the host) and
+   both models verify; then block the new host at the emulator's DNS and prove the fallback serves.
 
 Not in scope: a versioned manifest served from the host (so a model bump needs no app update). That is
 the second half of the open item and a separate plan; it is not needed for launch, because a model bump

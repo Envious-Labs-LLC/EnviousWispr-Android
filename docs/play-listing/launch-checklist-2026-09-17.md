@@ -39,7 +39,11 @@ closed beta: internal testing goes straight to a public release (`docs/device-su
    open Settings", Android's Accessibility list, the EnviousWispr toggle, the "Allow" prompt, the return
    to the app with Accessibility reading Granted, then one dictation from the floating bubble into a
    Chrome text field with the words landing (recorded 2026-09-17 on the emulator, reviewed build).
-   Play accepts an upload or a YouTube link; upload the file.
+   The declaration form takes a video LINK, not an upload. The file is hosted on the business Google
+   Drive with "anyone with the link can view":
+   https://drive.google.com/file/d/1vOOgHWrk_xMO8Cqq1LSvPGHOIqYl1UZE/view (checked from a logged-out
+   fetch 2026-09-17). Paste that URL. If Google's reviewer tooling rejects a Drive link, upload the same
+   file as an unlisted YouTube video on the business channel and paste that URL instead.
 6. **Reach and devices > Device catalogue:** the two exclusion rules in `console-declarations.md` §7.
 7. **Production track:** create the release from the same bundle as the internal build that passed the
    phone pass (promote from internal testing, never a fresh upload). **A first release cannot be staged**:

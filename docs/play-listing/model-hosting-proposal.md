@@ -1,6 +1,8 @@
 # Model hosting: the proposal for the founder's yes
 
-Status: PROPOSAL, 2026-09-17. Needs a founder decision because it is cloud spend (`GR-NO-CLOUD-SPEND`).
+Status: SHIPPING, 2026-09-17. The founder approved option A (Cloudflare R2, `GR-NO-CLOUD-SPEND`) in chat
+on 2026-09-17, served from the existing `models.enviouslabs.co` host the macOS and Windows apps already use
+rather than a new domain; the five model files are live there and the app change is #169.
 Owner of the delivery mechanics: `.claude/knowledge/model-delivery.md`; the open item it names is
 "production model hosting with versioned download manifests".
 

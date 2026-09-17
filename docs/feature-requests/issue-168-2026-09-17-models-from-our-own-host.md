@@ -257,14 +257,19 @@ hide which host served from the store's resume logic.
 
 ## 13. Ship criteria
 
-- [ ] Emulator clean install: five `Model source:` lines from our host, both models Ready, one dictation.
-- [ ] Emulator with our host blocked: five lines from Hugging Face, both Ready.
-- [ ] The four Parakeet objects answer 206 on the public URL before the branch goes to internal testing.
+- [x] Emulator clean install: five `Model source:` lines from our host, both models Ready, one dictation
+  (2026-09-17 09:34, both models Ready in 85 s; "The models came from our own host and the dictation
+  still works." inserted into Chrome, `outcome=VERIFIED`).
+- [x] Emulator with our host blocked: five lines from Hugging Face, both Ready (2026-09-17 09:37, a
+  throwaway build with `blocked-` prefixed onto our host's folder; both Ready in 63 s; the edit was
+  reverted before commit).
+- [x] The four Parakeet objects answer 206 on the public URL before the branch goes to internal testing
+  (2026-09-17 09:31, ranged GET on all four plus the S1 file; the bucket-scoped upload token was revoked
+  and its absence confirmed against the token list).
 
 ## 14. Open questions
 
-- The upload of the four Parakeet files needs a gcloud login the founder must do once
-  (`gcloud --configuration=business auth login --update-adc`); the upload script is ready.
+None. The upload ran 2026-09-17 after the founder's gcloud login.
 
 ## 15. Related
 

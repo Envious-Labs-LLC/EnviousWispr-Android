@@ -693,21 +693,28 @@ class DictationSessionService : Service() {
 
     /**
      * Two one-time lines about the microphone, decided from the codes the capture process reports:
-     * the Bluetooth tip (once per app process, tips on, take started on Bluetooth), and the pick-missing
-     * line (once per take whose explicit pick was not connected). Neither reads the display label.
+     * the pick-missing line (once per take whose explicit pick was not connected), then the Bluetooth
+     * tip (once per app process, tips on, take started on Bluetooth). Neither reads the display label.
+     *
+     * The recorder has ONE notice slot and the last write wins, so a take says at most one of these, and
+     * neither is said in a take that already carries the auto-stop warning: a capture warning outranks a
+     * nudge. The tip's once-per-process allowance is spent only when the tip is actually said, so a take
+     * that had to say something else leaves it for the next Bluetooth take (Codex review 5, 2026-09-17).
      */
     private fun publishMicrophoneNoticesIfNeeded(service: IAudioCaptureService) {
+        if (silenceNoticeShown || pickMissingNoticeShown) return
+        val reason = runCatching { service.inputRouteReason }.getOrNull() ?: return
+        if (CaptureNotices.pickIsMissing(reason)) {
+            val picked = (InputDevicePick.parse(inputDevicePick) as? InputDevicePick.Device)?.name
+            pickMissingNoticeShown = true
+            if (picked != null) sayWhileRecording(CaptureNotices.pickMissingLine(picked))
+            return
+        }
         val kind = runCatching { service.inputRouteKind }.getOrNull() ?: return
         if (bluetoothTipGate.shouldShow(kind, showBluetoothTips)) {
             DebugLogger.log(TAG, "Bluetooth tip shown")
             sayWhileRecording(CaptureNotices.BLUETOOTH_TIP)
         }
-        if (pickMissingNoticeShown) return
-        val reason = runCatching { service.inputRouteReason }.getOrNull() ?: return
-        if (!CaptureNotices.pickIsMissing(reason)) return
-        pickMissingNoticeShown = true
-        val picked = (InputDevicePick.parse(inputDevicePick) as? InputDevicePick.Device)?.name ?: return
-        sayWhileRecording(CaptureNotices.pickMissingLine(picked))
     }
 
     /**

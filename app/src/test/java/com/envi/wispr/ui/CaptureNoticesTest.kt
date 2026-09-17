@@ -44,6 +44,20 @@ class CaptureNoticesTest {
     }
 
     @Test
+    fun theRecorderSaysAtMostOneMicrophoneLinePerTakeAndACaptureWarningOutranksIt() {
+        // One notice slot on the recorder, last write wins: the tip must not overwrite the auto-stop
+        // warning, and must not spend its once-per-process allowance in a take that said something else.
+        val body = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+            .substringAfter("private fun publishMicrophoneNoticesIfNeeded(")
+            .substringBefore("private fun publishDurationWarningIfNeeded(")
+        assertTrue(body.contains("if (silenceNoticeShown || pickMissingNoticeShown) return"))
+        assertTrue("the pick-missing line returns before the tip is considered", body.indexOf("return
+        }
+        val kind") > 0)
+        assertTrue("the gate is consulted only after every other line has declined", body.indexOf("bluetoothTipGate.shouldShow") > body.indexOf("pickIsMissing"))
+    }
+
+    @Test
     fun anUnknownKindCodeIsNotBluetooth() {
         assertFalse(BluetoothTipGate().shouldShow(42, tipsEnabled = true))
     }

@@ -33,7 +33,7 @@ PRIVATE BY DESIGN
 Speech recognition runs entirely on your phone. Audio is never uploaded, to us or to anyone. There is no account, no sign-in, and no tracking. The only time any text leaves your phone is if you choose to connect your own AI provider key for cloud polish, and then your text goes straight from your phone to the provider you picked.
 
 FINISHED TEXT, NOT A RAW TRANSCRIPT
-Say it the way you would say it out loud. EnviousWispr removes the ums and the false starts, fixes punctuation and capitals, and keeps your voice and your meaning. On-device polish is built in. If you want more, plug in your own OpenAI, Anthropic, Google Gemini, or self-hosted key.
+Say it the way you would say it out loud. EnviousWispr removes the ums and the false starts, fixes punctuation and capitals, and keeps your voice and your meaning. On-device polish is built in. If you want more, plug in your own OpenAI, Anthropic, or Google Gemini key.
 
 YOUR WORDS
 Names, product terms, and jargon that speech engines get wrong: add them once to Your Words and they land right every time. Aliases let you say one thing and type another.
@@ -50,7 +50,7 @@ Android 13 or newer, a 64-bit phone with 6 GB of memory or more, and about 1.2 G
 ABOUT ACCESSIBILITY ACCESS
 EnviousWispr asks for Android's Accessibility permission so it can find the text box you are using and put your words there after you start a dictation. It is a dictation app, not an assistive tool. It never operates your phone on its own, and field contents are never sent to Envious Labs. You can switch the access off in Android Settings at any time; dictation then copies your words to the clipboard instead.
 ```
-(2,462 characters.)
+(2,449 characters.)
 
 ## Category and contact
 
@@ -84,7 +84,7 @@ First release. Press, speak, and finished text lands in the app you were typing 
 | Your voice never leaves your phone | `INTERNET` reaches only model downloads and the user's own polish provider; audio is never sent on any path | `privacy/PrivacyDisclosure.kt`, `docs/play-data-safety-answers.md` |
 | Text leaves the phone only for the user's own cloud polish key | Cloud polish is opt-in, straight to the provider | `providers/ProviderPolishClient.kt` |
 | On-device polish is built in | S1-mini on llama.cpp in `:polish`, CPU path, shipped | `.claude/knowledge/polish-engines.md` |
-| Providers: OpenAI, Anthropic, Google Gemini, self-hosted | The exhaustive provider `when` | `privacy/PrivacyDisclosure.kt` |
+| Providers: OpenAI, Anthropic, Google Gemini | The three a new install can connect; self-hosted exists only for a configuration an older build saved (`ui/PolishLadder.kt` excludes it from the pickable set) | `privacy/PrivacyDisclosure.kt`, `ui/PolishLadder.kt` |
 | Earbuds are the microphone when connected | PR #165, Auto prefers connected earbuds | `audio/InputDeviceResolver.kt` |
 | Bubble, Quick Settings tile, notification start a dictation | Three of the five entry points into the session owner | `.claude/knowledge/current-state.md` |
 | History keeps every dictation | Room `transcripts` table; wordless takes are not stored | `history/` |

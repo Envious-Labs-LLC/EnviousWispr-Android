@@ -42,7 +42,7 @@ MADE FOR REAL PHONES
 Works with your earbuds: when they are connected, they are the microphone. A one-tap floating bubble, a Quick Settings tile, and a notification all start a dictation. Every dictation is kept in History on your phone so nothing you said is ever lost.
 
 FREE
-No subscription, no trial, no limits. Bring your own key only if you want cloud polish.
+No subscription, no trial, no word count or daily quota. Each dictation can run up to ten minutes. Bring your own key only if you want cloud polish.
 
 WHAT YOU NEED
 Android 13 or newer, a 64-bit phone with 6 GB of memory or more, and about 1.2 GB of free storage for the two on-device models, downloaded once over Wi-Fi.
@@ -50,7 +50,7 @@ Android 13 or newer, a 64-bit phone with 6 GB of memory or more, and about 1.2 G
 ABOUT ACCESSIBILITY ACCESS
 EnviousWispr asks for Android's Accessibility permission so it can find the text box you are using and put your words there after you start a dictation. It is a dictation app, not an assistive tool. It never operates your phone on its own, and field contents are never sent to Envious Labs. You can switch the access off in Android Settings at any time; dictation then copies your words to the clipboard instead.
 ```
-(2,401 characters.)
+(2,462 characters.)
 
 ## Category and contact
 
@@ -93,6 +93,7 @@ First release. Press, speak, and finished text lands in the app you were typing 
 | About 1.2 GB of models over Wi-Fi | Speech 670 MB + polish 484 MB; onboarding has a mobile-data switch | `models/ModelManifest.kt`, `docs/launch-readiness-2026-09-15.md` |
 | Clipboard fallback without accessibility | Guarded insertion with clipboard fallback | `.claude/knowledge/current-state.md` |
 | Free, no account, no tracking | No server, no analytics SDK, no accounts | `docs/play-data-safety-answers.md` |
+| Each dictation up to ten minutes | `RecordingLimits.MAX_DURATION_MS` is 600,000 ms; the capture loop stops the take at the cap and transcribes what it has | `audio/RecordingLimits.kt` |
 
 Not claimed on purpose: NPU polish (development override, never shipped); language coverage beyond
 English (Parakeet v3 recognises 25 European languages but nothing in the app names or selects them, so

@@ -239,7 +239,7 @@ session. So a routing request never outlives the attempt that made it, session o
 2. `target == null` → return false. The owner's line becomes the macOS sentence "No microphone found. Please
    connect one." only when the capture service reports `getLastStartFailure() == NO_INPUT_DEVICE`
    (proposed getter, §4). Every other false keeps today's "Microphone capture could not start safely".
-3. Bluetooth target: find the SINK with the same type family and name in
+3. Bluetooth target: find the SINK with the same name AND the same transport type in
    `audioManager.availableCommunicationDevices` (external). No sink, a `false` return, or a thrown call →
    log, release the hold, resolve again with the Auto order WITHOUT Bluetooth, `reason = link_refused`.
    The device list is re-read for that second resolution so a headset that disappeared between the two

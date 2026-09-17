@@ -53,6 +53,6 @@ class CaptureNoticesTest {
         InputRouteReason.entries.forEach { reason ->
             assertEquals(reason.name, reason == InputRouteReason.PICK_MISSING, CaptureNotices.pickIsMissing(reason.code))
         }
-        assertEquals("AirPods Pro 3 is not connected, using the phone", CaptureNotices.pickMissingLine("AirPods Pro 3"))
+        assertEquals("AirPods Pro 3 is not connected. Using Auto instead.", CaptureNotices.pickMissingLine("AirPods Pro 3"))
     }
 }

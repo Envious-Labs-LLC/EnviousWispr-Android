@@ -57,9 +57,13 @@ object InputDeviceResolver {
         return Resolution(auto(sources, allowBluetooth), InputRouteReason.AUTO)
     }
 
-    /** The Bluetooth sink Android pairs with [target] for `setCommunicationDevice`, by type family and name. */
+    /**
+     * The Bluetooth sink Android pairs with [target] for `setCommunicationDevice`: same name AND the same
+     * transport. A headset that exposes both LE Audio and classic under one name has two sinks, and
+     * opening the classic link for the LE microphone (or the reverse) records silence (Codex, 2026-09-17).
+     */
     fun communicationSinkFor(target: InputDeviceCandidate, sinks: List<InputDeviceCandidate>): InputDeviceCandidate? =
-        sinks.firstOrNull { it.isSink && it.name == target.name && InputRouteKind.of(it.type) == InputRouteKind.BLUETOOTH }
+        sinks.firstOrNull { it.isSink && it.name == target.name && it.type == target.type }
 
     /** True when routing this target needs the two Bluetooth calls; wired, USB and built-in need none. */
     fun needsBluetoothRoute(target: InputDeviceCandidate): Boolean =

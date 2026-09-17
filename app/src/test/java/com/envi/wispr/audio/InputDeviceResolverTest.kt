@@ -107,12 +107,19 @@ class InputDeviceResolverTest {
     }
 
     @Test
-    fun theCommunicationSinkIsMatchedByNameAndBluetoothFamily() {
-        val sink = device(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, "AirPods Pro 3", source = false, sink = true)
-        val a2dp = device(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, "AirPods Pro 3", source = false, sink = true)
+    fun theCommunicationSinkIsMatchedByNameAndTheSameTransport() {
+        val sco = device(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, "Buds", source = false, sink = true)
+        val le = device(AudioDeviceInfo.TYPE_BLE_HEADSET, "Buds", source = false, sink = true)
+        val a2dp = device(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, "Buds", source = false, sink = true)
         val speaker = device(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, "SM-S948U1", source = false, sink = true)
-        assertSame(sink, InputDeviceResolver.communicationSinkFor(airpods, listOf(speaker, a2dp, sink)))
-        assertNull(InputDeviceResolver.communicationSinkFor(airpods, listOf(speaker)))
+        val scoMic = device(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, "Buds")
+        val leMic = device(AudioDeviceInfo.TYPE_BLE_HEADSET, "Buds")
+        // Both sink orderings: the transport, not the list order, decides.
+        assertSame(sco, InputDeviceResolver.communicationSinkFor(scoMic, listOf(speaker, a2dp, le, sco)))
+        assertSame(sco, InputDeviceResolver.communicationSinkFor(scoMic, listOf(sco, le)))
+        assertSame(le, InputDeviceResolver.communicationSinkFor(leMic, listOf(speaker, a2dp, sco, le)))
+        assertSame(le, InputDeviceResolver.communicationSinkFor(leMic, listOf(le, sco)))
+        assertNull(InputDeviceResolver.communicationSinkFor(scoMic, listOf(speaker, a2dp, le)))
     }
 
     @Test

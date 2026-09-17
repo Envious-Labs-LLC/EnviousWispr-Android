@@ -41,7 +41,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -52,7 +51,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -64,7 +62,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.ui.theme.brandButtonColors
@@ -193,28 +190,6 @@ private fun ChevronGlyph() {
         val stroke = 1.8.dp.toPx()
         drawLine(color, Offset(size.width * 0.35f, size.height * 0.2f), Offset(size.width * 0.68f, size.height * 0.5f), stroke, StrokeCap.Round)
         drawLine(color, Offset(size.width * 0.68f, size.height * 0.5f), Offset(size.width * 0.35f, size.height * 0.8f), stroke, StrokeCap.Round)
-    }
-}
-
-/** A rounded-square grid, for the disabled "From another app" card. */
-@Composable
-private fun AppGlyph(color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
-    Canvas(Modifier.size(18.dp)) {
-        val stroke = 1.7.dp.toPx()
-        val cell = size.width * 0.32f
-        val gap = size.width * 0.10f
-        val start = (size.width - (cell * 2 + gap)) / 2f
-        listOf(0, 1).forEach { row ->
-            listOf(0, 1).forEach { col ->
-                drawRoundRect(
-                    color,
-                    topLeft = Offset(start + col * (cell + gap), start + row * (cell + gap)),
-                    size = Size(cell, cell),
-                    cornerRadius = CornerRadius(cell * 0.22f),
-                    style = Stroke(width = stroke),
-                )
-            }
-        }
     }
 }
 
@@ -714,13 +689,6 @@ private fun ImportPickerDialog(
                     description = "Choose a .txt list or an EnviousWispr .json export.",
                     onClick = onOpenFile,
                 )
-                ImportPickerCard(
-                    glyph = { AppGlyph() },
-                    title = "From another app",
-                    description = "Bring words in from another dictation app.",
-                    badge = "Coming soon",
-                    onClick = null,
-                )
             }
         },
         confirmButton = {},
@@ -733,23 +701,12 @@ private fun ImportPickerCard(
     glyph: @Composable () -> Unit,
     title: String,
     description: String,
-    onClick: (() -> Unit)?,
-    badge: String? = null,
+    onClick: () -> Unit,
 ) {
-    val cardModifier = Modifier
-        .fillMaxWidth()
-        .let { base ->
-            if (onClick != null) {
-                base.clickable(onClick = onClick)
-            } else {
-                base.alpha(0.55f).semantics(mergeDescendants = true) {
-                    contentDescription = if (badge != null) "$title, $badge" else title
-                    disabled()
-                }
-            }
-        }
     Card(
-        modifier = cardModifier,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
         ),
@@ -771,24 +728,8 @@ private fun ImportPickerCard(
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall)
                 Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (badge != null) {
-                    Surface(
-                        modifier = Modifier.padding(top = 4.dp),
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                    ) {
-                        Text(
-                            badge,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
             }
-            if (onClick != null) {
-                ChevronGlyph()
-            }
+            ChevronGlyph()
         }
     }
 }

@@ -53,7 +53,7 @@ The floating recorder overlays the lower conversation area above the message com
 - Prefer the compact labeled `+ Add` pill. A floating plus competes with the persistent microphone action and can cover dictionary content.
 - Import opens a dedicated subpage with a back arrow and no bottom navigation.
 - Paste words and Open a file are large enabled source cards.
-- From another app stays visible but disabled with a Coming soon label.
+- There is no From another app card. Android locks each app's private files, and neither Wispr Flow nor Dictaflow exports its words, so the row was removed (founder 2026-09-16).
 - Back is the only dismissal. The import screen does not repeat a Cancel button.
 
 ## AI Polish interaction

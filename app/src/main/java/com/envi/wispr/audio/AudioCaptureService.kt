@@ -372,7 +372,7 @@ class AudioCaptureService : Service() {
                 if (record.state != AudioRecord.STATE_INITIALIZED) {
                     throw IllegalStateException("AudioRecord failed to initialize")
                 }
-                val effective = EffectiveDevice(route.kind, route.reason)
+                val effective = EffectiveDevice(route.reason)
                 applyPreferredDevice(record, route, effective, routeHold)
 
                 // cacheDir is app-internal and shared by this package's processes. It is
@@ -474,7 +474,6 @@ class AudioCaptureService : Service() {
         val target: InputDeviceCandidate,
         val info: AudioDeviceInfo,
         val reason: InputRouteReason,
-        val kind: InputRouteKind,
         val needsBluetooth: Boolean,
         val builtIn: AudioDeviceInfo?,
     )
@@ -522,7 +521,6 @@ class AudioCaptureService : Service() {
             target = target,
             info = info,
             reason = reason,
-            kind = InputRouteKind.of(target.type),
             needsBluetooth = InputDeviceResolver.needsBluetoothRoute(target),
             builtIn = builtIn,
         )
@@ -572,15 +570,16 @@ class AudioCaptureService : Service() {
     }
 
     /**
-     * The silent-earbud rescue: move the take to the phone microphone, once, and keep going. Never
-     * cancels, never clears the communication device (the hold does that at cleanup), never throws into
-     * the capture loop. Skipped once the take has been claimed as ended, under the same lock `endTake`
-     * uses, so a rescue cannot revive a finished take.
+     * The silent-earbud rescue: move the take to the phone microphone, once, and keep going. Runs on the
+     * route thread, never on the capture thread. Never cancels, never clears the communication device
+     * (the hold does that at cleanup). Skipped once the take has been claimed as ended, under the same
+     * lock `endTake` uses, so a rescue cannot revive a finished take; skipped once the hold is released,
+     * so a rescue posted just before cleanup touches nothing.
      */
     private fun rescueSilentRoute(active: CaptureSession) {
         val builtIn = active.builtIn ?: return
         synchronized(sessionLock) {
-            if (session !== active || !isRecording.get()) return
+            if (session !== active || !isRecording.get() || active.routeHold.isReleased) return
         }
         val moved = runCatching { active.record.setPreferredDevice(builtIn) }.getOrDefault(false)
         // The record is written by what Android REPORTS (the routing callback, the final read before
@@ -627,7 +626,9 @@ class AudioCaptureService : Service() {
                 if (bytesRead < 0) throw IOException("AudioRecord.read failed: $bytesRead")
                 if (bytesRead == 0) continue
 
-                if (active.rescue.offer(buffer, bytesRead)) rescueSilentRoute(active)
+                // The capture thread only counts and hands off: the rescue's platform call, lock and log
+                // run on the route thread (RULE: protect-audio-asr-stability).
+                if (active.rescue.offer(buffer, bytesRead)) routeHandler.post { rescueSilentRoute(active) }
 
                 val position = active.bytesWritten
                 active.output.write(buffer, 0, bytesRead)

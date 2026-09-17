@@ -35,17 +35,27 @@ class InputDeviceRouteTest {
 
     @Test
     fun theLabelListsEachDeviceOnceInOrder() {
-        val e = EffectiveDevice(InputRouteKind.BLUETOOTH, InputRouteReason.AUTO)
+        val e = EffectiveDevice(InputRouteReason.AUTO)
         assertEquals("", e.label())
+        assertEquals("unknown until observed", InputRouteKind.NONE, e.kind)
         e.observe(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, "AirPods Pro 3")
+        assertEquals(InputRouteKind.BLUETOOTH, e.kind)
         e.observe(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, "AirPods Pro 3")
         assertEquals("AirPods Pro 3", e.label())
         e.observe(AudioDeviceInfo.TYPE_BUILTIN_MIC, "SM-S948U1")
         assertEquals("AirPods Pro 3, then Phone", e.label())
+        assertEquals("the start kind is latched, not the latest", InputRouteKind.BLUETOOTH, e.kind)
         assertEquals(InputRouteReason.AUTO.code, e.reasonCode())
         e.markRescued()
         assertEquals(InputRouteReason.RESCUED.code, e.reasonCode())
         assertTrue(e.wasRescued())
+    }
+
+    @Test
+    fun aRefusedBluetoothPreferenceThatStartsOnThePhoneIsAPhoneTake() {
+        val e = EffectiveDevice(InputRouteReason.PREFERRED_REFUSED)
+        e.observe(AudioDeviceInfo.TYPE_BUILTIN_MIC, "SM-S948U1")
+        assertEquals(InputRouteKind.PHONE, e.kind)
     }
 
     @Test

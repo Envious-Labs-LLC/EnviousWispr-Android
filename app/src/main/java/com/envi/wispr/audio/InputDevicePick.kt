@@ -135,15 +135,24 @@ enum class InputRouteReason(val code: Int) {
  * Every write and read goes through [synchronized] on this object, and no platform call is ever made
  * while it is held: the lock guards the record, the calls happen outside it.
  */
-class EffectiveDevice(startKind: InputRouteKind, startReason: InputRouteReason) {
+class EffectiveDevice(startReason: InputRouteReason) {
     private val history = ArrayList<String>(3)
     private var reason: InputRouteReason = startReason
     private var rescued = false
-    val kind: InputRouteKind = startKind
+    private var startKind: InputRouteKind = InputRouteKind.NONE
+
+    /**
+     * The kind of device the take STARTED on, latched from the first OBSERVED device, never from the
+     * requested target: a refused Bluetooth preference that starts on the phone is a phone take, and the
+     * Bluetooth tip must not spend itself on it (Codex, 2026-09-17). NONE until the first observation.
+     */
+    val kind: InputRouteKind
+        @Synchronized get() = startKind
 
     /** The device the recorder reports at start, on every route change, and once more before it stops. */
     @Synchronized
     fun observe(type: Int, name: String) {
+        if (history.isEmpty()) startKind = InputRouteKind.of(type)
         val label = InputDeviceLabels.labelFor(type, name)
         if (history.lastOrNull() == label) return
         history.add(label)

@@ -101,6 +101,15 @@ class InputDeviceResolverTest {
     }
 
     @Test
+    fun aPortNobodyCanSpeakIntoIsNeverPickedEvenExplicitly() {
+        // The S26 lists its telephony port and the remote submix as sources (probe, 2026-09-16).
+        val r = InputDeviceResolver.resolve(telephony.pick, listOf(telephony, submix, phone))
+        assertSame(phone, r.target)
+        assertEquals(InputRouteReason.PICK_MISSING, r.reason)
+        assertEquals(listOf(phone), InputDeviceResolver.pickable(listOf(telephony, submix, phone, phoneBack)))
+    }
+
+    @Test
     fun sinksAreNeverRecordingTargets() {
         val sinkOnly = device(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, "AirPods Pro 3", source = false, sink = true)
         assertSame(phone, InputDeviceResolver.resolve(InputDevicePick.Auto, listOf(sinkOnly, phone)).target)

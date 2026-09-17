@@ -44,8 +44,16 @@ object InputDeviceResolver {
         AudioDeviceInfo.TYPE_BLE_BROADCAST,
     )
 
+    /**
+     * A source a person can speak into. The phone also lists the telephony port and the remote submix
+     * as sources; neither is a microphone, and an explicit pick of one records the wrong thing.
+     */
+    fun isMicrophone(candidate: InputDeviceCandidate): Boolean =
+        candidate.isSource && InputRouteKind.of(candidate.type) != InputRouteKind.NONE &&
+            candidate.type != AudioDeviceInfo.TYPE_BLE_BROADCAST
+
     fun resolve(pick: InputDevicePick, inputs: List<InputDeviceCandidate>, allowBluetooth: Boolean = true): Resolution {
-        val sources = inputs.filter { it.isSource }
+        val sources = inputs.filter(::isMicrophone)
         if (pick is InputDevicePick.Device) {
             // An explicit Bluetooth pick whose link was just refused is "missing" for this take: honouring
             // it without the link would record silence (V4, 2026-09-16).
@@ -72,6 +80,10 @@ object InputDeviceResolver {
     /** The built-in microphone, for the rescue and the fallback. Null only on a phone with no microphone. */
     fun builtIn(inputs: List<InputDeviceCandidate>): InputDeviceCandidate? =
         inputs.firstOrNull { it.isSource && it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+
+    /** The picker's rows: one per microphone identity, never a port a person cannot speak into. */
+    fun pickable(inputs: List<InputDeviceCandidate>): List<InputDeviceCandidate> =
+        inputs.filter(::isMicrophone).distinctBy { it.type to it.name }
 
     private fun auto(sources: List<InputDeviceCandidate>, allowBluetooth: Boolean): InputDeviceCandidate? {
         val eligible = sources.filter { it.type !in EXCLUDED_FROM_AUTO }

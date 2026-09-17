@@ -2,6 +2,7 @@ package com.envi.wispr.ui
 
 import android.os.Build
 import com.envi.wispr.audio.InputDevicePick
+import com.envi.wispr.audio.InputDeviceResolver
 import com.envi.wispr.audio.InputDeviceLabels
 import com.envi.wispr.audio.InputDeviceCandidate
 import androidx.compose.runtime.setValue
@@ -458,13 +459,13 @@ internal fun MicrophonePage(
 private fun rememberConnectedInputs(): List<InputDeviceCandidate> {
     val context = LocalContext.current
     val audioManager = remember(context) { context.getSystemService(AudioManager::class.java) }
+    // Microphones only (the phone also lists its telephony port and a playback capture as sources),
+    // one row per identity. The resolver applies the same filter to a stored pick, so a value written
+    // by an older build or by hand falls back to Auto rather than recording the wrong port.
     fun read(): List<InputDeviceCandidate> = audioManager
         ?.getDevices(AudioManager.GET_DEVICES_INPUTS)
         ?.map(InputDeviceCandidate::from)
-        ?.filter { it.isSource }
-        // One row per identity: a headset that exposes two microphones (LE Audio and classic) under
-        // the same name is one thing to the person choosing it.
-        ?.distinctBy { it.type to it.name }
+        ?.let(InputDeviceResolver::pickable)
         ?: emptyList()
     var inputs by remember { mutableStateOf(read()) }
     DisposableEffect(audioManager) {

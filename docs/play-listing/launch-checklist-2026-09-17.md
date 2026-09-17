@@ -15,7 +15,9 @@ closed beta: internal testing goes straight to a public release (`docs/device-su
       `16kb-page-size-check-2026-09-17.md`.
 - [x] Model hosting: costed proposal, recommendation R2 at under $1/month: `model-hosting-proposal.md`.
 - [x] Earbud microphone, picker, Bluetooth tip: PR #165, build 136 on internal testing, awaiting the
-      founder's phone pass (plan §11.1, eight runs).
+      founder's phone pass (plan §11.1, eight runs). Emulator receipt on the reviewed build: one take
+      into Chrome, `route=COMMIT outcome=VERIFIED`, History row `captureDevice = Phone`.
+- [x] Five listing screenshots and the accessibility review video: `screenshots/`, `video/`.
 
 ## Founder, in the morning (about 20 minutes, in this order)
 
@@ -26,17 +28,18 @@ closed beta: internal testing goes straight to a public release (`docs/device-su
 3. **Say "publish the policy"**: the Android paragraph goes onto https://enviouswispr.com/privacy-policy/
    through the macOS repo's website process (its own PR and review).
 4. **Play Console, Store presence > Main store listing:** paste from `store-listing.md`; upload the icon
-   and feature graphic from `graphics/` (both exist) and the screenshots from `screenshots/`.
-   **Screenshots are OUTSTANDING**: captured on the emulator by Claude before the founder wakes if the
-   emulator cooperates, otherwise the first item of the morning (owner: Claude; 4 to 6 portrait shots:
-   History, the recorder pill mid-dictation over Gmail, Your Words, Microphone settings, AI Polish).
+   and feature graphic from `graphics/` and the five screenshots from `screenshots/` (1080 x 1920, the
+   emulator's History, Dictionary, Transcription, AI Polish and Microphone screens on the brand
+   background; captured 2026-09-17 on the reviewed build). Optional sixth shot for the morning: the
+   recorder pill over a real Gmail draft on the founder's phone, which the emulator cannot stage nicely.
 5. **Play Console, Policy > App content:** answer from `console-declarations.md` and
-   `docs/play-data-safety-answers.md`. **The accessibility review video is OUTSTANDING** (owner: Claude,
-   emulator screen recording): it must show, in one take, the disclosure screen, tapping "Not now" and
-   returning, the disclosure again, tapping "Agree and open Settings", the Android toggle, the return to
-   the app, and one dictation from the bubble landing in a Gmail or Chrome field
-   (`.claude/knowledge/play-store-readiness.md` RULE: the-accessibility-declaration-is-the-highest-review-risk).
-   Until both exist this checklist stops at step 3.
+   `docs/play-data-safety-answers.md`; upload `video/accessibility-review-video-2026-09-17.mp4`
+   (720 x 1280, 3 min 16 s, no audio). It shows, in order: the Permissions page, the disclosure screen,
+   "Not now" returning to the app, the disclosure again from the onboarding permissions step, "Agree and
+   open Settings", Android's Accessibility list, the EnviousWispr toggle, the "Allow" prompt, the return
+   to the app with Accessibility reading Granted, then one dictation from the floating bubble into a
+   Chrome text field with the words landing (recorded 2026-09-17 on the emulator, reviewed build).
+   Play accepts an upload or a YouTube link; upload the file.
 6. **Reach and devices > Device catalogue:** the two exclusion rules in `console-declarations.md` §7.
 7. **Production track:** create the release from the same bundle as the internal build that passed the
    phone pass (promote from internal testing, never a fresh upload). **A first release cannot be staged**:

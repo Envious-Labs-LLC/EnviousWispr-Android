@@ -240,5 +240,46 @@ class ModelDeliveryStoreTest {
     }
 
     private fun descriptor(bytes: ByteArray, revision: String = "r1") = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", revision, listOf(ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://huggingface.co/test/model/resolve/$revision/model.bin")))
+
+    private fun twoHostDescriptor(bytes: ByteArray) = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", "r1", listOf(
+        ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://models.enviouslabs.co/demo/r1/model.bin", "https://huggingface.co/test/model/resolve/r1/model.bin"),
+    ))
+
+    /** Our host refuses to open, Hugging Face serves, the file is admitted, and the log names the host (#168). */
+    @Test fun theFallbackHostServesWhenOursCannotBeOpened() {
+        val root = Files.createTempDirectory("fallback").toFile()
+        val payload = "model payload".toByteArray()
+        val opened = mutableListOf<String>()
+        val served = mutableListOf<String>()
+        val status = ModelDeliveryStore(root).download(twoHostDescriptor(payload), ModelTransport { url, _ ->
+            opened += url
+            if (url.startsWith("https://models.enviouslabs.co/")) throw java.io.IOException("model source returned HTTP 404")
+            TransportResponse(ByteArrayInputStream(payload), false)
+        }, onSource = { file, host -> served += "$file@$host" })
+        assertEquals(DownloadState.READY, status.state)
+        assertEquals(listOf("https://models.enviouslabs.co/demo/r1/model.bin", "https://huggingface.co/test/model/resolve/r1/model.bin"), opened)
+        assertEquals(listOf("model.bin@huggingface.co"), served)
+    }
+
+    @Test fun ourHostIsTriedFirstAndTheFallbackIsNotTouchedWhenItServes() {
+        val root = Files.createTempDirectory("primary").toFile()
+        val payload = "model payload".toByteArray()
+        val opened = mutableListOf<String>()
+        val served = mutableListOf<String>()
+        val status = ModelDeliveryStore(root).download(twoHostDescriptor(payload), ModelTransport { url, _ ->
+            opened += url
+            TransportResponse(ByteArrayInputStream(payload), false)
+        }, onSource = { file, host -> served += "$file@$host" })
+        assertEquals(DownloadState.READY, status.state)
+        assertEquals(listOf("https://models.enviouslabs.co/demo/r1/model.bin"), opened)
+        assertEquals(listOf("model.bin@models.enviouslabs.co"), served)
+    }
+
+    @Test fun bothHostsRefusingFailsTheDownloadWithTheLastError() {
+        val root = Files.createTempDirectory("both-fail").toFile()
+        val payload = "model payload".toByteArray()
+        val status = ModelDeliveryStore(root).download(twoHostDescriptor(payload), ModelTransport { url, _ -> throw java.io.IOException("model source returned HTTP 503 for $url") })
+        assertEquals("both refusals collapse into the same interrupted state as one host did before", DownloadState.FAILED, status.state)
+    }
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }

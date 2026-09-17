@@ -89,7 +89,7 @@ class ModelDeliveryStore(private val root: File) {
             runCatching { receipt.readText() != receiptText(model) }.getOrDefault(false)
     }.getOrDefault(false)
 
-    fun download(model: ModelDescriptor, transport: ModelTransport, control: DownloadControl = object : DownloadControl {}, now: () -> Long = { System.currentTimeMillis() }, onProgress: (DownloadStatus) -> Unit = {}): DownloadStatus = synchronized(lock(model)) {
+    fun download(model: ModelDescriptor, transport: ModelTransport, control: DownloadControl = object : DownloadControl {}, now: () -> Long = { System.currentTimeMillis() }, onProgress: (DownloadStatus) -> Unit = {}, onSource: (file: String, host: String) -> Unit = { _, _ -> }): DownloadStatus = synchronized(lock(model)) {
         if (!model.isAvailable) return DownloadStatus(DownloadState.FAILED, message = "model manifest is unavailable")
         root.mkdirs()
         val staging = File(root, ".${model.id}.download")
@@ -132,13 +132,16 @@ class ModelDeliveryStore(private val root: File) {
                     part.delete()
                     offset = 0
                 }
-                var response = transport.open(entry.sourceUrl, offset)
+                var opened = openFirstSource(entry, transport, offset)
+                var response = opened.response
                 if (offset > 0 && !response.resumed) {
                     response.stream.close()
                     part.delete()
                     offset = 0
-                    response = transport.open(entry.sourceUrl, 0)
+                    opened = openFirstSource(entry, transport, 0)
+                    response = opened.response
                 }
+                onSource(entry.name, opened.host)
                 onProgress(DownloadStatus(DownloadState.DOWNLOADING, offset, entry.expectedBytes))
                 response.stream.use { input ->
                     FileOutputStream(part, offset > 0).use { output ->
@@ -250,6 +253,27 @@ class ModelDeliveryStore(private val root: File) {
         if (!staging.exists()) return
         staging.renameTo(File(root, "${staging.name}.quarantine-$stamp"))
     }
+    private class OpenedSource(val response: TransportResponse, val host: String)
+
+    /**
+     * Our host first, Hugging Face second. The fallback is tried only when the primary cannot be
+     * OPENED at all; once bytes flow, a failure mid-stream surfaces as before, and the next attempt
+     * resumes from the partial against the primary again. The same file lives on both hosts, so a
+     * partial written from one and resumed from the other is still one file; the byte count and hash
+     * check admits or quarantines it regardless of which host served (#168).
+     */
+    private fun openFirstSource(entry: ModelFile, transport: ModelTransport, offset: Long): OpenedSource {
+        var last: IOException? = null
+        for (url in entry.sources) {
+            try {
+                return OpenedSource(transport.open(url, offset), URI(url).host ?: url)
+            } catch (error: IOException) {
+                last = error
+            }
+        }
+        throw last ?: IOException("model has no source")
+    }
+
     private fun sha256(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
@@ -260,8 +284,16 @@ class ModelDeliveryStore(private val root: File) {
     }
 }
 
+/** The two hosts a model may come from, and nothing else; a redirect may not leave its host either. */
+const val MODEL_HOST_OWN = "models.enviouslabs.co"
+const val MODEL_HOST_HUGGING_FACE = "huggingface.co"
+
 fun validateModelSource(url: String): Boolean = runCatching {
     val uri = URI(url)
     uri.scheme == "https" && uri.host?.isNotBlank() == true && uri.userInfo == null && uri.fragment == null &&
-        (uri.port == -1 || uri.port == 443) && uri.host == "huggingface.co" && uri.path.contains("/resolve/")
+        (uri.port == -1 || uri.port == 443) && when (uri.host) {
+            MODEL_HOST_OWN -> uri.path.count { it == '/' } >= 3
+            MODEL_HOST_HUGGING_FACE -> uri.path.contains("/resolve/")
+            else -> false
+        }
 }.getOrDefault(false)

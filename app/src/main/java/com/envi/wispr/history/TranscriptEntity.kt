@@ -31,6 +31,10 @@ data class TranscriptEntity(
     @ColumnInfo(defaultValue = "''") val polishReason: String = "",
     @ColumnInfo(defaultValue = "0") val polishStatus: Int = 0,
     @ColumnInfo(defaultValue = "''") val polishContext: String = "",
+    // Which microphone actually captured, in order: "AirPods Pro 3" or "AirPods Pro 3, then Phone"
+    // (#26). Empty means unknown: rows from older builds, or a take whose capture process died before
+    // the label was read. Never rendered as "Phone" when empty.
+    @ColumnInfo(defaultValue = "''") val captureDevice: String = "",
 ) {
     companion object {
         const val STATUS_DRAFT = "draft"

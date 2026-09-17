@@ -90,6 +90,8 @@ class SettingsActivity : ComponentActivity() {
                     onSpokenPunctuationChanged = viewModel::setSpokenPunctuationEnabled,
                     onAutoStopOnSilenceChanged = viewModel::setAutoStopOnSilenceEnabled,
                     onSilencePauseSecondsChanged = viewModel::setSilencePauseSeconds,
+                    onInputDevicePickChanged = viewModel::setInputDevicePick,
+                    onShowBluetoothTipsChanged = viewModel::setShowBluetoothTips,
                     onAutoCopyChanged = viewModel::setAutoCopyToClipboard,
                     onRestoreClipboardChanged = viewModel::setRestoreClipboardAfterPaste,
                     onSmartInsertionChanged = viewModel::setSmartInsertionEnabled,

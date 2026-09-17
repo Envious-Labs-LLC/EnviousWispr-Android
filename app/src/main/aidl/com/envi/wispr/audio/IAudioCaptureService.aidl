@@ -33,4 +33,29 @@ interface IAudioCaptureService {
      * from the newest 64 ms of the open take. Always that many, never empty; all zeros when no take is open.
      */
     float[] getSpectrumBands();
+
+    /**
+     * Start a take on the microphone the user picked. inputDevicePick is InputDevicePick.serialize():
+     * "auto", or "<type>|<name>". startCaptureWithSilenceStop(a, p) keeps its exact meaning and equals
+     * startCaptureWithInputDevice(a, p, "auto"). An unparseable pick reads as "auto".
+     */
+    boolean startCaptureWithInputDevice(boolean autoStopOnSilence, float pauseSeconds, String inputDevicePick);
+
+    /**
+     * The device(s) that captured the CURRENT OR MOST RECENT take, in order: "AirPods Pro 3" or
+     * "AirPods Pro 3, then Phone". Set at start, updated on every route change and rescue, and kept
+     * after the take ends until the next start, so a take that ends before the first poll still reports
+     * its whole history when read once at stop. Empty only before the first take of this process. A
+     * display label: never parse it.
+     */
+    String getEffectiveInputDevice();
+
+    /** InputRouteKind.code of the device the current or most recent take STARTED on: 0 none, 1 phone, 2 wired or USB, 3 Bluetooth. */
+    int getInputRouteKind();
+
+    /** InputRouteReason.code, latest event wins: 0 auto, 1 picked, 2 pick missing, 3 link refused, 4 preferred refused, 5 rescued. */
+    int getInputRouteReason();
+
+    /** Why the last start returned false: 0 none, 1 no input device at all, 2 anything else. Reset on the next start. */
+    int getLastStartFailure();
 }

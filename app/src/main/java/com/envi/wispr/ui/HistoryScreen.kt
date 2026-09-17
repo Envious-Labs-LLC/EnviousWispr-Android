@@ -271,6 +271,15 @@ private fun HistoryCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    // Which microphone actually captured (#26). Empty means unknown, so nothing is
+                    // printed: an older row must never read as "Phone".
+                    if (expanded && transcript.captureDevice.isNotEmpty()) {
+                        Text(
+                            "Microphone: ${transcript.captureDevice}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 Chevron(expanded)
             }

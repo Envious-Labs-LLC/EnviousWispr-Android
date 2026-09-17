@@ -5,9 +5,14 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioRouting
 import android.media.MediaRecorder
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.SystemClock
 import com.envi.wispr.debug.DebugLogger
@@ -97,6 +102,11 @@ class AudioCaptureService : Service() {
         const val TERMINAL_REASON_MANUAL = CaptureEnding.MANUAL
         const val TERMINAL_REASON_ERROR = CaptureEnding.ERROR
         const val TERMINAL_REASON_SILENCE = CaptureEnding.SILENCE
+
+        /** Why the last start returned false. A start that never began is not a `CaptureEnding`. */
+        const val START_FAILURE_NONE = 0
+        const val START_FAILURE_NO_INPUT_DEVICE = 1
+        const val START_FAILURE_OTHER = 2
     }
 
     /** Every native and file resource for one take has one owner and one lifetime. */
@@ -111,6 +121,14 @@ class AudioCaptureService : Service() {
         val ring: BlockRing?,
         /** Staging for a read that did not land on a block boundary. Preallocated, like everything else. */
         val pendingBlock: ByteArray?,
+        /** What actually captured this take, in order. Read over the binder; outlives the session. */
+        val effective: EffectiveDevice,
+        /** This take's route ownership. Released in [closeResources], before the session slot frees. */
+        val routeHold: RouteHold,
+        /** Armed only for a Bluetooth target. Capture thread only. */
+        val rescue: SilentRouteRescue,
+        /** Where a rescue moves the take. Null only on a phone with no built-in microphone. */
+        val builtIn: AudioDeviceInfo?,
     ) {
         /** Capture thread only. */
         var pendingBytes: Int = 0
@@ -153,6 +171,20 @@ class AudioCaptureService : Service() {
 
     private val sessionLock = Any()
     @Volatile private var session: CaptureSession? = null
+
+    /**
+     * The most recent take's device record. Kept after the take ends until the next start, so the
+     * session owner can read a complete history once at stop, however short the take was.
+     */
+    @Volatile private var lastEffective: EffectiveDevice? = null
+    @Volatile private var lastStartFailure = START_FAILURE_NONE
+
+    /**
+     * Owns every routing callback and nothing else. A callback carries the session it was registered
+     * for and writes nothing once that session's hold is released.
+     */
+    private lateinit var routeThread: HandlerThread
+    private lateinit var routeHandler: Handler
     private val isRecording = AtomicBoolean(false)
     @Volatile private var captureThread: Thread? = null
     @Volatile private var lastAudioFile: File? = null
@@ -215,12 +247,26 @@ class AudioCaptureService : Service() {
         }
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        routeThread = HandlerThread("AudioRouteThread").also { it.start() }
+        routeHandler = Handler(routeThread.looper)
+    }
+
     private val binder = object : IAudioCaptureService.Stub() {
         override fun startCapture(): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence = false, pauseSeconds = 0f)
+            this@AudioCaptureService.startRecording(autoStopOnSilence = false, pauseSeconds = 0f, pick = InputDevicePick.Auto)
 
         override fun startCaptureWithSilenceStop(autoStopOnSilence: Boolean, pauseSeconds: Float): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds)
+            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.Auto)
+
+        override fun startCaptureWithInputDevice(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?): Boolean =
+            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick))
+
+        override fun getEffectiveInputDevice(): String = this@AudioCaptureService.lastEffective?.label().orEmpty()
+        override fun getInputRouteKind(): Int = this@AudioCaptureService.lastEffective?.kind?.code ?: InputRouteKind.NONE.code
+        override fun getInputRouteReason(): Int = this@AudioCaptureService.lastEffective?.reasonCode() ?: InputRouteReason.AUTO.code
+        override fun getLastStartFailure(): Int = this@AudioCaptureService.lastStartFailure
 
         override fun getSilenceStopStatus(): Int =
             this@AudioCaptureService.session?.silenceStatus?.get() ?: SILENCE_STATUS_DISABLED
@@ -256,7 +302,7 @@ class AudioCaptureService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
-    private fun startRecording(autoStopOnSilence: Boolean, pauseSeconds: Float): Boolean {
+    private fun startRecording(autoStopOnSilence: Boolean, pauseSeconds: Float, pick: InputDevicePick): Boolean {
         // REQUESTED is not the same as VALID AND ENABLED. A pause outside the slider's range reaching
         // this binder means a caller we do not control, so the detector is not built at all rather than
         // built with a number nobody chose. Ordinary recording is untouched either way.
@@ -273,6 +319,23 @@ class AudioCaptureService : Service() {
             // Starting another take before that point would make the old thread write into
             // the new take's file or release the new take's AudioRecord.
             if (session != null) return false
+            lastStartFailure = START_FAILURE_NONE
+
+            // Route ownership exists BEFORE the session, so every failure path below can release it.
+            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+            // Filled in once the listener exists; the hold removes exactly this one and no other.
+            var routingListener: Pair<AudioRecord, AudioRouting.OnRoutingChangedListener>? = null
+            val routeHold = RouteHold(
+                clearCommunicationDevice = { audioManager.clearCommunicationDevice() },
+                removeListener = { routingListener?.let { (r, l) -> r.removeOnRoutingChangedListener(l) } },
+            )
+            val route = resolveRoute(audioManager, pick, routeHold) ?: run {
+                lastStartFailure = START_FAILURE_NO_INPUT_DEVICE
+                routeHold.release()
+                DebugLogger.error(TAG, "No input device at all; refusing to start")
+                stopSelf()
+                return false
+            }
 
             val nativeBufferBytes = try {
                 val minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
@@ -290,6 +353,8 @@ class AudioCaptureService : Service() {
                 coerced
             } catch (e: Exception) {
                 DebugLogger.error(TAG, "Failed to determine audio buffer size", e)
+                lastStartFailure = START_FAILURE_OTHER
+                routeHold.release()
                 stopSelf()
                 return false
             }
@@ -307,6 +372,8 @@ class AudioCaptureService : Service() {
                 if (record.state != AudioRecord.STATE_INITIALIZED) {
                     throw IllegalStateException("AudioRecord failed to initialize")
                 }
+                val effective = EffectiveDevice(route.reason)
+                applyPreferredDevice(record, route, effective, routeHold)
 
                 // cacheDir is app-internal and shared by this package's processes. It is
                 // excluded from user backups and is less exposed than shared storage.
@@ -318,6 +385,9 @@ class AudioCaptureService : Service() {
                 }
                 output = FileOutputStream(file)
                 record.startRecording()
+                // The route is the target from the first read when the preferred device was set first
+                // (V2, 2026-09-16: routedDevice already the SCO source at startRecording).
+                record.routedDevice?.let { effective.observe(it.type, it.productName?.toString().orEmpty()) }
 
                 val newSession = CaptureSession(
                     record = record,
@@ -330,8 +400,14 @@ class AudioCaptureService : Service() {
                     token = nextCaptureToken(),
                     ring = if (detectorEnabled) BlockRing(RING_BLOCKS, READ_BLOCK_BYTES) else null,
                     pendingBlock = if (detectorEnabled) ByteArray(READ_BLOCK_BYTES) else null,
+                    effective = effective,
+                    routeHold = routeHold,
+                    rescue = SilentRouteRescue(armed = route.needsBluetooth),
+                    builtIn = route.builtIn,
                 )
+                registerRoutingListener(record, newSession)?.let { routingListener = record to it }
                 session = newSession
+                lastEffective = effective
                 lastAudioFile = file
                 isRecording.set(true)
                 terminalReason = TERMINAL_REASON_NONE
@@ -343,6 +419,11 @@ class AudioCaptureService : Service() {
                     "Recording started (PID: ${android.os.Process.myPid()}, " +
                         "max: ${RecordingLimits.MAX_DURATION_MS}ms, " +
                         "nativeFrames: ${runCatching { record.bufferSizeInFrames }.getOrDefault(-1)})",
+                )
+                DebugLogger.log(
+                    TAG,
+                    "route start=${effective.label()} kind=${effective.kind} reason=${route.reason} " +
+                        "target=${route.target.label}",
                 )
 
                 if (requestedButRefused) {
@@ -370,18 +451,144 @@ class AudioCaptureService : Service() {
                 return thread.isAlive && session === newSession && isRecording.get()
             } catch (e: SecurityException) {
                 DebugLogger.error(TAG, "RECORD_AUDIO permission not granted", e)
+                lastStartFailure = START_FAILURE_OTHER
                 isRecording.set(false)
+                routeHold.release()
                 closeResources(record, output)
                 stopSelf()
                 return false
             } catch (e: Exception) {
                 DebugLogger.error(TAG, "Failed to start recording", e)
+                lastStartFailure = START_FAILURE_OTHER
                 isRecording.set(false)
+                routeHold.release()
                 closeResources(record, output)
                 stopSelf()
                 return false
             }
         }
+    }
+
+    /** What `startRecording` needs to know about the chosen route, resolved under `sessionLock`. */
+    private class ResolvedRoute(
+        val target: InputDeviceCandidate,
+        val info: AudioDeviceInfo,
+        val reason: InputRouteReason,
+        val needsBluetooth: Boolean,
+        val builtIn: AudioDeviceInfo?,
+    )
+
+    /**
+     * Pick the device and, for a Bluetooth target, select the headset as the communication device: the
+     * one call that makes Android open the link for `VOICE_RECOGNITION` (measured 2026-09-16: the
+     * preferred device alone records silence; the communication device alone starts on the phone).
+     *
+     * Any refusal on the Bluetooth path (no sink, `false`, a throw) resolves again WITHOUT Bluetooth
+     * against a fresh device list, so a headset that vanished between the two reads is not picked twice.
+     * Returns null only when nothing at all can record.
+     */
+    private fun resolveRoute(audioManager: AudioManager, pick: InputDevicePick, hold: RouteHold): ResolvedRoute? {
+        var infos = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
+        var candidates = infos.map(InputDeviceCandidate::from)
+        var resolution = InputDeviceResolver.resolve(pick, candidates)
+        var target = resolution.target ?: return null
+        var reason = resolution.reason
+
+        if (InputDeviceResolver.needsBluetoothRoute(target)) {
+            val opened = runCatching {
+                val sinks = audioManager.availableCommunicationDevices.map(InputDeviceCandidate::from)
+                val sink = InputDeviceResolver.communicationSinkFor(target, sinks)
+                    ?: return@runCatching false
+                val sinkInfo = audioManager.availableCommunicationDevices.first { it.id == sink.id }
+                audioManager.setCommunicationDevice(sinkInfo).also { if (it) hold.markCommunicationSet() }
+            }.getOrElse { e ->
+                DebugLogger.warn(TAG, "setCommunicationDevice threw: ${e.message}")
+                false
+            }
+            if (!opened) {
+                DebugLogger.warn(TAG, "Bluetooth link refused for ${target.label}; resolving without Bluetooth")
+                hold.releaseCommunicationDevice()
+                infos = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
+                candidates = infos.map(InputDeviceCandidate::from)
+                resolution = InputDeviceResolver.resolve(pick, candidates, allowBluetooth = false)
+                target = resolution.target ?: return null
+                reason = InputRouteReason.LINK_REFUSED
+            }
+        }
+        val info = infos.firstOrNull { it.id == target.id } ?: return null
+        val builtIn = InputDeviceResolver.builtIn(candidates)?.let { b -> infos.firstOrNull { it.id == b.id } }
+        return ResolvedRoute(
+            target = target,
+            info = info,
+            reason = reason,
+            needsBluetooth = InputDeviceResolver.needsBluetoothRoute(target),
+            builtIn = builtIn,
+        )
+    }
+
+    /**
+     * Only a Bluetooth target, or any explicit pick, names a preferred device; Auto on wired, USB or the
+     * phone leaves today's behaviour untouched. A refusal is recorded and the take proceeds on whatever
+     * Android routes, reported truthfully by `routedDevice`, never by the target.
+     */
+    private fun applyPreferredDevice(record: AudioRecord, route: ResolvedRoute, effective: EffectiveDevice, hold: RouteHold) {
+        if (!route.needsBluetooth && route.reason != InputRouteReason.PICKED) return
+        val accepted = runCatching { record.setPreferredDevice(route.info) }.getOrDefault(false)
+        if (!accepted) {
+            DebugLogger.warn(TAG, "setPreferredDevice refused for ${route.target.label}")
+            effective.markReason(InputRouteReason.PREFERRED_REFUSED)
+            // The link is given back; listener ownership stays with the take so its route changes are recorded.
+            hold.releaseCommunicationDevice()
+        }
+    }
+
+    /**
+     * Registered on the route thread, removed by the hold. A callback checks the hold before writing so
+     * one already running when cleanup starts writes nothing; a callback for a dead session finds its
+     * own session object, never the live one.
+     */
+    private fun registerRoutingListener(record: AudioRecord, active: CaptureSession): AudioRouting.OnRoutingChangedListener? {
+        val listener = AudioRouting.OnRoutingChangedListener { router ->
+            if (active.routeHold.isReleased) return@OnRoutingChangedListener
+            val device = runCatching { router.routedDevice }.getOrNull() ?: return@OnRoutingChangedListener
+            active.effective.observe(device.type, device.productName?.toString().orEmpty())
+            DebugLogger.log(TAG, "route change=${active.effective.label()} at ${active.bytesWritten} bytes")
+        }
+        return runCatching {
+            record.addOnRoutingChangedListener(listener, routeHandler)
+        }.map {
+            active.routeHold.markListenerSet()
+            listener
+        }.onFailure { DebugLogger.warn(TAG, "Routing listener not registered: ${it.message}") }
+            .getOrNull()
+    }
+
+    /** Read the final route while the recorder is still active. Null preserves the history as it stands. */
+    private fun observeFinalRoute(active: CaptureSession) {
+        val device = runCatching { active.record.routedDevice }.getOrNull() ?: return
+        active.effective.observe(device.type, device.productName?.toString().orEmpty())
+    }
+
+    /**
+     * The silent-earbud rescue: move the take to the phone microphone, once, and keep going. Runs on the
+     * route thread, never on the capture thread. Never cancels, never clears the communication device
+     * (the hold does that at cleanup). Skipped once the take has been claimed as ended, under the same
+     * lock `endTake` uses, so a rescue cannot revive a finished take; skipped once the hold is released,
+     * so a rescue posted just before cleanup touches nothing.
+     */
+    private fun rescueSilentRoute(active: CaptureSession) {
+        val builtIn = active.builtIn ?: return
+        synchronized(sessionLock) {
+            if (session !== active || !isRecording.get() || active.routeHold.isReleased) return
+        }
+        val moved = runCatching { active.record.setPreferredDevice(builtIn) }.getOrDefault(false)
+        // The record is written by what Android REPORTS (the routing callback, the final read before
+        // stop), never by what was asked for; only the reason is recorded here.
+        active.effective.markRescued()
+        DebugLogger.warn(
+            TAG,
+            "route rescue=${active.effective.label()} moved=$moved after ${active.bytesWritten} silent bytes",
+        )
     }
 
     private fun captureLoop(active: CaptureSession) {
@@ -418,6 +625,10 @@ class AudioCaptureService : Service() {
                 val bytesRead = active.record.read(buffer, 0, requested, AudioRecord.READ_BLOCKING)
                 if (bytesRead < 0) throw IOException("AudioRecord.read failed: $bytesRead")
                 if (bytesRead == 0) continue
+
+                // The capture thread only counts and hands off: the rescue's platform call, lock and log
+                // run on the route thread (RULE: protect-audio-asr-stability).
+                if (active.rescue.offer(buffer, bytesRead)) routeHandler.post { rescueSilentRoute(active) }
 
                 val position = active.bytesWritten
                 active.output.write(buffer, 0, bytesRead)
@@ -750,6 +961,10 @@ class AudioCaptureService : Service() {
      */
     private fun endTakeLocked(active: CaptureSession, reason: Int) {
         if (!claimEnding(active, reason)) return
+        // routedDevice returns null once the recorder is inactive, so the final route is read HERE,
+        // before stop(); a headset removed just before the stop is then in the record even when its
+        // routing callback runs late. A null read preserves the history and proves nothing.
+        observeFinalRoute(active)
         try {
             // stop() unblocks a pending read. Do not release here while the reader may
             // still be using the same AudioRecord instance.
@@ -779,6 +994,8 @@ class AudioCaptureService : Service() {
     private fun releaseSession(active: CaptureSession) {
         synchronized(sessionLock) {
             if (session !== active) return
+            // Capture-loop endings (cap, byte ceiling, error) reach here with the recorder still active.
+            observeFinalRoute(active)
             closeResources(active)
             session = null
             if (captureThread === Thread.currentThread()) captureThread = null
@@ -795,7 +1012,15 @@ class AudioCaptureService : Service() {
         stopSelf()
     }
 
-    private fun closeResources(active: CaptureSession) = closeResources(active.record, active.output)
+    /**
+     * The route is released HERE, synchronously, before the session slot frees (the caller clears
+     * `session` after this returns under `sessionLock`), so a later start can never install a request
+     * that an earlier release still has to clear. The loop is over, so the binder call delays no read.
+     */
+    private fun closeResources(active: CaptureSession) {
+        active.routeHold.release()
+        closeResources(active.record, active.output)
+    }
 
     private fun closeResources(record: AudioRecord?, output: FileOutputStream?) {
         runCatching { output?.flush() }
@@ -845,6 +1070,8 @@ class AudioCaptureService : Service() {
                 isRecording.set(false)
             }
         }
+        // After the join: the capture thread's cleanup removed its listener; nothing else posts here.
+        routeThread.quitSafely()
         super.onDestroy()
     }
 }

@@ -115,9 +115,11 @@ class LiveAudioMeterWiringTest {
         val appendLine = aidl.indexOf("// APPENDED.")
         assertTrue("the append marker exists", appendLine >= 0)
         assertTrue("the picture getter sits below the append marker", aidl.indexOf("float[] getSpectrumBands();") > appendLine)
+        // Everything below it was appended later (#26); the transaction order is pinned in
+        // SilenceStopWiringTest.startCaptureIsStillTheFirstTransactionAndNothingWasReordered.
         assertTrue(
-            "and is the last method in the interface",
-            aidl.substringAfter("float[] getSpectrumBands();").trim() == "}",
+            "and every later method sits below it",
+            aidl.indexOf("startCaptureWithInputDevice") > aidl.indexOf("float[] getSpectrumBands();"),
         )
     }
 

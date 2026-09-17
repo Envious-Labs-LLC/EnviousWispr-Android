@@ -17,9 +17,9 @@ EnviousWispr: Voice to Text
 ## Short description (80 characters max)
 
 ```
-Press, speak, done. Private on-device dictation that types into any app.
+Press, speak, done. Private on-device dictation, typed into the app you use.
 ```
-(72 characters.)
+(76 characters.)
 
 ## Full description (4,000 characters max)
 
@@ -27,30 +27,30 @@ Press, speak, done. Private on-device dictation that types into any app.
 Typing on a phone is slow, and talking to it usually means sending your voice to someone's server. EnviousWispr is the third option: press, speak, and finished text lands in the app you were typing in. Your voice never leaves your phone.
 
 HOW IT WORKS
-Tap the floating bubble beside any text box, say what you want, and tap the check. EnviousWispr turns your speech into text on your phone, cleans it up, and puts it right where your cursor was: Gmail, WhatsApp, Slack, Notes, Chrome, anywhere you type. You keep your own keyboard. Nothing to switch, nothing to learn.
+Tap the floating bubble beside any text box, say what you want, and tap the check. EnviousWispr turns your speech into text on your phone, cleans it up, and puts it right where your cursor was, in apps like Gmail, WhatsApp and Chrome. You keep your own keyboard. Nothing to switch, nothing to learn.
 
 PRIVATE BY DESIGN
 Speech recognition runs entirely on your phone. Audio is never uploaded, to us or to anyone. There is no account, no sign-in, and no tracking. The only time any text leaves your phone is if you choose to connect your own AI provider key for cloud polish, and then your text goes straight from your phone to the provider you picked.
 
 FINISHED TEXT, NOT A RAW TRANSCRIPT
-Say it the way you would say it out loud. EnviousWispr removes the ums and the false starts, fixes punctuation and capitals, and keeps your voice and your meaning. On-device polish is built in. If you want more, plug in your own OpenAI, Anthropic, or Google Gemini key.
+Say it the way you would say it out loud. EnviousWispr removes the ums, fixes punctuation and capitals, and keeps your voice and your meaning. On-device polish is built in. If you want more, plug in your own OpenAI, Anthropic, or Google Gemini key.
 
 YOUR WORDS
 Names, product terms, and jargon that speech engines get wrong: add them once to Your Words and they land right every time. Aliases let you say one thing and type another.
 
 MADE FOR REAL PHONES
-Works with your earbuds: when they are connected, they are the microphone. A one-tap floating bubble, a Quick Settings tile, and a notification all start a dictation. Every dictation is kept in History on your phone so nothing you said is ever lost.
+Works with your earbuds: when they are connected, they are the microphone. A one-tap floating bubble, a Quick Settings tile, and a notification all start a dictation. Every dictation is kept in History on your phone, so you can copy it again later.
 
 FREE
 No subscription, no trial, no word count or daily quota. Each dictation can run up to ten minutes. Bring your own key only if you want cloud polish.
 
 WHAT YOU NEED
-Android 13 or newer, a 64-bit phone with 6 GB of memory or more, and about 1.2 GB of free storage for the two on-device models, downloaded once over Wi-Fi.
+Android 13 or newer, a 64-bit phone with 6 GB of memory or more, and about 1.2 GB of free storage for the two on-device models, downloaded once (Wi-Fi recommended).
 
 ABOUT ACCESSIBILITY ACCESS
 EnviousWispr asks for Android's Accessibility permission so it can find the text box you are using and put your words there after you start a dictation. It is a dictation app, not an assistive tool. It never operates your phone on its own, and field contents are never sent to Envious Labs. You can switch the access off in Android Settings at any time; dictation then copies your words to the clipboard instead.
 ```
-(2,449 characters.)
+(2,419 characters.)
 
 ## Category and contact
 
@@ -87,10 +87,12 @@ First release. Press, speak, and finished text lands in the app you were typing 
 | Providers: OpenAI, Anthropic, Google Gemini | The three a new install can connect; self-hosted exists only for a configuration an older build saved (`ui/PolishLadder.kt` excludes it from the pickable set) | `privacy/PrivacyDisclosure.kt`, `ui/PolishLadder.kt` |
 | Earbuds are the microphone when connected | PR #165, Auto prefers connected earbuds | `audio/InputDeviceResolver.kt` |
 | Bubble, Quick Settings tile, notification start a dictation | Three of the five entry points into the session owner | `.claude/knowledge/current-state.md` |
-| History keeps every dictation | Room `transcripts` table; wordless takes are not stored | `history/` |
+| Apps like Gmail, WhatsApp and Chrome | The three named are the ones insertion was proven in on the phone (Gmail and WhatsApp 2026-09-03, Chrome 2026-09-16); "like" because insertion works through the focused editable field, which some apps do not expose | `.claude/knowledge/device-testing.md` |
+| Removes the ums | Filler removal is on by default | `settings/AppPreferences.kt`, `cleanup/` |
+| History keeps every dictation, copy it again later | Room `transcripts` table with Copy on the expanded card; wordless and cancelled takes are not stored, and a crash mid-take loses that take (#43), which is why the listing promises copying later, not that nothing is lost | `history/`, `ui/HistoryScreen.kt` |
 | Your Words with aliases | Structured custom vocabulary | `vocabulary/` |
 | Android 13+, 64-bit, 6 GB | `minSdk = 33`, `arm64-v8a`, founder Option A 2026-09-16 | `app/build.gradle.kts`, `docs/device-support-decision.md` |
-| About 1.2 GB of models over Wi-Fi | Speech 670 MB + polish 484 MB; onboarding has a mobile-data switch | `models/ModelManifest.kt`, `docs/launch-readiness-2026-09-15.md` |
+| About 1.2 GB of models, Wi-Fi recommended | Speech 670 MB + polish 484 MB; onboarding has a mobile-data switch, so Wi-Fi is a recommendation, not a requirement | `models/ModelManifest.kt`, `docs/launch-readiness-2026-09-15.md` |
 | Clipboard fallback without accessibility | Guarded insertion with clipboard fallback | `.claude/knowledge/current-state.md` |
 | Free, no account, no tracking | No server, no analytics SDK, no accounts | `docs/play-data-safety-answers.md` |
 | Each dictation up to ten minutes | `RecordingLimits.MAX_DURATION_MS` is 600,000 ms; the capture loop stops the take at the cap and transcribes what it has | `audio/RecordingLimits.kt` |

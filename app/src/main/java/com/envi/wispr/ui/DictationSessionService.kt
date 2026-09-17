@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
+import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.CaptureEnding
 import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.audio.RecordingLimits
@@ -222,6 +223,17 @@ class DictationSessionService : Service() {
     @Volatile private var autoStopOnSilence = false
     @Volatile private var silencePauseSeconds = SilenceStopDetector.DEFAULT_PAUSE_SECONDS
     @Volatile private var silenceNoticeShown = false
+    /** The stored pick, frozen per take like the silence setting; crosses the binder as a string. */
+    @Volatile private var inputDevicePick = InputDevicePick.AUTO
+    @Volatile private var showBluetoothTips = true
+    /** One line per take for a pick that was not connected; latched like the silence notice. */
+    @Volatile private var pickMissingNoticeShown = false
+    private val bluetoothTipGate = BluetoothTipGate()
+    /**
+     * What captured the take, read ONCE at stop after `waitForFileReady`, when the capture thread has
+     * exited and the record is complete. Empty means unknown and is stored as such (#26).
+     */
+    @Volatile private var captureDeviceLabel = ""
     /** One warning per take, latched so the last minute is not announced ten times a second. */
     @Volatile private var durationWarningShown = false
     private val cleanupPreferencesReady = CompletableDeferred<Unit>()
@@ -326,6 +338,8 @@ class DictationSessionService : Service() {
                     clipboardPolicy = preferences.clipboardInsertionPolicy()
                     autoStopOnSilence = preferences.autoStopOnSilenceEnabled
                     silencePauseSeconds = preferences.silencePauseSeconds
+                    inputDevicePick = preferences.inputDevicePick
+                    showBluetoothTips = preferences.showBluetoothTips
                     cleanupPreferencesReady.complete(Unit)
                 }
             } catch (cancelled: CancellationException) {
@@ -504,12 +518,17 @@ class DictationSessionService : Service() {
         try {
             silenceNoticeShown = false
             durationWarningShown = false
+            pickMissingNoticeShown = false
+            captureDeviceLabel = ""
             val started = runCatching {
-                audioService?.startCaptureWithSilenceStop(autoStopOnSilence, silencePauseSeconds)
+                audioService?.startCaptureWithInputDevice(autoStopOnSilence, silencePauseSeconds, inputDevicePick)
             }.getOrNull()
             if (started != true) {
+                // The one start failure with its own sentence is "nothing can record at all" (macOS copy).
+                val failure = runCatching { audioService?.lastStartFailure }.getOrNull()
+                    ?: AudioCaptureService.START_FAILURE_OTHER
                 stopAudioCaptureService()
-                showError("Microphone capture could not start safely")
+                showError(CaptureNotices.startFailureLine(failure))
                 return
             }
             captureStarted = true
@@ -575,6 +594,7 @@ class DictationSessionService : Service() {
                         RecordingOverlayState.updateElapsed(second)
                     }
                     publishSilenceNoticeIfNeeded(service)
+                    publishMicrophoneNoticesIfNeeded(service)
                     if (!service.isCapturing && state.get() == SessionState.RECORDING) {
                         // Exhaustive over CaptureEnding with no `else`, so a reason this build does not
                         // know cannot fall through into an ordinary transcription.
@@ -671,6 +691,25 @@ class DictationSessionService : Service() {
     }
 
     /**
+     * Two one-time lines about the microphone, decided from the codes the capture process reports:
+     * the Bluetooth tip (once per app process, tips on, take started on Bluetooth), and the pick-missing
+     * line (once per take whose explicit pick was not connected). Neither reads the display label.
+     */
+    private fun publishMicrophoneNoticesIfNeeded(service: IAudioCaptureService) {
+        val kind = runCatching { service.inputRouteKind }.getOrNull() ?: return
+        if (bluetoothTipGate.shouldShow(kind, showBluetoothTips)) {
+            DebugLogger.log(TAG, "Bluetooth tip shown")
+            sayWhileRecording(CaptureNotices.BLUETOOTH_TIP)
+        }
+        if (pickMissingNoticeShown) return
+        val reason = runCatching { service.inputRouteReason }.getOrNull() ?: return
+        if (!CaptureNotices.pickIsMissing(reason)) return
+        pickMissingNoticeShown = true
+        val picked = (InputDevicePick.parse(inputDevicePick) as? InputDevicePick.Device)?.name ?: return
+        sayWhileRecording(CaptureNotices.pickMissingLine(picked))
+    }
+
+    /**
      * Warn once, in the last minute of a take, that the cap is about to stop it.
      *
      * The moment comes from `RecordingLimits`, the same object the capture process stops the take with.
@@ -734,6 +773,10 @@ class DictationSessionService : Service() {
                     audioService?.elapsedMs?.takeIf { it > 0L }
                         ?: (System.currentTimeMillis() - recordingStartedAtMs)
                 }.getOrDefault(0L).coerceAtLeast(0L)
+                // Complete once the capture thread has exited (waitForFileReady above joined it): the
+                // final route was observed before the recorder stopped, and the label persists in the
+                // capture process until its next start.
+                captureDeviceLabel = runCatching { audioService?.effectiveInputDevice }.getOrNull().orEmpty()
                 val audioFilePath = audioService?.audioFilePath
                 stopAudioCaptureService()
 
@@ -980,6 +1023,7 @@ class DictationSessionService : Service() {
                         polishReason = polishFacts.reasonToken,
                         polishStatus = polishFacts.statusCode,
                         polishContext = polishFacts.contextToken,
+                        captureDevice = captureDeviceLabel,
                     )
                     if (updated > 0) existingId else insertReadyTranscript(finalText, finalEngine, latencyMs, polishFacts)
                 } else {
@@ -1076,6 +1120,7 @@ class DictationSessionService : Service() {
                 polishReason = polishFacts.reasonToken,
                 polishStatus = polishFacts.statusCode,
                 polishContext = polishFacts.contextToken,
+                captureDevice = captureDeviceLabel,
             ),
         )
     }
@@ -1394,7 +1439,7 @@ class DictationSessionService : Service() {
             return
         }
         runCatching {
-            // VibratorManager is API 31 against minSdk 30. Guarded here as well as in
+            // VibratorManager is API 31 against minSdk 33. Guarded here as well as in
             // PasteAccessibilityService.performResultHaptic: the runCatching only degrades to no
             // haptics at all on the oldest supported phone, which is a silent loss of every cue.
             val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

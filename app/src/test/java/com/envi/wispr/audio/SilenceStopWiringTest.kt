@@ -36,7 +36,11 @@ class SilenceStopWiringTest {
             listOf(
                 "startCapture", "stopCapture", "isCapturing", "getTerminalReason", "getCurrentAmplitude",
                 "getAudioFilePath", "getElapsedMs", "getMaxDurationMs", "waitForFileReady", "getAudioData",
+                // getSpectrumBands returns float[], which this regex does not match; its position is
+                // pinned by LiveAudioMeterWiringTest.theAidlMethodIsAppendedLast.
                 "startCaptureWithSilenceStop", "getSilenceStopStatus",
+                "startCaptureWithInputDevice", "getEffectiveInputDevice", "getInputRouteKind",
+                "getInputRouteReason", "getLastStartFailure",
             ),
             order,
         )
@@ -46,7 +50,7 @@ class SilenceStopWiringTest {
     fun theOldStartMeansExactlyWhatItMeantBefore() {
         assertTrue(
             "startCapture must be the no-auto-stop case of the new one, not a second implementation",
-            service.contains("startRecording(autoStopOnSilence = false, pauseSeconds = 0f)"),
+            service.contains("startRecording(autoStopOnSilence = false, pauseSeconds = 0f, pick = InputDevicePick.Auto)"),
         )
     }
 

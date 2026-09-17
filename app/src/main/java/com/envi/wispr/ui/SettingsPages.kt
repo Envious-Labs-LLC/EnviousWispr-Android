@@ -1,6 +1,17 @@
 package com.envi.wispr.ui
 
 import android.os.Build
+import com.envi.wispr.audio.InputDevicePick
+import com.envi.wispr.audio.InputDeviceLabels
+import com.envi.wispr.audio.InputDeviceCandidate
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.material3.RadioButton
+import android.media.AudioManager
+import android.media.AudioDeviceInfo
+import android.media.AudioDeviceCallback
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -352,8 +363,14 @@ private fun DrawScope.drawLips(centreX: Float, centreY: Float, side: Float, edge
 @Composable
 internal fun MicrophonePage(
     readiness: AppReadiness,
+    preferences: AppPreferencesState,
     onRequestMicrophone: () -> Unit,
+    onInputDevicePickChanged: (InputDevicePick) -> Unit,
+    onShowBluetoothTipsChanged: (Boolean) -> Unit,
 ) {
+    val view = LocalView.current
+    val inputs = rememberConnectedInputs()
+    val pick = InputDevicePick.parse(preferences.inputDevicePick)
     ScreenContainer(subtitle = SettingsPage.Microphone.subtitle) {
         SettingsGroup("Access") {
             SettingsActionRow(
@@ -368,13 +385,120 @@ internal fun MicrophonePage(
                 onClick = onRequestMicrophone,
             )
         }
+        // The macOS "Input Device" row (catalog `microphone-selection`), as a list: Auto, then every
+        // microphone the phone can see right now, by its own name. The list is for DISPLAY and choice
+        // only; which one records is decided in the capture process at the moment a take starts.
+        SettingsGroup("Input Device") {
+            Column(Modifier.selectableGroup()) {
+                InputDeviceRow(
+                    title = "Auto",
+                    subtitle = "Earbuds when they are connected, otherwise the phone",
+                    selected = pick is InputDevicePick.Auto,
+                    onSelect = {
+                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        onInputDevicePickChanged(InputDevicePick.Auto)
+                    },
+                )
+                // A pick that is not connected right now stays in the list, marked, so it can be seen
+                // and changed rather than silently vanishing along with the reason the phone is listening.
+                val pickedButAbsent = (pick as? InputDevicePick.Device)
+                    ?.takeIf { chosen -> inputs.none { it.type == chosen.type && it.name == chosen.name } }
+                val rows = inputs.map { it.pick to it.label } +
+                    listOfNotNull(pickedButAbsent?.let { it to InputDeviceLabels.labelFor(it.type, it.name) })
+                rows.forEach { (device, label) ->
+                    HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                    InputDeviceRow(
+                        title = label,
+                        subtitle = if (device == pickedButAbsent) "Not connected. Dictation uses Auto until it is." else null,
+                        selected = pick == device,
+                        onSelect = {
+                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            onInputDevicePickChanged(device)
+                        },
+                    )
+                }
+            }
+        }
+        // PAR-028: the macOS Bluetooth guide, rewritten only where Android differs. No readiness
+        // window is promised, because Android closes the earbud link itself a few seconds after a take.
+        SettingsGroup("When using Bluetooth") {
+            Text(
+                "Bluetooth earbuds switch into call mode when a recording starts, which takes a moment " +
+                    "on a cold start. Give them a second before you speak. Music on the earbuds drops to " +
+                    "call quality while you dictate and comes back when you stop. Wired and USB " +
+                    "microphones have no startup delay.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+            )
+            HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+            SettingsToggleRow(
+                title = "Show Bluetooth tips",
+                subtitle = "A one-time reminder on the recorder when earbuds are your microphone.",
+                checked = preferences.showBluetoothTips,
+                onCheckedChange = {
+                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    onShowBluetoothTipsChanged(it)
+                },
+            )
+        }
         Text(
-            "EnviousWispr listens with whichever microphone the phone is using. Picking a " +
-                "specific microphone, and keeping a headset connected through a dictation, are " +
-                "not available yet.",
+            "Each dictation names the microphone that recorded it on its History card.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * The microphones the phone can see, kept current while the page is open. Read in the app process for
+ * display only; the capture process reads its own list when a take starts.
+ */
+@Composable
+private fun rememberConnectedInputs(): List<InputDeviceCandidate> {
+    val context = LocalContext.current
+    val audioManager = remember(context) { context.getSystemService(AudioManager::class.java) }
+    fun read(): List<InputDeviceCandidate> = audioManager
+        ?.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        ?.map(InputDeviceCandidate::from)
+        ?.filter { it.isSource }
+        // One row per identity: a headset that exposes two microphones (LE Audio and classic) under
+        // the same name is one thing to the person choosing it.
+        ?.distinctBy { it.type to it.name }
+        ?: emptyList()
+    var inputs by remember { mutableStateOf(read()) }
+    DisposableEffect(audioManager) {
+        val callback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) { inputs = read() }
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) { inputs = read() }
+        }
+        audioManager?.registerAudioDeviceCallback(callback, null)
+        onDispose { audioManager?.unregisterAudioDeviceCallback(callback) }
+    }
+    return inputs
+}
+
+@Composable
+private fun InputDeviceRow(title: String, subtitle: String?, selected: Boolean, onSelect: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        RadioButton(selected = selected, onClick = null)
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 

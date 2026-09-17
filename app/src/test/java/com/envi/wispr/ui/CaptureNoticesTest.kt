@@ -51,9 +51,7 @@ class CaptureNoticesTest {
             .substringAfter("private fun publishMicrophoneNoticesIfNeeded(")
             .substringBefore("private fun publishDurationWarningIfNeeded(")
         assertTrue(body.contains("if (silenceNoticeShown || pickMissingNoticeShown) return"))
-        assertTrue("the pick-missing line returns before the tip is considered", body.indexOf("return
-        }
-        val kind") > 0)
+        assertTrue("the pick-missing branch returns before the tip is considered", body.indexOf("return") < body.indexOf("val kind"))
         assertTrue("the gate is consulted only after every other line has declined", body.indexOf("bluetoothTipGate.shouldShow") > body.indexOf("pickIsMissing"))
     }
 

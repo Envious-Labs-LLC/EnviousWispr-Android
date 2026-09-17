@@ -508,7 +508,7 @@ class AudioCaptureService : Service() {
             }
             if (!opened) {
                 DebugLogger.warn(TAG, "Bluetooth link refused for ${target.label}; resolving without Bluetooth")
-                hold.release()
+                hold.releaseCommunicationDevice()
                 infos = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
                 candidates = infos.map(InputDeviceCandidate::from)
                 resolution = InputDeviceResolver.resolve(pick, candidates, allowBluetooth = false)
@@ -539,7 +539,8 @@ class AudioCaptureService : Service() {
         if (!accepted) {
             DebugLogger.warn(TAG, "setPreferredDevice refused for ${route.target.label}")
             effective.markReason(InputRouteReason.PREFERRED_REFUSED)
-            hold.release()
+            // The link is given back; listener ownership stays with the take so its route changes are recorded.
+            hold.releaseCommunicationDevice()
         }
     }
 

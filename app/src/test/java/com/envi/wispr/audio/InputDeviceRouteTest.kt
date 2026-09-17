@@ -77,6 +77,24 @@ class InputDeviceRouteTest {
     }
 
     @Test
+    fun givingBackTheLinkAloneKeepsListenerOwnershipForTheFinalRelease() {
+        var cleared = 0
+        var removed = 0
+        val hold = RouteHold({ cleared++ }, { removed++ })
+        hold.markCommunicationSet()
+        hold.markListenerSet()
+        hold.releaseCommunicationDevice()
+        assertEquals("the link goes back at once", 1, cleared)
+        assertEquals("the listener stays", 0, removed)
+        assertFalse("the take is not over", hold.isReleased)
+        hold.releaseCommunicationDevice()
+        assertEquals("giving it back twice clears once", 1, cleared)
+        hold.release()
+        assertEquals("the final release removes the listener", 1, removed)
+        assertEquals("and does not clear a link already given back", 1, cleared)
+    }
+
+    @Test
     fun aThrowingClearDoesNotStopTheListenerRemoval() {
         var removed = 0
         val hold = RouteHold({ throw IllegalStateException("binder gone") }, { removed++ })

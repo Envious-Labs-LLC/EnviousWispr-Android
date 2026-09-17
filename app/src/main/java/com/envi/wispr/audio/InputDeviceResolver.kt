@@ -96,17 +96,26 @@ class RouteHold(
     private val removeListener: () -> Unit,
 ) {
     private val released = AtomicBoolean(false)
-    @Volatile private var communicationSet = false
+    private val communicationSet = AtomicBoolean(false)
     @Volatile private var listenerSet = false
 
-    fun markCommunicationSet() { communicationSet = true }
+    fun markCommunicationSet() { communicationSet.set(true) }
     fun markListenerSet() { listenerSet = true }
     val isReleased: Boolean get() = released.get()
 
+    /**
+     * Give back the communication request alone, keeping listener ownership: a refused link mid-setup
+     * means the take continues on another device, and its route changes must still be recorded.
+     */
+    fun releaseCommunicationDevice() {
+        if (communicationSet.compareAndSet(true, false)) runCatching { clearCommunicationDevice() }
+    }
+
+    /** Everything, once. The take is over. */
     fun release() {
         if (!released.compareAndSet(false, true)) return
         if (listenerSet) runCatching { removeListener() }
-        if (communicationSet) runCatching { clearCommunicationDevice() }
+        releaseCommunicationDevice()
     }
 }
 

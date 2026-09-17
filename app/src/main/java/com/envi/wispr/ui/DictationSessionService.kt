@@ -228,7 +228,8 @@ class DictationSessionService : Service() {
     @Volatile private var showBluetoothTips = true
     /** One line per take for a pick that was not connected; latched like the silence notice. */
     @Volatile private var pickMissingNoticeShown = false
-    private val bluetoothTipGate = BluetoothTipGate()
+    /** Process-scoped on purpose: this service stops itself after every take. */
+    private val bluetoothTipGate = BluetoothTipGate.PROCESS
     /**
      * What captured the take, read ONCE at stop after `waitForFileReady`, when the capture thread has
      * exited and the record is complete. Empty means unknown and is stored as such (#26).

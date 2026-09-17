@@ -38,6 +38,14 @@ object CaptureNotices {
 class BluetoothTipGate {
     private val shown = AtomicBoolean(false)
 
+    companion object {
+        /**
+         * The one gate for this app process. The session owner is a service that stops itself after
+         * every dictation, so a gate held on the service would reset every take (Codex review, 2026-09-17).
+         */
+        val PROCESS = BluetoothTipGate()
+    }
+
     /** True exactly once, on the first Bluetooth take while tips are on. */
     fun shouldShow(routeKindCode: Int, tipsEnabled: Boolean): Boolean {
         if (!tipsEnabled) return false

@@ -36,6 +36,14 @@ class CaptureNoticesTest {
     }
 
     @Test
+    fun theSessionOwnerUsesTheProcessGateNotOneItBuildsPerService() {
+        // The service stops itself after every take; a gate it constructed would reset every dictation.
+        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+        assertTrue(source.contains("private val bluetoothTipGate = BluetoothTipGate.PROCESS"))
+        assertFalse(source.contains("BluetoothTipGate()"))
+    }
+
+    @Test
     fun anUnknownKindCodeIsNotBluetooth() {
         assertFalse(BluetoothTipGate().shouldShow(42, tipsEnabled = true))
     }

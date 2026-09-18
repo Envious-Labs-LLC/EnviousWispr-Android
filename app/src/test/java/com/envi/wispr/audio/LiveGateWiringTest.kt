@@ -78,6 +78,21 @@ class LiveGateWiringTest {
         val start = body(capture, "override fun onStartCommand(")
         assertTrue(start.contains("return START_NOT_STICKY"))
         assertTrue(capture.contains("synchronized(sessionLock) { warmHold?.end(WarmHold.END_DESTROYED) }"))
+        val destroy = capture.substringAfter("override fun onDestroy()")
+        assertTrue("the flag precedes the stop that could end a take", destroy.indexOf("destroyed = true") < destroy.indexOf("stopRecording()"))
+        assertTrue("no hold may start after teardown began", body(capture, "private fun holdEligible(").contains("if (destroyed) return false"))
+        assertTrue("a hold started before the join is ended before the route thread quits",
+            destroy.lastIndexOf("warmHold?.end(WarmHold.END_DESTROYED)") < destroy.indexOf("routeThread.quitSafely()"))
+    }
+
+    @Test
+    fun theHeldIdentityIsReadBeforeTheHandoverClearsIt() {
+        val start = body(capture, "private fun startRecording(")
+        val read = start.indexOf("val type = heldSinkType")
+        val hand = start.indexOf("hold.handOver()")
+        assertTrue(read in 0 until hand)
+        val resolve = body(capture, "private fun resolveRoute(")
+        assertTrue(resolve.contains("handedOver.sinkType == sink.type && handedOver.sinkName == sink.name"))
     }
 
     @Test

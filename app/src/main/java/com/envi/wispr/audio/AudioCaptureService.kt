@@ -211,6 +211,12 @@ class AudioCaptureService : Service() {
     @Volatile private var heldSinkType: Int = -1
     @Volatile private var heldSinkName: String = ""
     @Volatile private var holdExpiry: Runnable? = null
+
+    /** Set first thing in `onDestroy`: no take that ends after this may start a hold (Codex review 1). */
+    @Volatile private var destroyed = false
+
+    /** A warm hold's route on its way to the next take, with the identity the hold was keeping. */
+    private class HandedRoute(val route: RouteHold, val sinkType: Int, val sinkName: String)
     private var holdCommListener: AudioManager.OnCommunicationDeviceChangedListener? = null
     private var holdDeviceCallback: AudioDeviceCallback? = null
 
@@ -403,7 +409,13 @@ class AudioCaptureService : Service() {
             )
             // A warm hold hands its route to this take (the link stays up; V13: live at ~120 ms). Any hold
             // that does not match the resolved target is ended by resolveRoute before it sets anything.
-            val handedOver = warmHold?.handOver()
+            // The identity is read BEFORE the handover: handOver ends the hold, and the hold's end clears
+            // its bookkeeping synchronously (Codex review 1).
+            val handedOver = warmHold?.let { hold ->
+                val type = heldSinkType
+                val name = heldSinkName
+                hold.handOver()?.let { HandedRoute(it, type, name) }
+            }
             val route = resolveRoute(audioManager, pick, routeHold, handedOver) ?: run {
                 lastStartFailure = START_FAILURE_NO_INPUT_DEVICE
                 routeHold.release()
@@ -575,12 +587,12 @@ class AudioCaptureService : Service() {
         audioManager: AudioManager,
         pick: InputDevicePick,
         hold: RouteHold,
-        handedOver: RouteHold?,
+        handedOver: HandedRoute?,
     ): ResolvedRoute? {
         val infos = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
         val candidates = infos.map(InputDeviceCandidate::from)
         val resolution = InputDeviceResolver.resolve(pick, candidates)
-        val target = resolution.target ?: run { handedOver?.release(); return null }
+        val target = resolution.target ?: run { handedOver?.route?.release(); return null }
         var reason = resolution.reason
         var sinkInfo: AudioDeviceInfo? = null
 
@@ -590,13 +602,13 @@ class AudioCaptureService : Service() {
                 val sink = InputDeviceResolver.communicationSinkFor(target, available.map(InputDeviceCandidate::from))
                     ?: return@runCatching false
                 sinkInfo = available.first { it.id == sink.id }
-                val held = handedOver != null && heldSinkType == sink.type && heldSinkName == sink.name
+                val held = handedOver != null && handedOver.sinkType == sink.type && handedOver.sinkName == sink.name
                 if (held) {
-                    hold.adoptCommunicationFrom(handedOver!!)
+                    hold.adoptCommunicationFrom(handedOver!!.route)
                     DebugLogger.log(TAG, "route adopt=${target.label} from the warm hold")
                     true
                 } else {
-                    handedOver?.release()
+                    handedOver?.route?.release()
                     audioManager.setCommunicationDevice(sinkInfo!!).also { if (it) hold.markCommunicationSet() }
                 }
             }.getOrElse { e ->
@@ -605,12 +617,12 @@ class AudioCaptureService : Service() {
             }
             if (!opened) {
                 DebugLogger.warn(TAG, "Bluetooth link refused for ${target.label}; staying on the earbuds")
-                handedOver?.release()
+                handedOver?.route?.release()
                 hold.releaseCommunicationDevice()
                 reason = InputRouteReason.LINK_REFUSED
             }
         } else {
-            handedOver?.release()
+            handedOver?.route?.release()
         }
         val info = infos.firstOrNull { it.id == target.id } ?: return null
         return ResolvedRoute(
@@ -1194,6 +1206,7 @@ class AudioCaptureService : Service() {
 
     /** Under `sessionLock`. */
     private fun holdEligible(active: CaptureSession): Boolean {
+        if (destroyed) return false
         if (!active.keepEarbudsReady || !active.targetBluetooth || active.sink == null) return false
         if (active.routeHold.isReleased) return false
         if (active.effective.currentKind != InputRouteKind.BLUETOOTH) return false
@@ -1366,6 +1379,9 @@ class AudioCaptureService : Service() {
     }
 
     override fun onDestroy() {
+        // Ordered: no hold may start after this flag, so the take stopRecording ends below cannot open
+        // one after the route thread is gone (Codex review 1).
+        destroyed = true
         synchronized(sessionLock) { warmHold?.end(WarmHold.END_DESTROYED) }
         stopRecording()
         session?.let { active ->
@@ -1390,6 +1406,8 @@ class AudioCaptureService : Service() {
                 isRecording.set(false)
             }
         }
+        // A hold that slipped in between the flag and the join is ended here, before its expiry dies.
+        synchronized(sessionLock) { warmHold?.end(WarmHold.END_DESTROYED) }
         // After the join: the capture thread's cleanup removed its listener; nothing else posts here.
         routeThread.quitSafely()
         super.onDestroy()

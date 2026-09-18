@@ -62,6 +62,7 @@ class TranscriptOutcomePersistenceTest {
             polishReason = "HTTP_ERROR",
             polishStatus = 401,
             polishContext = "cloud:GEMINI",
+            captureDevice = "Phone",
         )
         val finalized = repository.transcripts.first().single { it.id == id }
         assertEquals("HTTP_ERROR", finalized.polishReason)

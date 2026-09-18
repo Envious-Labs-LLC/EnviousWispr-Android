@@ -54,6 +54,7 @@ interface TranscriptDao {
             "speechEngine = :speechEngine, polishEngine = :polishEngine, " +
             "polishLatencyMs = :polishLatencyMs, insertionResult = :insertionResult, " +
             "polishReason = :polishReason, polishStatus = :polishStatus, polishContext = :polishContext, " +
+            "captureDevice = :captureDevice, " +
             "durationMs = :durationMs, status = :status, stateChangedAtMs = :stateChangedAtMs, interrupted = :interrupted " +
             "WHERE id = :id",
     )
@@ -70,6 +71,7 @@ interface TranscriptDao {
         polishReason: String,
         polishStatus: Int,
         polishContext: String,
+        captureDevice: String,
         status: String = TranscriptEntity.STATUS_READY_FOR_INSERTION,
         interrupted: Boolean = false,
     ): Int

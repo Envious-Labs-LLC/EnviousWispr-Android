@@ -109,6 +109,7 @@ import com.envi.wispr.models.modelUiState
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.shortcuts.DictationNotificationController
+import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
@@ -206,6 +207,9 @@ internal fun EnviousWisprApp(
     onSpokenPunctuationChanged: (Boolean) -> Unit,
     onAutoStopOnSilenceChanged: (Boolean) -> Unit,
     onSilencePauseSecondsChanged: (Float) -> Unit,
+    onInputDevicePickChanged: (InputDevicePick) -> Unit,
+    onShowBluetoothTipsChanged: (Boolean) -> Unit,
+    onKeepEarbudsReadyChanged: (Boolean) -> Unit,
     onAutoCopyChanged: (Boolean) -> Unit,
     onRestoreClipboardChanged: (Boolean) -> Unit,
     onSmartInsertionChanged: (Boolean) -> Unit,
@@ -406,7 +410,11 @@ internal fun EnviousWisprApp(
                         )
                         SettingsPage.Microphone -> MicrophonePage(
                             readiness = uiState.readiness,
+                            preferences = uiState.preferences,
                             onRequestMicrophone = onRequestMicrophone,
+                            onInputDevicePickChanged = onInputDevicePickChanged,
+                            onShowBluetoothTipsChanged = onShowBluetoothTipsChanged,
+                            onKeepEarbudsReadyChanged = onKeepEarbudsReadyChanged,
                         )
                         SettingsPage.Sounds -> SoundsPage()
                         SettingsPage.Clipboard -> ClipboardPage(

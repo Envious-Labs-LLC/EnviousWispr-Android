@@ -61,6 +61,26 @@ class EnviousWisprDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migration6To7PreservesTranscriptsAndDefaultsTheCaptureDevice() {
+        helper.createDatabase(TEST_DATABASE, 6).use { database ->
+            database.execSQL(
+                "INSERT INTO transcripts (id, originalText, finalText, createdAtMs, durationMs, speechEngine, polishEngine, " +
+                    "polishLatencyMs, insertionResult, kept, recovered, interrupted, status, stateChangedAtMs, " +
+                    "polishReason, polishStatus, polishContext) " +
+                    "VALUES (9, 'canary raw', 'canary final', 1, 2, 'Parakeet', 'None', 0, 'pending', 0, 0, 0, 'completed', 0, '', 0, '')",
+            )
+        }
+
+        helper.runMigrationsAndValidate(TEST_DATABASE, 7, true, EnviousWisprDatabase.MIGRATION_6_7).use { database ->
+            database.query("SELECT finalText, captureDevice FROM transcripts WHERE id = 9").use { cursor ->
+                cursor.moveToFirst()
+                assertEquals("canary final", cursor.getString(0))
+                assertEquals("", cursor.getString(1))
+            }
+        }
+    }
+
     private companion object {
         const val TEST_DATABASE = "enviouswispr-migration-test"
     }

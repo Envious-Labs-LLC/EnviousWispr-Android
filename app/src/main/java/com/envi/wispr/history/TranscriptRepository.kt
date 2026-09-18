@@ -40,6 +40,7 @@ class TranscriptRepository(private val dao: TranscriptDao, private val clock: ()
         polishReason: String,
         polishStatus: Int,
         polishContext: String,
+        captureDevice: String,
         stateChangedAtMs: Long = clock(),
     ) = dao.finalize(
         id = id,
@@ -54,6 +55,7 @@ class TranscriptRepository(private val dao: TranscriptDao, private val clock: ()
         polishReason = polishReason,
         polishStatus = polishStatus,
         polishContext = polishContext,
+        captureDevice = captureDevice,
     )
 
     suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, interrupted: Boolean = false) =

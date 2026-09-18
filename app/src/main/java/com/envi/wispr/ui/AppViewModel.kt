@@ -10,6 +10,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.envi.wispr.paste.AccessibilityPermission
 import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.paste.AutoPasteReadiness
 import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.history.TranscriptEntity
@@ -426,6 +427,18 @@ class EnviousWisprViewModel(
     /** The value is clamped in the store as well, so a bad one never reaches a take. */
     fun setSilencePauseSeconds(seconds: Float) {
         viewModelScope.launch { appPreferences.setSilencePauseSeconds(seconds) }
+    }
+
+    fun setInputDevicePick(pick: InputDevicePick) {
+        viewModelScope.launch { appPreferences.setInputDevicePick(pick) }
+    }
+
+    fun setKeepEarbudsReady(enabled: Boolean) {
+        viewModelScope.launch { appPreferences.setKeepEarbudsReady(enabled) }
+    }
+
+    fun setShowBluetoothTips(enabled: Boolean) {
+        viewModelScope.launch { appPreferences.setShowBluetoothTips(enabled) }
     }
 
     fun setSpokenPunctuationEnabled(enabled: Boolean) {

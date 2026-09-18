@@ -602,21 +602,22 @@ class DictationSessionService : Service() {
             val capturing = runCatching { service.isCapturing }.getOrDefault(false)
             if (!capturing) {
                 val failure = runCatching { service.lastStartFailure }.getOrDefault(AudioCaptureService.START_FAILURE_OTHER)
+                val message = if (failure == AudioCaptureService.START_FAILURE_EARBUDS) CaptureNotices.startFailureLine(failure)
+                else "Microphone capture stopped unexpectedly. Try again."
+                // Claim first: a cancel that stopped capture between the two checks owns the take, and
+                // its stop must not read as a microphone failure.
+                if (!failWhileStarting(message)) return
                 DebugLogger.warn(TAG, "Capture ended while waiting for the route to go live (failure=$failure)")
                 runCatching { service.waitForFileReady(2_000L) }
                 stopAudioCaptureService()
-                showError(
-                    if (failure == AudioCaptureService.START_FAILURE_EARBUDS) CaptureNotices.startFailureLine(failure)
-                    else "Microphone capture stopped unexpectedly. Try again.",
-                )
                 return
             }
             if (SystemClock.elapsedRealtime() - startedAt > LIVE_WAIT_BOUND_MS) {
+                if (!failWhileStarting(CaptureNotices.START_FAILED)) return
                 DebugLogger.error(TAG, "The route never went live within ${LIVE_WAIT_BOUND_MS} ms")
                 runCatching { service.stopCapture() }
                 runCatching { service.waitForFileReady(2_000L) }
                 stopAudioCaptureService()
-                showError(CaptureNotices.START_FAILED)
                 return
             }
             Thread.sleep(LIVE_POLL_MS)
@@ -846,8 +847,12 @@ class DictationSessionService : Service() {
     }
 
     private fun stopAndTranscribe() {
-        if (!state.compareAndSet(SessionState.RECORDING, SessionState.PROCESSING)) return
-        RecordingOverlayState.showProcessing()
+        // Under publishLock: the live waiter publishes RECORDING (pill, draft) under the same lock, so a
+        // stop that follows its CAS cannot run ahead of its publication (Codex review 3, 2026-09-18).
+        synchronized(publishLock) {
+            if (!state.compareAndSet(SessionState.RECORDING, SessionState.PROCESSING)) return
+            RecordingOverlayState.showProcessing()
+        }
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.PROCESSING)
         promoteToForeground(processing = true)
         vibrate(HapticCue.SESSION_TRANSITION)
@@ -1297,7 +1302,10 @@ class DictationSessionService : Service() {
     }
 
     private fun cancelRecording() {
-        if (!state.compareAndSet(SessionState.RECORDING, SessionState.CANCELLING)) return
+        synchronized(publishLock) {
+            if (!state.compareAndSet(SessionState.RECORDING, SessionState.CANCELLING)) return
+            RecordingOverlayState.showProcessing()
+        }
         cancelCaptureAndFinish()
     }
 
@@ -1368,12 +1376,32 @@ class DictationSessionService : Service() {
     }
 
     private fun cancelStarting() {
-        if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
+        synchronized(publishLock) {
+            if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
+            RecordingOverlayState.showProcessing()
+        }
         cancelCaptureAndFinish()
     }
 
     private fun showError(message: String) {
         if (state.getAndSet(SessionState.ERROR) == SessionState.ERROR) return
+        announceError(message)
+    }
+
+    /**
+     * The live waiter's failure: claims ERROR only while the take is still STARTING, under the lock, so
+     * a cancel that already owns the take is not overwritten with a failure toast (Codex review 3).
+     * Returns false when something else owns the take; the waiter then does nothing.
+     */
+    private fun failWhileStarting(message: String): Boolean {
+        synchronized(publishLock) {
+            if (!state.compareAndSet(SessionState.STARTING, SessionState.ERROR)) return false
+        }
+        announceError(message)
+        return true
+    }
+
+    private fun announceError(message: String) {
         publicationStarted.set(true)
         cancelOpenPolishRequest()
         RecordingOverlayState.showProcessing()

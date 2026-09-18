@@ -97,6 +97,18 @@ class LiveGateWiringTest {
     }
 
     @Test
+    fun everyTransitionOutOfStartingOrRecordingTakesThePublishLock() {
+        // The producers of the race class Codex review 3 named: enumerated from the CAS sites, not
+        // from the findings. A new CAS out of STARTING or RECORDING outside the lock fails here.
+        val casLines = Regex("compareAndSet\\(SessionState\\.(STARTING|RECORDING), SessionState\\.\\w+\\)").findAll(session).count()
+        val lockedCas = Regex("synchronized\\(publishLock\\) \\{\\s*\\n\\s*if \\(!state\\.compareAndSet\\(SessionState\\.(STARTING|RECORDING), SessionState\\.\\w+\\)\\)").findAll(session).count()
+        assertTrue("every CAS out of STARTING/RECORDING ($casLines) sits under publishLock ($lockedCas)", casLines == lockedCas)
+        val wait = body(session, "private fun waitForLive()")
+        assertTrue("the waiter claims failure before any cleanup", wait.indexOf("failWhileStarting(") < wait.indexOf("waitForFileReady"))
+        assertFalse("the waiter never overwrites another owner with showError", wait.contains("showError("))
+    }
+
+    @Test
     fun theHeldIdentityIsReadBeforeTheHandoverClearsIt() {
         val start = body(capture, "private fun startRecording(")
         val read = start.indexOf("val type = heldSinkType")
@@ -135,7 +147,7 @@ class LiveGateWiringTest {
     fun aCancelledTakeStillHandsOverAndFailurePathsStillStop() {
         val cancel = body(session, "private fun cancelCaptureAndFinish()")
         assertTrue(cancel.contains("finishTakeOrStop()"))
-        val error = body(session, "private fun showError(")
+        val error = body(session, "private fun announceError(")
         assertTrue(error.contains("stopAudioCaptureService()"))
         val finish = body(session, "private fun finishTakeOrStop()")
         assertTrue(finish.contains("if (!held) stopAudioCaptureService()"))

@@ -1087,7 +1087,7 @@ git -C "$SM_REPO" worktree add -q "$SM_WT" -b feat/task >/dev/null 2>&1 || exit 
 # is populated. The first is the state every worktree in this repo is left in (git's own source calls
 # it a known false positive), so that is what is staged here.
 # The module repository as `submodule update --init` then `deinit` leave it: detached at the pinned
-# gitlink, no local branch, no stash. That is the shape the override may delete.
+# gitlink. Work of its own is added further down, where the move-aside is asserted.
 # A module repository under `modules/` IS a git dir (HEAD, config, objects at its top), so it is built
 # bare and addressed with --git-dir, exactly as the script reads it.
 SM_MOD="$SM_REPO/.git/worktrees/task/modules/third_party/sub"
@@ -1099,8 +1099,9 @@ git --git-dir="$SM_MOD" update-ref --no-deref HEAD "$SM_SUBSHA" >/dev/null 2>&1 
 SM_WT=$(cd "$SM_WT" && pwd -P)
 SM_ERR=$(git -C "$SM_REPO" worktree remove "$SM_WT" 2>&1 >/dev/null) || true
 SM_FN=$(mktemp) || exit 2
-sed -n '/^submodule_only_refusal() {/,/^}/p; /^modules_hold_nothing_of_their_own() {/,/^}/p; /^worktree_is_locked() {/,/^}/p' "$PWD/scripts/cleanup-merged-worktrees.sh" > "$SM_FN"
+sed -n '/^submodule_only_refusal() {/,/^}/p; /^rescue_submodule_repositories() {/,/^}/p; /^worktree_is_locked() {/,/^}/p' "$PWD/scripts/cleanup-merged-worktrees.sh" > "$SM_FN"
 sm_check() { ( cd "$SM_REPO" && . "$SM_FN" && submodule_only_refusal "$1" "$2" ); }
+sm_rescue() { ( cd "$SM_REPO" && . "$SM_FN" && rescue_submodule_repositories "$1" feat/task "$2" ); }
 case "$SM_ERR" in
     *"working trees containing submodules cannot be moved or removed"*)
         PASS=$((PASS+1)); echo "  ok    git refuses a gitlinked worktree with the submodule message (the regression is real)" ;;
@@ -1141,36 +1142,64 @@ else
 fi
 rm -f "$SM_WT/scratch.txt"
 git -C "$SM_WT" config --unset status.showUntrackedFiles
-# A submodule repository with work of its own (a local branch): --force would delete it with the tree.
+# --force deletes the submodule repositories with the tree, and what one holds cannot be judged (Codex
+# 2026-09-18 reproduced a local branch, then a stored repository no gitlink names, then a local tag and
+# an embedded repository, each passing an inspection). So they are moved aside WHOLE. Stage every
+# reproduced hiding place at once and assert each survives under the rescue destination.
 git --git-dir="$SM_MOD" branch wip "$SM_SUBSHA" >/dev/null 2>&1
-if sm_check "$SM_WT" "$SM_ERR"; then
-    FAIL=$((FAIL+1)); echo "  FAIL  a local branch in the submodule repository did not block the override"
-else
-    PASS=$((PASS+1)); echo "  ok    a local branch in the submodule repository blocks the override"
-fi
-git --git-dir="$SM_MOD" branch -D wip >/dev/null 2>&1
-git --git-dir="$SM_MOD" update-ref --no-deref HEAD "$SM_SUBSHA" >/dev/null 2>&1
-if sm_check "$SM_WT" "$SM_ERR"; then
-    PASS=$((PASS+1)); echo "  ok    with the branch gone the tree is answered again"
-else
-    FAIL=$((FAIL+1)); echo "  FAIL  the tree was not answered after the local branch was removed"
-fi
-# A repository stored under modules/ that no current gitlink names (a removed or renamed submodule)
-# with a branch of its own: Codex 2026-09-18 reproduced --force deleting it. Enumerated from disk.
+git --git-dir="$SM_MOD" tag keep-tag "$SM_SUBSHA" >/dev/null 2>&1
 SM_OLD="$SM_REPO/.git/worktrees/task/modules/old/sub"
 git init -q --bare "$SM_OLD" >/dev/null 2>&1 || exit 2
 git --git-dir="$SM_OLD" fetch -q "$SM_SUB" main >/dev/null 2>&1 || exit 2
 git --git-dir="$SM_OLD" branch keep "$SM_SUBSHA" >/dev/null 2>&1
-if sm_check "$SM_WT" "$SM_ERR"; then
-    FAIL=$((FAIL+1)); echo "  FAIL  a stored repository no gitlink names did not block the override"
+# A repository embedded at <submodule>/.git (a plain clone at the pinned commit): the tree stays clean,
+# and `modules/` is not where this one lives.
+git clone -q "$SM_SUB" "$SM_WT/third_party/sub" >/dev/null 2>&1 || exit 2
+git -C "$SM_WT/third_party/sub" branch emb "$SM_SUBSHA" >/dev/null 2>&1
+if [ -d "$SM_WT/third_party/sub/.git" ] && sm_check "$SM_WT" "$SM_ERR"; then
+    PASS=$((PASS+1)); echo "  ok    a clean embedded submodule repository keeps the tree answered (the override would run)"
 else
-    PASS=$((PASS+1)); echo "  ok    a stored repository no gitlink names blocks the override"
+    FAIL=$((FAIL+1)); echo "  FAIL  the clean embedded submodule repository was not staged or blocked the override"
 fi
-rm -rf "$SM_OLD"
-if sm_check "$SM_WT" "$SM_ERR"; then
-    PASS=$((PASS+1)); echo "  ok    with the orphan repository gone the tree is answered again"
+# A destination inside the tree about to be deleted is refused and nothing moves.
+if sm_rescue "$SM_WT" "$SM_WT/rescued" >/dev/null 2>&1 || [ ! -d "$SM_MOD" ] || [ ! -d "$SM_WT/third_party/sub/.git" ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL  a rescue destination inside the worktree was accepted or something moved"
 else
-    FAIL=$((FAIL+1)); echo "  FAIL  the tree was not answered after the orphan repository was removed"
+    PASS=$((PASS+1)); echo "  ok    a rescue destination inside the worktree is refused and nothing moves"
+fi
+SM_RESCUE_ROOT="$SM_REPO/.claude/_rescued-worktrees"
+if sm_rescue "$SM_WT" "$SM_RESCUE_ROOT" >/dev/null 2>&1; then
+    PASS=$((PASS+1)); echo "  ok    the submodule repositories are moved aside"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  the submodule repositories could not be moved aside"
+fi
+SM_DEST=$(ls -d "$SM_RESCUE_ROOT"/feat-task-*-submodules.* 2>/dev/null | head -1)
+if [ -n "$SM_DEST" ] && git --git-dir="$SM_DEST/modules/third_party/sub" rev-parse --verify -q refs/heads/wip >/dev/null \
+    && git --git-dir="$SM_DEST/modules/third_party/sub" rev-parse --verify -q refs/tags/keep-tag >/dev/null; then
+    PASS=$((PASS+1)); echo "  ok    the module repository, its local branch and its local tag survive whole"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  the module repository's branch or tag did not survive the move"
+fi
+if [ -n "$SM_DEST" ] && git --git-dir="$SM_DEST/modules/old/sub" rev-parse --verify -q refs/heads/keep >/dev/null; then
+    PASS=$((PASS+1)); echo "  ok    a stored repository no gitlink names survives whole"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  the stored repository no gitlink names did not survive the move"
+fi
+if [ -n "$SM_DEST" ] && git --git-dir="$SM_DEST/embedded/third_party/sub/.git" rev-parse --verify -q refs/heads/emb >/dev/null; then
+    PASS=$((PASS+1)); echo "  ok    an embedded submodule repository survives whole"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  the embedded submodule repository did not survive the move"
+fi
+if [ ! -e "$SM_MOD" ] && [ ! -e "$SM_OLD" ] && [ ! -e "$SM_WT/third_party/sub/.git" ]; then
+    PASS=$((PASS+1)); echo "  ok    nothing that was moved is left behind for --force to delete"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a moved repository is still in the tree"
+fi
+# With nothing left to move the rescue succeeds and makes no second destination.
+if sm_rescue "$SM_WT" "$SM_RESCUE_ROOT" >/dev/null 2>&1 && [ "$(ls -d "$SM_RESCUE_ROOT"/feat-task-*-submodules.* 2>/dev/null | wc -l | tr -d ' ')" = 1 ]; then
+    PASS=$((PASS+1)); echo "  ok    nothing to move is success with no new destination"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a rescue with nothing to move failed or made a second destination"
 fi
 # The override itself: --force on the clean tree removes it, which plain remove could not.
 if git -C "$SM_REPO" worktree remove --force "$SM_WT" >/dev/null 2>&1 && [ ! -d "$SM_WT" ]; then

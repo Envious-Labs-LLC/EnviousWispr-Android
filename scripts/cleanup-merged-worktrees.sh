@@ -31,8 +31,9 @@
 # shipped. The `llama.cpp` submodule makes `git worktree remove` refuse EVERY tree
 # whose HEAD lists the gitlink, deinitialised or not ("working trees containing
 # submodules cannot be moved or removed"). That one objection is answered by our
-# own checks (clean tree, no lock, proven merged) and then `--force`; every other
-# refusal is honored, so an unsafe tree is retained, not forced.
+# own checks (clean tree, no lock, proven merged), the submodule repositories are
+# moved aside whole, and then `--force`; every other refusal is honored, so an
+# unsafe tree is retained, not forced.
 
 set -uo pipefail
 
@@ -149,11 +150,9 @@ worktree_registration_state() {
 # and our own checks find nothing else in the way: no lock; no modified, staged or
 # untracked file (the status flags are PINNED so a `status.showUntrackedFiles=no`
 # or `ignore = all` in some config cannot hide work; ignored files such as build
-# output do not count, git itself ignores them for this refusal); and no submodule
-# repository under the worktree's `modules/` holding anything of its own (a local
-# branch, a stash, or a HEAD that is not the parent's pinned gitlink), because
-# `--force` deletes those repositories with the tree. Any other refusal text, or
-# any read that fails, is false. Codex review 2026-09-18 reproduced both holes.
+# output do not count, git itself ignores them for this refusal). Any other
+# refusal text, or any read that fails, is false. What the submodule REPOSITORIES
+# hold is not judged here: rescue_submodule_repositories keeps them whole.
 submodule_only_refusal() {
     local wt="$1" err="$2" dirty
     case "$err" in
@@ -163,39 +162,64 @@ submodule_only_refusal() {
     worktree_is_locked "$wt" && return 1
     dirty=$(git -c status.showUntrackedFiles=all -C "$wt" status --porcelain \
         --untracked-files=all --ignore-submodules=none 2>/dev/null) || return 1
-    [ -z "$dirty" ] || return 1
-    modules_hold_nothing_of_their_own "$wt"
+    [ -z "$dirty" ]
 }
 
-# Every repository STORED under the worktree's `modules/` (enumerated from disk,
-# never from the index, so a repository left by a removed or renamed submodule is
-# seen too): it must belong to a current gitlink, have no local branch, no stash
-# ref, and a HEAD exactly the pinned gitlink. Then every object it holds came from
-# a fetch and is lost by nothing. Any repository this cannot vouch for refuses.
-modules_hold_nothing_of_their_own() {
-    local wt="$1" gitdir moddir listing headfile mod rel sha heads stashes head
+# `--force` deletes the submodule repositories with the tree. Inspection cannot
+# vouch for what one holds: a local commit can hang off a branch, a stash, a tag,
+# a reflog or nothing at all (Codex review 2026-09-18 found a new hiding place on
+# each of three rounds), so nothing is judged and everything is KEPT. Every
+# repository is MOVED whole, next to the rescued gitignored files: the store under
+# the worktree's git directory (`modules/`, which also holds repositories no
+# current gitlink names any more) and any repository embedded at
+# `<submodule>/.git`. A move that cannot be verified, or a destination inside the
+# tree about to be deleted, refuses and the caller keeps the tree. Nothing to move
+# is success with no destination made.
+rescue_submodule_repositories() {
+    local wt="$1" branch="$2" dest_root="$3" gitdir moddir wt_abs dr_abs dest entry mode path
+    local listing i safe_branch stamp
+    local -a sources=() targets=()
     gitdir=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null) || return 1
     moddir="$gitdir/modules"
-    [ -d "$moddir" ] || return 0
-    listing=$(git -C "$wt" ls-files -s 2>/dev/null) || return 1
-    # A repository is a directory holding HEAD, config and objects; a HEAD under
-    # logs/ or refs/ belongs to such a repository and is not one itself.
-    while IFS= read -r headfile; do
-        [ -n "$headfile" ] || continue
-        mod=$(dirname "$headfile")
-        { [ -f "$mod/config" ] && [ -d "$mod/objects" ]; } || return 1
-        rel=${mod#"$moddir"/}
-        sha=$(awk -v p="$rel" '$1 == "160000" && $4 == p { print $2 }' <<< "$listing")
-        [ -n "$sha" ] || return 1
-        heads=$(git --git-dir="$mod" for-each-ref --format='%(refname)' refs/heads 2>/dev/null) || return 1
-        [ -z "$heads" ] || return 1
-        # `stash list` needs a work tree; the ref itself answers on a bare git dir too.
-        stashes=$(git --git-dir="$mod" for-each-ref --format='%(refname)' refs/stash 2>/dev/null) || return 1
-        [ -z "$stashes" ] || return 1
-        head=$(git --git-dir="$mod" rev-parse --verify HEAD 2>/dev/null) || return 1
-        [ "$head" = "$sha" ] || return 1
-    done < <(find "$moddir" -type f -name HEAD -not -path '*/logs/*' -not -path '*/refs/*' 2>/dev/null)
-    return 0
+    if [ -d "$moddir" ]; then
+        sources+=("$moddir"); targets+=("modules")
+    fi
+    # NUL-separated so a path with a space or a newline reads whole; a command
+    # substitution would drop the NULs, so the listing goes through a file.
+    listing=$(mktemp) || return 1
+    if ! git -C "$wt" ls-files -s -z > "$listing" 2>/dev/null; then
+        rm -f "$listing"; return 1
+    fi
+    while IFS= read -r -d '' entry; do
+        mode=${entry%% *}
+        path=${entry#*$'\t'}
+        [ "$mode" = 160000 ] || continue
+        # A gitfile at <submodule>/.git points into modules/ and goes with it;
+        # only a DIRECTORY there is a repository of its own.
+        { [ -d "$wt/$path/.git" ] && [ ! -L "$wt/$path/.git" ]; } || continue
+        sources+=("$wt/$path/.git"); targets+=("embedded/$path/.git")
+    done < "$listing"
+    rm -f "$listing"
+    [ "${#sources[@]}" -gt 0 ] || return 0
+
+    wt_abs=$(cd "$wt" 2>/dev/null && pwd -P) || return 1
+    mkdir -p "$dest_root" 2>/dev/null || return 1
+    dr_abs=$(cd "$dest_root" 2>/dev/null && pwd -P) || return 1
+    case "$dr_abs/" in
+        "$wt_abs/"*) echo "rescue: destination '$dest_root' resolves inside the worktree '$wt'; refusing." >&2; return 1 ;;
+    esac
+    safe_branch=$(printf '%s' "$branch" | tr '/' '-')
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    dest=$(mktemp -d "$dest_root/$safe_branch-$stamp-submodules.XXXXXX") || return 1
+    for i in "${!sources[@]}"; do
+        mkdir -p "$(dirname "$dest/${targets[$i]}")" 2>/dev/null || return 1
+        if ! mv "${sources[$i]}" "$dest/${targets[$i]}" 2>/dev/null \
+            || [ -e "${sources[$i]}" ] || [ ! -d "$dest/${targets[$i]}" ]; then
+            echo "rescue: could not move '${sources[$i]}' to '$dest/${targets[$i]}'; anything already moved is under $dest" >&2
+            return 1
+        fi
+    done
+    echo "Worktree cleanup: moved ${#sources[@]} submodule repository store(s) from '$branch' -> $dest"
 }
 
 worktree_is_locked() {
@@ -423,8 +447,14 @@ for r in rows:
     if [ "$remove_rc" -ne 0 ]; then
         if submodule_only_refusal "$wt" "$remove_err"; then
             # The gitlink is git's ONLY objection: the tree is clean, unlocked, its
-            # branch is merged on GitHub and its HEAD is the proven SHA. --force here
-            # overrides exactly that objection and nothing else (2026-09-18).
+            # branch is merged on GitHub and its HEAD is the proven SHA. --force
+            # would also delete the submodule repositories, so they are moved aside
+            # whole first; then --force overrides exactly that objection and
+            # nothing else (2026-09-18).
+            if ! rescue_submodule_repositories "$wt" "$branch" "$MAIN_ROOT/.claude/_rescued-worktrees"; then
+                echo "SKIPPED: $wt — could not move its submodule repositories aside. Keeping it so nothing is lost." >&2
+                return 1
+            fi
             remove_rc=0
             git worktree remove --force "$wt" || remove_rc=$?
         else

@@ -83,7 +83,7 @@ echo
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""; DWT_REPO=""
 GATE_EXP=""; GATE_PAY=""; VICTIM=""; STAGE_B=""; STAGE_A=""
-HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""
+HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""; SM_REPO=""; SM_FN=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan basename long enough that its recovery path exceeds the 255-byte filename limit, so the
 # preservation write fails for a real reason rather than a simulated one.
@@ -100,6 +100,8 @@ cleanup() {
     [ -n "$DIG_DIR" ]    && rm -rf "$DIG_DIR"
     [ -n "$NOHOOKS" ]    && rm -rf "$NOHOOKS"
     [ -n "$DWT_REPO" ] && rm -rf "$DWT_REPO"
+    [ -n "$SM_REPO" ] && rm -rf "$SM_REPO"
+    [ -n "$SM_FN" ] && rm -rf "$SM_FN"
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
@@ -1059,6 +1061,68 @@ if "$PWD/scripts/cleanup-merged-worktrees.sh" --repo "$DWT_REPO" --apply >/dev/n
     FAIL=$((FAIL+1)); echo "  FAIL  an unscoped --apply was accepted"
 else
     PASS=$((PASS+1)); echo "  ok    an unscoped --apply is refused"
+fi
+echo
+
+echo "cleanup-merged-worktrees.sh — the submodule objection is overridden ONLY on a clean, unlocked tree"
+# A gitlink in HEAD makes `git worktree remove` refuse every tree that lists it. The predicate that
+# answers that objection is exercised both ways in a throwaway repo with a real gitlink: clean tree →
+# true; a modified file, a lock, or any other refusal text → false. The --force it gates is what
+# reclaims a merged worktree in this repo (llama.cpp), so both directions matter.
+SM_REPO=$(mktemp -d) || exit 2
+git init -q -b main "$SM_REPO" >/dev/null 2>&1 || exit 2
+( cd "$SM_REPO" && printf 'x\n' > tracked && git add tracked \
+    && git update-index --add --cacheinfo 160000,4b825dc642cb6eb9a060e54bf8d69288fbee4904,third_party/sub \
+    && git -c user.email=t@t -c user.name=t commit -q -m base ) >/dev/null 2>&1 || exit 2
+SM_WT="$SM_REPO/.claude/worktrees/task"
+git -C "$SM_REPO" worktree add -q "$SM_WT" -b feat/task >/dev/null 2>&1 || exit 2
+# git refuses when the worktree's own git dir has a `modules/` directory (left behind by `submodule
+# update --init` inside the worktree and NOT removed by `submodule deinit`), or when the gitlink's path
+# is populated. The first is the state every worktree in this repo is left in (git's own source calls
+# it a known false positive), so that is what is staged here.
+mkdir -p "$SM_REPO/.git/worktrees/task/modules"
+# git's porcelain listing prints the REAL path (macOS mktemp lives under a /var symlink); the lock
+# helper compares strings against that listing, so the test hands it the same spelling.
+SM_WT=$(cd "$SM_WT" && pwd -P)
+SM_ERR=$(git -C "$SM_REPO" worktree remove "$SM_WT" 2>&1 >/dev/null) || true
+SM_FN=$(mktemp) || exit 2
+sed -n '/^submodule_only_refusal() {/,/^}/p; /^worktree_is_locked() {/,/^}/p' "$PWD/scripts/cleanup-merged-worktrees.sh" > "$SM_FN"
+sm_check() { ( cd "$SM_REPO" && . "$SM_FN" && submodule_only_refusal "$1" "$2" ); }
+case "$SM_ERR" in
+    *"working trees containing submodules cannot be moved or removed"*)
+        PASS=$((PASS+1)); echo "  ok    git refuses a gitlinked worktree with the submodule message (the regression is real)" ;;
+    *)
+        FAIL=$((FAIL+1)); echo "  FAIL  git did not refuse the gitlinked worktree: $SM_ERR" ;;
+esac
+if sm_check "$SM_WT" "$SM_ERR"; then
+    PASS=$((PASS+1)); echo "  ok    a clean, unlocked tree: the objection is answered"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  a clean, unlocked tree was not recognised"
+fi
+if sm_check "$SM_WT" "fatal: '$SM_WT' contains modified or untracked files, use --force to delete it"; then
+    FAIL=$((FAIL+1)); echo "  FAIL  a different refusal text was accepted"
+else
+    PASS=$((PASS+1)); echo "  ok    any other refusal text is honored"
+fi
+printf 'y\n' >> "$SM_WT/tracked"
+if sm_check "$SM_WT" "$SM_ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL  a modified file did not block the override"
+else
+    PASS=$((PASS+1)); echo "  ok    a modified file blocks the override"
+fi
+git -C "$SM_WT" checkout -q -- tracked
+git -C "$SM_REPO" worktree lock "$SM_WT" >/dev/null 2>&1
+if sm_check "$SM_WT" "$SM_ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL  a locked tree did not block the override"
+else
+    PASS=$((PASS+1)); echo "  ok    a lock blocks the override"
+fi
+git -C "$SM_REPO" worktree unlock "$SM_WT" >/dev/null 2>&1
+# The override itself: --force on the clean tree removes it, which plain remove could not.
+if git -C "$SM_REPO" worktree remove --force "$SM_WT" >/dev/null 2>&1 && [ ! -d "$SM_WT" ]; then
+    PASS=$((PASS+1)); echo "  ok    --force removes the clean gitlinked tree"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  --force did not remove the clean gitlinked tree"
 fi
 echo
 

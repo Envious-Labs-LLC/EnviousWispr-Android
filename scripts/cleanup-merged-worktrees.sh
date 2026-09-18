@@ -28,8 +28,11 @@
 #
 # AN ABANDONED, UNMERGED WORKTREE IS REPORTED AND RETAINED, NEVER DELETED. It
 # cannot pass the merged-PR guard, and nothing here may delete work that never
-# shipped. The `llama.cpp` submodule can make `git worktree remove` refuse; that
-# refusal is honored (never --force), so an unsafe tree is retained, not forced.
+# shipped. The `llama.cpp` submodule makes `git worktree remove` refuse EVERY tree
+# whose HEAD lists the gitlink, deinitialised or not ("working trees containing
+# submodules cannot be moved or removed"). That one objection is answered by our
+# own checks (clean tree, no lock, proven merged) and then `--force`; every other
+# refusal is honored, so an unsafe tree is retained, not forced.
 
 set -uo pipefail
 
@@ -140,6 +143,21 @@ worktree_registration_state() {
         0|1) return "$rc" ;;
         *)   return 2 ;;
     esac
+}
+
+# True when `git worktree remove` refused ONLY because the tree lists a submodule
+# and our own checks find nothing else in the way: no lock, no modified, staged or
+# untracked file (ignored files such as build output do not count; git itself
+# ignores them for this refusal). Any other refusal text, or any doubt, is false.
+submodule_only_refusal() {
+    local wt="$1" err="$2" dirty
+    case "$err" in
+        *"working trees containing submodules cannot be moved or removed"*) ;;
+        *) return 1 ;;
+    esac
+    worktree_is_locked "$wt" && return 1
+    dirty=$(git -C "$wt" status --porcelain 2>/dev/null) || return 1
+    [ -z "$dirty" ]
 }
 
 worktree_is_locked() {
@@ -363,7 +381,18 @@ for r in rows:
         return 1
     fi
     remove_rc=0
-    git worktree remove "$wt" || remove_rc=$?
+    remove_err=$(git worktree remove "$wt" 2>&1 >/dev/null) || remove_rc=$?
+    if [ "$remove_rc" -ne 0 ]; then
+        if submodule_only_refusal "$wt" "$remove_err"; then
+            # The gitlink is git's ONLY objection: the tree is clean, unlocked, its
+            # branch is merged on GitHub and its HEAD is the proven SHA. --force here
+            # overrides exactly that objection and nothing else (2026-09-18).
+            remove_rc=0
+            git worktree remove --force "$wt" || remove_rc=$?
+        else
+            printf '%s\n' "$remove_err" >&2
+        fi
+    fi
 
     # 8. SAME-PROCESS OBSERVATION, AND UNEXPECTED LEFTOVERS ARE RETAINED. Once git
     #    has unregistered the tree, any files that remain cannot be PROVEN to be

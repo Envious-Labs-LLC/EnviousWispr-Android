@@ -86,6 +86,17 @@ class LiveGateWiringTest {
     }
 
     @Test
+    fun removedEarbudsAdmitThePhoneAndADeadAudioProcessEndsAStartingTake() {
+        val admissible = body(capture, "private fun routeAdmissible(")
+        assertTrue("disconnected earbuds are the one case the phone may record", admissible.contains("active.sinkGone"))
+        val start = body(capture, "private fun startRecording(")
+        assertTrue(start.contains("watchSink(newSession)"))
+        assertTrue(body(capture, "private fun releaseSession(").contains("unregisterAudioDeviceCallback(w)"))
+        val disconnect = session.substringAfter("private val audioConnection").substringBefore("private val asrConnection")
+        assertTrue(disconnect.contains("seen == SessionState.RECORDING || seen == SessionState.STARTING"))
+    }
+
+    @Test
     fun theHeldIdentityIsReadBeforeTheHandoverClearsIt() {
         val start = body(capture, "private fun startRecording(")
         val read = start.indexOf("val type = heldSinkType")

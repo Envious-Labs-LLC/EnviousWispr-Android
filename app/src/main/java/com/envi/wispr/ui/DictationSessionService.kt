@@ -279,7 +279,10 @@ class DictationSessionService : Service() {
         override fun onServiceDisconnected(name: ComponentName?) {
             audioService = null
             DebugLogger.warn(TAG, "Audio capture disconnected")
-            if (state.get() == SessionState.RECORDING) {
+            // STARTING too: since the live gate, capture runs while the lips spin, and a waiter whose
+            // binder vanished returns without ending the take (Codex review 2, 2026-09-18).
+            val seen = state.get()
+            if (seen == SessionState.RECORDING || seen == SessionState.STARTING) {
                 handleServiceFailure("Microphone service stopped unexpectedly")
             }
         }
@@ -586,11 +589,11 @@ class DictationSessionService : Service() {
         val startedAt = SystemClock.elapsedRealtime()
         while (true) {
             if (state.get() != SessionState.STARTING) return
-            val service = audioService ?: return
+            val service = audioService ?: return // onServiceDisconnected ends the take for STARTING too.
             val live = try {
                 service.liveState
             } catch (_: Exception) {
-                return // A binder death is handled by its ServiceConnection callback.
+                return // A dead binder: its ServiceConnection callback ends the take.
             }
             if (live != AudioCaptureService.LIVE_WAITING) {
                 publishLive(forced = live == AudioCaptureService.LIVE_FORCED)

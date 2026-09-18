@@ -154,6 +154,14 @@ class AudioCaptureService : Service() {
         /** The route thread's deadline message for this take, removed at every end. */
         @Volatile var deadline: Runnable? = null
 
+        /**
+         * The earbuds this take asked for have been removed (their sink left the device list). Set on
+         * the route thread by [sinkWatch]; read on the capture thread. Once true the phone may record:
+         * the earbuds are disconnected, which is the one case the founder's rule allows.
+         */
+        @Volatile var sinkGone: Boolean = false
+        @Volatile var sinkWatch: AudioDeviceCallback? = null
+
         /** Capture thread only. */
         var pendingBytes: Int = 0
 
@@ -538,7 +546,12 @@ class AudioCaptureService : Service() {
                     return false
                 }
                 startSpectrumAnalysis(newSession)
-                if (route.needsBluetooth) armDeadline(newSession) else markLive(newSession)
+                if (route.needsBluetooth) {
+                    watchSink(newSession)
+                    armDeadline(newSession)
+                } else {
+                    markLive(newSession)
+                }
                 return thread.isAlive && session === newSession && isRecording.get()
             } catch (e: SecurityException) {
                 DebugLogger.error(TAG, "RECORD_AUDIO permission not granted", e)
@@ -683,7 +696,31 @@ class AudioCaptureService : Service() {
      * to the request. A route not yet observed is not refused.
      */
     private fun routeAdmissible(active: CaptureSession): Boolean =
-        !active.targetBluetooth || active.phonePicked || active.effective.currentKind != InputRouteKind.PHONE
+        !active.targetBluetooth || active.phonePicked || active.sinkGone ||
+            active.effective.currentKind != InputRouteKind.PHONE
+
+    /**
+     * Watch the take's earbuds leave, on the route thread, so the gate can admit the phone once they
+     * are gone (V7: Android moves the route itself within 120 ms). Registered after the session exists,
+     * removed in [releaseSession].
+     */
+    private fun watchSink(active: CaptureSession) {
+        val sink = active.sink ?: return
+        val type = sink.type
+        val name = sink.productName?.toString().orEmpty()
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val callback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) {
+                if (removed.any { it.type == type && it.productName?.toString().orEmpty() == name }) {
+                    active.sinkGone = true
+                    DebugLogger.log(TAG, "route earbuds removed while ${active.gate.state}; the phone may record")
+                }
+            }
+        }
+        active.sinkWatch = callback
+        runCatching { audioManager.registerAudioDeviceCallback(callback, routeHandler) }
+            .onFailure { DebugLogger.warn(TAG, "sink watch not registered: ${it.message}") }
+    }
 
     /** Capture thread, on the read that opened the gate. */
     private fun markLive(active: CaptureSession) {
@@ -1167,6 +1204,10 @@ class AudioCaptureService : Service() {
             if (session !== active) return
             active.deadline?.let { routeHandler.removeCallbacks(it) }
             active.deadline = null
+            active.sinkWatch?.let { w ->
+                runCatching { (getSystemService(AUDIO_SERVICE) as AudioManager).unregisterAudioDeviceCallback(w) }
+            }
+            active.sinkWatch = null
             // Capture-loop endings (cap, byte ceiling, error) reach here with the recorder still active.
             observeFinalRoute(active)
             // The one handoff point every ending reaches: a manual stop, the silence stop and both caps

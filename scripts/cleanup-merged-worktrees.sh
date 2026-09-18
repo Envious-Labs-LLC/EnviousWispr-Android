@@ -167,17 +167,26 @@ submodule_only_refusal() {
     modules_hold_nothing_of_their_own "$wt"
 }
 
-# For every gitlink in the worktree's index whose repository exists under the
-# worktree's own `modules/`: no local branch, no stash, HEAD exactly the pinned
-# gitlink. Then every object it holds came from a fetch and is lost by nothing.
+# Every repository STORED under the worktree's `modules/` (enumerated from disk,
+# never from the index, so a repository left by a removed or renamed submodule is
+# seen too): it must belong to a current gitlink, have no local branch, no stash
+# ref, and a HEAD exactly the pinned gitlink. Then every object it holds came from
+# a fetch and is lost by nothing. Any repository this cannot vouch for refuses.
 modules_hold_nothing_of_their_own() {
-    local wt="$1" gitdir listing path sha mod heads stashes head
+    local wt="$1" gitdir moddir listing headfile mod rel sha heads stashes head
     gitdir=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    moddir="$gitdir/modules"
+    [ -d "$moddir" ] || return 0
     listing=$(git -C "$wt" ls-files -s 2>/dev/null) || return 1
-    while read -r mode sha _stage path; do
-        [ "$mode" = "160000" ] || continue
-        mod="$gitdir/modules/$path"
-        [ -e "$mod" ] || continue
+    # A repository is a directory holding HEAD, config and objects; a HEAD under
+    # logs/ or refs/ belongs to such a repository and is not one itself.
+    while IFS= read -r headfile; do
+        [ -n "$headfile" ] || continue
+        mod=$(dirname "$headfile")
+        { [ -f "$mod/config" ] && [ -d "$mod/objects" ]; } || return 1
+        rel=${mod#"$moddir"/}
+        sha=$(awk -v p="$rel" '$1 == "160000" && $4 == p { print $2 }' <<< "$listing")
+        [ -n "$sha" ] || return 1
         heads=$(git --git-dir="$mod" for-each-ref --format='%(refname)' refs/heads 2>/dev/null) || return 1
         [ -z "$heads" ] || return 1
         # `stash list` needs a work tree; the ref itself answers on a bare git dir too.
@@ -185,7 +194,7 @@ modules_hold_nothing_of_their_own() {
         [ -z "$stashes" ] || return 1
         head=$(git --git-dir="$mod" rev-parse --verify HEAD 2>/dev/null) || return 1
         [ "$head" = "$sha" ] || return 1
-    done <<< "$listing"
+    done < <(find "$moddir" -type f -name HEAD -not -path '*/logs/*' -not -path '*/refs/*' 2>/dev/null)
     return 0
 }
 

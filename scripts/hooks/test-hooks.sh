@@ -1155,6 +1155,23 @@ if sm_check "$SM_WT" "$SM_ERR"; then
 else
     FAIL=$((FAIL+1)); echo "  FAIL  the tree was not answered after the local branch was removed"
 fi
+# A repository stored under modules/ that no current gitlink names (a removed or renamed submodule)
+# with a branch of its own: Codex 2026-09-18 reproduced --force deleting it. Enumerated from disk.
+SM_OLD="$SM_REPO/.git/worktrees/task/modules/old/sub"
+git init -q --bare "$SM_OLD" >/dev/null 2>&1 || exit 2
+git --git-dir="$SM_OLD" fetch -q "$SM_SUB" main >/dev/null 2>&1 || exit 2
+git --git-dir="$SM_OLD" branch keep "$SM_SUBSHA" >/dev/null 2>&1
+if sm_check "$SM_WT" "$SM_ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL  a stored repository no gitlink names did not block the override"
+else
+    PASS=$((PASS+1)); echo "  ok    a stored repository no gitlink names blocks the override"
+fi
+rm -rf "$SM_OLD"
+if sm_check "$SM_WT" "$SM_ERR"; then
+    PASS=$((PASS+1)); echo "  ok    with the orphan repository gone the tree is answered again"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  the tree was not answered after the orphan repository was removed"
+fi
 # The override itself: --force on the clean tree removes it, which plain remove could not.
 if git -C "$SM_REPO" worktree remove --force "$SM_WT" >/dev/null 2>&1 && [ ! -d "$SM_WT" ]; then
     PASS=$((PASS+1)); echo "  ok    --force removes the clean gitlinked tree"

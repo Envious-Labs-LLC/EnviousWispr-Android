@@ -41,6 +41,8 @@ class SilenceStopWiringTest {
                 "startCaptureWithSilenceStop", "getSilenceStopStatus",
                 "startCaptureWithInputDevice", "getEffectiveInputDevice", "getInputRouteKind",
                 "getInputRouteReason", "getLastStartFailure",
+                // 2026-09-18, the live gate and the earbud hold (#26): appended, never inserted.
+                "startCaptureWithInputDeviceHeld", "getLiveState", "getLiveAfterMs", "finishTake",
             ),
             order,
         )

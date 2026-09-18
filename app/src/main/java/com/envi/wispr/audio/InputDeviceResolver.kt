@@ -127,48 +127,30 @@ class RouteHold(
         if (communicationSet.compareAndSet(true, false)) runCatching { clearCommunicationDevice() }
     }
 
+    /**
+     * Drop the recorder's routing listener alone. The listener belongs to that `AudioRecord` and dies
+     * with it at every close; the communication ownership may outlive it in a `WarmHold`.
+     */
+    fun releaseListener() {
+        if (listenerSet) {
+            listenerSet = false
+            runCatching { removeListener() }
+        }
+    }
+
+    /**
+     * Take the communication ownership from a hold that is handing over to this take: the platform
+     * request stays exactly as it is, [other] forgets it (so its later release clears nothing), and this
+     * hold now owns the one clear.
+     */
+    fun adoptCommunicationFrom(other: RouteHold) {
+        if (other.communicationSet.compareAndSet(true, false)) communicationSet.set(true)
+    }
+
     /** Everything, once. The take is over. */
     fun release() {
         if (!released.compareAndSet(false, true)) return
-        if (listenerSet) runCatching { removeListener() }
+        releaseListener()
         releaseCommunicationDevice()
-    }
-}
-
-/**
- * The silent-earbud rescue's counter: pure over bytes read, so the bar is a unit test.
- *
- * Armed only for a Bluetooth target. Counts exact-zero bytes from the first byte of the take; retires
- * for good at the first non-zero sample (a healthy link cannot re-arm it) and fires at most once. The
- * bar is audio delivered, not wall-clock: a blocked read makes no progress and no decision.
- *
- * 3.0 s is the macOS ceiling (50 % headroom over the founder's observed 2 s worst case); the Android
- * cold link-up measured 0.56 to 0.96 s, so the bar sits about 3x past the measured tail.
- */
-class SilentRouteRescue(private val armed: Boolean) {
-    private var zeroBytes = 0L
-    private var retired = !armed
-    private var fired = false
-
-    /** True exactly once, on the read that crosses the bar with no non-zero sample seen so far. */
-    fun offer(buffer: ByteArray, bytesRead: Int): Boolean {
-        if (retired || fired) return false
-        for (i in 0 until bytesRead) {
-            if (buffer[i].toInt() != 0) {
-                retired = true
-                return false
-            }
-        }
-        zeroBytes += bytesRead
-        if (zeroBytes >= RESCUE_AFTER_BYTES) {
-            fired = true
-            return true
-        }
-        return false
-    }
-
-    companion object {
-        /** 3.0 s at 16 kHz, 16-bit mono. */
-        const val RESCUE_AFTER_BYTES: Long = 3L * PcmAudio.SAMPLE_RATE * PcmAudio.BYTES_PER_SAMPLE
     }
 }

@@ -209,6 +209,7 @@ internal fun EnviousWisprApp(
     onSilencePauseSecondsChanged: (Float) -> Unit,
     onInputDevicePickChanged: (InputDevicePick) -> Unit,
     onShowBluetoothTipsChanged: (Boolean) -> Unit,
+    onKeepEarbudsReadyChanged: (Boolean) -> Unit,
     onAutoCopyChanged: (Boolean) -> Unit,
     onRestoreClipboardChanged: (Boolean) -> Unit,
     onSmartInsertionChanged: (Boolean) -> Unit,
@@ -413,6 +414,7 @@ internal fun EnviousWisprApp(
                             onRequestMicrophone = onRequestMicrophone,
                             onInputDevicePickChanged = onInputDevicePickChanged,
                             onShowBluetoothTipsChanged = onShowBluetoothTipsChanged,
+                            onKeepEarbudsReadyChanged = onKeepEarbudsReadyChanged,
                         )
                         SettingsPage.Sounds -> SoundsPage()
                         SettingsPage.Clipboard -> ClipboardPage(

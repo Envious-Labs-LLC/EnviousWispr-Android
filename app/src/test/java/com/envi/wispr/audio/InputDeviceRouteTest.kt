@@ -46,9 +46,7 @@ class InputDeviceRouteTest {
         assertEquals("AirPods Pro 3, then Phone", e.label())
         assertEquals("the start kind is latched, not the latest", InputRouteKind.BLUETOOTH, e.kind)
         assertEquals(InputRouteReason.AUTO.code, e.reasonCode())
-        e.markRescued()
-        assertEquals(InputRouteReason.RESCUED.code, e.reasonCode())
-        assertTrue(e.wasRescued())
+        assertEquals("the current kind is the latest observation", InputRouteKind.PHONE, e.currentKind)
     }
 
     @Test
@@ -113,55 +111,5 @@ class InputDeviceRouteTest {
         hold.release()
         assertEquals(1, removed)
         assertTrue(hold.isReleased)
-    }
-
-    // --- SilentRouteRescue: the bar, the retire, the one shot ---
-
-    private val zeros = ByteArray(1_024)
-    private val voice = ByteArray(1_024).also { it[3] = 5 }
-
-    /** 96,000 bytes in 1,024-byte reads: the 94th read crosses (93 x 1,024 = 95,232 < 96,000). */
-    private val readsToCross = 94
-
-    @Test
-    fun firesExactlyOnceWhenTheBarIsCrossedWithOnlyZeros() {
-        val rescue = SilentRouteRescue(armed = true)
-        repeat(readsToCross - 1) { assertFalse(rescue.offer(zeros, zeros.size)) }
-        assertTrue("the read that crosses the bar fires", rescue.offer(zeros, zeros.size))
-        assertFalse("one shot", rescue.offer(zeros, zeros.size))
-    }
-
-    @Test
-    fun aPartialReadCountsItsBytesAndTheBarIsACrossing() {
-        val rescue = SilentRouteRescue(armed = true)
-        repeat(readsToCross - 2) { rescue.offer(zeros, zeros.size) } // 94,208 bytes
-        assertFalse(rescue.offer(zeros, 1_000)) // 95,208
-        assertTrue(rescue.offer(zeros, 1_000)) // 96,208 >= 96,000
-    }
-
-    @Test
-    fun oneNonZeroSampleRetiresTheRescueForGood() {
-        val rescue = SilentRouteRescue(armed = true)
-        assertFalse(rescue.offer(voice, voice.size))
-        repeat(readsToCross + 2) { assertFalse(rescue.offer(zeros, zeros.size)) }
-    }
-
-    @Test
-    fun aNonZeroSampleAnywhereInTheReadRetires() {
-        val rescue = SilentRouteRescue(armed = true)
-        val tail = ByteArray(1_024).also { it[1_023] = 1 }
-        assertFalse(rescue.offer(tail, tail.size))
-        repeat(readsToCross + 2) { assertFalse(rescue.offer(zeros, zeros.size)) }
-    }
-
-    @Test
-    fun anUnarmedRescueNeverFires() {
-        val rescue = SilentRouteRescue(armed = false)
-        repeat(readsToCross + 2) { assertFalse(rescue.offer(zeros, zeros.size)) }
-    }
-
-    @Test
-    fun theBarIsThreeSecondsOfAudio() {
-        assertEquals(96_000L, SilentRouteRescue.RESCUE_AFTER_BYTES)
     }
 }

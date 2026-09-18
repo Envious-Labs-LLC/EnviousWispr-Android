@@ -368,6 +368,7 @@ internal fun MicrophonePage(
     onRequestMicrophone: () -> Unit,
     onInputDevicePickChanged: (InputDevicePick) -> Unit,
     onShowBluetoothTipsChanged: (Boolean) -> Unit,
+    onKeepEarbudsReadyChanged: (Boolean) -> Unit,
 ) {
     val view = LocalView.current
     val inputs = rememberConnectedInputs()
@@ -420,17 +421,30 @@ internal fun MicrophonePage(
                 }
             }
         }
-        // PAR-028: the macOS Bluetooth guide, rewritten only where Android differs. No readiness
-        // window is promised, because Android closes the earbud link itself a few seconds after a take.
+        // PAR-028: the macOS Bluetooth guide, rewritten where Android differs. Since 2026-09-18 the
+        // recorder waits for the earbuds itself (the lips spin until they deliver sound), and the
+        // readiness window is the 30 s hold below, measured on the S26 (V13).
         SettingsGroup("When using Bluetooth") {
             Text(
-                "Bluetooth earbuds switch into call mode when a recording starts, which takes a moment " +
-                    "on a cold start. Give them a second before you speak. Music on the earbuds drops to " +
-                    "call quality while you dictate and comes back when you stop. Wired and USB " +
+                "Bluetooth earbuds switch into call mode when a recording starts. On a cold start that " +
+                    "takes a couple of seconds: the lips spin until the earbuds are live, then the " +
+                    "recorder opens and you speak. Music on the earbuds drops to call quality while " +
+                    "you dictate and, with the option below, for 30 seconds after. Wired and USB " +
                     "microphones have no startup delay.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+            )
+            HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+            SettingsToggleRow(
+                title = "Keep earbuds ready after dictating",
+                subtitle = "For 30 seconds after a dictation the earbud link stays open, so the next one " +
+                    "starts at once. Music on the earbuds stays in call quality for those 30 seconds.",
+                checked = preferences.keepEarbudsReady,
+                onCheckedChange = {
+                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    onKeepEarbudsReadyChanged(it)
+                },
             )
             HorizontalDivider(Modifier.padding(horizontal = 18.dp))
             SettingsToggleRow(

@@ -2,6 +2,12 @@
 
 GitHub issue: `#26`. Tier: MEDIUM. Status: APPROVED (founder 2026-09-17, warm hold declined: option A).
 
+> **Amended 2026-09-18 after the phone pass on build 137:**
+> [`issue-26-2026-09-18-earbud-hold-and-live-gate.md`](issue-26-2026-09-18-earbud-hold-and-live-gate.md)
+> supersedes this plan's "no warm hold" non-goal, deletes the silent-earbud rescue (§3 and §5's "link
+> silent" row), and adds the live gate (the pill opens only when the earbuds deliver sound) and the 30 s
+> silent-playback hold. Where the two disagree, the amendment wins.
+
 ## Preface — Lane + Hardware UAT declaration
 
 **Lane:** Code

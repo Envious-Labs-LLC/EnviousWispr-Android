@@ -14,6 +14,7 @@ class CaptureNoticesTest {
     @Test
     fun noInputDeviceGetsTheMacSentenceAndEverythingElseGetsTodays() {
         assertEquals("No microphone found. Please connect one.", CaptureNotices.startFailureLine(AudioCaptureService.START_FAILURE_NO_INPUT_DEVICE))
+        assertEquals("Earbuds could not be used.", CaptureNotices.startFailureLine(AudioCaptureService.START_FAILURE_EARBUDS))
         assertEquals("Microphone capture could not start safely", CaptureNotices.startFailureLine(AudioCaptureService.START_FAILURE_OTHER))
         assertEquals("Microphone capture could not start safely", CaptureNotices.startFailureLine(AudioCaptureService.START_FAILURE_NONE))
         assertEquals("Microphone capture could not start safely", CaptureNotices.startFailureLine(99))
@@ -50,9 +51,23 @@ class CaptureNoticesTest {
         val body = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
             .substringAfter("private fun publishMicrophoneNoticesIfNeeded(")
             .substringBefore("private fun publishDurationWarningIfNeeded(")
-        assertTrue(body.contains("if (silenceNoticeShown || pickMissingNoticeShown) return"))
+        assertTrue(body.contains("if (silenceNoticeShown || pickMissingNoticeShown || forcedNoticeShown) return"))
         assertTrue("the pick-missing branch returns before the tip is considered", body.indexOf("return") < body.indexOf("val kind"))
         assertTrue("the gate is consulted only after every other line has declined", body.indexOf("bluetoothTipGate.shouldShow") > body.indexOf("pickIsMissing"))
+    }
+
+    @Test
+    fun theForcedNoticeIsSaidBeforePollingAndTheTipNamesWhereTheSoundIs() {
+        // FORCED is published first, inside the live transition, so the once-per-process tip and a
+        // pick-missing line cannot take the recorder's one slot from it (plan §3.2, 2026-09-18).
+        val publish = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+            .substringAfter("private fun publishLive(")
+            .substringBefore("private fun startPolling(")
+        assertTrue(publish.indexOf("sayWhileRecording(CaptureNotices.EARBUDS_SILENT)") < publish.indexOf("startPolling()"))
+        assertTrue(publish.indexOf("forcedNoticeShown = true") < publish.indexOf("sayWhileRecording(CaptureNotices.EARBUDS_SILENT)"))
+        assertEquals("Earbuds are not sending sound.", CaptureNotices.EARBUDS_SILENT)
+        // The Android tip no longer asks the user to wait: the recorder waits for the earbuds itself.
+        assertFalse(CaptureNotices.BLUETOOTH_TIP.contains("moment"))
     }
 
     @Test

@@ -92,6 +92,7 @@ class SettingsActivity : ComponentActivity() {
                     onSilencePauseSecondsChanged = viewModel::setSilencePauseSeconds,
                     onInputDevicePickChanged = viewModel::setInputDevicePick,
                     onShowBluetoothTipsChanged = viewModel::setShowBluetoothTips,
+                    onKeepEarbudsReadyChanged = viewModel::setKeepEarbudsReady,
                     onAutoCopyChanged = viewModel::setAutoCopyToClipboard,
                     onRestoreClipboardChanged = viewModel::setRestoreClipboardAfterPaste,
                     onSmartInsertionChanged = viewModel::setSmartInsertionEnabled,

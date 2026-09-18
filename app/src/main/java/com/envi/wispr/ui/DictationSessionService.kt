@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -24,6 +25,8 @@ import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.CaptureEnding
 import com.envi.wispr.audio.IAudioCaptureService
+import com.envi.wispr.audio.LiveGate
+import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
@@ -139,6 +142,15 @@ class DictationSessionService : Service() {
 
     private enum class SessionState { IDLE, STARTING, RECORDING, PROCESSING, CANCELLING, FINISHING, ERROR }
 
+    /** How often the live waiter asks the capture process. */
+    private val LIVE_POLL_MS = 20L
+
+    /**
+     * The STARTING bound: two live deadlines (one reset) plus a second, after which a take that never
+     * went live fails rather than spins.
+     */
+    private val LIVE_WAIT_BOUND_MS = 2 * LiveGate.DEADLINE_MS + 1_000L
+
     private data class SessionPreferences(
         val cleanup: CleanupOptions = CleanupOptions(),
         val terms: List<CustomTerm> = emptyList(),
@@ -226,8 +238,19 @@ class DictationSessionService : Service() {
     /** The stored pick, frozen per take like the silence setting; crosses the binder as a string. */
     @Volatile private var inputDevicePick = InputDevicePick.AUTO
     @Volatile private var showBluetoothTips = true
+    /** The 30 s earbud hold, frozen per take and carried on the start call. */
+    @Volatile private var keepEarbudsReady = true
     /** One line per take for a pick that was not connected; latched like the silence notice. */
     @Volatile private var pickMissingNoticeShown = false
+    /** The take proceeded on earbuds that sent nothing; said once, before any other microphone line. */
+    @Volatile private var forcedNoticeShown = false
+
+    /**
+     * Serialises the one STARTING→RECORDING publication (the CAS, the pill, the haptic, the surface) with
+     * teardown's invalidation, so a live waiter that won its CAS cannot publish after `onDestroy` hid the
+     * overlay, and teardown cannot interleave between the CAS and the publication.
+     */
+    private val publishLock = Any()
     /** Process-scoped on purpose: this service stops itself after every take. */
     private val bluetoothTipGate = BluetoothTipGate.PROCESS
     /**
@@ -256,7 +279,10 @@ class DictationSessionService : Service() {
         override fun onServiceDisconnected(name: ComponentName?) {
             audioService = null
             DebugLogger.warn(TAG, "Audio capture disconnected")
-            if (state.get() == SessionState.RECORDING) {
+            // STARTING too: since the live gate, capture runs while the lips spin, and a waiter whose
+            // binder vanished returns without ending the take (Codex review 2, 2026-09-18).
+            val seen = state.get()
+            if (seen == SessionState.RECORDING || seen == SessionState.STARTING) {
                 handleServiceFailure("Microphone service stopped unexpectedly")
             }
         }
@@ -341,6 +367,7 @@ class DictationSessionService : Service() {
                     silencePauseSeconds = preferences.silencePauseSeconds
                     inputDevicePick = preferences.inputDevicePick
                     showBluetoothTips = preferences.showBluetoothTips
+                    keepEarbudsReady = preferences.keepEarbudsReady
                     cleanupPreferencesReady.complete(Unit)
                 }
             } catch (cancelled: CancellationException) {
@@ -520,9 +547,10 @@ class DictationSessionService : Service() {
             silenceNoticeShown = false
             durationWarningShown = false
             pickMissingNoticeShown = false
+            forcedNoticeShown = false
             captureDeviceLabel = ""
             val started = runCatching {
-                audioService?.startCaptureWithInputDevice(autoStopOnSilence, silencePauseSeconds, inputDevicePick)
+                audioService?.startCaptureWithInputDeviceHeld(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady)
             }.getOrNull()
             if (started != true) {
                 // The one start failure with its own sentence is "nothing can record at all" (macOS copy).
@@ -533,8 +561,80 @@ class DictationSessionService : Service() {
                 return
             }
             captureStarted = true
+            // The take is STARTING until the chosen route delivers sound: the lips spin, no pill, no
+            // timer, nothing written. The waiter performs the RECORDING transition when the capture
+            // process reports live (issue #26, 2026-09-18).
+            Thread({ waitForLive() }, "LiveWaiter").start()
+        } catch (error: Exception) {
+            if (captureStarted) {
+                val capture = audioService
+                Thread({
+                    runCatching { capture?.stopCapture() }
+                    runCatching { capture?.waitForFileReady(2_000L) }
+                    stopAudioCaptureService()
+                }, "StartCaptureFailureCleanup").start()
+            }
+            DebugLogger.error(TAG, "Failed to start recording", error)
+            showError("Failed to start recording")
+        }
+    }
+
+    /**
+     * Polls the capture process until the take is live, then publishes RECORDING. Four ways out without
+     * publishing: the state left STARTING (a cancel or teardown won), the binder is gone, capture ended
+     * during the wait (a deadline failure or a capture error), or the STARTING bound passed. None of
+     * them can publish a pill for an ended take, and none waits forever.
+     */
+    private fun waitForLive() {
+        val startedAt = SystemClock.elapsedRealtime()
+        while (true) {
+            if (state.get() != SessionState.STARTING) return
+            val service = audioService ?: return // onServiceDisconnected ends the take for STARTING too.
+            val live = try {
+                service.liveState
+            } catch (_: Exception) {
+                return // A dead binder: its ServiceConnection callback ends the take.
+            }
+            if (live != AudioCaptureService.LIVE_WAITING) {
+                // Published on the MAIN thread, where every command is dispatched and where the
+                // bubble's early release sets its flag: the old start published there too, so a stop,
+                // cancel or release can never read STARTING and then act against a take this thread
+                // published in between (Codex review 4, 2026-09-18).
+                val forced = live == AudioCaptureService.LIVE_FORCED
+                mainHandler.post { publishLive(forced) }
+                return
+            }
+            val capturing = runCatching { service.isCapturing }.getOrDefault(false)
+            if (!capturing) {
+                val failure = runCatching { service.lastStartFailure }.getOrDefault(AudioCaptureService.START_FAILURE_OTHER)
+                val message = if (failure == AudioCaptureService.START_FAILURE_EARBUDS) CaptureNotices.startFailureLine(failure)
+                else "Microphone capture stopped unexpectedly. Try again."
+                // Claim first: a cancel that stopped capture between the two checks owns the take, and
+                // its stop must not read as a microphone failure.
+                if (!failWhileStarting(message)) return
+                DebugLogger.warn(TAG, "Capture ended while waiting for the route to go live (failure=$failure)")
+                runCatching { service.waitForFileReady(2_000L) }
+                stopAudioCaptureService()
+                return
+            }
+            if (SystemClock.elapsedRealtime() - startedAt > LIVE_WAIT_BOUND_MS) {
+                if (!failWhileStarting(CaptureNotices.START_FAILED)) return
+                DebugLogger.error(TAG, "The route never went live within ${LIVE_WAIT_BOUND_MS} ms")
+                runCatching { service.stopCapture() }
+                runCatching { service.waitForFileReady(2_000L) }
+                stopAudioCaptureService()
+                return
+            }
+            Thread.sleep(LIVE_POLL_MS)
+        }
+    }
+
+    /** The one STARTING→RECORDING publication: main thread, under [publishLock]. */
+    private fun publishLive(forced: Boolean) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "publishLive runs on the main thread" }
+        synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.RECORDING)) {
-                audioService?.stopCapture()
+                audioService?.let { runCatching { it.stopCapture() } }
                 return
             }
             recordingStartedAtMs = System.currentTimeMillis()
@@ -560,7 +660,12 @@ class DictationSessionService : Service() {
             DictationSurfaceState.update(this, DictationSurfaceState.Phase.LISTENING)
             RecordingOverlayState.show()
             vibrate(HapticCue.SESSION_TRANSITION)
-            DebugLogger.log(TAG, "Recording started")
+            DebugLogger.log(TAG, "Recording started (live after ${runCatching { audioService?.liveAfterMs }.getOrNull() ?: -1} ms, forced=$forced)")
+            if (forced) {
+                // Said first, so neither the tip nor a pick-missing line can take the slot from it.
+                forcedNoticeShown = true
+                sayWhileRecording(CaptureNotices.EARBUDS_SILENT)
+            }
             startPolling()
             if (stopAfterRecording) {
                 // The bubble's hold was already released. Consumed here, at the one transition the
@@ -569,17 +674,6 @@ class DictationSessionService : Service() {
                 DebugLogger.log(TAG, "Early release applied: stopping as soon as capture started")
                 stopAndTranscribe()
             }
-        } catch (error: Exception) {
-            if (captureStarted) {
-                val capture = audioService
-                Thread({
-                    runCatching { capture?.stopCapture() }
-                    runCatching { capture?.waitForFileReady(2_000L) }
-                    stopAudioCaptureService()
-                }, "StartCaptureFailureCleanup").start()
-            }
-            DebugLogger.error(TAG, "Failed to start recording", error)
-            showError("Failed to start recording")
         }
     }
 
@@ -702,7 +796,7 @@ class DictationSessionService : Service() {
      * that had to say something else leaves it for the next Bluetooth take (Codex review 5, 2026-09-17).
      */
     private fun publishMicrophoneNoticesIfNeeded(service: IAudioCaptureService) {
-        if (silenceNoticeShown || pickMissingNoticeShown) return
+        if (silenceNoticeShown || pickMissingNoticeShown || forcedNoticeShown) return
         val reason = runCatching { service.inputRouteReason }.getOrNull() ?: return
         if (CaptureNotices.pickIsMissing(reason)) {
             val picked = (InputDevicePick.parse(inputDevicePick) as? InputDevicePick.Device)?.name
@@ -759,8 +853,12 @@ class DictationSessionService : Service() {
     }
 
     private fun stopAndTranscribe() {
-        if (!state.compareAndSet(SessionState.RECORDING, SessionState.PROCESSING)) return
-        RecordingOverlayState.showProcessing()
+        // Under publishLock: the live waiter publishes RECORDING (pill, draft) under the same lock, so a
+        // stop that follows its CAS cannot run ahead of its publication (Codex review 3, 2026-09-18).
+        synchronized(publishLock) {
+            if (!state.compareAndSet(SessionState.RECORDING, SessionState.PROCESSING)) return
+            RecordingOverlayState.showProcessing()
+        }
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.PROCESSING)
         promoteToForeground(processing = true)
         vibrate(HapticCue.SESSION_TRANSITION)
@@ -777,16 +875,18 @@ class DictationSessionService : Service() {
                     showError("Audio capture did not finish safely. Try again.")
                     return@Thread
                 }
+                val audioFilePath = audioService?.audioFilePath
+                // The duration is the audio's own length, read from the finished file NOW, before
+                // transcription deletes it: the elapsed getter is 0 once capture stops, and the wall
+                // clock counted the wait for the earbuds.
                 recordingDurationMs = runCatching {
-                    audioService?.elapsedMs?.takeIf { it > 0L }
-                        ?: (System.currentTimeMillis() - recordingStartedAtMs)
-                }.getOrDefault(0L).coerceAtLeast(0L)
+                    audioFilePath?.let { (PcmAudio.durationSeconds(File(it).length()) * 1000f).toLong() }
+                }.getOrNull()?.coerceAtLeast(0L) ?: 0L
                 // Complete once the capture thread has exited (waitForFileReady above joined it): the
                 // final route was observed before the recorder stopped, and the label persists in the
                 // capture process until its next start.
                 captureDeviceLabel = runCatching { audioService?.effectiveInputDevice }.getOrNull().orEmpty()
-                val audioFilePath = audioService?.audioFilePath
-                stopAudioCaptureService()
+                finishTakeOrStop()
 
                 val readyDraftId = runCatching { runBlocking { draftCreation?.await() ?: 0L } }.getOrDefault(0L)
                 if (readyDraftId > 0L) {
@@ -1208,15 +1308,35 @@ class DictationSessionService : Service() {
     }
 
     private fun cancelRecording() {
-        if (!state.compareAndSet(SessionState.RECORDING, SessionState.CANCELLING)) return
+        synchronized(publishLock) {
+            if (!state.compareAndSet(SessionState.RECORDING, SessionState.CANCELLING)) return
+            RecordingOverlayState.showProcessing()
+        }
+        cancelCaptureAndFinish()
+    }
+
+    /**
+     * Shared by a cancel during RECORDING and during STARTING: since the live gate, capture is already
+     * running while the lips spin, so a cancelled start stops it, discards the file and still hands the
+     * service its `finishTake` (a cancelled take leaves the earbuds warm like a finished one).
+     */
+    private fun cancelCaptureAndFinish() {
         RecordingOverlayState.showProcessing()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
         serviceScope.launch {
+            // A cancel before the capture process was even bound has nothing to stop: the quiet finish
+            // the old cancelStarting always took.
+            val service = audioService
+            if (service == null) {
+                discardDraft()
+                finishSession()
+                return@launch
+            }
             val ready = runCatching {
-                audioService?.stopCapture()
-                audioService?.waitForFileReady(2_000L) == true
+                service.stopCapture()
+                service.waitForFileReady(2_000L)
             }.getOrDefault(false)
             if (!ready) {
                 stopAudioCaptureService()
@@ -1225,10 +1345,19 @@ class DictationSessionService : Service() {
                 return@launch
             }
             discardDraft()
-            deleteCapturedAudio(runCatching { audioService?.audioFilePath }.getOrNull())
-            stopAudioCaptureService()
+            deleteCapturedAudio(runCatching { service.audioFilePath }.getOrNull())
+            finishTakeOrStop()
             finishSession()
         }
+    }
+
+    /**
+     * The take is over: let the capture service keep the earbuds warm if it can (it then owns its own
+     * lifetime and the unbind must not stop it), otherwise stop it as before.
+     */
+    private fun finishTakeOrStop() {
+        val held = runCatching { audioService?.finishTake() == true }.getOrDefault(false)
+        if (!held) stopAudioCaptureService()
     }
 
     /**
@@ -1253,16 +1382,32 @@ class DictationSessionService : Service() {
     }
 
     private fun cancelStarting() {
-        if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
-        RecordingOverlayState.showProcessing()
-        PasteAccessibilityService.releasePinnedTarget()
-        DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
-        vibrate(HapticCue.SESSION_CANCELED)
-        finishSession()
+        synchronized(publishLock) {
+            if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
+            RecordingOverlayState.showProcessing()
+        }
+        cancelCaptureAndFinish()
     }
 
     private fun showError(message: String) {
         if (state.getAndSet(SessionState.ERROR) == SessionState.ERROR) return
+        announceError(message)
+    }
+
+    /**
+     * The live waiter's failure: claims ERROR only while the take is still STARTING, under the lock, so
+     * a cancel that already owns the take is not overwritten with a failure toast (Codex review 3).
+     * Returns false when something else owns the take; the waiter then does nothing.
+     */
+    private fun failWhileStarting(message: String): Boolean {
+        synchronized(publishLock) {
+            if (!state.compareAndSet(SessionState.STARTING, SessionState.ERROR)) return false
+        }
+        announceError(message)
+        return true
+    }
+
+    private fun announceError(message: String) {
         publicationStarted.set(true)
         cancelOpenPolishRequest()
         RecordingOverlayState.showProcessing()
@@ -1464,10 +1609,16 @@ class DictationSessionService : Service() {
 
     override fun onDestroy() {
         if (::languageDetector.isInitialized) languageDetector.close()
-        RecordingOverlayState.hide()
+        // Invalidate a live wait or a running take BEFORE any blocking cleanup, under the same lock the
+        // waiter publishes under: after this, no pill can appear for a take being torn down.
+        val destroyedState = synchronized(publishLock) {
+            val seen = state.get()
+            if (seen == SessionState.STARTING || seen == SessionState.RECORDING) state.set(SessionState.ERROR)
+            RecordingOverlayState.hide()
+            seen
+        }
         publicationStarted.set(true)
         cancelOpenPolishRequest()
-        val destroyedState = state.get()
         val sessionWasOpen = destroyedState == SessionState.STARTING ||
             destroyedState == SessionState.RECORDING ||
             destroyedState == SessionState.PROCESSING ||
@@ -1505,8 +1656,8 @@ class DictationSessionService : Service() {
                 DebugLogger.warn(TAG, "Unable to mark interrupted session during teardown: ${error.message}")
             }
         }
-        if (destroyedState == SessionState.RECORDING && teardownStarted.compareAndSet(false, true)) {
-            state.set(SessionState.ERROR)
+        val captureRunning = destroyedState == SessionState.RECORDING || destroyedState == SessionState.STARTING
+        if (captureRunning && teardownStarted.compareAndSet(false, true)) {
             val capture = audioService
             Thread({
                 runCatching { capture?.stopCapture() }

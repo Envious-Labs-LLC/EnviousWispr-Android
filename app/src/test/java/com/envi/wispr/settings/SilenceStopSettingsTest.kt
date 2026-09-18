@@ -38,7 +38,7 @@ class SilenceStopSettingsTest {
     fun theTakeFreezesTheSettingsRatherThanReadingThemAsItGoes() {
         val source = read("ui/DictationSessionService.kt")
         assertTrue(
-            source.contains("audioService?.startCaptureWithInputDevice(autoStopOnSilence, silencePauseSeconds, inputDevicePick)"),
+            source.contains("audioService?.startCaptureWithInputDeviceHeld(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady)"),
         )
     }
 

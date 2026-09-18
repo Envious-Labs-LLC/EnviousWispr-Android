@@ -120,8 +120,7 @@ enum class InputRouteReason(val code: Int) {
     PICKED(1),
     PICK_MISSING(2),
     LINK_REFUSED(3),
-    PREFERRED_REFUSED(4),
-    RESCUED(5);
+    PREFERRED_REFUSED(4);
 
     companion object {
         fun fromCode(code: Int): InputRouteReason = entries.firstOrNull { it.code == code } ?: AUTO
@@ -138,7 +137,6 @@ enum class InputRouteReason(val code: Int) {
 class EffectiveDevice(startReason: InputRouteReason) {
     private val history = ArrayList<String>(3)
     private var reason: InputRouteReason = startReason
-    private var rescued = false
     private var startKind: InputRouteKind = InputRouteKind.NONE
 
     /**
@@ -149,19 +147,20 @@ class EffectiveDevice(startReason: InputRouteReason) {
     val kind: InputRouteKind
         @Synchronized get() = startKind
 
+    /** The kind of the device observed most recently: what Android is routing to RIGHT NOW. */
+    val currentKind: InputRouteKind
+        @Synchronized get() = latestKind
+
+    private var latestKind: InputRouteKind = InputRouteKind.NONE
+
     /** The device the recorder reports at start, on every route change, and once more before it stops. */
     @Synchronized
     fun observe(type: Int, name: String) {
         if (history.isEmpty()) startKind = InputRouteKind.of(type)
+        latestKind = InputRouteKind.of(type)
         val label = InputDeviceLabels.labelFor(type, name)
         if (history.lastOrNull() == label) return
         history.add(label)
-    }
-
-    @Synchronized
-    fun markRescued() {
-        rescued = true
-        reason = InputRouteReason.RESCUED
     }
 
     /** A later event that changes why the take is where it is (a refused preferred device). */
@@ -172,9 +171,6 @@ class EffectiveDevice(startReason: InputRouteReason) {
 
     @Synchronized
     fun reasonCode(): Int = reason.code
-
-    @Synchronized
-    fun wasRescued(): Boolean = rescued
 
     /** "AirPods Pro 3" or "AirPods Pro 3, then Phone". Empty until the first observation. */
     @Synchronized

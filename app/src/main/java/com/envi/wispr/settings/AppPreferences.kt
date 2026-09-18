@@ -46,6 +46,11 @@ data class AppPreferencesState(
     val inputDevicePick: String = InputDevicePick.AUTO,
     /** The one-time Bluetooth line on the recorder, and the settings note. On, like macOS. */
     val showBluetoothTips: Boolean = true,
+    /**
+     * After a take on earbuds, keep the link open for 30 s with silent playback so the next take starts
+     * at once (founder 2026-09-18). Frozen per take; crosses the binder on the start call. On by default.
+     */
+    val keepEarbudsReady: Boolean = true,
 )
 
 fun AppPreferencesState.cleanupOptions(): CleanupOptions = CleanupOptions(
@@ -97,6 +102,7 @@ class AppPreferences(context: Context) {
         // Stored as the string the binder carries; garbage reads as Auto at the parse, never here.
         inputDevicePick = preferences[Keys.INPUT_DEVICE_PICK] ?: InputDevicePick.AUTO,
         showBluetoothTips = preferences[Keys.SHOW_BLUETOOTH_TIPS] ?: true,
+        keepEarbudsReady = preferences[Keys.KEEP_EARBUDS_READY] ?: true,
     )
 
     suspend fun setOnboardingStep(step: Int) {
@@ -184,6 +190,10 @@ class AppPreferences(context: Context) {
         dataStore.edit { preferences -> preferences[Keys.SHOW_BLUETOOTH_TIPS] = enabled }
     }
 
+    suspend fun setKeepEarbudsReady(enabled: Boolean) {
+        dataStore.edit { preferences -> preferences[Keys.KEEP_EARBUDS_READY] = enabled }
+    }
+
     /** Clamped on the way in as well as on the way out, so a bad value never reaches storage. */
     suspend fun setSilencePauseSeconds(seconds: Float) {
         val safe = SilenceStopDetector.sanitisePauseSeconds(seconds)
@@ -208,5 +218,6 @@ class AppPreferences(context: Context) {
         val SILENCE_PAUSE_SECONDS = floatPreferencesKey("silence_pause_seconds")
         val INPUT_DEVICE_PICK = stringPreferencesKey("input_device_pick")
         val SHOW_BLUETOOTH_TIPS = booleanPreferencesKey("show_bluetooth_tips")
+        val KEEP_EARBUDS_READY = booleanPreferencesKey("keep_earbuds_ready")
     }
 }

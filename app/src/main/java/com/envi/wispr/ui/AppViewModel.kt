@@ -433,6 +433,10 @@ class EnviousWisprViewModel(
         viewModelScope.launch { appPreferences.setInputDevicePick(pick) }
     }
 
+    fun setKeepEarbudsReady(enabled: Boolean) {
+        viewModelScope.launch { appPreferences.setKeepEarbudsReady(enabled) }
+    }
+
     fun setShowBluetoothTips(enabled: Boolean) {
         viewModelScope.launch { appPreferences.setShowBluetoothTips(enabled) }
     }

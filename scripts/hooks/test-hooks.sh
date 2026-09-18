@@ -83,7 +83,7 @@ echo
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""; DWT_REPO=""
 GATE_EXP=""; GATE_PAY=""; VICTIM=""; STAGE_B=""; STAGE_A=""
-HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""; SM_REPO=""; SM_FN=""
+HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""; SM_REPO=""; SM_FN=""; SM_SUB=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan basename long enough that its recovery path exceeds the 255-byte filename limit, so the
 # preservation write fails for a real reason rather than a simulated one.
@@ -102,6 +102,7 @@ cleanup() {
     [ -n "$DWT_REPO" ] && rm -rf "$DWT_REPO"
     [ -n "$SM_REPO" ] && rm -rf "$SM_REPO"
     [ -n "$SM_FN" ] && rm -rf "$SM_FN"
+    [ -n "$SM_SUB" ] && rm -rf "$SM_SUB"
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
@@ -1070,9 +1071,14 @@ echo "cleanup-merged-worktrees.sh — the submodule objection is overridden ONLY
 # true; a modified file, a lock, or any other refusal text → false. The --force it gates is what
 # reclaims a merged worktree in this repo (llama.cpp), so both directions matter.
 SM_REPO=$(mktemp -d) || exit 2
+SM_SUB=$(mktemp -d) || exit 2
+# A real upstream for the submodule, so the gitlink is a commit the module repository can sit on.
+git init -q -b main "$SM_SUB" >/dev/null 2>&1 || exit 2
+( cd "$SM_SUB" && printf 's\n' > lib && git add lib && git -c user.email=t@t -c user.name=t commit -q -m sub ) >/dev/null 2>&1 || exit 2
+SM_SUBSHA=$(git -C "$SM_SUB" rev-parse HEAD)
 git init -q -b main "$SM_REPO" >/dev/null 2>&1 || exit 2
 ( cd "$SM_REPO" && printf 'x\n' > tracked && git add tracked \
-    && git update-index --add --cacheinfo 160000,4b825dc642cb6eb9a060e54bf8d69288fbee4904,third_party/sub \
+    && git update-index --add --cacheinfo "160000,$SM_SUBSHA,third_party/sub" \
     && git -c user.email=t@t -c user.name=t commit -q -m base ) >/dev/null 2>&1 || exit 2
 SM_WT="$SM_REPO/.claude/worktrees/task"
 git -C "$SM_REPO" worktree add -q "$SM_WT" -b feat/task >/dev/null 2>&1 || exit 2
@@ -1080,13 +1086,20 @@ git -C "$SM_REPO" worktree add -q "$SM_WT" -b feat/task >/dev/null 2>&1 || exit 
 # update --init` inside the worktree and NOT removed by `submodule deinit`), or when the gitlink's path
 # is populated. The first is the state every worktree in this repo is left in (git's own source calls
 # it a known false positive), so that is what is staged here.
-mkdir -p "$SM_REPO/.git/worktrees/task/modules"
+# The module repository as `submodule update --init` then `deinit` leave it: detached at the pinned
+# gitlink, no local branch, no stash. That is the shape the override may delete.
+# A module repository under `modules/` IS a git dir (HEAD, config, objects at its top), so it is built
+# bare and addressed with --git-dir, exactly as the script reads it.
+SM_MOD="$SM_REPO/.git/worktrees/task/modules/third_party/sub"
+git init -q --bare "$SM_MOD" >/dev/null 2>&1 || exit 2
+git --git-dir="$SM_MOD" fetch -q "$SM_SUB" main >/dev/null 2>&1 || exit 2
+git --git-dir="$SM_MOD" update-ref --no-deref HEAD "$SM_SUBSHA" >/dev/null 2>&1 || exit 2
 # git's porcelain listing prints the REAL path (macOS mktemp lives under a /var symlink); the lock
 # helper compares strings against that listing, so the test hands it the same spelling.
 SM_WT=$(cd "$SM_WT" && pwd -P)
 SM_ERR=$(git -C "$SM_REPO" worktree remove "$SM_WT" 2>&1 >/dev/null) || true
 SM_FN=$(mktemp) || exit 2
-sed -n '/^submodule_only_refusal() {/,/^}/p; /^worktree_is_locked() {/,/^}/p' "$PWD/scripts/cleanup-merged-worktrees.sh" > "$SM_FN"
+sed -n '/^submodule_only_refusal() {/,/^}/p; /^modules_hold_nothing_of_their_own() {/,/^}/p; /^worktree_is_locked() {/,/^}/p' "$PWD/scripts/cleanup-merged-worktrees.sh" > "$SM_FN"
 sm_check() { ( cd "$SM_REPO" && . "$SM_FN" && submodule_only_refusal "$1" "$2" ); }
 case "$SM_ERR" in
     *"working trees containing submodules cannot be moved or removed"*)
@@ -1118,6 +1131,30 @@ else
     PASS=$((PASS+1)); echo "  ok    a lock blocks the override"
 fi
 git -C "$SM_REPO" worktree unlock "$SM_WT" >/dev/null 2>&1
+# An untracked file hidden by config (Codex 2026-09-18 reproduced the deletion): the flags are pinned.
+printf 'w\n' > "$SM_WT/scratch.txt"
+git -C "$SM_WT" config status.showUntrackedFiles no
+if sm_check "$SM_WT" "$SM_ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL  an untracked file hidden by status.showUntrackedFiles=no did not block the override"
+else
+    PASS=$((PASS+1)); echo "  ok    an untracked file blocks the override even when config hides it"
+fi
+rm -f "$SM_WT/scratch.txt"
+git -C "$SM_WT" config --unset status.showUntrackedFiles
+# A submodule repository with work of its own (a local branch): --force would delete it with the tree.
+git --git-dir="$SM_MOD" branch wip "$SM_SUBSHA" >/dev/null 2>&1
+if sm_check "$SM_WT" "$SM_ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL  a local branch in the submodule repository did not block the override"
+else
+    PASS=$((PASS+1)); echo "  ok    a local branch in the submodule repository blocks the override"
+fi
+git --git-dir="$SM_MOD" branch -D wip >/dev/null 2>&1
+git --git-dir="$SM_MOD" update-ref --no-deref HEAD "$SM_SUBSHA" >/dev/null 2>&1
+if sm_check "$SM_WT" "$SM_ERR"; then
+    PASS=$((PASS+1)); echo "  ok    with the branch gone the tree is answered again"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  the tree was not answered after the local branch was removed"
+fi
 # The override itself: --force on the clean tree removes it, which plain remove could not.
 if git -C "$SM_REPO" worktree remove --force "$SM_WT" >/dev/null 2>&1 && [ ! -d "$SM_WT" ]; then
     PASS=$((PASS+1)); echo "  ok    --force removes the clean gitlinked tree"

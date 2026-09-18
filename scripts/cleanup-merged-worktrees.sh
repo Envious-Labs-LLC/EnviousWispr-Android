@@ -146,9 +146,14 @@ worktree_registration_state() {
 }
 
 # True when `git worktree remove` refused ONLY because the tree lists a submodule
-# and our own checks find nothing else in the way: no lock, no modified, staged or
-# untracked file (ignored files such as build output do not count; git itself
-# ignores them for this refusal). Any other refusal text, or any doubt, is false.
+# and our own checks find nothing else in the way: no lock; no modified, staged or
+# untracked file (the status flags are PINNED so a `status.showUntrackedFiles=no`
+# or `ignore = all` in some config cannot hide work; ignored files such as build
+# output do not count, git itself ignores them for this refusal); and no submodule
+# repository under the worktree's `modules/` holding anything of its own (a local
+# branch, a stash, or a HEAD that is not the parent's pinned gitlink), because
+# `--force` deletes those repositories with the tree. Any other refusal text, or
+# any read that fails, is false. Codex review 2026-09-18 reproduced both holes.
 submodule_only_refusal() {
     local wt="$1" err="$2" dirty
     case "$err" in
@@ -156,8 +161,32 @@ submodule_only_refusal() {
         *) return 1 ;;
     esac
     worktree_is_locked "$wt" && return 1
-    dirty=$(git -C "$wt" status --porcelain 2>/dev/null) || return 1
-    [ -z "$dirty" ]
+    dirty=$(git -c status.showUntrackedFiles=all -C "$wt" status --porcelain \
+        --untracked-files=all --ignore-submodules=none 2>/dev/null) || return 1
+    [ -z "$dirty" ] || return 1
+    modules_hold_nothing_of_their_own "$wt"
+}
+
+# For every gitlink in the worktree's index whose repository exists under the
+# worktree's own `modules/`: no local branch, no stash, HEAD exactly the pinned
+# gitlink. Then every object it holds came from a fetch and is lost by nothing.
+modules_hold_nothing_of_their_own() {
+    local wt="$1" gitdir listing path sha mod heads stashes head
+    gitdir=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    listing=$(git -C "$wt" ls-files -s 2>/dev/null) || return 1
+    while read -r mode sha _stage path; do
+        [ "$mode" = "160000" ] || continue
+        mod="$gitdir/modules/$path"
+        [ -e "$mod" ] || continue
+        heads=$(git --git-dir="$mod" for-each-ref --format='%(refname)' refs/heads 2>/dev/null) || return 1
+        [ -z "$heads" ] || return 1
+        # `stash list` needs a work tree; the ref itself answers on a bare git dir too.
+        stashes=$(git --git-dir="$mod" for-each-ref --format='%(refname)' refs/stash 2>/dev/null) || return 1
+        [ -z "$stashes" ] || return 1
+        head=$(git --git-dir="$mod" rev-parse --verify HEAD 2>/dev/null) || return 1
+        [ "$head" = "$sha" ] || return 1
+    done <<< "$listing"
+    return 0
 }
 
 worktree_is_locked() {

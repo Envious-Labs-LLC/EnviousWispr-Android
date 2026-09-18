@@ -91,6 +91,9 @@ class LiveGateWiringTest {
         assertTrue("disconnected earbuds are the one case the phone may record", admissible.contains("active.sinkGone"))
         val start = body(capture, "private fun startRecording(")
         assertTrue(start.contains("watchSink(newSession)"))
+        val watch = body(capture, "private fun watchSink(")
+        assertTrue("the device list is reconciled after registering, so a removal in between is not missed",
+            watch.indexOf("registerAudioDeviceCallback") < watch.indexOf("availableCommunicationDevices.any"))
         assertTrue(body(capture, "private fun releaseSession(").contains("unregisterAudioDeviceCallback(w)"))
         val disconnect = session.substringAfter("private val audioConnection").substringBefore("private val asrConnection")
         assertTrue(disconnect.contains("seen == SessionState.RECORDING || seen == SessionState.STARTING"))

@@ -692,8 +692,13 @@ class AudioCaptureService : Service() {
 
     /**
      * May a read on the OBSERVED route open the gate? An earbud target that Android is routing to the
-     * phone may not, unless the phone was picked: the founder's rule, applied to the observation and never
-     * to the request. A route not yet observed is not refused.
+     * phone may not, unless the phone was picked or the earbuds have left: the founder's rule, applied
+     * to the observation and never to the request. A route not yet observed is not refused.
+     *
+     * The rule binds what this app SELECTS, and is enforced at the gate. A route Android moves by itself
+     * once the take is live (V7, a call taking the link) is recorded on the History card ("AirPods Pro 3,
+     * then Phone") and not fought: ending a take mid-sentence would lose the words, and capture must never
+     * fail (architecture: heart and limbs). Decided at Codex code review 5, 2026-09-18.
      */
     private fun routeAdmissible(active: CaptureSession): Boolean =
         !active.targetBluetooth || active.phonePicked || active.sinkGone ||
@@ -720,6 +725,15 @@ class AudioCaptureService : Service() {
         active.sinkWatch = callback
         runCatching { audioManager.registerAudioDeviceCallback(callback, routeHandler) }
             .onFailure { DebugLogger.warn(TAG, "sink watch not registered: ${it.message}") }
+        // Reconcile once: a removal between route resolution and this registration is not replayed by
+        // the callback (Codex review 5). The list is read AFTER registering, so nothing can fall between.
+        val stillOffered = runCatching {
+            audioManager.availableCommunicationDevices.any { it.type == type && it.productName?.toString().orEmpty() == name }
+        }.getOrDefault(true)
+        if (!stillOffered) {
+            active.sinkGone = true
+            DebugLogger.log(TAG, "route earbuds already gone at start; the phone may record")
+        }
     }
 
     /** Capture thread, on the read that opened the gate. */

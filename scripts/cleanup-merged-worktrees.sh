@@ -171,12 +171,15 @@ submodule_only_refusal() {
 # each of three rounds), so nothing is judged and everything is KEPT. Every
 # repository is MOVED whole, next to the rescued gitignored files: the store under
 # the worktree's git directory (`modules/`, which also holds repositories no
-# current gitlink names any more) and any repository embedded at
-# `<submodule>/.git`. A move that cannot be verified, or a destination inside the
-# tree about to be deleted, refuses and the caller keeps the tree. Nothing to move
-# is success with no destination made.
+# current gitlink names any more, at any nesting) and every `.git` DIRECTORY
+# anywhere under the tree, found on disk rather than read from the index so a
+# submodule nested inside a submodule, or a repository no gitlink names, is seen
+# too (a gitfile at `<submodule>/.git` points into `modules/` and goes with it).
+# A move that cannot be verified, or a destination inside the tree about to be
+# deleted, refuses and the caller keeps the tree. Nothing to move is success with
+# no destination made.
 rescue_submodule_repositories() {
-    local wt="$1" branch="$2" dest_root="$3" gitdir moddir wt_abs dr_abs dest entry mode path
+    local wt="$1" branch="$2" dest_root="$3" gitdir moddir wt_abs dr_abs dest path
     local listing i safe_branch stamp
     local -a sources=() targets=()
     gitdir=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null) || return 1
@@ -185,19 +188,15 @@ rescue_submodule_repositories() {
         sources+=("$moddir"); targets+=("modules")
     fi
     # NUL-separated so a path with a space or a newline reads whole; a command
-    # substitution would drop the NULs, so the listing goes through a file.
+    # substitution would drop the NULs, so the listing goes through a file. The
+    # tree's own `.git` is at depth 1 and is never a candidate; each repository
+    # found is not descended into.
     listing=$(mktemp) || return 1
-    if ! git -C "$wt" ls-files -s -z > "$listing" 2>/dev/null; then
+    if ! /usr/bin/find "$wt" -mindepth 2 -type d -name .git -prune -print0 > "$listing" 2>/dev/null; then
         rm -f "$listing"; return 1
     fi
-    while IFS= read -r -d '' entry; do
-        mode=${entry%% *}
-        path=${entry#*$'\t'}
-        [ "$mode" = 160000 ] || continue
-        # A gitfile at <submodule>/.git points into modules/ and goes with it;
-        # only a DIRECTORY there is a repository of its own.
-        { [ -d "$wt/$path/.git" ] && [ ! -L "$wt/$path/.git" ]; } || continue
-        sources+=("$wt/$path/.git"); targets+=("embedded/$path/.git")
+    while IFS= read -r -d '' path; do
+        sources+=("$path"); targets+=("embedded/${path#"$wt"/}")
     done < "$listing"
     rm -f "$listing"
     [ "${#sources[@]}" -gt 0 ] || return 0

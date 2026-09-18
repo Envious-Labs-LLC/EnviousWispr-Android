@@ -83,7 +83,7 @@ echo
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""; DWT_REPO=""
 GATE_EXP=""; GATE_PAY=""; VICTIM=""; STAGE_B=""; STAGE_A=""
-HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""; SM_REPO=""; SM_FN=""; SM_SUB=""
+HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""; SM_REPO=""; SM_FN=""; SM_SUB=""; SM_NEST=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan basename long enough that its recovery path exceeds the 255-byte filename limit, so the
 # preservation write fails for a real reason rather than a simulated one.
@@ -103,6 +103,7 @@ cleanup() {
     [ -n "$SM_REPO" ] && rm -rf "$SM_REPO"
     [ -n "$SM_FN" ] && rm -rf "$SM_FN"
     [ -n "$SM_SUB" ] && rm -rf "$SM_SUB"
+    [ -n "$SM_NEST" ] && rm -rf "$SM_NEST"
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
@@ -1072,9 +1073,17 @@ echo "cleanup-merged-worktrees.sh — the submodule objection is overridden ONLY
 # reclaims a merged worktree in this repo (llama.cpp), so both directions matter.
 SM_REPO=$(mktemp -d) || exit 2
 SM_SUB=$(mktemp -d) || exit 2
-# A real upstream for the submodule, so the gitlink is a commit the module repository can sit on.
+SM_NEST=$(mktemp -d) || exit 2
+# A real upstream for the submodule, so the gitlink is a commit the module repository can sit on. The
+# submodule itself lists a nested submodule (Codex 2026-09-18 reproduced a nested embedded repository
+# lost by an inventory that read only the top-level index).
+git init -q -b main "$SM_NEST" >/dev/null 2>&1 || exit 2
+( cd "$SM_NEST" && printf 'n\n' > deep && git add deep && git -c user.email=t@t -c user.name=t commit -q -m nest ) >/dev/null 2>&1 || exit 2
+SM_NESTSHA=$(git -C "$SM_NEST" rev-parse HEAD)
 git init -q -b main "$SM_SUB" >/dev/null 2>&1 || exit 2
-( cd "$SM_SUB" && printf 's\n' > lib && git add lib && git -c user.email=t@t -c user.name=t commit -q -m sub ) >/dev/null 2>&1 || exit 2
+( cd "$SM_SUB" && printf 's\n' > lib && git add lib \
+    && git update-index --add --cacheinfo "160000,$SM_NESTSHA,nested" \
+    && git -c user.email=t@t -c user.name=t commit -q -m sub ) >/dev/null 2>&1 || exit 2
 SM_SUBSHA=$(git -C "$SM_SUB" rev-parse HEAD)
 git init -q -b main "$SM_REPO" >/dev/null 2>&1 || exit 2
 ( cd "$SM_REPO" && printf 'x\n' > tracked && git add tracked \
@@ -1156,10 +1165,13 @@ git --git-dir="$SM_OLD" branch keep "$SM_SUBSHA" >/dev/null 2>&1
 # and `modules/` is not where this one lives.
 git clone -q "$SM_SUB" "$SM_WT/third_party/sub" >/dev/null 2>&1 || exit 2
 git -C "$SM_WT/third_party/sub" branch emb "$SM_SUBSHA" >/dev/null 2>&1
-if [ -d "$SM_WT/third_party/sub/.git" ] && sm_check "$SM_WT" "$SM_ERR"; then
-    PASS=$((PASS+1)); echo "  ok    a clean embedded submodule repository keeps the tree answered (the override would run)"
+# ...and a submodule nested inside it, also embedded, with a tag of its own.
+git clone -q "$SM_NEST" "$SM_WT/third_party/sub/nested" >/dev/null 2>&1 || exit 2
+git -C "$SM_WT/third_party/sub/nested" tag deep-tag "$SM_NESTSHA" >/dev/null 2>&1
+if [ -d "$SM_WT/third_party/sub/.git" ] && [ -d "$SM_WT/third_party/sub/nested/.git" ] && sm_check "$SM_WT" "$SM_ERR"; then
+    PASS=$((PASS+1)); echo "  ok    clean embedded and nested submodule repositories keep the tree answered (the override would run)"
 else
-    FAIL=$((FAIL+1)); echo "  FAIL  the clean embedded submodule repository was not staged or blocked the override"
+    FAIL=$((FAIL+1)); echo "  FAIL  the embedded or nested submodule repository was not staged or blocked the override"
 fi
 # A destination inside the tree about to be deleted is refused and nothing moves.
 if sm_rescue "$SM_WT" "$SM_WT/rescued" >/dev/null 2>&1 || [ ! -d "$SM_MOD" ] || [ ! -d "$SM_WT/third_party/sub/.git" ]; then
@@ -1190,7 +1202,12 @@ if [ -n "$SM_DEST" ] && git --git-dir="$SM_DEST/embedded/third_party/sub/.git" r
 else
     FAIL=$((FAIL+1)); echo "  FAIL  the embedded submodule repository did not survive the move"
 fi
-if [ ! -e "$SM_MOD" ] && [ ! -e "$SM_OLD" ] && [ ! -e "$SM_WT/third_party/sub/.git" ]; then
+if [ -n "$SM_DEST" ] && git --git-dir="$SM_DEST/embedded/third_party/sub/nested/.git" rev-parse --verify -q refs/tags/deep-tag >/dev/null; then
+    PASS=$((PASS+1)); echo "  ok    a submodule nested inside a submodule survives whole"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  the nested submodule repository did not survive the move"
+fi
+if [ ! -e "$SM_MOD" ] && [ ! -e "$SM_OLD" ] && [ ! -e "$SM_WT/third_party/sub/.git" ] && [ ! -e "$SM_WT/third_party/sub/nested/.git" ]; then
     PASS=$((PASS+1)); echo "  ok    nothing that was moved is left behind for --force to delete"
 else
     FAIL=$((FAIL+1)); echo "  FAIL  a moved repository is still in the tree"

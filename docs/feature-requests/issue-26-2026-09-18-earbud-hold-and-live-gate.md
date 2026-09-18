@@ -1,7 +1,7 @@
 # Earbuds: open the pill only when the link is live, and keep the link warm for 30 s
 
 GitHub issue: `#26` (phone findings on build 137, 2026-09-18). Tier: MEDIUM (audio capture, the recorder's
-start, a setting). Status: APPROVED (Gate 2, founder "go", 2026-09-18; Codex PROCEED-AS-PLANNED after four rounds). Parent plan:
+start, a setting). Status: BUILT, on internal testing awaiting the founder's phone pass (2026-09-18). Parent plan:
 [`issue-26-2026-09-16-microphone-picker-and-bluetooth.md`](issue-26-2026-09-16-microphone-picker-and-bluetooth.md);
 this plan amends its §3 sequence, deletes its silent rescue, and supersedes its "no hold" non-goal.
 
@@ -429,8 +429,13 @@ the first live block so a reader can check it against the file.
 
 ## 13. Ship criteria specific to THIS change
 
-- [ ] Emulator: phone route unchanged (pill at once, one dictation inserted).
-- [ ] Codex code review to an explicit all-clear with a confirming rerun.
+- [x] Emulator: phone route unchanged (2026-09-18 15:50: `route live=Phone after 10 ms resets=0
+  state=READY`, "The lips wait for the earbuds and the phone still starts at once." inserted into Chrome
+  `outcome=VERIFIED`, no `route hold` line).
+- [x] Codex code review to an explicit all-clear with a confirming rerun (six rounds, 2026-09-18: the
+  handover identity, the teardown hold, a dead audio process while starting, removed earbuds while
+  waiting, the publish lock over every transition, publication on the main thread, the sink
+  reconciliation; round six clean).
 - [ ] Founder's phone pass per §11.1.
 
 ## 14. Open questions

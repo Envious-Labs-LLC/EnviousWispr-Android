@@ -7,6 +7,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import com.envi.wispr.debug.DebugLogger
 import androidx.work.Constraints
 import androidx.work.NetworkType
 import androidx.work.Data
@@ -102,6 +103,9 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 ModelDeliveryNotification.notify(applicationContext, model, progressBytes, totalBytes, status.state, status.message)
             }
             if (status.state == DownloadState.VERIFYING) completedBytes += status.bytes
+        }, onSource = { file, host ->
+            // Which roof served the bytes (#168). The log, never the screen: a user does not choose hosts.
+            DebugLogger.log(TAG, "Model source: ${model.id}/$file from $host")
         })
         when (result.state) {
             DownloadState.READY -> {
@@ -200,13 +204,15 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
 
         private fun allowedHost(from: String?, to: String?): Boolean = when {
-            from == "huggingface.co" -> to == "huggingface.co" || to?.endsWith(".cdn.hf.co") == true
+            from == MODEL_HOST_OWN -> to == MODEL_HOST_OWN
+            from == MODEL_HOST_HUGGING_FACE -> to == MODEL_HOST_HUGGING_FACE || to?.endsWith(".cdn.hf.co") == true
             from?.endsWith(".cdn.hf.co") == true -> to?.endsWith(".cdn.hf.co") == true
             else -> false
         }
     }
 
     companion object {
+        private const val TAG = "ModelDelivery"
         const val KEY_MODEL_ID = "model_id"
         const val KEY_REMOVE = "remove"
         const val KEY_REPAIR = "repair"

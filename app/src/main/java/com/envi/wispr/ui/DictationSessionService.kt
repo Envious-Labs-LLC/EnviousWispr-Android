@@ -596,7 +596,12 @@ class DictationSessionService : Service() {
                 return // A dead binder: its ServiceConnection callback ends the take.
             }
             if (live != AudioCaptureService.LIVE_WAITING) {
-                publishLive(forced = live == AudioCaptureService.LIVE_FORCED)
+                // Published on the MAIN thread, where every command is dispatched and where the
+                // bubble's early release sets its flag: the old start published there too, so a stop,
+                // cancel or release can never read STARTING and then act against a take this thread
+                // published in between (Codex review 4, 2026-09-18).
+                val forced = live == AudioCaptureService.LIVE_FORCED
+                mainHandler.post { publishLive(forced) }
                 return
             }
             val capturing = runCatching { service.isCapturing }.getOrDefault(false)
@@ -624,8 +629,9 @@ class DictationSessionService : Service() {
         }
     }
 
-    /** The one STARTING→RECORDING publication, under [publishLock]. */
+    /** The one STARTING→RECORDING publication: main thread, under [publishLock]. */
     private fun publishLive(forced: Boolean) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "publishLive runs on the main thread" }
         synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.RECORDING)) {
                 audioService?.let { runCatching { it.stopCapture() } }

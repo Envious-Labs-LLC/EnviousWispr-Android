@@ -104,6 +104,8 @@ class LiveGateWiringTest {
         val lockedCas = Regex("synchronized\\(publishLock\\) \\{\\s*\\n\\s*if \\(!state\\.compareAndSet\\(SessionState\\.(STARTING|RECORDING), SessionState\\.\\w+\\)\\)").findAll(session).count()
         assertTrue("every CAS out of STARTING/RECORDING ($casLines) sits under publishLock ($lockedCas)", casLines == lockedCas)
         val wait = body(session, "private fun waitForLive()")
+        assertTrue("publication is posted to the main thread, where commands are dispatched", wait.contains("mainHandler.post { publishLive(forced) }"))
+        assertTrue(body(session, "private fun publishLive(").contains("Looper.myLooper() == Looper.getMainLooper()"))
         assertTrue("the waiter claims failure before any cleanup", wait.indexOf("failWhileStarting(") < wait.indexOf("waitForFileReady"))
         assertFalse("the waiter never overwrites another owner with showError", wait.contains("showError("))
     }

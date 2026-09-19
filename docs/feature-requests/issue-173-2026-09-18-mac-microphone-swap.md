@@ -36,7 +36,7 @@ Today an explicit Input Device pick that is not connected already records throug
 
 ## 1. Problem
 
-Founder, S26 Ultra, Play build 141, 2026-09-18, Input Device set to AirPods Pro 3, AirPods off, Bose "Storm" connected: "it's saying airpod 3s not connected, please use auto. checked settings, It's still set to Saurabh's airpod pro 3. Looks like you failed to set up the proper switching." The take did switch (`resolve` line 55 to 64: an absent pick resolves to Auto, and Auto takes the connected Bluetooth microphone), so the defect is in what the app SAYS and SHOWS: `CaptureNotices.pickMissingLine` (line 42) said once per take by `DictationSessionService.publishMicrophoneNoticesIfNeeded` (line 797 to 811), and the `pickedButAbsent` row in `ui/SettingsPages.kt` (line 404 to 421).
+Founder, S26 Ultra, Play build 141, 2026-09-18, Input Device set to AirPods Pro 3, AirPods off, Bose "Storm" connected: "it's saying airpod 3s not connected, please use auto. checked settings, It's still set to Saurabh's airpod pro 3. Looks like you failed to set up the proper switching." The take did switch (`resolve` line 55 to 64: an absent pick resolves to Auto, and Auto takes the connected Bluetooth microphone), so the defect is in what the app SAYS and SHOWS: `CaptureNotices.pickMissingLine` (line 42) said once per take by `DictationSessionService.publishMicrophoneNoticesIfNeeded` (line 797 to 811), and the `pickedButAbsent` (removed) row in `ui/SettingsPages.kt` (line 404 to 421).
 
 ## 2. Goals & non-goals
 
@@ -61,7 +61,7 @@ Founder, S26 Ultra, Play build 141, 2026-09-18, Input Device set to AirPods Pro 
 - **Stored pick:** `AppPreferences` DataStore field `inputDevicePick` (a string, `InputDevicePick.serialize`). Written by `MicrophonePage` through `onInputDevicePickChanged` (`ui/SettingsPages.kt` line 399 to 419). Read by `DictationSessionService` (line 368, frozen per take at line 553 into `startCaptureWithInputDeviceHeld`), by `PasteAccessibilityService` for the bubble colour (line 245, `applyEarbuds`), and by `MicrophonePage` (line 375). Found with `grep -rn "inputDevicePick" app/src/main`.
 - **Device list:** `AudioManager.getDevices(GET_DEVICES_INPUTS)` (external) via `InputDeviceCandidate.from`; the page reads it in `rememberConnectedInputs` (line 473 to 494, `pickable` filter, `AudioDeviceCallback` on add/remove); the capture service reads its own list at take start (`AudioCaptureService.resolveRoute`, line 599 to 607); the accessibility service reads it for the colour.
 - **Decision:** `InputDeviceResolver.resolve(pick, inputs)` (line 55): explicit pick present → `PICKED`; explicit pick absent → Auto order with reason `PICK_MISSING`; Auto → `AUTO`. `earbudsAreTheMicrophone` (line 86) is a projection of it.
-- **Reason consumer in the app process:** `IAudioCaptureService.getInputRouteReason` (AIDL line 56 to 57) → `DictationSessionService.publishMicrophoneNoticesIfNeeded` (line 800 to 805) → `CaptureNotices.pickIsMissing` / `pickMissingLine` → `sayWhileRecording`. That is the ONLY reader of the reason code in the app process (`grep -rn "inputRouteReason\|InputRouteReason" app/src/main` lists the AIDL, the enum, `EffectiveDevice`, `AudioCaptureService` and this one site).
+- **Reason consumer in the app process:** `IAudioCaptureService.getInputRouteReason` (AIDL line 56 to 57) → `DictationSessionService.publishMicrophoneNoticesIfNeeded` (line 800 to 805) → `CaptureNotices.pickIsMissing` / `pickMissingLine` (removed) → `sayWhileRecording`. That is the ONLY reader of the reason code in the app process (`grep -rn "inputRouteReason\|InputRouteReason" app/src/main` lists the AIDL, the enum, `EffectiveDevice`, `AudioCaptureService` and this one site).
 - **Settings rows:** `MicrophonePage` builds the rows inline (line 393 to 423): Auto, then `inputs.map { it.pick to it.label }`, then the `pickedButAbsent` row. `InputDeviceRow` (line 497) is a radio row with an optional subtitle.
 - **History card:** `HistoryScreen.kt` line 276 to 278 shows "Microphone: <captureDevice>" from the row written at stop. Unchanged.
 
@@ -171,7 +171,7 @@ The row rule lives in `ui/` beside `CaptureNotices` because it is presentation o
 - `app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt`: remove `pickMissingNoticeShown` (field, reset, guard) and the pick-missing branch; KDoc updated.
 - `app/src/main/java/com/envi/wispr/ui/CaptureNotices.kt`: remove `pickMissingLine` and `pickIsMissing`.
 - `app/src/test/java/com/envi/wispr/ui/InputDeviceRowsTest.kt` (new): rows in §11.2.
-- `app/src/test/java/com/envi/wispr/ui/CaptureNoticesTest.kt`: guard text updated; `onlyThePickMissingReasonArmsThePickMissingLine` deleted (its subject is deleted; what it protected, the reason-to-line mapping, no longer exists); the forced-notice comment no longer names the pick-missing line.
+- `app/src/test/java/com/envi/wispr/ui/CaptureNoticesTest.kt`: guard text updated; `onlyThePickMissingReasonArmsThePickMissingLine` (removed) deleted (its subject is deleted; what it protected, the reason-to-line mapping, no longer exists); the forced-notice comment no longer names the pick-missing line.
 
 ## 11. Testing
 

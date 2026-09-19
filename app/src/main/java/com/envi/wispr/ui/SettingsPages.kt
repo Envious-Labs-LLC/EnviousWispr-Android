@@ -3,7 +3,6 @@ package com.envi.wispr.ui
 import android.os.Build
 import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.InputDeviceResolver
-import com.envi.wispr.audio.InputDeviceLabels
 import com.envi.wispr.audio.InputDeviceCandidate
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
@@ -390,32 +389,19 @@ internal fun MicrophonePage(
         // The macOS "Input Device" row (catalog `microphone-selection`), as a list: Auto, then every
         // microphone the phone can see right now, by its own name. The list is for DISPLAY and choice
         // only; which one records is decided in the capture process at the moment a take starts.
+        // Auto names the microphone it would open; a pick that is not connected is remembered, not
+        // shown, and reclaims its row when it reconnects (the Mac rule, `InputDeviceRows`, #173).
         SettingsGroup("Input Device") {
             Column(Modifier.selectableGroup()) {
-                InputDeviceRow(
-                    title = "Auto",
-                    subtitle = "Earbuds when they are connected, otherwise the phone",
-                    selected = pick is InputDevicePick.Auto,
-                    onSelect = {
-                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        onInputDevicePickChanged(InputDevicePick.Auto)
-                    },
-                )
-                // A pick that is not connected right now stays in the list, marked, so it can be seen
-                // and changed rather than silently vanishing along with the reason the phone is listening.
-                val pickedButAbsent = (pick as? InputDevicePick.Device)
-                    ?.takeIf { chosen -> inputs.none { it.type == chosen.type && it.name == chosen.name } }
-                val rows = inputs.map { it.pick to it.label } +
-                    listOfNotNull(pickedButAbsent?.let { it to InputDeviceLabels.labelFor(it.type, it.name) })
-                rows.forEach { (device, label) ->
-                    HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                InputDeviceRows.build(pick, inputs).forEachIndexed { index, row ->
+                    if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 18.dp))
                     InputDeviceRow(
-                        title = label,
-                        subtitle = if (device == pickedButAbsent) "Not connected. Dictation uses Auto until it is." else null,
-                        selected = pick == device,
+                        title = row.title,
+                        subtitle = row.subtitle,
+                        selected = row.selected,
                         onSelect = {
                             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            onInputDevicePickChanged(device)
+                            onInputDevicePickChanged(row.pick)
                         },
                     )
                 }
@@ -476,11 +462,14 @@ private fun rememberConnectedInputs(): List<InputDeviceCandidate> {
     // Microphones only (the phone also lists its telephony port and a playback capture as sources),
     // one row per identity. The resolver applies the same filter to a stored pick, so a value written
     // by an older build or by hand falls back to Auto rather than recording the wrong port.
-    fun read(): List<InputDeviceCandidate> = audioManager
-        ?.getDevices(AudioManager.GET_DEVICES_INPUTS)
-        ?.map(InputDeviceCandidate::from)
-        ?.let(InputDeviceResolver::pickable)
-        ?: emptyList()
+    // A read that throws shows the empty list (Auto, "No microphone found") rather than killing the
+    // settings screen; the capture service reads its own list when the take starts.
+    fun read(): List<InputDeviceCandidate> = runCatching {
+        audioManager
+            ?.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            ?.map(InputDeviceCandidate::from)
+            ?.let(InputDeviceResolver::pickable)
+    }.getOrNull().orEmpty()
     var inputs by remember { mutableStateOf(read()) }
     DisposableEffect(audioManager) {
         val callback = object : AudioDeviceCallback() {

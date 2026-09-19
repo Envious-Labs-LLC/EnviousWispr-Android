@@ -2,7 +2,6 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.InputRouteKind
-import com.envi.wispr.audio.InputRouteReason
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -51,15 +50,18 @@ class CaptureNoticesTest {
         val body = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
             .substringAfter("private fun publishMicrophoneNoticesIfNeeded(")
             .substringBefore("private fun publishDurationWarningIfNeeded(")
-        assertTrue(body.contains("if (silenceNoticeShown || pickMissingNoticeShown || forcedNoticeShown) return"))
-        assertTrue("the pick-missing branch returns before the tip is considered", body.indexOf("return") < body.indexOf("val kind"))
-        assertTrue("the gate is consulted only after every other line has declined", body.indexOf("bluetoothTipGate.shouldShow") > body.indexOf("pickIsMissing"))
+        assertTrue(body.contains("if (silenceNoticeShown || forcedNoticeShown) return"))
+        // #173: a pick that was not connected has no line and no latch of its own; the take is an
+        // ordinary take for the tip. The old branch returned before the tip was considered.
+        assertFalse(body.contains("pickMissing"))
+        assertFalse(body.contains("inputRouteReason"))
+        assertTrue("the gate is consulted only after the warnings have declined", body.indexOf("bluetoothTipGate.shouldShow") > body.indexOf("forcedNoticeShown) return"))
     }
 
     @Test
     fun theForcedNoticeIsSaidBeforePollingAndTheTipNamesWhereTheSoundIs() {
-        // FORCED is published first, inside the live transition, so the once-per-process tip and a
-        // pick-missing line cannot take the recorder's one slot from it (plan §3.2, 2026-09-18).
+        // FORCED is published first, inside the live transition, so the once-per-process tip cannot
+        // take the recorder's one slot from it (plan §3.2, 2026-09-18).
         val publish = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
             .substringAfter("private fun publishLive(")
             .substringBefore("private fun startPolling(")
@@ -73,13 +75,5 @@ class CaptureNoticesTest {
     @Test
     fun anUnknownKindCodeIsNotBluetooth() {
         assertFalse(BluetoothTipGate().shouldShow(42, tipsEnabled = true))
-    }
-
-    @Test
-    fun onlyThePickMissingReasonArmsThePickMissingLine() {
-        InputRouteReason.entries.forEach { reason ->
-            assertEquals(reason.name, reason == InputRouteReason.PICK_MISSING, CaptureNotices.pickIsMissing(reason.code))
-        }
-        assertEquals("AirPods Pro 3 is not connected. Using Auto instead.", CaptureNotices.pickMissingLine("AirPods Pro 3"))
     }
 }

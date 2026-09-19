@@ -2,7 +2,6 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.InputRouteKind
-import com.envi.wispr.audio.InputRouteReason
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -34,14 +33,6 @@ object CaptureNotices {
         AudioCaptureService.START_FAILURE_EARBUDS -> EARBUDS_UNUSABLE
         else -> START_FAILED
     }
-
-    /**
-     * Said once for the take whose pick was absent. Auto, not "the phone": another headset may be
-     * connected and Auto will use it; the History card names what actually recorded.
-     */
-    fun pickMissingLine(pickedName: String): String = "$pickedName is not connected. Using Auto instead."
-
-    fun pickIsMissing(reasonCode: Int): Boolean = InputRouteReason.fromCode(reasonCode) == InputRouteReason.PICK_MISSING
 }
 
 /**

@@ -240,8 +240,6 @@ class DictationSessionService : Service() {
     @Volatile private var showBluetoothTips = true
     /** The 30 s earbud hold, frozen per take and carried on the start call. */
     @Volatile private var keepEarbudsReady = true
-    /** One line per take for a pick that was not connected; latched like the silence notice. */
-    @Volatile private var pickMissingNoticeShown = false
     /** The take proceeded on earbuds that sent nothing; said once, before any other microphone line. */
     @Volatile private var forcedNoticeShown = false
 
@@ -546,7 +544,6 @@ class DictationSessionService : Service() {
         try {
             silenceNoticeShown = false
             durationWarningShown = false
-            pickMissingNoticeShown = false
             forcedNoticeShown = false
             captureDeviceLabel = ""
             val started = runCatching {
@@ -786,24 +783,19 @@ class DictationSessionService : Service() {
     }
 
     /**
-     * Two one-time lines about the microphone, decided from the codes the capture process reports:
-     * the pick-missing line (once per take whose explicit pick was not connected), then the Bluetooth
-     * tip (once per app process, tips on, take started on Bluetooth). Neither reads the display label.
+     * The one-time line about the microphone, decided from the kind code the capture process reports:
+     * the Bluetooth tip (once per app process, tips on, take started on Bluetooth). It never reads the
+     * display label. A pick that was not connected has no line of its own (#173, the Mac rule): the
+     * take records through Auto, the History card names what recorded, and a Bluetooth take reached
+     * that way is an ordinary Bluetooth take for the tip.
      *
-     * The recorder has ONE notice slot and the last write wins, so a take says at most one of these, and
-     * neither is said in a take that already carries the auto-stop warning: a capture warning outranks a
-     * nudge. The tip's once-per-process allowance is spent only when the tip is actually said, so a take
-     * that had to say something else leaves it for the next Bluetooth take (Codex review 5, 2026-09-17).
+     * The recorder has ONE notice slot and the last write wins, so the tip is never said in a take that
+     * already carries the auto-stop warning or the forced notice: a capture warning outranks a nudge.
+     * The tip's once-per-process allowance is spent only when the tip is actually said, so a take that
+     * had to say something else leaves it for the next Bluetooth take (Codex review 5, 2026-09-17).
      */
     private fun publishMicrophoneNoticesIfNeeded(service: IAudioCaptureService) {
-        if (silenceNoticeShown || pickMissingNoticeShown || forcedNoticeShown) return
-        val reason = runCatching { service.inputRouteReason }.getOrNull() ?: return
-        if (CaptureNotices.pickIsMissing(reason)) {
-            val picked = (InputDevicePick.parse(inputDevicePick) as? InputDevicePick.Device)?.name
-            pickMissingNoticeShown = true
-            if (picked != null) sayWhileRecording(CaptureNotices.pickMissingLine(picked))
-            return
-        }
+        if (silenceNoticeShown || forcedNoticeShown) return
         val kind = runCatching { service.inputRouteKind }.getOrNull() ?: return
         if (bluetoothTipGate.shouldShow(kind, showBluetoothTips)) {
             DebugLogger.log(TAG, "Bluetooth tip shown")

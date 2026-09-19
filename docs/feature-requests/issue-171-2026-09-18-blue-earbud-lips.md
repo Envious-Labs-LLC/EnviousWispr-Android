@@ -1,6 +1,6 @@
 # Issue #171 — Blue rainbow lips when the earbuds are the microphone — 2026-09-18
 
-GitHub issue: `#171`. Tier: MEDIUM (a new device listener in the accessibility service, the surface seen most). Status: DRAFT (Codex PROCEED-AS-PLANNED, round 3, 2026-09-18; awaiting Gate 2).
+GitHub issue: `#171`. Tier: MEDIUM (a new device listener in the accessibility service, the surface seen most). Status: SHIPPED (founder phone pass on Play build 140, 2026-09-18: "yes works great"; PR #172).
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -67,7 +67,7 @@ The lips look the same whether the take records from the earbuds or from the pho
 
 ### 2. Existing authority
 
-Capability search: "which microphone will be used" → `InputDeviceResolver.resolve` (one owner, callers: `AudioCaptureService.resolveRoute`, `InputDeviceResolverTest`, `InputDeviceRouteTest`). "current inputs with change push" → `ui/SettingsPages.kt` `rememberConnectedInputs` (Compose-scoped; not reusable from a service, so the service gets its own registration of the same `AudioDeviceCallback`, not a new abstraction). "overlay colour" → none; `new authority proposed`: a `palette` property on `BrandMarkView` and `RecordingLevelMeterView`, and `RecordingAccessibilityOverlay.setEarbuds` (proposed).
+Capability search: "which microphone will be used" → `InputDeviceResolver.resolve` (one owner, callers: `AudioCaptureService.resolveRoute`, `InputDeviceResolverTest`, `InputDeviceRouteTest`). "current inputs with change push" → `ui/SettingsPages.kt` `rememberConnectedInputs` (Compose-scoped; not reusable from a service, so the service gets its own registration of the same `AudioDeviceCallback`, not a new abstraction). "overlay colour" → none; `new authority proposed`: a `palette` property on `BrandMarkView` and `RecordingLevelMeterView`, and `RecordingAccessibilityOverlay.setEarbuds`.
 
 `grep -rn "palette\|RAINBOW_" app/src/main/java` → only `BrandPalette.RAINBOW` and the onboarding demo; no second palette exists.
 
@@ -98,11 +98,11 @@ Capability search: "which microphone will be used" → `InputDeviceResolver.reso
 
 ## 3. Design
 
-- `BrandPalette.RAINBOW_EARBUDS` (proposed): nine stops, option A of the mock: `#3DFFB0, #00F5D4, #00E5FF, #00B4FF, #1E90FF, #2E6BFF, #4169E1, #5B4BEA, #8A2BE2`. Same length as `BAR_COUNT`, violet on the last bar as the brand drawing has.
-- `BrandMarkView.palette` and `RecordingLevelMeterView.palette` (proposed): an `IntArray` property defaulting to `BrandPalette.RAINBOW`; setting a different array invalidates (the meter's setter calls `rebuildShader` at once, so no layout is needed). `BrandMarkView.onDraw` reads `palette` where it read `BrandPalette.RAINBOW`; the roll keeps working because the index arithmetic is unchanged.
-- `RecordingAccessibilityOverlay.setEarbuds(earbuds: Boolean)` (proposed): sets both views' palette and the bubble's content description; idempotent; main thread.
-- `InputDeviceResolver.earbudsAreTheMicrophone(pick, inputs)` (proposed): `resolve(pick, inputs).target?.let(::needsBluetoothRoute) ?: false`. Pure, tested without a phone.
-- `PasteAccessibilityService`: alongside the look collect, one `AudioDeviceCallback` registered on `mainHandler` inside the `recordingOverlay == null` block; it re-reads `getDevices` on add/remove and stores `inputs` (read once at registration too); the preference collect stores the parsed pick (nullable until the first emission); a private `applyEarbuds()` (proposed) computes the boolean once both are known and calls `recordingOverlay?.setEarbuds`. Unregistered in `onDestroy` before the overlay stops.
+- `BrandPalette.RAINBOW_EARBUDS`: nine stops, option A of the mock: `#3DFFB0, #00F5D4, #00E5FF, #00B4FF, #1E90FF, #2E6BFF, #4169E1, #5B4BEA, #8A2BE2`. Same length as `BAR_COUNT`, violet on the last bar as the brand drawing has.
+- `BrandMarkView.palette` and `RecordingLevelMeterView.palette`: an `IntArray` property defaulting to `BrandPalette.RAINBOW`; setting a different array invalidates (the meter's setter calls `rebuildShader` at once, so no layout is needed). `BrandMarkView.onDraw` reads `palette` where it read `BrandPalette.RAINBOW`; the roll keeps working because the index arithmetic is unchanged.
+- `RecordingAccessibilityOverlay.setEarbuds(earbuds: Boolean)`: sets both views' palette and the bubble's content description; idempotent; main thread.
+- `InputDeviceResolver.earbudsAreTheMicrophone(pick, inputs)`: `resolve(pick, inputs).target?.let(::needsBluetoothRoute) ?: false`. Pure, tested without a phone.
+- `PasteAccessibilityService`: alongside the look collect, one `AudioDeviceCallback` registered on `mainHandler` inside the `recordingOverlay == null` block; it re-reads `getDevices` on add/remove and stores `inputs` (read once at registration too); the preference collect stores the parsed pick (nullable until the first emission); a private `applyEarbuds()` computes the boolean once both are known and calls `recordingOverlay?.setEarbuds`. Unregistered in `onDestroy` before the overlay stops.
 
 Rejected: publishing the route through `RecordingOverlayState` from the session owner (only exists during a take, so the idle bubble could not be coloured, which is the ask); a new shared "current microphone" singleton (a second home for a fact `InputDeviceResolver` already computes on demand; guilty until proven innocent, and not needed).
 
@@ -158,7 +158,7 @@ The listener lives on `PasteAccessibilityService` because that is the one object
 
 - `app/src/main/java/com/envi/wispr/paste/BrandPalette.kt`: add `RAINBOW_EARBUDS` with the nine stops and a comment naming the mock and the founder choice.
 - `app/src/main/java/com/envi/wispr/paste/BrandMarkView.kt`: `var palette: IntArray` with invalidate; `onDraw` reads it.
-- `app/src/main/java/com/envi/wispr/paste/RecordingLevelMeterView.kt`: `var palette: IntArray`; a private `rebuildShader()` (proposed) builds the gradient from the current bounds and `palette`, called by `onLayout` and by the setter, which then invalidates.
+- `app/src/main/java/com/envi/wispr/paste/RecordingLevelMeterView.kt`: `var palette: IntArray`; a private `rebuildShader()` builds the gradient from the current bounds and `palette`, called by `onLayout` and by the setter, which then invalidates.
 - `app/src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt`: `fun setEarbuds(earbuds: Boolean)`: both palettes and the bubble's content description.
 - `app/src/main/java/com/envi/wispr/audio/InputDeviceResolver.kt`: `fun earbudsAreTheMicrophone(pick, inputs): Boolean`.
 - `app/src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt`: callback field, registration inside the overlay-creation block, pick captured in the existing collect, `applyEarbuds()`, unregister in `onDestroy`.
@@ -196,9 +196,9 @@ The listener lives on `PasteAccessibilityService` because that is the one object
 
 ## 13. Ship criteria
 
-- [ ] With AirPods in and Auto, the idle bubble lips and the pill's rail are the blue rainbow on the S26, on the tap pill and the hold pill; taking them out returns the brand rainbow without a restart.
-- [ ] Picking Phone with AirPods in shows the brand rainbow; picking the AirPods by name shows blue.
-- [ ] Confirmed in Messages over Gboard on the founder's S26 Ultra (phone pass).
+- [x] With AirPods in and Auto, the idle bubble lips and the pill's rail are the blue rainbow on the S26, on the tap pill and the hold pill; taking them out returns the brand rainbow without a restart.
+- [x] Picking Phone with AirPods in shows the brand rainbow; picking the AirPods by name shows blue.
+- [x] Confirmed in Messages over Gboard on the founder's S26 Ultra (phone pass).
 
 ## 14. Open questions
 

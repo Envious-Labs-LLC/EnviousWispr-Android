@@ -138,4 +138,32 @@ class InputDeviceResolverTest {
         assertEquals(false, InputDeviceResolver.needsBluetoothRoute(phone))
         assertEquals(false, InputDeviceResolver.needsBluetoothRoute(wired))
     }
+
+    // ---- #171: the recorder's colour is a projection of the same resolution ----
+    // Product outcome: when a row here fails, the bubble is blue while the phone (or a wired headset)
+    // records, or brand while the earbuds do.
+
+    @Test
+    fun theEarbudsAreTheMicrophoneWheneverAutoWouldOpenABluetoothRoute() {
+        val auto = InputDevicePick.Auto
+        assertEquals("LE Audio", true, InputDeviceResolver.earbudsAreTheMicrophone(auto, listOf(phone, buds, telephony)))
+        assertEquals("classic SCO", true, InputDeviceResolver.earbudsAreTheMicrophone(auto, listOf(phone, airpods)))
+        assertEquals("a wired headset beats the earbuds", false, InputDeviceResolver.earbudsAreTheMicrophone(auto, listOf(phone, airpods, wired)))
+        assertEquals("USB only", false, InputDeviceResolver.earbudsAreTheMicrophone(auto, listOf(phone, usb)))
+        assertEquals("phone only", false, InputDeviceResolver.earbudsAreTheMicrophone(auto, listOf(telephony, phone, submix)))
+    }
+
+    @Test
+    fun anExplicitPickColoursByWhatThePickResolvesTo() {
+        assertEquals("Phone picked with earbuds in", false, InputDeviceResolver.earbudsAreTheMicrophone(phone.pick, listOf(phone, airpods)))
+        assertEquals("earbuds picked and present", true, InputDeviceResolver.earbudsAreTheMicrophone(airpods.pick, listOf(phone, airpods)))
+        assertEquals("picked earbuds missing, other earbuds present: Auto picks them", true, InputDeviceResolver.earbudsAreTheMicrophone(airpods.pick, listOf(phone, buds)))
+        assertEquals("picked earbuds missing, phone only", false, InputDeviceResolver.earbudsAreTheMicrophone(airpods.pick, listOf(phone)))
+    }
+
+    @Test
+    fun noMicrophoneAtAllIsNotTheEarbuds() {
+        assertEquals(false, InputDeviceResolver.earbudsAreTheMicrophone(InputDevicePick.Auto, emptyList()))
+        assertEquals(false, InputDeviceResolver.earbudsAreTheMicrophone(InputDevicePick.Auto, listOf(telephony, submix)))
+    }
 }

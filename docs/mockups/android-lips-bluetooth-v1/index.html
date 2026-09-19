@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Earbud lips</title>
+<style>
+:root{--bg:#0d0b12;--ink:#ECE9F4;--muted:#9A93AD;--line:#2A2733;--violet:#8A2BE2;--accent:#7C3AED;--pill:#131019}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,Inter,Segoe UI,Roboto,sans-serif;padding:28px 16px 48px}
+h1{font-size:22px;margin:0 0 4px}
+.eyebrow{color:var(--muted);font-size:12px;letter-spacing:.12em;text-transform:uppercase;margin:0 0 6px}
+p{color:var(--muted);max-width:720px;margin:0 0 18px}
+h2{font-size:15px;margin:28px 0 10px;color:var(--ink)}
+.row{display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start}
+.card{background:#16121d;border:1px solid var(--line);border-radius:16px;padding:16px;min-width:280px;flex:1 1 300px}
+.card h3{margin:0 0 2px;font-size:14px}
+.card small{display:block;color:var(--muted);font-size:12px;margin-bottom:12px}
+.tag{display:inline-block;font-size:10px;letter-spacing:.14em;font-weight:700;color:#fff;background:var(--accent);border-radius:6px;padding:3px 7px;margin-left:6px;vertical-align:middle}
+.stage{position:relative;height:150px;border-radius:14px;overflow:hidden;background:#1d1926}
+.stage.light{background:#f2f0f6}
+.keys{position:absolute;left:0;right:0;bottom:0;height:64px;background:#2a2635;display:grid;grid-template-columns:repeat(10,1fr);gap:4px;padding:8px}
+.stage.light .keys{background:#dcd8e6}
+.keys i{background:#3a3547;border-radius:4px}
+.stage.light .keys i{background:#fff}
+.bubble{position:absolute;right:12px;bottom:76px;height:56px;width:56px;border-radius:28px;background:var(--pill);border:1px solid var(--violet);box-shadow:0 8px 24px rgba(138,43,226,.35);display:flex;align-items:center;overflow:hidden}
+.bubble.blue{border-color:#1E90FF;box-shadow:0 8px 24px rgba(30,144,255,.4)}
+.bubble.expanded{left:12px;width:auto}
+.lips{width:54px;height:54px;flex:0 0 54px;display:grid;place-items:center}
+.lips svg{width:34px;height:34px}
+.expanded .lips svg{width:26px;height:26px}
+.pill{display:flex;align-items:center;gap:10px;padding-right:10px;height:56px;flex:1;min-width:0}
+.timer{font-weight:600;font-size:15px;color:#ECE9F4;min-width:44px;font-variant-numeric:tabular-nums}
+.rail{flex:1;min-width:110px;height:22px;display:flex;align-items:center;gap:2px}
+.rail i{flex:1;height:100%;border-radius:2px;background:#3A3547;transform-origin:center}
+.state{font-size:10px;letter-spacing:.14em;font-weight:700;color:#9A93AD;white-space:nowrap}
+.act{width:40px;height:40px;border-radius:20px;color:#fff;font-weight:600;display:grid;place-items:center;flex:0 0 40px}
+.act.cancel{background:#2A2733;font-size:22px}
+.act.ok{background:#7C3AED;font-size:17px}
+.big{display:grid;place-items:center;height:190px;border-radius:14px;background:#1d1926}
+.big svg{width:160px;height:160px}
+.swatches{display:flex;gap:4px;margin-top:10px}
+.swatches i{flex:1;height:14px;border-radius:3px}
+.note{border-left:3px solid var(--violet);padding:8px 12px;background:#16121d;border-radius:8px;max-width:720px;margin-top:22px}
+.note b{color:var(--ink)}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#f7f5fb;--ink:#1a1523;--muted:#5f5872;--line:#e2ddec}
+ :root:not([data-theme="dark"]) .card,:root:not([data-theme="dark"]) .note{background:#fff}}
+</style>
+</head>
+<body>
+<p class="eyebrow">EnviousWispr Android · Design mock</p>
+<h1>Lips through the earbuds</h1>
+<p>When your earbuds are the microphone, the lips turn a blue rainbow. On the phone microphone they keep the brand rainbow. Same shape, same bars, only the colours change, so you can tell at a glance where your voice is going.</p>
+
+<h2>Close up</h2>
+<div class="row">
+  <div class="card"><h3>Phone microphone</h3><small>Brand rainbow.</small><div class="big"><svg viewBox="0 0 256 256" data-p="brand"></svg></div></div>
+  <div class="card"><h3>Earbuds, option A<span class="tag">Recommended</span></h3><small>Cool rainbow: mint, cyan, blues, violet.</small><div class="big"><svg viewBox="0 0 256 256" data-p="cool"></svg></div></div>
+  <div class="card"><h3>Earbuds, option B</h3><small>All blue: sky to indigo.</small><div class="big"><svg viewBox="0 0 256 256" data-p="sapphire"></svg></div></div>
+</div>
+
+<h2>Idle bubble, keyboard open</h2>
+<div class="row">
+  <div class="card"><h3>Phone microphone</h3><small>Today's brand rainbow. Unchanged.</small>
+    <div class="stage"><div class="keys"></div><div class="bubble"><div class="lips"><svg viewBox="0 0 256 256" data-p="brand"></svg></div></div></div>
+    <div class="swatches" data-p="brand"></div></div>
+  <div class="card"><h3>Earbuds connected<span class="tag">Recommended</span></h3><small>Option A: cool rainbow, mint to violet, blue in the middle.</small>
+    <div class="stage"><div class="keys"></div><div class="bubble blue"><div class="lips"><svg viewBox="0 0 256 256" data-p="cool"></svg></div></div></div>
+    <div class="swatches" data-p="cool"></div></div>
+  <div class="card"><h3>Earbuds connected</h3><small>Option B: all blue, sky to indigo. Quieter, less rainbow.</small>
+    <div class="stage"><div class="keys"></div><div class="bubble blue"><div class="lips"><svg viewBox="0 0 256 256" data-p="sapphire"></svg></div></div></div>
+    <div class="swatches" data-p="sapphire"></div></div>
+</div>
+
+<h2>Recording pill</h2>
+<div class="row">
+  <div class="card"><h3>Phone microphone</h3><small>Brand rainbow on the lips and on the level rail.</small>
+    <div class="stage"><div class="keys"></div><div class="bubble expanded"><div class="lips"><svg viewBox="0 0 256 256" data-p="brand"></svg></div><div class="pill"><span class="timer">0:07</span><div class="rail" data-p="brand"></div><span class="state">LISTENING</span><span class="act cancel">×</span><span class="act ok">✓</span></div></div></div></div>
+  <div class="card"><h3>Earbuds, option A<span class="tag">Recommended</span></h3><small>Blue rainbow on the lips, the rail and the outline glow.</small>
+    <div class="stage"><div class="keys"></div><div class="bubble expanded blue"><div class="lips"><svg viewBox="0 0 256 256" data-p="cool"></svg></div><div class="pill"><span class="timer">0:07</span><div class="rail" data-p="cool"></div><span class="state">LISTENING</span><span class="act cancel">×</span><span class="act ok">✓</span></div></div></div></div>
+  <div class="card"><h3>Earbuds, option B</h3><small>All blue on the lips, the rail and the outline glow.</small>
+    <div class="stage"><div class="keys"></div><div class="bubble expanded blue"><div class="lips"><svg viewBox="0 0 256 256" data-p="sapphire"></svg></div><div class="pill"><span class="timer">0:07</span><div class="rail" data-p="sapphire"></div><span class="state">LISTENING</span><span class="act cancel">×</span><span class="act ok">✓</span></div></div></div></div>
+</div>
+
+<h2>On a light app</h2>
+<div class="row">
+  <div class="card"><h3>Phone microphone</h3><small>Brand rainbow.</small>
+    <div class="stage light"><div class="keys"></div><div class="bubble"><div class="lips"><svg viewBox="0 0 256 256" data-p="brand"></svg></div></div></div></div>
+  <div class="card"><h3>Earbuds, option A</h3><small>Cool rainbow.</small>
+    <div class="stage light"><div class="keys"></div><div class="bubble blue"><div class="lips"><svg viewBox="0 0 256 256" data-p="cool"></svg></div></div></div></div>
+  <div class="card"><h3>Earbuds, option B</h3><small>All blue.</small>
+    <div class="stage light"><div class="keys"></div><div class="bubble blue"><div class="lips"><svg viewBox="0 0 256 256" data-p="sapphire"></svg></div></div></div></div>
+</div>
+
+<div class="note"><b>When the blue shows.</b> The lips turn blue as soon as the earbuds are the chosen microphone: with Input device on Auto and earbuds connected, or with the earbuds picked by name. They go back to the brand rainbow when the earbuds disconnect or you pick the phone. The rail, the outline and the glow follow the lips. The spin while the earbuds warm up keeps whichever colours the lips are showing.</div>
+
+<script>
+const P={
+ brand:['#ff2a40','#ff8c00','#ffd700','#adff2f','#00fa9a','#00ffff','#1e90ff','#4169e1','#8a2be2'],
+ cool:['#3dffb0','#00f5d4','#00e5ff','#00b4ff','#1e90ff','#2e6bff','#4169e1','#5b4bea','#8a2be2'],
+ sapphire:['#7fe7ff','#4fd3ff','#2bbbff','#1e90ff','#1a6fef','#2f5be0','#4169e1','#5a61f0','#7a5cff']
+};
+const upper=[[16,84.2,20],[40,65.75,32],[64,43.36,48],[88,63.04,36],[112,81.43,24],[136,63.04,36],[160,43.36,48],[184,65.75,32],[208,84.2,20]];
+const lower=[[16,125.8,20],[40,119.35,36],[64,112.96,48],[88,120.64,60],[112,127.03,68],[136,120.64,60],[160,112.96,48],[184,119.35,36],[208,125.8,20]];
+const lowerColour=[7,6,5,4,3,2,1,0,8];
+document.querySelectorAll('svg[data-p]').forEach(svg=>{
+ const c=P[svg.dataset.p];
+ const add=(b,fill)=>{const r=document.createElementNS('http://www.w3.org/2000/svg','rect');r.setAttribute('x',b[0]+8);r.setAttribute('y',b[1]+13);r.setAttribute('width',14);r.setAttribute('height',b[2]);r.setAttribute('rx',5);r.setAttribute('fill',fill);svg.append(r)};
+ upper.forEach((b,i)=>add(b,c[i]));lower.forEach((b,i)=>add(b,c[lowerColour[i]]));
+});
+document.querySelectorAll('.swatches[data-p]').forEach(s=>P[s.dataset.p].forEach(c=>{const i=document.createElement('i');i.style.background=c;s.append(i)}));
+const levels=[.3,.55,.9,.7,.45,.8,1,.6,.35,.5,.85,.65,.4,.75,.95,.55,.3,.6,.8,.5,.35,.7,.9,.6,.4,.55,.75,.45];
+document.querySelectorAll('.rail[data-p]').forEach(r=>{const c=P[r.dataset.p];levels.forEach((v,i)=>{const b=document.createElement('i');b.style.transform='scaleY('+v+')';b.style.background=c[Math.floor(i/levels.length*c.length)];r.append(b)})});
+</script>
+</body>
+</html>

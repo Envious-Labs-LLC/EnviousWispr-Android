@@ -30,6 +30,25 @@ internal object BrandPalette {
     /** `--v2-violet`. The brand violet, used for the recorder's outline and its glow. */
     const val VIOLET = 0xFF8A2BE2.toInt()
 
+    /**
+     * The nine stops the recorder draws with while the earbuds are the chosen microphone: mint through
+     * cyan and the blues to the same violet on the last bar, so the lips still read as the mark. Option
+     * A of `docs/mockups/android-lips-bluetooth-v1/index.html`, founder's choice 2026-09-18 (#171).
+     * Not a brand value: the website has no `--rainbow-earbuds`, and nothing outside the recorder
+     * draws it.
+     */
+    val RAINBOW_EARBUDS = intArrayOf(
+        0xFF3DFFB0.toInt(), // mint
+        0xFF00F5D4.toInt(), // aqua
+        0xFF00E5FF.toInt(), // cyan
+        0xFF00B4FF.toInt(), // sky
+        0xFF1E90FF.toInt(), // dodger blue
+        0xFF2E6BFF.toInt(), // azure
+        0xFF4169E1.toInt(), // royal blue
+        0xFF5B4BEA.toInt(), // indigo
+        0xFF8A2BE2.toInt(), // violet
+    )
+
     /** `--accent`. The Envious purple, used for the one filled action. */
     const val ACCENT = 0xFF7C3AED.toInt()
 

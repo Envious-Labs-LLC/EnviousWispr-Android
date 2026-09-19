@@ -8,6 +8,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -22,6 +25,9 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.view.WindowManager
 import android.widget.Toast
+import com.envi.wispr.audio.InputDeviceCandidate
+import com.envi.wispr.audio.InputDevicePick
+import com.envi.wispr.audio.InputDeviceResolver
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.history.TranscriptEntity
@@ -213,6 +219,37 @@ class PasteAccessibilityService : AccessibilityService() {
     private val bubblePositionStore by lazy { BubblePositionStore(applicationContext) }
     private var pinnedTarget: TargetToken? = null
 
+    // Which microphone a take would use right now, for the bubble's colour (#171). Two inputs, both
+    // written on the main thread: the phone's input list, read once at registration and again on every
+    // add or remove the system pushes (no poll, no timer), and the Input device pick from preferences.
+    // The pick is null until the first preference emission, and nothing is computed before both are
+    // known, so the first paint is never a guess about the saved pick.
+    private var connectedInputs: List<InputDeviceCandidate> = emptyList()
+    private var inputDevicePick: InputDevicePick? = null
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = readInputsAndApply()
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = readInputsAndApply()
+    }
+
+    /** Main thread. The current input list, then the colour. A failed read is an empty list: brand rainbow. */
+    private fun readInputsAndApply() {
+        connectedInputs = runCatching {
+            getSystemService(AudioManager::class.java)
+                ?.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                ?.map(InputDeviceCandidate::from)
+        }.getOrNull().orEmpty()
+        applyEarbuds()
+    }
+
+    /** Main thread. Colours the bubble once both the pick and the inputs are known; brand until then. */
+    private fun applyEarbuds() {
+        val pick = inputDevicePick ?: return
+        val earbuds = InputDeviceResolver.earbudsAreTheMicrophone(pick, connectedInputs)
+        // Shape only: a count and a boolean, so the phone pass can read the colour's input off logcat.
+        Log.i(TAG, "Bubble colour: inputs=${connectedInputs.size} earbuds=$earbuds")
+        recordingOverlay?.setEarbuds(earbuds)
+    }
+
     // Bubble-discovery retry: when a return to a focused field warrants discovery but the editor is not
     // accessible yet (the window is still coming up: ~2 s on a real Samsung, #141 phone pass 2026-09-13),
     // the first look finds nothing. Re-look a few times so the user never has to re-tap the field. One
@@ -248,9 +285,17 @@ class PasteAccessibilityService : AccessibilityService() {
             // cancelling them, so it must not be one of those.
             lookScope.launch {
                 AppPreferences(applicationContext).state.collect { preferences ->
-                    mainHandler.post { recordingOverlay?.setLook(preferences.bubbleLook) }
+                    mainHandler.post {
+                        recordingOverlay?.setLook(preferences.bubbleLook)
+                        inputDevicePick = InputDevicePick.parse(preferences.inputDevicePick)
+                        applyEarbuds()
+                    }
                 }
             }
+            // Delivered on the main thread, and read once now as well: the initial add callback is
+            // the platform's promise, the read is ours.
+            getSystemService(AudioManager::class.java)?.registerAudioDeviceCallback(audioDeviceCallback, mainHandler)
+            readInputsAndApply()
         }
         Log.i(TAG, "Accessibility insertion service connected")
         // A text box may already hold focus when this service (re)connects: discover it rather than
@@ -543,6 +588,7 @@ class PasteAccessibilityService : AccessibilityService() {
         // reader during that window would otherwise see a healthy binding on a dying service.
         if (instance === this) publishBinding(null)
         lookScope.cancel()
+        getSystemService(AudioManager::class.java)?.unregisterAudioDeviceCallback(audioDeviceCallback)
         // Detach only; the bus belongs to the session owner (see onInterrupt).
         recordingOverlay?.stop()
         recordingOverlay = null

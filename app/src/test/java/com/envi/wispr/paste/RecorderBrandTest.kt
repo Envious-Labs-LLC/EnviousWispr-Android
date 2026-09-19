@@ -79,6 +79,43 @@ class RecorderBrandTest {
         )
     }
 
+    // ---- #171: the earbud rainbow ----
+
+    @Test
+    fun theEarbudRainbowIsNineStopsEndingInTheBrandViolet() {
+        // Product outcome: one bar short and the ninth bar throws; a different last stop and the lips
+        // stop reading as the mark. Real values, not source text.
+        assertEquals(BrandMarkView.BAR_COUNT, BrandPalette.RAINBOW_EARBUDS.size)
+        assertEquals(BrandPalette.VIOLET, BrandPalette.RAINBOW_EARBUDS.last())
+        assertEquals("every stop distinct", 9, BrandPalette.RAINBOW_EARBUDS.toSet().size)
+        assertFalse("a different array from the brand one", BrandPalette.RAINBOW.contentEquals(BrandPalette.RAINBOW_EARBUDS))
+        // Option A of the mock: the stops the founder chose, in order.
+        assertEquals(
+            listOf(0xFF3DFFB0, 0xFF00F5D4, 0xFF00E5FF, 0xFF00B4FF, 0xFF1E90FF, 0xFF2E6BFF, 0xFF4169E1, 0xFF5B4BEA, 0xFF8A2BE2).map { it.toInt() },
+            BrandPalette.RAINBOW_EARBUDS.toList(),
+        )
+    }
+
+    @Test
+    fun theLipsAndTheRailDrawWhicheverPaletteTheyAreGiven() {
+        // Drift guard. The lips read `palette`, never the brand constant, on both lips and under the
+        // roll; the rail rebuilds its gradient from `palette` the moment it changes, not at the next
+        // layout, which a rail of unchanged size never gets.
+        val draw = mark.substringAfter("override fun onDraw")
+        assertEquals("both lips read the palette", 2, Regex("paint\\.color = palette\\[").findAll(draw).count())
+        assertFalse("no lip reads the brand constant directly", draw.contains("BrandPalette.RAINBOW"))
+        val setter = meter.substringAfter("var palette: IntArray").substringBefore("\n\n")
+        assertTrue("the rail setter rebuilds the shader itself", setter.contains("rebuildShader()"))
+        assertTrue("layout shares the same builder", meter.substringAfter("override fun onLayout").substringBefore("}").contains("rebuildShader()"))
+        val builder = meter.substringAfter("private fun rebuildShader()").substringBefore("\n    }")
+        assertTrue("the gradient is built from the palette", builder.contains("LinearGradient(start, 0f, end, 0f, palette,"))
+        assertFalse("the rail never builds from the brand constant", builder.contains("BrandPalette.RAINBOW"))
+        // The overlay sets both from one call, and only two palettes exist.
+        val set = overlay.substringAfter("fun setEarbuds(earbuds: Boolean)").substringBefore("\n    }")
+        assertTrue(set.contains("bubbleMark.palette = palette") && set.contains("meter.palette = palette"))
+        assertTrue(set.contains("if (earbuds) BrandPalette.RAINBOW_EARBUDS else BrandPalette.RAINBOW"))
+    }
+
     @Test
     fun theAcceptButtonStopsAndTheCancelButtonCancels() {
         val cancel = overlay.substringAfter("actionButton(ActionGlyph.CROSS").substringBefore("},")

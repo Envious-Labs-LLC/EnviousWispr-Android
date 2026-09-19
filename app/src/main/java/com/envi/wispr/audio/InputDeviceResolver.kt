@@ -77,6 +77,15 @@ object InputDeviceResolver {
     fun needsBluetoothRoute(target: InputDeviceCandidate): Boolean =
         InputRouteKind.of(target.type) == InputRouteKind.BLUETOOTH
 
+    /**
+     * Whether a take started now would record through the earbuds: [resolve] for [pick] over [inputs],
+     * then [needsBluetoothRoute] on what it chose. False for the phone, a wired or USB headset, and for
+     * no microphone at all. The recorder colours its lips and rail on this (#171); it is a projection
+     * of the same resolution the capture service makes, never a second decision.
+     */
+    fun earbudsAreTheMicrophone(pick: InputDevicePick, inputs: List<InputDeviceCandidate>): Boolean =
+        resolve(pick, inputs).target?.let(::needsBluetoothRoute) ?: false
+
     /** The built-in microphone, for the rescue and the fallback. Null only on a phone with no microphone. */
     fun builtIn(inputs: List<InputDeviceCandidate>): InputDeviceCandidate? =
         inputs.firstOrNull { it.isSource && it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }

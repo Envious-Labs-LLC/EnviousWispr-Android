@@ -78,13 +78,27 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         }
 
     /**
-     * The rainbow, rebuilt in LAYOUT and never while drawing.
+     * The rainbow, rebuilt in LAYOUT or when [palette] changes, and never while drawing.
      *
      * Keyed on the two horizontal endpoints rather than on the width, because padding moves them
      * without the width changing and the gradient then spans the wrong span while looking correct.
      */
     private var gradientLeft = Float.NaN
     private var gradientRight = Float.NaN
+
+    /**
+     * The colours painted across the rail: `BrandPalette.RAINBOW` unless the earbuds are the chosen
+     * microphone, then `BrandPalette.RAINBOW_EARBUDS` (#171). The gradient is rebuilt HERE, not left to
+     * the next layout: a rail whose size has not changed gets no layout, and a shader merely dropped
+     * would draw the bars in the paint's flat colour until one arrived.
+     */
+    var palette: IntArray = BrandPalette.RAINBOW
+        set(value) {
+            if (field === value) return
+            field = value
+            rebuildShader()
+            invalidate()
+        }
 
     private var animating = false
     private var lastFrameNanos = 0L
@@ -164,18 +178,17 @@ internal class RecordingLevelMeterView(context: Context) : View(context) {
         super.onLayout(changed, left, top, right, bottom)
         val start = paddingLeft.toFloat()
         val end = width.toFloat() - paddingRight.toFloat()
-        if (end <= start) {
-            paint.shader = null
-        } else if (paint.shader == null || gradientLeft != start || gradientRight != end) {
-            paint.shader = LinearGradient(
-                start,
-                0f,
-                end,
-                0f,
-                BrandPalette.RAINBOW,
-                null,
-                Shader.TileMode.CLAMP,
-            )
+        if (paint.shader == null || gradientLeft != start || gradientRight != end) rebuildShader()
+    }
+
+    /** The gradient across the current horizontal span in the current [palette]; none while the rail has no width. */
+    private fun rebuildShader() {
+        val start = paddingLeft.toFloat()
+        val end = width.toFloat() - paddingRight.toFloat()
+        paint.shader = if (end <= start) {
+            null
+        } else {
+            LinearGradient(start, 0f, end, 0f, palette, null, Shader.TileMode.CLAMP)
         }
         gradientLeft = start
         gradientRight = end

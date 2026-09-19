@@ -38,6 +38,19 @@ internal class BrandMarkView(context: Context) : View(context) {
     private var colourShift = 0
 
     /**
+     * The nine colours on the bars: `BrandPalette.RAINBOW` unless the earbuds are the chosen
+     * microphone, then `BrandPalette.RAINBOW_EARBUDS` (#171). Nine entries, one per bar; the roll
+     * indexes into whichever array is set.
+     */
+    var palette: IntArray = BrandPalette.RAINBOW
+        set(value) {
+            require(value.size == BAR_COUNT) { "a lips palette has $BAR_COUNT colours, got ${value.size}" }
+            if (field === value) return
+            field = value
+            invalidate()
+        }
+
+    /**
      * A dark edge drawn behind every bar, in pixels; 0 draws none. The look's way of keeping the
      * bright bars readable on a white page without a ground under them.
      */
@@ -117,10 +130,10 @@ internal class BrandMarkView(context: Context) : View(context) {
         }
         for (index in 0 until BAR_COUNT) {
             val left = originX + (BAR_LEFT + index * BAR_STEP) * unit
-            paint.color = BrandPalette.RAINBOW[(index + colourShift) % BAR_COUNT]
+            paint.color = palette[(index + colourShift) % BAR_COUNT]
             bar.set(left, originY + UPPER_TOP[index] * unit, left + BAR_WIDTH * unit, originY + (UPPER_TOP[index] + UPPER_HEIGHT[index]) * unit)
             canvas.drawRoundRect(bar, radius, radius, paint)
-            paint.color = BrandPalette.RAINBOW[(LOWER_COLOUR[index] + colourShift) % BAR_COUNT]
+            paint.color = palette[(LOWER_COLOUR[index] + colourShift) % BAR_COUNT]
             bar.set(left, originY + LOWER_TOP[index] * unit, left + BAR_WIDTH * unit, originY + (LOWER_TOP[index] + LOWER_HEIGHT[index]) * unit)
             canvas.drawRoundRect(bar, radius, radius, paint)
         }

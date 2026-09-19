@@ -1,6 +1,6 @@
 # Issue #173 — A picked microphone that is gone swaps to Auto the way the Mac does — 2026-09-18
 
-GitHub issue: `#173`. Tier: MEDIUM (a notice removed from the session service; the Settings row logic changes). Status: DRAFT.
+GitHub issue: `#173`. Tier: MEDIUM (a notice removed from the session service; the Settings row logic changes). Status: SHIPPED (founder phone pass on Play build 142 with the AirPods Pro 3 and the Bose "Storm", 2026-09-18: "ran the gambit - works great"; PR #174, main eb71d39).
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -32,7 +32,7 @@ Priya, Diana, Aaron, Marcus: fewer words on the recorder, no objection. Dr. Vasq
 
 Consolidation: none. This deletes one recorder sentence and replaces one Compose row rule with a pure, tested one; the single owner of "which microphone" stays `InputDeviceResolver.resolve`, and the Settings page reads it instead of keeping its own copy of the absent-pick rule.
 
-Today an explicit Input Device pick that is not connected already records through Auto for that take (`InputDeviceResolver.resolve`, reason `PICK_MISSING`), so the microphone is right. Two surfaces say otherwise: the recorder shows "AirPods Pro 3 is not connected. Using Auto instead." on every take, and Settings keeps the absent AirPods row selected with "Not connected. Dictation uses Auto until it is." The Mac (`InputDevicePreferencePolicy.swift`, founder decisions 2026-07-30 and 2026-09-18) shows Auto selected with a "Using Storm" pill, hides the absent device, keeps the pick so the device reclaims the selection when it reconnects, and has no recorder sentence for an absent pick. This change makes Android do the same: a pure `InputDeviceRows.build` (proposed) decides the rows from `resolve`; the recorder's pick-missing line and its latch are removed. Capture, the History card and the bubble colour are untouched; the Bluetooth tip's wording and gate are untouched, and it now also reaches an absent-pick Bluetooth take (§2.1). MEDIUM. Proof: unit rows on the row rule, the notice test updated, and the founder's phone pass with the AirPods and the Bose.
+Today an explicit Input Device pick that is not connected already records through Auto for that take (`InputDeviceResolver.resolve`, reason `PICK_MISSING`), so the microphone is right. Two surfaces say otherwise: the recorder shows "AirPods Pro 3 is not connected. Using Auto instead." on every take, and Settings keeps the absent AirPods row selected with "Not connected. Dictation uses Auto until it is." The Mac (`InputDevicePreferencePolicy.swift`, founder decisions 2026-07-30 and 2026-09-18) shows Auto selected with a "Using Storm" pill, hides the absent device, keeps the pick so the device reclaims the selection when it reconnects, and has no recorder sentence for an absent pick. This change makes Android do the same: a pure `InputDeviceRows.build` decides the rows from `resolve`; the recorder's pick-missing line and its latch are removed. Capture, the History card and the bubble colour are untouched; the Bluetooth tip's wording and gate are untouched, and it now also reaches an absent-pick Bluetooth take (§2.1). MEDIUM. Proof: unit rows on the row rule, the notice test updated, and the founder's phone pass with the AirPods and the Bose.
 
 ## 1. Problem
 
@@ -67,7 +67,7 @@ Founder, S26 Ultra, Play build 141, 2026-09-18, Input Device set to AirPods Pro 
 
 ### 2. Existing authority
 
-Capability search "which device will Auto open" → `InputDeviceResolver.resolve` (one owner; callers `AudioCaptureService.resolveRoute`, `PasteAccessibilityService.applyEarbuds` via `earbudsAreTheMicrophone`, the tests). "which row is selected" → inline in `MicrophonePage`, no separate authority; this plan extracts it as `InputDeviceRows` (proposed), reading `resolve`, so the page and the take apply one rule, each over its own snapshot (§2.5.4). "the words when the pick is absent" → `CaptureNotices.pickMissingLine` (removed) and the `pickedButAbsent` subtitle (removed). No other file mentions either sentence (`grep -rn "Dictation uses Auto\|Using Auto instead" app docs .claude scripts` → the two sources and `CaptureNoticesTest` only).
+Capability search "which device will Auto open" → `InputDeviceResolver.resolve` (one owner; callers `AudioCaptureService.resolveRoute`, `PasteAccessibilityService.applyEarbuds` via `earbudsAreTheMicrophone`, the tests). "which row is selected" → inline in `MicrophonePage`, no separate authority; this plan extracts it as `InputDeviceRows`, reading `resolve`, so the page and the take apply one rule, each over its own snapshot (§2.5.4). "the words when the pick is absent" → `CaptureNotices.pickMissingLine` (removed) and the `pickedButAbsent` (removed) subtitle (removed). No other file mentions either sentence (`grep -rn "Dictation uses Auto\|Using Auto instead" app docs .claude scripts` → the two sources and `CaptureNoticesTest` only).
 
 ### 3. Prior attempts and live direction
 
@@ -100,7 +100,7 @@ Capability search "which device will Auto open" → `InputDeviceResolver.resolve
 
 ## 3. Design
 
-- `ui/InputDeviceRows.kt` (proposed): `object InputDeviceRows` with `data class Row(val pick: InputDevicePick, val title: String, val subtitle: String?, val selected: Boolean)` and `fun build(pick: InputDevicePick, inputs: List<InputDeviceCandidate>): List<Row>`. Rule: `val resolution = InputDeviceResolver.resolve(pick, inputs)`; Auto is selected iff `resolution.reason != InputRouteReason.PICKED`; the Auto subtitle is `"Using ${target.label}"` when Auto is selected and a target exists, `"No microphone found"` when Auto is selected and there is none, and the existing explainer "Earbuds when they are connected, otherwise the phone" when a device is selected; one row per `InputDeviceResolver.pickable(inputs)` entry, selected iff `pick == it.pick`; no row for an absent pick.
+- `ui/InputDeviceRows.kt`: `object InputDeviceRows` with `data class Row(val pick: InputDevicePick, val title: String, val subtitle: String?, val selected: Boolean)` and `fun build(pick: InputDevicePick, inputs: List<InputDeviceCandidate>): List<Row>`. Rule: `val resolution = InputDeviceResolver.resolve(pick, inputs)`; Auto is selected iff `resolution.reason != InputRouteReason.PICKED`; the Auto subtitle is `"Using ${target.label}"` when Auto is selected and a target exists, `"No microphone found"` when Auto is selected and there is none, and the existing explainer "Earbuds when they are connected, otherwise the phone" when a device is selected; one row per `InputDeviceResolver.pickable(inputs)` entry, selected iff `pick == it.pick`; no row for an absent pick.
 - `MicrophonePage`: replaces the inline rows with `InputDeviceRows.build(pick, inputs).forEach { ... }`; `onSelect` writes `row.pick` as today.
 - `DictationSessionService`: delete the `pickMissingNoticeShown` field, its reset, and the pick-missing branch; `publishMicrophoneNoticesIfNeeded` no longer reads `inputRouteReason`, only `inputRouteKind` for the tip. The KDoc describes one line (the tip) after the forced and silence notices.
 - `CaptureNotices`: delete `pickMissingLine` and `pickIsMissing`.
@@ -129,7 +129,7 @@ The row rule lives in `ui/` beside `CaptureNotices` because it is presentation o
 
 | Contract delta | Consumer | Current behaviour | Required behaviour | Code change? | Verified by |
 |---|---|---|---|---|---|
-| rows from `InputDeviceRows.build` | `MicrophonePage` | inline rule with an absent row | Auto selected + "Using X" when the pick is absent; no absent row | yes | `InputDeviceRowsTest` (proposed) rows |
+| rows from `InputDeviceRows.build` | `MicrophonePage` | inline rule with an absent row | Auto selected + "Using X" when the pick is absent; no absent row | yes | `InputDeviceRowsTest` rows |
 | pick-missing line removed | `publishMicrophoneNoticesIfNeeded` | says the line once per take | no missing-pick sentence | yes | `CaptureNoticesTest` guard text |
 | `getInputRouteReason` | none in the app process | read for the line | unread; kept | no | `SilenceStopWiringTest` still lists the AIDL method |
 | bubble colour (#171) | `applyEarbuds` | `resolve` projection | unchanged | no | existing `InputDeviceResolverTest` rows |
@@ -209,13 +209,13 @@ The row rule lives in `ui/` beside `CaptureNotices` because it is presentation o
 
 ## 13. Ship criteria
 
-- [ ] With the AirPods picked and off, and the Bose on, Settings shows Auto selected with "Using Storm", no AirPods row, and a take records through the Bose with nothing said about the AirPods.
-- [ ] Putting the AirPods back on selects them again without touching Settings.
-- [ ] Confirmed on the founder's S26 Ultra with the AirPods Pro 3 and the Bose "Storm".
+- [x] With the AirPods picked and off, and the Bose on, Settings shows Auto selected with "Using Storm", no AirPods row, and a take records through the Bose with nothing said about the AirPods.
+- [x] Putting the AirPods back on selects them again without touching Settings.
+- [x] Confirmed on the founder's S26 Ultra with the AirPods Pro 3 and the Bose "Storm".
 
 ## 14. Open questions
 
-None blocking. The Bose "few taps" finding is read from the phone log when the phone is plugged in and classified on #173 or a new issue.
+None. The Bose "few taps" from the first session did not reproduce on build 142: two Storm takes went live in 366 ms (cold) and 252 ms (warm, adopted from the hold) with words both times; the earlier takes were outside the phone's log window (about an hour), so their cause is unrecorded.
 
 ## 15. Related
 

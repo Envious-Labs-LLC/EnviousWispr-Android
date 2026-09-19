@@ -28,8 +28,12 @@
 #
 # AN ABANDONED, UNMERGED WORKTREE IS REPORTED AND RETAINED, NEVER DELETED. It
 # cannot pass the merged-PR guard, and nothing here may delete work that never
-# shipped. The `llama.cpp` submodule can make `git worktree remove` refuse; that
-# refusal is honored (never --force), so an unsafe tree is retained, not forced.
+# shipped. The `llama.cpp` submodule makes `git worktree remove` refuse EVERY tree
+# whose HEAD lists the gitlink, deinitialised or not ("working trees containing
+# submodules cannot be moved or removed"). That one objection is answered by our
+# own checks (clean tree, no lock, proven merged), the submodule repositories are
+# moved aside whole, and then `--force`; every other refusal is honored, so an
+# unsafe tree is retained, not forced.
 
 set -uo pipefail
 
@@ -140,6 +144,81 @@ worktree_registration_state() {
         0|1) return "$rc" ;;
         *)   return 2 ;;
     esac
+}
+
+# True when `git worktree remove` refused ONLY because the tree lists a submodule
+# and our own checks find nothing else in the way: no lock; no modified, staged or
+# untracked file (the status flags are PINNED so a `status.showUntrackedFiles=no`
+# or `ignore = all` in some config cannot hide work; ignored files such as build
+# output do not count, git itself ignores them for this refusal). Any other
+# refusal text, or any read that fails, is false. What the submodule REPOSITORIES
+# hold is not judged here: rescue_submodule_repositories keeps them whole.
+submodule_only_refusal() {
+    local wt="$1" err="$2" dirty
+    case "$err" in
+        *"working trees containing submodules cannot be moved or removed"*) ;;
+        *) return 1 ;;
+    esac
+    worktree_is_locked "$wt" && return 1
+    dirty=$(git -c status.showUntrackedFiles=all -C "$wt" status --porcelain \
+        --untracked-files=all --ignore-submodules=none 2>/dev/null) || return 1
+    [ -z "$dirty" ]
+}
+
+# `--force` deletes the submodule repositories with the tree. Inspection cannot
+# vouch for what one holds: a local commit can hang off a branch, a stash, a tag,
+# a reflog or nothing at all (Codex review 2026-09-18 found a new hiding place on
+# each of three rounds), so nothing is judged and everything is KEPT. Every
+# repository is MOVED whole, next to the rescued gitignored files: the store under
+# the worktree's git directory (`modules/`, which also holds repositories no
+# current gitlink names any more, at any nesting) and every `.git` DIRECTORY
+# anywhere under the tree, found on disk rather than read from the index so a
+# submodule nested inside a submodule, or a repository no gitlink names, is seen
+# too (a gitfile at `<submodule>/.git` points into `modules/` and goes with it).
+# A move that cannot be verified, or a destination inside the tree about to be
+# deleted, refuses and the caller keeps the tree. Nothing to move is success with
+# no destination made.
+rescue_submodule_repositories() {
+    local wt="$1" branch="$2" dest_root="$3" gitdir moddir wt_abs dr_abs dest path
+    local listing i safe_branch stamp
+    local -a sources=() targets=()
+    gitdir=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    moddir="$gitdir/modules"
+    if [ -d "$moddir" ]; then
+        sources+=("$moddir"); targets+=("modules")
+    fi
+    # NUL-separated so a path with a space or a newline reads whole; a command
+    # substitution would drop the NULs, so the listing goes through a file. The
+    # tree's own `.git` is at depth 1 and is never a candidate; each repository
+    # found is not descended into.
+    listing=$(mktemp) || return 1
+    if ! /usr/bin/find "$wt" -mindepth 2 -type d -name .git -prune -print0 > "$listing" 2>/dev/null; then
+        rm -f "$listing"; return 1
+    fi
+    while IFS= read -r -d '' path; do
+        sources+=("$path"); targets+=("embedded/${path#"$wt"/}")
+    done < "$listing"
+    rm -f "$listing"
+    [ "${#sources[@]}" -gt 0 ] || return 0
+
+    wt_abs=$(cd "$wt" 2>/dev/null && pwd -P) || return 1
+    mkdir -p "$dest_root" 2>/dev/null || return 1
+    dr_abs=$(cd "$dest_root" 2>/dev/null && pwd -P) || return 1
+    case "$dr_abs/" in
+        "$wt_abs/"*) echo "rescue: destination '$dest_root' resolves inside the worktree '$wt'; refusing." >&2; return 1 ;;
+    esac
+    safe_branch=$(printf '%s' "$branch" | tr '/' '-')
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    dest=$(mktemp -d "$dest_root/$safe_branch-$stamp-submodules.XXXXXX") || return 1
+    for i in "${!sources[@]}"; do
+        mkdir -p "$(dirname "$dest/${targets[$i]}")" 2>/dev/null || return 1
+        if ! mv "${sources[$i]}" "$dest/${targets[$i]}" 2>/dev/null \
+            || [ -e "${sources[$i]}" ] || [ ! -d "$dest/${targets[$i]}" ]; then
+            echo "rescue: could not move '${sources[$i]}' to '$dest/${targets[$i]}'; anything already moved is under $dest" >&2
+            return 1
+        fi
+    done
+    echo "Worktree cleanup: moved ${#sources[@]} submodule repository store(s) from '$branch' -> $dest"
 }
 
 worktree_is_locked() {
@@ -363,7 +442,24 @@ for r in rows:
         return 1
     fi
     remove_rc=0
-    git worktree remove "$wt" || remove_rc=$?
+    remove_err=$(git worktree remove "$wt" 2>&1 >/dev/null) || remove_rc=$?
+    if [ "$remove_rc" -ne 0 ]; then
+        if submodule_only_refusal "$wt" "$remove_err"; then
+            # The gitlink is git's ONLY objection: the tree is clean, unlocked, its
+            # branch is merged on GitHub and its HEAD is the proven SHA. --force
+            # would also delete the submodule repositories, so they are moved aside
+            # whole first; then --force overrides exactly that objection and
+            # nothing else (2026-09-18).
+            if ! rescue_submodule_repositories "$wt" "$branch" "$MAIN_ROOT/.claude/_rescued-worktrees"; then
+                echo "SKIPPED: $wt — could not move its submodule repositories aside. Keeping it so nothing is lost." >&2
+                return 1
+            fi
+            remove_rc=0
+            git worktree remove --force "$wt" || remove_rc=$?
+        else
+            printf '%s\n' "$remove_err" >&2
+        fi
+    fi
 
     # 8. SAME-PROCESS OBSERVATION, AND UNEXPECTED LEFTOVERS ARE RETAINED. Once git
     #    has unregistered the tree, any files that remain cannot be PROVEN to be

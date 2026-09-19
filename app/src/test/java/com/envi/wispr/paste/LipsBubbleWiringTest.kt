@@ -213,7 +213,46 @@ class LipsBubbleWiringTest {
     fun aScreenReaderDoubleTapStartsDictationThroughTheClickAction() {
         val bubble = overlay.substringAfter("private fun buildBubble()").substringBefore("private fun buildPillColumn()")
         assertTrue(bubble.contains("setOnClickListener { startDictation(held = false) }"))
-        assertTrue(bubble.contains("Double tap to dictate"))
+        assertTrue(bubble.contains("contentDescription = BUBBLE_LABEL"))
+        assertTrue(RecordingAccessibilityOverlay.BUBBLE_LABEL.contains("Double tap to dictate"))
+    }
+
+    // ---- #171: the earbud colour ----
+
+    @Test
+    fun theServiceWatchesTheInputsOnTheMainThreadOncePerInstanceAndStopsWatchingOnDestroy() {
+        // The callback is registered inside the once-per-instance block (a repeat onServiceConnected
+        // must not register twice), delivered on the main handler (the overlay's thread), read once at
+        // registration (the initial add callback is the platform's promise, the read is ours), and
+        // unregistered in onDestroy before the overlay is stopped.
+        val creation = service.substringAfter("if (recordingOverlay == null) {").substringBefore("Log.i(TAG, \"Accessibility insertion service connected\")")
+        assertTrue(creation.contains("registerAudioDeviceCallback(audioDeviceCallback, mainHandler)"))
+        assertTrue(creation.contains("readInputsAndApply()"))
+        assertEquals(1, Regex("registerAudioDeviceCallback\\(").findAll(service.replace("unregisterAudioDeviceCallback(", "")).count())
+        val destroy = service.substringAfter("override fun onDestroy()").substringBefore("recordingOverlay?.stop()")
+        assertTrue(destroy.contains("unregisterAudioDeviceCallback(audioDeviceCallback)"))
+        // Both inputs of the colour are written on main: the pick inside the posted preference block,
+        // the list inside the callback and the registration read.
+        val posted = service.substringAfter("AppPreferences(applicationContext).state.collect").substringBefore("readInputsAndApply()")
+        assertTrue(posted.contains("mainHandler.post {") && posted.contains("inputDevicePick = InputDevicePick.parse(preferences.inputDevicePick)") && posted.contains("applyEarbuds()"))
+        // Nothing is coloured before the saved pick has arrived, and a failed device read is brand.
+        val apply = service.substringAfter("private fun applyEarbuds()").substringBefore("\n    }")
+        assertTrue(apply.contains("val pick = inputDevicePick ?: return"))
+        assertTrue(apply.contains("InputDeviceResolver.earbudsAreTheMicrophone(pick, connectedInputs)"))
+        val read = service.substringAfter("private fun readInputsAndApply()").substringBefore("\n    }")
+        assertTrue(read.contains("runCatching") && read.contains(".getOrNull().orEmpty()"))
+    }
+
+    @Test
+    fun theBubbleTellsAScreenReaderAboutTheEarbudsAndTakesItBack() {
+        val set = overlay.substringAfter("fun setEarbuds(earbuds: Boolean)").substringBefore("\n    }")
+        assertTrue(set.contains("bubble.contentDescription = if (earbuds) BUBBLE_LABEL_EARBUDS else BUBBLE_LABEL"))
+        assertTrue(RecordingAccessibilityOverlay.BUBBLE_LABEL_EARBUDS.contains("using your earbuds"))
+        assertFalse(RecordingAccessibilityOverlay.BUBBLE_LABEL.contains("earbuds"))
+        // The instructions survive in both labels.
+        for (label in listOf(RecordingAccessibilityOverlay.BUBBLE_LABEL, RecordingAccessibilityOverlay.BUBBLE_LABEL_EARBUDS)) {
+            assertTrue(label.endsWith("Double tap to dictate. Touch and hold to talk. Drag to move."))
+        }
     }
 
     @Test

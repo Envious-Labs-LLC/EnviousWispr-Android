@@ -174,6 +174,19 @@ internal class RecordingAccessibilityOverlay(
     }
 
     /**
+     * Whether the earbuds are the chosen microphone right now, delivered by the service on the main
+     * thread whenever the pick or the connected inputs change (#171). The lips and the rail take the
+     * earbud rainbow, and the bubble's spoken label says so; anything else (the phone, a wired or USB
+     * headset, nothing known) is the brand rainbow and the plain label. Idempotent.
+     */
+    fun setEarbuds(earbuds: Boolean) {
+        val palette = if (earbuds) BrandPalette.RAINBOW_EARBUDS else BrandPalette.RAINBOW
+        bubbleMark.palette = palette
+        meter.palette = palette
+        bubble.contentDescription = if (earbuds) BUBBLE_LABEL_EARBUDS else BUBBLE_LABEL
+    }
+
+    /**
      * Paint the three surfaces for [look]. One ground colour and one shadow depth shared by the bubble
      * and both pills, no outline on any of them; the lips, the rail and the clock carry the look's ink
      * edge, so all three read on a white page and a dark one alike. The values are
@@ -536,7 +549,7 @@ internal class RecordingAccessibilityOverlay(
      */
     private fun buildBubble(): View {
         return FrameLayout(service).apply {
-            contentDescription = "EnviousWispr. Double tap to dictate. Touch and hold to talk. Drag to move."
+            contentDescription = BUBBLE_LABEL
             isClickable = true
             isFocusable = false
             addView(bubbleMark, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -753,6 +766,10 @@ internal class RecordingAccessibilityOverlay(
 
         /** Unchanged on purpose: the device harness finds the window by this title. */
         const val WINDOW_TITLE = "EnviousWispr recording controls"
+
+        /** The idle bubble's spoken label, and the same label naming the earbuds while they are the microphone. */
+        const val BUBBLE_LABEL = "EnviousWispr. Double tap to dictate. Touch and hold to talk. Drag to move."
+        const val BUBBLE_LABEL_EARBUDS = "EnviousWispr, using your earbuds. Double tap to dictate. Touch and hold to talk. Drag to move."
 
         const val BUBBLE_DP = 56
         /** The bubble's visible ground sits this far inside the 56 dp touch target: a 48 dp square. */

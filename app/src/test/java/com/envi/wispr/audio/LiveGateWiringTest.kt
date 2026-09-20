@@ -104,7 +104,9 @@ class LiveGateWiringTest {
         val disconnect = body(session, "override fun onCaptureDisconnected()")
         assertTrue(disconnect.contains("seen == SessionState.RECORDING || seen == SessionState.STARTING"))
         // The link is cleared BEFORE the owner hears of the death, as the proxy field was (Codex review C1).
-        assertTrue(bindings.indexOf("capture = null") < bindings.indexOf("listener?.onCaptureDisconnected()"))
+        val clear = bindings.indexOf("capture = null")
+        val notify = bindings.indexOf("listener?.onCaptureDisconnected()")
+        assertTrue("the capture link must be cleared before the disconnect listener runs", clear >= 0 && notify > clear)
     }
 
     @Test

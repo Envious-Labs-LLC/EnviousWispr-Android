@@ -20,9 +20,10 @@ class SessionOwnerShapeTest {
     @Test
     fun serviceOwnsOnlyItsAdapters() {
         // Instance fields, read off the source: every member declared at class indentation with val/var.
-        // Every modifier and annotation a member declaration can carry, so `@Volatile private var` is
-        // enumerated too (Codex review C1, 2026-09-20).
-        val fields = Regex("""(?m)^ {4}(?:(?:@\S+|public|protected|internal|private|lateinit|override|const)\s+)*(?:val|var)\s+(\w+)\b""")
+        // Any run of annotations (with or without arguments and spaces) and any modifiers before val/var,
+        // so `@Volatile private var` and `@Suppress("x y") private val` are enumerated too (Codex reviews
+        // C1 and C2, 2026-09-20).
+        val fields = Regex("""(?m)^ {4}(?:(?:@[^\r\n]*?)\s+|(?:[A-Za-z_]\w*)\s+)*(?:val|var)\s+(\w+)\b""")
             .findAll(service).map { it.groupValues[1] }.toSet()
         assertEquals(
             "the Service holds exactly its adapters; a take's state lives in the coordinator",

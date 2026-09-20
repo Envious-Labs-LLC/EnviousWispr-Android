@@ -146,6 +146,16 @@ COMPONENT_TEXTS = {
         "BSD 3-Clause License - Protocol Buffers",
         "BSD-3-Clause-protobuf.txt",
     ),
+    # Telemetry (#176): both vendors' SDKs and their MIT transitive parts.
+    "com.posthog:posthog": ("MIT License - PostHog", "MIT-posthog-android.txt"),
+    "com.posthog:posthog-android": ("MIT License - PostHog", "MIT-posthog-android.txt"),
+    "io.sentry:sentry": ("MIT License - Sentry", "MIT-sentry-java.txt"),
+    "io.sentry:sentry-android": ("MIT License - Sentry", "MIT-sentry-java.txt"),
+    "io.sentry:sentry-android-core": ("MIT License - Sentry", "MIT-sentry-java.txt"),
+    "io.sentry:sentry-android-ndk": ("MIT License - Sentry", "MIT-sentry-java.txt"),
+    "io.sentry:sentry-android-replay": ("MIT License - Sentry", "MIT-sentry-java.txt"),
+    "io.sentry:sentry-native-ndk": ("MIT License - Sentry Native", "MIT-sentry-native.txt"),
+    "com.abovevacant:epitaph": ("MIT License - Epitaph", "MIT-epitaph.txt"),
 }
 NEEDS_OWN_TEXT = {"MIT", "MIT License", "BSD-3-Clause"}
 

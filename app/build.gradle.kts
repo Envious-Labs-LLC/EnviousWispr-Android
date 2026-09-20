@@ -19,6 +19,13 @@ android {
         targetSdk = 36
         versionCode = providers.gradleProperty("playVersionCode").orNull?.toInt() ?: 3
         versionName = "0.1.0"
+        // Telemetry keys (issue #176). Both are public client-side identifiers, not secrets: the PostHog
+        // project key and the Sentry DSN are embedded in every client that uses them. They come from
+        // gradle properties (`-PtelemetryPostHogKey=... -PtelemetrySentryDsn=...`, set by the Play
+        // workflow from repository variables) and default to EMPTY, which turns telemetry off: a local
+        // build sends nothing. Compiled in, so removing a variable later changes nothing on installed phones.
+        buildConfigField("String", "TELEMETRY_POSTHOG_KEY", "\"${providers.gradleProperty("telemetryPostHogKey").orNull.orEmpty()}\"")
+        buildConfigField("String", "TELEMETRY_SENTRY_DSN", "\"${providers.gradleProperty("telemetrySentryDsn").orNull.orEmpty()}\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += "arm64-v8a"
@@ -107,6 +114,12 @@ dependencies {
     // accepted model-acquisition path and dictation must work with no network. Used by
     // `polish/MlKitLanguageDetector.kt` (#107).
     implementation("com.google.mlkit:language-id:17.0.6")
+    // Telemetry (issue #176), PINNED: every option the bootstrap sets was read against these exact
+    // sources. Sentry runs in all five processes (its own cache dir per process); PostHog in main only.
+    // Neither is initialised by a manifest provider: `io.sentry.auto-init` is false and both are started
+    // from `ModelBootstrapApplication` through `telemetry/Telemetry.bootstrap`.
+    implementation("io.sentry:sentry-android:8.57.0")
+    implementation("com.posthog:posthog-android:3.67.0")
     ksp("androidx.room:room-compiler:2.8.4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

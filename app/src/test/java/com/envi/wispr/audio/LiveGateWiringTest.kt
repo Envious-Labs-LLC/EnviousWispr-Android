@@ -150,7 +150,7 @@ class LiveGateWiringTest {
 
     @Test
     fun aCancelledTakeStillHandsOverAndFailurePathsStillStop() {
-        val cancel = body(session, "private fun cancelCaptureAndFinish()")
+        val cancel = body(session, "private fun cancelCaptureAndFinish(")
         assertTrue(cancel.contains("finishTakeOrStop()"))
         val error = body(session, "private fun announceError(")
         assertTrue(error.contains("stopAudioCaptureService()"))

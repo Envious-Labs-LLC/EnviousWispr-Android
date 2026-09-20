@@ -161,7 +161,20 @@ class DictationSessionService : Service() {
     )
 
     private val state = AtomicReference(SessionState.IDLE)
-    private val publicationStarted = AtomicBoolean(false)
+
+    /**
+     * The one referee of how this take ends (issue #176). Every terminal route reserves or commits
+     * through it; a route that loses does no History, notification, insertion or terminal work. It
+     * replaced the `publicationStarted` flag, which guarded publication only and let a late ASR error
+     * announce over a cancel. A fresh arbiter per admitted take; `closed()` refuses everything before one.
+     */
+    @Volatile private var arbiter: TakeArbiter = TakeArbiter.closed()
+
+    /** Names for the two reservations whose outcome is unknown at the claim. */
+    private object Claimants {
+        const val PUBLICATION = "publication"
+        const val CANCEL = "cancel"
+    }
     /**
      * Reads the dictation's language off the finished transcript for this side's deterministic fallback
      * (#107). Built in `onCreate`, not as a field initializer and NOT lazily, for the reason
@@ -298,9 +311,9 @@ class DictationSessionService : Service() {
             if (state.get() == SessionState.PROCESSING) {
                 if (rawTranscript.isNotBlank()) {
                     publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
-                } else if (publicationStarted.compareAndSet(false, true)) {
+                } else if (arbiter.commitNow(TerminalReason.ASR_PROCESS_DIED)) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError(TerminalReason.ASR_PROCESS_DIED)
+                    endAsFailure(TerminalReason.ASR_PROCESS_DIED)
                 }
             }
         }
@@ -322,9 +335,9 @@ class DictationSessionService : Service() {
             if (state.get() == SessionState.PROCESSING) {
                 if (rawTranscript.isNotBlank()) {
                     publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
-                } else if (publicationStarted.compareAndSet(false, true)) {
+                } else if (arbiter.commitNow(TerminalReason.POLISH_PROCESS_DIED)) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError(TerminalReason.POLISH_PROCESS_DIED)
+                    endAsFailure(TerminalReason.POLISH_PROCESS_DIED)
                 }
             }
         }
@@ -463,6 +476,9 @@ class DictationSessionService : Service() {
 
     private fun beginSession() {
         if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return
+        // The referee for THIS take, in memory, before anything else (G2 D2). Its sink is a limb: chunk
+        // A2 logs, chunk C hands the reason to telemetry. Nothing here waits on storage.
+        arbiter = TakeArbiter { reason -> DebugLogger.log(TAG, "Take terminal: ${reason.name} (${reason.result.wire})") }
         RecordingOverlayState.showStarting(admittedRequest)
         promoteToForeground(processing = false)
         // Kept for the whole session. Android may rebind the accessibility service while the user
@@ -471,7 +487,6 @@ class DictationSessionService : Service() {
         targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()
         // Name the field this take aims at, for a reader that only wants takes aimed at ITS field.
         RecordingOverlayState.nameTarget(if (targetPinAtStart == DictationTargetPin.PINNED) PasteAccessibilityService.pinnedFieldId() else null)
-        publicationStarted.set(false)
         teardownStarted.set(false)
         draftId.set(0L)
         draftCreation = null
@@ -916,11 +931,14 @@ class DictationSessionService : Service() {
 
                     override fun onError(message: String?) {
                         deleteCapturedAudio(audioFilePath)
+                        // Claim FIRST: a cancel that already owns the take must not see its History row
+                        // rewritten or a failure toast over its acknowledgement (G1 D2).
+                        if (!arbiter.commitNow(TerminalReason.ASR_FAILED)) return
                         updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                         DebugLogger.error(TAG, "ASR failed")
                         // The process's own text is shown until chunk A3 gives it a code (issue #176); the
                         // override is the one seam that still carries a sentence across the binder.
-                        showError(TerminalReason.ASR_FAILED, message?.takeIf(String::isNotBlank) ?: TakeNotices.SPEECH_RECOGNITION_FAILED)
+                        endAsFailure(TerminalReason.ASR_FAILED, message?.takeIf(String::isNotBlank) ?: TakeNotices.SPEECH_RECOGNITION_FAILED)
                     }
                 })
             } catch (error: Exception) {
@@ -936,6 +954,9 @@ class DictationSessionService : Service() {
     private fun polishAndPublish(rawText: String) {
         rawTranscript = rawText
         if (rawText.isBlank()) {
+            // Committed before the draft is discarded (G2 D2). Unmeasured until chunk A3 carries the
+            // take's peak loudness across the binder and splits a quiet room from a lost transcript.
+            if (!arbiter.commitNow(TerminalReason.ASR_EMPTY_UNMEASURED)) return
             discardDraft()
             PasteAccessibilityService.releasePinnedTarget()
             finishSession()
@@ -954,7 +975,7 @@ class DictationSessionService : Service() {
             // itself runs outside the lock: the lock is also taken on the main thread by Cancel, and a
             // synchronous transaction to a stalled engine must not be able to hold the main thread.
             val requestId = synchronized(polishSubmissionLock) {
-                if (state.get() != SessionState.PROCESSING || publicationStarted.get()) {
+                if (state.get() != SessionState.PROCESSING || !arbiter.isOpen) {
                     DebugLogger.log(TAG, "Transcript arrived after the session ended; not polishing")
                     return@launch
                 }
@@ -1097,15 +1118,18 @@ class DictationSessionService : Service() {
         statusCode: Int,
         polishContext: PolishContext,
     ) {
-        if (!publicationStarted.compareAndSet(false, true)) {
-            DebugLogger.warn(TAG, "Ignoring duplicate final transcript callback")
+        // RESERVE, never commit: `completed` is unknown until the History save returns (G2 D2). A cancel
+        // that already owns the take, or a second final callback, loses here and does nothing.
+        val publication = arbiter.reserve(Claimants.PUBLICATION)
+        if (publication == null) {
+            DebugLogger.warn(TAG, "Ignoring a final transcript that arrived after the take was claimed")
             return
         }
         val finalText = text.ifBlank { rawTranscript }
         val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine
         DebugLogger.log(TAG, "Polish result received ($finalEngine, ${latencyMs}ms, chars=${finalText.length})")
         if (finalText.isBlank()) {
-            finishSession()
+            if (arbiter.commit(publication, TerminalReason.FINAL_TEXT_EMPTY)) finishSession()
             return
         }
         val polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext)
@@ -1145,6 +1169,14 @@ class DictationSessionService : Service() {
             val persistedId = saveResult.getOrNull() ?: 0L
             saveResult.exceptionOrNull()?.let { error ->
                 DebugLogger.warn(TAG, "Unable to save transcript history: ${error.message}")
+            }
+            // COMMIT now that the save result is known and BEFORE the insertion handoff: completed means
+            // the text finalised, never that insertion succeeded. A revoked reservation (the owner was
+            // destroyed while the save ran) stops here: no handoff, no announcement, no terminal; the
+            // teardown's own History write is the last word on that row (G2 D2).
+            if (!arbiter.commit(publication, TerminalReason.COMPLETED)) {
+                DebugLogger.warn(TAG, "Publication revoked before the handoff; not inserting")
+                return@launch
             }
             val route = HistoryPublicationPolicy.route(
                 persistedId = persistedId,
@@ -1310,11 +1342,12 @@ class DictationSessionService : Service() {
     }
 
     private fun cancelRecording() {
-        synchronized(publishLock) {
+        val cancel = synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.RECORDING, SessionState.CANCELLING)) return
             RecordingOverlayState.showProcessing()
-        }
-        cancelCaptureAndFinish()
+            arbiter.reserve(Claimants.CANCEL)
+        } ?: return
+        cancelCaptureAndFinish(cancel, TerminalReason.CANCELLED_RECORDING)
     }
 
     /**
@@ -1322,16 +1355,17 @@ class DictationSessionService : Service() {
      * running while the lips spin, so a cancelled start stops it, discards the file and still hands the
      * service its `finishTake` (a cancelled take leaves the earbuds warm like a finished one).
      */
-    private fun cancelCaptureAndFinish() {
+    private fun cancelCaptureAndFinish(cancel: TakeArbiter.Token, cancelled: TerminalReason) {
         RecordingOverlayState.showProcessing()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
         serviceScope.launch {
             // A cancel before the capture process was even bound has nothing to stop: the quiet finish
-            // the old cancelStarting always took.
+            // the old cancelStarting always took. Committed BEFORE the draft goes (G2 D2).
             val service = audioService
             if (service == null) {
+                if (!arbiter.commit(cancel, cancelled)) return@launch
                 discardDraft()
                 finishSession()
                 return@launch
@@ -1340,12 +1374,15 @@ class DictationSessionService : Service() {
                 service.stopCapture()
                 service.waitForFileReady(2_000L)
             }.getOrDefault(false)
+            // The outcome is known only now: a close that failed is a failure, not a cancel.
             if (!ready) {
+                if (!arbiter.commit(cancel, TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)) return@launch
                 stopAudioCaptureService()
                 discardDraft()
-                showError(TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)
+                endAsFailure(TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)
                 return@launch
             }
+            if (!arbiter.commit(cancel, cancelled)) return@launch
             discardDraft()
             deleteCapturedAudio(runCatching { service.audioFilePath }.getOrNull())
             finishTakeOrStop()
@@ -1369,39 +1406,60 @@ class DictationSessionService : Service() {
      * and cancelled on the engine, and the submitter re-sends that cancel once the engine has registered).
      */
     private fun cancelProcessing() {
-        if (!publicationStarted.compareAndSet(false, true)) return
-        synchronized(polishSubmissionLock) {
-            if (!state.compareAndSet(SessionState.PROCESSING, SessionState.CANCELLING)) return
+        val cancel = synchronized(polishSubmissionLock) {
+            // The reservation IS the publication check: a publication already holding the ending makes
+            // this cancel too late, exactly as the old flag did, and a cancel that wins keeps a later
+            // callback from ever publishing (G2 D2).
+            if (state.get() != SessionState.PROCESSING) return
+            val reserved = arbiter.reserve(Claimants.CANCEL) ?: return
+            state.set(SessionState.CANCELLING)
             DebugLogger.log(TAG, "Cancelled while processing; open polish request: ${polishLedger.openId != null}")
             cancelOpenPolishRequest()
+            reserved
         }
         RecordingOverlayState.showProcessing()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
+        // Committed before the draft goes (G2 D2); a destruction that revoked it owns the row instead.
+        if (!arbiter.commit(cancel, TerminalReason.CANCELLED_PROCESSING)) return
         discardDraft()
         finishSession()
     }
 
     private fun cancelStarting() {
-        synchronized(publishLock) {
+        val cancel = synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
             RecordingOverlayState.showProcessing()
-        }
-        cancelCaptureAndFinish()
+            arbiter.reserve(Claimants.CANCEL)
+        } ?: return
+        cancelCaptureAndFinish(cancel, TerminalReason.CANCELLED_STARTING)
     }
 
-    /** Ends the take as [reason]; the sentence is [TakeNotices]'s, never the caller's. */
+    /**
+     * Ends the take as the failure [reason] when nothing else has claimed it: the arbiter is the guard,
+     * so a failure observed after a cancel or a publication owns the take does nothing at all (the
+     * old `ERROR` check let it announce over them). The sentence is [TakeNotices]'s, never the caller's.
+     */
     private fun showError(reason: TerminalReason) {
-        showError(reason, TakeNotices.line(reason))
+        if (!arbiter.commitNow(reason)) {
+            DebugLogger.log(TAG, "Ignoring $reason: the take already has an ending")
+            return
+        }
+        endAsFailure(reason)
+    }
+
+    /** Teardown for a failure ALREADY committed by the caller; [TakeNotices] supplies the sentence. */
+    private fun endAsFailure(reason: TerminalReason) {
+        endAsFailure(reason, TakeNotices.line(reason))
     }
 
     /**
      * The one seam that still accepts a sentence: the speech process's own error text, until chunk A3
      * of issue #176 replaces it with a code. Every other caller goes through the one-argument form.
      */
-    private fun showError(reason: TerminalReason, line: String?) {
-        if (state.getAndSet(SessionState.ERROR) == SessionState.ERROR) return
+    private fun endAsFailure(reason: TerminalReason, line: String?) {
+        state.set(SessionState.ERROR)
         DebugLogger.warn(TAG, "Take ended: $reason")
         announceError(line)
     }
@@ -1414,6 +1472,9 @@ class DictationSessionService : Service() {
     private fun failWhileStarting(reason: TerminalReason): Boolean {
         synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.ERROR)) return false
+            // The CAS above and this commit move together under the one lock, so they cannot disagree:
+            // a cancel that owns the take already moved the state, and a destruction already committed.
+            if (!arbiter.commitNow(reason)) return false
         }
         DebugLogger.warn(TAG, "Take ended while starting: $reason")
         announceError(TakeNotices.line(reason))
@@ -1422,7 +1483,6 @@ class DictationSessionService : Service() {
 
     /** Tears the take down as a failure; says [line] when there is one. Teardown never depends on copy. */
     private fun announceError(line: String?) {
-        publicationStarted.set(true)
         cancelOpenPolishRequest()
         RecordingOverlayState.showProcessing()
         PasteAccessibilityService.releasePinnedTarget()
@@ -1629,9 +1689,18 @@ class DictationSessionService : Service() {
             val seen = state.get()
             if (seen == SessionState.STARTING || seen == SessionState.RECORDING) state.set(SessionState.ERROR)
             RecordingOverlayState.hide()
+            // The synchronous lifecycle decision (G2 D2): `interrupted` is committed only when nothing
+            // was, and it revokes an outstanding publication or cancel reservation so the displaced
+            // worker can no longer commit, announce or hand off. Nothing here waits on storage.
+            when (seen) {
+                SessionState.STARTING -> arbiter.interrupt(TerminalReason.INTERRUPTED_STARTING)
+                SessionState.RECORDING -> arbiter.interrupt(TerminalReason.INTERRUPTED_RECORDING)
+                SessionState.PROCESSING -> arbiter.interrupt(TerminalReason.INTERRUPTED_PROCESSING)
+                SessionState.CANCELLING -> arbiter.interrupt(TerminalReason.INTERRUPTED_CANCELLING)
+                SessionState.IDLE, SessionState.FINISHING, SessionState.ERROR -> false
+            }
             seen
         }
-        publicationStarted.set(true)
         cancelOpenPolishRequest()
         val sessionWasOpen = destroyedState == SessionState.STARTING ||
             destroyedState == SessionState.RECORDING ||

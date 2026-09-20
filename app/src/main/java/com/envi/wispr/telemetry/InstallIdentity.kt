@@ -28,7 +28,8 @@ import java.util.UUID
 object InstallIdentity {
 
     sealed class Resolution {
-        data class Available(val id: String) : Resolution()
+        /** [minted] is true only in the process that created the file: the install's first run. */
+        data class Available(val id: String, val minted: Boolean = false) : Resolution()
 
         /** Storage refused, or the file is corrupt: telemetry stays off for this bootstrap. */
         data class Unavailable(val why: String) : Resolution()
@@ -80,7 +81,7 @@ object InstallIdentity {
                     runCatching { atomic.failWrite(stream) }
                     false
                 }
-                return if (committed) Resolution.Available(minted) else Resolution.Unavailable("id file write failed")
+                return if (committed) Resolution.Available(minted, minted = true) else Resolution.Unavailable("id file write failed")
             }
         }
     }

@@ -5,6 +5,8 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.Process
 import com.envi.wispr.debug.DebugLogger
+import com.envi.wispr.telemetry.AppDefect
+import com.envi.wispr.telemetry.Telemetry
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -29,8 +31,8 @@ class SilenceVadService : Service() {
 
     private var session: SileroVadSession? = null
     private var activeToken: Long = NO_TOKEN
-    /** The owner's per-take UUID for the active take, request context only; empty for a legacy start. */
-    private var activeTakeId: String = ""
+    /** The owner's per-take UUID for the active take, request context only; empty for a legacy start. Volatile: the watchdog reads it outside the lock for its last note. */
+    @Volatile private var activeTakeId: String = ""
     private var unavailable = false
 
     /**
@@ -65,7 +67,7 @@ class SilenceVadService : Service() {
                 DebugLogger.warn(TAG, "Rejected a start from an older take, token $captureToken")
                 return@synchronized STATUS_UNAVAILABLE
             }
-            guarded(STATUS_UNAVAILABLE) {
+            guarded(STATUS_UNAVAILABLE, "start") {
                 releaseLocked()
                 unavailable = false
                 activeToken = captureToken
@@ -98,14 +100,14 @@ class SilenceVadService : Service() {
                 return@synchronized RESULT_UNAVAILABLE
             }
             val detector = session ?: return@synchronized RESULT_UNAVAILABLE
-            guarded(RESULT_UNAVAILABLE) {
+            guarded(RESULT_UNAVAILABLE, "processBlock") {
                 if (detector.processBlock(pcm16)) RESULT_SILENCE else RESULT_CONTINUE
             }
         }
 
         override fun finish(captureToken: Long) = synchronized(lock) {
             if (captureToken != activeToken) return@synchronized
-            guarded(Unit) { releaseLocked() }
+            guarded(Unit, "finish") { releaseLocked() }
         }
     }
 
@@ -135,13 +137,13 @@ class SilenceVadService : Service() {
      * The deadline matches the caller's ring capacity: past that point the detector cannot catch up
      * without a gap, and a gap breaks the model's recurrent continuity anyway.
      */
-    private fun <T> guarded(onDeadline: T, block: () -> T): T {
+    private fun <T> guarded(onDeadline: T, callName: String, block: () -> T): T {
         // One flag per call, owned by that call. A shared counter would let a later call disarm an
         // earlier stalled one, which is exactly the situation the deadline exists for.
         val active = AtomicBoolean(true)
         val armed = watchdog.schedule(
             {
-                if (active.compareAndSet(true, false)) terminateDetectorProcess()
+                if (active.compareAndSet(true, false)) terminateDetectorProcess(callName)
             },
             CALL_DEADLINE_MS,
             TimeUnit.MILLISECONDS,
@@ -157,7 +159,7 @@ class SilenceVadService : Service() {
             // The deadline may have won while this call was running. If it did, this transaction must
             // NOT return: a successful-looking return would let a later take start work inside a process
             // that is already scheduled to die.
-            if (!active.compareAndSet(true, false)) terminateDetectorProcess()
+            if (!active.compareAndSet(true, false)) terminateDetectorProcess(callName)
             result
         } finally {
             armed.cancel(false)
@@ -171,11 +173,19 @@ class SilenceVadService : Service() {
      * scheduled to end. The park is only for the interval between the signal and the process actually
      * going away.
      */
-    private fun terminateDetectorProcess(): Nothing {
+    private fun terminateDetectorProcess(callName: String): Nothing {
         DebugLogger.error(
             TAG,
             "Detector call exceeded ${CALL_DEADLINE_MS}ms; terminating the detector process",
         )
+        // A SIGKILL leaves no crash report, so the note is written first, as a small file main converts
+        // at its next start (issue #176). On its own thread, never on the watchdog's, and bounded: a
+        // note that cannot be written in time is lost, the kill is not delayed past that bound.
+        val takeId = activeTakeId.ifEmpty { null }
+        val note = Thread({
+            Telemetry.recordPendingDefect(applicationContext, AppDefect.VadCallWedged(callName), callName, takeId)
+        }, "SilenceVadPendingDefect")
+        runCatching { note.start(); note.join(PENDING_DEFECT_BOUND_MS) }
         Process.killProcess(Process.myPid())
         while (true) {
             LockSupport.park()
@@ -189,6 +199,8 @@ class SilenceVadService : Service() {
 
         /** Matches the caller's eight-slot ring: 8 blocks of 256 ms is 2.048 seconds. */
         const val CALL_DEADLINE_MS = 2_000L
+        /** How long the dying process waits for its pending-defect note before the kill proceeds. */
+        const val PENDING_DEFECT_BOUND_MS = 500L
 
         const val STATUS_READY = 2
         const val STATUS_UNAVAILABLE = 3

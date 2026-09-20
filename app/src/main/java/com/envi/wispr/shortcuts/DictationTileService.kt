@@ -6,6 +6,7 @@ import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import com.envi.wispr.ui.DictationSessionService
+import com.envi.wispr.ui.TriggerSource
 import com.envi.wispr.ui.VoiceInputActivity
 
 class DictationTileService : TileService() {
@@ -47,6 +48,7 @@ class DictationTileService : TileService() {
         val launcher = Intent(this, VoiceInputActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(VoiceInputActivity.EXTRA_TOGGLE, true)
+            putExtra(VoiceInputActivity.EXTRA_TRIGGER_SOURCE, TriggerSource.TILE.wire)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startActivityAndCollapse(

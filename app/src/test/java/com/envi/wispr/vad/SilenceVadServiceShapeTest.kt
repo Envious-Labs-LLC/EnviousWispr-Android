@@ -61,11 +61,16 @@ class SilenceVadServiceShapeTest {
     fun aCallThatLostItsDeadlineNeverReturns() {
         // Returning would release the lock and let a newer take begin work inside a process that is
         // already scheduled to end.
-        assertTrue(source.contains("private fun terminateDetectorProcess(): Nothing"))
-        assertTrue(source.contains("if (!active.compareAndSet(true, false)) terminateDetectorProcess()"))
-        val terminate = source.substringAfter("private fun terminateDetectorProcess(): Nothing")
+        assertTrue(source.contains("private fun terminateDetectorProcess(callName: String): Nothing"))
+        assertTrue(source.contains("if (!active.compareAndSet(true, false)) terminateDetectorProcess(callName)"))
+        val terminate = source.substringAfter("private fun terminateDetectorProcess(callName: String): Nothing")
         assertTrue("it kills its own process", terminate.contains("Process.killProcess(Process.myPid())"))
         assertTrue("and does not come back while it waits to die", terminate.contains("LockSupport.park()"))
+        // The last note is written BEFORE the kill, on its own thread, under a bound (issue #176).
+        val note = terminate.substringBefore("Process.killProcess(Process.myPid())")
+        assertTrue("the wedge is recorded before the kill", note.contains("Telemetry.recordPendingDefect(applicationContext, AppDefect.VadCallWedged(callName)"))
+        assertTrue("on its own thread, not the watchdog's", note.contains("Thread({"))
+        assertTrue("and never past its bound", note.contains("note.join(PENDING_DEFECT_BOUND_MS)"))
     }
 
     @Test

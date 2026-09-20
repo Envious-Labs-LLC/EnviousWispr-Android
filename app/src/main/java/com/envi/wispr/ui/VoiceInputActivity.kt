@@ -27,6 +27,20 @@ class VoiceInputActivity : Activity() {
 
         /** The bubble's request token, forwarded onto the service intent unchanged. */
         const val EXTRA_REQUEST = "request"
+
+        /**
+         * `TriggerSource.wire` from a surface that launches this window (the tile, the app). Absent on
+         * the side button, which arrives as `ACTION_ASSIST` and is read as such; absent on anything else
+         * (an `am start` from a harness) is `unknown`, never a guess (issue #176).
+         */
+        const val EXTRA_TRIGGER_SOURCE = "trigger_source"
+
+        /** The surface this launch names, from its extra or its action. Pure, for `TriggerSourceTest`. */
+        fun triggerOf(action: String?, extra: String?): TriggerSource = when {
+            extra != null -> TriggerSource.fromExtra(extra)
+            action == Intent.ACTION_ASSIST -> TriggerSource.ASSIST
+            else -> TriggerSource.UNKNOWN
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,7 +75,8 @@ class VoiceInputActivity : Activity() {
             // and this one dies first.
             PasteAccessibilityService.pinTargetForDictation()
         }
-        runCatching { DictationSessionService.sendCommand(this, action, intent.getStringExtra(EXTRA_REQUEST)) }
+        val trigger = triggerOf(intent.action, intent.getStringExtra(EXTRA_TRIGGER_SOURCE))
+        runCatching { DictationSessionService.sendCommand(this, action, intent.getStringExtra(EXTRA_REQUEST), trigger) }
             .onFailure {
                 Toast.makeText(this, "Dictation service could not start", Toast.LENGTH_LONG).show()
             }

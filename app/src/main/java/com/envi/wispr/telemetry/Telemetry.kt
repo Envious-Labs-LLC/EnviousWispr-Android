@@ -3,12 +3,17 @@ package com.envi.wispr.telemetry
 import android.content.Context
 import com.envi.wispr.BuildConfig
 import com.envi.wispr.debug.DebugLogger
+import com.envi.wispr.history.EnviousWisprDatabase
 import io.sentry.Breadcrumb
 import io.sentry.Sentry
 import io.sentry.SentryEvent
 import io.sentry.SentryLevel
 import io.sentry.protocol.Message
 import io.sentry.protocol.SentryId
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.util.Date
 
 /**
@@ -30,6 +35,8 @@ object Telemetry {
     @Volatile private var sentryOn = false
     @Volatile private var postHogOn = false
     @Volatile private var appContext: Context? = null
+    @Volatile private var journalWriter: TakeJournalWriter? = null
+    private val launchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** What this process ended up with; read by tests and the debug screen, never by product code. */
     data class Status(val installId: String?, val sentry: Boolean, val postHog: Boolean, val environment: String?)
@@ -47,6 +54,7 @@ object Telemetry {
         config = cfg
         val identity = InstallIdentity.resolve(app)
         val id = (identity as? InstallIdentity.Resolution.Available)?.id
+        val freshInstall = (identity as? InstallIdentity.Resolution.Available)?.minted == true
         installId = id
         val dsn = BuildConfig.TELEMETRY_SENTRY_DSN
         val key = BuildConfig.TELEMETRY_POSTHOG_KEY
@@ -59,6 +67,62 @@ object Telemetry {
                 .getOrElse { DebugLogger.warn(TAG, "PostHog did not start: ${it.javaClass.simpleName}"); false }
         }
         DebugLogger.log(TAG, "Telemetry bootstrap: process=${cfg.processTag} sentry=$sentryOn posthog=$postHogOn identity=${id != null}")
+        if (cfg.isMainProcess) startMainProcessWork(app, cfg, freshInstall)
+    }
+
+    /** The take journal's one writer; null outside main and before bootstrap. */
+    val journal: TakeJournalWriter? get() = journalWriter
+
+    /** One UUID per process start, on the journal and on `app.launched`; null before bootstrap. */
+    val processRunId: String? get() = config?.processRunId
+
+    private val processStartedAtNanos = System.nanoTime()
+
+    /** The onboarding rows' clock: seconds since THIS process started, in tenths, never a wall time. */
+    fun secondsSinceProcessStart(): Double = (System.nanoTime() - processStartedAtNanos) / 100_000_000L / 10.0
+
+    /**
+     * Main only. The journal writer opens synchronously (building the Room handle touches no disk), so
+     * a take admitted in the first millisecond of a service-only cold start still has a journal. Then,
+     * off the main thread and in this order: `app.launched` leaves with the persisted settings; the
+     * defects dying helpers left are converted; earlier runs' open takes become `dictation.interrupted`;
+     * old endings are pruned. Each step is a limb: a failure in one does not stop the next, and none
+     * of it touches a take.
+     */
+    private fun startMainProcessWork(app: Context, cfg: TelemetryConfig, freshInstall: Boolean) {
+        val writer = runCatching {
+            TakeJournalWriter(EnviousWisprDatabase.get(app).takeJournalDao(), cfg.processRunId, ::capture)
+        }.onFailure { DebugLogger.warn(TAG, "Take journal unavailable: ${it.javaClass.simpleName}") }.getOrNull()
+        journalWriter = writer
+        launchScope.launch {
+            if (postHogOn) {
+                runCatching { capture(AppLaunchFacts.read(app, freshInstall)) }
+                    .onFailure { DebugLogger.warn(TAG, "app.launched failed: ${it.javaClass.simpleName}") }
+            }
+            convertPendingDefects(app)
+            writer?.recoverAndPrune()
+        }
+    }
+
+    /**
+     * Recovered `ready_for_insertion` History rows (the owner died between the save and the insertion
+     * outcome) are insertion outcomes, not new dictations (G2 D4): one `insertion.terminal` per row,
+     * keyed to its take through the journal when the association survived.
+     */
+    fun insertionsRecovered(transcriptIds: List<Long>) {
+        if (!postHogOn || transcriptIds.isEmpty()) return
+        val writer = journalWriter
+        launchScope.launch {
+            for (transcriptId in transcriptIds) {
+                val takeId = writer?.takeIdForTranscript(transcriptId)
+                capture(
+                    AnalyticsEvent.InsertionTerminal(
+                        takeId = takeId, handoff = null, result = InsertionResultKind.INSERTION_INTERRUPTED,
+                        route = null, targetApp = null, latencyMs = null, clipboard = null, recovered = true,
+                    ),
+                )
+            }
+        }
     }
 
     /** True when a row could leave; callers use it only to skip building a payload. */

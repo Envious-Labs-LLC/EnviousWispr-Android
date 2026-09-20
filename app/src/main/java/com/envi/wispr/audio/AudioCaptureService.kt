@@ -247,6 +247,12 @@ class AudioCaptureService : Service() {
      * from a quiet room (issue #176). Absent (0 before any take) is "not measured", never "silence".
      */
     @Volatile private var takePeakAmplitude = 0f
+    /**
+     * The silence detector's status as the MOST RECENT take ended, kept like the peak until the next
+     * start, so the owner's one read at stop sees `lost after ready` and not the session-gone default
+     * (issue #176; a `null` session read as DISABLED, a plausible value that hid the detector's death).
+     */
+    @Volatile private var lastSilenceStatus = SILENCE_STATUS_DISABLED
     @Volatile private var terminalReason = TERMINAL_REASON_NONE
     private val tokens = AtomicLong(0L)
 
@@ -353,7 +359,7 @@ class AudioCaptureService : Service() {
         override fun getLastStartFailure(): Int = this@AudioCaptureService.lastStartFailure
 
         override fun getSilenceStopStatus(): Int =
-            this@AudioCaptureService.session?.silenceStatus?.get() ?: SILENCE_STATUS_DISABLED
+            this@AudioCaptureService.session?.silenceStatus?.get() ?: this@AudioCaptureService.lastSilenceStatus
         override fun stopCapture() = this@AudioCaptureService.stopRecording()
         override fun isCapturing(): Boolean = this@AudioCaptureService.isRecording.get()
         override fun getTerminalReason(): Int = this@AudioCaptureService.terminalReason
@@ -1256,6 +1262,7 @@ class AudioCaptureService : Service() {
             // may keep the earbuds warm; an error ending and teardown release everything.
             holding = holdEligible(active) && startWarmHold(active)
             closeResources(active, keepRoute = holding)
+            lastSilenceStatus = active.silenceStatus.get()
             session = null
             if (captureThread === Thread.currentThread()) captureThread = null
             currentAmplitude = 0f

@@ -43,6 +43,33 @@ enum class InsertionResultKind(val stored: String) {
     }
 }
 
+/**
+ * How the words travelled on an `insertion.terminal` row: the accessibility service's two editor
+ * writes, the clipboard fallback either writer takes, or no route at all (History only). Its own
+ * tokens on purpose: never a stored `InsertionResults` string, which names an OUTCOME.
+ */
+enum class InsertionRouteKind(val wire: String) {
+    COMMIT("commit"),
+    PASTE("paste"),
+    FALLBACK("fallback"),
+    NONE("none"),
+    ;
+
+    companion object {
+        /** The route an accepted insertion's stored outcome implies. */
+        fun of(kind: InsertionResultKind): InsertionRouteKind = when (kind) {
+            InsertionResultKind.COMMITTED -> COMMIT
+            InsertionResultKind.PASTED -> PASTE
+            InsertionResultKind.HISTORY_ONLY -> NONE
+            InsertionResultKind.CLIPBOARD, InsertionResultKind.COPY_ONLY, InsertionResultKind.COPY_ONLY_INTERRUPTED,
+            InsertionResultKind.COPY_ONLY_SERVICE_DESTROYED, InsertionResultKind.COPY_ONLY_SENSITIVE,
+            InsertionResultKind.COPY_ONLY_UNVERIFIED, InsertionResultKind.UNVERIFIED_NOT_COPIED,
+            InsertionResultKind.INSERTION_FAILED, InsertionResultKind.INSERTION_INTERRUPTED, InsertionResultKind.UNKNOWN,
+            -> FALLBACK
+        }
+    }
+}
+
 object TelemetryChannels {
 
     fun of(reason: PolishReason): Channel = when (reason) {
@@ -133,6 +160,20 @@ object TelemetryChannels {
 
         TerminalReason.CAPTURE_STILL_RUNNING_AFTER_STOP -> Channel.DEFECT
         TerminalReason.ASR_FAILED -> asrFailure?.let { of(it) } ?: Channel.BREADCRUMB
+    }
+
+    /**
+     * A failed History save: storage being full, locked or unreadable is the world (breadcrumb); a
+     * constraint, an illegal statement or a contract check tripping is our schema (defect). Anything
+     * this list does not name is the world: an unknown failure is never promoted to a defect.
+     */
+    fun historySaveDefect(error: Throwable): AppDefect? = when (error) {
+        is android.database.sqlite.SQLiteConstraintException,
+        is android.database.sqlite.SQLiteMisuseException,
+        is IllegalArgumentException,
+        is IllegalStateException,
+        -> AppDefect.HistoryContractViolation(error)
+        else -> null
     }
 
     fun defectOf(reason: TerminalReason, asrFailure: AsrFailureReason?): AppDefect? = when (reason) {

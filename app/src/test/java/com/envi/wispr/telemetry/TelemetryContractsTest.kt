@@ -141,7 +141,7 @@ class TelemetryContractsTest {
             takeId = "0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d",
             reason = TerminalReason.COMPLETED, asrFailure = null, trigger = TriggerSource.BUBBLE_TAP,
             routeKind = InputRouteKind.BLUETOOTH, routeReason = InputRouteReason.AUTO, liveAfterMs = 120L,
-            liveState = "ready", silenceStopStatus = "ready", recordingSeconds = 4.2, inputDevice = "auto",
+            liveState = "ready", silenceStopStatus = "ready", captureTerminal = "manual", recordingSeconds = 4.2, inputDevice = "auto",
             asrMs = 830L, asrChars = 57, peakAmplitude = 0.31f, polishProvider = "offline",
             polishReason = PolishReason.POLISHED, polishMs = 410L, polishStatus = 0, historySave = "ok",
         )
@@ -155,6 +155,7 @@ class TelemetryContractsTest {
             "live_after_ms" to 120L,
             "live_state" to "ready",
             "silence_stop_status" to "ready",
+            "capture_terminal" to "manual",
             "recording_s" to 4.2,
             "input_device" to "auto",
             "asr_ms" to 830L,
@@ -182,7 +183,7 @@ class TelemetryContractsTest {
         val event = AnalyticsEvent.DictationTerminal(
             takeId = "0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d", reason = TerminalReason.ASR_FAILED,
             asrFailure = AsrFailureReason.DECODE_FAILED, trigger = TriggerSource.ASSIST, routeKind = null,
-            routeReason = null, liveAfterMs = null, liveState = null, silenceStopStatus = null, recordingSeconds = null,
+            routeReason = null, liveAfterMs = null, liveState = null, silenceStopStatus = null, captureTerminal = null, recordingSeconds = null,
             inputDevice = null, asrMs = null, asrChars = null, peakAmplitude = null, polishProvider = null,
             polishReason = null, polishMs = null, polishStatus = null, historySave = null,
         )
@@ -202,8 +203,8 @@ class TelemetryContractsTest {
         )
         val built = listOf(
             AnalyticsEvent.AppLaunched("m", "16", false, true, true, true, true, 0, emptyMap()).name,
-            AnalyticsEvent.DictationTerminal("t", TerminalReason.COMPLETED, null, TriggerSource.APP, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null).name,
-            AnalyticsEvent.InsertionTerminal("t", null, InsertionResultKind.PASTED, null, null, null, null, false).name,
+            AnalyticsEvent.DictationTerminal("t", TerminalReason.COMPLETED, null, TriggerSource.APP, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null).name,
+            AnalyticsEvent.InsertionTerminal("t", null, InsertionResultKind.PASTED, InsertionRouteKind.PASTE, null, null, null, false).name,
             AnalyticsEvent.DictationInterrupted("t", TakeStage.RECORDING, "tile").name,
             AnalyticsEvent.DictationRefused("busy", TriggerSource.TILE).name,
             AnalyticsEvent.OnboardingStageReached("welcome", 1.0).name,

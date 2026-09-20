@@ -24,7 +24,9 @@ interface IAudioCaptureService {
 
     /**
      * 0 disabled, 1 preparing, 2 ready, 3 unavailable before ready, 4 lost after ready.
-     * Only 3 is worth telling the user about: 4 means the recording is still correct.
+     * Only 3 is worth telling the user about: 4 means the recording is still correct. After a take ends
+     * it keeps that take's last status until the next start (like getEffectiveInputDevice), so one read
+     * at stop sees a detector that died late; 0 only before the first take of this process.
      */
     int getSilenceStopStatus();
 

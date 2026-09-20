@@ -172,6 +172,11 @@ internal enum class SettingsPage(
         "Permissions",
         "The microphone and accessibility access EnviousWispr needs.",
     ),
+    Privacy(
+        SettingsPageGroup.SYSTEM,
+        "Privacy",
+        "What stays on this phone, and the little that leaves it.",
+    ),
     Storage(
         SettingsPageGroup.SYSTEM,
         "Storage",
@@ -431,6 +436,7 @@ internal fun EnviousWisprApp(
                             onRequestNotifications = onRequestNotifications,
                             onOpenAccessibility = onOpenAccessibility,
                         )
+                        SettingsPage.Privacy -> PrivacyPage()
                         SettingsPage.Storage -> StoragePage()
                         SettingsPage.Licenses -> LicensesPage(notices = licenseNotices)
                     }

@@ -56,8 +56,10 @@ inside Gmail or Chrome with the text landing in the field.
 
 Enter exactly the table in `docs/play-data-safety-answers.md` FACT: the-form-answers. One-line reminder of
 the shape: collected and shared = **Messages / Other in-app messages** (transcript text), optional,
-purpose App functionality, only under the user's own cloud polish key; audio **not** collected; no other
-type; encrypted in transit; no account and no server-side data.
+purpose App functionality, only under the user's own cloud polish key; collected, not shared = **App
+interactions**, **Crash logs**, **Diagnostics**, **Device or other IDs** (anonymous usage and crash
+reports, #176, required, purpose Analytics); audio **not** collected; encrypted in transit; no account;
+deletion on request through the policy's contact.
 
 ## 4. Content rating (IARC questionnaire)
 

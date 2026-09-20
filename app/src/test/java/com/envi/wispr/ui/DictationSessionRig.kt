@@ -408,7 +408,11 @@ internal class DictationSessionRig {
         fun fire() = release.countDown()
     }
 
-    /** History as rows in memory; the repository above is the real one. */
+    /**
+     * History as rows in memory; the repository above is the real one. Every UPDATE is one atomic
+     * `computeIfPresent`, as a Room UPDATE is: a read-then-put here let a status update racing a
+     * delete resurrect the deleted row on a slow runner (2026-09-20), which SQLite cannot do.
+     */
     class FakeTranscriptDao : TranscriptDao {
         val rows = java.util.concurrent.ConcurrentHashMap<Long, TranscriptEntity>()
         private val nextId = AtomicLong(1L)
@@ -421,27 +425,29 @@ internal class DictationSessionRig {
             rows[id] = transcript.copy(id = id)
             return id
         }
-        override suspend fun setKept(id: Long, kept: Boolean) { rows[id]?.let { rows[id] = it.copy(kept = kept) } }
+        override suspend fun setKept(id: Long, kept: Boolean) { rows.computeIfPresent(id) { _, row -> row.copy(kept = kept) } }
         override suspend fun delete(transcript: TranscriptEntity) { rows.remove(transcript.id) }
         override suspend fun deleteAll() = rows.clear()
         override suspend fun deleteById(id: Long): Int = if (rows.remove(id) != null) 1 else 0
         override suspend fun deleteWordlessRows(): Int = 0
         override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int {
-            val row = rows[id] ?: return 0
-            rows[id] = row.copy(status = status, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted, insertionResult = insertionResult ?: row.insertionResult)
-            return 1
+            return if (rows.computeIfPresent(id) { _, row -> row.copy(status = status, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted, insertionResult = insertionResult ?: row.insertionResult) } != null) 1 else 0
         }
         override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int {
             if (failInserts) throw IllegalStateException("disk full")
-            val row = rows[id] ?: return 0
-            rows[id] = row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted)
-            return 1
+            return if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted) } != null) 1 else 0
         }
         override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean): Int {
-            val row = rows[id] ?: return 0
-            if (row.status != TranscriptEntity.STATUS_READY_FOR_INSERTION || row.insertionResult != "pending") return 0
-            rows[id] = row.copy(status = status, insertionResult = result, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted)
-            return 1
+            var updated = 0
+            rows.computeIfPresent(id) { _, row ->
+                if (row.status != TranscriptEntity.STATUS_READY_FOR_INSERTION || row.insertionResult != "pending") {
+                    row
+                } else {
+                    updated = 1
+                    row.copy(status = status, insertionResult = result, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted)
+                }
+            }
+            return updated
         }
         override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int = 0
         override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int = 0

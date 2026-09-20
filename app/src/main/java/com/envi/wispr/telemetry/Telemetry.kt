@@ -16,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.Date
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The one door the app talks to telemetry through (issue #176, plan §3.2). Every method is a LIMB:
@@ -179,23 +180,27 @@ object Telemetry {
     }
 
     /**
-     * The take id on the process scope while a take is in flight, so every error in this process names
-     * it. Cleared with compare-and-clear: an old take's postamble cannot clear a newer take's tag.
+     * The take in flight in this process, set and cleared SYNCHRONOUSLY so an automatic crash (a Java
+     * uncaught exception, which runs `beforeSend` on the crashing thread) reads the live value at send
+     * time and never a queued one (code review round 2, F8). Compare-and-clear: an old take's postamble
+     * cannot clear a newer take's id. The Sentry scope tag is a mirror for the SDK's own events.
      */
-    @Volatile private var scopedTakeId: String? = null
+    private val liveTakeId = AtomicReference<String?>(null)
+
+    /** The take an event should be tagged with when it names none of its own; read by `beforeSend`. */
+    fun currentTakeId(): String? = liveTakeId.get()
 
     fun takeStarted(takeId: String) {
-        postVendor("take scope start") {
-            scopedTakeId = takeId
-            if (sentryOn) Sentry.configureScope { it.setTag(SentryBootstrap.TAG_TAKE_ID, takeId) }
-        }
+        liveTakeId.set(takeId)
+        if (!sentryOn) return
+        postVendor("take scope start") { Sentry.configureScope { it.setTag(SentryBootstrap.TAG_TAKE_ID, takeId) } }
     }
 
     fun takeEnded(takeId: String) {
+        liveTakeId.compareAndSet(takeId, null)
+        if (!sentryOn) return
         postVendor("take scope end") {
-            if (scopedTakeId != takeId) return@postVendor
-            scopedTakeId = null
-            if (sentryOn) Sentry.configureScope { it.removeTag(SentryBootstrap.TAG_TAKE_ID) }
+            if (liveTakeId.get() == null) Sentry.configureScope { it.removeTag(SentryBootstrap.TAG_TAKE_ID) }
         }
     }
 
@@ -235,7 +240,8 @@ object Telemetry {
                 event.setTag(SentryBootstrap.TAG_PROCESS, record.processName)
                 event.setTag("pending_defect.build", record.appBuild.toString())
                 record.installId?.let { event.setTag(SentryBootstrap.TAG_DISTINCT_ID, it) }
-                record.takeId?.let { event.setTag(SentryBootstrap.TAG_TAKE_ID, it) }
+                // The extra is the explicit take `beforeSend` honours over the live one (F8).
+                record.takeId?.let { event.setTag(SentryBootstrap.TAG_TAKE_ID, it); event.setExtra("take_id", it) }
                 event.setExtra("detail", record.detail)
                 Sentry.captureEvent(event)
             }.onFailure { DebugLogger.warn(TAG, "pending defect conversion failed: ${it.javaClass.simpleName}") }

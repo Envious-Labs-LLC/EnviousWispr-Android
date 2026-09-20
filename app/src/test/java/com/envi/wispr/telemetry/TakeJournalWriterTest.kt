@@ -31,7 +31,7 @@ class TakeJournalWriterTest {
         override suspend fun openFromOtherRuns(currentRunId: String): List<TakeJournalEntry> { calls += "open:$currentRunId"; return open }
         override suspend fun find(takeId: String): TakeJournalEntry? = null
         override suspend fun takeIdForTranscript(transcriptId: Long): String? = if (transcriptId == 42L) "take-42" else null
-        override suspend fun pendingInsertionTakeIds(): List<String> = listOf("kept")
+        override suspend fun insertionTakeIdsToKeep(cutoffMs: Long): List<String> = listOf("kept")
         override suspend fun prune(cutoffMs: Long, keep: List<String>): Int { calls += "prune:" + keep.joinToString(","); return 0 }
         override suspend fun closeInterrupted(takeId: String, reason: String, atMs: Long): Boolean {
             calls += "close:$takeId:$reason"

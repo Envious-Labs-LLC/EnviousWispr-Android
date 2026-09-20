@@ -138,8 +138,10 @@ class TelemetryStorageDeviceTest {
         assertEquals(record("aaaa", now - 1000), read.single())
         assertFalse("the expired record is gone", File(context.filesDir, "telemetry/pending-defects/bbbb").exists())
         assertTrue("a temp file is not eligible and is left for its writer", File(context.filesDir, "telemetry/pending-defects/cccc.tmp").exists())
-        PendingDefects.cleanTemps(context)
-        assertFalse(File(context.filesDir, "telemetry/pending-defects/cccc.tmp").exists())
+        PendingDefects.cleanTemps(context, nowMs = System.currentTimeMillis())
+        assertTrue("a fresh temp may be a live writer's and is kept", File(context.filesDir, "telemetry/pending-defects/cccc.tmp").exists())
+        PendingDefects.cleanTemps(context, nowMs = System.currentTimeMillis() + PendingDefects.TEMP_GRACE_MS + 1)
+        assertFalse("an old temp is a dead writer's and goes", File(context.filesDir, "telemetry/pending-defects/cccc.tmp").exists())
     }
 
     @Test

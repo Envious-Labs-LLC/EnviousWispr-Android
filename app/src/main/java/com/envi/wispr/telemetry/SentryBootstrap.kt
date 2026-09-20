@@ -92,6 +92,12 @@ object SentryBootstrap {
         }
         event.threads?.forEach { thread -> sanitizeFrames(thread.stacktrace?.frames) }
         event.breadcrumbs?.forEach { sanitize(it) }
+        // The take tag is decided HERE, at send time: an event that names its take (a defect's or a
+        // converted note's `take_id` extra) keeps it; anything else, including an automatic crash that
+        // outran the queued scope update, carries the take live right now, or none (round 2, F8).
+        val explicitTakeId = event.getExtra("take_id") as? String
+        val effectiveTakeId = explicitTakeId ?: Telemetry.currentTakeId()
+        if (effectiveTakeId == null) event.removeTag(TAG_TAKE_ID) else event.setTag(TAG_TAKE_ID, effectiveTakeId)
         event.tags?.let { tags -> event.tags = tags.mapValues { (_, v) -> PayloadSanitizer.sanitizeFreeText(v) } }
         event.extras?.let { extras -> event.extras = PayloadSanitizer.sanitizeFreeMap(extras).toMutableMap() }
         event.request = null

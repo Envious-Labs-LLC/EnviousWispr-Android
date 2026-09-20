@@ -8,7 +8,14 @@ set -euo pipefail
 # exactly the toolchain that ships.
 # shellcheck source=../ci/setup-android-deps.sh
 source "$(dirname "$0")/../ci/setup-android-deps.sh"
-./gradlew :app:testReleaseUnitTest :app:bundleRelease --rerun-tasks --console=plain --max-workers=2 -PplayVersionCode="$PLAY_VERSION_CODE"
+# Telemetry keys from the workflow's repository variables (#176). A production bundle with either one
+# empty ships silent: refuse, so a missing variable is a red build and never a quiet blind fleet.
+: "${TELEMETRY_POSTHOG_KEY:?TELEMETRY_POSTHOG_KEY repository variable required for a Play build}"
+: "${TELEMETRY_SENTRY_DSN:?TELEMETRY_SENTRY_DSN repository variable required for a Play build}"
+./gradlew :app:testReleaseUnitTest :app:bundleRelease --rerun-tasks --console=plain --max-workers=2 \
+  -PplayVersionCode="$PLAY_VERSION_CODE" \
+  -PtelemetryPostHogKey="$TELEMETRY_POSTHOG_KEY" \
+  -PtelemetrySentryDsn="$TELEMETRY_SENTRY_DSN"
 python3 scripts/release/test_receipt.py
 mkdir -p dist
 cp app/build/outputs/bundle/release/app-release.aab dist/unsigned.aab

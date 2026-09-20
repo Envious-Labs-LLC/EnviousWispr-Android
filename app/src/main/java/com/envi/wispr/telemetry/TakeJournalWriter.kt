@@ -103,7 +103,8 @@ class TakeJournalWriter(
                     capture(AnalyticsEvent.DictationInterrupted(open.takeId, stage, TriggerSource.entries.firstOrNull { it.name == open.triggerSource }?.wire ?: TriggerSource.UNKNOWN.wire))
                 }
             }
-            dao.prune(nowMs() - RETENTION_MS, keep = dao.pendingInsertionTakeIds())
+            val cutoffMs = nowMs() - RETENTION_MS
+            dao.prune(cutoffMs, keep = dao.insertionTakeIdsToKeep(cutoffMs))
         }
     }
 

@@ -23,6 +23,8 @@ object PendingDefects {
     private const val DIR = "telemetry/pending-defects"
     private const val TEMP_SUFFIX = ".tmp"
     const val RETENTION_MS = 7L * 24 * 60 * 60 * 1000
+    /** A temp younger than this may be a live writer's; the note path is bounded at 500 ms. */
+    const val TEMP_GRACE_MS = 60_000L
 
     /** Everything a converter needs and nothing that is content. */
     data class Record(
@@ -73,9 +75,12 @@ object PendingDefects {
     }
 
     /** The writer's own housekeeping at its next start: a temp file is a write that never finished. */
-    fun cleanTemps(context: Context) {
+    /** Temps older than [TEMP_GRACE_MS]: a younger one may be a dying helper's write in flight right now. */
+    fun cleanTemps(context: Context, nowMs: Long = System.currentTimeMillis()) {
         val dir = File(context.filesDir, DIR)
-        dir.listFiles()?.filter { it.name.endsWith(TEMP_SUFFIX) }?.forEach { runCatching { it.delete() } }
+        dir.listFiles()
+            ?.filter { it.name.endsWith(TEMP_SUFFIX) && nowMs - it.lastModified() > TEMP_GRACE_MS }
+            ?.forEach { runCatching { it.delete() } }
     }
 
     fun newEventId(): String = UUID.randomUUID().toString().replace("-", "")

@@ -63,6 +63,22 @@ class SentryPayloadTest {
     }
 
     @Test
+    fun theTakeTagIsDecidedAtSendTimeFromTheLiveTakeOrTheEventsOwnExtra() {
+        // A crash while a take is live carries that take even though the queued scope update never ran.
+        Telemetry.takeStarted("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d")
+        assertEquals("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d", SentryBootstrap.sanitize(SentryEvent()).getTag(SentryBootstrap.TAG_TAKE_ID))
+        // An event that names its own take (a converted note) keeps its own over the live one.
+        val own = SentryEvent().apply { setExtra("take_id", "11111111-2222-4333-8444-555555555555") }
+        assertEquals("11111111-2222-4333-8444-555555555555", SentryBootstrap.sanitize(own).getTag(SentryBootstrap.TAG_TAKE_ID))
+        // An old take's postamble cannot clear a newer take.
+        Telemetry.takeEnded("some-older-take")
+        assertEquals("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d", SentryBootstrap.sanitize(SentryEvent()).getTag(SentryBootstrap.TAG_TAKE_ID))
+        Telemetry.takeEnded("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d")
+        val stale = SentryEvent().apply { setTag(SentryBootstrap.TAG_TAKE_ID, "0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d") }
+        assertNull("a stale scope tag is removed once no take is live", SentryBootstrap.sanitize(stale).getTag(SentryBootstrap.TAG_TAKE_ID))
+    }
+
+    @Test
     fun aMessageAndABreadcrumbAreScrubbedNotRemoved() {
         val event = SentryEvent().apply { message = Message().apply { formatted = "saved /sdcard/EnviousWispr/debug.log for saurabh@example.com" } }
         assertEquals("[REDACTED]", SentryBootstrap.sanitize(event).message!!.formatted)

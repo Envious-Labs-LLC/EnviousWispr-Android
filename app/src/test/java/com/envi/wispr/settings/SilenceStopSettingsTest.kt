@@ -27,9 +27,11 @@ class SilenceStopSettingsTest {
         // beginSession awaits this readiness signal before binding anything, so both values must be
         // assigned in the same collector block ABOVE the completion. Written anywhere else and a user
         // who enabled auto-stop silently gets a manual take after every cold start.
-        // Since #186 the collector lives in SessionPreferencesSource; beginSession awaits its readiness signal.
+        // Since #186 the collector lives in SessionPreferencesSource, fed the authoritative flow by the
+        // Service; beginSession awaits its readiness signal.
+        assertTrue(read("ui/DictationSessionService.kt").contains("preferenceStates = AppPreferences(applicationContext).authoritativeState,"))
         val source = read("ui/SessionPreferencesSource.kt")
-        val block = source.substringAfter("authoritativeState.collect")
+        val block = source.substringAfter("preferenceStates.collect")
             .substringBefore("cleanupPreferencesReady.complete(Unit)")
         assertTrue("the switch is read before the gate", block.contains("autoStopOnSilence = preferences.autoStopOnSilenceEnabled"))
         assertTrue("and so is the wait", block.contains("silencePauseSeconds = preferences.silencePauseSeconds"))

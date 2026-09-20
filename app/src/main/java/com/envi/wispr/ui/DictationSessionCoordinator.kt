@@ -85,8 +85,12 @@ internal class DictationSessionCoordinator(
     /** `Dispatchers.Main.immediate` in production; a JVM test passes its single owner-thread dispatcher. */
     private val mainDispatcher: CoroutineDispatcher,
     private val polishTimeout: PolishTimeout = DelayPolishTimeout,
+    /** How long a take waits for the settings and custom words before failing; a test shortens it (#193 will remove the gate). */
+    private val settingsWaitMs: Long = SETTINGS_WAIT_MS,
     /** Process-scoped on purpose: the tip's once-per-process allowance outlives the Service instance. */
     private val tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS,
+    /** The one first-wins gate on the polish answer; production mints ids off the device clock, a test off the JVM's. */
+    private val polishLedger: PolishRequestLedger = PolishRequestLedger(),
     /** The arbiter's sink: where a committed ending goes. Production records it to telemetry. */
     private val endingSink: (TakeFacts, TerminalReason) -> Unit = ::recordTakeEnding,
 ) : PipelineController.Listener {
@@ -166,7 +170,6 @@ internal class DictationSessionCoordinator(
         const val CANCEL = "cancel"
     }
 
-    private val polishLedger = PolishRequestLedger()
     /**
      * Serialises the final state check, the ledger open, the watchdog launch and the binder call against
      * `cancelProcessing` (#75): without it the transcription thread can read PROCESSING, lose the CPU to a
@@ -358,7 +361,7 @@ internal class DictationSessionCoordinator(
         recordingDurationMs = 0L
         lastElapsedSecond = -1
         scope.launch {
-            val ready = preferences.awaitReady(SETTINGS_WAIT_MS)
+            val ready = preferences.awaitReady(settingsWaitMs)
             if (!ready) {
                 withContext(mainDispatcher) {
                     if (state.get() == SessionState.STARTING) {

@@ -192,8 +192,8 @@ class DictationSessionService : Service() {
         val customTermRepository = CustomTermRepository(applicationContext)
         val providerConfiguration = ProviderConfigurationRepository(applicationContext)
         preferences = SessionPreferencesSource(
-            appPreferences = AppPreferences(applicationContext),
-            customTerms = customTermRepository,
+            preferenceStates = AppPreferences(applicationContext).authoritativeState,
+            terms = customTermRepository.observeTerms(),
             migrateLegacyTerms = { customTermRepository.migrateLegacySharedPreferences(applicationContext) },
             log = DebugSessionLog,
         )

@@ -4,17 +4,17 @@ import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
 import com.envi.wispr.polish.PolishPolicy
-import com.envi.wispr.settings.AppPreferences
+import com.envi.wispr.settings.AppPreferencesState
 import com.envi.wispr.settings.cleanupOptions
 import com.envi.wispr.settings.clipboardInsertionPolicy
 import com.envi.wispr.vad.SilenceStopDetector
 import com.envi.wispr.vocabulary.BuiltinVocabulary
 import com.envi.wispr.vocabulary.CustomTerm
-import com.envi.wispr.vocabulary.CustomTermRepository
 import com.envi.wispr.vocabulary.StructuredTermRestorer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -40,8 +40,10 @@ internal data class SessionPreferences(
  * readiness deferreds publish the first snapshot, but later emissions still need visibility.
  */
 internal class SessionPreferencesSource(
-    private val appPreferences: AppPreferences,
-    private val customTerms: CustomTermRepository,
+    /** `AppPreferences.authoritativeState` in production; a test feeds a flow of its own. */
+    private val preferenceStates: Flow<AppPreferencesState>,
+    /** `CustomTermRepository.observeTerms()` in production. */
+    private val terms: Flow<List<CustomTerm>>,
     /** The legacy custom-term migration, run once before the terms are observed. */
     private val migrateLegacyTerms: suspend () -> Unit,
     private val log: SessionLog,
@@ -101,8 +103,8 @@ internal class SessionPreferencesSource(
                 } catch (error: Exception) {
                     log.warn("Unable to migrate custom terms: ${error.message}")
                 }
-                customTerms.observeTerms().collect { terms ->
-                    structuredTerms = BuiltinVocabulary.withUserTerms(terms)
+                terms.collect { userTerms ->
+                    structuredTerms = BuiltinVocabulary.withUserTerms(userTerms)
                     structuredTermsReady.complete(Unit)
                 }
             } catch (cancelled: CancellationException) {
@@ -113,7 +115,7 @@ internal class SessionPreferencesSource(
         }
         scope.launch {
             try {
-                appPreferences.authoritativeState.collect { preferences ->
+                preferenceStates.collect { preferences ->
                     cleanupOptions = preferences.cleanupOptions()
                     clipboardPolicy = preferences.clipboardInsertionPolicy()
                     autoStopOnSilence = preferences.autoStopOnSilenceEnabled

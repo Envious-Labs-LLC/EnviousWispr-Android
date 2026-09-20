@@ -372,9 +372,10 @@ declared"). `DestroyedSessionCleanup` captures only the `CaptureLink`, the `Pipe
 cleanup data; it never captures or invokes `PipelineBindings`, `SessionHost` or the Service after `onDestroy`
 returns (G4 D1).
 
-**`SessionPreferencesSource`** (proposed), constructed by the Service with `AppPreferences`,
-`CustomTermRepository` and the migration as a `suspend () -> Unit` (consult Q5: the collectors need a
-`Context` today at `:399` and `:417`; the Service supplies the built objects instead): the two `onCreate`
+**`SessionPreferencesSource`** (proposed), constructed by the Service with the two FLOWS
+(`AppPreferences.authoritativeState`, `CustomTermRepository.observeTerms()`) and the migration as a
+`suspend () -> Unit` (consult Q5: the collectors need a `Context` today at `:399` and `:417`; the Service
+supplies the built flows instead, and a JVM test feeds its own, built 2026-09-20): the two `onCreate`
 collectors (`observeTerms`, `AppPreferences.authoritativeState`), the legacy custom-term migration that precedes the first, the
 eight `@Volatile` preference fields, the two readiness deferreds, `SessionPreferences` (moved, still a
 private-to-the-owner data class made `internal`), `suspend fun awaitReady(timeoutMs): Boolean` and
@@ -391,7 +392,11 @@ because `promoteToForeground` reads the live nullable field on purpose (`:1711` 
 preferences: SessionPreferencesSource, transcripts: TranscriptRepository, languageDetector: LanguageDetector,
 loadPolicy: suspend () -> PolishPolicy, pipeline: PipelineController, scope: CoroutineScope,
 mainDispatcher: CoroutineDispatcher, polishTimeout: PolishTimeout = DelayPolishTimeout,
-tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS, endingSink: (TakeFacts, TerminalReason) -> Unit)`
+settingsWaitMs: Long = SETTINGS_WAIT_MS, tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS,
+polishLedger: PolishRequestLedger = PolishRequestLedger(), endingSink: (TakeFacts, TerminalReason) -> Unit)`
+(built 2026-09-20: `settingsWaitMs` is the same kind of deadline seam as `PolishTimeout`, so the
+settings-never-ready row runs in 200 ms instead of 10 s; `polishLedger` is injected because the shared
+`PolishRequestIdSource` mints ids off `SystemClock`, which throws on the JVM; production passes neither)
 (G2 D7: `PolishTimeout` (proposed) and its production `DelayPolishTimeout` (proposed), which delegates to
 `delay(PolishWatchdogBudget.forPolicy(policy))`, are chunk 1 foundations so chunk 2 compiles against the
 final design; chunk 3 adds only the fake).
@@ -673,7 +678,7 @@ an-expectation-built-with-the-mechanism-under-test-cannot-fail).
 | `DictationSessionCoordinatorTest.completedTakeInsertsOnce` (proposed) | Harness Contract | start→live→stop→ASR→polish→History→handoff commits `COMPLETED` once | drop the `arbiter.commit(publication, COMPLETED)` |
 | `...cancelWhileStartingLeavesNoRow` | Harness Contract | `CANCELLED_STARTING`, draft discarded, capture stopped | delete `arbiter.commit(cancel, cancelled)` in `cancelCaptureAndFinish` |
 | `...cancelWhileRecordingLeavesNoRow` | Harness Contract | `CANCELLED_RECORDING` | skip `discardDraft` |
-| `...cancelWhileProcessingBeatsLatePolish` | Harness Contract | a polish outcome after cancel does not publish, and the exact open request id reached `PolishLink.cancel` | delete `cancelOpenPolishRequest()` in `cancelProcessing` |
+| `...cancelWhileProcessingBeatsLatePolish` | Harness Contract | a polish outcome after cancel does not publish, and the exact open request id reached `PolishLink.cancel` | delete the `arbiter.commit(cancel, CANCELLED_PROCESSING)` in `cancelProcessing` (deleting only `cancelOpenPolishRequest()` there stays green: `finishSession` runs the same idempotent backstop first, measured 2026-09-20) |
 | `...audioDiedWhileRecordingEndsAsFailure` | Harness Contract | `AUDIO_PROCESS_DIED`, sentence shown, draft discarded | restrict the audio-disconnected branch to STARTING only |
 | `...asrDiedWithRawTextFallsBack` | Harness Contract | `SERVICE_DIED` fallback publishes the deterministic text | route to `endAsFailure` instead |
 | `...silenceLeavesNothing` | Harness Contract | empty ASR text with a low peak → `NO_SPEECH`, no row, target released | keep the row |

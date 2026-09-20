@@ -1,0 +1,450 @@
+package com.envi.wispr.ui
+
+import com.envi.wispr.audio.AudioCaptureService
+import com.envi.wispr.cleanup.LanguageDetector
+import com.envi.wispr.history.TranscriptDao
+import com.envi.wispr.history.TranscriptEntity
+import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.insertion.ClipboardInsertionPolicy
+import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.paste.DictationTargetPin
+import com.envi.wispr.paste.InsertionHandoff
+import com.envi.wispr.polish.PolishFailureNotice
+import com.envi.wispr.polish.PolishOutcome
+import com.envi.wispr.polish.PolishPolicy
+import com.envi.wispr.polish.PolishRequestIdSource
+import com.envi.wispr.settings.AppPreferencesState
+import com.envi.wispr.shortcuts.BubbleRequestToken
+import com.envi.wispr.shortcuts.DictationSurfaceState
+import com.envi.wispr.telemetry.TakeFacts
+import com.envi.wispr.vocabulary.CustomTerm
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
+import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.CoroutineContext
+
+/**
+ * Harness Contract: the fakes that stand in for Android and the three helper processes so
+ * [DictationSessionCoordinator] runs on the JVM (#186). Every fake records what it was asked and answers
+ * what the test configured; none of them decides anything.
+ *
+ * One thread stands in for main: [mainDispatcher] runs inline when already on it (as `Main.immediate`
+ * does on the main looper) and the host's `postToMain` always enqueues on it (as a `Handler` does).
+ */
+internal class DictationSessionRig {
+    private val mainExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "fake-main") }
+    val mainThread: Thread = mainExecutor.submit<Thread> { Thread.currentThread() }.get()
+
+    /**
+     * Which kind of task the fake main thread is running: `post` for a `postToMain` runnable, `dispatch`
+     * for a coroutine the dispatcher had to enqueue, `test` for [onMain]. A call that lands INSIDE a posted
+     * runnable reads `post`, which is the inline-versus-dispatched oracle the plan asked for.
+     */
+    val taskKind = ThreadLocal<String>()
+
+    private fun run(kind: String, block: Runnable) {
+        val previous = taskKind.get()
+        taskKind.set(kind)
+        try {
+            block.run()
+        } finally {
+            taskKind.set(previous)
+        }
+    }
+
+    val mainDispatcher: CoroutineDispatcher = object : CoroutineDispatcher() {
+        override fun isDispatchNeeded(context: CoroutineContext): Boolean = Thread.currentThread() !== mainThread
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            mainExecutor.execute { run("dispatch", block) }
+        }
+    }
+
+    val log = FakeLog()
+    val host = FakeHost()
+    val surface = FakeSurface()
+    val insertion = FakeInsertion()
+    val capture = FakeCapture()
+    val speech = FakeSpeech()
+    val polish = FakePolish()
+    val pipeline = FakePipeline(capture, speech, polish)
+    val dao = FakeTranscriptDao()
+    val transcripts = TranscriptRepository(dao, clock = { 1_000L })
+    val polishTimeout = FakePolishTimeout()
+    val endings = Endings()
+    val preferenceStates = MutableStateFlow(AppPreferencesState())
+    val terms = MutableStateFlow<List<CustomTerm>>(emptyList())
+    /** Anything a session coroutine threw: production has no handler, so a JVM-only throw would otherwise vanish. */
+    val uncaught = CopyOnWriteArrayList<Throwable>()
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, error -> uncaught += error })
+
+    var preferencesSource: SessionPreferencesSource = SessionPreferencesSource(
+        preferenceStates = preferenceStates,
+        terms = terms,
+        migrateLegacyTerms = {},
+        log = log,
+    )
+
+    fun coordinator(
+        preferences: SessionPreferencesSource = preferencesSource,
+        settingsWaitMs: Long = 5_000L,
+    ): DictationSessionCoordinator = DictationSessionCoordinator(
+        host = host,
+        surface = surface,
+        insertion = insertion,
+        log = log,
+        preferences = preferences,
+        transcripts = transcripts,
+        languageDetector = LanguageDetector { null },
+        loadPolicy = { PolishPolicy.Off },
+        pipeline = pipeline,
+        scope = scope,
+        mainDispatcher = mainDispatcher,
+        polishTimeout = polishTimeout,
+        settingsWaitMs = settingsWaitMs,
+        tipGate = BluetoothTipGate(),
+        polishLedger = PolishRequestLedger(PolishRequestIdSource { System.nanoTime() }),
+        endingSink = endings::record,
+    )
+
+    /** Runs [block] on the fake main thread and waits for it, as `onStartCommand` arrives on main. */
+    fun onMain(block: () -> Unit) {
+        mainExecutor.submit { run("test", block) }.get(5, TimeUnit.SECONDS)
+    }
+
+    /** Posts [block] to the fake main thread without waiting, for a call that blocks main on purpose (`destroy`). */
+    fun postMain(block: () -> Unit) {
+        mainExecutor.execute { run("test", block) }
+    }
+
+    /** A command as the Service forwards it. */
+    fun command(coordinator: DictationSessionCoordinator, action: String, request: BubbleRequestToken? = null) {
+        onMain { coordinator.handleCommand(action, request, TriggerSource.UNKNOWN) }
+    }
+
+    fun close() {
+        mainExecutor.shutdownNow()
+        capture.audioFile?.delete()
+    }
+
+    class Endings {
+        val reasons = CopyOnWriteArrayList<TerminalReason>()
+        private val latch = CountDownLatch(1)
+
+        fun record(facts: TakeFacts, reason: TerminalReason) {
+            reasons += reason
+            latch.countDown()
+        }
+
+        /** The one reason the take ended with, or a named failure: never elapsed time as the oracle. */
+        fun awaitOne(): TerminalReason {
+            check(latch.await(10, TimeUnit.SECONDS)) { "the take never committed an ending; the owner is still open" }
+            check(reasons.size == 1) { "the take committed ${reasons.size} endings: $reasons" }
+            return reasons.single()
+        }
+    }
+
+    class FakeLog : SessionLog {
+        val lines = CopyOnWriteArrayList<String>()
+        override fun log(message: String) { lines += "I $message" }
+        override fun warn(message: String) { lines += "W $message" }
+        override fun error(message: String, throwable: Throwable?) { lines += "E $message" }
+        override fun mark(event: String) { lines += "M $event" }
+        override fun pipelineSummary(): String = "Pipeline: summary"
+    }
+
+    inner class FakeHost : SessionHost {
+        val events = CopyOnWriteArrayList<String>()
+        val stopped = CountDownLatch(1)
+        @Volatile var clipboardWorks = true
+        @Volatile var autoPaste = AutoPasteAvailability.LIVE
+
+        override fun promoteToForeground(processing: Boolean) { events += "foreground:$processing" }
+        override fun updateSurfacePhase(phase: DictationSurfaceState.Phase) { events += "phase:${phase.name}" }
+        override fun vibrate(cue: HapticCue) { events += "vibrate:${cue.name}" }
+        override fun toastFromService(line: String) { events += "toast:$line" }
+        override fun toastFromApplication(line: String) { events += "toast-app:$line@${taskKind.get()}" }
+        override fun showPolishNotice(notice: PolishFailureNotice) { events += "polish-notice" }
+        override fun copyToClipboard(text: String): Boolean {
+            events += "clipboard:$text"
+            return clipboardWorks
+        }
+        override fun autoPasteAvailability(): AutoPasteAvailability = autoPaste
+        override fun removeForegroundAndDismiss() { events += "foreground-removed" }
+        override fun stopSelfNow() {
+            events += "stopSelf"
+            stopped.countDown()
+        }
+        override fun postToMain(runnable: Runnable) { mainExecutor.execute { run("post", runnable) } }
+        override fun onMainThread(): Boolean = Thread.currentThread() === mainThread
+        override fun elapsedRealtimeMs(): Long = System.nanoTime() / 1_000_000L
+
+        /** The Service stopped itself, which every terminal path ends in. */
+        fun awaitStopped() {
+            check(stopped.await(10, TimeUnit.SECONDS)) { "the owner never stopped the Service; events so far: $events" }
+        }
+    }
+
+    class FakeSurface : RecorderSurface {
+        val events = CopyOnWriteArrayList<String>()
+        private val serial = AtomicLong(0L)
+        private val shown = CountDownLatch(1)
+        private val hidden = CountDownLatch(1)
+
+        /** Teardown hid the recorder, which `destroy` does under the publish lock right after invalidating. */
+        fun awaitHidden() {
+            check(hidden.await(10, TimeUnit.SECONDS)) { "the recorder was never hidden; surface events so far: $events" }
+        }
+
+        /** The pill appeared, which `publishLive` does on the RECORDING transition. */
+        fun awaitShown() {
+            check(shown.await(10, TimeUnit.SECONDS)) { "the take never went live; surface events so far: $events" }
+        }
+        override fun showStarting(token: BubbleRequestToken?) { events += "starting" }
+        override fun nameTarget(fieldId: String?) { events += "target:$fieldId" }
+        override fun attachTranscript(id: Long) { events += "transcript:$id" }
+        override fun show() {
+            serial.incrementAndGet()
+            events += "show"
+            shown.countDown()
+        }
+        override fun showProcessing() { events += "processing" }
+        override fun showNotice(text: String) { events += "notice:$text" }
+        override fun updateElapsed(seconds: Int) {}
+        override fun updateBands(takeSerial: Long, bands: FloatArray) {}
+        override fun hide() {
+            events += "hide"
+            hidden.countDown()
+        }
+        override fun currentTakeSerial(): Long = serial.get()
+        override fun emptyBands(): FloatArray = FloatArray(0)
+    }
+
+    class FakeInsertion : InsertionGateway {
+        @Volatile var pin = DictationTargetPin.PINNED
+        @Volatile var handoff = InsertionHandoff.SCHEDULED
+        @Volatile var bound = true
+        val pastes = CopyOnWriteArrayList<Pair<Long, String>>()
+        val releases = AtomicLong(0L)
+        override fun pinTargetForDictation(): DictationTargetPin = pin
+        override fun pinnedFieldId(): String? = "field-1"
+        override fun releasePinnedTarget() { releases.incrementAndGet() }
+        override fun pasteWhenTargetReturns(transcriptId: Long, text: String, policy: ClipboardInsertionPolicy, takeId: String): InsertionHandoff {
+            pastes += transcriptId to text
+            return handoff
+        }
+        override fun isBound(): Boolean = bound
+    }
+
+    /** The capture process as the owner sees it. `startCaptureForTake` writes a small PCM file for the stop path to measure. */
+    class FakeCapture : CaptureLink {
+        @Volatile var startResult = true
+        @Volatile var startFailure = AudioCaptureService.START_FAILURE_NONE
+        @Volatile var liveStateAfterStart = AudioCaptureService.LIVE_READY
+        @Volatile var fileReady = true
+        /** When set, `waitForFileReady` blocks until the test opens it: holds a cancel in CANCELLING. */
+        @Volatile var fileReadyGate: CountDownLatch? = null
+        @Volatile var ending = AudioCaptureService.TERMINAL_REASON_MANUAL
+        @Volatile var peak: Float = 0.5f
+        @Volatile var throwOnPeak = false
+        @Volatile var capturing = false
+        @Volatile var live = AudioCaptureService.LIVE_WAITING
+        @Volatile var audioFile: File? = null
+        val events = CopyOnWriteArrayList<String>()
+        private val started = CountDownLatch(1)
+        private val stopRequested = CountDownLatch(1)
+
+        /** The owner asked capture to start. */
+        fun awaitStarted() {
+            check(started.await(10, TimeUnit.SECONDS)) { "capture was never asked to start; events: $events" }
+        }
+
+        /** The owner asked capture to stop. */
+        fun awaitStopRequested() {
+            check(stopRequested.await(10, TimeUnit.SECONDS)) { "capture was never asked to stop; events: $events" }
+        }
+
+        override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean {
+            events += "start"
+            if (!startResult) {
+                started.countDown()
+                return false
+            }
+            audioFile = File.createTempFile("take", ".pcm").apply { writeBytes(ByteArray(32_000)) }
+            capturing = true
+            live = liveStateAfterStart
+            started.countDown()
+            return true
+        }
+        override fun lastStartFailure(): Int = startFailure
+        override fun stopCapture() {
+            events += "stop"
+            capturing = false
+            stopRequested.countDown()
+        }
+        override fun waitForFileReady(timeoutMs: Long): Boolean {
+            fileReadyGate?.await(10, TimeUnit.SECONDS)
+            return fileReady
+        }
+        override fun liveState(): Int = live
+        override fun isCapturing(): Boolean = capturing
+        override fun audioFilePath(): String? = audioFile?.path
+        override fun elapsedMs(): Long = 1_000L
+        override fun silenceStopStatus(): Int = AudioCaptureService.SILENCE_STATUS_DISABLED
+        override fun inputRouteKind(): Int = 0
+        override fun inputRouteReason(): Int = 0
+        override fun liveAfterMs(): Long = 0L
+        override fun terminalReason(): Int = ending
+        override fun spectrumBands(): FloatArray = FloatArray(0)
+        override fun effectiveInputDevice(): String? = "Phone microphone"
+        override fun takePeakAmplitude(): Float {
+            if (throwOnPeak) throw IllegalStateException("peak unreadable")
+            return peak
+        }
+        override fun finishTake(): Boolean {
+            events += "finishTake"
+            return false
+        }
+
+        /** Capture ended on its own, as the polling thread will find. */
+        fun endOnItsOwn(reason: Int) {
+            ending = reason
+            capturing = false
+        }
+    }
+
+    /** The speech process: the test answers the request by hand, as a binder thread would. */
+    class FakeSpeech : SpeechLink {
+        @Volatile var listener: SpeechListener? = null
+        private val requested = CountDownLatch(1)
+        override fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener) {
+            this.listener = listener
+            requested.countDown()
+        }
+        fun awaitRequest(): SpeechListener {
+            check(requested.await(10, TimeUnit.SECONDS)) { "the owner never asked the speech process" }
+            return checkNotNull(listener)
+        }
+    }
+
+    /** The polish process: the test answers the request by hand. */
+    class FakePolish : PolishLink {
+        @Volatile var listener: PolishListener? = null
+        @Volatile var requestId = 0L
+        @Volatile var throwOnRequest = false
+        val cancelled = CopyOnWriteArrayList<Long>()
+        val warmed = CopyOnWriteArrayList<PolishPolicy>()
+        private val requested = CountDownLatch(1)
+        override fun warmUpWithPolicy(policy: PolishPolicy) { warmed += policy }
+        override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
+            if (throwOnRequest) throw IllegalStateException("engine gone")
+            this.requestId = requestId
+            this.listener = listener
+            requested.countDown()
+        }
+        override fun cancel(requestId: Long) { cancelled += requestId }
+        fun awaitRequest(diagnostics: () -> String = { "" }): PolishListener {
+            check(requested.await(10, TimeUnit.SECONDS)) { "the owner never asked the polish process. ${diagnostics()}" }
+            return checkNotNull(listener)
+        }
+        fun outcome(text: String, reason: com.envi.wispr.polish.PolishReason = com.envi.wispr.polish.PolishReason.POLISHED) =
+            PolishOutcome(requestId = requestId, text = text, engine = "Fake engine", reason = reason, statusCode = 0, latencyMs = 12L)
+    }
+
+    /** The three connections: `bind` connects all three on the fake main thread, as the platform would. */
+    inner class FakePipeline(
+        override val capture: CaptureLink?,
+        @Volatile override var speech: SpeechLink?,
+        override val polish: PolishLink?,
+    ) : PipelineController {
+        @Volatile var bindResult = PipelineController.BindResult.BOUND
+        @Volatile var connectSpeech = true
+        @Volatile var listener: PipelineController.Listener? = null
+        val events = CopyOnWriteArrayList<String>()
+
+        override fun bind(listener: PipelineController.Listener): PipelineController.BindResult {
+            this.listener = listener
+            events += "bind"
+            if (bindResult != PipelineController.BindResult.BOUND) return bindResult
+            mainExecutor.execute {
+                run("post") {
+                    listener.onCaptureConnected()
+                    if (connectSpeech) listener.onSpeechConnected()
+                    listener.onPolishConnected()
+                }
+            }
+            return bindResult
+        }
+        override fun unbind() { events += "unbind" }
+        override fun postUnbindToMain() { mainExecutor.execute { unbind() } }
+        override fun stopAudioService() { events += "stopAudioService" }
+
+        /** The platform reporting a helper's death, on main. */
+        fun disconnect(which: String) = onMain {
+            when (which) {
+                "capture" -> listener?.onCaptureDisconnected()
+                "speech" -> listener?.onSpeechDisconnected()
+                "polish" -> listener?.onPolishDisconnected()
+                else -> error(which)
+            }
+        }
+    }
+
+    class FakePolishTimeout : PolishTimeout {
+        private val release = CountDownLatch(1)
+        override suspend fun await(policy: PolishPolicy) {
+            kotlinx.coroutines.runInterruptible { release.await() }
+        }
+        fun fire() = release.countDown()
+    }
+
+    /** History as rows in memory; the repository above is the real one. */
+    class FakeTranscriptDao : TranscriptDao {
+        val rows = java.util.concurrent.ConcurrentHashMap<Long, TranscriptEntity>()
+        private val nextId = AtomicLong(1L)
+        @Volatile var failInserts = false
+
+        override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(rows.values.toList())
+        override suspend fun insert(transcript: TranscriptEntity): Long {
+            if (failInserts) throw IllegalStateException("disk full")
+            val id = nextId.getAndIncrement()
+            rows[id] = transcript.copy(id = id)
+            return id
+        }
+        override suspend fun setKept(id: Long, kept: Boolean) { rows[id]?.let { rows[id] = it.copy(kept = kept) } }
+        override suspend fun delete(transcript: TranscriptEntity) { rows.remove(transcript.id) }
+        override suspend fun deleteAll() = rows.clear()
+        override suspend fun deleteById(id: Long): Int = if (rows.remove(id) != null) 1 else 0
+        override suspend fun deleteWordlessRows(): Int = 0
+        override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int {
+            val row = rows[id] ?: return 0
+            rows[id] = row.copy(status = status, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted, insertionResult = insertionResult ?: row.insertionResult)
+            return 1
+        }
+        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int {
+            if (failInserts) throw IllegalStateException("disk full")
+            val row = rows[id] ?: return 0
+            rows[id] = row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted)
+            return 1
+        }
+        override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean): Int {
+            val row = rows[id] ?: return 0
+            if (row.status != TranscriptEntity.STATUS_READY_FOR_INSERTION || row.insertionResult != "pending") return 0
+            rows[id] = row.copy(status = status, insertionResult = result, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted)
+            return 1
+        }
+        override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int = 0
+        override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int = 0
+        override suspend fun staleReadyRowIds(cutoffMs: Long): List<Long> = emptyList()
+    }
+}

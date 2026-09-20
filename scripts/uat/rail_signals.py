@@ -15,17 +15,16 @@ drawn.
     scripts/uat/rail_signals.py                # every signal, then a verdict per signal
     scripts/uat/rail_signals.py tone1k noise   # a subset, by name
 
-Emulator only, launched with `-grpc 8554` (scripts/uat/launch-grpc.sh). The take is driven through the
-same exported trampoline the side button uses and ENDED in a finally whatever happens in between. The
-host microphone is turned off once, up front, because the injected stream IS the microphone. Needs
-grpcurl, ffmpeg, numpy and Pillow on the Mac. Nothing plays out of the speakers.
+Emulator only, launched with `-grpc 8554` (`wispr_eyes.launch_emulator()`). Every take is owned by
+`wispr_eyes.open_recorder()` and fed by `wispr_eyes.inject_audio()`; the host microphone is switched by
+`wispr_eyes.set_host_mic()` and put back by `restore()` after every take, because the injected stream IS
+the microphone. This file owns the signals and the frame measurement, nothing about driving the device
+(#177). Needs grpcurl, ffmpeg, numpy and Pillow on the Mac. Nothing plays out of the speakers.
 
 Proven by hand first (founder 2026-09-13: scripts only after the pathway is proven): a 1 kHz tone
 injected during a take arrived in the app's own capture file as a clean 1.7 s tone at -17 dBFS
 (2026-09-15), and the published picture read 0.88 in its band for the whole tone.
 """
-import base64
-import json
 import math
 import os
 import subprocess
@@ -39,11 +38,9 @@ os.environ["WISPR_SERIAL"] = "emulator-5554"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wispr_eyes as w  # noqa: E402
 
-SERIAL = "emulator-5554"
-ADB = ["adb", "-s", SERIAL, "shell"]
+SERIAL = w.EMULATOR_SERIAL
+ADB = [w.ADB, "-s", SERIAL, "shell"]
 RATE = 48_000  # the injection channel takes 48 kHz S16 mono; the app resamples to 16 kHz
-GRPC = "localhost:8554"
-PROTO_DIR = os.path.expanduser("~/Android/sdk/emulator/lib")
 OUT = os.path.join(os.environ.get("RAIL_SIGNALS_OUT", "/tmp/rail-signals"))
 FPS = 20
 
@@ -140,52 +137,47 @@ SIGNALS = {
 }
 
 
-def write_packets(path, samples):
-    """The signal as newline-delimited AudioPackets for `injectAudio`: ~100 ms each, timestamped."""
+def write_pcm(path, samples):
+    """The signal as raw s16le mono 48 kHz PCM, the one shape `wispr_eyes.inject_audio` takes."""
     pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
-    chunk = 9600  # 100 ms at 48 kHz S16 mono
-    t0 = int(time.time() * 1_000_000)
-    with open(path, "w") as f:
-        for n, i in enumerate(range(0, len(pcm), chunk)):
-            f.write(json.dumps({
-                "format": {"samplingRate": RATE, "channels": "Mono", "format": "AUD_FMT_S16"},
-                "timestamp": t0 + n * 100_000,
-                "audio": base64.b64encode(pcm[i:i + chunk]).decode(),
-            }) + "\n")
+    with open(path, "wb") as f:
+        f.write(pcm)
     return len(pcm) / (RATE * 2)
 
 
 # ------------------------------------------------------------------------------------------------
-# Driving the emulator
+# Driving the emulator, through the harness
 # ------------------------------------------------------------------------------------------------
 
-def inject(packets):
-    """Stream the packets into the emulator's microphone. The take must already be open."""
-    with open(packets) as f:
-        done = subprocess.run(["grpcurl", "-plaintext", "-import-path", PROTO_DIR, "-proto", "emulator_controller.proto",
-                               "-d", "@", GRPC, "android.emulation.control.EmulatorController/injectAudio"],
-                              stdin=f, capture_output=True, text=True, timeout=120)
-    if done.returncode != 0:
-        raise RuntimeError(f"injectAudio failed: {done.stderr.strip()[:200]}")
+def record_take(name, pcm, seconds, lead=1.5, tail=1.5):
+    """One take: the pill up, the sound into the microphone, the pill down. Returns the video path.
 
-
-def record_take(name, packets, seconds, lead=1.5, tail=1.5):
-    """One take: the pill up, the sound into the microphone, the pill down. Returns the video path."""
+    Order (plan #177 §5): restore, mic off, screen recording on, then the take owns the microphone and
+    the injection happens inside it; the recording is outside the take owner because it drives nothing.
+    """
     video = f"/sdcard/rail-{name}.mp4"
     limit = int(math.ceil(lead + seconds + tail + 2.5))
-    w.clear_log()
-    rec = subprocess.Popen(ADB + [f"screenrecord --time-limit {limit} --size 720x1600 --bit-rate 6000000 {video}"])
-    time.sleep(1.0)
+    w.restore()
+    w.set_host_mic(False)
+    rec = None
     try:
-        subprocess.run(ADB + ["am start -n com.envi.wispr/.ui.VoiceInputActivity --ez toggle true"], check=True, capture_output=True)
-        time.sleep(lead)
-        inject(packets)
-        time.sleep(tail)
+        w.clear_log()
+        rec = subprocess.Popen(ADB + [f"screenrecord --time-limit {limit} --size 720x1600 --bit-rate 6000000 {video}"])
+        time.sleep(1.0)
+        with w.open_recorder(verify=False):
+            time.sleep(lead)
+            w.inject_audio(pcm)
+            time.sleep(tail)
     finally:
-        subprocess.run(ADB + ["am start -n com.envi.wispr/.ui.VoiceInputActivity --ez stop true"], check=False, capture_output=True)
-    rec.wait(timeout=limit + 15)
+        # The microphone goes back whatever failed after it was switched, including the recording's
+        # own start or wait (review round 1).
+        try:
+            if rec is not None:
+                rec.wait(timeout=limit + 15)
+        finally:
+            w.restore()
     local = os.path.join(OUT, f"{name}.mp4")
-    subprocess.run(["adb", "-s", SERIAL, "pull", video, local], check=True, capture_output=True)
+    subprocess.run([w.ADB, "-s", SERIAL, "pull", video, local], check=True, capture_output=True)
     return local
 
 
@@ -444,21 +436,16 @@ def main(argv):
         return 2
     os.makedirs(OUT, exist_ok=True)
     w.restore()
-    # The injected stream is the microphone: host audio off, once, for the whole run.
-    off = subprocess.run(["adb", "-s", SERIAL, "emu", "avd", "hostmicoff"], capture_output=True, text=True).stdout
-    if not off.startswith("OK"):
-        print(f"BLOCKED: could not turn the host microphone off: {off.strip()}", file=sys.stderr)
-        return 2
-    subprocess.run(ADB + ["am start -a android.intent.action.VIEW -d about:blank com.android.chrome"], check=False, capture_output=True)
+    w.open_page("about:blank")
     time.sleep(2)
     report = []
     try:
         for name in names:
             label, make = SIGNALS[name]
-            packets = os.path.join(OUT, f"{name}.jsonl")
-            seconds = write_packets(packets, make())
+            pcm = os.path.join(OUT, f"{name}.pcm")
+            seconds = write_pcm(pcm, make())
             print(f"== {name}: {label}")
-            video = record_take(name, packets, seconds)
+            video = record_take(name, pcm, seconds)
             series, rest, peak = measure(video, name)
             lines = judge(name, series, rest, peak)
             report.extend(lines)

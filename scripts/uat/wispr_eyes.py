@@ -11,6 +11,7 @@ person can read.
     python3 scripts/uat/wispr_eyes.py quiet
     python3 scripts/uat/wispr_eyes.py dictate
     python3 scripts/uat/wispr_eyes.py restore
+    WISPR_SERIAL=emulator-5554 python3 scripts/uat/wispr_eyes.py launch | unlock | mic off | dictate-emu | insert "text"
 
 Or from Python, chaining in ONE call the way the macOS one does:
 
@@ -56,6 +57,18 @@ ADB = os.path.expanduser("~/Android/sdk/platform-tools/adb")
 PACKAGE = "com.envi.wispr"
 SETTINGS_ACTIVITY = f"{PACKAGE}/.ui.SettingsActivity"
 RECORDER_ACTIVITY = f"{PACKAGE}/.ui.VoiceInputActivity"
+
+# THE EMULATOR. One AVD, one serial, one PIN we set ourselves (device-testing.md FACT:
+# the-play-store-emulator-for-gmail-and-chatgpt), and one gRPC endpoint the launch opens on purpose. The
+# emulator is the only device this file ever unlocks or feeds audio to; the physical phone's PIN is the
+# founder's and nothing here holds it.
+EMULATOR_SERIAL = "emulator-5554"
+PLAY_AVD = "EnviousWispr_Android_16_Play"
+EMULATOR_PIN = "1234"
+EMULATOR_BIN = os.path.expanduser("~/Android/sdk/emulator/emulator")
+EMULATOR_PROTO_DIR = os.path.expanduser("~/Android/sdk/emulator/lib")
+GRPC_ENDPOINT = "localhost:8554"
+GRPC_SERVICE = "android.emulation.control.EmulatorController"
 
 # The app's own log tags, read off `TAG = "..."` in app/src/main. A take writes lines under several.
 APP_TAGS = (
@@ -249,8 +262,14 @@ def _settled_locked(entry, serial):
 RECORDING_IS_OFF = (
     "recording from this harness is off. Six review rounds each found a different sequence that could "
     "leave a recording running on the phone with nothing recording it, so the recording half is not "
-    "offered until a round says the class is closed. Everything that READS the phone still works."
+    "offered until a round says the class is closed. Everything that READS the phone still works. "
+    "(The EMULATOR is exempt: a take leaked there costs nothing and restore() ends it.)"
 )
+
+
+def _recording_is_off():
+    """The recording lock, for the PHYSICAL phone only. `is_emulator()` asks the device, not its name."""
+    return bool(RECORDING_IS_OFF) and not is_emulator()
 
 
 class Blocked(RuntimeError):
@@ -266,8 +285,11 @@ def _run(args, timeout=60):
     return done.returncode, done.stdout, done.stderr
 
 
-def _adb(command, timeout=60, check=True):
+def _adb(command, timeout=60, check=True, serial=None):
     """One `adb shell` command, with the REMOTE status read and, by default, enforced.
+
+    `serial` names a device OTHER than the selected one, for `restore()` putting back a debt owed to an
+    attached device this process is not driving. Nothing else passes it.
 
     Two separate traps, and this function is where both are closed.
 
@@ -282,7 +304,7 @@ def _adb(command, timeout=60, check=True):
     The command is quoted into a single `sh -c` argument so that no caller-supplied text can be read as
     shell syntax.
     """
-    target = device()
+    target = serial or device()
     code, out, err = _run(
         [ADB, "-s", target, "shell", f"sh -c {shlex.quote(command)}; echo __RC=$?"], timeout=timeout
     )
@@ -412,10 +434,31 @@ def ready():
         awake = "Awake" in power
     if not awake:
         raise Blocked("the phone will not wake. Nothing can be driven.")
-    # ASK THE WINDOW MANAGER, WHICH OWNS THE KEYGUARD. Two other signals were tried and both mislead:
-    # `deviceidle`'s `mScreenLocked` is that service's own view, and `dumpsys trust`'s `deviceLocked`
-    # answers "is a CREDENTIAL required", which is 0 for an insecure keyguard that is nonetheless
-    # covering the screen and swallowing every tap.
+    if _keyguard_showing():
+        # THE EMULATOR IS OURS, AND ITS PIN IS OURS. The refusal below is about the founder's phone;
+        # `is_emulator()` asks the device what it is (`ro.kernel.qemu`), not only what adb calls it,
+        # and `unlock_emulator()` asks again before its first keystroke.
+        if is_emulator():
+            unlock_emulator()
+            if _keyguard_showing():
+                raise Blocked("the emulator stayed locked after one unlock attempt. Nothing can be driven.")
+            return True
+        raise Blocked(
+            "the phone is locked, and only its owner can open it. This tool does not send taps, swipes "
+            "or keys at a lock screen: it cannot pass a credential it does not have, and trying would "
+            "spend real unlock attempts on the founder's own phone. Unlock it and run this again."
+        )
+    return True
+
+
+def _keyguard_showing():
+    """Whether the lock screen is up, from the one service that owns it.
+
+    ASK THE WINDOW MANAGER, WHICH OWNS THE KEYGUARD. Two other signals were tried and both mislead:
+    `deviceidle`'s `mScreenLocked` is that service's own view, and `dumpsys trust`'s `deviceLocked`
+    answers "is a CREDENTIAL required", which is 0 for an insecure keyguard that is nonetheless
+    covering the screen and swallowing every tap. An unclear answer is a refusal, never a guess.
+    """
     _, activities = _adb("dumpsys activity activities | grep -i isKeyguardShowing", check=False)
     states = re.findall(r"isKeyguardShowing\s*=\s*(true|false)", activities)
     if not states or len(set(states)) != 1:
@@ -424,13 +467,7 @@ def ready():
             + (f" (it said {states})" if states else "")
             + ", so whether a tap would land is unknown. Refusing rather than driving blind."
         )
-    if states[0] == "true":
-        raise Blocked(
-            "the phone is locked, and only its owner can open it. This tool does not send taps, swipes "
-            "or keys at a lock screen: it cannot pass a credential it does not have, and trying would "
-            "spend real unlock attempts on the founder's own phone. Unlock it and run this again."
-        )
-    return True
+    return states[0] == "true"
 
 
 def bound():
@@ -495,7 +532,8 @@ def tree(refresh=True):
             last = "the dump succeeded but wrote no tree"
         else:
             last = (f"status {remote}" + (f": {message.strip()}" if message.strip() else "")
-                    + (" — something else is reading this phone's screen at the same time"
+                    + (" — something else is reading this phone's screen at the same time; shot() "
+                       "and overlay() still answer, and last_take() reads the log"
                        if remote == 137 else ""))
         if attempt < 3:
             time.sleep(1.5)
@@ -1449,7 +1487,7 @@ def open_recorder(verify=True):
     answers the action (`device-testing.md` FACT: the-ASSIST-action-opens-a-CHOOSER-on-this-phone), so
     the component is named instead.
     """
-    if RECORDING_IS_OFF:
+    if _recording_is_off():
         raise Blocked(RECORDING_IS_OFF)
     # THE PRE-COMMITTED CONSEQUENCE, and it is paid on every take.
     #
@@ -1516,7 +1554,7 @@ def open_recorder(verify=True):
         # NO `except` AROUND IT, DELIBERATELY. An interrupted or timed-out start may already have
         # reached the phone, so settling the debt on the way out is exactly the case the debt exists
         # for: the take runs and the book forgets it. An uncertain start keeps its debt.
-        if RECORDING_IS_OFF:
+        if _recording_is_off():
             raise Blocked(RECORDING_IS_OFF)
         remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)}", check=False)
         if remote != 0 or "Error" in out:
@@ -1855,36 +1893,459 @@ def say_on_phone(sentence, volume=3, seconds=30, use_fixture=True):
 
 
 def is_emulator(serial=None):
-    """Whether the driven device is an Android emulator (its serial is what adb names them)."""
-    return (serial or device()).startswith("emulator-")
+    """Whether the driven device is an Android emulator: named like one by adb AND saying so itself.
 
-
-def hear_on_emulator(serial=None):
-    """Turn the EMULATOR's host microphone on, and prove it, before any sentence is spoken at it.
-
-    Two switches gate emulator audio input and only one of them is on the command line.
-    `-allow-host-audio` PERMITS the host microphone; the emulator's own toggle for it (Extended controls
-    > Microphone > "Virtual microphone uses host audio input") defaults to OFF, is not persisted across
-    launches, and is flipped only from the emulator console: `adb emu avd hostmicon`. With the flag and
-    without the toggle every take records silence and the recogniser returns zero characters while the
-    rest of the pipeline reports success, which reads exactly like a product that heard nothing.
-
-    Measured 2026-09-13: seven silent takes across the built-in microphone, a loopback device, a cold
-    boot and the AVD.conf key, then 34 characters decoded on the first take after this one console
-    command (#141 chunk 1 UAT).
-
-    The console answers `OK` on success; anything else is a refusal and this function says so.
+    The serial prefix alone is what adb assigns, and a caller can hand any string to `WISPR_SERIAL`;
+    `device()` checks only that it is attached. Everything this file does to an emulator (unlock it with
+    a PIN, start a take despite the recording lock) must never reach the founder's phone, so the device
+    is asked `ro.kernel.qemu`, which the emulator's kernel sets to `1` and a phone never does. An
+    unreadable property answers False: the safe side is "not an emulator".
     """
     target = serial or device()
+    if not target.startswith("emulator-"):
+        return False
+    try:
+        code, out, _ = _run([ADB, "-s", target, "shell", "getprop ro.kernel.qemu"], timeout=20)
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return False
+    return code == 0 and out.strip() == "1"
+
+
+def _require_emulator(what):
+    target = device()
     if not is_emulator(target):
-        raise Blocked(f"{target} is not an emulator; the phone hears through its own microphone")
-    code, out, err = _run([ADB, "-s", target, "emu", "avd", "hostmicon"], timeout=20)
-    if code != 0 or not out.strip().startswith("OK"):
-        raise Blocked(
-            f"could not turn the emulator's host microphone on: {out.strip() or err.strip() or 'no answer'}. "
-            "Was it started with -allow-host-audio? (scripts/enviouswispr-emulator.sh does both.)"
-        )
-    return "host microphone on"
+        raise Blocked(f"{target} is not an emulator, so {what} is refused: it is for the AVD only")
+    return target
+
+
+def unlock_emulator():
+    """Open the EMULATOR's lock screen with the PIN this project set on it, once, and read back.
+
+    The physical phone is never unlocked by this file (`ready()` says why). The emulator's PIN is ours
+    (`EMULATOR_PIN`), so the same sequence a person uses is sent: wake, swipe up, the PIN, enter. ONE
+    attempt: a second guess at a PIN is how a lockout starts, even on a device we own, and a PIN that
+    did not work is a fact to report rather than retry. The device is asked what it is again right
+    before the first keystroke, because that is the moment a wrong answer would cost something.
+    """
+    target = _require_emulator("unlocking")
+    if not _keyguard_showing():
+        return "already open"
+    if not is_emulator(target):
+        raise Blocked(f"{target} stopped answering as an emulator between two probes; no key was sent")
+    _adb("input keyevent KEYCODE_WAKEUP")
+    time.sleep(1)
+    # RAISE THE PASSWORD FIELD THROUGH THE WINDOW MANAGER, READ IT BACK, and only then type. A blind
+    # swipe-then-type typed the PIN into nothing in two of five benchmark runs (2026-09-20): a
+    # notification on the lock screen took the swipe. `wm dismiss-keyguard` asks the keyguard itself,
+    # which on a secure lock shows the bouncer (measured: field up on the first read, twice); one swipe
+    # is the fallback. The PIN is typed once, after the field is seen.
+    def field_up():
+        _STATE["tree"] = None
+        return any(n["id"] == "passwordEntry" for n in tree())
+
+    if not field_up():
+        _adb("wm dismiss-keyguard", check=False)
+        for _ in range(3):
+            time.sleep(1.0)
+            if field_up():
+                break
+        else:
+            width, height = _screen_size()
+            _adb(f"input swipe {width // 2} {int(height * 0.8)} {width // 2} {int(height * 0.3)} 300")
+            time.sleep(1.2)
+            if not field_up():
+                raise Blocked("the emulator's password field never came up, so no PIN was typed. "
+                              "Something is covering the lock screen; look() shows what.")
+    _adb(f"input text {shlex.quote(EMULATOR_PIN)}")
+    _adb("input keyevent KEYCODE_ENTER")
+    # THE KEYGUARD TAKES A FEW SECONDS TO GO, and a single read at two seconds called a successful unlock
+    # a failure (benchmark run 4, 2026-09-20: "stayed locked", and the very next read said open). Poll.
+    for _ in range(12):
+        time.sleep(0.5)
+        if not _keyguard_showing():
+            _STATE["tree"] = None
+            return "unlocked"
+    raise Blocked("the emulator stayed locked six seconds after one PIN attempt; the AVD's PIN may not "
+                  f"be {EMULATOR_PIN!r} any more. Not retrying.")
+
+
+def _grpc(method, payload=None, stdin_path=None, timeout=120):
+    """One call to the emulator's own control service, as JSON in and JSON out.
+
+    `grpcurl` (brew) is the client; the proto ships with the emulator. A streaming call hands a file of
+    newline-delimited JSON messages as stdin. Anything but a clean exit is a refusal that carries the
+    tool's own words, never a guess about what the emulator did.
+    """
+    if device() != EMULATOR_SERIAL:
+        raise Blocked(f"the control service at {GRPC_ENDPOINT} belongs to {EMULATOR_SERIAL} only, and "
+                      f"{device()} is selected; a change would land on the wrong device and be owed to "
+                      "the wrong one")
+    if not _has_tool("grpcurl"):
+        raise Blocked("grpcurl is not installed (brew install grpcurl), so the emulator's control "
+                      "service cannot be reached")
+    args = ["grpcurl", "-plaintext"]
+    proto = os.path.join(EMULATOR_PROTO_DIR, "emulator_controller.proto")
+    if os.path.exists(proto):
+        args += ["-import-path", EMULATOR_PROTO_DIR, "-proto", "emulator_controller.proto"]
+    if stdin_path is not None:
+        args += ["-d", "@"]
+    elif payload is not None:
+        args += ["-d", json.dumps(payload)]
+    args += [GRPC_ENDPOINT, f"{GRPC_SERVICE}/{method}"]
+    try:
+        with open(stdin_path if stdin_path else os.devnull, "rb") as feed:
+            done = subprocess.run(args, stdin=feed, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as why:
+        raise Blocked(f"grpcurl could not run {method}: {why}") from why
+    if done.returncode != 0:
+        raise Blocked(f"the emulator refused {method} over gRPC at {GRPC_ENDPOINT}: "
+                      f"{done.stderr.strip() or done.stdout.strip() or 'no message'}. "
+                      "Was it launched with -grpc 8554? launch_emulator() does that.")
+    text = done.stdout.strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {"raw": text}
+
+
+def _mic_state():
+    """Whether the emulator's virtual microphone is fed by the HOST microphone, read from the emulator."""
+    return bool(_grpc("getMicrophoneState").get("realAudioEnabled", False))
+
+
+def set_host_mic(on):
+    """Point the EMULATOR's microphone at the host microphone (on) or at nothing but injected audio (off).
+
+    Measured 2026-09-20: gRPC `getMicrophoneState.realAudioEnabled` tracks the console's `hostmicon` /
+    `hostmicoff`, and `setMicrophoneState` flips the same switch, so the console is not used any more
+    and, unlike the console, the state can be READ. The previous state is journaled and read back from
+    disk BEFORE the change, so a crash between the two leaves a debt rather than a silent emulator, and
+    a mismatch on the read-back keeps the debt. `restore()` from any later process puts it back.
+    """
+    _require_emulator("the host microphone switch")
+    previous = _mic_state()
+    if previous == bool(on):
+        return f"host microphone already {'on' if on else 'off'}"
+    entry = ("host-mic", "on" if previous else "off")
+    with _journal_locked():
+        _owe_locked(entry, device())
+        if entry not in _owed():
+            raise Blocked("the microphone change could not be written to the restore book, so it was "
+                          "not made")
+        _grpc("setMicrophoneState", {"realAudioEnabled": bool(on)})
+        now = _mic_state()
+    if now != bool(on):
+        raise Blocked(f"the emulator's microphone did not switch {'on' if on else 'off'}; it reads "
+                      f"{'on' if now else 'off'}. The previous state stays owed in {_JOURNAL}.")
+    return f"host microphone {'on' if on else 'off'}"
+
+
+def _pcm_from_sentence(sentence, path):
+    """Say a sentence into a raw PCM file the emulator's microphone accepts: s16le, mono, 48 kHz."""
+    for tool in ("say", "ffmpeg"):
+        if not _has_tool(tool):
+            raise Blocked(f"{tool} is not available, so no audio can be made for the emulator")
+    aiff = path + ".aiff"
+    _checked(["say", "-v", "Samantha", "-r", "160", "-o", aiff, "--", sentence], timeout=180)
+    _checked(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", aiff,
+              "-f", "s16le", "-ar", "48000", "-ac", "1", path], timeout=180)
+    # HALF A SECOND OF SILENCE ON THE END. The stream ends when the last packet is sent, and the last
+    # word was cut to "to Ma." on the first live take (2026-09-20, 1.8 s of audio, no padding); the
+    # recogniser needs the tail to hear the word end.
+    with open(path, "ab") as tail:
+        tail.write(bytes(48000))
+    return path
+
+
+PCM_CHUNK_BYTES = 9600  # 100 ms of s16le mono at 48 kHz
+
+
+def _audio_packets(pcm_path, packets_path):
+    """Chunk raw PCM into the newline-delimited JSON AudioPackets `injectAudio` streams.
+
+    Every packet carries its `format` AND a `timestamp` (microseconds, ascending). A packet with no
+    timestamp crashed the emulator on 2026-09-13 (device-testing.md RULE:
+    feed-emulator-audio-over-grpc-injectaudio-not-blackhole). This is the ONLY packet builder.
+    """
+    import base64
+    data = Path(pcm_path).read_bytes()
+    if not data:
+        raise Blocked(f"{pcm_path} holds no audio")
+    count = 0
+    t0 = int(time.time() * 1_000_000)  # epoch microseconds, ascending 100 ms per packet
+    with open(packets_path, "w") as out:
+        for count, offset in enumerate(range(0, len(data), PCM_CHUNK_BYTES), start=1):
+            out.write(json.dumps({
+                "format": {"samplingRate": 48000, "channels": "Mono", "format": "AUD_FMT_S16"},
+                "timestamp": t0 + (count - 1) * 100_000,
+                "audio": base64.b64encode(data[offset:offset + PCM_CHUNK_BYTES]).decode(),
+            }) + "\n")
+    return count, len(data) / (48000 * 2)
+
+
+def inject_audio(pcm_path):
+    """Stream a PCM file into the EMULATOR's microphone while a take is listening.
+
+    The injected stream IS the microphone only while the app holds it open, so this refuses unless
+    `recording()` says a take is live; injected before the microphone opens, the stream is dropped and
+    the take records silence, which reads exactly like a product that heard nothing.
+    """
+    _require_emulator("audio injection")
+    _grpc("getStatus")
+    if not Path(pcm_path).is_file():
+        raise Blocked(f"{pcm_path} is not a file")
+    if not recording():
+        raise Blocked("no take is listening on the emulator, so injected audio would be dropped. "
+                      "Inject inside `with open_recorder():`.")
+    packets = pcm_path + ".packets.jsonl"
+    count, seconds = _audio_packets(pcm_path, packets)
+    _grpc("injectAudio", stdin_path=packets, timeout=int(seconds) + 60)
+    return f"injected {count} packets, {seconds:.1f}s of audio"
+
+
+def _focused_field(target_package):
+    """The one focused editor in the target app, as (package, identity, text); None when there is none.
+
+    IDENTITY TRAVELS WITH THE TEXT so a before/after comparison is about ONE editor. Exactly one FOCUSED
+    editor is required: an unfocused field can become "the target" and read as words having arrived
+    somewhere they were never aimed (#161).
+    """
+    fields = [n for n in tree(refresh=True) if n["kind"] == "EditText"
+              and (target_package is None or n["package"] == target_package)
+              and n["focused"]]
+    if not fields:
+        return None
+    if len(fields) > 1:
+        raise Blocked(f"{len(fields)} focused editors are on screen, so which one the words were "
+                      "meant for is a guess")
+    node = fields[0]
+    return (node["package"], node["id"] or node["bounds"], node["text"])
+
+
+def _plain(text):
+    """A text with only the app's own decoration removed: NFKC, case-folded, punctuation dropped,
+    whitespace collapsed. NOT a tokenizer: three review rounds each found a script a tokenizer broke
+    (Cyrillic, combining marks, unspaced CJK), so the verdict is a plain substring match on this."""
+    import unicodedata
+    folded = unicodedata.normalize("NFKC", text or "").casefold()
+    kept = "".join(c for c in folded if not unicodedata.category(c).startswith("P"))
+    return " ".join(kept.split())
+
+
+def _sentence_landed(sentence, text):
+    """Whether the sentence appears in the text, exactly, once case, punctuation and spacing are aside.
+
+    Word membership alone passed "beta alpha" for "alpha beta" (review round 1, 2026-09-20); a word
+    tokenizer then failed Cyrillic, then combining marks and unspaced CJK (rounds 2 and 3), so this is a
+    substring match on `_plain`, which splits nothing.
+    """
+    # THE APP CAPITALISES THE FIRST LETTER, and case folding is not a bijection: Turkish `ı` folds
+    # differently from the `I` the app writes (review round 4), so the capitalised form is tried too.
+    got = _plain(text)
+    variants = {_plain(sentence), _plain(sentence[:1].upper() + sentence[1:])}
+    return any(wanted and wanted in got for wanted in variants)
+
+
+def _excerpt(text, keep=80):
+    """The tail of an editor's text, so a report line stays one line whatever the draft has grown to."""
+    text = (text or "").replace("\xa0", " ").strip()
+    return repr(text if len(text) <= keep else "…" + text[-keep:]) + f" ({len(text)} chars)"
+
+
+def open_app(package):
+    """Bring an app to the front by its package, the way the launcher would, and assert it arrived."""
+    ready()
+    _adb(f"monkey -p {shlex.quote(package)} -c android.intent.category.LAUNCHER 1")
+    for _ in range(8):
+        time.sleep(0.5)
+        _STATE["tree"] = None
+        if package in {n["package"] for n in tree()}:
+            return f"{package} is on screen"
+    raise Blocked(f"{package} did not come to the front")
+
+
+def focus_field(label, package):
+    """Press an editor by its hint or text and READ BACK that it took focus.
+
+    An editor is pressable by definition, whatever the tree says about `clickable`, so the press lands
+    on the label's own centre. The read-back is the point: a dictation aims at the focused field, and a
+    press that did not focus it would send the words somewhere else.
+    """
+    tap(label, clickable=False, package=package)
+    time.sleep(0.8)
+    field = _focused_field(package)
+    if field is None:
+        raise Blocked(f"{label!r} was pressed but no editor in {package} has focus")
+    return f"focused {label!r} ({field[1]})"
+
+
+def dictate_emulator(sentence="and I will send the deck tomorrow", target_package="com.google.android.gm"):
+    """One spoken take on the EMULATOR, fed over gRPC, judged by the editor's own text.
+
+    Replaces `scripts/uat/grpc-take.sh`, which tapped coordinates it had worked out by hand, turned the
+    host microphone off and never back on, and trusted a log line. Here the take is owned by
+    `open_recorder()`, the microphone by `set_host_mic()` and its journal, and the verdict by the field
+    that was focused before the take and is still the same field after it.
+    """
+    _require_emulator("a spoken take")
+    if _recording_is_off():
+        return [f"BLOCKED: {RECORDING_IS_OFF}"]
+    report = []
+    restore()
+    ready()
+    if not bound():
+        return ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
+                "enable_auto_paste() turns it back on."]
+    before = _focused_field(target_package)
+    if before is None:
+        return [f"BLOCKED: no focused editor in {target_package} is on screen; tap into one first"]
+    scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wispr-eyes")
+    os.makedirs(scratch, exist_ok=True)
+    pcm = _pcm_from_sentence(sentence, os.path.join(scratch, f"utt-{uuid.uuid4().hex}.pcm"))
+    report.append(f"NOTE: {sentence!r} was rendered to {pcm}")
+    ending = None
+    try:
+        report.append(f"NOTE: {set_host_mic(False)}")
+        clear_log()
+        with open_recorder(verify=False):
+            time.sleep(3.0)  # the recogniser warms; injecting sooner is dropped (grpc-take.sh, 2026-09-13)
+            report.append(f"NOTE: {inject_audio(pcm)}")
+            time.sleep(2.0)
+            stop_dictation()
+            ending = _wait_for_the_take_to_finish()
+    finally:
+        for line in restore():
+            report.append(f"NOTE: restored {line}")
+    if ending is None:
+        report.append("ISSUE: the dictation never reached an ending, so nothing can be said about it")
+        return report
+    take = last_take()
+    report.append(f"VERIFIED: a take ran, ended by {take['ended_by']}" if take["ended_by"]
+                  else "ISSUE: no take ending was logged")
+    if take["transcribed_chars"]:
+        report.append(f"VERIFIED: {take['transcribed_chars']} characters came back from the speech engine")
+    else:
+        report.append("ISSUE: nothing was transcribed; either the stream never reached the microphone "
+                      "or the engine returned empty")
+    _, route = _adb("logcat -d | grep 'insertion api=' | grep -v adbd | tail -1", check=False)
+    if route.strip():
+        report.append(f"NOTE: {route.strip()[-160:]}")
+    after = _focused_field(target_package)
+    if after is None:
+        report.append("ISSUE: no focused editor is on screen after the take, so where the words went "
+                      "is unknown")
+    elif after[:2] != before[:2]:
+        report.append("ISSUE: a DIFFERENT editor is focused now, so nothing here says where the words went")
+    elif after[2] == before[2]:
+        report.append(f"ISSUE: the editor is unchanged; it still holds {after[2]!r}")
+    else:
+        if not _sentence_landed(sentence, after[2]):
+            report.append(f"ISSUE: the editor changed but does not hold the sentence in order; it ends "
+                          f"{_excerpt(after[2])}")
+        else:
+            report.append(f"VERIFIED: the same editor now holds the sentence; it ends {_excerpt(after[2])}")
+    return report
+
+
+def debug_insert(text, target_package=None):
+    """Insert a sentence through the app's real insertion path with NO audio, on the EMULATOR's DEBUG build.
+
+    Replaces `scripts/uat/debug-insert.sh`. The debug-only broadcast pins the focused editor and
+    commits or pastes exactly as a take would, so it drives the caret matrix deterministically. The
+    editor's own text is the verdict, never the clipboard.
+    """
+    _require_emulator("the debug insert")
+    ready()
+    if not bound():
+        return ["BLOCKED: auto-paste is switched off, so nothing can be inserted"]
+    # THE PACKAGE's flag line is the bracketed one; the first bare `flags=0x0` belongs to a component
+    # and read as "not debuggable" on the first live run (2026-09-20).
+    _, dump = _adb(f"dumpsys package {PACKAGE} | grep -m1 DEBUGGABLE", check=False)
+    if "DEBUGGABLE" not in dump:
+        return [f"BLOCKED: the installed {PACKAGE} is not a debug build, so the insert receiver is absent"]
+    before = _focused_field(target_package)
+    if before is None:
+        return ["BLOCKED: no focused editor is on screen; tap into one first"]
+    clear_log()
+    _adb(f"am broadcast -a {PACKAGE}.debug.INSERT --es text {shlex.quote(text)} {PACKAGE}")
+    time.sleep(4)
+    report = []
+    # `grep -v adbd`: adbd logs the shell command it was asked to run, pattern included, so without it
+    # the last line read back is this very grep.
+    _, lines = _adb("logcat -d | grep -E 'insertion api=|DebugInsert: pin=' | grep -v adbd | tail -2",
+                    check=False)
+    for line in lines.strip().splitlines():
+        report.append(f"NOTE: {line.strip()[-160:]}")
+    after = _focused_field(target_package)
+    if after is None or after[:2] != before[:2]:
+        report.append("ISSUE: the focused editor changed or vanished, so where the text went is unknown")
+    elif text in (after[2] or ""):
+        report.append(f"VERIFIED: the same editor now holds the text; it ends {_excerpt(after[2])}")
+    else:
+        report.append(f"ISSUE: the editor reads {after[2]!r}, which does not contain {text!r}")
+    return report
+
+
+def open_page(url, package="com.android.chrome"):
+    """Open a URL in a browser and assert the browser is on screen. Nothing is sent to anyone."""
+    ready()
+    remote, out = _adb(f"am start -a android.intent.action.VIEW -d {shlex.quote(url)} {shlex.quote(package)}",
+                       check=False)
+    if remote != 0 or "Error" in out:
+        detail = out.strip().splitlines()[-1] if out.strip() else "no message"
+        raise Blocked(f"{url} would not open in {package}: {detail}")
+    for _ in range(6):
+        time.sleep(0.5)
+        _STATE["tree"] = None
+        if package in {n["package"] for n in tree()}:
+            return f"{package} is showing {url}"
+    raise Blocked(f"{package} did not come to the front for {url}")
+
+
+def launch_emulator(avd=PLAY_AVD, restart=False):
+    """Boot the AVD with its control service on, and wait until Android says it is up.
+
+    Replaces `scripts/uat/launch-grpc.sh`. A booted emulator is reused unless `restart=True`, because
+    killing one that another session is driving is the one-device rule broken at the level of the
+    machine. `-allow-host-audio` and `-grpc 8554` are always passed: without the first every microphone
+    sample is zeroed by design, without the second nothing here can feed audio or read the mic switch.
+    """
+    attached = {serial for serial, _ in devices()}
+    if EMULATOR_SERIAL in attached and not restart:
+        code, out, _ = _run([ADB, "-s", EMULATOR_SERIAL, "shell", "getprop sys.boot_completed"], timeout=20)
+        if code == 0 and out.strip() == "1":
+            device(EMULATOR_SERIAL)
+            _grpc("getStatus")
+            return f"{EMULATOR_SERIAL} is already booted with gRPC at {GRPC_ENDPOINT}"
+    if EMULATOR_SERIAL in attached:
+        if _owed(EMULATOR_SERIAL):
+            raise Blocked(f"changes are still owed to {EMULATOR_SERIAL}; restore() before restarting it")
+        _run([ADB, "-s", EMULATOR_SERIAL, "emu", "kill"], timeout=30)
+        for _ in range(30):
+            time.sleep(2)
+            if EMULATOR_SERIAL not in {serial for serial, _ in devices()}:
+                break
+        else:
+            raise Blocked(f"{EMULATOR_SERIAL} would not shut down")
+        time.sleep(4)
+    if not os.access(EMULATOR_BIN, os.X_OK):
+        raise Blocked(f"{EMULATOR_BIN} is not executable; is the Android SDK installed?")
+    log = open(os.path.join(os.environ.get("TMPDIR", "/tmp"), f"{avd}.log"), "ab")
+    subprocess.Popen([EMULATOR_BIN, "-avd", avd, "-gpu", "swiftshader_indirect", "-no-boot-anim",
+                      "-allow-host-audio", "-grpc", GRPC_ENDPOINT.rsplit(":", 1)[1]],
+                     stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    for _ in range(180):
+        time.sleep(1)
+        code, out, _ = _run([ADB, "-s", EMULATOR_SERIAL, "shell", "getprop sys.boot_completed"], timeout=20)
+        if code == 0 and out.strip() == "1":
+            break
+    else:
+        raise Blocked(f"{avd} did not finish booting in 180 s; its log is {log.name}")
+    device(EMULATOR_SERIAL)
+    _grpc("getStatus")
+    return f"{avd} booted as {EMULATOR_SERIAL} with gRPC at {GRPC_ENDPOINT}"
 
 
 CABLE = "BlackHole 2ch"
@@ -1920,7 +2381,7 @@ def say_into_emulator(sentence):
                       "cannot be pointed at the cable")
     if CABLE not in _checked([SWITCH_AUDIO, "-a", "-t", "input"]):
         raise Blocked(f"the virtual cable {CABLE!r} is not an input device (brew install blackhole-2ch)")
-    hear_on_emulator()
+    set_host_mic(True)
     previous = _mac_input()
     entry = ("mac-input", previous)
     _owe(entry, serial="host")
@@ -2101,8 +2562,29 @@ def _checked(args, timeout=60):
 
 
 @_atomic_change
-def _restore_one(entry):
+@contextmanager
+def _as_serial(serial):
+    """Drive ANOTHER attached device for the length of a restore, and put the selection back.
+
+    Not `_switch_to`: that refuses while the selected device has debts, and a restore is exactly the
+    moment it does. The selection is put back in `finally` so `device()` and `restored_for` are what
+    they were, whichever device's debt was just settled.
+    """
+    if serial is None or serial == _STATE["serial"]:
+        yield
+        return
+    saved, saved_tree = _STATE["serial"], _STATE["tree"]
+    _STATE["serial"], _STATE["tree"] = serial, None
+    try:
+        yield
+    finally:
+        _STATE["serial"], _STATE["tree"] = saved, saved_tree
+
+
+def _restore_one(entry, serial=None):
     """Put ONE change back, and read it back to prove it took.
+
+    `serial` names an attached device other than the selected one; see `_as_serial`.
 
     A restore that returned zero is not a restore that happened.
 
@@ -2110,6 +2592,11 @@ def _restore_one(entry):
     value nobody had recorded — `_restore_one(("screen-timeout", "1800000"))` against an empty book set
     his timeout to half an hour and left no trace. "Undo" is only undo when there is something to undo.
     """
+    with _as_serial(serial):
+        _restore_one_here(entry)
+
+
+def _restore_one_here(entry):
     what, previous = entry
     scope = "host" if what in ("mac-volume", "mac-input") else device()
     if entry not in _owed(scope):
@@ -2194,6 +2681,13 @@ def _restore_one(entry):
         if switch(wanted["label"]) != wanted["was"]:
             raise Blocked(f"{wanted['label']!r} would not go back to "
                           f"{'on' if wanted['was'] else 'off'}")
+    elif what == "host-mic":
+        wanted = previous == "on"
+        _grpc("setMicrophoneState", {"realAudioEnabled": wanted})
+        now = _mic_state()
+        if now != wanted:
+            raise Blocked(f"the emulator's host microphone did not go back {previous}; it reads "
+                          f"{'on' if now else 'off'}")
     elif what == "screen-timeout":
         _adb(f"settings put system screen_off_timeout {int(previous)}")
         _, now = _adb("settings get system screen_off_timeout")
@@ -2229,13 +2723,22 @@ def _restore_locked():
     """
     _STATE["restored_for"] = None
     done = []
-    # The HOST book first, then this phone's. Never another phone's: a change owed to a device that is
-    # not attached cannot be verified, and an unverified restore is not a restore.
-    for scope in ("host", device()):
+    # The HOST book first, then this device's, then any OTHER device in the book that is attached right
+    # now. A debt owed to a device that is not attached cannot be verified, so it is reported and kept,
+    # never settled: an unverified restore is not a restore. The other attached devices are driven
+    # through `_as_serial`, so the selection this process made is untouched afterwards.
+    selected = device()
+    attached = {serial for serial, _ in devices()}
+    others = sorted(scope for scope in _journal_read() if scope not in ("host", selected))
+    for scope in ["host", selected] + others:
+        if scope not in ("host", selected) and scope not in attached:
+            if _owed(scope):
+                done.append(f"{scope}: not attached, debt kept")
+            continue
         for entry in list(_owed(scope)):
-            _restore_one(entry)
+            _restore_one(entry, serial=None if scope in ("host", selected) else scope)
             _settled_locked(entry, scope)
-            done.append(f"{entry[0]} back to {entry[1]}")
+            done.append(f"{entry[0]} back to {entry[1]}" + ("" if scope in ("host", selected) else f" on {scope}"))
     _STATE["restore"] = []
     # THE SCREEN DUMP IS NOT DELETED, and that is the whole of it. `rm -f` on a fixed path removes
     # whatever is sitting there, and "it looks like XML" is a description, not proof of ownership: a
@@ -2252,7 +2755,7 @@ def _restore_locked():
 
 def check_recorder():
     """Does the floating recorder open, and can the user see it? One call, and it always tidies up."""
-    if RECORDING_IS_OFF:
+    if _recording_is_off():
         return [f"BLOCKED: {RECORDING_IS_OFF}"]
     ready()
     report = []
@@ -2295,6 +2798,9 @@ TRAILING_MARGIN_S = 1.0
 _TERMINAL_LINES = (
     "Auto-insert handed", "kept on clipboard", "Transcription failed",
     "Speech recognition failed", "No audio captured", "showError",
+    # `Take terminal: <STATE>` is the session's own ending line (seen `NO_SPEECH` on 2026-09-20); without
+    # it a take that heard nothing waited the full 40 s and 200 log reads before saying so.
+    "Take terminal:",
 )
 
 
@@ -2454,7 +2960,7 @@ def room_is_quiet(seconds=6):
     Non-disruptive by construction: it plays nothing, so it is safe to run while somebody is talking,
     which is exactly when it is needed.
     """
-    if RECORDING_IS_OFF:
+    if _recording_is_off():
         return [f"BLOCKED: {RECORDING_IS_OFF}"]
     ready()
     restore()
@@ -2504,7 +3010,7 @@ def test_dictation(sentence="The quick brown fox jumps over the lazy dog.", volu
     so a run started from the app's own screens is testing something the product never does. Chrome's
     address bar is the safe one: nothing is sent.
     """
-    if RECORDING_IS_OFF:
+    if _recording_is_off():
         return [f"BLOCKED: {RECORDING_IS_OFF}"]
     ready()
     restore()
@@ -2604,11 +3110,30 @@ def test_dictation(sentence="The quick brown fox jumps over the lazy dog.", volu
 # Command line
 # --------------------------------------------------------------------------------------------------
 
+def _print_report(command, report, verbose):
+    """One line on success, the whole report on a finding or with `--verbose`.
+
+    Everything the harness prints lands in the calling agent's context, so a routine success costs one
+    line: the last VERIFIED sentence. A finding prints every line, because then the NOTEs are the
+    evidence. Founder 2026-09-20: "blazing fast and not crazy token heavy".
+    """
+    red = any(line.startswith(("ISSUE", "BLOCKED")) for line in report)
+    if red or verbose:
+        print("\n".join(report))
+    else:
+        verified = [line for line in report if line.startswith("VERIFIED")]
+        print(f"OK {command}: {verified[-1][len('VERIFIED: '):] if verified else 'done'} (--verbose for the notes)")
+    return 1 if red else 0
+
+
 def _main(argv):
+    verbose = "--verbose" in argv
+    argv = [a for a in argv if a != "--verbose"]
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
         print("commands: devices look tree find tap tab nav scan switches recorder dictate "
-              "quiet logs take shot restore")
+              "quiet logs take shot restore | emulator: launch unlock mic on|off inject <pcm> "
+              "dictate-emu [sentence] insert <text>")
         return 0
     command, rest = argv[0], argv[1:]
     try:
@@ -2640,9 +3165,8 @@ def _main(argv):
             return 0 if answer["quiet"] else 1
         elif command in ("recorder", "dictate"):
             report = check_recorder() if command == "recorder" else test_dictation(*(rest or []))
-            print("\n".join(report))
             # A findings report that exits 0 is a green light over a red result.
-            return 1 if any(line.startswith(("ISSUE", "BLOCKED")) for line in report) else 0
+            return _print_report(command, report, verbose)
         elif command == "logs":
             print(logs(rest[0] if rest else None))
         elif command == "take":
@@ -2650,7 +3174,22 @@ def _main(argv):
         elif command == "shot":
             print(shot(rest[0] if rest else None))
         elif command == "restore":
-            print("\n".join(restore()))
+            lines = restore()
+            print("\n".join(lines) if verbose or len(lines) > 3 else "; ".join(lines))
+        elif command == "launch":
+            print(launch_emulator(restart="--restart" in rest))
+        elif command == "unlock":
+            print(unlock_emulator())
+        elif command == "mic":
+            if not rest or rest[0] not in ("on", "off"):
+                print("usage: mic on|off", file=sys.stderr)
+                return 2
+            print(set_host_mic(rest[0] == "on"))
+        elif command == "inject":
+            print(inject_audio(rest[0]))
+        elif command in ("dictate-emu", "insert"):
+            report = dictate_emulator(*(rest or [])) if command == "dictate-emu" else debug_insert(rest[0])
+            return _print_report(command, report, verbose)
         else:
             print(f"unknown command {command!r}", file=sys.stderr)
             return 2

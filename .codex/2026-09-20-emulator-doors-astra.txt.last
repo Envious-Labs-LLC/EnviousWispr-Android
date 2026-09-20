@@ -1,0 +1,53 @@
+## Verdict
+
+**ONE-FRONT-DOOR.** This is an established architecture, not something to re-derive: [DeepMind’s AndroidEnv](https://github.com/google-deepmind/android_env) is the foundational reference; [Mobile-Env, Appendix B.1](https://rhythmcao.github.io/publication/2024-mobile-env/2024-mobile-env.pdf) explicitly combines adb and emulator gRPC behind one agent interface. Neither is a canonical recipe specifically for voice-app UAT. Use that shape here: one discoverable harness, several private transports. Four documented choices preserve the recurring mistake. One interface centralizes protection against founder-phone lockouts and destructive input, while small transport wrappers cost less to maintain than competing scripts. However, adding functions and another rule alone will **not** make the next agent choose correctly: expose the harness commands as the project’s visible device tools and block direct transport calls at the tool boundary.
+
+## Design
+
+Add these public signatures; each returns a plain-English result and raises `Blocked` when prerequisites or outcomes are uncertain:
+
+```python
+def unlock_emulator() -> str: ...
+def set_host_mic(enabled: bool) -> str: ...
+def inject_audio(pcm_path: str) -> str: ...
+def dictate_emulator(sentence: str) -> str: ...
+def debug_insert(text: str) -> str: ...
+def launch_emulator(*, restart: bool = False) -> str: ...
+```
+
+All emulator operations require an explicitly selected serial, verified emulator identity and the expected AVD. Bind its gRPC endpoint to that same target; never fall back to the attached physical phone.
+
+- **`unlock_emulator()`** wraps the existing adb wake/swipe/PIN/enter sequence. Use the known AVD’s PIN internally, attempt once, and verify the window manager’s keyguard state. Already unlocked means no input. Preserve `ready()`’s physical-phone refusal.
+- **`set_host_mic(enabled)`** wraps host microphone routing. Journal the previous state before changing it; extend `restore()` to put it back.
+- **`inject_audio(pcm_path)`** wraps gRPC `injectAudio`, accepting validated 48 kHz mono S16LE PCM. Require host mic off and an active emulator recording. Report transport completion separately from transcription or insertion success.
+- **`dictate_emulator(sentence)`** replaces the complete `grpc-take.sh` workflow: prepare speech and packets before recording, disable host mic, start through harness controls, inject, finish, and verify the editor’s actual text. Cancel and restore on failure.
+- **`debug_insert(text)`** wraps the debug INSERT broadcast with safe argument handling, emulator/debug-build checks and editor-text verification. Label the result as insertion-only evidence.
+- **`launch_emulator(restart=False)`** absorbs launch setup and boot waiting. Reuse a healthy matching instance; restart only when explicitly requested, targeting that instance alone.
+
+Expose matching CLI commands and help examples. Keep adb/grpcurl private implementation details; `BLOCKED` must not become permission to bypass the harness.
+
+**gRPC microphone replacement: NOT VERIFIED.** The [upstream controller definition](https://github.com/google/android-emulator-webrtc/blob/master/proto/emulator_controller.proto) exposes microphone-state operations, but that alone does not establish equivalence with `hostmicoff/hostmicon` on this installed emulator. Retain those console commands privately inside `set_host_mic()` until equivalence is confirmed. One front door does not require eliminating every internal console call.
+
+## Delete
+
+After their replacements work:
+
+| Remove | Purpose and replacement |
+|---|---|
+| `grpc-take.sh` | Complete spoken take → `dictate_emulator()` |
+| `inject-audio.sh` | Speech preparation and gRPC injection → shared preparation inside `dictate_emulator()`, streaming through `inject_audio()` |
+| `launch-grpc.sh` | Emulator restart, launch and mic setup → `launch_emulator()` and `set_host_mic()` |
+| `debug-insert.sh` | Synthetic insertion → `debug_insert()` |
+
+In the skill, replace **“The emulator”** raw unlock recipe with the harness call; replace external-script instructions under **“Insertion without audio…”** with `debug_insert()`. Preserve the overlay guidance and physical-phone prohibitions.
+
+Remove the Appium fallback rule and this project’s `appium-mcp` registration exposing `mcp__appium-mcp__*`. They supplied alternate tree inspection and locator taps; harness observation and explicit refusal replace them. Exact rule heading and registration location: **UNCHECKED**.
+
+Global/project brains, memory files, and referenced helper files: **UNCHECKED**, outside the permitted file list. No changes made.
+
+## Risks
+
+- **RC=137:** retry the tree dump once, then return a clearly degraded observation using `shot()`, app state/logs and `overlay()`. These do not replace missing selectors. If safe targeting needs the tree, return `BLOCKED`; never open UiAutomator2 on the phone.
+- **Wrong target:** serial, emulator identity, AVD and endpoint checks must precede PIN or microphone operations. Uncertainty means refusal.
+- **Recording lifecycle:** the skill currently disables harness recording. The emulator take path needs an explicit scoped implementation; adding injection must not silently enable physical-phone recording or bypass that restriction.
+- **False consolidation:** raw shell access and advertised helper scripts remain alternative doors unless access and discovery change. Keep one public interface, private transport helpers and shared restoration, rather than expanding the harness into a general automation framework.

@@ -1,0 +1,25 @@
+Issue #177 review — DONE
+
+## Axes
+
+A. CONFIRMED CLOSED
+
+D. CONFIRMED CLOSED
+
+E. CONFIRMED CLOSED
+
+F. CONFIRMED CLOSED
+
+G. CONFIRMED CLOSED
+
+NEW: FOUND two reproducible defects.
+
+1. The hook allows a mutating RPC when `list` or `describe` appears as any argument, for example `-authority describe …/setMicrophoneState`. Fix: allow only controller targets without `/`; deny every `EmulatorController/<method>` target. Add this bypass as a deny test.
+
+2. The ASCII-only normalizer wrongly refuses exact non-Latin sentences, such as `Привет мир`. Fix both harness and benchmark tokenizers with Unicode normalization and tokens:
+`re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", text or "").casefold())`.
+Add a non-Latin acceptance test.
+
+## Verdict
+
+FIX-FIRST

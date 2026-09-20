@@ -29,11 +29,11 @@ class DeterministicFallbackTest {
      * Drift Guard, not product coverage, and a SOURCE-SHAPE check rather than a proof: the two rows above
      * exercise the shared helper's text, and this one checks by current source spelling that the session
      * owner still calls it. A matching call left in dead code would satisfy it. Restoring the regex
-     * polisher only inside `DictationSessionService.deterministicFallback` would leave the rows above
-     * green, which is the drift it is here for.
+     * polisher only inside `DictationSessionCoordinator.deterministicFallback` would leave the rows above
+     * green, which is the drift it is here for. (The owner moved from the Service to the coordinator in #186.)
      */
     @Test fun sessionOwnerUsesTheSharedDeterministicFallback() {
-        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
         assertTrue(source.contains("PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)"))
         assertFalse(source.contains("RegexPolisher"))
     }
@@ -76,20 +76,32 @@ class DeterministicFallbackTest {
      * deliberately substituting a dead detector is not something a source match can stop.
      */
     @Test fun bothTerminalsPassTheirConfiguredDetectorByCurrentSourceShape() {
+        // Since #186 the session side is two files: the coordinator makes the call with the detector it
+        // was handed, and the Service builds the real one and hands it over in `onCreate`.
         val terminals = listOf(
-            "src/main/java/com/envi/wispr/ui/DictationSessionService.kt"
-                to "PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)",
-            "src/main/java/com/envi/wispr/polish/PolishService.kt"
-                to "PolishFallback.deterministic(raw, options, languageDetector)",
+            Triple(
+                "src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt",
+                "PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)",
+                "src/main/java/com/envi/wispr/ui/DictationSessionService.kt",
+            ),
+            Triple(
+                "src/main/java/com/envi/wispr/polish/PolishService.kt",
+                "PolishFallback.deterministic(raw, options, languageDetector)",
+                "src/main/java/com/envi/wispr/polish/PolishService.kt",
+            ),
         )
-        terminals.forEach { (path, call) ->
+        terminals.forEach { (path, call, builder) ->
             val source = java.io.File(path).readText()
             assertTrue("$path no longer passes its detector to the shared fallback", source.contains(call))
             assertTrue(
-                "$path no longer builds the real detector",
-                source.contains("MlKitLanguageDetector(applicationContext)"),
+                "$builder no longer builds the real detector",
+                java.io.File(builder).readText().contains("MlKitLanguageDetector(applicationContext)"),
             )
         }
+        assertTrue(
+            "the Service no longer hands its detector to the coordinator",
+            java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText().contains("languageDetector = languageDetector,"),
+        )
     }
 
     @Test fun fallbackStillAppliesTheTakeCleanupOptions() {

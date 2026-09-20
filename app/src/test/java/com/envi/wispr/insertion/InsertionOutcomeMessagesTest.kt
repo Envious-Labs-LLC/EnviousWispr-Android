@@ -282,8 +282,9 @@ class InsertionOutcomeMessagesTest {
      */
     @Test
     fun noFallbackPathBuzzesThePhone() {
+        // Since #186 the announcement lives in the coordinator; the haptic would read `host.vibrate(`.
         val session = slice(
-            read("ui/DictationSessionService.kt"),
+            read("ui/DictationSessionCoordinator.kt"),
             "private fun announceInsertionFallback(",
             "\n    /**",
         )
@@ -383,18 +384,20 @@ class InsertionOutcomeMessagesTest {
         // DRIFT GUARD. REVERT: `clipboard = ClipboardInsertionPolicy()` in promoteToForeground,
         // or dropping the `?` from the field it reads. Either restores a stand-in that reads as a
         // decided answer, and every row above stays green through both.
-        val session = read("ui/DictationSessionService.kt")
+        // Since #186 the field lives in SessionPreferencesSource and the notification in the Service's host.
+        val source = read("ui/SessionPreferencesSource.kt")
         assertTrue(
             "clipboardPolicy is no longer nullable, so the session owner cannot tell an unloaded " +
                 "setting from a decided one and the listening notification is built from a " +
                 "default whose auto-copy value is true",
-            session.contains("private var clipboardPolicy: ClipboardInsertionPolicy? = null"),
+            source.contains("@Volatile var clipboardPolicy: ClipboardInsertionPolicy? = null"),
         )
-        val promote = slice(session, "private fun promoteToForeground(", "\n    private fun ")
+        val session = read("ui/DictationSessionService.kt")
+        val promote = slice(session, "override fun promoteToForeground(", "\n        override fun ")
         assertTrue(
             "The listening notification is built from something other than the live, possibly " +
                 "unloaded clipboard field, so it can state a destination nobody has decided",
-            promote.contains("clipboard = clipboardPolicy,"),
+            promote.contains("clipboard = preferences.clipboardPolicy,"),
         )
         assertFalse(
             "promoteToForeground constructs a ClipboardInsertionPolicy of its own. That default " +

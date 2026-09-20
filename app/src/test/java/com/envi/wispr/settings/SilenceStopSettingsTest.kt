@@ -27,7 +27,8 @@ class SilenceStopSettingsTest {
         // beginSession awaits this readiness signal before binding anything, so both values must be
         // assigned in the same collector block ABOVE the completion. Written anywhere else and a user
         // who enabled auto-stop silently gets a manual take after every cold start.
-        val source = read("ui/DictationSessionService.kt")
+        // Since #186 the collector lives in SessionPreferencesSource; beginSession awaits its readiness signal.
+        val source = read("ui/SessionPreferencesSource.kt")
         val block = source.substringAfter("authoritativeState.collect")
             .substringBefore("cleanupPreferencesReady.complete(Unit)")
         assertTrue("the switch is read before the gate", block.contains("autoStopOnSilence = preferences.autoStopOnSilenceEnabled"))
@@ -36,18 +37,20 @@ class SilenceStopSettingsTest {
 
     @Test
     fun theTakeFreezesTheSettingsRatherThanReadingThemAsItGoes() {
-        val source = read("ui/DictationSessionService.kt")
-        assertTrue(
-            source.contains("audioService?.startCaptureForTake(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady, takeId)"),
-        )
+        // Since #186 the frozen fields are read off SessionPreferencesSource at the one start call in the coordinator.
+        val source = read("ui/DictationSessionCoordinator.kt")
+        val start = source.substringAfter("pipeline.capture?.startCaptureForTake(").substringBefore(")")
+        listOf("preferences.autoStopOnSilence", "preferences.silencePauseSeconds", "preferences.inputDevicePick", "preferences.keepEarbudsReady", "takeId").forEach {
+            assertTrue("the start call carries $it", start.contains(it))
+        }
     }
 
     @Test
     fun theNoticeFiresOnlyOnceAndOnlyWhenAutoStopNeverBecameAvailable() {
-        val body = read("ui/DictationSessionService.kt")
+        val body = read("ui/DictationSessionCoordinator.kt")
             .substringAfter("private fun publishSilenceNoticeIfNeeded(")
             .substringBefore("private fun stopAndTranscribe(")
-        assertTrue("nothing to say when the user has it off", body.contains("if (!autoStopOnSilence || silenceNoticeShown) return"))
+        assertTrue("nothing to say when the user has it off", body.contains("if (!preferences.autoStopOnSilence || silenceNoticeShown) return"))
         assertTrue("and only for the unavailable state", body.contains("!= AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return"))
         assertTrue("shown once per take", body.contains("silenceNoticeShown = true"))
     }
@@ -60,18 +63,22 @@ class SilenceStopSettingsTest {
         // That decision now belongs to `sayWhileRecording`, which every mid-dictation message goes
         // through. Asserting it there is what stops the NEXT message picking a surface that is not on
         // screen, which asserting it inside this one caller could never do.
-        val source = read("ui/DictationSessionService.kt")
+        // Since #186 the chooser reads the paste service's liveness and the overlay through the owner's seams.
+        val source = read("ui/DictationSessionCoordinator.kt")
         val chooser = source
             .substringAfter("private fun sayWhileRecording(line: String) {")
             .substringBefore("private fun sayAfterRecording(")
-        assertTrue(chooser.contains("if (PasteAccessibilityService.isBound.value)"))
-        assertTrue(chooser.contains("RecordingOverlayState.showNotice(line)"))
+        assertTrue(chooser.contains("if (insertion.isBound())"))
+        assertTrue(chooser.contains("surface.showNotice(line)"))
         assertTrue(chooser.contains("sayAfterRecording(line)"))
 
         val toast = source
             .substringAfter("private fun sayAfterRecording(line: String) {")
             .substringBefore("private fun stopAndTranscribe(")
-        assertTrue(toast.contains("Toast.makeText(applicationContext, line"))
+        assertTrue("the after-recorder line is the application-context toast", toast.contains("host.toastFromApplication(line)"))
+        assertTrue(
+            read("ui/DictationSessionService.kt").substringAfter("override fun toastFromApplication(").contains("Toast.makeText(applicationContext, line"),
+        )
 
         val notice = source
             .substringAfter("private fun publishSilenceNoticeIfNeeded(")
@@ -86,7 +93,7 @@ class SilenceStopSettingsTest {
     fun theNoticeUsesMacOSsOwnSentence() {
         // Android inventing its own words for a state macOS has already worded is how they drift.
         assertTrue(
-            read("ui/DictationSessionService.kt")
+            read("ui/DictationSessionCoordinator.kt")
                 .contains("\"Auto-stop on silence is unavailable right now\""),
         )
     }

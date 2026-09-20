@@ -21,7 +21,8 @@ class RecordingCapWiringTest {
     private val limits = File("src/main/java/com/envi/wispr/audio/RecordingLimits.kt").readText()
     private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
     private val asr = File("src/main/java/com/envi/wispr/asr/AsrService.kt").readText()
-    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+    /** Since #186 the cap notices, the warning latch and the polling loop live in the coordinator. */
+    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
 
     @Test
     fun theCapHasExactlyOneHome() {

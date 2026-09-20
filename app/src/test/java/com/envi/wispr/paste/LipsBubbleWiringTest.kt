@@ -13,7 +13,8 @@ import java.io.File
 class LipsBubbleWiringTest {
 
     private val service = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText()
-    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+    /** The owner since #186; the overlay state is reached through its `surface` seam and the notification through `host`. */
+    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
     private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
     private val launcher = File("src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt").readText()
     private val manifest = File("src/main/AndroidManifest.xml").readText()
@@ -31,10 +32,10 @@ class LipsBubbleWiringTest {
     fun theSessionOwnerPublishesIdleOnlyWhereItCanNoLongerRefuseAStart() {
         // finishSession publishes IDLE right before stopSelf; onDestroy publishes it because the
         // owner is gone. Every other terminal path publishes PROCESSING.
-        val finish = session.substringAfter("private fun finishSession()").substringBefore("private fun promoteToForeground")
-        assertTrue(finish.contains("RecordingOverlayState.showProcessing()"))
-        assertTrue(finish.contains("RecordingOverlayState.hide()"))
-        assertTrue(finish.indexOf("RecordingOverlayState.hide()") > finish.indexOf("DictationNotificationController.dismiss"))
+        val finish = session.substringAfter("private fun finishSession()").substringBefore("private fun stopIfIdle()")
+        assertTrue(finish.contains("surface.showProcessing()"))
+        assertTrue(finish.contains("surface.hide()"))
+        assertTrue(finish.indexOf("surface.hide()") > finish.indexOf("host.removeForegroundAndDismiss()"))
         // Both cancels share one body since the live gate (a cancelled start has capture running too).
         listOf("private fun cancelRecording()", "private fun cancelStarting()").forEach { head ->
             val body = session.substringAfter(head).substringBefore("\n    private fun ")
@@ -43,8 +44,8 @@ class LipsBubbleWiringTest {
         listOf("private fun stopAndTranscribe()", "private fun cancelCaptureAndFinish(", "private fun announceError(")
             .forEach { head ->
                 val body = session.substringAfter(head).substringBefore("\n    private fun ")
-                assertTrue("$head must publish PROCESSING", body.contains("RecordingOverlayState.showProcessing()"))
-                assertFalse("$head must not publish IDLE", body.contains("RecordingOverlayState.hide()"))
+                assertTrue("$head must publish PROCESSING", body.contains("surface.showProcessing()"))
+                assertFalse("$head must not publish IDLE", body.contains("surface.hide()"))
             }
     }
 
@@ -52,9 +53,9 @@ class LipsBubbleWiringTest {
     fun theOwnerPublishesTheTakesTargetAndRowSoNoReaderGuessesThem() {
         // The onboarding practice judges ONLY the row the owner names, for a take aimed at ITS box.
         val begin = session.substringAfter("private fun beginSession()").substringBefore("\n    private fun ")
-        assertTrue(begin.contains("RecordingOverlayState.nameTarget("))
+        assertTrue(begin.contains("surface.nameTarget("))
         assertTrue(begin.indexOf("nameTarget(") > begin.indexOf("pinTargetForDictation()"))
-        assertTrue(session.contains("RecordingOverlayState.attachTranscript(id)"))
+        assertTrue(session.contains("surface.attachTranscript(id)"))
         val viewModel = File("src/main/java/com/envi/wispr/ui/OnboardingViewModel.kt").readText()
         assertTrue(viewModel.contains("snapshot.targetFieldId == PRACTICE_FIELD_ID"))
         assertTrue(viewModel.contains("snapshot.transcriptId"))
@@ -91,8 +92,8 @@ class LipsBubbleWiringTest {
 
     @Test
     fun theOwnerResolvesEveryMarkedCommandThroughTheLedgerBeforeDispatch() {
-        val handler = session.substringAfter("override fun onStartCommand").substringBefore("override fun onBind")
-        assertTrue(handler.indexOf("admitBubbleCommand(") < handler.indexOf("when (intent?.action ?: ACTION_START)"))
+        val handler = session.substringAfter("fun handleCommand(").substringBefore("private fun admitBubbleCommand(")
+        assertTrue(handler.indexOf("admitBubbleCommand(") < handler.indexOf("when (action)"))
         assertTrue(session.contains("BubbleRequests.resolveStart("))
         assertTrue(session.contains("BubbleRequests.resolveCommand("))
         // The early release is consumed at the RECORDING transition, nowhere else.

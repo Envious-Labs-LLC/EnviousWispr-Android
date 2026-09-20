@@ -14,7 +14,8 @@ import org.junit.Test
  * appeared and the History row and the completion surface can disagree about one dictation.
  */
 class PolishPublicationRoutesTest {
-    private val source = File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+    /** The owner since #186; the notice reaches the notification through the `host` seam. */
+    private val source = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
 
     private fun section(start: String, end: String): String {
         val from = source.indexOf(start)
@@ -36,8 +37,8 @@ class PolishPublicationRoutesTest {
     @Test fun theFactsAreDerivedExactlyOnceAndTheNoticePrecedesPersistence() {
         assertEquals(1, Regex("""PolishPublicationFacts\.from\(""").findAll(source).count())
         val publication = section("private fun publishResult(", "private suspend fun insertReadyTranscript")
-        val notice = publication.indexOf("DictationNotificationController.showPolishNotice(this, notice)")
-        val persistence = publication.indexOf("serviceScope.launch")
+        val notice = publication.indexOf("host.showPolishNotice(notice)")
+        val persistence = publication.indexOf("scope.launch")
         assertTrue("the notice is posted before the persistence coroutine starts", notice >= 0 && notice < persistence)
     }
 

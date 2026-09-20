@@ -24,10 +24,14 @@ import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.CaptureEnding
+import com.envi.wispr.audio.InputRouteKind
+import com.envi.wispr.audio.InputRouteReason
 import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.audio.LiveGate
 import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
+import com.envi.wispr.audio.SpeechEvidence
+import com.envi.wispr.asr.AsrFailureReason
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.TextSafety
@@ -50,6 +54,14 @@ import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
 import com.envi.wispr.polish.PolishContext
+import com.envi.wispr.telemetry.AnalyticsEvent
+import com.envi.wispr.telemetry.AppDefect
+import com.envi.wispr.telemetry.InsertionResultKind
+import com.envi.wispr.telemetry.InsertionRouteKind
+import com.envi.wispr.telemetry.TakeFacts
+import com.envi.wispr.telemetry.TakeStage
+import com.envi.wispr.telemetry.Telemetry
+import com.envi.wispr.telemetry.TelemetryChannels
 import com.envi.wispr.polish.PolishEngineLabels
 import com.envi.wispr.polish.PolishPublicationFacts
 import com.envi.wispr.polish.MlKitLanguageDetector
@@ -91,6 +103,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 
 /** Owns a dictation session without placing an Activity above the user's typing app. */
@@ -128,9 +141,19 @@ class DictationSessionService : Service() {
         /** The floating bubble's request token (`BubbleRequestToken.encode`), on START, STOP and CANCEL. */
         const val EXTRA_REQUEST = "bubble_request"
 
-        fun sendCommand(context: Context, action: String, requestToken: String? = null) {
+        /**
+         * `TriggerSource.wire` on a START or TOGGLE: which surface asked (issue #176). A bubble request
+         * carries its own answer in its token; every other surface names itself here or reads `unknown`.
+         */
+        const val EXTRA_TRIGGER_SOURCE = "trigger_source"
+
+        /** How long a take waits for its journal admission before starting anyway (a limb, never a gate). */
+        const val JOURNAL_ADMISSION_DEADLINE_MS = 300L
+
+        fun sendCommand(context: Context, action: String, requestToken: String? = null, trigger: TriggerSource? = null) {
             val intent = Intent(context, DictationSessionService::class.java).setAction(action)
             if (requestToken != null) intent.putExtra(EXTRA_REQUEST, requestToken)
+            if (trigger != null) intent.putExtra(EXTRA_TRIGGER_SOURCE, trigger.wire)
             if (action == ACTION_START || action == ACTION_TOGGLE) {
                 intent.putExtra(EXTRA_FOREGROUND_COMMAND, true)
                 ContextCompat.startForegroundService(context, intent)
@@ -161,7 +184,39 @@ class DictationSessionService : Service() {
     )
 
     private val state = AtomicReference(SessionState.IDLE)
-    private val publicationStarted = AtomicBoolean(false)
+
+    /**
+     * The one referee of how this take ends (issue #176). Every terminal route reserves or commits
+     * through it; a route that loses does no History, notification, insertion or terminal work. It
+     * replaced the `publicationStarted` flag, which guarded publication only and let a late ASR error
+     * announce over a cancel. A fresh arbiter per admitted take; `closed()` refuses everything before one.
+     */
+    @Volatile private var arbiter: TakeArbiter = TakeArbiter.closed()
+
+    /**
+     * This take's id, minted at admission and carried on every request that leaves this process
+     * (audio start, the speech request, the polish request), so a helper's records can name the take
+     * (issue #176). Never persisted by the helpers; chunk B carries it to telemetry.
+     */
+    @Volatile private var takeId = ""
+
+    /** The take's peak loudness, read ONCE at stop like the device label; null when it could not be read. */
+    @Volatile private var takePeakAmplitude: Float? = null
+
+    /**
+     * What this take measured, for its one `dictation.terminal` row (issue #176). A fresh holder per
+     * admitted take; every fact is written where it becomes known and read once, at the commit.
+     */
+    @Volatile private var facts = TakeFacts("", TriggerSource.UNKNOWN)
+
+    /** The surface named on the last START or TOGGLE command; consumed at admission. */
+    @Volatile private var pendingTrigger = TriggerSource.UNKNOWN
+
+    /** Names for the two reservations whose outcome is unknown at the claim. */
+    private object Claimants {
+        const val PUBLICATION = "publication"
+        const val CANCEL = "cancel"
+    }
     /**
      * Reads the dictation's language off the finished transcript for this side's deterministic fallback
      * (#107). Built in `onCreate`, not as a field initializer and NOT lazily, for the reason
@@ -281,7 +336,7 @@ class DictationSessionService : Service() {
             // binder vanished returns without ending the take (Codex review 2, 2026-09-18).
             val seen = state.get()
             if (seen == SessionState.RECORDING || seen == SessionState.STARTING) {
-                handleServiceFailure("Microphone service stopped unexpectedly")
+                handleServiceFailure(TerminalReason.AUDIO_PROCESS_DIED)
             }
         }
     }
@@ -298,9 +353,9 @@ class DictationSessionService : Service() {
             if (state.get() == SessionState.PROCESSING) {
                 if (rawTranscript.isNotBlank()) {
                     publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
-                } else if (publicationStarted.compareAndSet(false, true)) {
+                } else if (arbiter.commitNow(TerminalReason.ASR_PROCESS_DIED)) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError("Speech service stopped before transcription finished")
+                    endAsFailure(TerminalReason.ASR_PROCESS_DIED)
                 }
             }
         }
@@ -322,9 +377,9 @@ class DictationSessionService : Service() {
             if (state.get() == SessionState.PROCESSING) {
                 if (rawTranscript.isNotBlank()) {
                     publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
-                } else if (publicationStarted.compareAndSet(false, true)) {
+                } else if (arbiter.commitNow(TerminalReason.POLISH_PROCESS_DIED)) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError("Polish service stopped before cleanup finished")
+                    endAsFailure(TerminalReason.POLISH_PROCESS_DIED)
                 }
             }
         }
@@ -335,6 +390,7 @@ class DictationSessionService : Service() {
         languageDetector = MlKitLanguageDetector(applicationContext)
         serviceScope.launch {
             runCatching { transcriptRepository.recoverStaleOpenRows(System.currentTimeMillis()) }
+                .onSuccess { recovered -> Telemetry.insertionsRecovered(recovered.readyRowIds) }
                 .onFailure { error -> DebugLogger.warn(TAG, "Unable to recover stale history: ${error.message}") }
         }
         serviceScope.launch {
@@ -381,6 +437,7 @@ class DictationSessionService : Service() {
             promoteToForeground(state.get() == SessionState.PROCESSING)
         }
         val request = BubbleRequestToken.parse(intent?.getStringExtra(EXTRA_REQUEST))
+        pendingTrigger = TriggerSource.fromExtra(intent?.getStringExtra(EXTRA_TRIGGER_SOURCE))
         if (request != null && !admitBubbleCommand(intent?.action ?: ACTION_START, request)) {
             stopIfIdle()
             return START_NOT_STICKY
@@ -403,7 +460,11 @@ class DictationSessionService : Service() {
                 SessionState.RECORDING -> stopAndTranscribe()
                 else -> Unit
             }
-            ACTION_START -> if (state.get() == SessionState.IDLE) beginSession()
+            ACTION_START -> if (state.get() == SessionState.IDLE) {
+                beginSession()
+            } else {
+                Telemetry.capture(AnalyticsEvent.DictationRefused("busy", pendingTrigger))
+            }
         }
         return START_NOT_STICKY
     }
@@ -423,10 +484,12 @@ class DictationSessionService : Service() {
             ACTION_START -> when (val decision = BubbleRequests.resolveStart(request, ownerIdle = state.get() == SessionState.IDLE)) {
                 BubbleRequestLedger.StartDecision.Stale -> {
                     DebugLogger.log(TAG, "Bubble start refused as stale")
+                    Telemetry.capture(AnalyticsEvent.DictationRefused("stale", bubbleTrigger(request)))
                     false
                 }
                 BubbleRequestLedger.StartDecision.RefusedBusy -> {
                     DebugLogger.log(TAG, "Bubble start refused: a take is active")
+                    Telemetry.capture(AnalyticsEvent.DictationRefused("busy", bubbleTrigger(request)))
                     false
                 }
                 is BubbleRequestLedger.StartDecision.Admitted -> {
@@ -461,8 +524,29 @@ class DictationSessionService : Service() {
         }
     }
 
+    /** The bubble's surface from its own token: a hold and a tap are different surfaces (issue #176). */
+    private fun bubbleTrigger(request: BubbleRequestToken): TriggerSource =
+        if (request.held) TriggerSource.BUBBLE_HOLD else TriggerSource.BUBBLE_TAP
+
     private fun beginSession() {
         if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return
+        takeId = UUID.randomUUID().toString().lowercase()
+        takePeakAmplitude = null
+        val trigger = admittedRequest?.let(::bubbleTrigger) ?: pendingTrigger
+        pendingTrigger = TriggerSource.UNKNOWN
+        val takeFacts = TakeFacts(takeId, trigger)
+        takeFacts.inputDevice = TakeFacts.inputDeviceToken(inputDevicePick)
+        facts = takeFacts
+        // The referee for THIS take, in memory, before anything else (G2 D2). Its sink is a limb: it
+        // hands the committed reason to telemetry and never waits on storage or the network.
+        arbiter = TakeArbiter { reason -> recordEnding(takeFacts, reason) }
+        Telemetry.takeStarted(takeId)
+        Telemetry.breadcrumb("take", "admitted", mapOf("take_id" to takeId, "trigger_source" to trigger.wire))
+        // Queued HERE, on the main thread, before any command can end this take: the journal applies
+        // writes in arrival order, so a cancel that lands during the settings wait can never queue its
+        // ending ahead of the admission and leave an open row (code review round 1, F2). The wait for
+        // it happens below, before capture starts, under a deadline that never gates the take.
+        val admission = Telemetry.journal?.admit(takeId, trigger)
         RecordingOverlayState.showStarting(admittedRequest)
         promoteToForeground(processing = false)
         // Kept for the whole session. Android may rebind the accessibility service while the user
@@ -471,7 +555,6 @@ class DictationSessionService : Service() {
         targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()
         // Name the field this take aims at, for a reader that only wants takes aimed at ITS field.
         RecordingOverlayState.nameTarget(if (targetPinAtStart == DictationTargetPin.PINNED) PasteAccessibilityService.pinnedFieldId() else null)
-        publicationStarted.set(false)
         teardownStarted.set(false)
         draftId.set(0L)
         draftCreation = null
@@ -487,7 +570,7 @@ class DictationSessionService : Service() {
             if (!ready) {
                 withContext(Dispatchers.Main.immediate) {
                     if (state.get() == SessionState.STARTING) {
-                        showError("Settings could not be loaded. Try again.")
+                        showError(TerminalReason.SETTINGS_UNAVAILABLE)
                     }
                 }
                 return@launch
@@ -497,6 +580,11 @@ class DictationSessionService : Service() {
                 StructuredTermRestorer.compile(termsSnapshot)
             }
             val policy = withContext(Dispatchers.IO) { providerConfiguration.loadPolicy() }
+            // Admission is written before capture starts, under a deadline that never gates the take:
+            // the queued write still lands in order if this stops waiting (issue #176, plan §3.3).
+            if (admission != null && withTimeoutOrNull(JOURNAL_ADMISSION_DEADLINE_MS) { admission.await() } == null) {
+                DebugLogger.warn(TAG, "Journal admission did not land within ${JOURNAL_ADMISSION_DEADLINE_MS} ms; starting anyway")
+            }
             withContext(Dispatchers.Main.immediate) {
                 if (state.get() != SessionState.STARTING) return@withContext
                 sessionPreferences = SessionPreferences(
@@ -520,7 +608,7 @@ class DictationSessionService : Service() {
         }.getOrDefault(false)
         if (!audioBound) {
             stopAudioCaptureService()
-            showError("Microphone service could not be connected")
+            showError(TerminalReason.AUDIO_BIND_FAILED)
             return
         }
 
@@ -528,14 +616,14 @@ class DictationSessionService : Service() {
             bindService(Intent(this, com.envi.wispr.asr.AsrService::class.java), asrConnection, Context.BIND_AUTO_CREATE)
         }.getOrDefault(false)
         if (!asrBound) {
-            handleServiceFailure("Speech service could not be connected")
+            handleServiceFailure(TerminalReason.ASR_BIND_FAILED)
             return
         }
 
         polishBound = runCatching {
             bindService(Intent(this, PolishService::class.java), polishConnection, Context.BIND_AUTO_CREATE)
         }.getOrDefault(false)
-        if (!polishBound) handleServiceFailure("Polish service could not be connected")
+        if (!polishBound) handleServiceFailure(TerminalReason.POLISH_BIND_FAILED)
     }
 
     private fun tryStartRecording() {
@@ -547,14 +635,14 @@ class DictationSessionService : Service() {
             forcedNoticeShown = false
             captureDeviceLabel = ""
             val started = runCatching {
-                audioService?.startCaptureWithInputDeviceHeld(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady)
+                audioService?.startCaptureForTake(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady, takeId)
             }.getOrNull()
             if (started != true) {
                 // The one start failure with its own sentence is "nothing can record at all" (macOS copy).
                 val failure = runCatching { audioService?.lastStartFailure }.getOrNull()
                     ?: AudioCaptureService.START_FAILURE_OTHER
                 stopAudioCaptureService()
-                showError(CaptureNotices.startFailureLine(failure))
+                showError(TakeNotices.startFailureReason(failure))
                 return
             }
             captureStarted = true
@@ -572,7 +660,7 @@ class DictationSessionService : Service() {
                 }, "StartCaptureFailureCleanup").start()
             }
             DebugLogger.error(TAG, "Failed to start recording", error)
-            showError("Failed to start recording")
+            showError(TerminalReason.START_EXCEPTION)
         }
     }
 
@@ -604,18 +692,21 @@ class DictationSessionService : Service() {
             val capturing = runCatching { service.isCapturing }.getOrDefault(false)
             if (!capturing) {
                 val failure = runCatching { service.lastStartFailure }.getOrDefault(AudioCaptureService.START_FAILURE_OTHER)
-                val message = if (failure == AudioCaptureService.START_FAILURE_EARBUDS) CaptureNotices.startFailureLine(failure)
-                else "Microphone capture stopped unexpectedly. Try again."
+                val reason = if (failure == AudioCaptureService.START_FAILURE_EARBUDS) {
+                    TerminalReason.CAPTURE_START_EARBUDS_REFUSED
+                } else {
+                    TerminalReason.CAPTURE_ENDED_BEFORE_LIVE
+                }
                 // Claim first: a cancel that stopped capture between the two checks owns the take, and
                 // its stop must not read as a microphone failure.
-                if (!failWhileStarting(message)) return
+                if (!failWhileStarting(reason)) return
                 DebugLogger.warn(TAG, "Capture ended while waiting for the route to go live (failure=$failure)")
                 runCatching { service.waitForFileReady(2_000L) }
                 stopAudioCaptureService()
                 return
             }
             if (SystemClock.elapsedRealtime() - startedAt > LIVE_WAIT_BOUND_MS) {
-                if (!failWhileStarting(CaptureNotices.START_FAILED)) return
+                if (!failWhileStarting(TerminalReason.LIVE_WAIT_DEADLINE)) return
                 DebugLogger.error(TAG, "The route never went live within ${LIVE_WAIT_BOUND_MS} ms")
                 runCatching { service.stopCapture() }
                 runCatching { service.waitForFileReady(2_000L) }
@@ -635,6 +726,18 @@ class DictationSessionService : Service() {
                 return
             }
             recordingStartedAtMs = System.currentTimeMillis()
+            val takeFacts = facts
+            audioService?.let { service ->
+                takeFacts.routeKind = runCatching { InputRouteKind.fromCode(service.inputRouteKind) }.getOrNull()
+                takeFacts.routeReason = runCatching { InputRouteReason.fromCode(service.inputRouteReason) }.getOrNull()
+                takeFacts.liveAfterMs = runCatching { service.liveAfterMs }.getOrNull()
+            }
+            takeFacts.liveState = if (forced) "forced" else "ready"
+            Telemetry.journal?.advance(takeId, TakeStage.RECORDING)
+            Telemetry.breadcrumb(
+                "take", "live",
+                mapOf("take_id" to takeId, "route_kind" to takeFacts.routeKind?.name?.lowercase(), "live_after_ms" to takeFacts.liveAfterMs, "live_state" to takeFacts.liveState),
+            )
             draftCreation = serviceScope.async {
                 val id = transcriptRepository.insert(
                     TranscriptEntity(
@@ -652,6 +755,7 @@ class DictationSessionService : Service() {
                 // The row's identity goes out on the bridge so a reader judges THIS take's row, never a
                 // row it guessed at by time or order (onboarding practice; Codex reviews 2 to 9).
                 RecordingOverlayState.attachTranscript(id)
+                Telemetry.journal?.associate(takeFacts.takeId, id)
                 id
             }
             DictationSurfaceState.update(this, DictationSurfaceState.Phase.LISTENING)
@@ -688,18 +792,28 @@ class DictationSessionService : Service() {
                     publishSilenceNoticeIfNeeded(service)
                     publishMicrophoneNoticesIfNeeded(service)
                     if (!service.isCapturing && state.get() == SessionState.RECORDING) {
+                        val ending = service.terminalReason
+                        // The ending as a fact for the take's row, stamped here at the ONE place it is
+                        // classified; a stop the owner itself requested never reaches this branch and is
+                        // stamped `manual` at the stop (issue #176).
+                        facts.captureTerminal = TakeFacts.captureEndingToken(ending)
                         // Exhaustive over CaptureEnding with no `else`, so a reason this build does not
                         // know cannot fall through into an ordinary transcription.
-                        when (CaptureEnding.fromAidl(service.terminalReason)) {
+                        when (CaptureEnding.fromAidl(ending)) {
                             // StillRunning belongs HERE. Capture that stopped without publishing a
                             // reason has no successful ending to report, and the type says so:
                             // StillRunning.transcribes is false. Grouping it with the successes would
                             // send partial audio on as though it were a finished take.
-                            CaptureEnding.Failure,
-                            CaptureEnding.StillRunning -> {
+                            CaptureEnding.Failure -> {
                                 DebugLogger.error(TAG, "Audio capture ended without a successful reason")
                                 discardDraft()
-                                showError("Microphone capture stopped unexpectedly. Try again.")
+                                showError(TerminalReason.CAPTURE_FAILED_MID_TAKE)
+                            }
+
+                            CaptureEnding.StillRunning -> {
+                                DebugLogger.error(TAG, "Audio capture stopped without publishing a reason")
+                                discardDraft()
+                                showError(TerminalReason.CAPTURE_STILL_RUNNING_AFTER_STOP)
                             }
 
                             // The words up to the cap are kept and transcribed. What the user needs
@@ -864,7 +978,7 @@ class DictationSessionService : Service() {
                 if (!audioReady) {
                     stopAudioCaptureService()
                     discardDraft()
-                    showError("Audio capture did not finish safely. Try again.")
+                    showError(TerminalReason.CAPTURE_CLOSE_UNSAFE)
                     return@Thread
                 }
                 val audioFilePath = audioService?.audioFilePath
@@ -878,6 +992,22 @@ class DictationSessionService : Service() {
                 // final route was observed before the recorder stopped, and the label persists in the
                 // capture process until its next start.
                 captureDeviceLabel = runCatching { audioService?.effectiveInputDevice }.getOrNull().orEmpty()
+                // Same moment, same reason: the capture thread has exited, so the peak is the whole take's.
+                takePeakAmplitude = runCatching { audioService?.takePeakAmplitude }.getOrNull()
+                val takeFacts = facts
+                takeFacts.peakAmplitude = takePeakAmplitude
+                takeFacts.recordingSeconds = recordingDurationMs / 1000.0
+                // Stamped by the polling loop when capture ended on its own; otherwise this stop is the
+                // owner's own request, which the capture process reports as a manual ending.
+                if (takeFacts.captureTerminal == null) takeFacts.captureTerminal = TakeFacts.MANUAL_ENDING
+                audioService?.let { service ->
+                    takeFacts.silenceStopStatus = runCatching { TakeFacts.silenceStatusToken(service.silenceStopStatus) }.getOrNull()
+                }
+                Telemetry.journal?.advance(takeId, TakeStage.PROCESSING)
+                Telemetry.breadcrumb(
+                    "take", "stopped",
+                    mapOf("take_id" to takeId, "capture_terminal" to takeFacts.captureTerminal, "recording_s" to takeFacts.recordingSeconds, "silence_stop_status" to takeFacts.silenceStopStatus),
+                )
                 finishTakeOrStop()
 
                 val readyDraftId = runCatching { runBlocking { draftCreation?.await() ?: 0L } }.getOrDefault(0L)
@@ -887,30 +1017,54 @@ class DictationSessionService : Service() {
                 }
                 if (audioFilePath.isNullOrBlank()) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError("No audio captured")
+                    showError(TerminalReason.AUDIO_FILE_MISSING)
                     return@Thread
                 }
                 val speechService = asrService
                 if (speechService == null) {
                     deleteCapturedAudio(audioFilePath)
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError("Speech model is still loading. Try again in a moment.")
+                    showError(TerminalReason.ASR_NOT_READY)
                     return@Thread
                 }
                 DebugLogger.mark(TAG, "asr_request")
-                speechService.transcribeFile(audioFilePath, object : IAsrCallback.Stub() {
+                val asrRequestedAtMs = SystemClock.elapsedRealtime()
+                speechService.transcribeFileForTake(audioFilePath, takeId, object : IAsrCallback.Stub() {
                     override fun onResult(text: String?) {
                         deleteCapturedAudio(audioFilePath)
+                        takeFacts.asrMs = SystemClock.elapsedRealtime() - asrRequestedAtMs
+                        takeFacts.asrChars = text?.length ?: 0
                         DebugLogger.log(TAG, "Transcription result received (chars=${text?.length ?: 0})")
                         DebugLogger.mark(TAG, "result_received")
+                        Telemetry.breadcrumb("take", "asr_done", mapOf("take_id" to takeId, "asr_ms" to takeFacts.asrMs, "asr_chars" to takeFacts.asrChars))
                         polishAndPublish(text.orEmpty())
                     }
 
+                    /** The versioned request never answers this; a legacy sentence here is a service defect. */
                     override fun onError(message: String?) {
                         deleteCapturedAudio(audioFilePath)
+                        DebugLogger.error(TAG, "Legacy onError on a versioned request")
+                        // The fact is written before the claim so the ending's row carries it; a claim
+                        // that loses leaves an unread fact, never a rewritten row (G1 D2).
+                        takeFacts.asrFailure = AsrFailureReason.UNKNOWN
+                        takeFacts.asrMs = SystemClock.elapsedRealtime() - asrRequestedAtMs
+                        if (!arbiter.commitNow(TerminalReason.ASR_FAILED)) return
                         updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                        DebugLogger.error(TAG, "ASR failed")
-                        showError(message?.takeIf(String::isNotBlank) ?: "Speech recognition failed")
+                        endAsFailure(TerminalReason.ASR_FAILED)
+                    }
+
+                    override fun onFailure(reason: Int, detail: String?) {
+                        deleteCapturedAudio(audioFilePath)
+                        val failure = AsrFailureReason.fromCode(reason)
+                        takeFacts.asrFailure = failure
+                        takeFacts.asrMs = SystemClock.elapsedRealtime() - asrRequestedAtMs
+                        // Claim FIRST: a cancel that already owns the take must not see its History row
+                        // rewritten or a failure toast over its acknowledgement (G1 D2).
+                        if (!arbiter.commitNow(TerminalReason.ASR_FAILED)) return
+                        updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
+                        // The detail is local diagnostics and stops here: never a toast, never the wire.
+                        DebugLogger.error(TAG, "ASR failed: ${failure.name} (code $reason) ${detail.orEmpty()}")
+                        endAsFailure(TerminalReason.ASR_FAILED)
                     }
                 })
             } catch (error: Exception) {
@@ -918,7 +1072,7 @@ class DictationSessionService : Service() {
                 if (audioReady) deleteCapturedAudio(runCatching { audioService?.audioFilePath }.getOrNull())
                 DebugLogger.error(TAG, "Transcription failed", error)
                 updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                showError("Transcription failed")
+                showError(TerminalReason.ASR_CALLBACK_EXCEPTION)
             }
         }, "TranscribeThread").start()
     }
@@ -926,6 +1080,9 @@ class DictationSessionService : Service() {
     private fun polishAndPublish(rawText: String) {
         rawTranscript = rawText
         if (rawText.isBlank()) {
+            // Committed before the draft is discarded (G2 D2). The peak read at stop decides which of the
+            // three empty endings this is; no reading stays unmeasured, never "silence".
+            if (!arbiter.commitNow(SpeechEvidence.emptyTranscriptReason(takePeakAmplitude))) return
             discardDraft()
             PasteAccessibilityService.releasePinnedTarget()
             finishSession()
@@ -944,7 +1101,7 @@ class DictationSessionService : Service() {
             // itself runs outside the lock: the lock is also taken on the main thread by Cancel, and a
             // synchronous transaction to a stalled engine must not be able to hold the main thread.
             val requestId = synchronized(polishSubmissionLock) {
-                if (state.get() != SessionState.PROCESSING || publicationStarted.get()) {
+                if (state.get() != SessionState.PROCESSING || !arbiter.isOpen) {
                     DebugLogger.log(TAG, "Transcript arrived after the session ended; not polishing")
                     return@launch
                 }
@@ -961,13 +1118,14 @@ class DictationSessionService : Service() {
                 opened
             }
             try {
-                service.polishRequest(
+                service.polishRequestForTake(
                     requestId,
                     preparedRaw,
                     takePreferences.cleanup.removeFillers,
                     takePreferences.cleanup.spokenEmoji,
                     takePreferences.cleanup.spokenPunctuation,
                     takePreferences.policy,
+                    takeId,
                     object : IPolishCallback.Stub() {
                         override fun onOutcome(outcome: PolishOutcome?) {
                             // This callback belongs to ONE request and the engine answers it once, so an
@@ -976,6 +1134,7 @@ class DictationSessionService : Service() {
                             if (outcome == null || outcome.requestId != requestId) {
                                 if (polishLedger.claim(requestId)) {
                                     DebugLogger.warn(TAG, "Invalid polish outcome for request $requestId")
+                                    Telemetry.defect(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to if (outcome == null) "null" else "mismatched"))
                                     publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
                                 }
                                 return
@@ -1001,11 +1160,17 @@ class DictationSessionService : Service() {
                         // v1 answers are never produced for a v2 request. If one ever arrives it is an
                         // engine defect, and the session still fails open to the deterministic text.
                         override fun onResult(text: String?, engine: String?, latencyMs: Long) {
-                            if (polishLedger.claim(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                            if (polishLedger.claim(requestId)) {
+                                Telemetry.defect(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_result"))
+                                publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                            }
                         }
 
                         override fun onError(message: String?) {
-                            if (polishLedger.claim(requestId)) publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                            if (polishLedger.claim(requestId)) {
+                                Telemetry.defect(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_error"))
+                                publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                            }
                         }
                     },
                 )
@@ -1087,15 +1252,28 @@ class DictationSessionService : Service() {
         statusCode: Int,
         polishContext: PolishContext,
     ) {
-        if (!publicationStarted.compareAndSet(false, true)) {
-            DebugLogger.warn(TAG, "Ignoring duplicate final transcript callback")
+        // The polish facts, written before the reservation so an ending committed by anyone after this
+        // point carries them; the reason arrives once per take through the ledger, so the defect it may
+        // name is raised once here, whoever ends up owning the take (issue #176, plan §3.6).
+        val takeFacts = facts
+        takeFacts.polishProvider = polishContext.encode()
+        takeFacts.polishReason = reason
+        takeFacts.polishMs = latencyMs
+        takeFacts.polishStatus = statusCode
+        Telemetry.breadcrumb("take", "polish_done", mapOf("take_id" to takeId, "polish_reason" to reason.name, "polish_ms" to latencyMs, "polish_provider" to takeFacts.polishProvider))
+        TelemetryChannels.defectOf(reason)?.let { Telemetry.defect(it, mapOf("take_id" to takeId, "polish_status" to statusCode)) }
+        // RESERVE, never commit: `completed` is unknown until the History save returns (G2 D2). A cancel
+        // that already owns the take, or a second final callback, loses here and does nothing.
+        val publication = arbiter.reserve(Claimants.PUBLICATION)
+        if (publication == null) {
+            DebugLogger.warn(TAG, "Ignoring a final transcript that arrived after the take was claimed")
             return
         }
         val finalText = text.ifBlank { rawTranscript }
         val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine
         DebugLogger.log(TAG, "Polish result received ($finalEngine, ${latencyMs}ms, chars=${finalText.length})")
         if (finalText.isBlank()) {
-            finishSession()
+            if (arbiter.commit(publication, TerminalReason.FINAL_TEXT_EMPTY)) finishSession()
             return
         }
         val polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext)
@@ -1133,8 +1311,21 @@ class DictationSessionService : Service() {
                 persistedId
             }
             val persistedId = saveResult.getOrNull() ?: 0L
+            takeFacts.historySave = if (saveResult.isSuccess) "ok" else "failed"
             saveResult.exceptionOrNull()?.let { error ->
                 DebugLogger.warn(TAG, "Unable to save transcript history: ${error.message}")
+                // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal
+                // statement is our schema contract (a defect). The message never leaves either way.
+                Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName))
+                TelemetryChannels.historySaveDefect(error)?.let { Telemetry.defect(it, mapOf("take_id" to takeId)) }
+            }
+            // COMMIT now that the save result is known and BEFORE the insertion handoff: completed means
+            // the text finalised, never that insertion succeeded. A revoked reservation (the owner was
+            // destroyed while the save ran) stops here: no handoff, no announcement, no terminal; the
+            // teardown's own History write is the last word on that row (G2 D2).
+            if (!arbiter.commit(publication, TerminalReason.COMPLETED)) {
+                DebugLogger.warn(TAG, "Publication revoked before the handoff; not inserting")
+                return@launch
             }
             val route = HistoryPublicationPolicy.route(
                 persistedId = persistedId,
@@ -1149,6 +1340,7 @@ class DictationSessionService : Service() {
                         persistedId,
                         finalText,
                         policy = sessionPreferences.clipboard,
+                        takeId = takeId,
                     )
                 } else {
                     InsertionHandoff.HISTORY_NOT_DURABLE
@@ -1187,6 +1379,21 @@ class DictationSessionService : Service() {
                     clipboard = clipboard,
                     savedInHistory = persistedId > 0L,
                 )
+                // The owner is one of the three insertion writers (G1 D3): nothing was handed off, so
+                // this is where the words ended up, as the same values the History row received.
+                val resultKind = when {
+                    clipboard == ClipboardOutcome.NOT_ATTEMPTED -> InsertionResultKind.HISTORY_ONLY
+                    clipboard == ClipboardOutcome.COPIED -> InsertionResultKind.CLIPBOARD
+                    else -> InsertionResultKind.INSERTION_FAILED
+                }
+                Telemetry.capture(
+                    AnalyticsEvent.InsertionTerminal(
+                        takeId = takeId, handoff = handoff, result = resultKind, route = InsertionRouteKind.of(resultKind),
+                        targetApp = null, latencyMs = null, clipboard = clipboard.name.lowercase(), recovered = false,
+                    ),
+                )
+            } else {
+                Telemetry.breadcrumb("take", "insertion_handed_off", mapOf("take_id" to takeId))
             }
             DebugLogger.log(
                 TAG,
@@ -1300,11 +1507,12 @@ class DictationSessionService : Service() {
     }
 
     private fun cancelRecording() {
-        synchronized(publishLock) {
+        val cancel = synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.RECORDING, SessionState.CANCELLING)) return
             RecordingOverlayState.showProcessing()
-        }
-        cancelCaptureAndFinish()
+            arbiter.reserve(Claimants.CANCEL)
+        } ?: return
+        cancelCaptureAndFinish(cancel, TerminalReason.CANCELLED_RECORDING)
     }
 
     /**
@@ -1312,16 +1520,17 @@ class DictationSessionService : Service() {
      * running while the lips spin, so a cancelled start stops it, discards the file and still hands the
      * service its `finishTake` (a cancelled take leaves the earbuds warm like a finished one).
      */
-    private fun cancelCaptureAndFinish() {
+    private fun cancelCaptureAndFinish(cancel: TakeArbiter.Token, cancelled: TerminalReason) {
         RecordingOverlayState.showProcessing()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
         serviceScope.launch {
             // A cancel before the capture process was even bound has nothing to stop: the quiet finish
-            // the old cancelStarting always took.
+            // the old cancelStarting always took. Committed BEFORE the draft goes (G2 D2).
             val service = audioService
             if (service == null) {
+                if (!arbiter.commit(cancel, cancelled)) return@launch
                 discardDraft()
                 finishSession()
                 return@launch
@@ -1330,12 +1539,15 @@ class DictationSessionService : Service() {
                 service.stopCapture()
                 service.waitForFileReady(2_000L)
             }.getOrDefault(false)
+            // The outcome is known only now: a close that failed is a failure, not a cancel.
             if (!ready) {
+                if (!arbiter.commit(cancel, TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)) return@launch
                 stopAudioCaptureService()
                 discardDraft()
-                showError("Audio capture did not finish safely. Try again.")
+                endAsFailure(TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)
                 return@launch
             }
+            if (!arbiter.commit(cancel, cancelled)) return@launch
             discardDraft()
             deleteCapturedAudio(runCatching { service.audioFilePath }.getOrNull())
             finishTakeOrStop()
@@ -1359,31 +1571,74 @@ class DictationSessionService : Service() {
      * and cancelled on the engine, and the submitter re-sends that cancel once the engine has registered).
      */
     private fun cancelProcessing() {
-        if (!publicationStarted.compareAndSet(false, true)) return
-        synchronized(polishSubmissionLock) {
-            if (!state.compareAndSet(SessionState.PROCESSING, SessionState.CANCELLING)) return
+        val cancel = synchronized(polishSubmissionLock) {
+            // The reservation IS the publication check: a publication already holding the ending makes
+            // this cancel too late, exactly as the old flag did, and a cancel that wins keeps a later
+            // callback from ever publishing (G2 D2).
+            if (state.get() != SessionState.PROCESSING) return
+            val reserved = arbiter.reserve(Claimants.CANCEL) ?: return
+            state.set(SessionState.CANCELLING)
             DebugLogger.log(TAG, "Cancelled while processing; open polish request: ${polishLedger.openId != null}")
             cancelOpenPolishRequest()
+            reserved
         }
         RecordingOverlayState.showProcessing()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.SESSION_CANCELED)
+        // Committed before the draft goes (G2 D2); a destruction that revoked it owns the row instead.
+        if (!arbiter.commit(cancel, TerminalReason.CANCELLED_PROCESSING)) return
         discardDraft()
         finishSession()
     }
 
     private fun cancelStarting() {
-        synchronized(publishLock) {
+        val cancel = synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
             RecordingOverlayState.showProcessing()
-        }
-        cancelCaptureAndFinish()
+            arbiter.reserve(Claimants.CANCEL)
+        } ?: return
+        cancelCaptureAndFinish(cancel, TerminalReason.CANCELLED_STARTING)
     }
 
-    private fun showError(message: String) {
-        if (state.getAndSet(SessionState.ERROR) == SessionState.ERROR) return
-        announceError(message)
+    /**
+     * The arbiter's sink: the one place a committed ending becomes telemetry (issue #176). A breadcrumb
+     * always; a Sentry defect only when the channel table says the cause is ours; the journal commit,
+     * which captures the `dictation.terminal` row after its own Room transaction; then the take leaves
+     * the error scope. Every call is a limb that returns at once.
+     */
+    private fun recordEnding(takeFacts: TakeFacts, reason: TerminalReason) {
+        DebugLogger.log(TAG, "Take terminal: ${reason.name} (${reason.result.wire})")
+        Telemetry.breadcrumb("take", "terminal", mapOf("take_id" to takeFacts.takeId, "reason" to reason.name, "result" to reason.result.wire))
+        TelemetryChannels.defectOf(reason, takeFacts.asrFailure)?.let { defect ->
+            Telemetry.defect(defect, mapOf("take_id" to takeFacts.takeId, "reason" to reason.name, "asr_failure_reason" to takeFacts.asrFailure?.name))
+        }
+        Telemetry.journal?.terminal(takeFacts.terminal(reason))
+        Telemetry.takeEnded(takeFacts.takeId)
+    }
+
+    /**
+     * Ends the take as the failure [reason] when nothing else has claimed it: the arbiter is the guard,
+     * so a failure observed after a cancel or a publication owns the take does nothing at all (the
+     * old `ERROR` check let it announce over them). The sentence is [TakeNotices]'s, never the caller's.
+     */
+    private fun showError(reason: TerminalReason) {
+        if (!arbiter.commitNow(reason)) {
+            DebugLogger.log(TAG, "Ignoring $reason: the take already has an ending")
+            return
+        }
+        endAsFailure(reason)
+    }
+
+    /** Teardown for a failure ALREADY committed by the caller; [TakeNotices] supplies the sentence. */
+    private fun endAsFailure(reason: TerminalReason) {
+        endAsFailure(reason, TakeNotices.line(reason))
+    }
+
+    private fun endAsFailure(reason: TerminalReason, line: String?) {
+        state.set(SessionState.ERROR)
+        DebugLogger.warn(TAG, "Take ended: $reason")
+        announceError(line)
     }
 
     /**
@@ -1391,29 +1646,33 @@ class DictationSessionService : Service() {
      * a cancel that already owns the take is not overwritten with a failure toast (Codex review 3).
      * Returns false when something else owns the take; the waiter then does nothing.
      */
-    private fun failWhileStarting(message: String): Boolean {
+    private fun failWhileStarting(reason: TerminalReason): Boolean {
         synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.ERROR)) return false
+            // The CAS above and this commit move together under the one lock, so they cannot disagree:
+            // a cancel that owns the take already moved the state, and a destruction already committed.
+            if (!arbiter.commitNow(reason)) return false
         }
-        announceError(message)
+        DebugLogger.warn(TAG, "Take ended while starting: $reason")
+        announceError(TakeNotices.line(reason))
         return true
     }
 
-    private fun announceError(message: String) {
-        publicationStarted.set(true)
+    /** Tears the take down as a failure; says [line] when there is one. Teardown never depends on copy. */
+    private fun announceError(line: String?) {
         cancelOpenPolishRequest()
         RecordingOverlayState.showProcessing()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.FAILURE)
-        mainHandler.post { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
+        if (line != null) mainHandler.post { Toast.makeText(this, line, Toast.LENGTH_LONG).show() }
         stopAudioCaptureService()
         finishSession()
     }
 
-    private fun handleServiceFailure(message: String) {
+    private fun handleServiceFailure(reason: TerminalReason) {
         if (state.get() == SessionState.RECORDING) discardDraft()
-        showError(message)
+        showError(reason)
     }
 
     private fun finishSession() {
@@ -1607,9 +1866,18 @@ class DictationSessionService : Service() {
             val seen = state.get()
             if (seen == SessionState.STARTING || seen == SessionState.RECORDING) state.set(SessionState.ERROR)
             RecordingOverlayState.hide()
+            // The synchronous lifecycle decision (G2 D2): `interrupted` is committed only when nothing
+            // was, and it revokes an outstanding publication or cancel reservation so the displaced
+            // worker can no longer commit, announce or hand off. Nothing here waits on storage.
+            when (seen) {
+                SessionState.STARTING -> arbiter.interrupt(TerminalReason.INTERRUPTED_STARTING)
+                SessionState.RECORDING -> arbiter.interrupt(TerminalReason.INTERRUPTED_RECORDING)
+                SessionState.PROCESSING -> arbiter.interrupt(TerminalReason.INTERRUPTED_PROCESSING)
+                SessionState.CANCELLING -> arbiter.interrupt(TerminalReason.INTERRUPTED_CANCELLING)
+                SessionState.IDLE, SessionState.FINISHING, SessionState.ERROR -> false
+            }
             seen
         }
-        publicationStarted.set(true)
         cancelOpenPolishRequest()
         val sessionWasOpen = destroyedState == SessionState.STARTING ||
             destroyedState == SessionState.RECORDING ||

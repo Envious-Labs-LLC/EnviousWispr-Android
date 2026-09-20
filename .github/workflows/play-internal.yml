@@ -13,6 +13,10 @@ jobs:
     timeout-minutes: 45
     env:
       PLAY_VERSION_CODE: ${{ github.run_number }}
+      # Client-side keys (a PostHog project key, a Sentry DSN): identifiers a shipped app carries,
+      # not secrets, so repository VARIABLES. `scripts/release/build.sh` refuses an empty one (#176).
+      TELEMETRY_POSTHOG_KEY: ${{ vars.TELEMETRY_POSTHOG_KEY }}
+      TELEMETRY_SENTRY_DSN: ${{ vars.TELEMETRY_SENTRY_DSN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

@@ -9,7 +9,14 @@ import java.nio.file.Files
 import java.security.MessageDigest
 
 enum class DownloadState { DOWNLOADING, PAUSED, VERIFYING, READY, FAILED, CANCELLED, REPAIR_NEEDED }
-data class DownloadStatus(val state: DownloadState, val bytes: Long = 0, val total: Long = 0, val message: String? = null)
+data class DownloadStatus(
+    val state: DownloadState,
+    val bytes: Long = 0,
+    val total: Long = 0,
+    val message: String? = null,
+    /** Why the attempt did not end READY, decided where the cause is known (issue #176); null on READY and progress. */
+    val reason: DeliveryFailureReason? = null,
+)
 private val MODEL_CONTROL_LOCK = Any()
 private val MODEL_OPERATION_LOCKS = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
@@ -90,7 +97,7 @@ class ModelDeliveryStore(private val root: File) {
     }.getOrDefault(false)
 
     fun download(model: ModelDescriptor, transport: ModelTransport, control: DownloadControl = object : DownloadControl {}, now: () -> Long = { System.currentTimeMillis() }, onProgress: (DownloadStatus) -> Unit = {}, onSource: (file: String, host: String) -> Unit = { _, _ -> }): DownloadStatus = synchronized(lock(model)) {
-        if (!model.isAvailable) return DownloadStatus(DownloadState.FAILED, message = "model manifest is unavailable")
+        if (!model.isAvailable) return DownloadStatus(DownloadState.FAILED, message = "model manifest is unavailable", reason = DeliveryFailureReason.MANIFEST_UNAVAILABLE)
         root.mkdirs()
         val staging = File(root, ".${model.id}.download")
         // A revision bump keeps the model id and every staging file name, so the PREVIOUS revision's
@@ -109,13 +116,13 @@ class ModelDeliveryStore(private val root: File) {
             for (entry in model.files) {
                 if (control.isCancelled()) {
                     val bytes = File(staging, entry.name + ".part").length()
-                    val status = DownloadStatus(DownloadState.CANCELLED, bytes, entry.expectedBytes)
+                    val status = DownloadStatus(DownloadState.CANCELLED, bytes, entry.expectedBytes, reason = DeliveryFailureReason.CANCELLED)
                     onProgress(status)
                     return status
                 }
                 if (control.isPaused()) {
                     val bytes = File(staging, entry.name + ".part").length()
-                    val status = DownloadStatus(DownloadState.PAUSED, bytes, entry.expectedBytes)
+                    val status = DownloadStatus(DownloadState.PAUSED, bytes, entry.expectedBytes, reason = DeliveryFailureReason.PAUSED)
                     onProgress(status)
                     return status
                 }
@@ -148,12 +155,12 @@ class ModelDeliveryStore(private val root: File) {
                         val buffer = ByteArray(64 * 1024)
                         while (true) {
                             if (control.isStopped() || control.isCancelled()) {
-                                val status = DownloadStatus(DownloadState.CANCELLED, offset, entry.expectedBytes)
+                                val status = DownloadStatus(DownloadState.CANCELLED, offset, entry.expectedBytes, reason = DeliveryFailureReason.CANCELLED)
                                 onProgress(status)
                                 return status
                             }
                             if (control.isPaused()) {
-                                val status = DownloadStatus(DownloadState.PAUSED, offset, entry.expectedBytes)
+                                val status = DownloadStatus(DownloadState.PAUSED, offset, entry.expectedBytes, reason = DeliveryFailureReason.PAUSED)
                                 onProgress(status)
                                 return status
                             }
@@ -168,10 +175,10 @@ class ModelDeliveryStore(private val root: File) {
                 onProgress(DownloadStatus(DownloadState.VERIFYING, offset, entry.expectedBytes))
                 if (offset != entry.expectedBytes || sha256(part) != entry.sha256!!.lowercase()) {
                     quarantine(staging, now())
-                    return DownloadStatus(DownloadState.REPAIR_NEEDED, offset, entry.expectedBytes, "model integrity check failed")
+                    return DownloadStatus(DownloadState.REPAIR_NEEDED, offset, entry.expectedBytes, "model integrity check failed", DeliveryFailureReason.INTEGRITY_MISMATCH)
                 }
                 val admittedFile = File(staging, entry.name)
-                if (!part.renameTo(admittedFile)) throw IOException("could not finalize model file")
+                if (!part.renameTo(admittedFile)) throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not finalize model file")
             }
             // The stamp is staging-only bookkeeping and must not be admitted: `isVerified` requires the
             // directory to hold EXACTLY the manifest's files plus the receipt, so one extra file makes an
@@ -181,16 +188,17 @@ class ModelDeliveryStore(private val root: File) {
             val final = finalDirectory(model)
             val old = File(root, ".${model.id}.old")
             if (old.exists()) old.deleteRecursively()
-            if (final.exists() && !final.renameTo(old)) throw IOException("could not stage existing model")
+            if (final.exists() && !final.renameTo(old)) throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not stage existing model")
             if (!staging.renameTo(final)) {
                 old.renameTo(final)
-                throw IOException("could not admit model atomically")
+                throw ModelDeliveryException(DeliveryFailureReason.ADMISSION_FAILED, "could not admit model atomically")
             }
             old.deleteRecursively()
             DownloadStatus(DownloadState.READY, model.files.sumOf { it.expectedBytes }, model.files.sumOf { it.expectedBytes })
         } catch (e: IOException) {
-            // Transport and storage interruptions keep the .part file for a later range resume.
-            DownloadStatus(DownloadState.FAILED, message = "model download interrupted")
+            // Transport and storage interruptions keep the .part file for a later range resume. The
+            // reason is read off the exception, which was typed where the cause was decided (#176).
+            DownloadStatus(DownloadState.FAILED, message = "model download interrupted", reason = DeliveryFailureReason.of(e))
         }
     }
 

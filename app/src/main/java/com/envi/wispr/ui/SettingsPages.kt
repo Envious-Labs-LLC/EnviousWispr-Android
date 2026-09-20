@@ -47,6 +47,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -62,6 +63,7 @@ import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.BubbleLook
+import com.envi.wispr.privacy.PrivacyDisclosures
 import com.envi.wispr.settings.AppPreferencesState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -568,6 +570,46 @@ internal fun ClipboardPage(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * The privacy boundary in the app's own words (issue #176): what stays, what leaves for telemetry, and
+ * the policy. The sentences are `PrivacyDisclosures`'s, the enforcer file, so this page cannot drift
+ * from what the sanitizer and the identity file actually guarantee.
+ */
+@Composable
+internal fun PrivacyPage() {
+    val uriHandler = LocalUriHandler.current
+    ScreenContainer(subtitle = SettingsPage.Privacy.subtitle) {
+        Card {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Your voice stays with you", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    PrivacyDisclosures.ON_DEVICE_SUMMARY,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Card {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Usage and crash reports", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    PrivacyDisclosures.TELEMETRY_SUMMARY,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    PrivacyDisclosures.TELEMETRY_VENDORS,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        FilledTonalButton(onClick = { uriHandler.openUri(PrivacyDisclosures.POLICY_URL) }) {
+            Text("Read the privacy policy")
+        }
     }
 }
 

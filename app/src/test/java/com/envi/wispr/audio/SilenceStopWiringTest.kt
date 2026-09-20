@@ -43,6 +43,8 @@ class SilenceStopWiringTest {
                 "getInputRouteReason", "getLastStartFailure",
                 // 2026-09-18, the live gate and the earbud hold (#26): appended, never inserted.
                 "startCaptureWithInputDeviceHeld", "getLiveState", "getLiveAfterMs", "finishTake",
+                // 2026-09-20, the take id and the peak (#176): appended, never inserted.
+                "startCaptureForTake", "getTakePeakAmplitude",
             ),
             order,
         )
@@ -52,7 +54,7 @@ class SilenceStopWiringTest {
     fun theOldStartMeansExactlyWhatItMeantBefore() {
         assertTrue(
             "startCapture must be the no-auto-stop case of the new one, not a second implementation",
-            service.contains("startRecording(autoStopOnSilence = false, pauseSeconds = 0f, pick = InputDevicePick.Auto)"),
+            service.contains("startRecording(autoStopOnSilence = false, pauseSeconds = 0f, pick = InputDevicePick.Auto, takeId = \"\")"),
         )
     }
 

@@ -99,6 +99,8 @@ class SilenceStoppedTakeTranscribesDeviceTest {
             asr.transcribeFile(filePath, object : IAsrCallback.Stub() {
                 override fun onResult(result: String?) { text = result.orEmpty(); done.countDown() }
                 override fun onError(message: String?) { error = message.orEmpty(); done.countDown() }
+                // Never answered on the legacy request (#176): the legacy transaction keeps onError.
+                override fun onFailure(reason: Int, detail: String?) { error = "typed failure $reason on a legacy request"; done.countDown() }
             })
             assumeTrue("the speech model must be installed on this phone", error.isBlank() || done.await(1, TimeUnit.SECONDS))
             assertTrue("the speech engine must answer", done.await(60, TimeUnit.SECONDS))

@@ -61,8 +61,11 @@ class TranscriptRepository(private val dao: TranscriptDao, private val clock: ()
     suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, interrupted: Boolean = false) =
         dao.finalizeInsertionOutcome(id, status, result, clock(), interrupted)
 
-    suspend fun recoverStaleOpenRows(nowMs: Long, cutoffMs: Long = nowMs - STALE_OPEN_ROW_AGE_MS) {
+    /** What one recovery pass closed: the ready rows by id, because each is an insertion outcome to report. */
+    data class RecoveredRows(val readyRowIds: List<Long>)
+
+    suspend fun recoverStaleOpenRows(nowMs: Long, cutoffMs: Long = nowMs - STALE_OPEN_ROW_AGE_MS): RecoveredRows {
         dao.recoverStaleDrafts(cutoffMs, nowMs)
-        dao.recoverStaleReadyRows(cutoffMs, nowMs)
+        return RecoveredRows(dao.recoverStaleReadyRowsReturningIds(cutoffMs, nowMs))
     }
 }

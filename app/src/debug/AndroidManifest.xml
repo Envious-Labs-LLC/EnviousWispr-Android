@@ -14,5 +14,12 @@
                 <action android:name="com.envi.wispr.debug.INSERT" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".debug.DebugTelemetryReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.envi.wispr.debug.TELEMETRY_PROBE" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

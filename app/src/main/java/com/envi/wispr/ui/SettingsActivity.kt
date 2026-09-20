@@ -63,7 +63,7 @@ class SettingsActivity : ComponentActivity() {
                 EnviousWisprApp(
                     uiState = uiState,
                     onStartDictation = {
-                        startActivity(Intent(this, VoiceInputActivity::class.java))
+                        startActivity(Intent(this, VoiceInputActivity::class.java).putExtra(VoiceInputActivity.EXTRA_TRIGGER_SOURCE, TriggerSource.APP.wire))
                     },
                     onRequestMicrophone = {
                         requestPermissionWithRecovery(Manifest.permission.RECORD_AUDIO) { microphonePermission.launch(it) }

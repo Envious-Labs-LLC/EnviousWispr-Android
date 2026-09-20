@@ -129,6 +129,12 @@ class VoicePipelineDeviceTest {
                 asrError = message.orEmpty()
                 asrFinished.countDown()
             }
+
+            // Never answered on the legacy request (#176): the legacy transaction keeps onError.
+            override fun onFailure(reason: Int, detail: String?) {
+                asrError = "typed failure $reason on a legacy request"
+                asrFinished.countDown()
+            }
         })
         assertTrue("ASR callback timed out", asrFinished.await(30, TimeUnit.SECONDS))
         assertTrue("ASR returned no text: $asrError", rawText.isNotBlank())

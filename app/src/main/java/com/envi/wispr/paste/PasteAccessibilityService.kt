@@ -35,6 +35,10 @@ import com.envi.wispr.insertion.ClipboardInsertionPolicy
 import com.envi.wispr.insertion.ClipboardOutcome
 import com.envi.wispr.insertion.FallbackAnnouncement
 import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.telemetry.AnalyticsEvent
+import com.envi.wispr.telemetry.InsertionResultKind
+import com.envi.wispr.telemetry.InsertionRouteKind
+import com.envi.wispr.telemetry.Telemetry
 import com.envi.wispr.insertion.ServiceFallbackReason
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.shortcuts.RecordingOverlayState
@@ -88,9 +92,14 @@ class PasteAccessibilityService : AccessibilityService() {
         val policy: ClipboardInsertionPolicy,
         val startedAtMs: Long,
         val deadlineMs: Long,
+        /** The dictation this text belongs to, for its `insertion.terminal` row; null from a debug probe. */
+        val takeId: String?,
         val clipboardOwnershipToken: String = UUID.randomUUID().toString(),
     ) {
         lateinit var attempt: InsertionAttempt
+
+        /** The pinned editor's package at the moment the attempt ended; read by the outcome row only. */
+        var targetPackage: String? = null
 
         /** The input session captured at the eligibility check; the commit and its judge use only this. */
         var commitSession: EditorInputSession.Captured? = null
@@ -152,13 +161,14 @@ class PasteAccessibilityService : AccessibilityService() {
             text: String,
             previousClipboard: ClipData? = null,
             policy: ClipboardInsertionPolicy = ClipboardInsertionPolicy(),
+            takeId: String? = null,
         ): InsertionHandoff {
             val service = instance ?: run {
                 Log.w(TAG, "Accessibility service is not running; clipboard only")
                 return InsertionHandoff.SERVICE_NOT_RUNNING
             }
             return service.callOnMain(InsertionHandoff.SERVICE_DID_NOT_ANSWER) {
-                service.requestInsertion(transcriptId, text, previousClipboard, policy)
+                service.requestInsertion(transcriptId, text, previousClipboard, policy, takeId)
             }
         }
 
@@ -561,6 +571,7 @@ class PasteAccessibilityService : AccessibilityService() {
         // to copy them and say nothing, which is issue #16's silence reached from the one direction
         // where the service dies holding the text.
         pendingInsertion?.let { pending ->
+            pending.targetPackage = pinnedTarget?.packageName
             logOutcome(pending, InsertionOutcomeLine.Outcome.INTERRUPTED, pinnedTarget?.packageName)
             recordAndAnnounce(ServiceFallbackReason.SERVICE_INTERRUPTED, pending)
         }
@@ -599,6 +610,7 @@ class PasteAccessibilityService : AccessibilityService() {
         // recordAndAnnounce: what survives this teardown is the durable notification, and it only
         // survives if it is handed to the system while this process is still alive.
         pendingInsertion?.let { pending ->
+            pending.targetPackage = pinnedTarget?.packageName
             logOutcome(pending, InsertionOutcomeLine.Outcome.DESTROYED, pinnedTarget?.packageName)
             recordAndAnnounce(ServiceFallbackReason.SERVICE_DESTROYED, pending)
         }
@@ -705,6 +717,7 @@ class PasteAccessibilityService : AccessibilityService() {
         text: String,
         previousClipboard: ClipData?,
         policy: ClipboardInsertionPolicy,
+        takeId: String?,
     ): InsertionHandoff {
         // Three separate refusals. Merging them into one answer is what made a crashed service and
         // a back-to-back dictation indistinguishable from the log and from the History row.
@@ -729,6 +742,7 @@ class PasteAccessibilityService : AccessibilityService() {
             policy = policy,
             startedAtMs = now,
             deadlineMs = now + INSERTION_TIMEOUT_MS,
+            takeId = takeId,
         )
         // A caller-supplied snapshot is honoured; otherwise the paste route takes its own immediately
         // before the first staging (#141, review round 3).
@@ -935,6 +949,7 @@ class PasteAccessibilityService : AccessibilityService() {
     private fun finish(pending: PendingInsertion, outcome: InsertionOutcomeLine.Outcome) {
         pendingInsertion = null
         val target = pinnedTarget?.packageName
+        pending.targetPackage = target
         clearPinnedTarget()
         configureEventMode(includeContentChanges = false)
         logOutcome(pending, outcome, target)
@@ -1341,11 +1356,47 @@ class PasteAccessibilityService : AccessibilityService() {
 
 
 
-    private fun finalizeInsertion(pending: PendingInsertion, status: String, result: String, interrupted: Boolean = false) {
-        if (pending.transcriptId <= 0L) return
+    /**
+     * The accepted-insertion writer (issue #176, G1 D3): every outcome of a text this service ACCEPTED
+     * ends here, so this is where its `insertion.terminal` row leaves, with the same value the History
+     * row receives. The target is its package name, never a label; a debug probe has no take and no row.
+     */
+    private fun finalizeInsertion(
+        pending: PendingInsertion,
+        status: String,
+        result: String,
+        interrupted: Boolean = false,
+        clipboard: ClipboardOutcome? = null,
+    ) {
+        val kind = InsertionResultKind.fromStored(result)
+        val latencyMs = SystemClock.elapsedRealtime() - pending.startedAtMs
+        fun emit() {
+            Telemetry.breadcrumb("insertion", "outcome", mapOf("take_id" to pending.takeId, "result" to result, "target_app" to pending.targetPackage))
+            if (pending.takeId == null) return
+            Telemetry.capture(
+                AnalyticsEvent.InsertionTerminal(
+                    takeId = pending.takeId,
+                    handoff = InsertionHandoff.SCHEDULED,
+                    result = kind,
+                    route = InsertionRouteKind.of(kind),
+                    targetApp = pending.targetPackage,
+                    latencyMs = latencyMs,
+                    clipboard = clipboard?.name?.lowercase(),
+                    recovered = false,
+                ),
+            )
+        }
+        if (pending.transcriptId <= 0L) {
+            emit()
+            return
+        }
         historyScope.launch {
-            runCatching { transcriptRepository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
+            // The History update is first-wins; the row leaves only when THIS writer won it, so a
+            // recovery or a second finalizer that got there first is the one that reports (round 1, F5).
+            val changed = runCatching { transcriptRepository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
                 .onFailure { error -> Log.w(TAG, "Unable to update transcript insertion result: ${error.message}") }
+                .getOrNull()
+            if (changed == 1) emit()
         }
     }
 
@@ -1391,6 +1442,7 @@ class PasteAccessibilityService : AccessibilityService() {
             TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
             InsertionResults.forServiceFallback(reason, clipboard),
             true,
+            clipboard,
         )
         val announcement = FallbackAnnouncement.serviceFallbackAnnouncement(
             reason = reason,

@@ -245,12 +245,14 @@ def stage_compose():
             if not body[0]["focused"]:
                 w.focus_field(body[0]["text"] or "Compose email", GM)
             break
-        if w.present("Compose"):
-            w.tap("Compose", package=GM)
-            time.sleep(2.5)
+        try:
+            w.find("Compose", package=GM)
+        except w.Blocked:
+            w.back()
+            time.sleep(1.2)
             continue
-        w.back()
-        time.sleep(1.2)
+        w.tap("Compose", package=GM)
+        time.sleep(2.5)
     text = editor_text_raw()
     if text is None:
         raise RuntimeError("no focused compose body")
@@ -324,11 +326,10 @@ def main():
     before = {}
 
     def stage_take():
-        # THE MICROPHONE STARTS ON, the launch default, so a take that turns it off and never back on
-        # shows up as dirty. Settled straight away: this is the baseline, not a change to put back.
-        if not mic_raw():
-            w.set_host_mic(True)
-            w._settled(("host-mic", "off"), SERIAL)
+        # THE MICROPHONE RESTS OFF (#181: a switch right before a capture dropped the injected audio 4
+        # times in 25). Both ways start from the resting state; the #177 table already recorded that
+        # the raw script never puts the mic back.
+        w._rest_host_mic_off()
         before["text"] = stage_compose()
 
     def plain(text):
@@ -354,7 +355,7 @@ def main():
     rows.append(run("audio-free insert", "raw", stage_take, lambda: raw_script("debug-insert.sh", INSERT, "bench"), insert_landed))
     rows.append(run("audio-free insert", "harness", stage_take, lambda: w.debug_insert(INSERT), insert_landed))
     # 6. leave-clean is the `dirty` column of every row above; summarised below.
-    out = Path(os.environ.get("BENCH_OUT", "docs/benchmark-results/2026-09-20-issue-177-harness-vs-raw.md"))
+    out = Path(os.environ.get("BENCH_OUT", "docs/benchmark-results/2026-09-20-issue-181-harness-fast-eye.md"))
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = ["# Harness versus raw adb on the emulator, #177", "",
              f"Run {time.strftime('%Y-%m-%d %H:%M')} on {SERIAL} ({w.PLAY_AVD}), raw scripts from `{RAW_SCRIPTS_COMMIT}`.",

@@ -200,6 +200,18 @@ class PasteAccessibilityService : AccessibilityService() {
         }
 
         /**
+         * Every window's accessibility tree as `uiautomator dump` XML, or null when no service is
+         * bound (#181). Read on the main thread like every other read of `windows`. Only the
+         * debug-build dump receiver calls this; it is here because [instance] stays private.
+         */
+        fun windowTreeXml(): String? {
+            val service = instance ?: return null
+            return service.callOnMain(null) {
+                WindowTreeXml.render(WindowTreeXml.fromWindows(service.windows))
+            }
+        }
+
+        /**
          * An admitted field of our own was withdrawn ([OwnFieldAdmission.withdraw]) without any
          * accessibility event to say so (setup left its practice screen): re-check the remembered
          * editor, so the bubble leaves with the field instead of lingering on the next screen.

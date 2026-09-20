@@ -91,7 +91,12 @@ APP_TAGS = (
 _JOURNAL = Path(os.path.expanduser("~/.cache/wispr-eyes/restore.json"))
 
 _STATE = {"serial": None, "restore": [], "tree": None, "holding_journal": False,
-          "restored_for": None, "dump_path": None}
+          "restored_for": None, "dump_path": None,
+          # THE EYE (#181). None: not probed yet. "fast": the debug build's dump receiver answers.
+          # "slow": nobody answered the probe (a release build), so `uiautomator` for the rest of this
+          # process. `eye_retry_after` counts slow reads still to go before the fast eye is tried again
+          # after a transient refusal (unbound, too big, timeout).
+          "eye": None, "eye_retry_after": 0}
 
 
 def _journal_read():
@@ -406,6 +411,9 @@ def _switch_to(serial):
         )
     _STATE["serial"] = serial
     _STATE["tree"] = None
+    # THE EYE BELONGS TO THE DEVICE (#181 review): a release phone answering "slow" must not stop a
+    # debug emulator selected later from being probed, and the other way round.
+    _STATE["eye"], _STATE["eye_retry_after"] = None, 0
 
 
 def ready():
@@ -515,14 +523,14 @@ def tree(refresh=True):
     """
     if not refresh and _STATE["tree"] is not None:
         return _STATE["tree"]
-    xml = None
+    xml = _fast_dump_xml()
     last = None
     # A PATH OF OUR OWN, made once per process. A fixed name is a file we do not own: another session
     # writes it between our dump and our read, and reading it reports THEIR screen as ours.
     dump = _STATE.get("dump_path")
     if dump is None:
         dump = _STATE["dump_path"] = f"/sdcard/wispr-eyes-{uuid.uuid4().hex}.xml"
-    for attempt in (1, 2, 3):
+    for attempt in ((1, 2, 3) if xml is None else ()):
         remote, message = _adb(f"uiautomator dump {shlex.quote(dump)}", check=False)
         if remote == 0:
             _, xml = _adb(f"cat {shlex.quote(dump)}")
@@ -593,17 +601,100 @@ def tree(refresh=True):
     return nodes
 
 
+DUMP_ACTION = "com.envi.wispr.debug.DUMP"
+EYE_COOLDOWN_READS = 3
+
+
+def _fast_dump_xml():
+    """The screen from the app's own accessibility service, or None when `uiautomator` must do it.
+
+    A DEBUG build carries `DebugDumpReceiver` (#181): one broadcast answers in ~0.1 s with the same XML
+    `uiautomator dump` takes 1.9 s of process start to write, and it sees the service's own overlay.
+    The result code is the contract: 1 + data = the tree; 0 = nobody answered, a release build, so
+    this process stops asking; 2 (too big) and 3 (unbound, or the read threw), a timeout or an `am`
+    error = this read is slow and the fast eye is tried again after EYE_COOLDOWN_READS slow reads, so a
+    service that comes back is found again. Undecodable data is a refusal ONCE, naming the eye, then
+    the same cooldown: a broken eye must not be quietly retired, and must not block every read.
+    """
+    if _STATE["eye"] == "slow":
+        return None
+    if _STATE["eye_retry_after"] > 0:
+        _STATE["eye_retry_after"] -= 1
+        return None
+    try:
+        remote, out = _adb(f"am broadcast -a {DUMP_ACTION} {PACKAGE}", timeout=10, check=False)
+    except (Blocked, subprocess.TimeoutExpired):
+        _STATE["eye_retry_after"] = EYE_COOLDOWN_READS
+        return None
+    match = re.search(r"Broadcast completed: result=(\d+)(?:, data=\"(.*)\")?", out, re.S)
+    if remote != 0 or match is None:
+        _STATE["eye_retry_after"] = EYE_COOLDOWN_READS
+        return None
+    code, data = int(match.group(1)), match.group(2)
+    if code == 0:
+        _STATE["eye"] = "slow"
+        return None
+    if code != 1 or not data:
+        _STATE["eye_retry_after"] = EYE_COOLDOWN_READS
+        return None
+    import base64
+    try:
+        xml = base64.b64decode(data.strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as why:
+        _STATE["eye_retry_after"] = EYE_COOLDOWN_READS
+        raise Blocked(f"the app's dump receiver answered with data that does not decode ({why}); "
+                      "falling back to uiautomator on the next read") from why
+    if "<hierarchy" not in xml:
+        _STATE["eye_retry_after"] = EYE_COOLDOWN_READS
+        raise Blocked("the app's dump receiver answered with something that is not a screen tree; "
+                      "falling back to uiautomator on the next read")
+    _STATE["eye"] = "fast"
+    return xml
+
+
+def _stable_tree(max_wait=1.5, gap=0.12):
+    """The screen once it has STOPPED MOVING: two consecutive reads with the same geometry.
+
+    A 1.9 s `uiautomator dump` was an accidental settle; the fast eye (#181) reads mid-animation, and a
+    tab bar read 0.15 s after the settings screen launched sat 70 px above where it landed 0.15 s
+    later, so the tap missed. Anything that turns a reading into a COORDINATE reads through this.
+    `max_wait` bounds it; a screen that never settles (a live clock) is handed over as read, and the
+    read-back after the action is what catches a miss.
+    """
+    def shape(nodes):
+        return [(n["package"], n["id"], n["text"], n["desc"], n["bounds"], n["clickable"], n["enabled"],
+                 n["checkable"], n["on"], n["parent"]) for n in nodes]
+
+    previous = tree(refresh=True)
+    if _STATE["eye"] != "fast":
+        # A `uiautomator` read is 1.9 s of process start; the screen has settled long before it answers,
+        # and a second one would double the cost of every tap on the phone (#181 review).
+        return previous
+    deadline = time.monotonic() + max_wait
+    while time.monotonic() < deadline:
+        time.sleep(gap)
+        current = tree(refresh=True)
+        if shape(current) == shape(previous):
+            return current
+        previous = current
+    return previous
+
+
 def _label(node):
     return node["text"] or node["desc"]
 
 
-def look(only_ours=False):
+def look(only_ours=False, nodes=None):
     """What is on screen, as plain lines, top to bottom.
 
     Pass `only_ours=True` to drop the system chrome and other apps, which is usually what a UAT wants.
+    `nodes` is a snapshot already read; `find` hands its own so a refusal describes the screen that
+    failed rather than the one a second read finds (#181).
     """
     lines = []
-    for node in sorted(tree(), key=lambda n: (n["bounds"][1], n["bounds"][0])):
+    if nodes is None:
+        nodes = tree()
+    for node in sorted(nodes, key=lambda n: (n["bounds"][1], n["bounds"][0])):
         if only_ours and node["package"] != PACKAGE:
             continue
         text = _label(node)
@@ -616,13 +707,13 @@ def look(only_ours=False):
     if not unique:
         # NEVER return an empty string. Silence is the one answer a reader turns into "nothing is
         # wrong", and here it usually means the app is not on screen at all.
-        showing = sorted({n["package"] for n in tree(refresh=False) if n["package"]})
+        showing = sorted({n["package"] for n in nodes if n["package"]})
         scope = "from EnviousWispr" if only_ours else "with any words"
         return f"(nothing on screen {scope}. Showing instead: {', '.join(showing) or 'nothing'})"
     return "\n".join(unique)
 
 
-def find(text, exact=True, clickable=None, package=PACKAGE):
+def find(text, exact=True, clickable=None, package=PACKAGE, stable=False):
     """The ONE node matching, or a refusal naming every candidate.
 
     Three rules, and each one closes a way this could press the wrong thing.
@@ -641,7 +732,8 @@ def find(text, exact=True, clickable=None, package=PACKAGE):
     if not isinstance(text, str) or not text.strip():
         raise Blocked("a non-empty control name is required; an empty one matches whatever is first")
     matches = []
-    for node in tree(refresh=True):
+    snapshot = _stable_tree() if stable else tree(refresh=True)
+    for node in snapshot:
         if package is not None and node["package"] != package:
             continue
         labels = {node["text"], node["desc"]} - {""}
@@ -651,7 +743,8 @@ def find(text, exact=True, clickable=None, package=PACKAGE):
         if hit:
             matches.append(node)
     if not matches:
-        raise Blocked(f"nothing on screen matches {text!r}. What is there:\n{look(only_ours=True)}")
+        raise Blocked(f"nothing on screen matches {text!r}. What is there:\n"
+                      f"{look(only_ours=True, nodes=snapshot)}")
     if len(matches) > 1:
         where = "; ".join(f"{_label(n)!r} at {n['centre']}" for n in matches)
         raise Blocked(
@@ -934,6 +1027,27 @@ def one_way(label, package=PACKAGE):
     return len(chosen) == 1 and not chosen[0]["clickable"]
 
 
+def _switch_settled(label, wanted, package=PACKAGE, max_wait=0.6, gap=0.1):
+    """Wait for a switch to read the WANTED state on two consecutive reads, up to `max_wait`.
+
+    Replaces a fixed 0.6 s after the press (#181): with a 0.1 s eye the state is usually there on the
+    first read, and a state that appears once and flips back is not settled. A switch that never
+    reaches the state is handed to the caller's own read-back, which is what refuses.
+    """
+    deadline = time.monotonic() + max_wait
+    agreed = 0
+    while True:
+        if switch(label, package=package) == wanted:
+            agreed += 1
+            if agreed >= 2:
+                return True
+        else:
+            agreed = 0
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(gap)
+
+
 @_atomic_change
 def set_switch(label, on, where, package=PACKAGE):
     """Put a switch into a known state, and READ IT BACK. Returns what it was before.
@@ -982,7 +1096,7 @@ def set_switch(label, on, where, package=PACKAGE):
     debt = ("switch", json.dumps({"where": where, "label": label, "was": before}, sort_keys=True))
     _owe(debt)
     tap(label, package=package)
-    time.sleep(0.6)
+    _switch_settled(label, on, package=package)
     after = switch(label, package=package)
     if after != on:
         raise Blocked(
@@ -1031,7 +1145,7 @@ def tap(text, exact=True, clickable=True, package=PACKAGE):
     # Ask for the LABEL, not for a clickable node. In Compose the words and the touch target are usually
     # different nodes: the drawer row carries "Storage" on a non-clickable child inside a clickable
     # parent, so demanding a clickable match refuses a control that is plainly there.
-    node = find(text, exact=exact, clickable=None, package=package)
+    node = find(text, exact=exact, clickable=None, package=package, stable=True)
     if clickable and not node["clickable"]:
         holder = _enclosing_control(node, package)
         # PRESS WITHIN THE LABEL'S OWN ROW. A clickable ancestor can be the whole drawer, and its centre
@@ -1161,7 +1275,7 @@ def scroll(direction="down", amount=1, package=PACKAGE):
         raise Blocked("amount must be a whole number from 1 to 20")
     # ONE read serves both questions asked of this screen: what scrolls, and what was here before the
     # swipe. Reading twice costs about two seconds per swipe, and `scan()` swipes dozens of times.
-    here = tree(refresh=True)
+    here = _stable_tree()
     areas = [n for n in here if n["scrollable"] and n["package"] == package]
     if not areas:
         raise Blocked(
@@ -1242,6 +1356,7 @@ def _start(component, what, settle):
         time.sleep(settle / 3 if settle else 0.5)
         _STATE["tree"] = None
         if PACKAGE in {n["package"] for n in tree()}:
+            _stable_tree()
             break
     showing = {n["package"] for n in tree(refresh=False)}
     if PACKAGE not in showing and "com.android.systemui" in showing:
@@ -2042,6 +2157,31 @@ def set_host_mic(on):
     return f"host microphone {'on' if on else 'off'}"
 
 
+@_atomic_change
+def _rest_host_mic_off():
+    """Make host-mic OFF the emulator's RESTING state, settled rather than owed.
+
+    Measured 2026-09-20: a take whose capture opened right after the host mic was switched dropped the
+    injected audio 4 times in 25 (`Transcription result received (chars=0)`, `NO_SPEECH`), and 0 times
+    in 10 when the mic was already off and nothing switched inside the take. The mechanism is the
+    emulator's, not ours; what is ours is to never switch inside a take. With off as the resting state,
+    `dictate_emulator` finds it "already off" and `restore()` has nothing to flip; `say_into_emulator`
+    (the BlackHole path) turns it on for its own take and back. Called at launch and at the start of a
+    take that finds the mic on.
+    """
+    if not _mic_state():
+        return "host microphone already off"
+    _grpc("setMicrophoneState", {"realAudioEnabled": False})
+    if _mic_state():
+        raise Blocked("the emulator's host microphone would not switch off")
+    # A debt whose destination IS off is now moot and is settled. A debt owing "on" is not: something
+    # switched the mic off and still owes turning it back on, and `restore()` keeps that promise.
+    for owed in list(_owed()):
+        if owed == ("host-mic", "off"):
+            _settled(owed)
+    return "host microphone off (resting state)"
+
+
 def _pcm_from_sentence(sentence, path):
     """Say a sentence into a raw PCM file the emulator's microphone accepts: s16le, mono, 48 kHz."""
     for tool in ("say", "ffmpeg"):
@@ -2207,7 +2347,10 @@ def dictate_emulator(sentence="and I will send the deck tomorrow", target_packag
     report.append(f"NOTE: {sentence!r} was rendered to {pcm}")
     ending = None
     try:
-        report.append(f"NOTE: {set_host_mic(False)}")
+        # OFF AS THE RESTING STATE, never a switch inside the take: see _rest_host_mic_off. Done before
+        # the audio is rendered so the switch, if one happens at all, is as far from the capture as the
+        # call allows.
+        report.append(f"NOTE: {_rest_host_mic_off()}")
         clear_log()
         with open_recorder(verify=False):
             time.sleep(3.0)  # the recogniser warms; injecting sooner is dropped (grpc-take.sh, 2026-09-13)
@@ -2318,7 +2461,8 @@ def launch_emulator(avd=PLAY_AVD, restart=False):
         if code == 0 and out.strip() == "1":
             device(EMULATOR_SERIAL)
             _grpc("getStatus")
-            return f"{EMULATOR_SERIAL} is already booted with gRPC at {GRPC_ENDPOINT}"
+            _rest_host_mic_off()
+            return f"{EMULATOR_SERIAL} is already booted with gRPC at {GRPC_ENDPOINT}, host microphone off"
     if EMULATOR_SERIAL in attached:
         if _owed(EMULATOR_SERIAL):
             raise Blocked(f"changes are still owed to {EMULATOR_SERIAL}; restore() before restarting it")
@@ -2345,7 +2489,8 @@ def launch_emulator(avd=PLAY_AVD, restart=False):
         raise Blocked(f"{avd} did not finish booting in 180 s; its log is {log.name}")
     device(EMULATOR_SERIAL)
     _grpc("getStatus")
-    return f"{avd} booted as {EMULATOR_SERIAL} with gRPC at {GRPC_ENDPOINT}"
+    _rest_host_mic_off()
+    return f"{avd} booted as {EMULATOR_SERIAL} with gRPC at {GRPC_ENDPOINT}, host microphone off"
 
 
 CABLE = "BlackHole 2ch"
@@ -2394,8 +2539,14 @@ def say_into_emulator(sentence):
         _checked(["say", "-v", "Samantha", "-r", "170", "-a", CABLE, "--", sentence], timeout=180)
         return time.monotonic() - started
     finally:
-        _restore_one(entry)
-        _settled(entry, serial="host")
+        # BOTH cleanups run whatever the other does: the Mac's input goes back, and the emulator's host
+        # mic returns to its OFF resting state (#181; the on-debt `set_host_mic(True)` wrote is settled
+        # by that, or kept for `restore()` if the switch fails).
+        try:
+            _restore_one(entry)
+            _settled(entry, serial="host")
+        finally:
+            _rest_host_mic_off()
 
 
 @_atomic_change
@@ -2573,12 +2724,12 @@ def _as_serial(serial):
     if serial is None or serial == _STATE["serial"]:
         yield
         return
-    saved, saved_tree = _STATE["serial"], _STATE["tree"]
-    _STATE["serial"], _STATE["tree"] = serial, None
+    saved = {k: _STATE[k] for k in ("serial", "tree", "eye", "eye_retry_after")}
+    _STATE.update({"serial": serial, "tree": None, "eye": None, "eye_retry_after": 0})
     try:
         yield
     finally:
-        _STATE["serial"], _STATE["tree"] = saved, saved_tree
+        _STATE.update(saved)
 
 
 def _restore_one(entry, serial=None):
@@ -2666,18 +2817,21 @@ def _restore_one_here(entry):
         # Navigate BY NAME and set it BY NAME. A switch debt survives the process that made it, so the
         # screen has to be reached again from wherever the phone happens to be.
         wanted = json.loads(previous)
-        if wanted["where"] in TABS:
-            open_tab(wanted["where"])
-        else:
-            open_settings()
-            tap("Open settings menu")
-            tap(wanted["where"], exact=True)
+        # IN PLACE WHEN THE SCREEN IS ALREADY UP (#181): both the screen identity and the exact label,
+        # never the label alone, which can sit on another page. Otherwise navigate as before.
+        if not (on_screen(wanted["where"]) and present(wanted["label"], exact=True)):
+            if wanted["where"] in TABS:
+                open_tab(wanted["where"])
+            else:
+                open_settings()
+                tap("Open settings menu")
+                tap(wanted["where"], exact=True)
         if not reveal(wanted["label"]):
             raise Blocked(f"{wanted['label']!r} could not be found on {wanted['where']}, so it cannot "
                           "be put back")
         if switch(wanted["label"]) != wanted["was"]:
             tap(wanted["label"])
-            time.sleep(0.6)
+            _switch_settled(wanted["label"], wanted["was"])
         if switch(wanted["label"]) != wanted["was"]:
             raise Blocked(f"{wanted['label']!r} would not go back to "
                           f"{'on' if wanted['was'] else 'off'}")
@@ -2856,7 +3010,7 @@ def open_tab(name):
     if name not in TABS:
         raise Blocked(f"{name!r} is not one of the four tabs: {', '.join(TABS)}")
     open_settings()
-    tree(refresh=True)
+    _stable_tree()
     node = _tab_row()[name]
     if node["selected"] or _holder(node, lambda n: n["clickable"]) is None:
         return f"already on {name}"
@@ -2864,8 +3018,15 @@ def open_tab(name):
     x, y = holder["centre"][0], node["centre"][1]
     _STATE["tree"] = None
     _adb(f"input tap {x} {y}")
-    time.sleep(1.2)
-    return f"opened {name}"
+    # READ BACK that the tab took, polling up to the old fixed wait; a tap that landed mid-animation
+    # is reported here rather than by the next call failing to find a switch.
+    deadline = time.monotonic() + 1.2
+    while True:
+        time.sleep(0.15)
+        if on_screen(name):
+            return f"opened {name}"
+        if time.monotonic() >= deadline:
+            raise Blocked(f"{name!r} was pressed at ({x}, {y}) but the app is not showing it 1.2 s later")
 
 
 def scan(toggle=False):

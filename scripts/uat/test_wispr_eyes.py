@@ -727,8 +727,15 @@ def main():
         return original_run(args, timeout)
 
     mic_calls = []
-    eyes._grpc = lambda method, payload=None, stdin_path=None, timeout=120: (
-        mic_calls.append((method, payload)) or ({"realAudioEnabled": False} if method == "getMicrophoneState" and not any(m == "setMicrophoneState" for m, _ in mic_calls) else {"realAudioEnabled": True}))
+    cable_mic = {"on": False}
+
+    def cable_grpc(method, payload=None, stdin_path=None, timeout=120):
+        mic_calls.append((method, payload))
+        if method == "setMicrophoneState":
+            cable_mic["on"] = bool(payload["realAudioEnabled"])
+        return {"realAudioEnabled": True} if (method == "getMicrophoneState" and cable_mic["on"]) else {}
+
+    eyes._grpc = cable_grpc
     eyes._run = cable_run
     eyes._has_tool = lambda name: True
     eyes.say("hello there")
@@ -744,6 +751,8 @@ def main():
           not any(c[0] == "osascript" and "set volume" in " ".join(c) for c in calls))
     check("the emulator's host microphone is switched on first, over gRPC",
           ("setMicrophoneState", {"realAudioEnabled": True}) in mic_calls, mic_calls)
+    check("and rests OFF again once the cable take is over, with nothing owed",
+          cable_mic["on"] is False and eyes._owed("emulator-5554") == [], (cable_mic, eyes._owed("emulator-5554")))
     eyes._has_tool = lambda name: False
     try:
         eyes.say("hello there")
@@ -762,6 +771,204 @@ def main():
     eyes._has_tool = original_has_tool
     eyes._JOURNAL = original_journal
     eyes._STATE["serial"] = None
+
+    # ---- the fast eye (#181): the app's own dump receiver first, uiautomator as the fallback -----------
+    # Every row drives the real `tree()` with adb faked: the broadcast's result code is the contract.
+    import base64 as _b64
+    eye_book = Path(_tempfile.mkdtemp()) / "restore.json"
+    original_journal_eye, original_adb_eye = eyes._JOURNAL, eyes._adb
+    eyes._JOURNAL = eye_book
+    eye_calls = []
+    eye = {"result": 1, "data": _b64.b64encode(TWO_REMOVES.encode()).decode(), "raise": False}
+
+    def eye_adb(command, timeout=60, check=True, serial=None):
+        if command.startswith("am broadcast"):
+            eye_calls.append("broadcast")
+            if eye["raise"]:
+                raise eyes.Blocked("adb could not reach the device")
+            data = f', data="{eye["data"]}"' if eye["data"] is not None else ""
+            return 0, f"Broadcasting: Intent\nBroadcast completed: result={eye['result']}{data}\n"
+        if command.startswith("uiautomator dump"):
+            eye_calls.append("uiautomator")
+            return 0, ""
+        if command.startswith("cat "):
+            return 0, TWO_REMOVES
+        return 0, ""
+
+    eyes._adb = eye_adb
+    eyes._STATE.update({"serial": "emulator-5554", "eye": None, "eye_retry_after": 0, "tree": None})
+    nodes = eyes.tree()
+    check("a receiver answering 1 + data is the fast eye, and uiautomator is not run",
+          len(nodes) == 7 and eye_calls == ["broadcast"] and eyes._STATE["eye"] == "fast", eye_calls)
+    eye_calls.clear()
+    eye["result"], eye["data"] = 0, None
+    eyes._STATE["eye"] = None
+    eyes.tree()
+    check("nobody answering (a release build) is slow for the rest of the process",
+          eye_calls == ["broadcast", "uiautomator"] and eyes._STATE["eye"] == "slow", eye_calls)
+    eye_calls.clear()
+    eyes.tree()
+    check("and the broadcast is not sent again in that process", eye_calls == ["uiautomator"], eye_calls)
+    # A transient refusal (unbound) is slow for this read and retried after the cooldown.
+    eye_calls.clear()
+    eye["result"], eye["data"] = 3, None
+    eyes._STATE.update({"eye": None, "eye_retry_after": 0})
+    eyes.tree()
+    check("an unbound service is slow for this read", eye_calls == ["broadcast", "uiautomator"], eye_calls)
+    eye["result"], eye["data"] = 1, _b64.b64encode(TWO_REMOVES.encode()).decode()
+    eye_calls.clear()
+    for _ in range(eyes.EYE_COOLDOWN_READS):
+        eyes.tree()
+    check("the next three reads stay slow without asking", eye_calls == ["uiautomator"] * 3, eye_calls)
+    eye_calls.clear()
+    eyes.tree()
+    check("and the fourth asks again and is fast", eye_calls == ["broadcast"] and eyes._STATE["eye"] == "fast", eye_calls)
+    # Too big and a broken transport behave the same way.
+    for code, label in ((2, "a tree over the cap"),):
+        eye["result"], eye["data"] = code, None
+        eyes._STATE["eye_retry_after"] = 0
+        eye_calls.clear()
+        eyes.tree()
+        check(f"{label} is slow for this read with a cooldown",
+              eye_calls == ["broadcast", "uiautomator"] and eyes._STATE["eye_retry_after"] == eyes.EYE_COOLDOWN_READS, eye_calls)
+    eye["raise"] = True
+    eyes._STATE["eye_retry_after"] = 0
+    eye_calls.clear()
+    eyes.tree()
+    check("an adb failure on the broadcast is slow for this read with a cooldown",
+          eye_calls == ["broadcast", "uiautomator"] and eyes._STATE["eye_retry_after"] == eyes.EYE_COOLDOWN_READS, eye_calls)
+    eye["raise"] = False
+    # Undecodable data is a refusal ONCE, naming the eye, then slow.
+    eye["result"], eye["data"] = 1, "not base64 at all !!!"
+    eyes._STATE["eye_retry_after"] = 0
+    eye_calls.clear()
+    try:
+        eyes.tree()
+        check("undecodable data is a refusal that names the eye", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("undecodable data is a refusal that names the eye", "dump receiver" in str(refusal), refusal)
+    eye_calls.clear()
+    eyes.tree()
+    check("and the read after it is slow, without raising", eye_calls == ["uiautomator"], eye_calls)
+    eyes._adb = original_adb_eye
+    eyes._STATE.update({"serial": None, "eye": None, "eye_retry_after": 0, "tree": None})
+
+    # The eye belongs to the device: selecting another device forgets the answer.
+    eyes._STATE.update({"serial": "100.94.206.47:5555", "eye": "slow", "eye_retry_after": 2})
+    eyes._switch_to("emulator-5554")
+    check("switching device resets the eye so the new device is probed",
+          eyes._STATE["eye"] is None and eyes._STATE["eye_retry_after"] == 0)
+    eyes._STATE["eye"] = "fast"
+    with eyes._as_serial("emulator-5556"):
+        check("a restore on another device starts with its own unprobed eye", eyes._STATE["eye"] is None)
+        eyes._STATE["eye"] = "slow"
+    check("and the selected device's eye comes back afterwards", eyes._STATE["eye"] == "fast")
+    eyes._STATE.update({"serial": None, "eye": None, "eye_retry_after": 0})
+
+    # ---- a refusal describes the screen that FAILED, not the one a second read finds ------------------
+    reads = []
+    screens = iter([EXACT_VS_SUBSTRING, NOTHING_OF_OURS, NOTHING_OF_OURS])
+
+    def changing_adb(command, timeout=60, check=True, serial=None):
+        if command.startswith("uiautomator dump"):
+            reads.append(1)
+            return 0, ""
+        if command.startswith("cat "):
+            return 0, next(screens)
+        if command.startswith("am broadcast"):
+            return 0, "Broadcast completed: result=0\n"
+        return 0, ""
+
+    eyes._adb = changing_adb
+    eyes._STATE.update({"serial": "fixture", "eye": "slow", "tree": None})
+    try:
+        eyes.find("Bluetooth pairing")
+        check("an absent query on a changing screen still refuses", False, "it found something")
+    except eyes.Blocked as refusal:
+        check("the refusal lists the screen of the read that failed, from one read",
+              "Remove all models" in str(refusal) and "nexuslauncher" not in str(refusal) and len(reads) == 1,
+              (str(refusal)[:120], len(reads)))
+    eyes._adb = original_adb_eye
+    eyes._STATE.update({"serial": None, "eye": None, "tree": None})
+
+    # ---- a switch is put back IN PLACE when its screen is already up, and by navigating when not -----
+    # Navigation helpers are SPIED: the row is red if any of them is invoked on the in-place path.
+    spied = {name: 0 for name in ("open_tab", "open_settings", "nav")}
+    originals = {name: getattr(eyes, name) for name in spied}
+    for name in spied:
+        setattr(eyes, name, (lambda n: (lambda *a, **k: spied.__setitem__(n, spied[n] + 1)))(name))
+    original_on_screen, original_reveal, original_switch, original_tap = eyes.on_screen, eyes.reveal, eyes.switch, eyes.tap
+    original_present = eyes.present
+    place = {"on_screen": True, "present": True, "state": [False, True, True]}
+    eyes.on_screen = lambda where: place["on_screen"]
+    eyes.present = lambda text, exact=False: place["present"]
+    eyes.reveal = lambda label, package=eyes.PACKAGE: True
+    eyes.switch = lambda label, package=eyes.PACKAGE: place["state"].pop(0) if len(place["state"]) > 1 else place["state"][0]
+    taps = []
+    eyes.tap = lambda text, **k: taps.append(text) or "pressed"
+    eyes._STATE["serial"] = "fixture"
+    debt = ("switch", json.dumps({"where": "Transcription", "label": "Spoken emoji", "was": True}, sort_keys=True))
+    eyes._owe(debt)
+    eyes._restore_one(debt)
+    check("a switch whose screen is up is put back without navigating",
+          sum(spied.values()) == 0 and taps == ["Spoken emoji"], (spied, taps))
+    eyes._settled(debt)
+    place.update({"on_screen": False, "present": True, "state": [False, True, True]})
+    taps.clear()
+    eyes._owe(debt)
+    eyes._restore_one(debt)
+    check("the label alone, on another screen, is not enough: the tab is opened",
+          spied["open_tab"] == 1 and taps == ["Spoken emoji"], (spied, taps))
+    eyes._settled(debt)
+    for name, fn in originals.items():
+        setattr(eyes, name, fn)
+    eyes.on_screen, eyes.reveal, eyes.switch, eyes.tap, eyes.present = original_on_screen, original_reveal, original_switch, original_tap, original_present
+    eyes._STATE["serial"] = None
+
+    # A slow read is its own settle: one dump, not two.
+    reads = []
+    eyes._adb = lambda command, timeout=60, check=True, serial=None: (reads.append(command[:12]), (0, TWO_REMOVES if command.startswith("cat ") else ""))[1]
+    eyes._STATE.update({"serial": "fixture", "eye": "slow", "tree": None})
+    eyes._stable_tree()
+    check("a stable read through uiautomator is ONE dump", reads.count("uiautomator ") == 1, reads)
+    eyes._adb = original_adb_eye
+    eyes._STATE.update({"serial": None, "eye": None, "tree": None})
+
+    # The resting-state helper settles only a debt whose destination is off.
+    mic = {"on": True}
+    original_mic_state, original_grpc2 = eyes._mic_state, eyes._grpc
+    eyes._mic_state = lambda: mic["on"]
+    eyes._grpc = lambda method, payload=None, stdin_path=None, timeout=120: mic.__setitem__("on", payload["realAudioEnabled"]) if method == "setMicrophoneState" else {}
+    eyes._STATE["serial"] = "emulator-5554"
+    eyes._owe(("host-mic", "on"))
+    check("resting the mic off keeps a debt that owes ON",
+          "off" in eyes._rest_host_mic_off() and eyes._owed("emulator-5554") == [("host-mic", "on")] and mic["on"] is False,
+          eyes._owed("emulator-5554"))
+    eyes._settled(("host-mic", "on"))
+    mic["on"] = True
+    eyes._owe(("host-mic", "off"))
+    check("and settles a debt whose destination is OFF, now moot",
+          "off" in eyes._rest_host_mic_off() and eyes._owed("emulator-5554") == [] and mic["on"] is False,
+          eyes._owed("emulator-5554"))
+    eyes._mic_state, eyes._grpc = original_mic_state, original_grpc2
+    eyes._STATE["serial"] = None
+
+    # ---- the switch settle waits for the WANTED state twice, and gives up on time -------------------
+    readings = iter([False, True, True])
+    eyes.switch = lambda label, package=eyes.PACKAGE: next(readings)
+    clock = {"t": 0.0}
+    real_monotonic, real_sleep2 = eyes.time.monotonic, eyes.time.sleep
+    eyes.time.monotonic = lambda: clock["t"]
+    eyes.time.sleep = lambda s: clock.__setitem__("t", clock["t"] + s)
+    check("the settle returns once the wanted state is read twice in a row",
+          eyes._switch_settled("x", True) is True and clock["t"] < 0.6, clock["t"])
+    readings = iter([False] * 50)
+    clock["t"] = 0.0
+    check("and gives up after the bound when it never arrives",
+          eyes._switch_settled("x", True) is False and 0.6 <= clock["t"] <= 0.8, clock["t"])
+    eyes.time.monotonic, eyes.time.sleep = real_monotonic, real_sleep2
+    eyes.switch = original_switch
+    eyes._JOURNAL = original_journal_eye
 
     # ---- the "put it back" book -------------------------------------------------------------------
     # Every row here drives the REAL journal, pointed at a throwaway file. The rows exist because the

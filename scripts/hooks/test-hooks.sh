@@ -81,7 +81,7 @@ echo
 # EVERY `mktemp` IN THIS FILE, enumerated with `grep mktemp` rather than from the block I happened to be
 # editing. The previous version registered the six in this block and left four allocated hundreds of
 # lines later, each removed only on its own success path — so an interruption before that line leaked it.
-MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""; DWT_REPO=""
+MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""; DWT_REPO=""; UNGUARDED=""
 GATE_EXP=""; GATE_PAY=""; VICTIM=""; STAGE_B=""; STAGE_A=""
 HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""; SM_REPO=""; SM_FN=""; SM_SUB=""; SM_NEST=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
@@ -108,6 +108,7 @@ cleanup() {
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
     [ -n "$GATE_EXP" ]   && rm -rf "$GATE_EXP"   # -rf for every mktemp resource, as the check requires
+    [ -n "$UNGUARDED" ]  && rm -rf "$UNGUARDED"  # the hook copy with the #177 check removed
     [ -n "$GATE_PAY" ]   && rm -rf "$GATE_PAY"
     [ -n "$VICTIM" ]     && rm -rf "$VICTIM"
     [ -n "$STAGE_B" ]    && rm -rf "$STAGE_B"
@@ -217,6 +218,55 @@ assert_branch "a wrapper keeps gradle's flags"  allow command-safety.py '{"tool_
 # NAMED FALSE POSITIVE, asserted so it is a decision and not a surprise: `help --task <name>` runs
 # nothing, and denying it is the cheap side of a trade whose other side is a wiped phone.
 assert_branch "help --task is denied, named"    deny  command-safety.py '{"tool_input":{"command":"./gradlew help --task connectedDebugAndroidTest"}}'
+echo
+
+echo "command-safety.py — one front door onto the device (#177): raw driving is refused, every read stays open"
+assert_branch "adb shell input tap"             deny  command-safety.py '{"tool_input":{"command":"adb shell input tap 540 1200"}}'
+assert_branch "with a serial, uiautomator dump" deny  command-safety.py '{"tool_input":{"command":"adb -s emulator-5554 shell uiautomator dump /sdcard/x.xml"}}'
+assert_branch "screencap"                       deny  command-safety.py '{"tool_input":{"command":"adb shell screencap -p /sdcard/s.png"}}'
+assert_branch "the emulator console"            deny  command-safety.py '{"tool_input":{"command":"adb -s emulator-5554 emu avd hostmicoff"}}'
+assert_branch "the \$ADB variable"               deny  command-safety.py '{"tool_input":{"command":"$ADB shell input text 1234"}}'
+assert_branch "the \${ADB} variable"             deny  command-safety.py '{"tool_input":{"command":"${ADB} -s emulator-5554 shell input keyevent KEYCODE_ENTER"}}'
+assert_branch "a full path to adb"              deny  command-safety.py '{"tool_input":{"command":"~/Android/sdk/platform-tools/adb shell input swipe 1 2 3 4"}}'
+assert_branch "one quoted shell word"           deny  command-safety.py '{"tool_input":{"command":"adb shell \"input tap 1 2\""}}'
+assert_branch "grpcurl at the emulator"         deny  command-safety.py '{"tool_input":{"command":"grpcurl -plaintext -d @ localhost:8554 android.emulation.control.EmulatorController/injectAudio < p.jsonl"}}'
+assert_branch "hidden behind a &&"              deny  command-safety.py '{"tool_input":{"command":"adb logcat -c && adb shell input tap 1 2"}}'
+# Controls in the allow direction: the road has to stay open or the reader routes around the wall.
+assert_branch "reading the log"                 allow command-safety.py '{"tool_input":{"command":"adb -s emulator-5554 logcat -d | grep insertion"}}'
+assert_branch "dumpsys"                         allow command-safety.py '{"tool_input":{"command":"adb shell dumpsys window windows"}}'
+assert_branch "installing a build"              allow command-safety.py '{"tool_input":{"command":"adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk"}}'
+assert_branch "listing packages"                allow command-safety.py '{"tool_input":{"command":"adb shell pm list packages"}}'
+assert_branch "listing devices"                 allow command-safety.py '{"tool_input":{"command":"adb devices"}}'
+assert_branch "getprop"                         allow command-safety.py '{"tool_input":{"command":"$ADB shell getprop sys.boot_completed"}}'
+assert_branch "a screen recording"              allow command-safety.py '{"tool_input":{"command":"adb shell screenrecord --time-limit 10 /sdcard/r.mp4"}}'
+assert_branch "grpcurl listing the service"     allow command-safety.py '{"tool_input":{"command":"grpcurl -plaintext localhost:8554 list android.emulation.control.EmulatorController"}}'
+assert_branch "grpcurl describing the service"  allow command-safety.py '{"tool_input":{"command":"grpcurl -plaintext localhost:8554 describe android.emulation.control.EmulatorController"}}'
+assert_branch "a read verb beside a method target" deny command-safety.py '{"tool_input":{"command":"grpcurl -plaintext -authority describe localhost:8554 android.emulation.control.EmulatorController/setMicrophoneState"}}'
+assert_branch "the harness itself"              allow command-safety.py '{"tool_input":{"command":"python3 scripts/uat/wispr_eyes.py look"}}'
+assert_branch "printing the word input"         allow command-safety.py '{"tool_input":{"command":"printf %s \"adb shell input tap\""}}'
+# THE GUARD REMOVED (validation-discipline RULE: a-guard-control-needs-the-guard-REMOVED): the same
+# command against a copy of the hook whose new check is gone must be ALLOWED, so the deny rows above are
+# the check's doing and not some other check's.
+UNGUARDED=$(mktemp -d) || exit 2
+mkdir -p "$UNGUARDED/scripts/hooks" || exit 2
+cp "$HOOKS"/*.py "$UNGUARDED/scripts/hooks/" || exit 2
+git -C "$UNGUARDED" init -q -b work || exit 2
+python3 - "$UNGUARDED/scripts/hooks/command-safety.py" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+s = s.replace("    try:\n        check_raw_device_driving(segments)\n", "    try:\n        pass\n", 1)
+p.write_text(s)
+PY
+assert_at "$UNGUARDED/scripts/hooks" "with the check removed, input tap is allowed" allow command-safety.py '{"tool_input":{"command":"adb shell input tap 540 1200"}}'
+# THE CHECK CRASHING fails OPEN AND SILENT: exit 0, no decision, nothing on stderr (the suite reads a
+# traceback as `error`).
+python3 - "$UNGUARDED/scripts/hooks/command-safety.py" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+s = s.replace("    try:\n        pass\n", "    try:\n        raise RuntimeError('forced')\n", 1)
+p.write_text(s)
+PY
+assert_at "$UNGUARDED/scripts/hooks" "a crashing check fails open and silent" allow command-safety.py '{"tool_input":{"command":"adb shell input tap 540 1200"}}'
 echo
 
 # THE COMMIT CHECK IS A REAL GIT HOOK NOW, so it is exercised by RUNNING COMMITS rather than by feeding

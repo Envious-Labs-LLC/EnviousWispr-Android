@@ -1,0 +1,15 @@
+Issue 177 review — DONE
+
+## Findings
+
+Identity: FOUND: removing the required second identity probe would leave every current row green. Add a row where the first probe returns `1`, the immediate pre-input probe is unclear or `0`, and no input is sent (`docs/feature-requests/issue-177-2026-09-20-one-front-door.md:162-164,289-300`).
+
+Mic: FOUND: removing the journal read-back would not fail the current test, which checks only write-before-change. Add a row where journal read-back fails or differs and assert `setMicrophoneState` is never called and debt remains (`scripts/uat/wispr_eyes.py:171-175,199-211`; plan `:166-168,298`).
+
+Restore: FOUND: the plan does not preserve the selected device while restoring other serials. `_switch_to` changes global selection, `_restore_locked` targets through `device()`, and `open_recorder` requires `restored_for == device()`. Fix: restore using an explicit serial without switching selection, preserve the original device, and assert both selection and `restored_for` remain the phone (`scripts/uat/wispr_eyes.py:376-386,1464-1470,2230-2246`; plan `:299`).
+
+Hook: FOUND: `main` catches parsing failures only; check functions run outside the fail-open `try`. A new-check exception would block execution, while §11.2 tests only tokenizer errors. Fix: catch ordinary exceptions around `check_raw_device_driving` and add a forced-check-error row (`scripts/hooks/command-safety.py:274-287`; plan `:296`). The `$ADB` normalization rows themselves are sound.
+
+## Verdict
+
+PROCEED-WITH-REVISIONS — the design stands, but four small contract/test details must be made explicit.

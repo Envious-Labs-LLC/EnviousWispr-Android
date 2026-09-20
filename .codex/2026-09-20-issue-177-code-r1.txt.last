@@ -1,0 +1,42 @@
+## Axes
+
+A. FOUND (HYPOTHETICAL): `_grpc` always controls `localhost:8554`, but `set_host_mic` journals under any selected emulator serial. With `emulator-5556` selected, it changes `emulator-5554` without debt under that device and can settle the wrong debt. fix: begin `_grpc` with `if device() != EMULATOR_SERIAL: raise Blocked("the fixed gRPC endpoint belongs only to emulator-5554")`.
+
+B. NOT FOUND
+
+C. NOT FOUND
+
+D. FOUND (REPRODUCIBLE): `grpcurl … describe android.emulation.control.EmulatorController` is read-only but denied. fix: before the controller denial, add `if any(arg in ("list", "describe") for arg in args): continue`.
+
+E. FOUND (HYPOTHETICAL): after `set_host_mic(False)`, failures in `clear_log`, `Popen`, or `rec.wait` bypass the final `restore()`. fix: set `rec = None`, start an outer `try` immediately after the mic change, and use:
+```python
+finally:
+    try:
+        if rec is not None:
+            rec.wait(timeout=limit + 15)
+    finally:
+        w.restore()
+```
+
+F. FOUND (REPRODUCIBLE): `"beta alpha"` verifies for expected `"alpha beta"` because `dictate_emulator` checks unordered word membership; the benchmark repeats this flaw. fix: require a contiguous normalized sequence:
+```python
+wanted, got = _words(sentence), _words(after[2])
+landed = bool(wanted) and any(
+    got[i:i + len(wanted)] == wanted
+    for i in range(len(got) - len(wanted) + 1)
+)
+```
+Report `ISSUE` unless `landed`; use an independent equivalent in the benchmark oracle.
+
+G. FOUND (HYPOTHETICAL): `is_emulator` now leaks `TimeoutExpired`, `OSError`, or decoding failures instead of returning `False`, breaking existing Boolean callers and contradicting its docstring. fix:
+```python
+try:
+    code, out, _ = _run(...)
+except (OSError, subprocess.SubprocessError, UnicodeError):
+    return False
+```
+
+## Verdict
+
+FIX-FIRST
+

@@ -1,0 +1,5 @@
+## Axis
+FOUND: `"ışık geldi"` is wrongly refused for editor output `"Işık geldi."`; Unicode casefold treats `ı` and capital `I` differently. Fix: also match the app’s exact sentence-capitalized expected variant, in both matchers.
+
+## Verdict
+FIX-FIRST

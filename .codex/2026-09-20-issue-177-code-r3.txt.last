@@ -1,0 +1,11 @@
+## Axes
+
+1. CONFIRMED CLOSED
+
+2. CONFIRMED CLOSED
+
+NEW: FOUND: Unicode combining marks are discarded, so `_sentence_landed("कि", "क")` incorrectly returns true. Unspaced CJK also fails: `"你好"` is not found inside `"他说你好世界"`. This is the third narrow-tokenizer defect. fix: apply the pre-committed exact, whitespace-collapsed substring match with only app punctuation stripped.
+
+## Verdict
+
+FIX-FIRST

@@ -26,7 +26,8 @@ class SilenceVadServiceShapeTest {
         // A call that armed a deadline and THEN waited for the lock can kill this process while a newer
         // take owns it. Taking the lock first means only the call actually doing work is on a clock.
         listOf(
-            "override fun start(",
+            // Both `start` and `startForTake` (#176) delegate here; the property lives in the one body.
+            "private fun startTake(",
             "override fun processBlock(",
             "override fun finish(",
         ).forEach { signature ->
@@ -49,7 +50,7 @@ class SilenceVadServiceShapeTest {
                 body.indexOf("captureToken != activeToken") < body.indexOf("guarded("),
             )
         }
-        val start = bodyOf("override fun start(")
+        val start = bodyOf("private fun startTake(")
         assertTrue(
             "start must order tokens before arming",
             start.indexOf("tokenOrder.accept(captureToken)") < start.indexOf("guarded("),

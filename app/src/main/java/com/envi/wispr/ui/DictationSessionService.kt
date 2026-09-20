@@ -28,6 +28,8 @@ import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.audio.LiveGate
 import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
+import com.envi.wispr.audio.SpeechEvidence
+import com.envi.wispr.asr.AsrFailureReason
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.TextSafety
@@ -91,6 +93,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 
 /** Owns a dictation session without placing an Activity above the user's typing app. */
@@ -169,6 +172,19 @@ class DictationSessionService : Service() {
      * announce over a cancel. A fresh arbiter per admitted take; `closed()` refuses everything before one.
      */
     @Volatile private var arbiter: TakeArbiter = TakeArbiter.closed()
+
+    /**
+     * This take's id, minted at admission and carried on every request that leaves this process
+     * (audio start, the speech request, the polish request), so a helper's records can name the take
+     * (issue #176). Never persisted by the helpers; chunk B carries it to telemetry.
+     */
+    @Volatile private var takeId = ""
+
+    /** The take's peak loudness, read ONCE at stop like the device label; null when it could not be read. */
+    @Volatile private var takePeakAmplitude: Float? = null
+
+    /** The speech process's typed failure for an `ASR_FAILED` ending; null on every other ending. */
+    @Volatile private var asrFailure: AsrFailureReason? = null
 
     /** Names for the two reservations whose outcome is unknown at the claim. */
     private object Claimants {
@@ -479,6 +495,9 @@ class DictationSessionService : Service() {
         // The referee for THIS take, in memory, before anything else (G2 D2). Its sink is a limb: chunk
         // A2 logs, chunk C hands the reason to telemetry. Nothing here waits on storage.
         arbiter = TakeArbiter { reason -> DebugLogger.log(TAG, "Take terminal: ${reason.name} (${reason.result.wire})") }
+        takeId = UUID.randomUUID().toString().lowercase()
+        takePeakAmplitude = null
+        asrFailure = null
         RecordingOverlayState.showStarting(admittedRequest)
         promoteToForeground(processing = false)
         // Kept for the whole session. Android may rebind the accessibility service while the user
@@ -562,7 +581,7 @@ class DictationSessionService : Service() {
             forcedNoticeShown = false
             captureDeviceLabel = ""
             val started = runCatching {
-                audioService?.startCaptureWithInputDeviceHeld(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady)
+                audioService?.startCaptureForTake(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady, takeId)
             }.getOrNull()
             if (started != true) {
                 // The one start failure with its own sentence is "nothing can record at all" (macOS copy).
@@ -901,6 +920,8 @@ class DictationSessionService : Service() {
                 // final route was observed before the recorder stopped, and the label persists in the
                 // capture process until its next start.
                 captureDeviceLabel = runCatching { audioService?.effectiveInputDevice }.getOrNull().orEmpty()
+                // Same moment, same reason: the capture thread has exited, so the peak is the whole take's.
+                takePeakAmplitude = runCatching { audioService?.takePeakAmplitude }.getOrNull()
                 finishTakeOrStop()
 
                 val readyDraftId = runCatching { runBlocking { draftCreation?.await() ?: 0L } }.getOrDefault(0L)
@@ -921,7 +942,7 @@ class DictationSessionService : Service() {
                     return@Thread
                 }
                 DebugLogger.mark(TAG, "asr_request")
-                speechService.transcribeFile(audioFilePath, object : IAsrCallback.Stub() {
+                speechService.transcribeFileForTake(audioFilePath, takeId, object : IAsrCallback.Stub() {
                     override fun onResult(text: String?) {
                         deleteCapturedAudio(audioFilePath)
                         DebugLogger.log(TAG, "Transcription result received (chars=${text?.length ?: 0})")
@@ -929,16 +950,27 @@ class DictationSessionService : Service() {
                         polishAndPublish(text.orEmpty())
                     }
 
+                    /** The versioned request never answers this; a legacy sentence here is a service defect. */
                     override fun onError(message: String?) {
+                        deleteCapturedAudio(audioFilePath)
+                        DebugLogger.error(TAG, "Legacy onError on a versioned request")
+                        if (!arbiter.commitNow(TerminalReason.ASR_FAILED)) return
+                        asrFailure = AsrFailureReason.UNKNOWN
+                        updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
+                        endAsFailure(TerminalReason.ASR_FAILED)
+                    }
+
+                    override fun onFailure(reason: Int, detail: String?) {
                         deleteCapturedAudio(audioFilePath)
                         // Claim FIRST: a cancel that already owns the take must not see its History row
                         // rewritten or a failure toast over its acknowledgement (G1 D2).
                         if (!arbiter.commitNow(TerminalReason.ASR_FAILED)) return
+                        val failure = AsrFailureReason.fromCode(reason)
+                        asrFailure = failure
                         updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                        DebugLogger.error(TAG, "ASR failed")
-                        // The process's own text is shown until chunk A3 gives it a code (issue #176); the
-                        // override is the one seam that still carries a sentence across the binder.
-                        endAsFailure(TerminalReason.ASR_FAILED, message?.takeIf(String::isNotBlank) ?: TakeNotices.SPEECH_RECOGNITION_FAILED)
+                        // The detail is local diagnostics and stops here: never a toast, never the wire.
+                        DebugLogger.error(TAG, "ASR failed: ${failure.name} (code $reason) ${detail.orEmpty()}")
+                        endAsFailure(TerminalReason.ASR_FAILED)
                     }
                 })
             } catch (error: Exception) {
@@ -954,9 +986,9 @@ class DictationSessionService : Service() {
     private fun polishAndPublish(rawText: String) {
         rawTranscript = rawText
         if (rawText.isBlank()) {
-            // Committed before the draft is discarded (G2 D2). Unmeasured until chunk A3 carries the
-            // take's peak loudness across the binder and splits a quiet room from a lost transcript.
-            if (!arbiter.commitNow(TerminalReason.ASR_EMPTY_UNMEASURED)) return
+            // Committed before the draft is discarded (G2 D2). The peak read at stop decides which of the
+            // three empty endings this is; no reading stays unmeasured, never "silence".
+            if (!arbiter.commitNow(SpeechEvidence.emptyTranscriptReason(takePeakAmplitude))) return
             discardDraft()
             PasteAccessibilityService.releasePinnedTarget()
             finishSession()
@@ -992,13 +1024,14 @@ class DictationSessionService : Service() {
                 opened
             }
             try {
-                service.polishRequest(
+                service.polishRequestForTake(
                     requestId,
                     preparedRaw,
                     takePreferences.cleanup.removeFillers,
                     takePreferences.cleanup.spokenEmoji,
                     takePreferences.cleanup.spokenPunctuation,
                     takePreferences.policy,
+                    takeId,
                     object : IPolishCallback.Stub() {
                         override fun onOutcome(outcome: PolishOutcome?) {
                             // This callback belongs to ONE request and the engine answers it once, so an
@@ -1454,10 +1487,6 @@ class DictationSessionService : Service() {
         endAsFailure(reason, TakeNotices.line(reason))
     }
 
-    /**
-     * The one seam that still accepts a sentence: the speech process's own error text, until chunk A3
-     * of issue #176 replaces it with a code. Every other caller goes through the one-argument form.
-     */
     private fun endAsFailure(reason: TerminalReason, line: String?) {
         state.set(SessionState.ERROR)
         DebugLogger.warn(TAG, "Take ended: $reason")

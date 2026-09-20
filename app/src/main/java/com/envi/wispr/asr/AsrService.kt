@@ -47,6 +47,35 @@ class AsrService : Service() {
         Thread(it, "AsrTranscriptionThread").apply { isDaemon = true }
     }
 
+    /**
+     * How a request wants to hear about a failure. The legacy transactions answer `onError` with the
+     * sentences they always sent, so the separately installed instrumentation client keeps working; the
+     * versioned request answers `onFailure` with a closed code (issue #176). One decode path, two adapters.
+     */
+    private fun interface FailureReporter {
+        fun report(reason: AsrFailureReason, detail: String)
+    }
+
+    private fun legacyReporter(callback: IAsrCallback?) = FailureReporter { reason, detail ->
+        // The exact strings the legacy callback has always carried, chosen by reason, not by exception.
+        val sentence = when (reason) {
+            AsrFailureReason.AUDIO_MISSING -> detail
+            AsrFailureReason.OVER_LIMIT -> OVER_LIMIT_MESSAGE
+            AsrFailureReason.AUDIO_UNREADABLE -> detail.ifBlank { "Unable to read audio" }
+            AsrFailureReason.MODEL_NOT_LOADED -> "ASR model not loaded"
+            AsrFailureReason.DECODE_FAILED -> detail.ifBlank { "Unknown transcription error" }
+            AsrFailureReason.UNKNOWN -> "Unknown transcription error"
+        }
+        runCatching { callback?.onError(sentence) }
+            .onFailure { DebugLogger.warn(TAG, "Legacy failure callback threw: ${it.javaClass.simpleName}") }
+    }
+
+    private fun typedReporter(callback: IAsrCallback?) = FailureReporter { reason, detail ->
+        // `detail` stays on the phone: the client logs it and never forwards it (IAsrCallback.aidl).
+        runCatching { callback?.onFailure(reason.code, detail) }
+            .onFailure { DebugLogger.warn(TAG, "Typed failure callback threw: ${it.javaClass.simpleName}") }
+    }
+
     private val binder = object : IAsrService.Stub() {
 
         /**
@@ -54,38 +83,12 @@ class AsrService : Service() {
          * Preferred method — avoids AIDL 1MB transaction limit.
          */
         override fun transcribeFile(audioFilePath: String, callback: IAsrCallback?) {
-            val file = File(audioFilePath)
-            if (!file.exists()) {
-                val msg = "Audio file not found: $audioFilePath"
-                DebugLogger.error(TAG, msg)
-                callback?.onError(msg)
-                return
-            }
-            // Not an independent limit. `RecordingLimits` owns the number and the capture process
-            // stops a take before this can be reached, so arriving here means something upstream is
-            // wrong rather than that the user talked for too long.
-            if (file.length() > RecordingLimits.MAX_AUDIO_BYTES) {
-                DebugLogger.warn(
-                    TAG,
-                    "Audio file is ${file.length()} bytes, over the " +
-                        "${RecordingLimits.MAX_AUDIO_BYTES} byte ceiling",
-                )
-                callback?.onError(OVER_LIMIT_MESSAGE)
-                return
-            }
+            transcribeFromFile(audioFilePath, takeId = "", callback, legacyReporter(callback))
+        }
 
-            transcriptionExecutor.execute {
-                try {
-                    val audioData = file.readBytes()
-                    val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
-                    DebugLogger.log(TAG, "Read ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) from $audioFilePath")
-                    DebugLogger.mark(TAG, "asr_file_read")
-                    doTranscribe(audioData, durationSec, callback)
-                } catch (e: Exception) {
-                    DebugLogger.error(TAG, "Failed to read audio file", e)
-                    callback?.onError(e.message ?: "Unable to read audio")
-                }
-            }
+        /** The versioned request: same decode, typed failures, the take's id as request context. */
+        override fun transcribeFileForTake(audioFilePath: String, takeId: String?, callback: IAsrCallback?) {
+            transcribeFromFile(audioFilePath, takeId.orEmpty(), callback, typedReporter(callback))
         }
 
         /**
@@ -95,23 +98,61 @@ class AsrService : Service() {
         override fun transcribe(audioData: ByteArray, callback: IAsrCallback?) {
             DebugLogger.warn(TAG, "Legacy transcribe(ByteArray) called — prefer transcribeFile()")
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
-            transcriptionExecutor.execute { doTranscribe(audioData, durationSec, callback) }
+            transcriptionExecutor.execute { doTranscribe(audioData, durationSec, callback, legacyReporter(callback)) }
         }
 
         override fun isReady(): Boolean = modelReady
     }
 
-    private fun doTranscribe(audioData: ByteArray, durationSec: Float, callback: IAsrCallback?) {
+    private fun transcribeFromFile(audioFilePath: String, takeId: String, callback: IAsrCallback?, failure: FailureReporter) {
+        val file = File(audioFilePath)
+        if (!file.exists()) {
+            DebugLogger.error(TAG, "Audio file not found (take=$takeId)")
+            failure.report(AsrFailureReason.AUDIO_MISSING, "Audio file not found: $audioFilePath")
+            return
+        }
+        // Not an independent limit. `RecordingLimits` owns the number and the capture process
+        // stops a take before this can be reached, so arriving here means something upstream is
+        // wrong rather than that the user talked for too long.
+        if (file.length() > RecordingLimits.MAX_AUDIO_BYTES) {
+            DebugLogger.warn(
+                TAG,
+                "Audio file is ${file.length()} bytes, over the " +
+                    "${RecordingLimits.MAX_AUDIO_BYTES} byte ceiling",
+            )
+            failure.report(AsrFailureReason.OVER_LIMIT, OVER_LIMIT_MESSAGE)
+            return
+        }
+
+        transcriptionExecutor.execute {
+            // The read is its own boundary (G1 D4): a failure here is the FILE, never the decoder.
+            val audioData = try {
+                file.readBytes()
+            } catch (e: Exception) {
+                DebugLogger.error(TAG, "Failed to read audio file", e)
+                failure.report(AsrFailureReason.AUDIO_UNREADABLE, e.message.orEmpty())
+                return@execute
+            }
+            val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
+            DebugLogger.log(TAG, "Read ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) for take $takeId")
+            DebugLogger.mark(TAG, "asr_file_read")
+            doTranscribe(audioData, durationSec, callback, failure)
+        }
+    }
+
+    private fun doTranscribe(audioData: ByteArray, durationSec: Float, callback: IAsrCallback?, failure: FailureReporter) {
         DebugLogger.log(TAG, "Transcribing ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) (PID: ${android.os.Process.myPid()})")
 
         val rec = recognizer
         if (rec == null) {
             DebugLogger.error(TAG, "Recognizer not initialized")
-            callback?.onError("ASR model not loaded")
+            failure.report(AsrFailureReason.MODEL_NOT_LOADED, "")
             return
         }
 
-        try {
+        // The decode is its own boundary (G1 D4): only the recogniser's own work is inside this try, so
+        // a throwing DELIVERY below can never be reported as a decode failure or produce a second callback.
+        val rawText = try {
             val samples = PcmAudio.toFloatSamples(audioData)
             DebugLogger.mark(TAG, "pcm_to_float")
 
@@ -127,20 +168,23 @@ class AsrService : Service() {
             }
 
             val decodeMs = SystemClock.elapsedRealtime() - t0
-            val rawText = result.text.trim()
+            val text = result.text.trim()
             val rtf = if (durationSec > 0) decodeMs / (durationSec * 1000) else 0f
 
             DebugLogger.mark(TAG, "asr_decode")
             // Transcript text is user content and must never enter logs. Keep only the
             // aggregate needed to diagnose decode latency and empty-result behavior.
-            DebugLogger.log(TAG, "Decode: ${decodeMs}ms, RTF=${String.format("%.2f", rtf)}, textChars=${rawText.length}")
-
-            DebugLogger.log(TAG, DebugLogger.pipelineSummary())
-            callback?.onResult(rawText)
+            DebugLogger.log(TAG, "Decode: ${decodeMs}ms, RTF=${String.format("%.2f", rtf)}, textChars=${text.length}")
+            text
         } catch (e: Exception) {
             DebugLogger.error(TAG, "Transcription failed", e)
-            callback?.onError(e.message ?: "Unknown transcription error")
+            failure.report(AsrFailureReason.DECODE_FAILED, e.message.orEmpty())
+            return
         }
+
+        DebugLogger.log(TAG, DebugLogger.pipelineSummary())
+        runCatching { callback?.onResult(rawText) }
+            .onFailure { DebugLogger.warn(TAG, "Result delivery threw: ${it.javaClass.simpleName}; not reported as a decode failure") }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder

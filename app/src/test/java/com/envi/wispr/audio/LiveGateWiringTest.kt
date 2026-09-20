@@ -126,7 +126,7 @@ class LiveGateWiringTest {
     @Test
     fun theSessionCarriesTheSavedSettingAndWaitsForLiveUnderTheLock() {
         assertTrue(session.contains("keepEarbudsReady = preferences.keepEarbudsReady"))
-        assertTrue(session.contains("startCaptureWithInputDeviceHeld(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady)"))
+        assertTrue(session.contains("startCaptureForTake(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady, takeId)"))
         val publish = body(session, "private fun publishLive(")
         assertTrue(publish.contains("synchronized(publishLock)"))
         assertTrue(publish.indexOf("compareAndSet(SessionState.STARTING, SessionState.RECORDING)") < publish.indexOf("RecordingOverlayState.show()"))

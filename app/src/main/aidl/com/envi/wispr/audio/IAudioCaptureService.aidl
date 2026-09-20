@@ -85,4 +85,17 @@ interface IAudioCaptureService {
      * there is nothing to keep and the owner stops it as before.
      */
     boolean finishTake();
+
+    /**
+     * startCaptureWithInputDeviceHeld plus the take's id (the owner's per-take UUID), which the service keeps
+     * as request context for this take and forwards to the silence detector. Issue #176.
+     */
+    boolean startCaptureForTake(boolean autoStopOnSilence, float pauseSeconds, String inputDevicePick, boolean keepEarbudsReady, String takeId);
+
+    /**
+     * The loudest sample of the CURRENT OR MOST RECENT take, 0..1 of full scale, kept after the take ends
+     * until the next start, like getEffectiveInputDevice. 0 before the first take of this process. Read
+     * once at stop: it is what lets an empty transcript be told apart from a quiet room (issue #176).
+     */
+    float getTakePeakAmplitude();
 }

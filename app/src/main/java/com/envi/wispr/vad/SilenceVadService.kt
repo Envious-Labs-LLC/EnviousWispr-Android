@@ -29,6 +29,8 @@ class SilenceVadService : Service() {
 
     private var session: SileroVadSession? = null
     private var activeToken: Long = NO_TOKEN
+    /** The owner's per-take UUID for the active take, request context only; empty for a legacy start. */
+    private var activeTakeId: String = ""
     private var unavailable = false
 
     /**
@@ -52,7 +54,13 @@ class SilenceVadService : Service() {
 
         // The lock is OUTSIDE the deadline, not inside it. A call that waits for the lock must not have
         // armed a watchdog while it waited, or it can kill this process while a newer take owns the lock.
-        override fun start(captureToken: Long, pauseSeconds: Float): Int = synchronized(lock) {
+        override fun start(captureToken: Long, pauseSeconds: Float): Int = startTake(captureToken, pauseSeconds, takeId = "")
+
+        /** The versioned start (issue #176): identical, plus the take's id bound after the token is accepted. */
+        override fun startForTake(captureToken: Long, pauseSeconds: Float, takeId: String?): Int =
+            startTake(captureToken, pauseSeconds, takeId.orEmpty())
+
+        private fun startTake(captureToken: Long, pauseSeconds: Float, takeId: String): Int = synchronized(lock) {
             if (!tokenOrder.accept(captureToken)) {
                 DebugLogger.warn(TAG, "Rejected a start from an older take, token $captureToken")
                 return@synchronized STATUS_UNAVAILABLE
@@ -61,6 +69,9 @@ class SilenceVadService : Service() {
                 releaseLocked()
                 unavailable = false
                 activeToken = captureToken
+                // Bound only here, under the lock, after the token was accepted: the token stays the
+                // functional arbiter; the id is context for this take's records.
+                activeTakeId = takeId
                 val opened = SileroVadSession.open(assets, pauseSeconds)
                 if (opened == null) {
                     unavailable = true
@@ -70,7 +81,7 @@ class SilenceVadService : Service() {
                 session = opened
                 DebugLogger.log(
                     TAG,
-                    "Detector ready (PID: ${Process.myPid()}, token: $captureToken, pause: ${pauseSeconds}s)",
+                    "Detector ready (PID: ${Process.myPid()}, token: $captureToken, pause: ${pauseSeconds}s, take: $activeTakeId)",
                 )
                 STATUS_READY
             }

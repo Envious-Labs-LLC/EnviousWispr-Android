@@ -144,6 +144,8 @@ class AudioCaptureService : Service() {
         val sink: AudioDeviceInfo?,
         /** The setting, frozen per take like the pick. */
         val keepEarbudsReady: Boolean,
+        /** The owner's per-take UUID, request context only; empty for a legacy start. Forwarded to the detector. */
+        val takeId: String,
     ) {
         /** Set on the capture thread when the gate opens; the timer and the duration cap count from here. */
         @Volatile var liveAtMs: Long = 0L
@@ -238,6 +240,13 @@ class AudioCaptureService : Service() {
     @Volatile private var captureThread: Thread? = null
     @Volatile private var lastAudioFile: File? = null
     @Volatile private var currentAmplitude = 0f
+    /**
+     * The loudest sample of the current or most recent take, 0..1 of full scale. Written on the capture
+     * thread, reset at start, kept after the take ends until the next start (like `lastEffective`), so a
+     * reader that asks once at stop gets the whole take. It is what lets an empty transcript be told apart
+     * from a quiet room (issue #176). Absent (0 before any take) is "not measured", never "silence".
+     */
+    @Volatile private var takePeakAmplitude = 0f
     @Volatile private var terminalReason = TERMINAL_REASON_NONE
     private val tokens = AtomicLong(0L)
 
@@ -304,16 +313,21 @@ class AudioCaptureService : Service() {
 
     private val binder = object : IAudioCaptureService.Stub() {
         override fun startCapture(): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence = false, pauseSeconds = 0f, pick = InputDevicePick.Auto)
+            this@AudioCaptureService.startRecording(autoStopOnSilence = false, pauseSeconds = 0f, pick = InputDevicePick.Auto, takeId = "")
 
         override fun startCaptureWithSilenceStop(autoStopOnSilence: Boolean, pauseSeconds: Float): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.Auto)
+            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.Auto, takeId = "")
 
         override fun startCaptureWithInputDevice(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick))
+            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick), takeId = "")
 
         override fun startCaptureWithInputDeviceHeld(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick), keepEarbudsReady)
+            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick), keepEarbudsReady, takeId = "")
+
+        override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean, takeId: String?): Boolean =
+            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick), keepEarbudsReady, takeId.orEmpty())
+
+        override fun getTakePeakAmplitude(): Float = this@AudioCaptureService.takePeakAmplitude
 
         override fun getLiveState(): Int {
             val active = this@AudioCaptureService.session ?: return LIVE_WAITING
@@ -388,6 +402,7 @@ class AudioCaptureService : Service() {
         pauseSeconds: Float,
         pick: InputDevicePick,
         keepEarbudsReady: Boolean = false,
+        takeId: String,
     ): Boolean {
         // REQUESTED is not the same as VALID AND ENABLED. A pause outside the slider's range reaching
         // this binder means a caller we do not control, so the detector is not built at all rather than
@@ -502,6 +517,7 @@ class AudioCaptureService : Service() {
                     phonePicked = pick is InputDevicePick.Device && InputRouteKind.of(pick.type) == InputRouteKind.PHONE,
                     sink = route.sink,
                     keepEarbudsReady = keepEarbudsReady,
+                    takeId = takeId,
                 )
                 registerRoutingListener(record, newSession)?.let { routingListener = record to it }
                 session = newSession
@@ -510,6 +526,7 @@ class AudioCaptureService : Service() {
                 isRecording.set(true)
                 terminalReason = TERMINAL_REASON_NONE
                 currentAmplitude = 0f
+                takePeakAmplitude = 0f
                 DebugLogger.startPipeline()
                 DebugLogger.mark(TAG, "recording_start")
                 DebugLogger.log(
@@ -861,17 +878,23 @@ class AudioCaptureService : Service() {
                 LockSupport.unpark(active.analyserThread)
 
                 var sum = 0L
+                var peak = 0
                 for (i in 0 until bytesRead step PcmAudio.BYTES_PER_SAMPLE) {
                     if (i + 1 < bytesRead) {
                         val sample = (buffer[i].toInt() and 0xFF) or
                             (buffer[i + 1].toInt() shl 8)
-                        sum += abs(sample)
+                        val magnitude = abs(sample)
+                        sum += magnitude
+                        if (magnitude > peak) peak = magnitude
                     }
                 }
                 val numSamples = bytesRead / PcmAudio.BYTES_PER_SAMPLE
                 currentAmplitude = if (numSamples > 0) {
                     (sum.toFloat() / numSamples) / Short.MAX_VALUE
                 } else 0f
+                // No allocation, one compare per read: the take's peak, kept for the reader at stop.
+                val peakLevel = peak.toFloat() / Short.MAX_VALUE
+                if (peakLevel > takePeakAmplitude) takePeakAmplitude = peakLevel
             }
         } catch (e: Exception) {
             synchronized(sessionLock) {
@@ -1043,7 +1066,12 @@ class AudioCaptureService : Service() {
                 }
 
                 if (!started) {
-                    val status = runCatching { remote.start(active.token, pauseSeconds) }
+                    // The versioned start carries the take's id as detector context; a legacy start (no
+                    // id) keeps the old transaction (issue #176).
+                    val status = runCatching {
+                        if (active.takeId.isEmpty()) remote.start(active.token, pauseSeconds)
+                        else remote.startForTake(active.token, pauseSeconds, active.takeId)
+                    }
                         .getOrElse {
                             abandonDetector(active)
                             DebugLogger.warn(TAG, "Auto-stop unavailable: start failed, ${it.message}")

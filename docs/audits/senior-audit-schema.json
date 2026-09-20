@@ -1,0 +1,238 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reader_guide",
+    "overall_grade",
+    "dimensions",
+    "refactor_targets",
+    "phased_roadmap",
+    "strengths",
+    "meta_recommendations",
+    "not_assessed",
+    "severity_confidence_distribution",
+    "internal_red_team"
+  ],
+  "properties": {
+    "reader_guide": {
+      "type": "string",
+      "description": "120-250 words telling a reader how to consume this report."
+    },
+    "overall_grade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["letter", "score_out_of_100", "rationale", "confidence", "confidence_rationale"],
+      "properties": {
+        "letter": { "type": "string", "enum": ["A", "B", "C", "D", "F"] },
+        "score_out_of_100": { "type": "integer" },
+        "rationale": { "type": "string" },
+        "confidence": { "type": "string", "enum": ["High", "Medium", "Low"] },
+        "confidence_rationale": { "type": "string" }
+      }
+    },
+    "dimensions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "scale_type",
+          "grade",
+          "justification",
+          "best_example",
+          "worst_violation",
+          "top_refactor_target_ids"
+        ],
+        "properties": {
+          "name": { "type": "string" },
+          "scale_type": { "type": "string", "enum": ["letter", "risk"] },
+          "grade": {
+            "type": "string",
+            "description": "letter scale: A B C D F. risk scale: Low Risk, Medium Risk, High Risk, Indeterminate."
+          },
+          "justification": { "type": "string" },
+          "best_example": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "line_range", "snippet", "why_exemplary"],
+            "properties": {
+              "file": { "type": "string", "description": "Repo-relative path. 'NONE' if no example found." },
+              "line_range": { "type": "string", "description": "e.g. L120-L134. 'N/A' when file is NONE." },
+              "snippet": { "type": "string", "description": "Verbatim lines from the file. Never paraphrase." },
+              "why_exemplary": { "type": "string" }
+            }
+          },
+          "worst_violation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file",
+              "line_range",
+              "snippet",
+              "rule_violated",
+              "severity",
+              "confidence",
+              "confidence_rationale",
+              "counterfactual",
+              "counterfactual_rationale",
+              "falsifiability",
+              "concurrency_interleaving"
+            ],
+            "properties": {
+              "file": { "type": "string", "description": "Repo-relative path. 'NONE' if no violation found." },
+              "line_range": { "type": "string", "description": "e.g. L120-L134. 'L0-L0' when file is NONE." },
+              "snippet": { "type": "string", "description": "Verbatim lines from the file. Never paraphrase." },
+              "rule_violated": { "type": "string", "description": "Cite a rule file and its RULE: or FACT: heading, or a named engineering principle." },
+              "severity": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+              "confidence": { "type": "string", "enum": ["High", "Medium", "Low"] },
+              "confidence_rationale": { "type": "string" },
+              "counterfactual": { "type": "string", "description": "What a user or developer experiences because of this violation." },
+              "counterfactual_rationale": { "type": "string" },
+              "falsifiability": { "type": "string", "description": "A concrete test, command or experiment that would prove this finding wrong." },
+              "concurrency_interleaving": { "type": "string", "description": "For a concurrency claim: the exact thread or coroutine interleaving, step by step. 'N/A' otherwise." }
+            }
+          },
+          "top_refactor_target_ids": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "refactor_targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "dimension",
+          "tier",
+          "estimated_loc_delta",
+          "rule_violated",
+          "severity",
+          "confidence",
+          "fix_shape",
+          "evidence_files",
+          "depends_on"
+        ],
+        "properties": {
+          "id": { "type": "string", "description": "REF-01, REF-02, ..." },
+          "title": { "type": "string" },
+          "dimension": { "type": "string" },
+          "tier": { "type": "string", "enum": ["REFACTOR", "LARGE", "MEDIUM", "SMALL"] },
+          "estimated_loc_delta": { "type": "integer" },
+          "rule_violated": { "type": "string" },
+          "severity": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+          "confidence": { "type": "string", "enum": ["High", "Medium", "Low"] },
+          "fix_shape": { "type": "string", "description": "The exact change: which code moves where, which type is introduced or deleted. Never a diagnosis alone." },
+          "evidence_files": { "type": "array", "items": { "type": "string" }, "description": "Repo-relative paths with line ranges that ground this target." },
+          "depends_on": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "phased_roadmap": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase", "title", "refactor_ids", "rationale"],
+        "properties": {
+          "phase": { "type": "integer" },
+          "title": { "type": "string" },
+          "refactor_ids": { "type": "array", "items": { "type": "string" } },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "strengths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line_range", "pattern_name", "why_preserve"],
+        "properties": {
+          "file": { "type": "string" },
+          "line_range": { "type": "string" },
+          "pattern_name": { "type": "string" },
+          "why_preserve": { "type": "string" }
+        }
+      }
+    },
+    "meta_recommendations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["recommendation", "triggered_by"],
+        "properties": {
+          "recommendation": { "type": "string" },
+          "triggered_by": { "type": "string" }
+        }
+      }
+    },
+    "not_assessed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["area", "reason", "how_to_cover"],
+        "properties": {
+          "area": { "type": "string" },
+          "reason": { "type": "string" },
+          "how_to_cover": { "type": "string" }
+        }
+      }
+    },
+    "severity_confidence_distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "critical_high", "critical_medium", "critical_low",
+        "high_high", "high_medium", "high_low",
+        "medium_high", "medium_medium", "medium_low",
+        "low_high", "low_medium", "low_low"
+      ],
+      "properties": {
+        "critical_high": { "type": "integer" },
+        "critical_medium": { "type": "integer" },
+        "critical_low": { "type": "integer" },
+        "high_high": { "type": "integer" },
+        "high_medium": { "type": "integer" },
+        "high_low": { "type": "integer" },
+        "medium_high": { "type": "integer" },
+        "medium_medium": { "type": "integer" },
+        "medium_low": { "type": "integer" },
+        "low_high": { "type": "integer" },
+        "low_medium": { "type": "integer" },
+        "low_low": { "type": "integer" }
+      }
+    },
+    "internal_red_team": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["least_confident_finding", "top_not_assessed_gap"],
+      "properties": {
+        "least_confident_finding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["refactor_id_or_description", "why_low_confidence", "what_would_resolve_it"],
+          "properties": {
+            "refactor_id_or_description": { "type": "string" },
+            "why_low_confidence": { "type": "string" },
+            "what_would_resolve_it": { "type": "string" }
+          }
+        },
+        "top_not_assessed_gap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["gap", "runtime_test_required", "why_this_matters_for_heart_limbs"],
+          "properties": {
+            "gap": { "type": "string" },
+            "runtime_test_required": { "type": "string" },
+            "why_this_matters_for_heart_limbs": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,79 @@
+Wispr Eyes — DONE
+
+## Known problem
+
+Android’s supported pattern is to keep an accessibility automation session alive, perform an action, then wait for the expected accessibility event or state. `UiAutomation.executeAndWaitForEvent()` and bounded idle waits provide this directly; `UiObject2.clickAndWait()` provides the higher-level form. A full XML hierarchy dump is mainly a diagnostic snapshot, not the ideal per-step primitive. Cached nodes are safe only until input changes the screen. `dumpsys` is useful for system state such as keyguard, but cannot replace the app control’s own read-back. A persistent `adb shell` can remove host process startup without weakening verification. [Android UiAutomation](https://developer.android.com/reference/android/app/UiAutomation), [UI Automator guidance](https://developer.android.com/training/testing/other-components/ui-automator-legacy)
+
+## Ranked changes
+
+1. **Read each screen generation once. MEDIUM.**
+
+   Change `tree`, `find`, `switch`, `switches`, `set_switch`, `tap`, `look`, `reveal`, and `scroll`. Pass one immutable snapshot through an operation. `tap()` invalidates it immediately; the post-action read-back creates the next generation. Add a small device-side accessibility query session so required reads return filtered nodes, with XML dump only as timeout/failure fallback.
+
+   Expected saving:
+
+   - Flip-and-back: budget 40 of 92 commands and 18.0 seconds. Arithmetic: eliminate eight repeated dump/read cycles, `8 × 1.5 = 12.0 s`, then make four required read-backs targeted, `4 × (1.5 - 0.15) = 5.4 s`; rounded total 18.0 seconds.
+   - Spoken take: two required editor reads remain, but become targeted: `2 × (1.5 - 0.15) = 2.7 s`; 8 commands saved.
+
+   Risk: stale coordinates. Prevent this by never reusing a generation across input, navigation, scrolling, or an accessibility change event. Final device read-back remains mandatory.
+
+2. **Restore the visible switch in place. SMALL.**
+
+   In `_restore_one_here`, switch arm: first check whether the debt’s named screen and label are already visible. If so, use the current snapshot, tap directly, settle, and read the switch back. Call `open_tab`, `open_settings`, `nav`, and `reveal` only when that check fails.
+
+   Expected saving:
+
+   - Flip-and-back: 14.0 seconds and 24 commands by skipping the second `_start` plus settings/tab/reveal trip. Arithmetic: `48.1 - 14.0 = 34.1 s`; `92 - 24 = 68 commands` before the other changes.
+   - Spoken take: 0 seconds and 0 commands because its restore debt is the host microphone, not a settings switch.
+
+   Risk: matching the same label on the wrong page. Require both the screen identity and exact switch label before taking the fast path.
+
+3. **Replace sleeps with state settling. MEDIUM.**
+
+   Change `tap`, `_start`, `open_tab`, `open_recorder`, `dictate_emulator`, and `unlock_emulator`. Wait for an exact accessibility event or state predicate with a bounded timeout: target visible/selected, recorder listening, injection accepted, editor changed, or keyguard false. Always finish with the existing read-back.
+
+   Expected saving:
+
+   - Flip-and-back: two transitions currently pay `1.2 + 0.6 s`; budget 0.2 seconds each for event settling: `2 × (1.8 - 0.2) = 3.2 s`. No command reduction.
+   - Spoken take: replace `open_recorder`’s 2.5 seconds and `dictate_emulator`’s 3.0 plus 2.0 seconds with roughly 1.5 seconds of actual state waits: `7.5 - 1.5 = 6.0 s`. No extra processes because the event stream stays open.
+
+   Risk: noisy or missing events. Use an exact predicate, hard timeout, and final state read, never idle alone.
+
+4. **Use one framed adb shell session. MEDIUM.**
+
+   Change `_run`, `_adb`, and `_main`. Open one `adb -s SERIAL shell` process per harness invocation. Send commands with unique start/end markers and remote exit status. Serialize requests and close at exit. If transport dies after input, fail with the restore debt intact rather than replaying uncertain input.
+
+   Expected saving after changes 1 and 2:
+
+   - Flip-and-back: `28 adb launches -> 1`, saving 27 commands and about `27 × 0.035 = 1.0 s`.
+   - Spoken take: planning budget `60 processes -> 1 adb + 8 existing grpcurl = 9`, saving 51 commands and about `51 × 0.035 = 1.8 s`.
+
+   Risk: framing bugs or a wedged shell. Use random markers, per-command timeouts, stderr capture, and no automatic replay after input.
+
+5. **Make success output one line. SMALL.**
+
+   Change `look`, `dictate_emulator`, and `_main`.
+
+   Default examples:
+
+   - `look()`: `SCREEN EnviousWispr/Transcription | Spoken emoji=on | Stop on silence=off | ...`
+   - Successful internal NOTE lines: print nothing.
+   - `dictate_emulator`: `OK dictate-emu: take ended; sentence present in same editor; microphone restored`
+
+   `--verbose` gets the current node-per-line view, temporary PCM path, packet count, full editor text, insertion log, coordinates, and individual restoration notes. Failures always print the exact read-back and reason.
+
+   Expected saving: negligible time and commands; typically hundreds of output tokens per errand. Risk: less routine diagnostic detail, recoverable with `--verbose`.
+
+## Do not do
+
+- Remove the post-action switch/editor/keyguard check. Breaks constraint 1: “Every action is still READ BACK from the device.”
+- Keep restore only in memory. Breaks constraint 2: “The restore book on disk stays.”
+- Send swipe, PIN, or other input to the physical phone’s lock screen. Breaks constraint 3.
+- Expose raw adb as a “fast mode” or failure fallback. Breaks constraint 4: “The harness stays the ONLY door.”
+
+## Target
+
+Planning target after all changes and a benchmark rerun:
+
+- **Flip-and-back:** `48.1 - 18.0 - 14.0 - 3.2 - 1.0 = 11.9 s`, **1 counted adb process**.
+- **Spoken take:** `21.3 - 2.7 - 6.0 - 1.8 = 10.8 s`, **9 counted processes**: 1 adb session plus an 8-grpcurl allowance.

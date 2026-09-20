@@ -1,0 +1,15 @@
+Harness speed plan review — DONE
+
+## Axes
+
+1: CONFIRMED CLOSED
+
+4: CONFIRMED CLOSED
+
+5: CONFIRMED CLOSED
+
+NEW: FOUND: `run-as com.envi.wispr` uses the receiver app’s own UID, not an ordinary external app, so it does not prove other apps are refused. fix: send from a separate unprivileged test app and assert refusal.
+
+## Verdict
+
+PROCEED-WITH-REVISIONS

@@ -1,0 +1,19 @@
+## Axes
+
+A. NOT FOUND
+
+B. NOT FOUND
+
+C. FOUND (REPRODUCIBLE): Eye state is global, not device-specific. `_switch_to()` at `wispr_eyes.py:412-413` resets only `tree`; `_as_serial()` at `:2711-2716` saves only serial/tree. Selecting a release device sets `eye="slow"` at `:631-633`, so a later debug device never probes its receiver. A temporary restore on another device can likewise poison the original device’s state. fix: store or reset `eye` and `eye_retry_after` per serial in both paths.
+
+D. FOUND (REPRODUCIBLE): `_stable_tree()` always performs at least two reads at `wispr_eyes.py:664-668`. On the release phone, each read uses the measured 1.9-second slow eye, so every tap now costs roughly two dumps even when already settled. Also HYPOTHETICAL: its comparison at `:661-662` ignores `enabled`, `clickable`, and ancestry, which `tap()` relies on at `:1141-1162`. fix: skip the second read when `tree()` used `uiautomator`; for fast reads, compare the control and ancestry fields used to choose and validate the tap.
+
+E. FOUND (REPRODUCIBLE): The already-running-emulator branch returns at `wispr_eyes.py:2450-2455` without calling `_rest_host_mic_off()`, so `launch_emulator()` does not establish the promised OFF resting state. Also HYPOTHETICAL: `_rest_host_mic_off()` at `:2169-2172` erases every host-mic debt after setting OFF, including `("host-mic", "on")`, which has not been restored. This can occur after interruption between journaling and changing the microphone. fix: call the helper on the reuse path and settle only debts whose recorded destination is OFF; keep other debts for `restore()`. The BlackHole path remains recoverable because `set_host_mic(True)` records its OFF debt.
+
+F. NOT FOUND
+
+G. NOT FOUND
+
+## Verdict
+
+FIX-FIRST

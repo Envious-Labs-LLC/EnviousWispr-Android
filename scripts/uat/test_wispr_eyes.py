@@ -13,6 +13,7 @@ behaves, which is what the device commands are for.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -407,38 +408,293 @@ def main():
         check("a non-numeric line count refuses", True)
     restore_adb(original)
 
-    # ---- the emulator hears only after hostmicon --------------------------------------------------
-    # Measured 2026-09-13 (#141): with -allow-host-audio alone every take recorded silence; the console
-    # command is the switch. These rows keep the tool from speaking at an emulator that cannot hear.
-    original_run = eyes._run
-    console = []
+    # ---- the emulator is the ONLY device this file unlocks, feeds, or records on unasked --------------
+    # #177: one front door. Every row here drives the real functions with adb and grpcurl faked, and
+    # every row exists because the same call against the founder's phone would cost him something.
+    import tempfile as _tempfile
+    emu_book = Path(_tempfile.mkdtemp()) / "restore.json"
+    original_run, original_grpc, original_journal = eyes._run, eyes._grpc, eyes._JOURNAL
+    original_adb, original_devices, original_screen = eyes._adb, eyes.devices, eyes._screen_size
+    original_recording, original_bound = eyes.recording, eyes.bound
+    eyes._JOURNAL = emu_book
+    emu = {"qemu": "1", "keyguard": "true", "mic": True, "pin_accepted": True, "attached": ["emulator-5554"]}
+    sent = []
+    grpc_calls = []
 
-    def fake_run(args, timeout=60):
-        if len(args) >= 5 and args[3:5] == ["emu", "avd"]:
-            console.append(args[5])
-            return (0, "OK\nOK\n", "") if console_answer[0] else (0, "KO: unknown\n", "")
-        return original_run(args, timeout)
+    def emu_run(args, timeout=60):
+        if len(args) >= 5 and args[3] == "shell" and args[4] == "getprop ro.kernel.qemu":
+            return (0, emu["qemu"] + "\n", "")
+        return (1, "", "not faked: " + " ".join(args))
 
-    console_answer = [True]
-    eyes._run = fake_run
+    def emu_grpc(method, payload=None, stdin_path=None, timeout=120):
+        grpc_calls.append((method, payload, stdin_path))
+        if method == "getMicrophoneState":
+            return {"realAudioEnabled": True} if emu["mic"] else {}
+        if method == "setMicrophoneState":
+            emu["mic"] = bool(payload["realAudioEnabled"])
+            return {}
+        return {}
+
+    BOUNCER = ('<?xml version="1.0"?><hierarchy rotation="0"><node text="Enter password" resource-id="bouncer_primary_message_area" '
+               'bounds="[0,0][100,50]" package="com.android.systemui" class="android.widget.TextView" clickable="false" enabled="true" />'
+               '<node text="" resource-id="passwordEntry" bounds="[0,60][100,120]" package="com.android.systemui" '
+               'class="android.widget.EditText" clickable="true" enabled="true" focused="true" /></hierarchy>')
+    LOCKSCREEN = ('<?xml version="1.0"?><hierarchy rotation="0"><node text="Sun, Sep 20" resource-id="" bounds="[0,0][100,50]" '
+                  'package="com.android.systemui" class="android.widget.TextView" clickable="false" enabled="true" /></hierarchy>')
+    # How the password field comes up: "dismiss" (the window manager raises it), "swipe" (only a swipe
+    # does), or "never".
+    emu["field"] = "dismiss"
+    emu["field_up"] = False
+
+    def emu_adb(command, timeout=60, check=True, serial=None):
+        if command.startswith("input"):
+            sent.append(command)
+            if command.startswith("input swipe") and emu["field"] == "swipe":
+                emu["field_up"] = True
+            if command.startswith("input keyevent KEYCODE_ENTER") and emu["pin_accepted"]:
+                emu["keyguard"] = "false"
+            return 0, ""
+        if command.startswith("wm dismiss-keyguard"):
+            sent.append(command)
+            if emu["field"] == "dismiss":
+                emu["field_up"] = True
+            return 0, ""
+        if command.startswith("uiautomator dump"):
+            return 0, ""
+        if command.startswith("cat "):
+            return 0, (BOUNCER if emu["field_up"] else LOCKSCREEN)
+        if command.startswith("wm size"):
+            return 0, "Physical size: 1080x2400\n"
+        if "isKeyguardShowing" in command:
+            return 0, f"isKeyguardShowing={emu['keyguard']}\n"
+        if command.startswith("dumpsys power"):
+            return 0, "mWakefulness=Awake\n"
+        return 0, ""
+
+    eyes._run, eyes._grpc, eyes._adb = emu_run, emu_grpc, emu_adb
+    eyes.devices = lambda: [(s, "sdk_gphone64_arm64") for s in emu["attached"]] + [("100.94.206.47:5555", "SM_S948U1")]
+    eyes._screen_size = lambda: (1080, 2400)
     eyes._STATE["serial"] = "emulator-5554"
-    check("an emulator serial is recognised", eyes.is_emulator("emulator-5554"))
-    check("a phone serial is not", not eyes.is_emulator("100.94.206.47:5555"))
-    check("hear_on_emulator turns the host mic on through the console",
-          eyes.hear_on_emulator() == "host microphone on" and console == ["hostmicon"])
-    console_answer[0] = False
+
+    check("an emulator serial that says ro.kernel.qemu=1 is an emulator", eyes.is_emulator("emulator-5554"))
+    emu["qemu"] = "0"
+    check("an emulator-looking serial whose kernel is not qemu is NOT an emulator",
+          not eyes.is_emulator("emulator-5554"))
+    check("and the recording lock stays closed for it", eyes._recording_is_off())
+    emu["qemu"] = "1"
+    check("a phone serial is never an emulator, without asking it", not eyes.is_emulator("100.94.206.47:5555"))
+    check("and the recording lock opens only for the real emulator", not eyes._recording_is_off())
+
+    # ready() opens the emulator itself, and the phone refusal is byte-for-byte what it was.
+    sent.clear()
+    check("ready() unlocks a locked emulator and passes", eyes.ready() is True and emu["keyguard"] == "false")
+    check("the unlock sent wake, dismiss-keyguard, the PIN and enter, in that order, and no swipe",
+          sent[0] == "input keyevent KEYCODE_WAKEUP" and sent[1] == "wm dismiss-keyguard"
+          and sent[2] == f"input text {eyes.EMULATOR_PIN}" and sent[3] == "input keyevent KEYCODE_ENTER"
+          and not any(c.startswith("input swipe") for c in sent), sent)
+    check("an already-open emulator gets no input at all",
+          eyes.unlock_emulator() == "already open" and len(sent) == 4)
+    # When the window manager does not raise the field, ONE swipe is tried, and the PIN typed after it.
+    emu["keyguard"], emu["field"], emu["field_up"] = "true", "swipe", False
+    sent.clear()
+    check("a field the window manager did not raise gets one swipe, and the PIN typed once after it",
+          eyes.unlock_emulator() == "unlocked" and sum(c.startswith("input swipe") for c in sent) == 1
+          and sent.index(f"input text {eyes.EMULATOR_PIN}") > sent.index(next(c for c in sent if c.startswith("input swipe"))), sent)
+    emu["keyguard"], emu["field"], emu["field_up"] = "true", "never", False
+    sent.clear()
     try:
-        eyes.hear_on_emulator()
-        check("a console refusal is reported, never swallowed", False, "it returned")
+        eyes.unlock_emulator()
+        check("no password field at all means no PIN typed", False, "it returned")
     except eyes.Blocked as refusal:
-        check("a console refusal is reported, never swallowed", "hostmicon" not in str(refusal) or "KO" in str(refusal))
+        check("no password field at all means no PIN typed",
+              "never came up" in str(refusal) and not any("input text" in c for c in sent)
+              and sum(c.startswith("input swipe") for c in sent) == 1, sent)
+    emu["keyguard"], emu["pin_accepted"], emu["field"], emu["field_up"] = "true", False, "dismiss", False
+    sent.clear()
     try:
-        eyes.hear_on_emulator("100.94.206.47:5555")
-        check("a phone is refused by hear_on_emulator", False, "it returned")
+        eyes.unlock_emulator()
+        check("a PIN that does not open it is reported after ONE attempt", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("a PIN that does not open it is reported after ONE attempt",
+              "stayed locked" in str(refusal) and sent.count(f"input text {eyes.EMULATOR_PIN}") == 1, sent)
+    emu["pin_accepted"] = True
+    # The identity is asked AGAIN right before the first keystroke, and a changed answer sends nothing.
+    answers = iter(["1", "0", "0", "0"])
+    eyes._run = lambda args, timeout=60: (0, next(answers) + "\n", "") if args[-1] == "getprop ro.kernel.qemu" else emu_run(args, timeout)
+    sent.clear()
+    try:
+        eyes.unlock_emulator()
+        check("a device that stops answering as an emulator between the two probes gets no key", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("a device that stops answering as an emulator between the two probes gets no key",
+              "no key was sent" in str(refusal) and sent == [], (refusal, sent))
+    eyes._run = emu_run
+    emu["keyguard"] = "true"
+    eyes._STATE["serial"] = "100.94.206.47:5555"
+    sent.clear()
+    try:
+        eyes.ready()
+        check("a locked PHONE is still refused", False, "it passed")
+    except eyes.Blocked as refusal:
+        check("a locked PHONE is still refused, with the owner message",
+              "only its owner can open it" in str(refusal))
+        check("and not one input command was sent at it", sent == [], sent)
+    emu["keyguard"] = "false"
+    eyes._STATE["serial"] = "emulator-5554"
+
+    # The host microphone: journaled BEFORE the change, read back after, restorable from any process.
+    emu["mic"] = True
+    grpc_calls.clear()
+    check("set_host_mic(False) turns it off over gRPC", eyes.set_host_mic(False) == "host microphone off" and emu["mic"] is False)
+    check("and the previous state is in the book", eyes._owed("emulator-5554") == [("host-mic", "on")])
+    order = [m for m, _, _ in grpc_calls]
+    check("the set is preceded by a read and followed by a read-back",
+          order == ["getMicrophoneState", "setMicrophoneState", "getMicrophoneState"], order)
+    check("setting it to what it already is changes nothing and owes nothing",
+          eyes.set_host_mic(False) == "host microphone already off" and len(eyes._owed("emulator-5554")) == 1)
+    # A journal write that fails means NO set call: the change is refused before it is made.
+    real_owe_locked = eyes._owe_locked
+    eyes._owe_locked = lambda entry, serial: None
+    grpc_calls.clear()
+    try:
+        eyes.set_host_mic(True)
+        check("a change whose debt cannot be written is not made", False, "it returned")
     except eyes.Blocked:
-        check("a phone is refused by hear_on_emulator", True)
-    eyes._run = original_run
+        check("a change whose debt cannot be written is not made",
+              "setMicrophoneState" not in [m for m, _, _ in grpc_calls], grpc_calls)
+    eyes._owe_locked = real_owe_locked
+    # A read-back that disagrees keeps the debt.
+    stubborn = dict(emu)
+
+    def stubborn_grpc(method, payload=None, stdin_path=None, timeout=120):
+        grpc_calls.append((method, payload, stdin_path))
+        return {"realAudioEnabled": True} if method == "getMicrophoneState" and stubborn["mic"] else {}
+
+    eyes._grpc = stubborn_grpc
+    stubborn["mic"] = False
+    eyes._settled(("host-mic", "on"), "emulator-5554")
+    try:
+        eyes.set_host_mic(True)
+        check("a read-back that disagrees is a refusal that keeps the debt", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("a read-back that disagrees is a refusal that keeps the debt",
+              "did not switch on" in str(refusal) and eyes._owed("emulator-5554") == [("host-mic", "off")], refusal)
+    eyes._grpc = emu_grpc
+    # The book now owes "off" from the refused change above; replace it with a real "on" debt and an
+    # emulator whose mic is off, so a restore has something to put back.
+    eyes._settled(("host-mic", "off"), "emulator-5554")
+    eyes._owe(("host-mic", "on"), "emulator-5554")
+    emu["mic"] = False
+    # restore() from a process pointed at the PHONE still puts the attached emulator's mic back, and
+    # leaves the selection and the restored-for marker on the phone.
+    eyes._STATE["serial"] = "100.94.206.47:5555"
+    lines = eyes.restore()
+    check("a phone-selected restore puts an attached emulator's mic back",
+          emu["mic"] is True and eyes._owed("emulator-5554") == [] and any("on emulator-5554" in l for l in lines), lines)
+    check("and the selection stays on the phone afterwards",
+          eyes._STATE["serial"] == "100.94.206.47:5555" and eyes._STATE["restored_for"] == "100.94.206.47:5555")
+    # A debt owed to a device that is NOT attached is reported and kept, never settled blind.
+    eyes._owe(("host-mic", "on"), "emulator-5556")
+    lines = eyes.restore()
+    check("a debt to a device that is not attached is kept and named",
+          any("emulator-5556: not attached, debt kept" in l for l in lines) and eyes._owed("emulator-5556") == [("host-mic", "on")], lines)
+    eyes._settled(("host-mic", "on"), "emulator-5556")
+    eyes._STATE["serial"] = "emulator-5554"
+
+    # The take's verdict wants the sentence as a RUN of words, not a bag of them.
+    check("the sentence is found through case and punctuation",
+          eyes._sentence_landed("and I will send the deck tomorrow", "Hi. And I will send the deck tomorrow!\xa0"))
+    check("the same words in another order do not count",
+          not eyes._sentence_landed("alpha beta", "beta alpha"))
+    check("a missing word does not count", not eyes._sentence_landed("send the deck tomorrow", "send the deck to Ma."))
+    check("an empty expectation never counts", not eyes._sentence_landed("", "anything"))
+    check("a sentence in another script is found too",
+          eyes._sentence_landed("Привет мир", "Он сказал: Привет, мир!") and eyes._plain("Straße") == "strasse")
+    check("unspaced CJK is found inside a longer text", eyes._sentence_landed("你好", "他说你好世界"))
+    check("a combining mark is not dropped", not eyes._sentence_landed("कि", "क"))
+    check("a first letter the app capitalised is matched even where case folding is not a bijection",
+          eyes._sentence_landed("ışık geldi", "Işık geldi."))
+
+    # Audio goes in only while a take is listening, as timestamped packets from the ONE builder.
+    pcm = Path(_tempfile.mkdtemp()) / "utt.pcm"
+    pcm.write_bytes(bytes(9600 * 2 + 100))
+    count, seconds = eyes._audio_packets(str(pcm), str(pcm) + ".packets.jsonl")
+    packets = [json.loads(l) for l in open(str(pcm) + ".packets.jsonl")]
+    check("the packet builder chunks 100 ms at a time and keeps the tail", count == 3 and len(packets) == 3)
+    stamps = [pk["timestamp"] for pk in packets]
+    check("every packet carries its format and an epoch timestamp 100 ms after the last",
+          all("format" in pk for pk in packets) and stamps[0] > 1_600_000_000_000_000
+          and [b - a for a, b in zip(stamps, stamps[1:])] == [100000, 100000], stamps)
+    check("the audio length is computed from the bytes", abs(seconds - (9600 * 2 + 100) / 96000) < 1e-9)
+    eyes.recording = lambda: False
+    try:
+        eyes.inject_audio(str(pcm))
+        check("injection refuses while no take is listening", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("injection refuses while no take is listening", "no take is listening" in str(refusal))
+    eyes.recording = lambda: True
+    grpc_calls.clear()
+    check("injection streams the packets file into injectAudio",
+          "injected 3 packets" in eyes.inject_audio(str(pcm))
+          and any(m == "injectAudio" and stdin for m, _, stdin in grpc_calls))
+    eyes.recording = original_recording
+    # The gRPC endpoint being down is a refusal that names the launch call.
+    def down_grpc(method, payload=None, stdin_path=None, timeout=120):
+        raise eyes.Blocked(f"the emulator refused {method} over gRPC at localhost:8554: connection refused. "
+                           "Was it launched with -grpc 8554? launch_emulator() does that.")
+    eyes._grpc = down_grpc
+    try:
+        eyes.inject_audio(str(pcm))
+        check("a closed gRPC port names launch_emulator()", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("a closed gRPC port names launch_emulator()", "launch_emulator()" in str(refusal))
+    eyes._grpc = emu_grpc
+
+    # The recording lock: the phone is refused exactly as before; the emulator reaches the start intent.
+    starts = []
+
+    def take_adb(command, timeout=60, check=True, serial=None):
+        if command.startswith("am start -n") and "VoiceInputActivity" in command and "--ez" not in command:
+            starts.append(command)
+            return 0, "Starting: Intent\n"
+        if "isKeyguardShowing" in command:
+            return 0, "isKeyguardShowing=false\n"
+        if command.startswith("dumpsys power"):
+            return 0, "mWakefulness=Awake\n"
+        if command.startswith("settings get secure"):
+            return 0, "com.envi.wispr/.paste.AutoPasteService\n" if "enabled_accessibility_services" in command else "1\n"
+        if command.startswith("dumpsys accessibility"):
+            return 0, "com.envi.wispr/.paste.AutoPasteService bound\n"
+        if command.startswith("logcat -d"):
+            return 0, "I/AudioCapture(1): recording_start [+0ms]\nI/AudioCapture(1): recording_stop [+5ms]\n"
+        return emu_adb(command, timeout, check, serial)
+
+    eyes._adb = take_adb
+    eyes.bound = lambda: True
+    eyes._STATE["serial"] = "100.94.206.47:5555"
+    eyes._STATE["restored_for"] = "100.94.206.47:5555"
+    try:
+        with eyes.open_recorder(verify=False):
+            pass
+        check("a take on the PHONE is still refused by the recording lock", False, "it started")
+    except eyes.Blocked as refusal:
+        check("a take on the PHONE is still refused by the recording lock",
+              "recording from this harness is off" in str(refusal) and starts == [], (refusal, starts))
+    eyes._STATE["serial"] = "emulator-5554"
+    eyes._STATE["restored_for"] = "emulator-5554"
+    try:
+        with eyes.open_recorder(verify=False):
+            pass
+    except eyes.Blocked as refusal:
+        check("a take on the EMULATOR reaches the start intent", False, refusal)
+    else:
+        check("a take on the EMULATOR reaches the start intent", len(starts) == 1, starts)
+    check("and the take debt is settled once the block ends", eyes._owed("emulator-5554") == [])
+    eyes.bound = original_bound
+    eyes._run, eyes._grpc, eyes._adb, eyes._JOURNAL = original_run, original_grpc, original_adb, original_journal
+    eyes.devices, eyes._screen_size = original_devices, original_screen
     eyes._STATE["serial"] = None
+    eyes._STATE["restored_for"] = None
 
     # ---- the emulator is spoken to through the cable, never the speakers ---------------------------
     # Founder 2026-09-13: the speaker-to-microphone path was the flaky half of every emulator take.
@@ -466,10 +722,20 @@ def main():
             return (0, "", "")
         if args[0] == "osascript":
             return (0, "35\n", "")
-        if len(args) >= 5 and args[3:5] == ["emu", "avd"]:
-            return (0, "OK\n", "")
+        if args[-1] == "getprop ro.kernel.qemu":
+            return (0, "1\n", "")
         return original_run(args, timeout)
 
+    mic_calls = []
+    cable_mic = {"on": False}
+
+    def cable_grpc(method, payload=None, stdin_path=None, timeout=120):
+        mic_calls.append((method, payload))
+        if method == "setMicrophoneState":
+            cable_mic["on"] = bool(payload["realAudioEnabled"])
+        return {"realAudioEnabled": True} if (method == "getMicrophoneState" and cable_mic["on"]) else {}
+
+    eyes._grpc = cable_grpc
     eyes._run = cable_run
     eyes._has_tool = lambda name: True
     eyes.say("hello there")
@@ -483,8 +749,10 @@ def main():
           eyes._owed("host") == [])
     check("no speaker volume is touched on a cable take",
           not any(c[0] == "osascript" and "set volume" in " ".join(c) for c in calls))
-    check("the emulator's host microphone is switched on first",
-          any(len(c) >= 6 and c[3:6] == ["emu", "avd", "hostmicon"] for c in calls))
+    check("the emulator's host microphone is switched on first, over gRPC",
+          ("setMicrophoneState", {"realAudioEnabled": True}) in mic_calls, mic_calls)
+    check("and rests OFF again once the cable take is over, with nothing owed",
+          cable_mic["on"] is False and eyes._owed("emulator-5554") == [], (cable_mic, eyes._owed("emulator-5554")))
     eyes._has_tool = lambda name: False
     try:
         eyes.say("hello there")
@@ -499,9 +767,208 @@ def main():
     except eyes.Blocked:
         check("a phone is refused by say_into_emulator", True)
     eyes._run = original_run
+    eyes._grpc = original_grpc
     eyes._has_tool = original_has_tool
     eyes._JOURNAL = original_journal
     eyes._STATE["serial"] = None
+
+    # ---- the fast eye (#181): the app's own dump receiver first, uiautomator as the fallback -----------
+    # Every row drives the real `tree()` with adb faked: the broadcast's result code is the contract.
+    import base64 as _b64
+    eye_book = Path(_tempfile.mkdtemp()) / "restore.json"
+    original_journal_eye, original_adb_eye = eyes._JOURNAL, eyes._adb
+    eyes._JOURNAL = eye_book
+    eye_calls = []
+    eye = {"result": 1, "data": _b64.b64encode(TWO_REMOVES.encode()).decode(), "raise": False}
+
+    def eye_adb(command, timeout=60, check=True, serial=None):
+        if command.startswith("am broadcast"):
+            eye_calls.append("broadcast")
+            if eye["raise"]:
+                raise eyes.Blocked("adb could not reach the device")
+            data = f', data="{eye["data"]}"' if eye["data"] is not None else ""
+            return 0, f"Broadcasting: Intent\nBroadcast completed: result={eye['result']}{data}\n"
+        if command.startswith("uiautomator dump"):
+            eye_calls.append("uiautomator")
+            return 0, ""
+        if command.startswith("cat "):
+            return 0, TWO_REMOVES
+        return 0, ""
+
+    eyes._adb = eye_adb
+    eyes._STATE.update({"serial": "emulator-5554", "eye": None, "eye_retry_after": 0, "tree": None})
+    nodes = eyes.tree()
+    check("a receiver answering 1 + data is the fast eye, and uiautomator is not run",
+          len(nodes) == 7 and eye_calls == ["broadcast"] and eyes._STATE["eye"] == "fast", eye_calls)
+    eye_calls.clear()
+    eye["result"], eye["data"] = 0, None
+    eyes._STATE["eye"] = None
+    eyes.tree()
+    check("nobody answering (a release build) is slow for the rest of the process",
+          eye_calls == ["broadcast", "uiautomator"] and eyes._STATE["eye"] == "slow", eye_calls)
+    eye_calls.clear()
+    eyes.tree()
+    check("and the broadcast is not sent again in that process", eye_calls == ["uiautomator"], eye_calls)
+    # A transient refusal (unbound) is slow for this read and retried after the cooldown.
+    eye_calls.clear()
+    eye["result"], eye["data"] = 3, None
+    eyes._STATE.update({"eye": None, "eye_retry_after": 0})
+    eyes.tree()
+    check("an unbound service is slow for this read", eye_calls == ["broadcast", "uiautomator"], eye_calls)
+    eye["result"], eye["data"] = 1, _b64.b64encode(TWO_REMOVES.encode()).decode()
+    eye_calls.clear()
+    for _ in range(eyes.EYE_COOLDOWN_READS):
+        eyes.tree()
+    check("the next three reads stay slow without asking", eye_calls == ["uiautomator"] * 3, eye_calls)
+    eye_calls.clear()
+    eyes.tree()
+    check("and the fourth asks again and is fast", eye_calls == ["broadcast"] and eyes._STATE["eye"] == "fast", eye_calls)
+    # Too big and a broken transport behave the same way.
+    for code, label in ((2, "a tree over the cap"),):
+        eye["result"], eye["data"] = code, None
+        eyes._STATE["eye_retry_after"] = 0
+        eye_calls.clear()
+        eyes.tree()
+        check(f"{label} is slow for this read with a cooldown",
+              eye_calls == ["broadcast", "uiautomator"] and eyes._STATE["eye_retry_after"] == eyes.EYE_COOLDOWN_READS, eye_calls)
+    eye["raise"] = True
+    eyes._STATE["eye_retry_after"] = 0
+    eye_calls.clear()
+    eyes.tree()
+    check("an adb failure on the broadcast is slow for this read with a cooldown",
+          eye_calls == ["broadcast", "uiautomator"] and eyes._STATE["eye_retry_after"] == eyes.EYE_COOLDOWN_READS, eye_calls)
+    eye["raise"] = False
+    # Undecodable data is a refusal ONCE, naming the eye, then slow.
+    eye["result"], eye["data"] = 1, "not base64 at all !!!"
+    eyes._STATE["eye_retry_after"] = 0
+    eye_calls.clear()
+    try:
+        eyes.tree()
+        check("undecodable data is a refusal that names the eye", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("undecodable data is a refusal that names the eye", "dump receiver" in str(refusal), refusal)
+    eye_calls.clear()
+    eyes.tree()
+    check("and the read after it is slow, without raising", eye_calls == ["uiautomator"], eye_calls)
+    eyes._adb = original_adb_eye
+    eyes._STATE.update({"serial": None, "eye": None, "eye_retry_after": 0, "tree": None})
+
+    # The eye belongs to the device: selecting another device forgets the answer.
+    eyes._STATE.update({"serial": "100.94.206.47:5555", "eye": "slow", "eye_retry_after": 2})
+    eyes._switch_to("emulator-5554")
+    check("switching device resets the eye so the new device is probed",
+          eyes._STATE["eye"] is None and eyes._STATE["eye_retry_after"] == 0)
+    eyes._STATE["eye"] = "fast"
+    with eyes._as_serial("emulator-5556"):
+        check("a restore on another device starts with its own unprobed eye", eyes._STATE["eye"] is None)
+        eyes._STATE["eye"] = "slow"
+    check("and the selected device's eye comes back afterwards", eyes._STATE["eye"] == "fast")
+    eyes._STATE.update({"serial": None, "eye": None, "eye_retry_after": 0})
+
+    # ---- a refusal describes the screen that FAILED, not the one a second read finds ------------------
+    reads = []
+    screens = iter([EXACT_VS_SUBSTRING, NOTHING_OF_OURS, NOTHING_OF_OURS])
+
+    def changing_adb(command, timeout=60, check=True, serial=None):
+        if command.startswith("uiautomator dump"):
+            reads.append(1)
+            return 0, ""
+        if command.startswith("cat "):
+            return 0, next(screens)
+        if command.startswith("am broadcast"):
+            return 0, "Broadcast completed: result=0\n"
+        return 0, ""
+
+    eyes._adb = changing_adb
+    eyes._STATE.update({"serial": "fixture", "eye": "slow", "tree": None})
+    try:
+        eyes.find("Bluetooth pairing")
+        check("an absent query on a changing screen still refuses", False, "it found something")
+    except eyes.Blocked as refusal:
+        check("the refusal lists the screen of the read that failed, from one read",
+              "Remove all models" in str(refusal) and "nexuslauncher" not in str(refusal) and len(reads) == 1,
+              (str(refusal)[:120], len(reads)))
+    eyes._adb = original_adb_eye
+    eyes._STATE.update({"serial": None, "eye": None, "tree": None})
+
+    # ---- a switch is put back IN PLACE when its screen is already up, and by navigating when not -----
+    # Navigation helpers are SPIED: the row is red if any of them is invoked on the in-place path.
+    spied = {name: 0 for name in ("open_tab", "open_settings", "nav")}
+    originals = {name: getattr(eyes, name) for name in spied}
+    for name in spied:
+        setattr(eyes, name, (lambda n: (lambda *a, **k: spied.__setitem__(n, spied[n] + 1)))(name))
+    original_on_screen, original_reveal, original_switch, original_tap = eyes.on_screen, eyes.reveal, eyes.switch, eyes.tap
+    original_present = eyes.present
+    place = {"on_screen": True, "present": True, "state": [False, True, True]}
+    eyes.on_screen = lambda where: place["on_screen"]
+    eyes.present = lambda text, exact=False: place["present"]
+    eyes.reveal = lambda label, package=eyes.PACKAGE: True
+    eyes.switch = lambda label, package=eyes.PACKAGE: place["state"].pop(0) if len(place["state"]) > 1 else place["state"][0]
+    taps = []
+    eyes.tap = lambda text, **k: taps.append(text) or "pressed"
+    eyes._STATE["serial"] = "fixture"
+    debt = ("switch", json.dumps({"where": "Transcription", "label": "Spoken emoji", "was": True}, sort_keys=True))
+    eyes._owe(debt)
+    eyes._restore_one(debt)
+    check("a switch whose screen is up is put back without navigating",
+          sum(spied.values()) == 0 and taps == ["Spoken emoji"], (spied, taps))
+    eyes._settled(debt)
+    place.update({"on_screen": False, "present": True, "state": [False, True, True]})
+    taps.clear()
+    eyes._owe(debt)
+    eyes._restore_one(debt)
+    check("the label alone, on another screen, is not enough: the tab is opened",
+          spied["open_tab"] == 1 and taps == ["Spoken emoji"], (spied, taps))
+    eyes._settled(debt)
+    for name, fn in originals.items():
+        setattr(eyes, name, fn)
+    eyes.on_screen, eyes.reveal, eyes.switch, eyes.tap, eyes.present = original_on_screen, original_reveal, original_switch, original_tap, original_present
+    eyes._STATE["serial"] = None
+
+    # A slow read is its own settle: one dump, not two.
+    reads = []
+    eyes._adb = lambda command, timeout=60, check=True, serial=None: (reads.append(command[:12]), (0, TWO_REMOVES if command.startswith("cat ") else ""))[1]
+    eyes._STATE.update({"serial": "fixture", "eye": "slow", "tree": None})
+    eyes._stable_tree()
+    check("a stable read through uiautomator is ONE dump", reads.count("uiautomator ") == 1, reads)
+    eyes._adb = original_adb_eye
+    eyes._STATE.update({"serial": None, "eye": None, "tree": None})
+
+    # The resting-state helper settles only a debt whose destination is off.
+    mic = {"on": True}
+    original_mic_state, original_grpc2 = eyes._mic_state, eyes._grpc
+    eyes._mic_state = lambda: mic["on"]
+    eyes._grpc = lambda method, payload=None, stdin_path=None, timeout=120: mic.__setitem__("on", payload["realAudioEnabled"]) if method == "setMicrophoneState" else {}
+    eyes._STATE["serial"] = "emulator-5554"
+    eyes._owe(("host-mic", "on"))
+    check("resting the mic off keeps a debt that owes ON",
+          "off" in eyes._rest_host_mic_off() and eyes._owed("emulator-5554") == [("host-mic", "on")] and mic["on"] is False,
+          eyes._owed("emulator-5554"))
+    eyes._settled(("host-mic", "on"))
+    mic["on"] = True
+    eyes._owe(("host-mic", "off"))
+    check("and settles a debt whose destination is OFF, now moot",
+          "off" in eyes._rest_host_mic_off() and eyes._owed("emulator-5554") == [] and mic["on"] is False,
+          eyes._owed("emulator-5554"))
+    eyes._mic_state, eyes._grpc = original_mic_state, original_grpc2
+    eyes._STATE["serial"] = None
+
+    # ---- the switch settle waits for the WANTED state twice, and gives up on time -------------------
+    readings = iter([False, True, True])
+    eyes.switch = lambda label, package=eyes.PACKAGE: next(readings)
+    clock = {"t": 0.0}
+    real_monotonic, real_sleep2 = eyes.time.monotonic, eyes.time.sleep
+    eyes.time.monotonic = lambda: clock["t"]
+    eyes.time.sleep = lambda s: clock.__setitem__("t", clock["t"] + s)
+    check("the settle returns once the wanted state is read twice in a row",
+          eyes._switch_settled("x", True) is True and clock["t"] < 0.6, clock["t"])
+    readings = iter([False] * 50)
+    clock["t"] = 0.0
+    check("and gives up after the bound when it never arrives",
+          eyes._switch_settled("x", True) is False and 0.6 <= clock["t"] <= 0.8, clock["t"])
+    eyes.time.monotonic, eyes.time.sleep = real_monotonic, real_sleep2
+    eyes.switch = original_switch
+    eyes._JOURNAL = original_journal_eye
 
     # ---- the "put it back" book -------------------------------------------------------------------
     # Every row here drives the REAL journal, pointed at a throwaway file. The rows exist because the
@@ -654,9 +1121,13 @@ def main():
     check("and the microphone is actually closed", store.get("take") == "stopped", store.get("take"))
     check("and the book is clear afterwards", eyes._owed("fixture") == [], eyes._owed("fixture"))
 
-    # A change owed to ANOTHER phone is never restored onto this one.
+    # A change owed to ANOTHER phone is never restored onto this one. Since #177 the debt is NAMED as
+    # kept rather than passed over in silence, and it stays in the book.
     eyes._owe(("screen-timeout", "15000"), serial="some-other-phone")
-    check("another phone's change is left alone", eyes.restore() == ["nothing was changed"])
+    said = eyes.restore()
+    check("another phone's change is left alone, and said so",
+          said == ["some-other-phone: not attached, debt kept"]
+          and eyes._owed("some-other-phone") == [("screen-timeout", "15000")], said)
     check("and it is still owed to that phone",
           eyes._owed("some-other-phone") == [("screen-timeout", "15000")])
 

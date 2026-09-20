@@ -39,16 +39,21 @@ class CaptureNoticesTest {
     @Test
     fun theSessionOwnerUsesTheProcessGateNotOneItBuildsPerService() {
         // The service stops itself after every take; a gate it constructed would reset every dictation.
-        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
-        assertTrue(source.contains("private val bluetoothTipGate = BluetoothTipGate.PROCESS"))
+        // Since #186 the owner is the coordinator: the gate is a constructor default, never built per instance,
+        // and the Service does not pass one, so the process-scoped default is what production runs with.
+        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        assertTrue(source.contains("private val tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS"))
         assertFalse(source.contains("BluetoothTipGate()"))
+        val service = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+        assertFalse("the Service must not hand the coordinator a per-instance gate", service.contains("tipGate ="))
+        assertFalse(service.contains("BluetoothTipGate"))
     }
 
     @Test
     fun theRecorderSaysAtMostOneMicrophoneLinePerTakeAndACaptureWarningOutranksIt() {
         // One notice slot on the recorder, last write wins: the tip must not overwrite the auto-stop
         // warning, and must not spend its once-per-process allowance in a take that said something else.
-        val body = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+        val body = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
             .substringAfter("private fun publishMicrophoneNoticesIfNeeded(")
             .substringBefore("private fun publishDurationWarningIfNeeded(")
         assertTrue(body.contains("if (silenceNoticeShown || forcedNoticeShown) return"))
@@ -56,14 +61,14 @@ class CaptureNoticesTest {
         // ordinary take for the tip. The old branch returned before the tip was considered.
         assertFalse(body.contains("pickMissing"))
         assertFalse(body.contains("inputRouteReason"))
-        assertTrue("the gate is consulted only after the warnings have declined", body.indexOf("bluetoothTipGate.shouldShow") > body.indexOf("forcedNoticeShown) return"))
+        assertTrue("the gate is consulted only after the warnings have declined", body.indexOf("tipGate.shouldShow") > body.indexOf("forcedNoticeShown) return"))
     }
 
     @Test
     fun theForcedNoticeIsSaidBeforePollingAndTheTipNamesWhereTheSoundIs() {
         // FORCED is published first, inside the live transition, so the once-per-process tip cannot
         // take the recorder's one slot from it (plan §3.2, 2026-09-18).
-        val publish = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+        val publish = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
             .substringAfter("private fun publishLive(")
             .substringBefore("private fun startPolling(")
         assertTrue(publish.indexOf("sayWhileRecording(CaptureNotices.EARBUDS_SILENT)") < publish.indexOf("startPolling()"))

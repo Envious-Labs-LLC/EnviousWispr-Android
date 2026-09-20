@@ -1,0 +1,36 @@
+Harness speed plan review — DONE
+
+## Known problem
+
+Verified: `setResultData()` works only for ordered broadcasts. Android does not document that `am broadcast` prints `data=` or guarantee its formatting, so P3 remains **NOT VERIFIED** until measured. [BroadcastReceiver docs](https://developer.android.com/reference/android/content/BroadcastReceiver#setResultData(java.lang.String))
+
+Binder’s 1 MB buffer is shared across concurrent transactions, so a 900 KB result is not safe. [TransactionTooLargeException docs](https://developer.android.com/reference/android/os/TransactionTooLargeException)
+
+`getWindows()` returns interactive windows, and Android defines accessibility-overlay windows, but neither document guarantees that a service receives its own overlay and root. P4 remains **NOT VERIFIED**. [getWindows](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#getWindows()), [TYPE_ACCESSIBILITY_OVERLAY](https://developer.android.com/reference/android/view/accessibility/AccessibilityWindowInfo#TYPE_ACCESSIBILITY_OVERLAY)
+
+## Axes
+
+1. **FOUND:** Rejecting the framed shell is correct given the measured 0.6 seconds. Rejecting cross-input tree caching is also correct, but the plan misses same-generation reuse inside one operation. `find` searches one tree at `scripts/uat/wispr_eyes.py:644`, then its failure branch calls `look` at `:654`, which reads a new tree at `:606`; the error can describe a different screen. **fix:** keep freshness between operations, but retain the local snapshot for that `find` result and format failures from it.
+
+2. **FOUND:** The sleep population is incomplete. §5 names only `tap` and `set_switch` (`docs/feature-requests/issue-181-2026-09-20-harness-speed.md:185`), but the switch restore arm has another 0.6-second sleep at `scripts/uat/wispr_eyes.py:2680`. **fix:** include it explicitly and either replace it with the switch’s exact checked-state wait/read-back or state that it remains and include it in the benchmark accounting.
+
+3. **FOUND:** The receiver concept is viable, but has four traps:
+
+   - Main-thread access is correct for `onReceive`, and omitting `recycle()` is correct for API 33+. Still, enforce the accessor contract with `service.callOnMain(null) { ... }`, instead of relying on its first caller always being main-thread.
+   - “Text is XML-escaped” at plan `:139` is too narrow. **fix:** one attribute escaper for every string attribute, including text, description, package, class, and resource ID; test `&`, `<`, and `"` in each.
+   - The 900 KB cap at plan `:111-113` is unsafe. **fix:** cap the final encoded result conservatively, for example 256 KiB, before `setResultData`; return `TOO_BIG` above it and test the boundary. Compression before Base64 is optional but useful.
+   - “Declared in the manifest” is underspecified. The existing precedent is exported (`app/src/debug/AndroidManifest.xml:10-16`). **fix:** require `android:exported="true"` plus the DUMP intent filter in the plan.
+
+4. **FOUND:** Any transient failure permanently selects `"slow"` for the process (`plan:143-147`, `:199-203`). Starting while unbound, an initially empty window list, or one oversized screen therefore disables the fast eye even after recovery. A broadcast timeout/exception also has no explicit fallback contract, and malformed data conflicts between immediate fallback at `:146-147` and “Blocked, then slow next call” at `:202`. **fix:** cache permanent slow only after proving the receiver is absent; use per-call fallback plus a short retry cooldown for unbound, empty, oversized, timeout, and framework failures. Give the broadcast a bounded timeout, and specify malformed data as: mark cooldown, raise `Blocked` once, then allow slow fallback on retry.
+
+5. **FOUND:** A generic “any node count or label changed” condition can fire on an outgoing animation or the recorder’s live elapsed-time label before the requested press takes effect (`plan:155-159`). The immediate read-back can then falsely fail. **fix:** keep generic `tap`’s fixed bound, or accept an action-specific predicate: desired switch state, selected tab, destination title, recorder state, etc. Require the predicate to remain true across two reads before returning early.
+
+6. **FOUND:** Three §11.2 revert claims are not guaranteed to turn red:
+
+   - Row `:246`: omitted attributes with default values can parse identically. **fix:** give every attribute a non-default sentinel and mutation-test each omission.
+   - Row `:252`: “always navigate” may call a navigation helper that itself no-ops, leaving “no command sent” green. **fix:** spy on and reject invocation of `open_tab`/`open_settings`.
+   - Row `:253`: “skip the check” could mean removing the optimization entirely, which still navigates and stays green. **fix:** name the revert precisely: remove only the `on_screen` conjunct while retaining the visible-label fast path.
+
+## Verdict
+
+PROCEED-WITH-REVISIONS

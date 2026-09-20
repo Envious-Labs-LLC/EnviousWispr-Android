@@ -85,7 +85,7 @@ class TakeNoticesTest {
     @Test
     fun theSessionOwnerNeverAuthorsAnEndingSentence() {
         // The identity is the member; a literal at a call site is the old shape coming back.
-        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
         for (call in listOf("showError(\"", "failWhileStarting(\"", "handleServiceFailure(\"", "announceError(\"")) {
             assertTrue("found $call", !source.contains(call))
         }

@@ -21,7 +21,10 @@ its PR merged.
 
 - `scripts/cleanup-merged-worktrees.sh --report` names finished worktrees and any leftover folders. It is
   read-only and runs on its own after every `git fetch`/`git pull` (the `post-sync-cleanup` hook) and at
-  wind-down.
+  wind-down. It sees a worktree only once its branch is gone from origin, so the repository's
+  "automatically delete head branches" setting is what makes a merged worktree visible to it; while that
+  setting is off, delete the merged branch on origin by hand (`git push origin --delete <branch>`) and
+  `git fetch --prune` before reading the report.
 - `scripts/cleanup-merged-worktrees.sh --apply <path>` removes one named worktree: it must be a registered
   worktree with a MERGED PR at the branch's SHA and a clean tree, it rescues gitignored work first, it
   never uses `--force` (so the `third_party/llama.cpp` submodule can refuse an unsafe removal), and it

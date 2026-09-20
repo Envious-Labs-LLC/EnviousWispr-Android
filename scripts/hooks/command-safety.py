@@ -242,6 +242,84 @@ def check_connected_android_test(segments: list[list[str]]) -> None:
         )
 
 
+# THE ONE FRONT DOOR ONTO THE DEVICE (#177). The shapes below DRIVE a phone or the emulator, and each has
+# a harness call that reads the result back and puts the device back afterwards. Reads (`logcat`,
+# `dumpsys`, `getprop`, `pm`, `install`, `devices`, `screenrecord`) are not here: the guard is a road,
+# and the road has to leave every read open or the reader routes around the wall. Founder 2026-09-20:
+# a rule alone did not make the harness the first choice; this is the tool boundary Astra asked for.
+RAW_DRIVING = {
+    "input": "tap('label'), set_switch(...), nav(...) or unlock_emulator()",
+    "uiautomator": "look(), find('label') or tree()",
+    "screencap": "shot()",
+    "monkey": "tap('label') or nav('page')",
+}
+ADB_VARIABLE = re.compile(r"^\$(?:ADB|\{ADB\}|A)$")
+
+
+def check_raw_device_driving(segments: list[list[str]]) -> None:
+    """Deny raw `adb shell input|uiautomator|screencap|monkey`, `adb emu`, and gRPC against the emulator.
+
+    Same threat model as the rest of this file: cooperative agents, no adversary, no option grammar. The
+    adb executable may be spelled as a path, as `$ADB` (the shell variable every recipe in this repo
+    uses; the tokenizer keeps it literal), or as the emulator's own gRPC client. The subcommand is read
+    after `-s <serial>`, `-d`, `-e` and `-t <id>`, the four target selectors adb has.
+    """
+    for segment in segments:
+        found = executable(segment)
+        if found is None:
+            continue
+        name, args = found
+        if name == "grpcurl":
+            # A METHOD target (`…EmulatorController/<method>`) is driving; the bare service name is what
+            # `list` and `describe` take, and those read. Keying on the verb let `-authority describe
+            # …/setMicrophoneState` through (review round 2).
+            if any("EmulatorController/" in arg for arg in args):
+                deny(
+                    "BLOCKED: this drives the emulator's control service by hand. The harness owns that "
+                    "endpoint and puts the emulator back afterwards:\n\n"
+                    "  set_host_mic(False) / set_host_mic(True)   # the microphone switch, journaled\n"
+                    "  inject_audio('utt.pcm')                    # inside `with open_recorder():`\n"
+                    "  dictate_emulator('a sentence')             # one spoken take, judged by the editor\n"
+                    "  launch_emulator()                          # boots with -grpc 8554\n\n"
+                    "python3 -c \"import sys; sys.path.insert(0, 'scripts/uat'); from wispr_eyes import *; "
+                    "print(dictate_emulator('and I will send the deck tomorrow'))\"\n\n"
+                    "Owner: .claude/skills/wispr-eyes/SKILL.md."
+                )
+            continue
+        if not (name == "adb" or ADB_VARIABLE.match(name)):
+            continue
+        rest = list(args)
+        while rest and rest[0] in ("-s", "-t", "-d", "-e", "-H", "-P"):
+            rest = rest[2:] if rest[0] in ("-s", "-t", "-H", "-P") else rest[1:]
+        if not rest:
+            continue
+        if rest[0] == "emu":
+            deny(
+                "BLOCKED: the emulator console is driven by hand here. The harness owns the emulator:\n\n"
+                "  launch_emulator(restart=True)   # the only place `emu kill` is sent\n"
+                "  set_host_mic(False)             # replaces `emu avd hostmicoff`, over gRPC, journaled\n\n"
+                "Owner: .claude/skills/wispr-eyes/SKILL.md, section \"The emulator\"."
+            )
+        if rest[0] != "shell":
+            continue
+        words = rest[1:]
+        # `adb shell 'input tap 1 2'` arrives as one quoted word; split it the way the device shell will.
+        if len(words) == 1:
+            words = words[0].split()
+        if not words or words[0] not in RAW_DRIVING:
+            continue
+        deny(
+            f"BLOCKED: `adb shell {words[0]}` drives the device by hand, and nothing reads the result back "
+            f"or puts the device back afterwards. Use the harness call instead: {RAW_DRIVING[words[0]]}.\n\n"
+            "python3 -c \"import sys; sys.path.insert(0, 'scripts/uat'); from wispr_eyes import *; "
+            "print(look())\"\n\n"
+            "Every read (logcat, dumpsys, getprop, pm, install, screenrecord) is still allowed. A need the "
+            "harness cannot meet is one more call in scripts/uat/wispr_eyes.py, never a raw command.\n"
+            "Owner: .claude/skills/wispr-eyes/SKILL.md; rule: tools-and-apps.md RULE: "
+            "drive-the-phone-through-wispr-eyes-before-any-raw-adb."
+        )
+
+
 def check_writes(tokens: list[str], segments: list[list[str]]) -> None:
     if branch() != "main":
         return  # the branch IS the protection
@@ -284,6 +362,12 @@ def main() -> int:
 
     check_no_verify(segments)
     check_connected_android_test(segments)
+    try:
+        check_raw_device_driving(segments)
+    except SystemExit:
+        raise
+    except Exception:
+        pass  # fail open, silently: a broken guard must not block or spam every command
     check_writes(tokens, segments)
     return 0
 

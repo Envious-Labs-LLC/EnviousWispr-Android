@@ -1,0 +1,22 @@
+## Missing members
+
+- `RECORDING_IS_OFF` reads — `scripts/uat/wispr_eyes.py:2255`, `scripts/uat/wispr_eyes.py:2457`. Add: “Every `RECORDING_IS_OFF` read is at `wispr_eyes.py:1452,1519,2255,2457,2507`; all five get the `is_emulator` scope.”
+- Journal kinds — `scripts/uat/wispr_eyes.py:2170`, `scripts/uat/wispr_eyes.py:2178`, `scripts/uat/wispr_eyes.py:2197`. Add: “Every journal kind in `_restore_one` is `mac-volume, mac-input, log-buffer, take, parked-fixture, media-volume, a11y-state, a11y-services, switch, screen-timeout`; `host-mic` is added with read-back.”
+- Raw transport sites — `scripts/uat/rail_signals.py:452`. Add: “`rail_signals.py:452` is also a raw driving site and moves behind a harness call.”
+- Restore-output consumer — `scripts/uat/wispr_eyes.py:2238`. Add: “Change `_restore_locked`’s generic report formatter so `host-mic` produces `host microphone back on|off`.”
+- CLI documentation consumer — `scripts/uat/wispr_eyes.py:9`. Add: “Update the module docstring’s CLI examples to include `launch`, `unlock`, `mic`, `inject`, `dictate-emu`, and `insert`.”
+- Closed gRPC port branch — `docs/feature-requests/issue-177-2026-09-20-one-front-door.md:208`. Add: “Test that an unreachable `getStatus` produces a `Blocked` response naming `launch_emulator`.”
+- Failed unlock branch — `docs/feature-requests/issue-177-2026-09-20-one-front-door.md:209`. Add: “Test that a still-true keyguard after the unlock attempt produces the stayed-locked refusal.”
+- Console rejection branch — `docs/feature-requests/issue-177-2026-09-20-one-front-door.md:210`. Add: “Test that a non-OK console response makes `set_host_mic` refuse.”
+- Take-start failure branch — `docs/feature-requests/issue-177-2026-09-20-one-front-door.md:212`. Add: “Test that a failed recorder start returns the existing `open_recorder` refusal and leaves the take debt unsettled.”
+- Second-137 branch — `docs/feature-requests/issue-177-2026-09-20-one-front-door.md:213`. Add: “Test that one uiautomator 137 retries and a second returns `Blocked` naming `shot` and `overlay`.”
+- Hook self-error branch — `docs/feature-requests/issue-177-2026-09-20-one-front-door.md:214`. Add: “Test that malformed input and tokenizer failure both fail open.”
+- Result-oracle failure — `docs/feature-requests/issue-177-2026-09-20-one-front-door.md:227`. Add: “Test that missing or unequal editor text makes `dictate_emulator` return `ISSUE`.”
+
+## Weak test rows
+
+- Phone-locked `ready` row — `docs/feature-requests/issue-177-2026-09-20-one-front-door.md:263`: reverting the new emulator branch leaves the existing phone refusal intact, so the row remains green. A mutation that would turn it red is making the unlock branch unconditional for every locked device.
+
+## Verdict
+
+GAPS

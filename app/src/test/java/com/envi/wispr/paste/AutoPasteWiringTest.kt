@@ -200,7 +200,8 @@ class AutoPasteWiringTest {
                 teardown.contains("recordAndAnnounce(ServiceFallbackReason.$reason, pending)"),
             )
         }
-        val source = read("ui/DictationSessionService.kt")
+        // Since #186 publication lives in the coordinator, which logs through its `log` seam.
+        val source = read("ui/DictationSessionCoordinator.kt")
         // `substringAfter` and `substringBefore` return the WHOLE receiver when their delimiter is
         // absent, so a reformat of either line would silently widen this to the entire file and
         // the check below would then match the DECLARATION of announceInsertionFallback rather
@@ -209,7 +210,7 @@ class AutoPasteWiringTest {
         val branch = slice(
             source,
             "if (handoff != InsertionHandoff.SCHEDULED) {",
-            "\n            DebugLogger.log(",
+            "\n            log.log(",
         )
         assertTrue(
             "A dictation that did not reach the field no longer announces where its words went, " +
@@ -237,12 +238,18 @@ class AutoPasteWiringTest {
      */
     @Test
     fun theHandoffIsJudgedByWhatTheStartSawNotOnlyByWhatInsertionFound() {
-        val source = read("ui/DictationSessionService.kt")
+        // Since #186 the start pins through the coordinator's `insertion` seam, whose production delegate
+        // must still reach the accessibility service's companion (Codex review C1, 2026-09-20).
+        val gateway = read("ui/InsertionGateway.kt")
+        assertTrue(gateway.contains("override fun pinTargetForDictation(): DictationTargetPin = PasteAccessibilityService.pinTargetForDictation()"))
+        assertTrue(gateway.contains("override fun isBound(): Boolean = PasteAccessibilityService.isBound.value"))
+        assertTrue(gateway.contains("PasteAccessibilityService.pasteWhenTargetReturns("))
+        val source = read("ui/DictationSessionCoordinator.kt")
         val begin = slice(source, "private fun beginSession() {", "\n    private fun ")
         assertTrue(
             "beginSession discards the pin result again, so nothing can tell a dead service at " +
                 "the start from the four entry points that never had a target: $begin",
-            begin.contains("targetPinAtStart = PasteAccessibilityService.pinTargetForDictation()"),
+            begin.contains("targetPinAtStart = insertion.pinTargetForDictation()"),
         )
         assertEquals(
             "The handoff must pass through InsertionJudgement.handoffToJudge exactly once, at the " +
@@ -392,7 +399,11 @@ class AutoPasteWiringTest {
      */
     @Test
     fun theRecordingCuesAreNotGatedOnTheTouchFeedbackSetting() {
+        // Since #186 the Service fires the cue (its host object), HapticCue.kt names it, and the
+        // coordinator asks for it; each pin reads the file its statement moved to.
         val source = read("ui/DictationSessionService.kt")
+        val cues = read("ui/HapticCue.kt")
+        val owner = read("ui/DictationSessionCoordinator.kt")
         assertEquals(
             "The session service reads the touch-feedback setting in more than one place, so " +
                 "the cue is no longer the only thing that decides which buzzes it silences",
@@ -407,16 +418,16 @@ class AutoPasteWiringTest {
         )
         assertTrue(
             "SESSION_TRANSITION must not answer to the touch-feedback switch",
-            source.contains("SESSION_TRANSITION(28L, 120, honoursSystemHapticSetting = false)"),
+            cues.contains("SESSION_TRANSITION(28L, 120, honoursSystemHapticSetting = false)"),
         )
         assertTrue(
             "The failure cue must still answer to it, for parity with performResultHaptic",
-            source.contains("FAILURE(45L, 180, honoursSystemHapticSetting = true)"),
+            cues.contains("FAILURE(45L, 180, honoursSystemHapticSetting = true)"),
         )
         assertEquals(
             "Recording started and recording stopped are the two cues that must always fire",
             2,
-            Regex("vibrate\\(HapticCue\\.SESSION_TRANSITION\\)").findAll(source).count(),
+            Regex("host\\.vibrate\\(HapticCue\\.SESSION_TRANSITION\\)").findAll(owner).count(),
         )
     }
 

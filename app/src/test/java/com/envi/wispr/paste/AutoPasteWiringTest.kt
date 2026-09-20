@@ -238,7 +238,12 @@ class AutoPasteWiringTest {
      */
     @Test
     fun theHandoffIsJudgedByWhatTheStartSawNotOnlyByWhatInsertionFound() {
-        // Since #186 the start pins through the coordinator's `insertion` seam.
+        // Since #186 the start pins through the coordinator's `insertion` seam, whose production delegate
+        // must still reach the accessibility service's companion (Codex review C1, 2026-09-20).
+        val gateway = read("ui/InsertionGateway.kt")
+        assertTrue(gateway.contains("override fun pinTargetForDictation(): DictationTargetPin = PasteAccessibilityService.pinTargetForDictation()"))
+        assertTrue(gateway.contains("override fun isBound(): Boolean = PasteAccessibilityService.isBound.value"))
+        assertTrue(gateway.contains("PasteAccessibilityService.pasteWhenTargetReturns("))
         val source = read("ui/DictationSessionCoordinator.kt")
         val begin = slice(source, "private fun beginSession() {", "\n    private fun ")
         assertTrue(

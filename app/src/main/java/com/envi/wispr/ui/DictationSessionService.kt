@@ -88,58 +88,19 @@ class DictationSessionService : Service() {
     private lateinit var bindings: PipelineBindings
     private lateinit var coordinator: DictationSessionCoordinator
 
-    /** The Android calls the owner makes, each one line; a private object so the Service's public surface stays the four actions. */
-    private val host = object : SessionHost {
-        override fun promoteToForeground(processing: Boolean) {
-            val notification = if (processing) {
-                DictationNotificationController.processing(this@DictationSessionService)
-            } else {
-                DictationNotificationController.listening(
-                    context = this@DictationSessionService,
-                    autoPaste = autoPasteAvailability(),
-                    // The live field, not the session snapshot: this runs before `beginSession`
-                    // freezes one, and it is the field that snapshot is taken from. It is null on a
-                    // cold start, which is the state the notification has to be able to say nothing
-                    // about rather than guess at.
-                    clipboard = preferences.clipboardPolicy,
-                )
-            }
-            startForeground(
-                DictationNotificationController.NOTIFICATION_ID,
-                notification,
-                if (processing) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                },
-            )
-        }
+    /**
+     * The Android calls the owner makes, each one line, built once in `onCreate` and handed to the coordinator;
+     * not a field, so the Service holds exactly its five adapters (`SessionOwnerShapeTest`).
+     */
+    private fun createHost(): SessionHost = object : SessionHost {
+        override fun promoteToForeground(processing: Boolean) =
+            this@DictationSessionService.promoteToForeground(processing)
 
         override fun updateSurfacePhase(phase: DictationSurfaceState.Phase) {
             DictationSurfaceState.update(this@DictationSessionService, phase)
         }
 
-        override fun vibrate(cue: HapticCue) {
-            if (cue.honoursSystemHapticSetting &&
-                Settings.System.getInt(contentResolver, Settings.System.HAPTIC_FEEDBACK_ENABLED, 1) != 1
-            ) {
-                return
-            }
-            runCatching {
-                // VibratorManager is API 31 against minSdk 33. Guarded here as well as in
-                // PasteAccessibilityService.performResultHaptic: the runCatching only degrades to no
-                // haptics at all on the oldest supported phone, which is a silent loss of every cue.
-                val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    getSystemService(VibratorManager::class.java)?.defaultVibrator
-                } else {
-                    @Suppress("DEPRECATION")
-                    getSystemService(Vibrator::class.java)
-                } ?: return
-                if (vibrator.hasVibrator()) {
-                    vibrator.vibrate(VibrationEffect.createOneShot(cue.durationMs, cue.amplitude))
-                }
-            }
-        }
+        override fun vibrate(cue: HapticCue) = this@DictationSessionService.vibrate(cue)
 
         override fun toastFromService(line: String) {
             Toast.makeText(this@DictationSessionService, line, Toast.LENGTH_LONG).show()
@@ -157,16 +118,8 @@ class DictationSessionService : Service() {
             getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("EnviousWispr", text))
         }.isSuccess
 
-        /**
-         * Liveness is a volatile read. The permission half is a `Settings.Secure` lookup, which the
-         * platform serves from a per-process cache after the first call. Read only when a session
-         * starts and when a dictation falls back, never at idle (`architecture-rules.md`
-         * RULE: no-idle-cost). The setting alone cannot answer this: it still names a crashed service.
-         */
-        override fun autoPasteAvailability(): AutoPasteAvailability = AutoPasteReadiness.evaluate(
-            permittedInSettings = AccessibilityPermission.isGranted(this@DictationSessionService),
-            serviceBound = PasteAccessibilityService.isBound.value,
-        )
+        override fun autoPasteAvailability(): AutoPasteAvailability =
+            this@DictationSessionService.autoPasteAvailability()
 
         override fun removeForegroundAndDismiss() {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -186,6 +139,64 @@ class DictationSessionService : Service() {
         override fun elapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()
     }
 
+    private fun promoteToForeground(processing: Boolean) {
+        val notification = if (processing) {
+            DictationNotificationController.processing(this)
+        } else {
+            DictationNotificationController.listening(
+                context = this,
+                autoPaste = autoPasteAvailability(),
+                // The live field, not the session snapshot: this runs before `beginSession`
+                // freezes one, and it is the field that snapshot is taken from. It is null on a
+                // cold start, which is the state the notification has to be able to say nothing
+                // about rather than guess at.
+                clipboard = preferences.clipboardPolicy,
+            )
+        }
+        startForeground(
+            DictationNotificationController.NOTIFICATION_ID,
+            notification,
+            if (processing) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            } else {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            },
+        )
+    }
+
+    private fun vibrate(cue: HapticCue) {
+        if (cue.honoursSystemHapticSetting &&
+            Settings.System.getInt(contentResolver, Settings.System.HAPTIC_FEEDBACK_ENABLED, 1) != 1
+        ) {
+            return
+        }
+        runCatching {
+            // VibratorManager is API 31 against minSdk 33. Guarded here as well as in
+            // PasteAccessibilityService.performResultHaptic: the runCatching only degrades to no
+            // haptics at all on the oldest supported phone, which is a silent loss of every cue.
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                getSystemService(VibratorManager::class.java)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Vibrator::class.java)
+            } ?: return
+            if (vibrator.hasVibrator()) {
+                vibrator.vibrate(VibrationEffect.createOneShot(cue.durationMs, cue.amplitude))
+            }
+        }
+    }
+
+    /**
+     * Liveness is a volatile read. The permission half is a `Settings.Secure` lookup, which the
+     * platform serves from a per-process cache after the first call. Read only when a session
+     * starts and when a dictation falls back, never at idle (`architecture-rules.md`
+     * RULE: no-idle-cost). The setting alone cannot answer this: it still names a crashed service.
+     */
+    private fun autoPasteAvailability(): AutoPasteAvailability = AutoPasteReadiness.evaluate(
+        permittedInSettings = AccessibilityPermission.isGranted(this),
+        serviceBound = PasteAccessibilityService.isBound.value,
+    )
+
     override fun onCreate() {
         super.onCreate()
         languageDetector = MlKitLanguageDetector(applicationContext)
@@ -197,7 +208,8 @@ class DictationSessionService : Service() {
             migrateLegacyTerms = { customTermRepository.migrateLegacySharedPreferences(applicationContext) },
             log = DebugSessionLog,
         )
-        bindings = PipelineBindings(applicationContext, mainHandler)
+        bindings = PipelineBindings(applicationContext, mainHandler, DebugSessionLog)
+        val host = createHost()
         coordinator = DictationSessionCoordinator(
             host = host,
             surface = OverlayRecorderSurface,
@@ -216,7 +228,7 @@ class DictationSessionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND_COMMAND, false) == true) {
-            host.promoteToForeground(coordinator.isProcessing)
+            promoteToForeground(coordinator.isProcessing)
         }
         val request = BubbleRequestToken.parse(intent?.getStringExtra(EXTRA_REQUEST))
         val trigger = TriggerSource.fromExtra(intent?.getStringExtra(EXTRA_TRIGGER_SOURCE))

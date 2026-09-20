@@ -21,6 +21,7 @@ class LiveAudioMeterWiringTest {
     private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
     /** The owner since #186: the meter moved from the Service to the coordinator with its seams (`surface` over the overlay state). */
     private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+    private val recorder = File("src/main/java/com/envi/wispr/ui/RecorderSurface.kt").readText()
     private val overlayState = File("src/main/java/com/envi/wispr/shortcuts/RecordingOverlayState.kt").readText()
     private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
     private val meterView = File("src/main/java/com/envi/wispr/paste/RecordingLevelMeterView.kt").readText()
@@ -39,6 +40,10 @@ class LiveAudioMeterWiringTest {
         assertTrue("the read must be caught where it happens", meter.contains("runCatching { service.spectrumBands() }"))
         assertTrue("a throwing read must publish the empty picture, so the rail rests", meter.contains("getOrElse { surface.emptyBands() }"))
         assertTrue("the picture must reach the recorder with the take's serial", meter.contains("surface.updateBands(takeSerial, bands)"))
+        // The seam is only as good as its production delegate (Codex review C1, 2026-09-20).
+        assertTrue(recorder.contains("override fun updateBands(takeSerial: Long, bands: FloatArray) = RecordingOverlayState.updateBands(takeSerial, bands)"))
+        assertTrue(recorder.contains("override fun currentTakeSerial(): Long = RecordingOverlayState.snapshots.value.takeSerial"))
+        assertTrue(recorder.contains("override fun emptyBands(): FloatArray = RecordingOverlayState.NO_BANDS"))
         assertTrue("the meter runs on its own thread, never in the polling tick", meter.contains("\"DictationMeterThread\""))
         assertTrue("and starting it cannot end the take", meter.contains("runCatching {\n            Thread("))
         val polling = body(session, "private fun startPolling()")

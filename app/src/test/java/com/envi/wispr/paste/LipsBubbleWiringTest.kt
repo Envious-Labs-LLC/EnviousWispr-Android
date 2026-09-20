@@ -15,6 +15,7 @@ class LipsBubbleWiringTest {
     private val service = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText()
     /** The owner since #186; the overlay state is reached through its `surface` seam and the notification through `host`. */
     private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+    private val recorder = File("src/main/java/com/envi/wispr/ui/RecorderSurface.kt").readText()
     private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
     private val launcher = File("src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt").readText()
     private val manifest = File("src/main/AndroidManifest.xml").readText()
@@ -35,6 +36,10 @@ class LipsBubbleWiringTest {
         val finish = session.substringAfter("private fun finishSession()").substringBefore("private fun stopIfIdle()")
         assertTrue(finish.contains("surface.showProcessing()"))
         assertTrue(finish.contains("surface.hide()"))
+        // Each phase the owner publishes must reach the real overlay state (Codex review C1, 2026-09-20).
+        listOf("showProcessing", "hide", "nameTarget", "attachTranscript", "showNotice").forEach {
+            assertTrue("RecorderSurface.$it is not wired", recorder.contains("RecordingOverlayState.$it("))
+        }
         assertTrue(finish.indexOf("surface.hide()") > finish.indexOf("host.removeForegroundAndDismiss()"))
         // Both cancels share one body since the live gate (a cancelled start has capture running too).
         listOf("private fun cancelRecording()", "private fun cancelStarting()").forEach { head ->

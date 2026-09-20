@@ -173,7 +173,16 @@ internal class DictationSessionRig {
         override fun updateSurfacePhase(phase: DictationSurfaceState.Phase) { events += "phase:${phase.name}" }
         override fun vibrate(cue: HapticCue) { events += "vibrate:${cue.name}" }
         override fun toastFromService(line: String) { events += "toast:$line" }
-        override fun toastFromApplication(line: String) { events += "toast-app:$line@${taskKind.get()}" }
+        private val applicationToast = CountDownLatch(1)
+        override fun toastFromApplication(line: String) {
+            events += "toast-app:$line@${taskKind.get()}"
+            applicationToast.countDown()
+        }
+
+        /** A line was said after the recorder had gone; the inline-versus-posted row waits on it. */
+        fun awaitApplicationToast() {
+            check(applicationToast.await(10, TimeUnit.SECONDS)) { "the application toast never fired; events: $events" }
+        }
         override fun showPolishNotice(notice: PolishFailureNotice) { events += "polish-notice" }
         override fun copyToClipboard(text: String): Boolean {
             events += "clipboard:$text"
@@ -386,7 +395,7 @@ internal class DictationSessionRig {
             return bindResult
         }
         override fun unbind() { events += "unbind" }
-        override fun postUnbindToMain() { mainExecutor.execute { unbind() } }
+        override fun postUnbindToMain(beforeUnbind: () -> Unit) { mainExecutor.execute { run("post") { beforeUnbind(); unbind() } } }
         override fun stopAudioService() { events += "stopAudioService" }
 
         /** The platform reporting a helper's death, on main. */

@@ -11,7 +11,6 @@ import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.IAudioCaptureService
-import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
 import com.envi.wispr.polish.PolishOutcome
@@ -34,11 +33,8 @@ import com.envi.wispr.polish.PolishService
 internal class PipelineBindings(
     private val appContext: Context,
     private val mainHandler: Handler,
+    private val log: SessionLog,
 ) : PipelineController {
-    private companion object {
-        const val TAG = "DictationSession"
-    }
-
     @Volatile override var capture: CaptureLink? = null
         private set
 
@@ -121,13 +117,16 @@ internal class PipelineBindings(
         polish = null
     }
 
-    override fun postUnbindToMain() {
-        mainHandler.post { unbind() }
+    override fun postUnbindToMain(beforeUnbind: () -> Unit) {
+        mainHandler.post {
+            beforeUnbind()
+            unbind()
+        }
     }
 
     override fun stopAudioService() {
         runCatching { appContext.stopService(Intent(appContext, AudioCaptureService::class.java)) }
-            .onFailure { error -> DebugLogger.warn(TAG, "Unable to stop audio capture service: ${error.message}") }
+            .onFailure { error -> log.warn("Unable to stop audio capture service: ${error.message}") }
     }
 
     /** Pass-through; a binder exception escapes to the caller's `runCatching`, exactly as the proxy's did. */

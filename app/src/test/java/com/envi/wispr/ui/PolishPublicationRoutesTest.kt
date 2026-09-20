@@ -38,6 +38,8 @@ class PolishPublicationRoutesTest {
         assertEquals(1, Regex("""PolishPublicationFacts\.from\(""").findAll(source).count())
         val publication = section("private fun publishResult(", "private suspend fun insertReadyTranscript")
         val notice = publication.indexOf("host.showPolishNotice(notice)")
+        // The host delegate must still reach the notification controller (Codex review C1, 2026-09-20).
+        assertTrue(File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText().contains("DictationNotificationController.showPolishNotice(this@DictationSessionService, notice)"))
         val persistence = publication.indexOf("scope.launch")
         assertTrue("the notice is posted before the persistence coroutine starts", notice >= 0 && notice < persistence)
     }

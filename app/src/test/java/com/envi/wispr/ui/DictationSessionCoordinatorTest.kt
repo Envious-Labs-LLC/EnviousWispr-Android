@@ -378,7 +378,7 @@ class DictationSessionCoordinatorTest {
         rig.capture.liveStateAfterStart = AudioCaptureService.LIVE_FORCED
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
-        rig.onMain {}
+        rig.host.awaitApplicationToast()
 
         assertTrue(
             "the notice ran inline inside the posted runnable, not as a dispatched task: ${rig.host.events}",

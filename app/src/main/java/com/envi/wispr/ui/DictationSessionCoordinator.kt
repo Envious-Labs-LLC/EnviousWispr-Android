@@ -1636,10 +1636,11 @@ internal class DictationSessionCoordinator(
                 val ready = runCatching { capture?.waitForFileReady(2_000L) == true }.getOrDefault(false)
                 if (ready) deleteCapturedAudio(runCatching { capture?.audioFilePath() }.getOrNull())
                 pipeline.stopAudioService()
-                pipeline.postUnbindToMain()
+                pipeline.postUnbindToMain(::cancelOpenPolishRequest)
             }, "DestroyedSessionCleanup").start()
         } else {
             if (sessionWasOpen) pipeline.stopAudioService()
+            cancelOpenPolishRequest()
             pipeline.unbind()
         }
     }

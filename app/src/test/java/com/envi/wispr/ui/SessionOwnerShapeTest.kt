@@ -20,11 +20,13 @@ class SessionOwnerShapeTest {
     @Test
     fun serviceOwnsOnlyItsAdapters() {
         // Instance fields, read off the source: every member declared at class indentation with val/var.
-        val fields = Regex("""(?m)^ {4}(?:private |internal )?(?:lateinit )?(?:val|var) (\w+)""")
+        // Every modifier and annotation a member declaration can carry, so `@Volatile private var` is
+        // enumerated too (Codex review C1, 2026-09-20).
+        val fields = Regex("""(?m)^ {4}(?:(?:@\S+|public|protected|internal|private|lateinit|override|const)\s+)*(?:val|var)\s+(\w+)\b""")
             .findAll(service).map { it.groupValues[1] }.toSet()
         assertEquals(
             "the Service holds exactly its adapters; a take's state lives in the coordinator",
-            setOf("mainHandler", "host", "languageDetector", "preferences", "bindings", "coordinator"),
+            setOf("mainHandler", "languageDetector", "preferences", "bindings", "coordinator"),
             fields,
         )
         listOf("synchronized(", "compareAndSet(", "TakeArbiter", "PolishRequestLedger", "TerminalReason", "SessionState").forEach { token ->

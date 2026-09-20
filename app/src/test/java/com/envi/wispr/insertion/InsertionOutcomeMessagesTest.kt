@@ -393,7 +393,7 @@ class InsertionOutcomeMessagesTest {
             source.contains("@Volatile var clipboardPolicy: ClipboardInsertionPolicy? = null"),
         )
         val session = read("ui/DictationSessionService.kt")
-        val promote = slice(session, "override fun promoteToForeground(", "\n        override fun ")
+        val promote = slice(session, "private fun promoteToForeground(", "\n    private fun ")
         assertTrue(
             "The listening notification is built from something other than the live, possibly " +
                 "unloaded clipboard field, so it can state a destination nobody has decided",

@@ -434,7 +434,9 @@ fixed and matches `:1861-1935` today (G1 D5): close `languageDetector`; under `p
 STARTING/RECORDING, hide the surface, interrupt the arbiter; close the polish ledger; resolve the draft id
 while its creation job is still alive; cancel and join the injected service job; write `interrupted`; start
 the capture cleanup thread or unbind synchronously; then the Service calls `stopForeground`, dismisses the
-notification and calls `super.onDestroy`. The `runBlocking` calls in that sequence are a known rule conflict
+notification and calls `super.onDestroy`. `onDestroy` checks `::coordinator.isInitialized` before calling
+`destroy()`; this is a composition-failure guard only, and after a completed `onCreate` it executes the same call
+in the same order (Codex code review C1). The `runBlocking` calls in that sequence are a known rule conflict
 carried unchanged (`kotlin-patterns.md` RULE: never-block-a-binder-or-ui-thread); #115 owns their removal;
 this extraction neither legitimises nor expands them (G1 D9).
 

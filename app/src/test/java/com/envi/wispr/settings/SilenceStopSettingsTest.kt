@@ -72,6 +72,9 @@ class SilenceStopSettingsTest {
             .substringBefore("private fun sayAfterRecording(")
         assertTrue(chooser.contains("if (insertion.isBound())"))
         assertTrue(chooser.contains("surface.showNotice(line)"))
+        // Both seams reach their real owners (Codex review C1, 2026-09-20).
+        assertTrue(read("ui/InsertionGateway.kt").contains("override fun isBound(): Boolean = PasteAccessibilityService.isBound.value"))
+        assertTrue(read("ui/RecorderSurface.kt").contains("RecordingOverlayState.showNotice("))
         assertTrue(chooser.contains("sayAfterRecording(line)"))
 
         val toast = source

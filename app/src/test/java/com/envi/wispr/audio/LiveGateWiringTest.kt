@@ -18,6 +18,7 @@ class LiveGateWiringTest {
      */
     private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
     private val preferences = File("src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt").readText()
+    private val bindings = File("src/main/java/com/envi/wispr/ui/PipelineBindings.kt").readText()
 
     private fun body(source: String, head: String): String =
         source.substringAfter(head).substringBefore("\n    private fun ").substringBefore("\n    override fun ")
@@ -102,6 +103,8 @@ class LiveGateWiringTest {
         assertTrue(body(capture, "private fun releaseSession(").contains("unregisterAudioDeviceCallback(w)"))
         val disconnect = body(session, "override fun onCaptureDisconnected()")
         assertTrue(disconnect.contains("seen == SessionState.RECORDING || seen == SessionState.STARTING"))
+        // The link is cleared BEFORE the owner hears of the death, as the proxy field was (Codex review C1).
+        assertTrue(bindings.indexOf("capture = null") < bindings.indexOf("listener?.onCaptureDisconnected()"))
     }
 
     @Test

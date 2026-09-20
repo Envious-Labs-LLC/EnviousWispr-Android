@@ -38,9 +38,9 @@ class LipsBubbleWiringTest {
         // Both cancels share one body since the live gate (a cancelled start has capture running too).
         listOf("private fun cancelRecording()", "private fun cancelStarting()").forEach { head ->
             val body = session.substringAfter(head).substringBefore("\n    private fun ")
-            assertTrue("$head delegates to the shared cancel", body.contains("cancelCaptureAndFinish()"))
+            assertTrue("$head delegates to the shared cancel", body.contains("cancelCaptureAndFinish("))
         }
-        listOf("private fun stopAndTranscribe()", "private fun cancelCaptureAndFinish()", "private fun announceError(")
+        listOf("private fun stopAndTranscribe()", "private fun cancelCaptureAndFinish(", "private fun announceError(")
             .forEach { head ->
                 val body = session.substringAfter(head).substringBefore("\n    private fun ")
                 assertTrue("$head must publish PROCESSING", body.contains("RecordingOverlayState.showProcessing()"))

@@ -26,7 +26,8 @@ class SilenceVadServiceShapeTest {
         // A call that armed a deadline and THEN waited for the lock can kill this process while a newer
         // take owns it. Taking the lock first means only the call actually doing work is on a clock.
         listOf(
-            "override fun start(",
+            // Both `start` and `startForTake` (#176) delegate here; the property lives in the one body.
+            "private fun startTake(",
             "override fun processBlock(",
             "override fun finish(",
         ).forEach { signature ->
@@ -49,7 +50,7 @@ class SilenceVadServiceShapeTest {
                 body.indexOf("captureToken != activeToken") < body.indexOf("guarded("),
             )
         }
-        val start = bodyOf("override fun start(")
+        val start = bodyOf("private fun startTake(")
         assertTrue(
             "start must order tokens before arming",
             start.indexOf("tokenOrder.accept(captureToken)") < start.indexOf("guarded("),
@@ -60,11 +61,16 @@ class SilenceVadServiceShapeTest {
     fun aCallThatLostItsDeadlineNeverReturns() {
         // Returning would release the lock and let a newer take begin work inside a process that is
         // already scheduled to end.
-        assertTrue(source.contains("private fun terminateDetectorProcess(): Nothing"))
-        assertTrue(source.contains("if (!active.compareAndSet(true, false)) terminateDetectorProcess()"))
-        val terminate = source.substringAfter("private fun terminateDetectorProcess(): Nothing")
+        assertTrue(source.contains("private fun terminateDetectorProcess(callName: String): Nothing"))
+        assertTrue(source.contains("if (!active.compareAndSet(true, false)) terminateDetectorProcess(callName)"))
+        val terminate = source.substringAfter("private fun terminateDetectorProcess(callName: String): Nothing")
         assertTrue("it kills its own process", terminate.contains("Process.killProcess(Process.myPid())"))
         assertTrue("and does not come back while it waits to die", terminate.contains("LockSupport.park()"))
+        // The last note is written BEFORE the kill, on its own thread, under a bound (issue #176).
+        val note = terminate.substringBefore("Process.killProcess(Process.myPid())")
+        assertTrue("the wedge is recorded before the kill", note.contains("Telemetry.recordPendingDefect(applicationContext, AppDefect.VadCallWedged(callName)"))
+        assertTrue("on its own thread, not the watchdog's", note.contains("Thread({"))
+        assertTrue("and never past its bound", note.contains("note.join(PENDING_DEFECT_BOUND_MS)"))
     }
 
     @Test

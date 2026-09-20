@@ -24,7 +24,9 @@ interface IAudioCaptureService {
 
     /**
      * 0 disabled, 1 preparing, 2 ready, 3 unavailable before ready, 4 lost after ready.
-     * Only 3 is worth telling the user about: 4 means the recording is still correct.
+     * Only 3 is worth telling the user about: 4 means the recording is still correct. After a take ends
+     * it keeps that take's last status until the next start (like getEffectiveInputDevice), so one read
+     * at stop sees a detector that died late; 0 only before the first take of this process.
      */
     int getSilenceStopStatus();
 
@@ -85,4 +87,17 @@ interface IAudioCaptureService {
      * there is nothing to keep and the owner stops it as before.
      */
     boolean finishTake();
+
+    /**
+     * startCaptureWithInputDeviceHeld plus the take's id (the owner's per-take UUID), which the service keeps
+     * as request context for this take and forwards to the silence detector. Issue #176.
+     */
+    boolean startCaptureForTake(boolean autoStopOnSilence, float pauseSeconds, String inputDevicePick, boolean keepEarbudsReady, String takeId);
+
+    /**
+     * The loudest sample of the CURRENT OR MOST RECENT take, 0..1 of full scale, kept after the take ends
+     * until the next start, like getEffectiveInputDevice. 0 before the first take of this process. Read
+     * once at stop: it is what lets an empty transcript be told apart from a quiet room (issue #176).
+     */
+    float getTakePeakAmplitude();
 }

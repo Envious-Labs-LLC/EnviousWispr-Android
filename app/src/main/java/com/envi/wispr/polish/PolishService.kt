@@ -121,6 +121,29 @@ class PolishService : Service() {
             spokenPunctuation: Boolean,
             policy: PolishPolicy?,
             callback: IPolishCallback?,
+        ) = accept(requestId, rawText, removeFillers, spokenEmoji, spokenPunctuation, policy, takeId = "", callback)
+
+        /** The versioned request (issue #176): identical, plus the take's id bound to the request entry. */
+        override fun polishRequestForTake(
+            requestId: Long,
+            rawText: String?,
+            removeFillers: Boolean,
+            spokenEmoji: Boolean,
+            spokenPunctuation: Boolean,
+            policy: PolishPolicy?,
+            takeId: String?,
+            callback: IPolishCallback?,
+        ) = accept(requestId, rawText, removeFillers, spokenEmoji, spokenPunctuation, policy, takeId.orEmpty(), callback)
+
+        private fun accept(
+            requestId: Long,
+            rawText: String?,
+            removeFillers: Boolean,
+            spokenEmoji: Boolean,
+            spokenPunctuation: Boolean,
+            policy: PolishPolicy?,
+            takeId: String,
+            callback: IPolishCallback?,
         ) {
             val raw = rawText.orEmpty().trim()
             val options = CleanupOptions(removeFillers, spokenEmoji, spokenPunctuation)
@@ -138,7 +161,7 @@ class PolishService : Service() {
                 )
                 return
             }
-            val entry = registry.register(requestId)
+            val entry = registry.register(requestId)?.also { it.takeId = takeId }
             if (entry == null) {
                 DebugLogger.warn(TAG, "Refusing polish request $requestId: id already registered")
                 deliver(

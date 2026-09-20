@@ -29,6 +29,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.EnviousWispr">
 
+        <!-- #176: Sentry's own provider init runs in the default process only. Every process boots the
+             SDK itself from ModelBootstrapApplication (telemetry/SentryBootstrap), so this stays false. -->
+        <meta-data android:name="io.sentry.auto-init" android:value="false" />
+
         <activity
             android:name=".ui.AccessibilityGuideActivity"
             android:taskAffinity="${applicationId}.accessibilityguide"

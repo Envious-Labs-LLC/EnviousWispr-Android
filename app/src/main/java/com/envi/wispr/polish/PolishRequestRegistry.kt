@@ -13,6 +13,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 class PolishRequestRegistry {
     class Entry internal constructor(val requestId: Long) {
         val cancellation = ProviderCancellation()
+
+        /** The owner's per-take UUID, request context only (issue #176); empty for a legacy request. */
+        @Volatile var takeId: String = ""
         private val delivered = AtomicBoolean(false)
 
         /** Runs [block] the first time only; a throwing block still counts as delivered. */

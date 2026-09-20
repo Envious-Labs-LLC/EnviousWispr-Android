@@ -27,4 +27,14 @@ interface ISilenceVadService {
 
     /** Release state for the take, if the token still matches the active one. */
     void finish(long captureToken);
+
+    // APPENDED (issue #176). Never reorder or rename anything above this line.
+
+    /**
+     * start plus the take's id: same return codes, same token ordering and stale-call rejection, same
+     * pause configuration and deadline. The id is bound only after the token is accepted and is request
+     * context for this take; processBlock and finish keep using the token. The legacy start keeps its
+     * behaviour and carries no take context.
+     */
+    int startForTake(long captureToken, float pauseSeconds, String takeId);
 }

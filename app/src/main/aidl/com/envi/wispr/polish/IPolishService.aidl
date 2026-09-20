@@ -36,4 +36,21 @@ interface IPolishService {
     oneway void cancel(long requestId);
     boolean isLocalModelReady();
     String localModelStatus();
+
+    // APPENDED (issue #176). Never reorder or rename anything above this line.
+
+    /**
+     * polishRequest plus the take's id. requestId stays the arbitration and cancellation key; the engine
+     * binds takeId to the request entry as context and never persists it.
+     */
+    void polishRequestForTake(
+        long requestId,
+        String rawText,
+        boolean removeFillers,
+        boolean spokenEmoji,
+        boolean spokenPunctuation,
+        in PolishPolicy policy,
+        String takeId,
+        IPolishCallback callback
+    );
 }

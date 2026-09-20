@@ -1,12 +1,12 @@
 package com.envi.wispr.ui
 
-import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.InputRouteKind
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * The words the session owner says about the microphone, decided from the codes the capture process
- * reports over the binder, never from the display label and never from the app's own device list.
+ * The words the session owner says about the microphone, never from the display label and never from
+ * the app's own device list. Which start failure gets which sentence is `TakeNotices.startFailureReason`
+ * plus `TakeNotices.line` (issue #176): the code decides the ending, the ending decides the words.
  */
 object CaptureNotices {
     /** macOS `Recording failure` copy, verbatim from the catalog. */
@@ -27,12 +27,6 @@ object CaptureNotices {
 
     /** The earbuds are connected and only the phone would have recorded; by rule the take does not start. */
     const val EARBUDS_UNUSABLE = "Earbuds could not be used."
-
-    fun startFailureLine(lastStartFailure: Int): String = when (lastStartFailure) {
-        AudioCaptureService.START_FAILURE_NO_INPUT_DEVICE -> NO_MICROPHONE
-        AudioCaptureService.START_FAILURE_EARBUDS -> EARBUDS_UNUSABLE
-        else -> START_FAILED
-    }
 }
 
 /**

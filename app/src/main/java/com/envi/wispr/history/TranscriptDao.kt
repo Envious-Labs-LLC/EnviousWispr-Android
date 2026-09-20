@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.envi.wispr.insertion.InsertionResults
 import kotlinx.coroutines.flow.Flow
 
@@ -103,4 +104,18 @@ interface TranscriptDao {
             "WHERE stateChangedAtMs <= :cutoffMs AND status = '${TranscriptEntity.STATUS_READY_FOR_INSERTION}'",
     )
     suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int
+
+    @Query("SELECT id FROM transcripts WHERE stateChangedAtMs <= :cutoffMs AND status = '${TranscriptEntity.STATUS_READY_FOR_INSERTION}'")
+    suspend fun staleReadyRowIds(cutoffMs: Long): List<Long>
+
+    /**
+     * The ready rows recovered, BY ID, in the one transaction that recovers them: each is an insertion
+     * outcome telemetry reports (issue #176, G2 D4), and a select after the update would find nothing.
+     */
+    @Transaction
+    suspend fun recoverStaleReadyRowsReturningIds(cutoffMs: Long, nowMs: Long): List<Long> {
+        val ids = staleReadyRowIds(cutoffMs)
+        if (ids.isNotEmpty()) recoverStaleReadyRows(cutoffMs, nowMs)
+        return ids
+    }
 }

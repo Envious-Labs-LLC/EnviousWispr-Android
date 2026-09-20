@@ -36,7 +36,14 @@ import com.envi.wispr.providers.SelfHostedProtocol
 import com.envi.wispr.providers.capabilities
 import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.settings.AppPreferences
+import com.envi.wispr.telemetry.AnalyticsEvent
+import com.envi.wispr.telemetry.AppLaunchFacts
+import com.envi.wispr.telemetry.TakeFacts
+import com.envi.wispr.telemetry.Telemetry
+import com.envi.wispr.polish.PolishContext
 import com.envi.wispr.settings.AppPreferencesState
+import com.envi.wispr.vad.SilenceStopDetector
+import kotlinx.coroutines.flow.first
 import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.CustomTermRecord
 import com.envi.wispr.vocabulary.CustomTermRepository
@@ -245,7 +252,7 @@ class EnviousWisprViewModel(
     init {
         viewModelScope.launch {
             runCatching {
-                repository.recoverStaleOpenRows(clock())
+                Telemetry.insertionsRecovered(repository.recoverStaleOpenRows(clock()).readyRowIds)
                 // Rows an older build saved for a dictation with no words in them. Swept here rather
                 // than left for the user to delete, because they are the reason History could not be
                 // scanned. Nothing writes them any more, so on a phone that has run this once it
@@ -375,6 +382,9 @@ class EnviousWisprViewModel(
     fun setOnboardingStep(step: Int) {
         viewModelScope.launch {
             appPreferences.setOnboardingStep(step)
+            OnboardingStage.entries.getOrNull(step)?.let { stage ->
+                Telemetry.capture(AnalyticsEvent.OnboardingStageReached(stage.name.lowercase(), Telemetry.secondsSinceProcessStart()))
+            }
         }
     }
 
@@ -393,79 +403,90 @@ class EnviousWisprViewModel(
     fun completeOnboarding() {
         viewModelScope.launch {
             appPreferences.completeOnboarding()
+            Telemetry.capture(AnalyticsEvent.OnboardingCompleted(Telemetry.secondsSinceProcessStart()))
         }
     }
 
-    fun setDynamicColorEnabled(enabled: Boolean) {
+    /**
+     * One settings write plus its `settings.changed` row (issue #176): `from` is the PERSISTED value
+     * read before the write, never the UI's, and nothing leaves when the value did not change. The
+     * key names are the `app.launched` projection's, so one query reconstructs a phone's settings.
+     */
+    private fun changeSetting(
+        setting: String,
+        to: String,
+        from: (AppPreferencesState) -> String,
+        write: suspend () -> Unit,
+    ) {
         viewModelScope.launch {
-            appPreferences.setDynamicColorEnabled(enabled)
+            val before = runCatching { from(appPreferences.authoritativeState.first()) }.getOrDefault(AppLaunchFacts.UNKNOWN)
+            write()
+            if (before != to) Telemetry.capture(AnalyticsEvent.SettingsChanged(setting, before, to))
         }
     }
 
-    fun setBubbleLook(look: BubbleLook) {
-        viewModelScope.launch {
-            appPreferences.setBubbleLook(look)
-        }
-    }
+    fun setDynamicColorEnabled(enabled: Boolean) =
+        changeSetting("dynamic_color", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.dynamicColorEnabled) }) { appPreferences.setDynamicColorEnabled(enabled) }
 
-    fun setFillerRemovalEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            appPreferences.setFillerRemovalEnabled(enabled)
-        }
-    }
+    fun setBubbleLook(look: BubbleLook) =
+        changeSetting("bubble_look", look.name.lowercase(), { it.bubbleLook.name.lowercase() }) { appPreferences.setBubbleLook(look) }
 
-    fun setEmojiFormatterEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            appPreferences.setEmojiFormatterEnabled(enabled)
-        }
-    }
+    fun setFillerRemovalEnabled(enabled: Boolean) =
+        changeSetting("filler_removal", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.fillerRemovalEnabled) }) { appPreferences.setFillerRemovalEnabled(enabled) }
 
-    fun setAutoStopOnSilenceEnabled(enabled: Boolean) {
-        viewModelScope.launch { appPreferences.setAutoStopOnSilenceEnabled(enabled) }
-    }
+    fun setEmojiFormatterEnabled(enabled: Boolean) =
+        changeSetting("emoji_formatter", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.emojiFormatterEnabled) }) { appPreferences.setEmojiFormatterEnabled(enabled) }
+
+    fun setAutoStopOnSilenceEnabled(enabled: Boolean) =
+        changeSetting("auto_stop_on_silence", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.autoStopOnSilenceEnabled) }) { appPreferences.setAutoStopOnSilenceEnabled(enabled) }
 
     /** The value is clamped in the store as well, so a bad one never reaches a take. */
-    fun setSilencePauseSeconds(seconds: Float) {
-        viewModelScope.launch { appPreferences.setSilencePauseSeconds(seconds) }
-    }
+    fun setSilencePauseSeconds(seconds: Float) =
+        changeSetting("silence_pause_seconds", SilenceStopDetector.sanitisePauseSeconds(seconds).toString(), { it.silencePauseSeconds.toString() }) { appPreferences.setSilencePauseSeconds(seconds) }
 
-    fun setInputDevicePick(pick: InputDevicePick) {
-        viewModelScope.launch { appPreferences.setInputDevicePick(pick) }
-    }
+    fun setInputDevicePick(pick: InputDevicePick) =
+        changeSetting("input_device", TakeFacts.inputDeviceToken(pick.serialize()), { TakeFacts.inputDeviceToken(it.inputDevicePick) }) { appPreferences.setInputDevicePick(pick) }
 
-    fun setKeepEarbudsReady(enabled: Boolean) {
-        viewModelScope.launch { appPreferences.setKeepEarbudsReady(enabled) }
-    }
+    fun setKeepEarbudsReady(enabled: Boolean) =
+        changeSetting("keep_earbuds_ready", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.keepEarbudsReady) }) { appPreferences.setKeepEarbudsReady(enabled) }
 
-    fun setShowBluetoothTips(enabled: Boolean) {
-        viewModelScope.launch { appPreferences.setShowBluetoothTips(enabled) }
-    }
+    fun setShowBluetoothTips(enabled: Boolean) =
+        changeSetting("show_bluetooth_tips", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.showBluetoothTips) }) { appPreferences.setShowBluetoothTips(enabled) }
 
-    fun setSpokenPunctuationEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            appPreferences.setSpokenPunctuationEnabled(enabled)
-        }
-    }
+    fun setSpokenPunctuationEnabled(enabled: Boolean) =
+        changeSetting("spoken_punctuation", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.spokenPunctuationEnabled) }) { appPreferences.setSpokenPunctuationEnabled(enabled) }
 
-    fun setAutoCopyToClipboard(enabled: Boolean) {
-        viewModelScope.launch { appPreferences.setAutoCopyToClipboard(enabled) }
-    }
+    fun setAutoCopyToClipboard(enabled: Boolean) =
+        changeSetting("auto_copy_to_clipboard", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.autoCopyToClipboard) }) { appPreferences.setAutoCopyToClipboard(enabled) }
 
-    fun setRestoreClipboardAfterPaste(enabled: Boolean) {
-        viewModelScope.launch { appPreferences.setRestoreClipboardAfterPaste(enabled) }
-    }
+    fun setRestoreClipboardAfterPaste(enabled: Boolean) =
+        changeSetting("restore_clipboard_after_paste", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.restoreClipboardAfterPaste) }) { appPreferences.setRestoreClipboardAfterPaste(enabled) }
 
-    fun setSmartInsertionEnabled(enabled: Boolean) {
-        viewModelScope.launch { appPreferences.setSmartInsertionEnabled(enabled) }
-    }
+    fun setSmartInsertionEnabled(enabled: Boolean) =
+        changeSetting("smart_insertion", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.smartInsertionEnabled) }) { appPreferences.setSmartInsertionEnabled(enabled) }
+
+    /** The polish policy as the `polish_policy` token, read from the repository inside the write lock. */
+    private fun polishPolicyToken(): String =
+        runCatching { PolishContext.from(providerRepository.loadPolicy()).encode() }.getOrDefault(AppLaunchFacts.UNKNOWN)
 
     /** A mode tap on the tab. Returns the request sequence of the write it queued. */
-    fun setPolishMode(mode: PolishMode): Int = updateProviderSettings {
-        if (mode == PolishMode.PROVIDER && providerRepository.load() == null) {
-            error("Save provider settings before selecting provider mode")
+    fun setPolishMode(mode: PolishMode): Int {
+        var before = AppLaunchFacts.UNKNOWN
+        return updateProviderSettings(
+            beforeWrite = { before = withContext(Dispatchers.IO) { polishPolicyToken() } },
+            afterWrite = { succeeded ->
+                if (succeeded) {
+                    val after = withContext(Dispatchers.IO) { polishPolicyToken() }
+                    if (after != before) Telemetry.capture(AnalyticsEvent.SettingsChanged("polish_policy", before, after))
+                }
+            },
+        ) {
+            if (mode == PolishMode.PROVIDER && providerRepository.load() == null) {
+                error("Save provider settings before selecting provider mode")
+            }
+            providerRepository.setMode(mode)
+            ""
         }
-        providerRepository.setMode(mode)
-        ""
     }
 
     /** A chip tap on the Writing style card (#152). Returns the request sequence of the write it queued. */
@@ -498,6 +519,8 @@ class EnviousWisprViewModel(
             // Awaited BEFORE the completed write is published, so the tab reads the promoted or cleared
             // cache, never the stale one.
             afterWrite = { succeeded ->
+                // Never the key: the provider, what was done and whether it landed (macOS #1173).
+                Telemetry.capture(AnalyticsEvent.ApiKeyChanged(provider.name.lowercase(), if (suppliedKey) "save" else "model_change", if (succeeded) "success" else "failed"))
                 when (ProviderDiscoveryApplyPolicy.afterSave(succeeded, suppliedKey, discoverySequence, draftResults[provider]?.first)) {
                     ProviderDiscoveryApplyPolicy.CacheAction.PROMOTE -> {
                         val listed = draftResults.remove(provider)?.second
@@ -537,6 +560,7 @@ class EnviousWisprViewModel(
      */
     fun removeProviderKey(provider: Provider): Int = updateProviderSettings(
         afterWrite = { succeeded ->
+            Telemetry.capture(AnalyticsEvent.ApiKeyChanged(provider.name.lowercase(), "remove", if (succeeded) "success" else "failed"))
             if (succeeded) {
                 draftResults.remove(provider)
                 withContext(Dispatchers.IO) { modelCache.clear(provider) }
@@ -546,6 +570,18 @@ class EnviousWisprViewModel(
     ) {
         providerRepository.removeKey(provider)
         "${provider.capabilities().displayName} removed"
+    }
+
+    /** A key check's verdict as a closed token; exhaustive over the verdict type, no `else`. */
+    private fun keyCheckToken(outcome: ProviderDiscovery): String = when (outcome) {
+        is ProviderDiscovery.Listed -> "valid"
+        is ProviderDiscovery.Refused -> when (val verdict = outcome.verdict) {
+            ProviderKeyCheck.Accepted -> "valid"
+            ProviderKeyCheck.NotApplicable -> "not_applicable"
+            is ProviderKeyCheck.Rejected -> "rejected"
+            is ProviderKeyCheck.Denied -> "denied"
+            is ProviderKeyCheck.Unverified -> "unverified_" + verdict.failure.name.lowercase()
+        }
     }
 
     /** The page's cached list on open (#84); never replaces a live result already showing for that provider. */
@@ -617,6 +653,7 @@ class EnviousWisprViewModel(
                     ?: ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
             }
             val name = provider.capabilities().displayName
+            Telemetry.capture(AnalyticsEvent.ApiKeyValidationCompleted(provider.name.lowercase(), keyCheckToken(outcome)))
             // The class of defect this closes: a completion judged on state read BEFORE a suspension. There
             // are three suspensions in this coroutine (the discovery itself, the cache read for the merge,
             // the cache write), and after EACH the completion re-asks both questions on the state as it is

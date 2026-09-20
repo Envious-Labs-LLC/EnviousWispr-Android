@@ -51,7 +51,7 @@ llama.cpp
 PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
 ===========================================================
 
-161 components, each with the licence its own POM declares.
+176 components, each with the licence its own POM declares.
 
   androidx.activity:activity:1.10.1                                 Apache-2.0
   androidx.activity:activity-compose:1.10.1                         Apache-2.0
@@ -184,12 +184,14 @@ PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
   androidx.window:window-core-android:1.5.0                         Apache-2.0
   androidx.work:work-runtime:2.10.1                                 Apache-2.0
   androidx.work:work-runtime-ktx:2.10.1                             Apache-2.0
+  com.abovevacant:epitaph:0.1.1                                     MIT
   com.google.android.datatransport:transport-api:2.2.1              Apache-2.0
   com.google.android.datatransport:transport-backend-cct:2.3.3      Apache-2.0
   com.google.android.datatransport:transport-runtime:2.2.6          Apache-2.0
   com.google.android.gms:play-services-base:18.5.0                  Android Software Development Kit License
   com.google.android.gms:play-services-basement:18.4.0              Android Software Development Kit License
   com.google.android.gms:play-services-tasks:18.2.0                 Android Software Development Kit License
+  com.google.code.gson:gson:2.10.1                                  Apache-2.0
   com.google.firebase:firebase-annotations:16.0.0                   Apache-2.0
   com.google.firebase:firebase-components:16.1.0                    Apache-2.0
   com.google.firebase:firebase-encoders:16.1.0                      Apache-2.0
@@ -198,12 +200,25 @@ PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
   com.google.mlkit:common:18.11.0                                   ML Kit Terms of Service
   com.google.mlkit:language-id:17.0.6                               ML Kit Terms of Service
   com.google.mlkit:language-id-common:16.1.0                        ML Kit Terms of Service
+  com.posthog:posthog:6.40.0                                        MIT
+  com.posthog:posthog-android:3.67.0                                MIT
   com.qualcomm.qti:geniex-android:0.4.0                             BSD-3-Clause AND Qualcomm Terms of Use
+  com.squareup.curtains:curtains:1.2.5                              Apache-2.0
+  com.squareup.okhttp3:okhttp:4.12.0                                Apache-2.0
+  com.squareup.okhttp3:okhttp-bom:4.12.0                            Apache-2.0
   com.squareup.okio:okio:3.9.1                                      Apache-2.0
   com.squareup.okio:okio-jvm:3.9.1                                  Apache-2.0
+  io.sentry:sentry:8.57.0                                           MIT
+  io.sentry:sentry-android:8.57.0                                   MIT
+  io.sentry:sentry-android-core:8.57.0                              MIT
+  io.sentry:sentry-android-ndk:8.57.0                               MIT
+  io.sentry:sentry-android-replay:8.57.0                            MIT
+  io.sentry:sentry-native-ndk:0.16.6                                MIT
   javax.inject:javax.inject:1                                       Apache-2.0
   org.jetbrains:annotations:23.0.0                                  Apache-2.0
-  org.jetbrains.kotlin:kotlin-stdlib:2.1.20                         Apache-2.0
+  org.jetbrains.kotlin:kotlin-stdlib:2.1.21                         Apache-2.0
+  org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.21                    Apache-2.0
+  org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.21                    Apache-2.0
   org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0            Apache-2.0
   org.jetbrains.kotlinx:kotlinx-coroutines-bom:1.9.0                Apache-2.0
   org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0               Apache-2.0
@@ -519,6 +534,144 @@ support library is itself covered by the above license.
 
 
 ================================================================================
+MIT License - Epitaph
+Covers: com.abovevacant:epitaph:0.1.1.
+================================================================================
+
+MIT License
+
+Copyright (c) 2026 Above Vacant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License - PostHog
+Covers: com.posthog:posthog:6.40.0.
+================================================================================
+
+MIT License
+
+Copyright (c) [2023] [PostHog]
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Some files in this codebase contain code from getsentry/sentry-android-gradle-plugin.
+In such cases it is explicitly stated in the file header. This license only applies to the relevant code in such cases.
+
+MIT License
+
+Copyright (c) 2020 Sentry
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License - PostHog
+Covers: com.posthog:posthog-android:3.67.0.
+================================================================================
+
+MIT License
+
+Copyright (c) [2023] [PostHog]
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Some files in this codebase contain code from getsentry/sentry-android-gradle-plugin.
+In such cases it is explicitly stated in the file header. This license only applies to the relevant code in such cases.
+
+MIT License
+
+Copyright (c) 2020 Sentry
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
 BSD 3-Clause License - Qualcomm GenieX
 Covers: com.qualcomm.qti:geniex-android:0.4.0.
 ================================================================================
@@ -552,6 +705,178 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+================================================================================
+MIT License - Sentry
+Covers: io.sentry:sentry:8.57.0.
+================================================================================
+
+MIT License
+
+Copyright (c) 2019 Sentry
+Copyright (c) 2015 Salomon BRYS for Android ANRWatchDog
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License - Sentry
+Covers: io.sentry:sentry-android:8.57.0.
+================================================================================
+
+MIT License
+
+Copyright (c) 2019 Sentry
+Copyright (c) 2015 Salomon BRYS for Android ANRWatchDog
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License - Sentry
+Covers: io.sentry:sentry-android-core:8.57.0.
+================================================================================
+
+MIT License
+
+Copyright (c) 2019 Sentry
+Copyright (c) 2015 Salomon BRYS for Android ANRWatchDog
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License - Sentry
+Covers: io.sentry:sentry-android-ndk:8.57.0.
+================================================================================
+
+MIT License
+
+Copyright (c) 2019 Sentry
+Copyright (c) 2015 Salomon BRYS for Android ANRWatchDog
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License - Sentry
+Covers: io.sentry:sentry-android-replay:8.57.0.
+================================================================================
+
+MIT License
+
+Copyright (c) 2019 Sentry
+Copyright (c) 2015 Salomon BRYS for Android ANRWatchDog
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License - Sentry Native
+Covers: io.sentry:sentry-native-ndk:0.16.6.
+================================================================================
+
+Copyright (c) 2019 Sentry (https://sentry.io) and individual contributors.
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 
 ================================================================================

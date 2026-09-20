@@ -12,6 +12,8 @@ import androidx.work.Constraints
 import androidx.work.NetworkType
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
+import com.envi.wispr.telemetry.AnalyticsEvent
+import com.envi.wispr.telemetry.Telemetry
 import java.io.IOException
 import java.io.FilterInputStream
 import java.net.HttpURLConnection
@@ -78,10 +80,16 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         val staging = java.io.File(root, ".${model.id}.download")
         val partial = model.files.sumOf { entry -> java.io.File(staging, entry.name + ".part").takeIf { it.isFile }?.length() ?: 0L }
         val required = (model.files.sumOf { it.expectedBytes } - partial).coerceAtLeast(0L) + 128L * 1024L * 1024L
-        if (StatFs(ModelStorage.root(applicationContext).path).availableBytes < required) return@withContext failure("not enough storage for ${model.displayName}")
+        val firstRun = !store.finalDirectory(model).exists()
+        val startedAtMs = System.currentTimeMillis()
+        if (StatFs(ModelStorage.root(applicationContext).path).availableBytes < required) {
+            reportDelivery(model, DownloadState.FAILED, DeliveryFailureReason.DISK_FULL, ModelSourceHost.UNKNOWN, partial, startedAtMs, firstRun)
+            return@withContext failure("not enough storage for ${model.displayName}")
+        }
         var lastProgress = 0L
         var lastProgressTime = 0L
         var completedBytes = 0L
+        var lastHost: String? = null
         val result = store.download(model, HttpsRangeTransport(), object : DownloadControl {
             override fun isStopped() = this@ModelDeliveryWorker.isStopped
             override fun isPaused() = controls.read(model) == ModelDeliveryControlState.PAUSED
@@ -106,7 +114,9 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }, onSource = { file, host ->
             // Which roof served the bytes (#168). The log, never the screen: a user does not choose hosts.
             DebugLogger.log(TAG, "Model source: ${model.id}/$file from $host")
+            lastHost = host
         })
+        reportDelivery(model, result.state, result.reason, ModelSourceHost.of(lastHost), completedBytes + result.bytes, startedAtMs, firstRun)
         when (result.state) {
             DownloadState.READY -> {
                 controls.clear(model)
@@ -157,6 +167,38 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
     }
 
+    /**
+     * One `model_delivery.terminal` per attempt ending, never progress (issue #176, plan §3.1): the
+     * model, the closed outcome and reason, which roof served, a byte bucket, the duration, and whether
+     * this was the model's first delivery on this phone. Every ending is a breadcrumb; none is a defect.
+     */
+    private fun reportDelivery(
+        model: ModelDescriptor,
+        state: DownloadState,
+        reason: DeliveryFailureReason?,
+        host: ModelSourceHost,
+        bytes: Long,
+        startedAtMs: Long,
+        firstRun: Boolean,
+    ) {
+        val durationSeconds = (System.currentTimeMillis() - startedAtMs) / 100 / 10.0
+        Telemetry.breadcrumb(
+            "model_delivery", "terminal",
+            mapOf("model" to model.id, "outcome" to state.name.lowercase(), "reason" to reason?.wire, "source_host" to host.wire),
+        )
+        Telemetry.capture(
+            AnalyticsEvent.ModelDeliveryTerminal(
+                model = model.id,
+                outcome = state.name.lowercase(),
+                sourceHost = host.wire,
+                reason = reason?.wire,
+                bytesBucket = bytesBucket(bytes),
+                durationSeconds = durationSeconds,
+                firstRun = firstRun,
+            ),
+        )
+    }
+
     private fun failure(reason: String, state: DownloadState? = null): Result = Result.failure(
         Data.Builder()
             .putString(KEY_STATE, state?.name ?: DownloadState.FAILED.name)
@@ -178,7 +220,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 val responseCode = try { connection.responseCode } catch (error: IOException) { connection.disconnect(); throw error }
                 when (responseCode) {
                     in 200..299 -> {
-                        if (offset == 0L && connection.responseCode == 206) { connection.disconnect(); throw IOException("unexpected partial response") }
+                        if (offset == 0L && connection.responseCode == 206) { connection.disconnect(); throw ModelDeliveryException(DeliveryFailureReason.PARTIAL_RESPONSE, "unexpected partial response") }
                         val resumed = offset > 0 && connection.responseCode == 206
                         val input = try {
                             connection.inputStream
@@ -191,16 +233,16 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                         }, resumed)
                     }
                     in 300..399 -> {
-                        val location = connection.getHeaderField("Location") ?: run { connection.disconnect(); throw IOException("redirect missing location") }
+                        val location = connection.getHeaderField("Location") ?: run { connection.disconnect(); throw ModelDeliveryException(DeliveryFailureReason.REDIRECT_REFUSED, "redirect missing location") }
                         val next = current.resolve(location)
                         connection.disconnect()
-                        if (next.scheme != "https" || next.userInfo != null || next.fragment != null || next.port !in listOf(-1, 443) || !allowedHost(current.host, next.host)) throw IOException("unsafe model redirect")
+                        if (next.scheme != "https" || next.userInfo != null || next.fragment != null || next.port !in listOf(-1, 443) || !allowedHost(current.host, next.host)) throw ModelDeliveryException(DeliveryFailureReason.REDIRECT_REFUSED, "unsafe model redirect")
                         current = next
                     }
-                    else -> { connection.disconnect(); throw IOException("model source returned HTTP $responseCode") }
+                    else -> { connection.disconnect(); throw ModelDeliveryException(DeliveryFailureReason.HTTP_STATUS, "model source returned HTTP $responseCode") }
                 }
             }
-            throw IOException("too many model redirects")
+            throw ModelDeliveryException(DeliveryFailureReason.REDIRECT_REFUSED, "too many model redirects")
         }
 
         private fun allowedHost(from: String?, to: String?): Boolean = when {
@@ -223,6 +265,16 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         const val KEY_TOTAL = "total"
         const val KEY_REASON = "reason"
         const val KEY_NO_LEGACY = "no_legacy_model"
+
+        /** Bytes moved this attempt, as a closed bucket token: enough to tell a stall from a near-miss. */
+        fun bytesBucket(bytes: Long): String = when {
+            bytes <= 0L -> "0"
+            bytes < 10L * 1024 * 1024 -> "lt_10mb"
+            bytes < 100L * 1024 * 1024 -> "lt_100mb"
+            bytes < 500L * 1024 * 1024 -> "lt_500mb"
+            bytes < 1024L * 1024 * 1024 -> "lt_1gb"
+            else -> "ge_1gb"
+        }
         private const val DOWNLOAD_PREFIX = "model-download-"
         private const val ADOPT_PREFIX = "model-adopt-"
 

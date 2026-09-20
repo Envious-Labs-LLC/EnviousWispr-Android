@@ -35,7 +35,8 @@ sealed class AnalyticsEvent(val name: String) {
         val accessibilityGranted: Boolean,
         val micGranted: Boolean,
         val onboardingComplete: Boolean,
-        val customWordsCount: Int,
+        /** Null when the store could not be read: absent, never a sentinel. */
+        val customWordsCount: Int?,
         /** Persisted settings as projections; a failed read is the `unknown` token, never a UI default. */
         val settings: Map<String, Any>,
     ) : AnalyticsEvent("app.launched") {

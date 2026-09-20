@@ -542,6 +542,11 @@ class DictationSessionService : Service() {
         arbiter = TakeArbiter { reason -> recordEnding(takeFacts, reason) }
         Telemetry.takeStarted(takeId)
         Telemetry.breadcrumb("take", "admitted", mapOf("take_id" to takeId, "trigger_source" to trigger.wire))
+        // Queued HERE, on the main thread, before any command can end this take: the journal applies
+        // writes in arrival order, so a cancel that lands during the settings wait can never queue its
+        // ending ahead of the admission and leave an open row (code review round 1, F2). The wait for
+        // it happens below, before capture starts, under a deadline that never gates the take.
+        val admission = Telemetry.journal?.admit(takeId, trigger)
         RecordingOverlayState.showStarting(admittedRequest)
         promoteToForeground(processing = false)
         // Kept for the whole session. Android may rebind the accessibility service while the user
@@ -577,7 +582,6 @@ class DictationSessionService : Service() {
             val policy = withContext(Dispatchers.IO) { providerConfiguration.loadPolicy() }
             // Admission is written before capture starts, under a deadline that never gates the take:
             // the queued write still lands in order if this stops waiting (issue #176, plan §3.3).
-            val admission = Telemetry.journal?.admit(takeId, trigger)
             if (admission != null && withTimeoutOrNull(JOURNAL_ADMISSION_DEADLINE_MS) { admission.await() } == null) {
                 DebugLogger.warn(TAG, "Journal admission did not land within ${JOURNAL_ADMISSION_DEADLINE_MS} ms; starting anyway")
             }

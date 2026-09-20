@@ -80,6 +80,13 @@ interface TakeJournalDao {
     @Query("SELECT take_id FROM take_journal WHERE transcript_id = :transcriptId")
     suspend fun takeIdForTranscript(transcriptId: Long): String?
 
+    /** The takes whose History row is still waiting for an insertion outcome; kept by pruning. */
+    @Query(
+        "SELECT take_id FROM take_journal WHERE transcript_id IN " +
+            "(SELECT id FROM transcripts WHERE status = '${com.envi.wispr.history.TranscriptEntity.STATUS_READY_FOR_INSERTION}' AND insertionResult = 'pending')",
+    )
+    suspend fun pendingInsertionTakeIds(): List<String>
+
     /** Ended takes older than the cutoff; an entry still associated with a pending insertion is kept by its caller. */
     @Query("DELETE FROM take_journal WHERE terminal_result IS NOT NULL AND terminal_at_ms < :cutoffMs AND take_id NOT IN (:keep)")
     suspend fun prune(cutoffMs: Long, keep: List<String>): Int

@@ -50,6 +50,9 @@ object PostHogBootstrap {
             setDefaultPersonProperties = false
             errorTrackingConfig.autoCapture = false
             errorTrackingConfig.captureNativeCrashes = false
+            // An identity mismatch opts out for THIS run only; the SDK would otherwise persist the
+            // opt-out and every later, correct launch would stay silent (code review round 1, F6).
+            persistOptOut = false
             flushAt = 20
             flushIntervalSeconds = 30
             maxQueueSize = 1000

@@ -46,6 +46,8 @@ class SilenceVadService : Service() {
      */
     private val tokenOrder = CaptureTokenOrder()
 
+    private val terminationStarted = AtomicBoolean(false)
+
     private val watchdog: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "SilenceVadWatchdog").apply { isDaemon = true }
@@ -67,13 +69,14 @@ class SilenceVadService : Service() {
                 DebugLogger.warn(TAG, "Rejected a start from an older take, token $captureToken")
                 return@synchronized STATUS_UNAVAILABLE
             }
+            // Bound under the lock, after the token was accepted and BEFORE the previous session is
+            // released, so a wedge inside that release is attributed to the take that asked for it
+            // (code review round 1, F4). The token stays the functional arbiter; the id is context.
+            activeTakeId = takeId
             guarded(STATUS_UNAVAILABLE, "start") {
                 releaseLocked()
                 unavailable = false
                 activeToken = captureToken
-                // Bound only here, under the lock, after the token was accepted: the token stays the
-                // functional arbiter; the id is context for this take's records.
-                activeTakeId = takeId
                 val opened = SileroVadSession.open(assets, pauseSeconds)
                 if (opened == null) {
                     unavailable = true
@@ -174,6 +177,9 @@ class SilenceVadService : Service() {
      * going away.
      */
     private fun terminateDetectorProcess(callName: String): Nothing {
+        // First wins: the watchdog and the returning call can both decide to die for one wedge, and
+        // only one of them writes the note (code review round 1, F4). The loser parks until the kill.
+        if (!terminationStarted.compareAndSet(false, true)) parkUntilKilled()
         DebugLogger.error(
             TAG,
             "Detector call exceeded ${CALL_DEADLINE_MS}ms; terminating the detector process",
@@ -187,6 +193,10 @@ class SilenceVadService : Service() {
         }, "SilenceVadPendingDefect")
         runCatching { note.start(); note.join(PENDING_DEFECT_BOUND_MS) }
         Process.killProcess(Process.myPid())
+        parkUntilKilled()
+    }
+
+    private fun parkUntilKilled(): Nothing {
         while (true) {
             LockSupport.park()
             Thread.interrupted()

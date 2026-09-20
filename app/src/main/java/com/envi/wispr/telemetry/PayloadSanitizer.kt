@@ -46,10 +46,11 @@ object PayloadSanitizer {
         // onboarding, model delivery, providers
         "elapsed_s", "lesson", "outcome", "model", "source_host", "bytes_bucket", "duration_s", "first_run",
         "provider", "action",
-        // PostHog SDK context we keep (the rest of the SDK's `$` keys are dropped below)
-        "\$app_build", "\$app_version", "\$app_namespace", "\$device_manufacturer", "\$device_model",
-        "\$device_type", "\$is_emulator", "\$lib", "\$lib_version", "\$locale", "\$os_name", "\$os_version",
-        "\$timezone", "\$network_wifi", "\$network_cellular", "\$network_bluetooth",
+        // PostHog SDK context we keep (the rest of the SDK's `$` keys are dropped below). `$is_emulator`
+        // stays because it is how a reader excludes our own emulator rows; the network booleans, the
+        // timezone, the namespace and the device type answer no forecast question and are dropped.
+        "\$app_build", "\$app_version", "\$device_manufacturer", "\$device_model", "\$is_emulator",
+        "\$lib", "\$lib_version", "\$locale", "\$os_name", "\$os_version",
         // PostHog SDK bookkeeping the SDK itself reads
         "\$session_id", "\$process_person_profile", "\$sample_type", "\$sample_threshold", "\$sampled_events",
     )
@@ -67,11 +68,11 @@ object PayloadSanitizer {
     private val NAME_SHAPE = Regex("\\A[\\x21-\\x7E]+( [\\x21-\\x7E]+){0,4}\\z")
     private val boundedStringKeys: Map<String, Regex> = mapOf(
         "take_id" to UUID_SHAPE, "distinct_id" to UUID_SHAPE, "process_run_id" to UUID_SHAPE, "\$session_id" to UUID_SHAPE,
-        "target_app" to PACKAGE_SHAPE, "\$app_namespace" to PACKAGE_SHAPE,
+        "target_app" to PACKAGE_SHAPE,
         "device_model" to NAME_SHAPE, "\$device_model" to NAME_SHAPE, "\$device_manufacturer" to NAME_SHAPE,
         "os_version" to LABEL_SHAPE, "\$os_version" to LABEL_SHAPE, "\$os_name" to LABEL_SHAPE,
         "\$app_version" to LABEL_SHAPE, "\$app_build" to LABEL_SHAPE, "\$locale" to LABEL_SHAPE,
-        "\$timezone" to LABEL_SHAPE, "\$lib" to LABEL_SHAPE, "\$lib_version" to LABEL_SHAPE, "\$device_type" to LABEL_SHAPE,
+        "\$lib" to LABEL_SHAPE, "\$lib_version" to LABEL_SHAPE,
         "app_version" to LABEL_SHAPE, "app" to LABEL_SHAPE, "environment" to LABEL_SHAPE,
     )
 

@@ -31,7 +31,8 @@ class TakeJournalWriterTest {
         override suspend fun openFromOtherRuns(currentRunId: String): List<TakeJournalEntry> { calls += "open:$currentRunId"; return open }
         override suspend fun find(takeId: String): TakeJournalEntry? = null
         override suspend fun takeIdForTranscript(transcriptId: Long): String? = if (transcriptId == 42L) "take-42" else null
-        override suspend fun prune(cutoffMs: Long, keep: List<String>): Int { calls += "prune"; return 0 }
+        override suspend fun pendingInsertionTakeIds(): List<String> = listOf("kept")
+        override suspend fun prune(cutoffMs: Long, keep: List<String>): Int { calls += "prune:" + keep.joinToString(","); return 0 }
         override suspend fun closeInterrupted(takeId: String, reason: String, atMs: Long): Boolean {
             calls += "close:$takeId:$reason"
             return closeAnswers[takeId] ?: true
@@ -98,11 +99,11 @@ class TakeJournalWriterTest {
         val done = CountDownLatch(1)
         writer.recoverAndPrune()
         val deadline = System.currentTimeMillis() + 2_000
-        while (!dao.calls.contains("prune") && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        while (dao.calls.none { it.startsWith("prune") } && System.currentTimeMillis() < deadline) Thread.sleep(5)
         done.countDown()
         assertTrue(done.await(1, TimeUnit.SECONDS))
         assertEquals(
-            listOf("open:run-now", "close:a:INTERRUPTED_STARTING", "close:b:INTERRUPTED_RECORDING", "close:c:INTERRUPTED_PROCESSING", "close:d:INTERRUPTED_RECORDING", "prune"),
+            listOf("open:run-now", "close:a:INTERRUPTED_STARTING", "close:b:INTERRUPTED_RECORDING", "close:c:INTERRUPTED_PROCESSING", "close:d:INTERRUPTED_RECORDING", "prune:kept"),
             dao.calls,
         )
         assertEquals(

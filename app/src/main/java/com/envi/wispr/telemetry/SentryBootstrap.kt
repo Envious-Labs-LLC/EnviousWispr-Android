@@ -4,6 +4,7 @@ import android.content.Context
 import io.sentry.Breadcrumb
 import io.sentry.SentryEvent
 import io.sentry.SentryOptions
+import io.sentry.protocol.SentryStackFrame
 import io.sentry.android.core.SentryAndroid
 import io.sentry.android.core.SentryAndroidOptions
 import io.sentry.protocol.Message
@@ -87,7 +88,9 @@ object SentryBootstrap {
             // frames are what group and diagnose.
             exception.value = null
             exception.mechanism?.data?.let { data -> data.keys.toList().forEach { data.remove(it) } }
+            sanitizeFrames(exception.stacktrace?.frames)
         }
+        event.threads?.forEach { thread -> sanitizeFrames(thread.stacktrace?.frames) }
         event.breadcrumbs?.forEach { sanitize(it) }
         event.tags?.let { tags -> event.tags = tags.mapValues { (_, v) -> PayloadSanitizer.sanitizeFreeText(v) } }
         event.extras?.let { extras -> event.extras = PayloadSanitizer.sanitizeFreeMap(extras).toMutableMap() }
@@ -103,6 +106,23 @@ object SentryBootstrap {
             }
         }
         return event
+    }
+
+    /**
+     * A frame's location fields pass through the path rules (a native frame's `package` is the loaded
+     * library's absolute path; a Java frame's `absPath` can be one), and the fields that can carry a
+     * VALUE (local variables, source context lines) are dropped outright (code review round 1, F1).
+     */
+    private fun sanitizeFrames(frames: List<SentryStackFrame>?) {
+        frames.orEmpty().forEach { frame ->
+            frame.absPath = frame.absPath?.let(PayloadSanitizer::sanitizeFreeText)
+            frame.filename = frame.filename?.let(PayloadSanitizer::sanitizeFreeText)
+            frame.`package` = frame.`package`?.let(PayloadSanitizer::sanitizeFreeText)
+            frame.contextLine = null
+            frame.preContext = null
+            frame.postContext = null
+            frame.vars = null
+        }
     }
 
     fun sanitize(crumb: Breadcrumb): Breadcrumb {

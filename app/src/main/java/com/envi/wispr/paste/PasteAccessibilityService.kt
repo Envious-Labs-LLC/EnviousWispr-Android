@@ -1369,8 +1369,10 @@ class PasteAccessibilityService : AccessibilityService() {
         clipboard: ClipboardOutcome? = null,
     ) {
         val kind = InsertionResultKind.fromStored(result)
-        Telemetry.breadcrumb("insertion", "outcome", mapOf("take_id" to pending.takeId, "result" to result, "target_app" to pending.targetPackage))
-        if (pending.takeId != null) {
+        val latencyMs = SystemClock.elapsedRealtime() - pending.startedAtMs
+        fun emit() {
+            Telemetry.breadcrumb("insertion", "outcome", mapOf("take_id" to pending.takeId, "result" to result, "target_app" to pending.targetPackage))
+            if (pending.takeId == null) return
             Telemetry.capture(
                 AnalyticsEvent.InsertionTerminal(
                     takeId = pending.takeId,
@@ -1378,16 +1380,23 @@ class PasteAccessibilityService : AccessibilityService() {
                     result = kind,
                     route = InsertionRouteKind.of(kind),
                     targetApp = pending.targetPackage,
-                    latencyMs = SystemClock.elapsedRealtime() - pending.startedAtMs,
+                    latencyMs = latencyMs,
                     clipboard = clipboard?.name?.lowercase(),
                     recovered = false,
                 ),
             )
         }
-        if (pending.transcriptId <= 0L) return
+        if (pending.transcriptId <= 0L) {
+            emit()
+            return
+        }
         historyScope.launch {
-            runCatching { transcriptRepository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
+            // The History update is first-wins; the row leaves only when THIS writer won it, so a
+            // recovery or a second finalizer that got there first is the one that reports (round 1, F5).
+            val changed = runCatching { transcriptRepository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
                 .onFailure { error -> Log.w(TAG, "Unable to update transcript insertion result: ${error.message}") }
+                .getOrNull()
+            if (changed == 1) emit()
         }
     }
 

@@ -103,7 +103,7 @@ class TakeJournalWriter(
                     capture(AnalyticsEvent.DictationInterrupted(open.takeId, stage, TriggerSource.entries.firstOrNull { it.name == open.triggerSource }?.wire ?: TriggerSource.UNKNOWN.wire))
                 }
             }
-            dao.prune(nowMs() - RETENTION_MS, keep = emptyList())
+            dao.prune(nowMs() - RETENTION_MS, keep = dao.pendingInsertionTakeIds())
         }
     }
 

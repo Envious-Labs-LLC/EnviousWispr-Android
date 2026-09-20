@@ -13,6 +13,7 @@ import io.sentry.protocol.SentryId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.Date
 
@@ -37,6 +38,24 @@ object Telemetry {
     @Volatile private var appContext: Context? = null
     @Volatile private var journalWriter: TakeJournalWriter? = null
     private val launchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Every vendor call runs here, on one background worker in arrival order, never on the thread that
+     * asked. Both SDKs do real work synchronously in their capture calls (PostHog builds the event and
+     * runs `beforeSend`; Sentry applies scope, processors, `beforeSend` and builds the envelope), and the
+     * askers are the main thread, binder callbacks and teardown (code review round 1, F3).
+     */
+    private val vendorCalls = Channel<() -> Unit>(Channel.UNLIMITED)
+
+    init {
+        launchScope.launch { for (call in vendorCalls) call() }
+    }
+
+    private fun postVendor(label: String, call: () -> Unit) {
+        vendorCalls.trySend {
+            runCatching(call).onFailure { DebugLogger.warn(TAG, "$label failed: ${it.javaClass.simpleName}") }
+        }
+    }
 
     /** What this process ended up with; read by tests and the debug screen, never by product code. */
     data class Status(val installId: String?, val sentry: Boolean, val postHog: Boolean, val environment: String?)
@@ -114,7 +133,8 @@ object Telemetry {
         val writer = journalWriter
         launchScope.launch {
             for (transcriptId in transcriptIds) {
-                val takeId = writer?.takeIdForTranscript(transcriptId)
+                // A row with no journal association is not in the denominator and sends nothing.
+                val takeId = writer?.takeIdForTranscript(transcriptId) ?: continue
                 capture(
                     AnalyticsEvent.InsertionTerminal(
                         takeId = takeId, handoff = null, result = InsertionResultKind.INSERTION_INTERRUPTED,
@@ -130,8 +150,7 @@ object Telemetry {
 
     fun capture(event: AnalyticsEvent) {
         if (!postHogOn) return
-        runCatching { PostHogBootstrap.capture(event.name, event.properties()) }
-            .onFailure { DebugLogger.warn(TAG, "capture failed: ${it.javaClass.simpleName}") }
+        postVendor("capture") { PostHogBootstrap.capture(event.name, event.properties()) }
     }
 
     /**
@@ -140,21 +159,23 @@ object Telemetry {
      */
     fun breadcrumb(category: String, message: String, data: Map<String, Any?> = emptyMap()) {
         if (!sentryOn) return
-        runCatching {
+        val snapshot = data.toMap()
+        postVendor("breadcrumb") {
             val crumb = Breadcrumb(message)
             crumb.category = category
             crumb.level = SentryLevel.INFO
-            data.forEach { (k, v) -> if (v != null) crumb.setData(k, v) }
+            snapshot.forEach { (k, v) -> if (v != null) crumb.setData(k, v) }
             Sentry.addBreadcrumb(crumb)
-        }.onFailure { DebugLogger.warn(TAG, "breadcrumb failed: ${it.javaClass.simpleName}") }
+        }
     }
 
     /** A defect we own. The ONLY way an error reaches Sentry. */
     fun defect(defect: AppDefect, data: Map<String, Any?> = emptyMap()) {
         if (!sentryOn) return
-        runCatching {
-            Sentry.captureEvent(defectEvent(defect, data, eventId = null, timestamp = null, tags = emptyMap()))
-        }.onFailure { DebugLogger.warn(TAG, "defect capture failed: ${it.javaClass.simpleName}") }
+        val snapshot = data.toMap()
+        postVendor("defect capture") {
+            Sentry.captureEvent(defectEvent(defect, snapshot, eventId = null, timestamp = null, tags = emptyMap()))
+        }
     }
 
     /**
@@ -164,16 +185,18 @@ object Telemetry {
     @Volatile private var scopedTakeId: String? = null
 
     fun takeStarted(takeId: String) {
-        scopedTakeId = takeId
-        if (!sentryOn) return
-        runCatching { Sentry.configureScope { it.setTag(SentryBootstrap.TAG_TAKE_ID, takeId) } }
+        postVendor("take scope start") {
+            scopedTakeId = takeId
+            if (sentryOn) Sentry.configureScope { it.setTag(SentryBootstrap.TAG_TAKE_ID, takeId) }
+        }
     }
 
     fun takeEnded(takeId: String) {
-        if (scopedTakeId != takeId) return
-        scopedTakeId = null
-        if (!sentryOn) return
-        runCatching { Sentry.configureScope { it.removeTag(SentryBootstrap.TAG_TAKE_ID) } }
+        postVendor("take scope end") {
+            if (scopedTakeId != takeId) return@postVendor
+            scopedTakeId = null
+            if (sentryOn) Sentry.configureScope { it.removeTag(SentryBootstrap.TAG_TAKE_ID) }
+        }
     }
 
     /**
@@ -217,6 +240,8 @@ object Telemetry {
                 Sentry.captureEvent(event)
             }.onFailure { DebugLogger.warn(TAG, "pending defect conversion failed: ${it.javaClass.simpleName}") }
         }
+        // A temp left by a writer that died mid-write: its process is gone by the time main runs.
+        runCatching { PendingDefects.cleanTemps(context) }
     }
 
     internal fun defectEvent(

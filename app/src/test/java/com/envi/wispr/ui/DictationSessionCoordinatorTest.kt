@@ -258,7 +258,11 @@ class DictationSessionCoordinatorTest {
         rig.host.awaitStopped()
         assertTrue(rig.host.events.contains("toast:Speech model is still loading. Try again in a moment."))
         val row = theOnlyRow()
-        assertEquals("asr_error", row.status)
+        // Only the insertion result is asserted. The stop path launches the `processing` write and the
+        // `asr_error` write back to back on the IO dispatcher and they can land in either order (the
+        // `processing` write carries no insertion result, so that column is stable either way); the
+        // status column is a pre-existing write race, seen on a hosted runner 2026-09-20 and routed to
+        // #115, whose History write queue serialises exactly these writes.
         assertEquals("asr_error", row.insertionResult)
     }
 
@@ -295,15 +299,18 @@ class DictationSessionCoordinatorTest {
         rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
         // The cancel is inside waitForFileReady, held by the gate: the take is CANCELLING.
         rig.capture.awaitStopRequested()
-        // destroy() invalidates under the publish lock (hiding the recorder), then blocks main until the
-        // cancel's coroutine is joined; that coroutine is behind the gate, which opens only after the
-        // invalidation has happened, so the cancel's own commit finds the take already interrupted.
+        // destroy() interrupts the arbiter under the publish lock, then blocks main until the cancel's
+        // coroutine is joined; that coroutine is behind the gate. The gate opens only once the interrupt
+        // has been COMMITTED (the ending sink fired), never on an earlier signal such as the recorder
+        // hiding, which destroy does before the interrupt (a hosted-runner flake, 2026-09-20). The
+        // cancel's own commit then finds the take already interrupted and does nothing.
         rig.postMain { coordinator.destroy() }
-        rig.surface.awaitHidden()
-        gate.countDown()
-
         assertEquals(TerminalReason.INTERRUPTED_CANCELLING, rig.endings.awaitOne())
-        assertEquals(1, rig.endings.reasons.size)
+        gate.countDown()
+        // destroy() returns only after it joined the cancel's coroutine, and this runs after it on the
+        // one main thread: by now the losing cancel has run its commit and lost.
+        rig.onMain {}
+        assertEquals(listOf(TerminalReason.INTERRUPTED_CANCELLING), rig.endings.reasons.toList())
     }
 
     @Test

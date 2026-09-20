@@ -281,7 +281,7 @@ class DictationSessionService : Service() {
             // binder vanished returns without ending the take (Codex review 2, 2026-09-18).
             val seen = state.get()
             if (seen == SessionState.RECORDING || seen == SessionState.STARTING) {
-                handleServiceFailure("Microphone service stopped unexpectedly")
+                handleServiceFailure(TerminalReason.AUDIO_PROCESS_DIED)
             }
         }
     }
@@ -300,7 +300,7 @@ class DictationSessionService : Service() {
                     publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
                 } else if (publicationStarted.compareAndSet(false, true)) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError("Speech service stopped before transcription finished")
+                    showError(TerminalReason.ASR_PROCESS_DIED)
                 }
             }
         }
@@ -324,7 +324,7 @@ class DictationSessionService : Service() {
                     publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
                 } else if (publicationStarted.compareAndSet(false, true)) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError("Polish service stopped before cleanup finished")
+                    showError(TerminalReason.POLISH_PROCESS_DIED)
                 }
             }
         }
@@ -487,7 +487,7 @@ class DictationSessionService : Service() {
             if (!ready) {
                 withContext(Dispatchers.Main.immediate) {
                     if (state.get() == SessionState.STARTING) {
-                        showError("Settings could not be loaded. Try again.")
+                        showError(TerminalReason.SETTINGS_UNAVAILABLE)
                     }
                 }
                 return@launch
@@ -520,7 +520,7 @@ class DictationSessionService : Service() {
         }.getOrDefault(false)
         if (!audioBound) {
             stopAudioCaptureService()
-            showError("Microphone service could not be connected")
+            showError(TerminalReason.AUDIO_BIND_FAILED)
             return
         }
 
@@ -528,14 +528,14 @@ class DictationSessionService : Service() {
             bindService(Intent(this, com.envi.wispr.asr.AsrService::class.java), asrConnection, Context.BIND_AUTO_CREATE)
         }.getOrDefault(false)
         if (!asrBound) {
-            handleServiceFailure("Speech service could not be connected")
+            handleServiceFailure(TerminalReason.ASR_BIND_FAILED)
             return
         }
 
         polishBound = runCatching {
             bindService(Intent(this, PolishService::class.java), polishConnection, Context.BIND_AUTO_CREATE)
         }.getOrDefault(false)
-        if (!polishBound) handleServiceFailure("Polish service could not be connected")
+        if (!polishBound) handleServiceFailure(TerminalReason.POLISH_BIND_FAILED)
     }
 
     private fun tryStartRecording() {
@@ -554,7 +554,7 @@ class DictationSessionService : Service() {
                 val failure = runCatching { audioService?.lastStartFailure }.getOrNull()
                     ?: AudioCaptureService.START_FAILURE_OTHER
                 stopAudioCaptureService()
-                showError(CaptureNotices.startFailureLine(failure))
+                showError(TakeNotices.startFailureReason(failure))
                 return
             }
             captureStarted = true
@@ -572,7 +572,7 @@ class DictationSessionService : Service() {
                 }, "StartCaptureFailureCleanup").start()
             }
             DebugLogger.error(TAG, "Failed to start recording", error)
-            showError("Failed to start recording")
+            showError(TerminalReason.START_EXCEPTION)
         }
     }
 
@@ -604,18 +604,21 @@ class DictationSessionService : Service() {
             val capturing = runCatching { service.isCapturing }.getOrDefault(false)
             if (!capturing) {
                 val failure = runCatching { service.lastStartFailure }.getOrDefault(AudioCaptureService.START_FAILURE_OTHER)
-                val message = if (failure == AudioCaptureService.START_FAILURE_EARBUDS) CaptureNotices.startFailureLine(failure)
-                else "Microphone capture stopped unexpectedly. Try again."
+                val reason = if (failure == AudioCaptureService.START_FAILURE_EARBUDS) {
+                    TerminalReason.CAPTURE_START_EARBUDS_REFUSED
+                } else {
+                    TerminalReason.CAPTURE_ENDED_BEFORE_LIVE
+                }
                 // Claim first: a cancel that stopped capture between the two checks owns the take, and
                 // its stop must not read as a microphone failure.
-                if (!failWhileStarting(message)) return
+                if (!failWhileStarting(reason)) return
                 DebugLogger.warn(TAG, "Capture ended while waiting for the route to go live (failure=$failure)")
                 runCatching { service.waitForFileReady(2_000L) }
                 stopAudioCaptureService()
                 return
             }
             if (SystemClock.elapsedRealtime() - startedAt > LIVE_WAIT_BOUND_MS) {
-                if (!failWhileStarting(CaptureNotices.START_FAILED)) return
+                if (!failWhileStarting(TerminalReason.LIVE_WAIT_DEADLINE)) return
                 DebugLogger.error(TAG, "The route never went live within ${LIVE_WAIT_BOUND_MS} ms")
                 runCatching { service.stopCapture() }
                 runCatching { service.waitForFileReady(2_000L) }
@@ -695,11 +698,16 @@ class DictationSessionService : Service() {
                             // reason has no successful ending to report, and the type says so:
                             // StillRunning.transcribes is false. Grouping it with the successes would
                             // send partial audio on as though it were a finished take.
-                            CaptureEnding.Failure,
-                            CaptureEnding.StillRunning -> {
+                            CaptureEnding.Failure -> {
                                 DebugLogger.error(TAG, "Audio capture ended without a successful reason")
                                 discardDraft()
-                                showError("Microphone capture stopped unexpectedly. Try again.")
+                                showError(TerminalReason.CAPTURE_FAILED_MID_TAKE)
+                            }
+
+                            CaptureEnding.StillRunning -> {
+                                DebugLogger.error(TAG, "Audio capture stopped without publishing a reason")
+                                discardDraft()
+                                showError(TerminalReason.CAPTURE_STILL_RUNNING_AFTER_STOP)
                             }
 
                             // The words up to the cap are kept and transcribed. What the user needs
@@ -864,7 +872,7 @@ class DictationSessionService : Service() {
                 if (!audioReady) {
                     stopAudioCaptureService()
                     discardDraft()
-                    showError("Audio capture did not finish safely. Try again.")
+                    showError(TerminalReason.CAPTURE_CLOSE_UNSAFE)
                     return@Thread
                 }
                 val audioFilePath = audioService?.audioFilePath
@@ -887,14 +895,14 @@ class DictationSessionService : Service() {
                 }
                 if (audioFilePath.isNullOrBlank()) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError("No audio captured")
+                    showError(TerminalReason.AUDIO_FILE_MISSING)
                     return@Thread
                 }
                 val speechService = asrService
                 if (speechService == null) {
                     deleteCapturedAudio(audioFilePath)
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError("Speech model is still loading. Try again in a moment.")
+                    showError(TerminalReason.ASR_NOT_READY)
                     return@Thread
                 }
                 DebugLogger.mark(TAG, "asr_request")
@@ -910,7 +918,9 @@ class DictationSessionService : Service() {
                         deleteCapturedAudio(audioFilePath)
                         updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                         DebugLogger.error(TAG, "ASR failed")
-                        showError(message?.takeIf(String::isNotBlank) ?: "Speech recognition failed")
+                        // The process's own text is shown until chunk A3 gives it a code (issue #176); the
+                        // override is the one seam that still carries a sentence across the binder.
+                        showError(TerminalReason.ASR_FAILED, message?.takeIf(String::isNotBlank) ?: TakeNotices.SPEECH_RECOGNITION_FAILED)
                     }
                 })
             } catch (error: Exception) {
@@ -918,7 +928,7 @@ class DictationSessionService : Service() {
                 if (audioReady) deleteCapturedAudio(runCatching { audioService?.audioFilePath }.getOrNull())
                 DebugLogger.error(TAG, "Transcription failed", error)
                 updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                showError("Transcription failed")
+                showError(TerminalReason.ASR_CALLBACK_EXCEPTION)
             }
         }, "TranscribeThread").start()
     }
@@ -1333,7 +1343,7 @@ class DictationSessionService : Service() {
             if (!ready) {
                 stopAudioCaptureService()
                 discardDraft()
-                showError("Audio capture did not finish safely. Try again.")
+                showError(TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)
                 return@launch
             }
             discardDraft()
@@ -1381,9 +1391,19 @@ class DictationSessionService : Service() {
         cancelCaptureAndFinish()
     }
 
-    private fun showError(message: String) {
+    /** Ends the take as [reason]; the sentence is [TakeNotices]'s, never the caller's. */
+    private fun showError(reason: TerminalReason) {
+        showError(reason, TakeNotices.line(reason))
+    }
+
+    /**
+     * The one seam that still accepts a sentence: the speech process's own error text, until chunk A3
+     * of issue #176 replaces it with a code. Every other caller goes through the one-argument form.
+     */
+    private fun showError(reason: TerminalReason, line: String?) {
         if (state.getAndSet(SessionState.ERROR) == SessionState.ERROR) return
-        announceError(message)
+        DebugLogger.warn(TAG, "Take ended: $reason")
+        announceError(line)
     }
 
     /**
@@ -1391,29 +1411,31 @@ class DictationSessionService : Service() {
      * a cancel that already owns the take is not overwritten with a failure toast (Codex review 3).
      * Returns false when something else owns the take; the waiter then does nothing.
      */
-    private fun failWhileStarting(message: String): Boolean {
+    private fun failWhileStarting(reason: TerminalReason): Boolean {
         synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.ERROR)) return false
         }
-        announceError(message)
+        DebugLogger.warn(TAG, "Take ended while starting: $reason")
+        announceError(TakeNotices.line(reason))
         return true
     }
 
-    private fun announceError(message: String) {
+    /** Tears the take down as a failure; says [line] when there is one. Teardown never depends on copy. */
+    private fun announceError(line: String?) {
         publicationStarted.set(true)
         cancelOpenPolishRequest()
         RecordingOverlayState.showProcessing()
         PasteAccessibilityService.releasePinnedTarget()
         DictationSurfaceState.update(this, DictationSurfaceState.Phase.IDLE)
         vibrate(HapticCue.FAILURE)
-        mainHandler.post { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
+        if (line != null) mainHandler.post { Toast.makeText(this, line, Toast.LENGTH_LONG).show() }
         stopAudioCaptureService()
         finishSession()
     }
 
-    private fun handleServiceFailure(message: String) {
+    private fun handleServiceFailure(reason: TerminalReason) {
         if (state.get() == SessionState.RECORDING) discardDraft()
-        showError(message)
+        showError(reason)
     }
 
     private fun finishSession() {

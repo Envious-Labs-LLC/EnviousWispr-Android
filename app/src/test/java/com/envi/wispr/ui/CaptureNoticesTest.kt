@@ -12,11 +12,12 @@ class CaptureNoticesTest {
 
     @Test
     fun noInputDeviceGetsTheMacSentenceAndEverythingElseGetsTodays() {
-        assertEquals("No microphone found. Please connect one.", CaptureNotices.startFailureLine(AudioCaptureService.START_FAILURE_NO_INPUT_DEVICE))
-        assertEquals("Earbuds could not be used.", CaptureNotices.startFailureLine(AudioCaptureService.START_FAILURE_EARBUDS))
-        assertEquals("Microphone capture could not start safely", CaptureNotices.startFailureLine(AudioCaptureService.START_FAILURE_OTHER))
-        assertEquals("Microphone capture could not start safely", CaptureNotices.startFailureLine(AudioCaptureService.START_FAILURE_NONE))
-        assertEquals("Microphone capture could not start safely", CaptureNotices.startFailureLine(99))
+        fun line(code: Int) = TakeNotices.line(TakeNotices.startFailureReason(code))
+        assertEquals("No microphone found. Please connect one.", line(AudioCaptureService.START_FAILURE_NO_INPUT_DEVICE))
+        assertEquals("Earbuds could not be used.", line(AudioCaptureService.START_FAILURE_EARBUDS))
+        assertEquals("Microphone capture could not start safely", line(AudioCaptureService.START_FAILURE_OTHER))
+        assertEquals("Microphone capture could not start safely", line(AudioCaptureService.START_FAILURE_NONE))
+        assertEquals("Microphone capture could not start safely", line(99))
     }
 
     @Test

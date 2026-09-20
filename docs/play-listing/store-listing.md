@@ -30,7 +30,7 @@ HOW IT WORKS
 Tap the floating bubble beside any text box, say what you want, and tap the check. EnviousWispr turns your speech into text on your phone, cleans it up, and puts it right where your cursor was, in apps like Gmail, WhatsApp and Chrome. You keep your own keyboard. Nothing to switch, nothing to learn.
 
 PRIVATE BY DESIGN
-Speech recognition runs entirely on your phone. Audio is never uploaded, to us or to anyone. There is no account, no sign-in, and no ads. The only time any text leaves your phone is if you choose to connect your own AI provider key for cloud polish, and then your text goes straight from your phone to the provider you picked. The app sends anonymous usage and crash reports so problems get fixed; they never carry your words.
+Speech recognition runs entirely on your phone. Audio is never uploaded, to us or to anyone. There is no account, no sign-in, and no ads. The only time any text leaves your phone is if you choose to connect your own AI provider key for cloud polish, and then your text goes straight from your phone to the provider you picked. The app sends usage and crash reports so problems get fixed; they never carry your words.
 
 FINISHED TEXT, NOT A RAW TRANSCRIPT
 Say it the way you would say it out loud. EnviousWispr removes the ums, fixes punctuation and capitals, and keeps your voice and your meaning. On-device polish is built in. If you want more, plug in your own OpenAI, Anthropic, or Google Gemini key.
@@ -94,7 +94,7 @@ First release. Press, speak, and finished text lands in the app you were typing 
 | Android 13+, 64-bit, 6 GB | `minSdk = 33`, `arm64-v8a`, founder Option A 2026-09-16 | `app/build.gradle.kts`, `docs/device-support-decision.md` |
 | About 1.2 GB of models, Wi-Fi recommended | Speech 670 MB + polish 484 MB; onboarding has a mobile-data switch, so Wi-Fi is a recommendation, not a requirement | `models/ModelManifest.kt`, `docs/launch-readiness-2026-09-15.md` |
 | Clipboard fallback without accessibility | Guarded insertion with clipboard fallback | `.claude/knowledge/current-state.md` |
-| Free, no account, no ads; anonymous usage and crash reports with no words | No server, no accounts, no ads; PostHog and Sentry rows are allowlist-scrubbed (`telemetry/PayloadSanitizer.kt`) and keyed to a random install id | `docs/play-data-safety-answers.md`, `privacy/PrivacyDisclosure.kt` |
+| Free, no account, no ads; usage and crash reports with no words | No server, no accounts, no ads; PostHog and Sentry rows are allowlist-scrubbed (`telemetry/PayloadSanitizer.kt`) and keyed to a random install id | `docs/play-data-safety-answers.md`, `privacy/PrivacyDisclosure.kt` |
 | Each dictation up to ten minutes | `RecordingLimits.MAX_DURATION_MS` is 600,000 ms; the capture loop stops the take at the cap and transcribes what it has | `audio/RecordingLimits.kt` |
 
 Not claimed on purpose: NPU polish (development override, never shipped); language coverage beyond

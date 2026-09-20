@@ -594,7 +594,7 @@ internal fun PrivacyPage() {
         }
         Card {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Anonymous usage and crash reports", style = MaterialTheme.typography.titleMedium)
+                Text("Usage and crash reports", style = MaterialTheme.typography.titleMedium)
                 Text(
                     PrivacyDisclosures.TELEMETRY_SUMMARY,
                     style = MaterialTheme.typography.bodyMedium,

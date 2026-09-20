@@ -45,16 +45,18 @@ rather than lean on the user-initiated-sharing exception (the conservative, revi
 | Data type: **App info and performance / Crash logs** | Collected: **Yes**. Shared: **No**. Required. Purpose: **Analytics**. Not ephemeral. | Crash reports and our own defect reports to Sentry, a processor. No message text; frames only. |
 | Data type: **App info and performance / Diagnostics** | Collected: **Yes**. Shared: **No**. Required. Purpose: **Analytics**. Not ephemeral. | Step timings and the take's route and ending, on the same usage rows. |
 | Data type: **Device or other IDs** | Collected: **Yes**. Shared: **No**. Required. Purpose: **Analytics**. Not ephemeral. | The random install id on every row, plus the device model and OS version. Google counts an app-instance id here. |
-| Data type: **Location, Contacts, Personal info, Financial, Health, Photos, Files, Calendar, Web browsing** | **No** to all. | Nothing of the kind is read. On-device processing is exempt. |
+| Data type: **Location / Approximate location** | Collected: **Yes**. Shared: **No**. Required. Purpose: **Analytics**. Not ephemeral. | PostHog, as our processor, derives an approximate city or region from the telemetry request's IP (a project-level setting shared with the Mac). The app never reads GPS or the device's location. Google requires this to be declared. |
+| Data type: **Contacts, Personal info, Financial, Health, Photos, Files, Calendar, Web browsing** | **No** to all. | Nothing of the kind is read. On-device processing is exempt. |
 | Is all collected data encrypted in transit? | **Yes** | Model downloads, both telemetry vendors and every provider endpoint are HTTPS. |
-| Do you provide a way to request data deletion? | **Yes, via the contact in the privacy policy.** | Telemetry rows are keyed to an anonymous install id the app shows nowhere yet; a user who wants their rows gone writes to the policy's contact address with their approximate install date and device, and we delete by id in both vendors. Founder call to confirm before the closed track: an in-app "copy my id" row would make this exact (stage 2). |
+| Do you provide a way to request data deletion? | **No** | There is no account, and the app does not yet show the random install id that would locate one installation's rows reliably (an approximate date and device cannot). On-device History, custom words and settings are deleted in the app or by uninstalling. Stage 2: an in-app "copy my install id" row turns this into a Yes. |
 | Privacy policy URL | **Required** (a public HTTPS non-PDF page). | Mandatory even when we collect nothing ourselves, because the app requests the Accessibility API. |
 
 ## FACT: the-listing-and-policy-must-agree
 The four claims must match `PrivacyDisclosure.kt`: audio never leaves the phone (true on every path);
-selected TEXT goes to the user's chosen cloud provider under their key (true, and must appear); anonymous
-usage and crash reports leave with no words, names, keys or paths (true since #176, and must appear: the
-old "no tracking, no analytics" wording is now false); NPU polish is not shipped (keep it out). A listing
+selected TEXT goes to the user's chosen cloud provider under their key (true, and must appear); usage and
+crash reports leave with no dictated words, entered names, file contents or keys, under a random install id,
+with an approximate location derived by PostHog from the IP (true since #176, and must appear: the old "no
+tracking, no analytics" and "anonymous" wordings are false); NPU polish is not shipped (keep it out). A listing
 carrying only the audio claim answers this form wrongly (`../.claude/rules/content-brand.md` RULE:
 the-listing-may-only-claim-what-ships).
 

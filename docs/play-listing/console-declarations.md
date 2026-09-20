@@ -57,9 +57,9 @@ inside Gmail or Chrome with the text landing in the field.
 Enter exactly the table in `docs/play-data-safety-answers.md` FACT: the-form-answers. One-line reminder of
 the shape: collected and shared = **Messages / Other in-app messages** (transcript text), optional,
 purpose App functionality, only under the user's own cloud polish key; collected, not shared = **App
-interactions**, **Crash logs**, **Diagnostics**, **Device or other IDs** (anonymous usage and crash
-reports, #176, required, purpose Analytics); audio **not** collected; encrypted in transit; no account;
-deletion on request through the policy's contact.
+interactions**, **Crash logs**, **Diagnostics**, **Device or other IDs**, **Approximate location** (usage and
+crash reports, #176, required, purpose Analytics; the location is PostHog's IP-derived city or region); audio
+**not** collected; encrypted in transit; no account; no deletion request path yet (no exposed install id).
 
 ## 4. Content rating (IARC questionnaire)
 

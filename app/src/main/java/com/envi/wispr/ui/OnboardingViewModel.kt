@@ -27,6 +27,8 @@ import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.envi.wispr.telemetry.AnalyticsEvent
+import com.envi.wispr.telemetry.Telemetry
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -71,6 +73,8 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     var downloadMessage by mutableStateOf("")
         private set
     private var take: PracticeTake? = null
+    /** The current take's verdict was reported once; reset when a new take starts (issue #176). */
+    private var takeReported = false
     private var rows: List<TranscriptEntity> = emptyList()
     private var watching: Job? = null
     private val engines = EngineWarmUp(context, viewModelScope)
@@ -103,6 +107,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         viewModelScope.launch {
             // Navigation is committed before worker admission. No late write can undo Back.
             preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)
+            Telemetry.capture(AnalyticsEvent.OnboardingStageReached(OnboardingStage.DOWNLOADS.name.lowercase(), Telemetry.secondsSinceProcessStart()))
             downloadAction {
                 val mobile = preferences.authoritativeState.first().onboardingMobileData
                 ModelManifest.all.forEach { ModelDeliveryWorker.enqueueSetup(context, it, mobile) }
@@ -228,6 +233,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         take = if (ours) {
             val transcript = snapshot.transcriptId.takeIf { it > 0L }
             if (current == null || current.ended) {
+                takeReported = false
                 PracticeTake(held = snapshot.requestToken?.held, transcriptId = transcript)
             } else {
                 current.copy(held = current.held ?: snapshot.requestToken?.held, transcriptId = current.transcriptId ?: transcript)
@@ -244,6 +250,12 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         val current = take ?: return
         val outcome = judgePracticeTake(current, lesson, rows)
         practiceOutcome = outcome
+        // One `onboarding.practice` per ended take, with the verdict the screen shows (plan §3.1): the
+        // take itself is an ordinary bubble dictation and reports through the owner like any other.
+        if (outcome != null && outcome != PracticeOutcome.WORKING && current.ended && !takeReported) {
+            takeReported = true
+            Telemetry.capture(AnalyticsEvent.OnboardingPractice(lesson.name.lowercase(), outcome.name.lowercase()))
+        }
         when (outcome) {
             PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {
                 holdComplete = true

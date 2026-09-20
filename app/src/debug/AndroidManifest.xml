@@ -14,6 +14,16 @@
                 <action android:name="com.envi.wispr.debug.INSERT" />
             </intent-filter>
         </receiver>
+        <!-- The test harness's fast eye (#181). DUMP is signature|privileged|development: the shell
+             holds it, an ordinary app cannot be granted it, so only adb can ask for the screen. -->
+        <receiver
+            android:name=".debug.DebugDumpReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="com.envi.wispr.debug.DUMP" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name=".debug.DebugTelemetryReceiver"
             android:exported="true">

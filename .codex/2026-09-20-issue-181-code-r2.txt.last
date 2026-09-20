@@ -1,0 +1,15 @@
+Issue #181 review — DONE
+
+## Axes
+
+C: CONFIRMED CLOSED
+
+D: CONFIRMED CLOSED
+
+E: CONFIRMED CLOSED
+
+NEW: FOUND: `say_into_emulator()` turns the host mic ON for BlackHole but restores only the Mac input, leaving the mic ON despite the new OFF resting-state contract. No slow-eye caller requires two reads, and reselecting the same serial correctly preserves its cached eye. fix: always run `_rest_host_mic_off()` during BlackHole cleanup, while ensuring both mic and Mac-input cleanup execute if either fails.
+
+## Verdict
+
+FIX-FIRST

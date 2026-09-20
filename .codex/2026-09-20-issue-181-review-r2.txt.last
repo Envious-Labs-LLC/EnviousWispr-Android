@@ -1,0 +1,19 @@
+## Axes
+
+1. FOUND: §2.2 states the intended behavior, but no chunk, file entry, or test implements it. fix: add the `find` snapshot change and a regression test proving no second read occurs.
+
+2. CONFIRMED CLOSED
+
+3. CONFIRMED CLOSED
+
+4. FOUND: §2.5.4 and §5 are correct, but §3 still makes every non-success permanently slow, while §7 incorrectly maps unbound and exceptions to result `0` and permanent fallback. fix: align §3 and §7 with the adopted `0/1/2/3`, timeout, bad-data, and three-slow-read cooldown contract.
+
+5. FOUND: §3 and §5 correctly preserve `tap`’s 1.2 seconds, but §10 still lists “`tap` settle” as a change. fix: replace it with `set_switch` and restore-arm settling.
+
+6. CONFIRMED CLOSED
+
+NEW: FOUND: the newly exported tree-dump receiver has no sender restriction, allowing any app on a debug device to request screen contents. fix: permission-gate it to shell/debug tooling and test both successful adb access and rejection of an unprivileged app.
+
+## Verdict
+
+PROCEED-WITH-REVISIONS

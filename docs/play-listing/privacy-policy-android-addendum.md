@@ -1,7 +1,7 @@
 # Privacy policy: the Android addendum
 
 Play requires a public, non-PDF privacy policy URL; the app requests the Accessibility API and, since #176,
-sends anonymous usage and crash reports (`docs/play-data-safety-answers.md`). The
+sends pseudonymous usage and crash reports (`docs/play-data-safety-answers.md`). The
 policy already exists for macOS at https://enviouswispr.com/privacy-policy/ (Termly-generated, last
 updated July 5, 2026, source `~/Developer/EnviousLabs/EnviousWispr/website/src/pages/privacy-policy.astro`).
 One policy, one URL: extend that page to cover Android rather than publishing a second document.

@@ -208,12 +208,6 @@ internal class DictationSessionRig {
         val events = CopyOnWriteArrayList<String>()
         private val serial = AtomicLong(0L)
         private val shown = CountDownLatch(1)
-        private val hidden = CountDownLatch(1)
-
-        /** Teardown hid the recorder, which `destroy` does under the publish lock right after invalidating. */
-        fun awaitHidden() {
-            check(hidden.await(10, TimeUnit.SECONDS)) { "the recorder was never hidden; surface events so far: $events" }
-        }
 
         /** The pill appeared, which `publishLive` does on the RECORDING transition. */
         fun awaitShown() {
@@ -231,10 +225,7 @@ internal class DictationSessionRig {
         override fun showNotice(text: String) { events += "notice:$text" }
         override fun updateElapsed(seconds: Int) {}
         override fun updateBands(takeSerial: Long, bands: FloatArray) {}
-        override fun hide() {
-            events += "hide"
-            hidden.countDown()
-        }
+        override fun hide() { events += "hide" }
         override fun currentTakeSerial(): Long = serial.get()
         override fun emptyBands(): FloatArray = FloatArray(0)
     }

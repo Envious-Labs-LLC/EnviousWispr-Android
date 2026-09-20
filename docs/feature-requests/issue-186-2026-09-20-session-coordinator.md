@@ -363,7 +363,7 @@ accident, so the new fields are declared volatile and the §14 note is closed). 
 `ServiceConnection`s and bound flags and calls the `PipelineController.Listener` (implemented by the
 coordinator) on connect/disconnect, on the same thread the platform delivers them. It is constructed with
 `applicationContext` and uses that same context for every `bindService`, `unbindService` and `stopService`
-(G1 D5: today `onDestroy` lets `DestroyedSessionCleanup` post `unbindPipelineServices` after the Service has
+(G1 D5: today `onDestroy` lets `DestroyedSessionCleanup` post `unbindPipelineServices` (removed) after the Service has
 returned from `onDestroy`, `:1920-1928`, which Android defines as a dead Service; binding through the
 application context makes the late unbind legal instead of accidental). **This is the one declared deviation
 from "no behaviour change"**: the binding's owning context moves from the Service to the application. It is
@@ -400,7 +400,7 @@ settings-never-ready row runs in 200 ms instead of 10 s; `polishLedger` is injec
 (G2 D7: `PolishTimeout` (proposed) and its production `DelayPolishTimeout` (proposed), which delegates to
 `delay(PolishWatchdogBudget.forPolicy(policy))`, are chunk 1 foundations so chunk 2 compiles against the
 final design; chunk 3 adds only the fake).
-The injected `scope` is the one `serviceScope`; `serviceJob` is read once as
+The injected `scope` is the one `serviceScope` (removed); `serviceJob` is read once as
 `scope.coroutineContext[Job]` and never constructed separately, and `destroy()` cancels and joins that exact
 job (coverage F3). `tipGate` (proposed) defaults to the process-scoped gate on purpose: its once-per-process allowance must outlive the
 Service instance (consult Q3, `CaptureNotices.kt:40-45`), so a coordinator never owns one. The locks and

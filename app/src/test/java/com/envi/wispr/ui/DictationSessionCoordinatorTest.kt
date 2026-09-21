@@ -1,6 +1,7 @@
 package com.envi.wispr.ui
 
 import com.envi.wispr.audio.AudioCaptureService
+import com.envi.wispr.audio.SpectrumAnalyzer
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.paste.InsertionHandoff
 import com.envi.wispr.polish.PolishReason
@@ -81,6 +82,33 @@ class DictationSessionCoordinatorTest {
         assertTrue("the helpers are unbound on the way out", rig.pipeline.events.contains("unbind"))
         assertEquals("the Service stops itself last", "stopSelf", rig.host.events.last())
         assertTrue(rig.host.events.indexOf("foreground-removed") < rig.host.events.indexOf("stopSelf"))
+    }
+
+    /**
+     * Product Outcome (#187): when this fails, the user sees a rail that never moves, or a picture from
+     * the last take drawn on this one. The audio process pushes; the owner registers when the pill
+     * appears, stamps the visible take's serial on every picture, and unregisters where every session
+     * ends, before the binding goes. The fakes share one timeline so the ORDER across them is the proof.
+     * REVERT: delete the `listenForPicture()` call in `startPolling`; no "listen", no picture.
+     */
+    @Test
+    fun theOwnerRegistersForThePictureWhenTheTakeGoesLiveAndUnregistersWhenItEnds() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        val listener = rig.capture.awaitListener()
+        val picture = FloatArray(SpectrumAnalyzer.BAND_COUNT) { index -> index / 10f }
+        listener.onSpectrum(picture)
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+
+        val stamped = rig.surface.currentTakeSerial()
+        assertEquals(listOf(stamped), rig.surface.pictures.map { it.first })
+        assertTrue("the pushed picture reached the recorder unchanged", rig.surface.pictures.single().second.contentEquals(picture))
+        val order = listOf("show", "listen", "updateBands:$stamped", "capture-stop", "stopListening", "unbind", "owner-stop")
+        val seen = rig.timeline.filter { it in order }
+        assertEquals("show < listen < picture < capture stop < stopListening < unbind < owner stop; timeline was ${rig.timeline}", order, seen)
     }
 
     @Test

@@ -11,7 +11,9 @@ import java.io.File
  * and no route carried it to the screen, so every part looked right on its own. Each link of the route
  * from the audio process to the rail is asserted here because the broken state compiles, passes every
  * other test, and shows nothing. #151 replaced the scalar level with a per-band picture and the polling
- * tick's meter step with a thread of its own; the links changed, the reason for guarding them did not.
+ * tick's meter step with a thread of its own; #187 replaced that thread's thirty polls a second with one
+ * picture pushed per analyser wake over a oneway listener; the links changed, the reason for guarding
+ * them did not.
  *
  * Source-level because the two ends are an Android `Service` and a `View` attached to a `WindowManager`,
  * neither of which a JVM test can stand up.
@@ -26,6 +28,8 @@ class LiveAudioMeterWiringTest {
     private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
     private val meterView = File("src/main/java/com/envi/wispr/paste/RecordingLevelMeterView.kt").readText()
     private val aidl = File("src/main/aidl/com/envi/wispr/audio/IAudioCaptureService.aidl").readText()
+    private val listenerAidl = File("src/main/aidl/com/envi/wispr/audio/IAudioSpectrumListener.aidl").readText()
+    private val bindings = File("src/main/java/com/envi/wispr/ui/PipelineBindings.kt").readText()
 
     /** The text of one named function, and a loud failure if the name is gone. */
     private fun body(source: String, declaration: String): String {
@@ -34,55 +38,88 @@ class LiveAudioMeterWiringTest {
     }
 
     @Test
-    fun theSessionOwnerReadsThePictureOnItsOwnThreadAndPublishesIt() {
-        val meter = body(session, "private fun startMeter()")
-        assertTrue("the meter thread must read the capture service's picture", meter.contains("service.spectrumBands()"))
-        assertTrue("the read must be caught where it happens", meter.contains("runCatching { service.spectrumBands() }"))
-        assertTrue("a throwing read must publish the empty picture, so the rail rests", meter.contains("getOrElse { surface.emptyBands() }"))
-        assertTrue("the picture must reach the recorder with the take's serial", meter.contains("surface.updateBands(takeSerial, bands)"))
+    fun theOwnerSubscribesToThePictureAndNeverPollsIt() {
+        val listen = body(session, "private fun listenForPicture()")
+        assertTrue("the serial is captured once, when the take starts", listen.contains("val takeSerial = surface.currentTakeSerial()"))
+        assertTrue(
+            "the owner registers a listener that stamps that serial on every picture",
+            listen.contains("pipeline.capture?.listenForSpectrum { bands -> surface.updateBands(takeSerial, bands) }"),
+        )
+        assertTrue("and registering cannot end the take", listen.contains("runCatching {\n            pipeline.capture?.listenForSpectrum"))
         // The seam is only as good as its production delegate (Codex review C1, 2026-09-20).
         assertTrue(recorder.contains("override fun updateBands(takeSerial: Long, bands: FloatArray) = RecordingOverlayState.updateBands(takeSerial, bands)"))
         assertTrue(recorder.contains("override fun currentTakeSerial(): Long = RecordingOverlayState.snapshots.value.takeSerial"))
-        assertTrue(recorder.contains("override fun emptyBands(): FloatArray = RecordingOverlayState.NO_BANDS"))
-        assertTrue("the meter runs on its own thread, never in the polling tick", meter.contains("\"DictationMeterThread\""))
-        assertTrue("and starting it cannot end the take", meter.contains("runCatching {\n            Thread("))
         val polling = body(session, "private fun startPolling()")
-        assertTrue("the polling tick must not read the picture", !polling.contains("spectrumBands"))
-        assertTrue("the polling thread starts the meter thread", polling.contains("startMeter()"))
+        assertTrue("the polling thread registers the listener once the take is live", polling.contains("listenForPicture()"))
+        assertTrue("and no meter thread remains", !session.contains("DictationMeterThread") && !session.contains("METER_INTERVAL_MS"))
     }
 
     @Test
-    fun theMeterExitsWhenItsTakeIsOver() {
-        val meter = body(session, "private fun startMeter()")
-        assertTrue("the serial is captured once, when the take starts", meter.contains("val takeSerial = surface.currentTakeSerial()"))
-        assertTrue("and compared after every read, so a read that returned in a later take leaves", meter.contains("if (surface.currentTakeSerial() != takeSerial) break"))
-        assertTrue("the loop lives only while recording", meter.contains("while (state.get() == SessionState.RECORDING)"))
+    fun theOwnerUnsubscribesWhereEverySessionEnds() {
+        val finish = body(session, "private fun finishSession()")
+        val unsubscribe = finish.indexOf("runCatching { pipeline.capture?.stopListeningForSpectrum() }")
+        val unbind = finish.indexOf("pipeline.unbind()")
+        assertTrue("finishSession unregisters the listener", unsubscribe >= 0)
+        assertTrue("before it unbinds", unbind > unsubscribe)
     }
 
     @Test
-    fun thePictureIsOnlyEverReadInOnePlace() {
+    fun nothingInProductionReadsThePicture() {
         // architecture-rules.md RULE: no-idle-cost — surfaces are pushed a picture, they never poll for
-        // one. One reader is what keeps that true as surfaces are added.
-        val readers = Regex("spectrumBands").findAll(session).count()
-        assertTrue("the session owner must read the picture exactly once, found $readers", readers == 1)
+        // one. Since #187 nothing polls: the only mention of the legacy getter in production is the Stub
+        // override that keeps the transaction alive. Repository-wide, so a poller reintroduced anywhere
+        // (the proxy, a screen, a service) turns this red, not only one in the owner.
+        val production = File("src/main/java").walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        assertTrue("the production tree must be readable", production.size > 100)
+        val readers = production.filter { file ->
+            val text = file.readText()
+            text.contains("spectrumBands") || text.contains("getSpectrumBands")
+        }.map { it.path }
+        assertTrue(
+            "only the audio service may mention the picture getter, found $readers",
+            readers == listOf("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt"),
+        )
+        val mentions = Regex("getSpectrumBands").findAll(capture).count()
+        assertTrue("and there only its Stub override, found $mentions", mentions == 1)
         assertTrue(
             "the recorder must not reach for the capture service itself",
-            !overlay.contains("spectrumBands") && !meterView.contains("spectrumBands") &&
-                !overlay.contains("currentAmplitude") && !meterView.contains("currentAmplitude"),
+            !overlay.contains("currentAmplitude") && !meterView.contains("currentAmplitude"),
         )
     }
 
     @Test
-    fun theAudioProcessPublishesUnderOneLockAndTheGetterReadsUnderIt() {
+    fun theProxyRegistersAndUnregistersTheSameStub() {
+        val proxy = bindings.substringAfter("private class CaptureProxy(")
+        assertTrue("the proxy keeps the Stub it registered", proxy.contains("@Volatile private var spectrumStub: IAudioSpectrumListener.Stub? = null"))
+        val listen = proxy.substringAfter("override fun listenForSpectrum(listener: SpectrumListener) {").substringBefore("override fun stopListeningForSpectrum()")
+        assertTrue("it forwards every picture to the Kotlin listener", listen.contains("listener.onSpectrum(bands ?: FloatArray(0))"))
+        assertTrue("stores the Stub before registering it", listen.indexOf("spectrumStub = stub") in 0 until listen.indexOf("service.registerSpectrumListener(stub)"))
+        val stop = proxy.substringAfter("override fun stopListeningForSpectrum() {").substringBefore("override fun effectiveInputDevice()")
+        assertTrue("and unregisters exactly the stored Stub", stop.contains("val stub = spectrumStub ?: return") && stop.contains("service.unregisterSpectrumListener(stub)"))
+    }
+
+    @Test
+    fun theAnalyserPushesOutsideTheLockAndNeverFromCapture() {
         // A sequential test cannot open the window between a half-written picture and its reader
         // (validation-discipline.md RULE: a-single-threaded-test-cannot-distinguish-atomic-from-check-then-act),
-        // so the lock is asserted at the source: the copy in and the copy out both sit inside it.
+        // so the lock is asserted at the source: the copy in and the copy out both sit inside it, and
+        // the push (a binder transaction) sits after the lock closes.
         val loop = body(capture, "private fun analyserLoop(active: CaptureSession)")
+        val copyIn = "synchronized(active.bandsLock) {\n                        System.arraycopy(bands, 0, active.publishedBands, 0, SpectrumAnalyzer.BAND_COUNT)\n                    }"
+        assertTrue("the analyser copies its picture in under the lock", loop.contains(copyIn))
         assertTrue(
-            "the analyser copies its picture in under the lock",
-            loop.contains("synchronized(active.bandsLock) {\n                        System.arraycopy(bands, 0, active.publishedBands"),
+            "and pushes it after the lock closes, never inside it",
+            loop.substringAfter(copyIn).trimStart().startsWith("// Outside the lock") &&
+                loop.substringAfter(copyIn).substringBefore("LockSupport.parkNanos").contains("pushSpectrum(active, bands)"),
         )
-        assertTrue("a failure publishes the empty picture before leaving", loop.contains("synchronized(active.bandsLock) { active.publishedBands.fill(0f) }"))
+        assertTrue(
+            "a failure zeros the local picture and publishes it both ways before leaving",
+            loop.contains("bands.fill(0f)\n            synchronized(active.bandsLock) { active.publishedBands.fill(0f) }\n            pushSpectrum(active, bands)"),
+        )
+        val push = body(capture, "private fun pushSpectrum(active: CaptureSession, bands: FloatArray)")
+        assertTrue("the push reads the slot once", push.contains("val listener = spectrumListener.get() ?: return"))
+        assertTrue("a dead client clears only the listener it was pushing to", push.contains("spectrumListener.compareAndSet(listener, null)"))
+        assertTrue("the capture thread never touches the listener", !body(capture, "private fun captureLoop(active: CaptureSession)").contains("spectrumListener"))
         assertTrue("the getter copies out under the same lock", capture.contains("return synchronized(active.bandsLock) { active.publishedBands.copyOf() }"))
         assertTrue(
             "and answers a full-length empty picture when no take is open, never an empty array",
@@ -117,7 +154,7 @@ class LiveAudioMeterWiringTest {
     }
 
     @Test
-    fun theAidlMethodIsAppendedLast() {
+    fun theListenerIsOnewayAndTheRegistrationIsAppendedLast() {
         val appendLine = aidl.indexOf("// APPENDED.")
         assertTrue("the append marker exists", appendLine >= 0)
         assertTrue("the picture getter sits below the append marker", aidl.indexOf("float[] getSpectrumBands();") > appendLine)
@@ -126,6 +163,38 @@ class LiveAudioMeterWiringTest {
         assertTrue(
             "and every later method sits below it",
             aidl.indexOf("startCaptureWithInputDevice") > aidl.indexOf("float[] getSpectrumBands();"),
+        )
+        val register = aidl.indexOf("void registerSpectrumListener(IAudioSpectrumListener listener);")
+        val unregister = aidl.indexOf("void unregisterSpectrumListener(IAudioSpectrumListener listener);")
+        assertTrue("the two registration transactions sit after the last pre-#187 one, in order",
+            register > aidl.indexOf("float getTakePeakAmplitude();") && unregister > register)
+        assertTrue("the listener's one call is oneway, so the analyser never waits on the app process",
+            listenerAidl.contains("oneway void onSpectrum(in float[] bands);"))
+        assertTrue("and the listener carries its own append marker", listenerAidl.contains("// APPENDED."))
+    }
+
+    @Test
+    fun theServiceClearsOnlyTheObservedListener() {
+        assertTrue("the slot is an AtomicReference", capture.contains("private val spectrumListener = AtomicReference<IAudioSpectrumListener?>(null)"))
+        val register = body(capture, "override fun registerSpectrumListener(listener: IAudioSpectrumListener?)")
+        assertTrue("registration replaces", register.contains("spectrumListener.set(listener)"))
+        val unregister = body(capture, "override fun unregisterSpectrumListener(listener: IAudioSpectrumListener?)")
+        assertTrue("unregister compares binder identity and clears with compareAndSet",
+            unregister.contains("current.asBinder() == listener.asBinder()") && unregister.contains("spectrumListener.compareAndSet(current, null)"))
+        val unbind = body(capture, "override fun onUnbind(intent: Intent?): Boolean")
+        assertTrue("unbind clears outright", unbind.contains("spectrumListener.set(null)"))
+    }
+
+    @Test
+    fun theCountersAndTheTakeEndLineAreWired() {
+        // Observability Contract: the take-end line is the oracle the hardware pass reads for "no polling".
+        val getter = body(capture, "override fun getSpectrumBands(): FloatArray")
+        assertTrue("every poll of the legacy getter is counted", getter.contains("active.spectrumPolls.incrementAndGet()"))
+        val push = body(capture, "private fun pushSpectrum(active: CaptureSession, bands: FloatArray)")
+        assertTrue("every delivered push is counted", push.contains("active.spectrumPushes.incrementAndGet()"))
+        assertTrue(
+            "and the take-end line names both",
+            capture.contains("\"Live picture: pushed=\${active.spectrumPushes.get()} polled=\${active.spectrumPolls.get()}\""),
         )
     }
 

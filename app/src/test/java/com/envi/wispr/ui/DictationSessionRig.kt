@@ -321,10 +321,18 @@ internal class DictationSessionRig {
         override fun terminalReason(): Int = ending
         /** The listener the owner registered, so a test can push a picture through it as the audio process would. */
         @Volatile var spectrumListener: SpectrumListener? = null
+        private val listening = CountDownLatch(1)
+
+        /** The listener the owner registered, once `listenForPicture` ran; a loud failure if it never did. */
+        fun awaitListener(): SpectrumListener {
+            check(listening.await(10, TimeUnit.SECONDS)) { "the owner never registered for the picture; events: $events" }
+            return checkNotNull(spectrumListener)
+        }
         override fun listenForSpectrum(listener: SpectrumListener) {
             spectrumListener = listener
             events += "listen"
             timeline += "listen"
+            listening.countDown()
         }
         override fun stopListeningForSpectrum() {
             if (spectrumListener == null) return
@@ -411,7 +419,10 @@ internal class DictationSessionRig {
             }
             return bindResult
         }
-        override fun unbind() { events += "unbind" }
+        override fun unbind() {
+            events += "unbind"
+            timeline += "unbind"
+        }
         override fun postUnbindToMain(beforeUnbind: () -> Unit) { mainExecutor.execute { run("post") { beforeUnbind(); unbind() } } }
         override fun stopAudioService() { events += "stopAudioService" }
 

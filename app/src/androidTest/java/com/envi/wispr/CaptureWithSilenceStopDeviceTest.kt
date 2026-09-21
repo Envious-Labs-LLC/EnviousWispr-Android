@@ -8,12 +8,15 @@ import android.os.IBinder
 import androidx.test.platform.app.InstrumentationRegistry
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.IAudioCaptureService
+import com.envi.wispr.audio.IAudioSpectrumListener
+import com.envi.wispr.audio.SpectrumAnalyzer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The REAL capture path with the detector attached, on the phone, across the real process boundary.
@@ -271,6 +274,56 @@ class CaptureWithSilenceStopDeviceTest {
             assertTrue("and ordinary recording is untouched", capture.isCapturing)
             capture.stopCapture()
             assertTrue(capture.waitForFileReady(3_000L))
+        } finally {
+            runCatching { context.unbindService(connection) }
+        }
+    }
+
+    /**
+     * Product Outcome across the real binder boundary (#187): when this fails, the bars on the phone
+     * never move. A listener registered on the real audio service receives the picture while a take is
+     * open, every picture the full band count, and nothing more after it unregisters. The picture is a
+     * limb, so its content is not judged here (the rail battery does that on the emulator); its ARRIVAL
+     * over the real oneway callback is what no JVM row can prove. REVERT: comment out the
+     * `pushSpectrum(active, bands)` call after the arraycopy; no picture arrives and the first latch
+     * times out with its message.
+     */
+    @Test
+    fun aRegisteredListenerReceivesThePictureDuringATake() {
+        val (capture, connection) = bindCapture()
+        try {
+            val first = CountDownLatch(1)
+            val delivered = AtomicInteger(0)
+            val wrongLength = AtomicInteger(0)
+            val listener = object : IAudioSpectrumListener.Stub() {
+                override fun onSpectrum(bands: FloatArray?) {
+                    if (bands == null || bands.size != SpectrumAnalyzer.BAND_COUNT) wrongLength.incrementAndGet()
+                    delivered.incrementAndGet()
+                    first.countDown()
+                }
+            }
+            capture.registerSpectrumListener(listener)
+            assumeTrue("the microphone must be available to this test", capture.startCapture())
+            assertTrue(
+                "a picture must arrive over the callback within five seconds of a take starting; none did",
+                first.await(5, TimeUnit.SECONDS),
+            )
+            capture.stopCapture()
+            assertTrue("the recording must have closed", capture.waitForFileReady(3_000L))
+            capture.unregisterSpectrumListener(listener)
+            val seenAtUnregister = delivered.get()
+            assertEquals("every picture carries the full band count", 0, wrongLength.get())
+
+            // Nothing more after unregistering: a second take on the same binding pushes to nobody.
+            assumeTrue("the microphone must be available for the second take", capture.startCapture())
+            Thread.sleep(1_500)
+            capture.stopCapture()
+            assertTrue("the second recording must have closed", capture.waitForFileReady(3_000L))
+            assertEquals(
+                "no picture may arrive after the listener unregistered",
+                seenAtUnregister,
+                delivered.get(),
+            )
         } finally {
             runCatching { context.unbindService(connection) }
         }

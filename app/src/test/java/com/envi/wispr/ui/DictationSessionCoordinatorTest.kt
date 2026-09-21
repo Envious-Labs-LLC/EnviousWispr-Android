@@ -61,6 +61,7 @@ class DictationSessionCoordinatorTest {
     }
 
     private fun theOnlyRow(): TranscriptEntity {
+        rig.awaitHistoryIdle()
         assertEquals("one History row", 1, rig.dao.rows.size)
         return rig.dao.rows.values.single()
     }
@@ -548,6 +549,11 @@ class DictationSessionCoordinatorTest {
     fun asrNotReadyEndsProcessing() {
         rig.pipeline.speech = null
         rig.pipeline.connectSpeech = false
+        // The P4 race, staged: the stop path writes `processing` then `asr_error` back to back, and the
+        // fake holds the FIRST of them. On 87e07ca the two were launched on the IO dispatcher and the held
+        // one landed last, leaving the row `processing`; the History queue (#115) applies them in enqueue
+        // order whatever the disk does. REVERT: launch the status writes on the owner's scope again.
+        rig.dao.delayFirstStatusMs = 200L
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
         rig.command(coordinator, DictationSessionService.ACTION_STOP)
@@ -556,12 +562,32 @@ class DictationSessionCoordinatorTest {
         rig.host.awaitStopped()
         assertTrue(rig.host.events.contains("toast:Speech model is still loading. Try again in a moment."))
         val row = theOnlyRow()
-        // Only the insertion result is asserted. The stop path launches the `processing` write and the
-        // `asr_error` write back to back on the IO dispatcher and they can land in either order (the
-        // `processing` write carries no insertion result, so that column is stable either way); the
-        // status column is a pre-existing write race, seen on a hosted runner 2026-09-20 and routed to
-        // #115, whose History write queue serialises exactly these writes.
+        assertEquals("asr_error", row.status)
         assertEquals("asr_error", row.insertionResult)
+    }
+
+    /**
+     * Product Outcome (#115, chunk B): when this fails, force-stopping the app during a take freezes its
+     * screen for as long as the disk is stalled, because teardown waited on the History write. Here the
+     * disk is HELD; destroy returns on the main thread anyway (the rig's main-thread call has a bound),
+     * and the `interrupted` row lands once the disk answers. REVERT: restore a `runBlocking` on the
+     * `interrupted` write in `destroy`.
+     */
+    @Test
+    fun destroyReturnsWhileARoomWriteIsStalled() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.awaitHistoryIdle()
+        val disk = kotlinx.coroutines.CompletableDeferred<Unit>()
+        rig.dao.holdStatusWrites = disk
+        rig.onMain { coordinator.destroy() }
+        assertEquals(TerminalReason.INTERRUPTED_RECORDING, rig.endings.awaitOne())
+        assertEquals("the row is still the draft while the disk is held", "draft", rig.dao.rows.values.single().status)
+        disk.complete(Unit)
+        rig.dao.holdStatusWrites = null
+        val row = theOnlyRow()
+        assertEquals("interrupted", row.status)
+        assertTrue(row.interrupted)
     }
 
     @Test

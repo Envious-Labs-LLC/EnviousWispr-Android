@@ -12,6 +12,7 @@ import com.envi.wispr.audio.SpeechEvidence
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.TextSafety
 import com.envi.wispr.history.HistoryPublicationPolicy
+import com.envi.wispr.history.HistoryWriteQueue
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.insertion.ClipboardOutcome
@@ -41,16 +42,12 @@ import com.envi.wispr.telemetry.Telemetry
 import com.envi.wispr.telemetry.TelemetryChannels
 import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.StructuredTermRestorer
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -78,7 +75,8 @@ internal class DictationSessionCoordinator(
     private val insertion: InsertionGateway,
     private val log: SessionLog,
     private val preferences: SessionPreferencesSource,
-    private val transcripts: TranscriptRepository,
+    /** Every per-take History write goes through here, in enqueue order, on the application's worker (#115). */
+    private val historyWrites: HistoryWriteQueue,
     private val languageDetector: LanguageDetector,
     private val loadPolicy: suspend () -> PolishPolicy,
     private val pipeline: PipelineController,
@@ -190,7 +188,6 @@ internal class DictationSessionCoordinator(
     private val draftId = AtomicLong(0L)
     /** The injected scope's job, read once; `destroy` cancels and joins exactly this. */
     private val serviceJob: Job = requireNotNull(scope.coroutineContext[Job]) { "the session scope needs a Job" }
-    private val pendingHistoryUpdates = java.util.Collections.synchronizedList(mutableListOf<Job>())
 
     private var rawTranscript = ""
     // What the START of this dictation saw when it tried to pin an editor. Read at the end,
@@ -210,7 +207,14 @@ internal class DictationSessionCoordinator(
     @Volatile private var stopAfterRecording = false
     private var recordingStartedAtMs = 0L
     @Volatile private var recordingDurationMs = 0L
-    private var draftCreation: Deferred<Long>? = null
+    /**
+     * The take's History row id, completed by the queued draft insert ON THE QUEUE'S WORKER (#115). Every
+     * later write of the row is queued after that insert, so awaiting this inside a write never waits on
+     * anything but a write already applied; the owner itself never awaits it on main.
+     */
+    private var draftCreation: CompletableDeferred<Long>? = null
+    /** Set by [destroy]; the owner's surface is never touched from the application queue after it. */
+    private val destroyed = AtomicBoolean(false)
     private var lastElapsedSecond = -1
     /**
      * The take's cancel, reserved under [publishLock] and committed when the capture process publishes
@@ -258,8 +262,10 @@ internal class DictationSessionCoordinator(
 
     /** The Service's `onCreate` work that is the session's: stale-row recovery and the preference collectors. */
     fun onCreated() {
-        scope.launch {
-            runCatching { transcripts.recoverStaleOpenRows(System.currentTimeMillis()) }
+        // On the queue, AHEAD of anything this take will write (#115): the recovery closes rows an earlier
+        // process left open, and it must not race the new take's own draft insert on another thread.
+        historyWrites.enqueue("stale-row recovery") { repository ->
+            runCatching { repository.recoverStaleOpenRows(System.currentTimeMillis()) }
                 .onSuccess { recovered -> Telemetry.insertionsRecovered(recovered.readyRowIds) }
                 .onFailure { error -> log.warn("Unable to recover stale history: ${error.message}") }
         }
@@ -762,25 +768,43 @@ internal class DictationSessionCoordinator(
                 "take", "live",
                 mapOf("take_id" to takeId, "route_kind" to takeFacts.routeKind?.name?.lowercase(), "live_after_ms" to takeFacts.liveAfterMs, "live_state" to takeFacts.liveState),
             )
-            draftCreation = scope.async {
-                val id = transcripts.insert(
-                    TranscriptEntity(
-                        originalText = "",
-                        finalText = "",
-                        createdAtMs = System.currentTimeMillis(),
-                        durationMs = 0L,
-                        speechEngine = "Parakeet",
-                        polishEngine = PolishEngineLabels.NOT_RECORDED,
-                        polishLatencyMs = 0L,
-                        insertionResult = "pending",
-                        status = TranscriptEntity.STATUS_DRAFT,
-                    ),
-                )
+            // The FIRST queued write of the take (#115): it runs on the application's worker, under
+            // application ownership, so destroy cannot cancel it and every later write of the row is
+            // queued behind it. The id comes back through the deferred; the still-live owner attaches it
+            // to its surface from MAIN (a dead surface is never called from the queue).
+            val draft = CompletableDeferred<Long>()
+            draftCreation = draft
+            val rowTakeId = takeFacts.takeId
+            val createdAtMs = System.currentTimeMillis()
+            historyWrites.enqueue("draft insert") { repository ->
+                val id = try {
+                    repository.insert(
+                        TranscriptEntity(
+                            originalText = "",
+                            finalText = "",
+                            createdAtMs = createdAtMs,
+                            durationMs = 0L,
+                            speechEngine = "Parakeet",
+                            polishEngine = PolishEngineLabels.NOT_RECORDED,
+                            polishLatencyMs = 0L,
+                            insertionResult = "pending",
+                            status = TranscriptEntity.STATUS_DRAFT,
+                        ),
+                    )
+                } catch (error: Exception) {
+                    draft.completeExceptionally(error)
+                    throw error
+                }
+                draftId.set(id)
+                Telemetry.journal?.associate(rowTakeId, id)
+                draft.complete(id)
+            }
+            draft.invokeOnCompletion { cause ->
+                if (cause != null) return@invokeOnCompletion
+                val id = draft.getCompleted()
                 // The row's identity goes out on the bridge so a reader judges THIS take's row, never a
                 // row it guessed at by time or order (onboarding practice; Codex reviews 2 to 9).
-                surface.attachTranscript(id)
-                Telemetry.journal?.associate(takeFacts.takeId, id)
-                id
+                host.postToMain { if (!destroyed.get() && draftCreation === draft) surface.attachTranscript(id) }
             }
             host.updateSurfacePhase(DictationSurfaceState.Phase.LISTENING)
             surface.show()
@@ -958,11 +982,9 @@ internal class DictationSessionCoordinator(
                 )
                 finishTakeOrStop()
 
-                val readyDraftId = runCatching { draftCreation?.await() ?: 0L }.getOrDefault(0L)
-                if (readyDraftId > 0L) {
-                    draftId.set(readyDraftId)
-                    updateDraftStatus(TranscriptEntity.STATUS_PROCESSING)
-                }
+                // Queued behind the draft insert; the id is resolved on the worker (#115). Nothing here
+                // waits on storage.
+                updateDraftStatus(TranscriptEntity.STATUS_PROCESSING)
                 if (audioFilePath.isNullOrBlank()) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                     showError(TerminalReason.AUDIO_FILE_MISSING)
@@ -1209,21 +1231,62 @@ internal class DictationSessionCoordinator(
         takeFacts.polishStatus = statusCode
         Telemetry.breadcrumb("take", "polish_done", mapOf("take_id" to takeId, "polish_reason" to reason.name, "polish_ms" to latencyMs, "polish_provider" to takeFacts.polishProvider))
         TelemetryChannels.defectOf(reason)?.let { Telemetry.defect(it, mapOf("take_id" to takeId, "polish_status" to statusCode)) }
+        // The immutable payload FIRST, so the reservation and its write can be one operation below.
+        val finalText = text.ifBlank { rawTranscript }
+        val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine
+        val originalText = rawTranscript
+        val durationMs = recordingDurationMs
+        val captureDevice = captureDeviceLabel
+        val polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext)
         // RESERVE, never commit: `completed` is unknown until the History save returns (G2 D2). A cancel
-        // that already owns the take, or a second final callback, loses here and does nothing.
-        val publication = arbiter.reserve(Claimants.PUBLICATION)
+        // that already owns the take, or a second final callback, loses here and does nothing. Under
+        // publishLock, and the write is ENQUEUED in the same operation (#115): destroy takes the same lock
+        // before enqueueing `interrupted`, so a reserved finalization is always queued ahead of it and
+        // `interrupted` is the last word on the row.
+        val saved = CompletableDeferred<Result<Long>>()
+        val publication = synchronized(publishLock) {
+            val reserved = arbiter.reserve(Claimants.PUBLICATION) ?: return@synchronized null
+            if (finalText.isNotBlank()) {
+                historyWrites.enqueue("finalize") { repository ->
+                    saved.complete(
+                        runCatching {
+                            val existingId = resolvedDraftId()
+                            val persistedId = if (existingId > 0L) {
+                                val updated = repository.finalize(
+                                    id = existingId,
+                                    originalText = originalText,
+                                    finalText = finalText,
+                                    speechEngine = "Parakeet",
+                                    polishEngine = finalEngine,
+                                    polishLatencyMs = latencyMs,
+                                    insertionResult = "pending",
+                                    durationMs = durationMs,
+                                    polishReason = polishFacts.reasonToken,
+                                    polishStatus = polishFacts.statusCode,
+                                    polishContext = polishFacts.contextToken,
+                                    captureDevice = captureDevice,
+                                )
+                                if (updated > 0) existingId else repository.insertReadyTranscript(originalText, finalText, finalEngine, latencyMs, durationMs, captureDevice, polishFacts)
+                            } else {
+                                repository.insertReadyTranscript(originalText, finalText, finalEngine, latencyMs, durationMs, captureDevice, polishFacts)
+                            }
+                            draftId.set(persistedId)
+                            persistedId
+                        },
+                    )
+                }
+            }
+            reserved
+        }
         if (publication == null) {
             log.warn("Ignoring a final transcript that arrived after the take was claimed")
             return
         }
-        val finalText = text.ifBlank { rawTranscript }
-        val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine
         log.log("Polish result received ($finalEngine, ${latencyMs}ms, chars=${finalText.length})")
         if (finalText.isBlank()) {
             if (arbiter.commit(publication, TerminalReason.FINAL_TEXT_EMPTY)) finishSession()
             return
         }
-        val polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext)
         polishFacts.notice?.let { notice ->
             log.log("Polish notice shown: ${polishFacts.failure}")
             host.postToMain {
@@ -1233,30 +1296,8 @@ internal class DictationSessionCoordinator(
         }
 
         scope.launch {
-            val saveResult = runCatching {
-                val existingId = draftId.get()
-                val persistedId = if (existingId > 0L) {
-                    val updated = transcripts.finalize(
-                        id = existingId,
-                        originalText = rawTranscript,
-                        finalText = finalText,
-                        speechEngine = "Parakeet",
-                        polishEngine = finalEngine,
-                        polishLatencyMs = latencyMs,
-                        insertionResult = "pending",
-                        durationMs = recordingDurationMs,
-                        polishReason = polishFacts.reasonToken,
-                        polishStatus = polishFacts.statusCode,
-                        polishContext = polishFacts.contextToken,
-                        captureDevice = captureDeviceLabel,
-                    )
-                    if (updated > 0) existingId else insertReadyTranscript(finalText, finalEngine, latencyMs, polishFacts)
-                } else {
-                    insertReadyTranscript(finalText, finalEngine, latencyMs, polishFacts)
-                }
-                draftId.set(persistedId)
-                persistedId
-            }
+            // The save's result, from the queue's worker; the owner's coroutine waits on it, main never.
+            val saveResult = saved.await()
             val persistedId = saveResult.getOrNull() ?: 0L
             takeFacts.historySave = if (saveResult.isSuccess) "ok" else "failed"
             saveResult.exceptionOrNull()?.let { error ->
@@ -1352,25 +1393,32 @@ internal class DictationSessionCoordinator(
         }
     }
 
-    private suspend fun insertReadyTranscript(finalText: String, engine: String, latencyMs: Long, polishFacts: PolishPublicationFacts): Long {
-        return transcripts.insert(
-            TranscriptEntity(
-                originalText = rawTranscript,
-                finalText = finalText,
-                createdAtMs = System.currentTimeMillis(),
-                durationMs = recordingDurationMs,
-                speechEngine = "Parakeet",
-                polishEngine = engine,
-                polishLatencyMs = latencyMs,
-                insertionResult = "pending",
-                status = TranscriptEntity.STATUS_READY_FOR_INSERTION,
-                polishReason = polishFacts.reasonToken,
-                polishStatus = polishFacts.statusCode,
-                polishContext = polishFacts.contextToken,
-                captureDevice = captureDeviceLabel,
-            ),
-        )
-    }
+    /** The ready row when there is no draft to finalize; every value is the payload's, read before the reservation. */
+    private suspend fun TranscriptRepository.insertReadyTranscript(
+        originalText: String,
+        finalText: String,
+        engine: String,
+        latencyMs: Long,
+        durationMs: Long,
+        captureDevice: String,
+        polishFacts: PolishPublicationFacts,
+    ): Long = insert(
+        TranscriptEntity(
+            originalText = originalText,
+            finalText = finalText,
+            createdAtMs = System.currentTimeMillis(),
+            durationMs = durationMs,
+            speechEngine = "Parakeet",
+            polishEngine = engine,
+            polishLatencyMs = latencyMs,
+            insertionResult = "pending",
+            status = TranscriptEntity.STATUS_READY_FOR_INSERTION,
+            polishReason = polishFacts.reasonToken,
+            polishStatus = polishFacts.statusCode,
+            polishContext = polishFacts.contextToken,
+            captureDevice = captureDevice,
+        ),
+    )
 
     /** @return whether the words actually reached the clipboard, which the copy depends on. */
     private suspend fun keepOnClipboard(
@@ -1380,15 +1428,13 @@ internal class DictationSessionCoordinator(
         val copied = host.copyToClipboard(text)
         if (transcriptId <= 0L) return copied
 
-        runCatching {
-            transcripts.finalizeInsertionOutcome(
+        historyWrites.enqueue("clipboard-only outcome") { repository ->
+            repository.finalizeInsertionOutcome(
                 transcriptId,
                 TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
                 if (copied) InsertionResults.CLIPBOARD else InsertionResults.INSERTION_FAILED,
                 interrupted = true,
             )
-        }.onFailure { error ->
-            log.warn("Unable to finalize clipboard-only history: ${error.message}")
         }
         return copied
     }
@@ -1418,17 +1464,15 @@ internal class DictationSessionCoordinator(
         }
     }
 
-    private suspend fun keepInHistoryOnly(transcriptId: Long) {
+    private fun keepInHistoryOnly(transcriptId: Long) {
         if (transcriptId <= 0L) return
-        runCatching {
-            transcripts.finalizeInsertionOutcome(
+        historyWrites.enqueue("history-only outcome") { repository ->
+            repository.finalizeInsertionOutcome(
                 transcriptId,
                 TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
                 InsertionResults.HISTORY_ONLY,
                 interrupted = true,
             )
-        }.onFailure { error ->
-            log.warn("Unable to finalize history-only transcript: ${error.message}")
         }
     }
 
@@ -1594,9 +1638,9 @@ internal class DictationSessionCoordinator(
         cancelOpenPolishRequest()
         surface.showProcessing()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
-        val historyUpdates = synchronized(pendingHistoryUpdates) { pendingHistoryUpdates.toList() }
+        // The take's History writes are on the application's queue, in order; nothing here waits for
+        // them (#115). The Service may stop while the last of them is still landing.
         scope.launch {
-            historyUpdates.joinAll()
             host.postToMain {
                 cancelOpenPolishRequest()
                 // Both subscriptions go with the binding; nothing is called on the capture process here,
@@ -1629,17 +1673,18 @@ internal class DictationSessionCoordinator(
     }
 
     private fun updateDraftStatus(status: String, interrupted: Boolean = false, insertionResult: String? = null) {
-        val update = scope.launch(start = CoroutineStart.LAZY) {
-            setDraftStatus(status, interrupted, insertionResult)
+        historyWrites.enqueue("draft status") { repository ->
+            val id = resolvedDraftId()
+            if (id > 0L) repository.updateStatus(id, status, interrupted, insertionResult)
         }
-        pendingHistoryUpdates += update
-        update.start()
     }
 
-    private suspend fun setDraftStatus(status: String, interrupted: Boolean = false, insertionResult: String? = null) {
-        val id = draftId.get().takeIf { it > 0L } ?: runCatching { draftCreation?.await() ?: 0L }.getOrDefault(0L)
-        if (id > 0L) transcripts.updateStatus(id, status, interrupted, insertionResult)
-    }
+    /**
+     * The row's id, ON THE QUEUE'S WORKER: the draft insert is queued before every other write of the row,
+     * so this awaits at most a write already applied; a failed insert or a take that never went live is 0.
+     */
+    private suspend fun resolvedDraftId(): Long =
+        draftId.get().takeIf { it > 0L } ?: runCatching { draftCreation?.await() ?: 0L }.getOrDefault(0L)
 
     /**
      * A dictation that produced no words leaves nothing behind.
@@ -1667,34 +1712,33 @@ internal class DictationSessionCoordinator(
      * anything and the row is the only signal that words were lost. That is why the prune leaves
      * `interrupted` rows alone.
      *
-     * The id is cleared after the delete. That does not make a late write impossible — `setDraftStatus`
-     * can still resolve the completed `draftCreation` to the old id — it makes one harmless: the
+     * The id is cleared after the delete. That does not make a late write impossible — a later queued
+     * write can still resolve the completed `draftCreation` to the old id — it makes one harmless: the
      * `UPDATE` matches zero rows and cannot bring the draft back.
      */
     private fun discardDraft() {
-        val discard = scope.launch(start = CoroutineStart.LAZY) {
-            val id = draftId.get().takeIf { it > 0L }
-                ?: runCatching { draftCreation?.await() ?: 0L }.getOrDefault(0L)
+        historyWrites.enqueue("discard") { repository ->
+            val id = resolvedDraftId()
             if (id > 0L) {
-                transcripts.discard(id)
+                repository.discard(id)
                 draftId.set(0L)
             }
         }
-        pendingHistoryUpdates += discard
-        discard.start()
     }
 
     /**
-     * The Service's `onDestroy` body, in the order it always ran: invalidate under [publishLock], close
-     * the ledger, resolve the interrupted row while its creation job is alive, cancel and join the
-     * session job, write `interrupted`, then clean up capture on its own thread or unbind here. The
-     * Service stops foreground and dismisses the notification after this returns. The `runBlocking`
-     * calls are a known conflict with `kotlin-patterns.md` RULE: never-block-a-binder-or-ui-thread,
-     * carried unchanged; #115 owns their removal.
+     * The Service's `onDestroy` body, on the main thread and never waiting on anything (#115): invalidate
+     * and claim the arbiter under [publishLock], and in the SAME operation enqueue the `interrupted` write
+     * when the interrupt won; disarm the bound; cancel the session job without joining it; cancel polish;
+     * then clean up capture on its own thread or unbind here. The Service stops foreground and dismisses
+     * the notification after this returns. A finalization reserved before this took the lock is already
+     * queued ahead of `interrupted`, so `interrupted` is the last word on the row; one not yet reserved
+     * loses the arbiter to this interrupt and never enqueues.
      */
     fun destroy() {
-        // Invalidate a live wait or a running take BEFORE any blocking cleanup, under the same lock the
-        // waiter publishes under: after this, no pill can appear for a take being torn down.
+        destroyed.set(true)
+        // Invalidate a live wait or a running take BEFORE any cleanup, under the same lock the live
+        // transition publishes under: after this, no pill can appear for a take being torn down.
         val destroyedState = synchronized(publishLock) {
             val seen = state.get()
             if (seen == SessionState.STARTING || seen == SessionState.RECORDING) state.set(SessionState.ERROR)
@@ -1702,12 +1746,27 @@ internal class DictationSessionCoordinator(
             // The synchronous lifecycle decision (G2 D2): `interrupted` is committed only when nothing
             // was, and it revokes an outstanding publication or cancel reservation so the displaced
             // worker can no longer commit, announce or hand off. Nothing here waits on storage.
-            when (seen) {
+            val interrupted = when (seen) {
                 SessionState.STARTING -> arbiter.interrupt(TerminalReason.INTERRUPTED_STARTING)
                 SessionState.RECORDING -> arbiter.interrupt(TerminalReason.INTERRUPTED_RECORDING)
                 SessionState.PROCESSING -> arbiter.interrupt(TerminalReason.INTERRUPTED_PROCESSING)
                 SessionState.CANCELLING -> arbiter.interrupt(TerminalReason.INTERRUPTED_CANCELLING)
                 SessionState.IDLE, SessionState.FINISHING, SessionState.ERROR -> false
+            }
+            if (interrupted) {
+                // Only when the interrupt WON: every terminal commit site owns its own later status or
+                // discard write, and a reserved finalization is already queued (plan §3 C1).
+                historyWrites.enqueue("interrupted") { repository ->
+                    val id = resolvedDraftId()
+                    if (id > 0L) {
+                        repository.updateStatus(
+                            id,
+                            TranscriptEntity.STATUS_INTERRUPTED,
+                            interrupted = true,
+                            insertionResult = "not_attempted",
+                        )
+                    }
+                }
             }
             seen
         }
@@ -1719,39 +1778,10 @@ internal class DictationSessionCoordinator(
             destroyedState == SessionState.RECORDING ||
             destroyedState == SessionState.PROCESSING ||
             destroyedState == SessionState.CANCELLING
-        val interruptedDraftId = if (sessionWasOpen) {
-            runCatching {
-                runBlocking(Dispatchers.IO) {
-                    draftId.get().takeIf { it > 0L }
-                        ?: draftCreation?.await()?.takeIf { it > 0L }
-                        ?: 0L
-                }
-            }.onFailure { error ->
-                log.warn("Unable to resolve interrupted history row during teardown: ${error.message}")
-            }.getOrDefault(0L)
-        } else {
-            0L
-        }
-        // Stop any in-flight finalization before writing the terminal teardown state.
-        // This keeps a late polish callback from changing an interrupted row back to ready.
-        runBlocking(Dispatchers.IO) {
-            serviceJob.cancel()
-            serviceJob.join()
-        }
-        if (interruptedDraftId > 0L) {
-            runCatching {
-                runBlocking(Dispatchers.IO) {
-                    transcripts.updateStatus(
-                        interruptedDraftId,
-                        TranscriptEntity.STATUS_INTERRUPTED,
-                        interrupted = true,
-                        insertionResult = "not_attempted",
-                    )
-                }
-            }.onFailure { error ->
-                log.warn("Unable to mark interrupted session during teardown: ${error.message}")
-            }
-        }
+        // Cancelled, never joined (#115): a late polish callback cannot restore `ready` after
+        // `interrupted` because the finalization it would write either lost the arbiter above or was
+        // already queued ahead of the `interrupted` write.
+        serviceJob.cancel()
         val captureRunning = destroyedState == SessionState.RECORDING || destroyedState == SessionState.STARTING
         if (captureRunning && teardownStarted.compareAndSet(false, true)) {
             // Captures the link and the controller only: the Service is dead once `onDestroy` returns,

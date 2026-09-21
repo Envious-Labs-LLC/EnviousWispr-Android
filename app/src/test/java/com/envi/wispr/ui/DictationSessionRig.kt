@@ -2,6 +2,7 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.cleanup.LanguageDetector
+import com.envi.wispr.history.HistoryWriteQueue
 import com.envi.wispr.history.TranscriptDao
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
@@ -87,6 +88,18 @@ internal class DictationSessionRig {
     val pipeline = FakePipeline(capture, speech, polish)
     val dao = FakeTranscriptDao()
     val transcripts = TranscriptRepository(dao, clock = { 1_000L })
+    /** The application-owned History queue (#115), here on its own scope like the real one; tests drain it through [awaitHistoryIdle]. */
+    val historyWrites = HistoryWriteQueue(transcripts, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO), warn = { line -> log.warn(line) })
+
+    /**
+     * Every History write queued so far has been applied: a marker write is queued and awaited, and the
+     * queue is one worker in enqueue order. The rows' assertions read the DAO after this.
+     */
+    fun awaitHistoryIdle() {
+        val landed = CountDownLatch(1)
+        check(historyWrites.enqueue("test marker") { landed.countDown() }) { "the History queue refused a write" }
+        check(landed.await(10, TimeUnit.SECONDS)) { "the History queue never drained; log: ${log.lines}" }
+    }
     val polishTimeout = FakePolishTimeout()
     val endings = Endings()
     val preferenceStates = MutableStateFlow(AppPreferencesState())
@@ -111,7 +124,7 @@ internal class DictationSessionRig {
         insertion = insertion,
         log = log,
         preferences = preferences,
-        transcripts = transcripts,
+        historyWrites = historyWrites,
         languageDetector = LanguageDetector { null },
         loadPolicy = { PolishPolicy.Off },
         pipeline = pipeline,
@@ -240,9 +253,14 @@ internal class DictationSessionRig {
         override fun onMainThread(): Boolean = Thread.currentThread() === mainThread
         override fun elapsedRealtimeMs(): Long = System.nanoTime() / 1_000_000L
 
-        /** The Service stopped itself, which every terminal path ends in. */
+        /**
+         * The Service stopped itself, which every terminal path ends in. Then the History queue is drained:
+         * since #115 the Service may stop while the take's last write is still landing on the application's
+         * worker, and a row read before that is a row read too early.
+         */
         fun awaitStopped() {
             check(stopped.await(10, TimeUnit.SECONDS)) { "the owner never stopped the Service; events so far: $events" }
+            awaitHistoryIdle()
         }
     }
 
@@ -569,6 +587,11 @@ internal class DictationSessionRig {
         val rows = java.util.concurrent.ConcurrentHashMap<Long, TranscriptEntity>()
         private val nextId = AtomicLong(1L)
         @Volatile var failInserts = false
+        /** When set, the FIRST `updateStatus` is held this long: on two threads the second lands first (the #115 P4 race). */
+        @Volatile var delayFirstStatusMs = 0L
+        private val statusWrites = AtomicLong(0L)
+        /** When set, every status write is held until the test completes it: a stalled disk (the #115 destroy row). */
+        @Volatile var holdStatusWrites: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(rows.values.toList())
         override suspend fun insert(transcript: TranscriptEntity): Long {
@@ -583,6 +606,8 @@ internal class DictationSessionRig {
         override suspend fun deleteById(id: Long): Int = if (rows.remove(id) != null) 1 else 0
         override suspend fun deleteWordlessRows(): Int = 0
         override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int {
+            if (statusWrites.getAndIncrement() == 0L && delayFirstStatusMs > 0L) kotlinx.coroutines.delay(delayFirstStatusMs)
+            holdStatusWrites?.await()
             return if (rows.computeIfPresent(id) { _, row -> row.copy(status = status, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted, insertionResult = insertionResult ?: row.insertionResult) } != null) 1 else 0
         }
         override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int {

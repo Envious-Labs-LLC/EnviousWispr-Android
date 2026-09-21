@@ -30,6 +30,7 @@ import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.InputDeviceResolver
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
 import com.envi.wispr.insertion.ClipboardOutcome
@@ -1403,10 +1404,12 @@ class PasteAccessibilityService : AccessibilityService() {
             emit()
             return
         }
-        historyScope.launch {
-            // The History update is first-wins; the row leaves only when THIS writer won it, so a
-            // recovery or a second finalizer that got there first is the one that reports (round 1, F5).
-            val changed = runCatching { transcriptRepository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
+        // On the application's History queue (#115), behind the owner's writes of the same row, so the
+        // outcome cannot land before the finalization it belongs to. The update is first-wins; the row
+        // leaves only when THIS writer won it, so a recovery or a second finalizer that got there first
+        // is the one that reports (round 1, F5).
+        ModelBootstrapApplication.historyWrites(applicationContext).enqueue("insertion outcome") { repository ->
+            val changed = runCatching { repository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
                 .onFailure { error -> Log.w(TAG, "Unable to update transcript insertion result: ${error.message}") }
                 .getOrNull()
             if (changed == 1) emit()

@@ -17,8 +17,7 @@ import android.os.VibratorManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.ContextCompat
-import com.envi.wispr.history.EnviousWisprDatabase
-import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.paste.AccessibilityPermission
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.AutoPasteReadiness
@@ -224,7 +223,7 @@ class DictationSessionService : Service() {
             insertion = AccessibilityInsertionGateway,
             log = DebugSessionLog,
             preferences = preferences,
-            transcripts = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()),
+            historyWrites = ModelBootstrapApplication.historyWrites(applicationContext),
             languageDetector = languageDetector,
             loadPolicy = { providerConfiguration.loadPolicy() },
             pipeline = bindings,

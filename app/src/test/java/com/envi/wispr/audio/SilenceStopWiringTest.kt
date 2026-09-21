@@ -45,6 +45,8 @@ class SilenceStopWiringTest {
                 "startCaptureWithInputDeviceHeld", "getLiveState", "getLiveAfterMs", "finishTake",
                 // 2026-09-20, the take id and the peak (#176): appended, never inserted.
                 "startCaptureForTake", "getTakePeakAmplitude",
+                // 2026-09-21, the pushed picture (#187): appended, never inserted.
+                "registerSpectrumListener", "unregisterSpectrumListener",
             ),
             order,
         )

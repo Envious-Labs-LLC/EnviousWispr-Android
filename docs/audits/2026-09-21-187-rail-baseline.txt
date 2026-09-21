@@ -1,0 +1,43 @@
+# Rail battery baseline for #187, BEFORE any code change
+# Emulator EnviousWispr_Android_16_Play (emulator-5554), debug build of 83ded85 (the build-149 code), light mode, Chrome about:blank, 2026-09-21 ~03:15 local
+# Command: python3 -u scripts/uat/rail_signals.py (find_pill band widened to 0.97 for the bottom pill in the same commit)
+
+== silence: two seconds of nothing
+silence: 160 frames, 132 with the rail readable, rest 6px peak 36px
+  active frames 0, quiet frames 132
+PASS: nothing lit
+== tone120: 120 Hz, a low voice's fundamental
+tone120: 160 frames, 130 with the rail readable, rest 6px peak 36px
+  active frames 35, quiet frames 95
+  expected bars [5] (band 0); 33/35 active frames agree
+  frames with a far-off bar above a third: 0
+PASS: the tone lit its own bars and nothing far from them
+== tone1k: 1 kHz
+tone1k: 160 frames, 131 with the rail readable, rest 6px peak 36px
+  active frames 35, quiet frames 96
+  expected bars [2, 8] (band 5); 35/35 active frames agree
+  frames with a far-off bar above a third: 3
+PASS: the tone lit its own bars and nothing far from them
+== tone5k: 5 kHz, the sibilant band
+tone5k: 160 frames, 132 with the rail readable, rest 6px peak 36px
+  active frames 34, quiet frames 97
+  expected bars [0, 10] (band 10); 34/34 active frames agree
+  frames with a far-off bar above a third: 0
+PASS: the tone lit its own bars and nothing far from them
+== sweep: 100 Hz to 6 kHz in three seconds
+sweep: 180 frames, 151 with the rail readable, rest 6px peak 36px
+  active frames 55, quiet frames 96
+  distance from centre: first frames 0.1, last frames 4.6
+  frames where the lit bars jumped back toward the centre: 0
+PASS: the lit bars travelled from the centre to the edges
+== noise: flat hiss that starts mid-take, four seconds
+noise: 200 frames, 173 with the rail readable, rest 6px peak 36px
+  active frames 33, quiet frames 136
+  hiss lit the rail for 1.6 s from its start, then 20 of the next 20 frames were dark
+PASS: a steady hiss is learned and goes dark
+== bursts: 300 Hz switched on and off four times a second
+bursts: 161 frames, 133 with the rail readable, rest 6px peak 36px
+  active frames 36, quiet frames 96
+  beats seen 8 (about 9 expected for 2.5 s at 4 per second); trace [0.63, 0.87, 0.93, 0.73, 0.33, 0.53, 0.93, 0.87, 0.53, 0.33, 0.83, 0.97, 0.97, 0.9, 0.37, 0.73, 1.0, 0.8, 0.4, 0.2, 0.73, 1.0, 0.97, 0.8, 0.43, 0.5, 0.9, 1.0, 0.73, 0.4, 0.6, 0.93, 0.93, 0.47, 0.3, 0.47, 0.83]
+PASS: the bars pulse with the bursts
+EXIT=0

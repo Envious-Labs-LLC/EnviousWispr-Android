@@ -1,10 +1,10 @@
 package com.envi.wispr.privacy
 
-enum class PolishProvider { OFFLINE, OPENAI, GEMINI, CLAUDE, SELF_HOSTED }
+internal enum class PolishProvider { OFFLINE, OPENAI, GEMINI, CLAUDE, SELF_HOSTED }
 
-data class PrivacyDisclosure(val provider: PolishProvider, val summary: String, val sendsText: Boolean)
+internal data class PrivacyDisclosure(val provider: PolishProvider, val summary: String, val sendsText: Boolean)
 
-object PrivacyDisclosures {
+internal object PrivacyDisclosures {
     /** The privacy policy page, one URL for both products. */
     const val POLICY_URL = "https://enviouswispr.com/privacy-policy/"
 

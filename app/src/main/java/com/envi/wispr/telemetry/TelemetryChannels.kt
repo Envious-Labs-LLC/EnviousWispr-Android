@@ -14,14 +14,14 @@ import com.envi.wispr.ui.TerminalReason
  * Every `when` here is exhaustive with no `else`, so a new member of any vocabulary fails to compile
  * until someone decides its channel. No channel is inferred from a sentence or a member's name.
  */
-enum class Channel { DEFECT, BREADCRUMB }
+internal enum class Channel { DEFECT, BREADCRUMB }
 
 /**
  * The closed reading of `TranscriptEntity.insertionResult`, whose stored values are the string
  * constants in [InsertionResults]. `UNKNOWN` is what a historical or foreign string parses to and is
  * never a defect.
  */
-enum class InsertionResultKind(val stored: String) {
+internal enum class InsertionResultKind(val stored: String) {
     CLIPBOARD(InsertionResults.CLIPBOARD),
     PASTED(InsertionResults.PASTED),
     COMMITTED(InsertionResults.COMMITTED),
@@ -48,7 +48,7 @@ enum class InsertionResultKind(val stored: String) {
  * writes, the clipboard fallback either writer takes, or no route at all (History only). Its own
  * tokens on purpose: never a stored `InsertionResults` string, which names an OUTCOME.
  */
-enum class InsertionRouteKind(val wire: String) {
+internal enum class InsertionRouteKind(val wire: String) {
     COMMIT("commit"),
     PASTE("paste"),
     FALLBACK("fallback"),
@@ -70,7 +70,7 @@ enum class InsertionRouteKind(val wire: String) {
     }
 }
 
-object TelemetryChannels {
+internal object TelemetryChannels {
 
     fun of(reason: PolishReason): Channel = when (reason) {
         PolishReason.POLISHED, PolishReason.OFF, PolishReason.NO_SPEECH, PolishReason.EMPTY_AFTER_CLEANUP,

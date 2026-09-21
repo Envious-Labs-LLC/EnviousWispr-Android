@@ -7,7 +7,7 @@ import com.envi.wispr.providers.Provider
  * completed Save or Remove does to the per-provider cache. Kept out of the view model so they are tested
  * without an Android rig.
  */
-object ProviderDiscoveryApplyPolicy {
+internal object ProviderDiscoveryApplyPolicy {
     /** A completion applies only when its sequence is the latest allocated for that provider. */
     fun isLatest(sequence: Int, latestForProvider: Int?): Boolean = latestForProvider == sequence
 

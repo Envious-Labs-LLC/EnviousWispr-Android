@@ -49,15 +49,15 @@ internal val CloudProviders: List<Provider> = Provider.entries - Provider.SELF_H
 internal fun savedModelFor(provider: Provider, settings: ProviderSettingsUiState): String =
     if (provider == settings.provider) settings.model else ""
 
-enum class RungOne { OFF, THIS_PHONE, CLOUD }
+internal enum class RungOne { OFF, THIS_PHONE, CLOUD }
 
 /** Where the tab is standing: which rung one shows, and which tile the lower rungs describe. */
-data class SetupNavigation(val cloudSetup: Boolean, val browsedName: String?)
+internal data class SetupNavigation(val cloudSetup: Boolean, val browsedName: String?)
 
 /** What a tap on Cloud does: activate the configured provider, or open the setup rungs without a write. */
-enum class CloudTap { ACTIVATE, SETUP }
+internal enum class CloudTap { ACTIVATE, SETUP }
 
-enum class KeyRung { CONNECTED, FIELD }
+internal enum class KeyRung { CONNECTED, FIELD }
 
 /**
  * Where a user goes to make an API key for [Provider], and the domain to show them (#97).
@@ -72,14 +72,14 @@ enum class KeyRung { CONNECTED, FIELD }
  * **No claim about price.** macOS says "free API key", which holds for AI Studio and is wrong for the
  * other two, both of which want billing set up before a key does anything.
  */
-data class KeyPortal(val domain: String, val url: String)
+internal data class KeyPortal(val domain: String, val url: String)
 
 /**
  * Measured 2026-09-02: `console.anthropic.com/settings/keys` answers 301 to `platform.claude.com`, so the
  * old address ships a redirect rather than a destination. Re-check these by fetching them, never by
  * remembering them; a dead link here is a user who cannot start.
  */
-fun keyPortal(provider: Provider): KeyPortal? = when (provider) {
+internal fun keyPortal(provider: Provider): KeyPortal? = when (provider) {
     Provider.OPENAI -> KeyPortal("platform.openai.com", "https://platform.openai.com/api-keys")
     Provider.GEMINI -> KeyPortal("aistudio.google.com", "https://aistudio.google.com/apikey")
     Provider.CLAUDE -> KeyPortal("platform.claude.com", "https://platform.claude.com/settings/keys")
@@ -87,9 +87,9 @@ fun keyPortal(provider: Provider): KeyPortal? = when (provider) {
     Provider.SELF_HOSTED_POLISH -> null
 }
 
-data class KeyPill(val label: String, val enabled: Boolean)
+internal data class KeyPill(val label: String, val enabled: Boolean)
 
-object PolishLadder {
+internal object PolishLadder {
     /** Rung 1 follows the persisted mode, except that an open setup shows Cloud while nothing is saved. */
     fun rungOne(mode: PolishMode, cloudSetup: Boolean): RungOne = when (mode) {
         PolishMode.PROVIDER -> RungOne.CLOUD
@@ -282,7 +282,7 @@ object PolishLadder {
  * until the write it named has completed, then DONE or FAILED. It never infers process death from the
  * numbers; the tab clears a restored target under its loading gate instead.
  */
-object PolishWritePolicy {
+internal object PolishWritePolicy {
     enum class Outcome { WAITING, DONE, FAILED }
 
     fun outcome(target: Int?, completed: Int, error: String?): Outcome = when {
@@ -298,7 +298,7 @@ object PolishWritePolicy {
  * animated screen body; [current] is the view model's `writeSequence`. After process recreation the
  * remembered value can exceed the fresh view model's count, which is the reset case.
  */
-object PolishSnackbarPolicy {
+internal object PolishSnackbarPolicy {
     /** @return the sequence to remember after this evaluation, and whether to show. */
     fun decide(lastShown: Int, current: Int, message: String): Decision = when {
         current < lastShown -> Decision(remember = current, show = false)
@@ -452,7 +452,7 @@ internal fun relativeAge(fetchedAt: Long, now: Long = System.currentTimeMillis()
  * catalog, so the two products cannot drift. The option labels are a total function over each enum
  * (no `else`), so adding a trained value cannot leave a chip without a name.
  */
-object S1ControlCopy {
+internal object S1ControlCopy {
     const val EYEBROW = "WRITING STYLE"
     const val INTRO = "Superwhisper trained S1-mini on these three settings. Change them any time; a new pick applies to your next dictation."
 

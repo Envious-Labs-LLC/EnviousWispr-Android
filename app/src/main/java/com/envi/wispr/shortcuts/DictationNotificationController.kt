@@ -16,7 +16,7 @@ import com.envi.wispr.polish.PolishFailureNotice
 import com.envi.wispr.ui.DictationSessionService
 import com.envi.wispr.ui.SettingsActivity
 
-object DictationNotificationController {
+internal object DictationNotificationController {
     private const val CHANNEL_ID = "active_dictation"
     const val NOTIFICATION_ID = 1001
 

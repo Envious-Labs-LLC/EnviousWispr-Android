@@ -1,14 +1,14 @@
 package com.envi.wispr.models
 
-enum class ModelUiAction { DOWNLOAD, PAUSE, RESUME, RETRY, REPAIR, REMOVE, UPDATE, CANCEL, NONE }
+internal enum class ModelUiAction { DOWNLOAD, PAUSE, RESUME, RETRY, REPAIR, REMOVE, UPDATE, CANCEL, NONE }
 
 /**
  * What a model's status MEANS, beside the label that says it (#64). Set in the same branch as each label,
  * so the two cannot drift; consumers classify on this and never on the label string.
  */
-enum class ModelHealth { READY, NOT_READY, BROKEN, UNKNOWN }
+internal enum class ModelHealth { READY, NOT_READY, BROKEN, UNKNOWN }
 
-data class ModelUiState(
+internal data class ModelUiState(
     val label: String,
     val health: ModelHealth,
     val bytes: Long = 0L,
@@ -18,7 +18,7 @@ data class ModelUiState(
 )
 
 /** Maps persisted WorkManager and model-control values to honest lifecycle controls. */
-fun modelUiState(
+internal fun modelUiState(
     verifiedReady: Boolean,
     workState: String?,
     progressState: String? = null,

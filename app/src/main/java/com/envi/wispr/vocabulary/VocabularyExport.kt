@@ -7,7 +7,7 @@ package com.envi.wispr.vocabulary
  * phone is a promise about a format, and a promise belongs beside the code that writes it.
  * `VocabularyTransfer` owns the CONTENT; this owns how it arrives on disk.
  */
-object VocabularyExport {
+internal object VocabularyExport {
 
     /**
      * `text/plain`, because that is what the file honestly is.

@@ -156,7 +156,7 @@ class PasteAccessibilityService : AccessibilityService() {
          * Starts an event-assisted insertion attempt. The dictated text remains on the
          * clipboard even if Android never restores a safe editable target.
          */
-        fun pasteWhenTargetReturns(
+        internal fun pasteWhenTargetReturns(
             transcriptId: Long,
             text: String,
             previousClipboard: ClipData? = null,
@@ -179,7 +179,7 @@ class PasteAccessibilityService : AccessibilityService() {
          * carry WHY nothing was pinned all the way to the announcement. See
          * [InsertionJudgement.handoffToJudge].
          */
-        fun pinTargetForDictation(): DictationTargetPin {
+        internal fun pinTargetForDictation(): DictationTargetPin {
             val service = instance ?: return DictationTargetPin.SERVICE_NOT_RUNNING
             return service.callOnMain(DictationTargetPin.SERVICE_DID_NOT_ANSWER) {
                 service.pinTarget()

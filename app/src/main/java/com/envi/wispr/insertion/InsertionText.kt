@@ -1,6 +1,6 @@
 package com.envi.wispr.insertion
 
-object InsertionText {
+internal object InsertionText {
     private const val CONTEXT_LIMIT = 64
 
     data class SmartPayloadPlan(

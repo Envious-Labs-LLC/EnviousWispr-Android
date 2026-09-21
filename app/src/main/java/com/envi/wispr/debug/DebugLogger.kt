@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * File logging must be explicitly enabled — off by default to avoid
  * unnecessary I/O during normal use.
  */
-object DebugLogger {
+internal object DebugLogger {
 
     private const val LOG_PATH = "/sdcard/EnviousWispr/debug.log"
     private const val MAX_LOG_SIZE_BYTES = 1_000_000L

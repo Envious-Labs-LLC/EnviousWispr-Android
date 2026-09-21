@@ -15,7 +15,7 @@ package com.envi.wispr.paste
  * The members are produced by `PasteAccessibilityService.pinTarget` and its wrapper, one per exit,
  * so a new way to decline has to name itself rather than inherit the ordinary case.
  */
-enum class DictationTargetPin {
+internal enum class DictationTargetPin {
     /** An editor was pinned. Insertion has somewhere to go. */
     PINNED,
 
@@ -33,7 +33,7 @@ enum class DictationTargetPin {
 }
 
 /** Reconciles what the START of a dictation saw with what INSERTION found. */
-object InsertionJudgement {
+internal object InsertionJudgement {
     /**
      * The handoff this dictation must be judged by, which is not always the one insertion returned.
      *

@@ -9,7 +9,7 @@ import androidx.room.PrimaryKey
     tableName = "transcripts",
     indices = [Index(value = ["createdAtMs"])],
 )
-data class TranscriptEntity(
+internal data class TranscriptEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val originalText: String,

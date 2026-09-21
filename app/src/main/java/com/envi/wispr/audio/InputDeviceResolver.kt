@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Founder decision 2026-09-15: Auto uses connected earbuds, like a phone call. The macOS order (built-in
  * first) would never use earbuds on a phone, because a phone always has a built-in microphone.
  */
-object InputDeviceResolver {
+internal object InputDeviceResolver {
 
     /** The device to record from, or null when nothing at all can record, and why it was chosen. */
     data class Resolution(val target: InputDeviceCandidate?, val reason: InputRouteReason) {
@@ -116,7 +116,7 @@ object InputDeviceResolver {
  * [release] is idempotent and undoes exactly what was set: a hold that never set a communication device
  * never clears one, so it cannot clear a request that belongs to somebody else.
  */
-class RouteHold(
+internal class RouteHold(
     private val clearCommunicationDevice: () -> Unit,
     private val removeListener: () -> Unit,
 ) {

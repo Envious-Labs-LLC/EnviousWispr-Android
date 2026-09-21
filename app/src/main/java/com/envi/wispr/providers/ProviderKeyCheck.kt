@@ -7,7 +7,7 @@ import com.envi.wispr.polish.PolishFailure
  * the provider's model-list endpoint and consumed by [ProviderConfigurationRepository.saveProvider], which
  * writes a cloud key only on [Accepted]. No verdict carries the key or the response body.
  */
-sealed interface ProviderKeyCheck {
+internal sealed interface ProviderKeyCheck {
     /** The provider answered 200 with its model list: the key works. */
     data object Accepted : ProviderKeyCheck
 
@@ -29,10 +29,10 @@ sealed interface ProviderKeyCheck {
 }
 
 /** The seam the repository is given; [ProviderModelDiscoveryClient] is the production implementation. */
-fun interface ProviderKeyChecker {
+internal fun interface ProviderKeyChecker {
     fun check(provider: Provider, apiKey: String): ProviderKeyCheck
 }
 
 /** Thrown by [ProviderConfigurationRepository.saveProvider] before any write when the check did not accept. */
-class ProviderKeyRefusedException(val provider: Provider, val verdict: ProviderKeyCheck) :
+internal class ProviderKeyRefusedException(val provider: Provider, val verdict: ProviderKeyCheck) :
     RuntimeException("key check for $provider: ${verdict::class.simpleName}")

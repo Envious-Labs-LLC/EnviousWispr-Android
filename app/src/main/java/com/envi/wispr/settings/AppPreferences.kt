@@ -21,7 +21,7 @@ import java.io.IOException
 
 private val Context.enviousWisprDataStore by preferencesDataStore(name = "enviouswispr_settings")
 
-data class AppPreferencesState(
+internal data class AppPreferencesState(
     val onboardingStep: Int = 0,
     val onboardingMobileData: Boolean = false,
     val onboardingComplete: Boolean = false,
@@ -53,19 +53,19 @@ data class AppPreferencesState(
     val keepEarbudsReady: Boolean = true,
 )
 
-fun AppPreferencesState.cleanupOptions(): CleanupOptions = CleanupOptions(
+internal fun AppPreferencesState.cleanupOptions(): CleanupOptions = CleanupOptions(
     removeFillers = fillerRemovalEnabled,
     spokenEmoji = emojiFormatterEnabled,
     spokenPunctuation = spokenPunctuationEnabled,
 )
 
-fun AppPreferencesState.clipboardInsertionPolicy(): ClipboardInsertionPolicy = ClipboardInsertionPolicy(
+internal fun AppPreferencesState.clipboardInsertionPolicy(): ClipboardInsertionPolicy = ClipboardInsertionPolicy(
     autoCopyToClipboard = autoCopyToClipboard,
     restoreClipboardAfterPaste = restoreClipboardAfterPaste,
     smartInsertion = smartInsertionEnabled,
 )
 
-class AppPreferences(context: Context) {
+internal class AppPreferences(context: Context) {
     private val dataStore = context.applicationContext.enviousWisprDataStore
 
     val authoritativeState: Flow<AppPreferencesState> = dataStore.data

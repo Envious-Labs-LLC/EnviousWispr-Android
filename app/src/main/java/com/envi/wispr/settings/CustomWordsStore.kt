@@ -3,7 +3,7 @@ package com.envi.wispr.settings
 import android.content.Context
 import com.envi.wispr.polish.S1PromptBuilder
 
-class CustomWordsStore(context: Context) {
+internal class CustomWordsStore(context: Context) {
     companion object {
         private const val PREFERENCES = "envious_wispr_settings"
         private const val CUSTOM_WORDS = "custom_words"

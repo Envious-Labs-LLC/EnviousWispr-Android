@@ -11,7 +11,7 @@ import com.envi.wispr.providers.capabilities
  * a legacy alias, and decoding is tolerant, an empty or unknown token reads as null and the card then says
  * nothing about a failure rather than throwing.
  */
-sealed class PolishContext {
+internal sealed class PolishContext {
     object Off : PolishContext()
     object Local : PolishContext()
     object CloudUnconfigured : PolishContext()

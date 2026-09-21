@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicReference
  * gate. Sentry starts everywhere; PostHog and `app.launched` only in main; pending defects left by a
  * dying helper are converted only by main.
  */
-object Telemetry {
+internal object Telemetry {
     private const val TAG = "Telemetry"
 
     @Volatile private var config: TelemetryConfig? = null

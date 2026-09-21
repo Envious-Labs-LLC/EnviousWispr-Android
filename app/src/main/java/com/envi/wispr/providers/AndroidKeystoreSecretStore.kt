@@ -14,7 +14,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.spec.GCMParameterSpec
 
 /** Stores only encrypted blobs in the app's no-backup directory. Plaintext never enters preferences or logs. */
-class AndroidKeystoreSecretStore(context: Context) : SecretStore {
+internal class AndroidKeystoreSecretStore(context: Context) : SecretStore {
     private val file: File = File(context.applicationContext.noBackupFilesDir, "provider-secrets.v1")
     // All instances in the process share the same file and Keystore alias.
     private val lock = processLock

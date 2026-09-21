@@ -50,7 +50,7 @@ import kotlin.math.sqrt
  *
  * The per-take state (the floor) lives on the instance, which the capture service creates per take.
  */
-class SpectrumAnalyzer {
+internal class SpectrumAnalyzer {
 
     /** The last [FFT_SIZE] samples, oldest first, as -1..1. Silence until the first chunk. */
     private val history = FloatArray(FFT_SIZE)

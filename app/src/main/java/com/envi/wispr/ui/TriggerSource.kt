@@ -14,7 +14,7 @@ package com.envi.wispr.ui
  * A missing or unknown extra reads [UNKNOWN] and is kept as such: never defaulted to a real surface
  * (`validation-discipline.md`, plausible-value traps).
  */
-enum class TriggerSource(val wire: String) {
+internal enum class TriggerSource(val wire: String) {
     BUBBLE_TAP("bubble_tap"),
     BUBBLE_HOLD("bubble_hold"),
     ASSIST("assist"),

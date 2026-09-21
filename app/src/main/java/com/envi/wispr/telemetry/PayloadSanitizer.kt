@@ -16,7 +16,7 @@ package com.envi.wispr.telemetry
  *
  * Pure: no SDK types, so `PayloadSanitizerTest` drives the exact bytes with literal witnesses.
  */
-object PayloadSanitizer {
+internal object PayloadSanitizer {
     const val REDACTED = "[REDACTED]"
     const val MAX_STRING = 100
 

@@ -61,7 +61,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-data class ProviderSettingsUiState(
+internal data class ProviderSettingsUiState(
     val loading: Boolean = true,
     val mode: PolishMode = PolishMode.OFFLINE_S1,
     val provider: Provider = Provider.OPENAI,
@@ -91,7 +91,7 @@ data class ProviderSettingsUiState(
 }
 
 /** The setup page's live model list (#84): one provider at a time, one sequence, one phase. */
-data class ProviderDiscoveryUiState(
+internal data class ProviderDiscoveryUiState(
     val provider: Provider? = null,
     val sequence: Int = 0,
     val phase: Phase = Phase.IDLE,
@@ -105,7 +105,7 @@ data class ProviderDiscoveryUiState(
     enum class Phase { IDLE, CHECKING, LISTED, FAILED }
 }
 
-data class AppReadiness(
+internal data class AppReadiness(
     val microphoneGranted: Boolean = false,
     val notificationsGranted: Boolean = false,
     val accessibilityPermitted: Boolean = false,
@@ -119,7 +119,7 @@ data class AppReadiness(
         get() = microphoneGranted && requiredModelsReady
 }
 
-data class EnviousWisprUiState(
+internal data class EnviousWisprUiState(
     val loading: Boolean = true,
     val preferences: AppPreferencesState = AppPreferencesState(),
     val readiness: AppReadiness = AppReadiness(),
@@ -142,7 +142,7 @@ data class EnviousWisprUiState(
             !preferences.onboardingDismissed
 }
 
-class EnviousWisprViewModel(
+internal class EnviousWisprViewModel(
     private val appPreferences: AppPreferences,
     private val repository: TranscriptRepository,
     private val customTermRepository: CustomTermRepository,
@@ -814,7 +814,7 @@ class EnviousWisprViewModel(
  * and `getEnabledAccessibilityServiceList`, which project the same setting. Liveness is pushed by
  * `PasteAccessibilityService.isBound`, and the two are combined in the view model.
  */
-fun readAppReadiness(context: Context): AppReadiness {
+internal fun readAppReadiness(context: Context): AppReadiness {
     val accessibilityPermitted = AccessibilityPermission.isGranted(context)
 
     val speechModelReady = ModelStorage.isReady(context, ModelManifest.parakeet)

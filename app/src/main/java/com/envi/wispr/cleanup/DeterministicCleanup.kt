@@ -5,16 +5,16 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
 
-data class CleanupOptions(
+internal data class CleanupOptions(
     val removeFillers: Boolean = true,
     val spokenEmoji: Boolean = true,
     val spokenPunctuation: Boolean = false,
 )
 
-data class CleanupResult(val text: String, val changed: Boolean, val recovered: Boolean)
+internal data class CleanupResult(val text: String, val changed: Boolean, val recovered: Boolean)
 
 /** Conservative, deterministic English cleanup. It never calls a network service. */
-object DeterministicCleanup {
+internal object DeterministicCleanup {
     // `um` and `err` were removed 2026-09-02 (#36, #107). Both are ordinary WORDS, so stripping them
     // deletes something the speaker authored, and RULE: matcher-set-adversarial-tests says that direction
     // fails worse than leaving a filler in. `err` is an English verb: "To err is human" became "To is
@@ -594,7 +594,7 @@ object DeterministicCleanup {
     private fun ordinalSuffix(value: Int) = if (value % 100 in 11..13) "th" else when (value % 10) { 1 -> "st"; 2 -> "nd"; 3 -> "rd"; else -> "th" }
 }
 
-object TextSafety {
+internal object TextSafety {
     fun isDeterministicSafe(input: String, output: String, allowLargeContraction: Boolean): Boolean {
         if (input.isNotBlank() && output.isBlank()) return false
         if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' }) return false

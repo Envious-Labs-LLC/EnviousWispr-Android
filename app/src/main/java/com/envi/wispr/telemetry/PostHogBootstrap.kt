@@ -24,7 +24,7 @@ import java.util.UUID
  * stamps `app`, `environment`, `app_version`, `app_build` and `process_run_id`, runs the volume policy
  * (which also reduces SDK context to the allowlist), then the sanitizer. It never touches the journal.
  */
-object PostHogBootstrap {
+internal object PostHogBootstrap {
     private const val TAG = "PostHogBootstrap"
     const val HOST = "https://us.i.posthog.com"
     const val APP_TAG = "enviouswispr-android"

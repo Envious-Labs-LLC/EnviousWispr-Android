@@ -26,7 +26,7 @@ import java.io.File
  * re-enter through the Java client and pass `beforeSend` too (`OutboxSender`, verified 2026-09-19);
  * non-event envelope items do not, which is why attachments stay off.
  */
-object SentryBootstrap {
+internal object SentryBootstrap {
     const val TAG_PROCESS = "app.process"
     const val TAG_BUILD_TYPE = "app.build_type"
     const val TAG_DISTINCT_ID = "analytics.distinct_id"

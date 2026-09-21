@@ -1,14 +1,14 @@
 package com.envi.wispr.providers
 
 /** Providers supported by the configuration layer. The wire shape per provider is its `ProviderAdapter`; `ProviderPolishClient` and `ProviderModelDiscoveryClient` make the calls. */
-enum class Provider {
+internal enum class Provider {
     OPENAI,
     GEMINI,
     CLAUDE,
     SELF_HOSTED_POLISH,
 }
 
-data class ProviderCapabilities(
+internal data class ProviderCapabilities(
     val provider: Provider,
     val displayName: String,
     val requiresApiKey: Boolean,
@@ -17,7 +17,7 @@ data class ProviderCapabilities(
     val offlineAvailable: Boolean,
 )
 
-fun Provider.capabilities(): ProviderCapabilities = when (this) {
+internal fun Provider.capabilities(): ProviderCapabilities = when (this) {
     Provider.OPENAI -> ProviderCapabilities(this, "OpenAI", true, false, true, false)
     Provider.GEMINI -> ProviderCapabilities(this, "Gemini", true, false, true, false)
     Provider.CLAUDE -> ProviderCapabilities(this, "Claude", true, false, true, false)
@@ -25,14 +25,14 @@ fun Provider.capabilities(): ProviderCapabilities = when (this) {
 }
 
 /** User-facing disclosure kept here so callers cannot imply that configuration is an offline feature. */
-data class ProviderDisclosure(
+internal data class ProviderDisclosure(
     val provider: Provider,
     val summary: String,
     val networkRequired: Boolean,
     val apiKeyStoredEncrypted: Boolean,
 )
 
-fun Provider.disclosure(): ProviderDisclosure = ProviderDisclosure(
+internal fun Provider.disclosure(): ProviderDisclosure = ProviderDisclosure(
     provider = this,
     summary = when (this) {
         Provider.OPENAI -> "Text is sent to OpenAI when this provider is used."

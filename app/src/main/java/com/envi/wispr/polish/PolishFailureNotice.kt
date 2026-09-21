@@ -8,7 +8,7 @@ package com.envi.wispr.polish
  * 2026-07-15), shown for a hard failure and never for a skip; [title] and [detail] are the lead-in and the
  * full reason, carried by a silent notification the user can read at leisure and tap to open the app.
  */
-class PolishFailureNotice private constructor(
+internal class PolishFailureNotice private constructor(
     val toastLine: String,
     val title: String,
     val detail: String,

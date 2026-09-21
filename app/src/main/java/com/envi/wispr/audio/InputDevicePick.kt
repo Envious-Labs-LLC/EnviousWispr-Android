@@ -9,7 +9,7 @@ import android.media.AudioDeviceInfo
  * earbuds on two runs the same day, measured 2026-09-16) and never the address (redacted to its last two
  * bytes without `BLUETOOTH_CONNECT`, which this app does not hold and does not need).
  */
-sealed class InputDevicePick {
+internal sealed class InputDevicePick {
     object Auto : InputDevicePick()
     data class Device(val type: Int, val name: String) : InputDevicePick()
 
@@ -40,7 +40,7 @@ sealed class InputDevicePick {
  * One input as the resolver sees it: a plain value, so the Auto order is tested without a phone.
  * `id` is carried only so the service can find the same `AudioDeviceInfo` in the list it read.
  */
-data class InputDeviceCandidate(
+internal data class InputDeviceCandidate(
     val id: Int,
     val type: Int,
     val name: String,
@@ -64,7 +64,7 @@ data class InputDeviceCandidate(
 }
 
 /** The one place a device type becomes words a user reads. */
-object InputDeviceLabels {
+internal object InputDeviceLabels {
     const val PHONE = "Phone"
 
     /** The card's fallback marker: "AirPods Pro 3, then Phone". */
@@ -87,7 +87,7 @@ object InputDeviceLabels {
  * The kind of device a take started on, as the app process reads it over the binder. It decides the
  * Bluetooth tip; the app never infers the route from its own device list or from the label.
  */
-enum class InputRouteKind(val code: Int) {
+internal enum class InputRouteKind(val code: Int) {
     NONE(0),
     PHONE(1),
     WIRED_OR_USB(2),
@@ -115,7 +115,7 @@ enum class InputRouteKind(val code: Int) {
  * Why the take is on the device it is on. The latest event wins; the app process reads the code over
  * the binder and never parses the label for it.
  */
-enum class InputRouteReason(val code: Int) {
+internal enum class InputRouteReason(val code: Int) {
     AUTO(0),
     PICKED(1),
     PICK_MISSING(2),
@@ -134,7 +134,7 @@ enum class InputRouteReason(val code: Int) {
  * Every write and read goes through [synchronized] on this object, and no platform call is ever made
  * while it is held: the lock guards the record, the calls happen outside it.
  */
-class EffectiveDevice(startReason: InputRouteReason) {
+internal class EffectiveDevice(startReason: InputRouteReason) {
     private val history = ArrayList<String>(3)
     private var reason: InputRouteReason = startReason
     private var startKind: InputRouteKind = InputRouteKind.NONE

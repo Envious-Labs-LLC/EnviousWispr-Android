@@ -7,7 +7,7 @@ import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.ProviderPolishClient
 
 /** One row of the setup page's model list (#84). */
-data class ModelRow(
+internal data class ModelRow(
     val id: String,
     val displayName: String,
     val note: String?,
@@ -26,7 +26,7 @@ data class ModelRow(
     val typed: Boolean = false,
 )
 
-object ModelListPresentation {
+internal object ModelListPresentation {
     /**
      * The ONE model to badge Recommended, or null when there is nothing worth badging (#99).
      *

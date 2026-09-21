@@ -70,7 +70,7 @@ internal fun OnboardingScreen(
         onStepChange(when (stage) {
             OnboardingStage.PRACTICE -> OnboardingStage.DEMO.ordinal
             OnboardingStage.DEMO -> OnboardingStage.PERMISSIONS.ordinal
-            else -> OnboardingStage.WELCOME.ordinal
+            OnboardingStage.WELCOME, OnboardingStage.DOWNLOADS, OnboardingStage.PERMISSIONS -> OnboardingStage.WELCOME.ordinal
         })
     }
     // Load the speech and polish models while the user reads and grants the permissions, so the first
@@ -196,7 +196,7 @@ internal fun OnboardingScreen(
                     OnboardingStage.DOWNLOADS -> {
                         val active = downloads.getOrNull(if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0)
                         val action = active?.action
-                        SetupButton(when (action) { ModelUiAction.PAUSE -> "Pause download"; ModelUiAction.RESUME -> "Resume download"; else -> "Retry download" }, fill, active != null) {
+                        SetupButton(when (action) { ModelUiAction.PAUSE -> "Pause download"; ModelUiAction.RESUME -> "Resume download"; ModelUiAction.DOWNLOAD, ModelUiAction.RETRY, ModelUiAction.REPAIR, ModelUiAction.REMOVE, ModelUiAction.UPDATE, ModelUiAction.CANCEL, ModelUiAction.NONE, null -> "Retry download" }, fill, active != null) {
                             if (action == ModelUiAction.PAUSE) model.pauseDownloads() else model.resumeDownloads()
                         }
                         TextButton(onClick = { model.resumeDownloads(mobileData = true) }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Use mobile data", color = accent, fontSize = 12.sp) }

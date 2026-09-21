@@ -7,7 +7,7 @@ import com.envi.wispr.providers.Provider
  * speed and accuracy dots the founder's design carries. This is no longer a list of what exists; the
  * provider answers that. An id absent here shows without a note or dots.
  */
-data class CatalogModel(
+internal data class CatalogModel(
     val name: String,
     val note: String,
     val tag: String? = null,
@@ -28,7 +28,7 @@ data class CatalogModel(
     val released: String? = null,
 )
 
-object ModelNotes {
+internal object ModelNotes {
     private val openAi = listOf(
         // Ratings verified against OpenAI's July 2026 pricing (Sol $5/$30, Terra $2/$12, Luna $0.20/$1.20 per 1M).
         CatalogModel("gpt-5.6-terra", "Reasoning, best value for most dictation", cost = 2, speed = 2, accuracy = 3),

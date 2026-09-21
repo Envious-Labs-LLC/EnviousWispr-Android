@@ -15,7 +15,7 @@ package com.envi.wispr.polish
  * The VALUES are stored in Room and read back for the life of a row, so a rename here changes what
  * rows written by older builds display. `PolishEngineLabelsTest` pins each one.
  */
-object PolishEngineLabels {
+internal object PolishEngineLabels {
 
     /** No polish has run yet. Written on the draft row the moment recording starts. */
     const val NOT_RECORDED = ""

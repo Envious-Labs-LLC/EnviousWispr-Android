@@ -114,7 +114,7 @@ internal class ProviderModelDiscoveryClient(
                         if (rows.isNotEmpty()) break
                         return when (val verdict = adapter.keyCheckVerdict(transport.status, transport.body)) {
                             ProviderKeyCheck.Accepted -> ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST, transport.status))
-                            else -> ProviderDiscovery.Refused(verdict)
+                            ProviderKeyCheck.NotApplicable, is ProviderKeyCheck.Rejected, is ProviderKeyCheck.Denied, is ProviderKeyCheck.Unverified -> ProviderDiscovery.Refused(verdict)
                         }
                     }
                     val page = adapter.parseModelRows(transport.body)

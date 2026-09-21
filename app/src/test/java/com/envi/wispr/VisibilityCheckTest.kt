@@ -60,6 +60,11 @@ class VisibilityCheckTest {
         rejected("name-next-line", "app/src/main/java/com/envi/wispr/Leak.kt:3: public-default top-level class Leak")
         rejected("indented-top-level", "app/src/main/java/com/envi/wispr/Leak.kt:6: public-default top-level class Leak")
         rejected("allowlisted-name-wrong-file", "app/src/main/java/com/envi/wispr/Other.kt:3: public-default top-level class SettingsActivity")
+        // Code review round 1: an explicit `public` is the default written out; a same-line annotation
+        // and `fun interface` are still declarations.
+        rejected("explicit-public", "app/src/main/java/com/envi/wispr/Leak.kt:3: public-default top-level class Leak")
+        rejected("annotated-same-line", "app/src/main/java/com/envi/wispr/Leak.kt:3: public-default top-level fun leak")
+        rejected("fun-interface", "app/src/main/java/com/envi/wispr/Leak.kt:3: public-default top-level interface Leak")
     }
 
     @Test
@@ -79,11 +84,19 @@ class VisibilityCheckTest {
         rejected("else-over-enum", "app/src/main/java/com/envi/wispr/Color.kt:8: else over the closed set Color")
         rejected("else-over-sealed-data-object", "app/src/main/java/com/envi/wispr/Shape.kt:11: else over the closed set Shape")
         rejected("else-over-nested-enum-bare", "app/src/main/java/com/envi/wispr/Owner.kt:8: else over the closed set Mode")
+        // Code review round 1: a sealed child declared in another file of the package, and an enum whose
+        // entries are lowercase or backticked with a `;` body.
+        rejected("sealed-child-in-other-file", "app/src/main/java/com/envi/wispr/Box.kt:8: else over the closed set Shape")
+        rejected("lowercase-enum-with-body", "app/src/main/java/com/envi/wispr/Tone.kt:14: else over the closed set Tone")
     }
 
     @Test
     fun anOpenWhenWithAnElseIsNotTheChecksBusiness() {
         val r = run("--root", File(fixtures, "open-mixed-when").path)
         assertEquals("a when over an Int, a guarded arm, or a mix of a member and a type test must pass:\n${r.out}", 0, r.exit)
+        // An open subject whose arms happen to name members keeps its else with a stated reason on the
+        // when's own line (`// visibility-open-when: <reason>`).
+        val marked = run("--root", File(fixtures, "open-when-marker").path)
+        assertEquals("the marker with a reason must let the else stand:\n${marked.out}", 0, marked.exit)
     }
 }

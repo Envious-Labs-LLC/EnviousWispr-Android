@@ -36,7 +36,9 @@ CHANGED=$(printf '%s\n' "$CHANGED" | sed '/^$/d' | sort -u)
 
 detect() {
   local lanes=""
-  printf '%s\n' "$CHANGED" | grep -qE '^(app/|llama-android/|third_party/|build\.gradle\.kts|settings\.gradle\.kts|gradle\.properties|gradle/|gradlew|gradlew\.bat|\.gitmodules)' && lanes+="Code "
+  # scripts/check-visibility.py and its allowlist are Code-lane files (#191): a change to the check must
+  # run the check and VisibilityCheckTest, which only the Code lane does.
+  printf '%s\n' "$CHANGED" | grep -qE '^(app/|llama-android/|third_party/|build\.gradle\.kts|settings\.gradle\.kts|gradle\.properties|gradle/|gradlew|gradlew\.bat|\.gitmodules|scripts/check-visibility\.py|scripts/visibility-allowlist\.txt)' && lanes+="Code "
   printf '%s\n' "$CHANGED" | grep -qE '^accelerator-benchmark/' && lanes+="Benchmark "
   printf '%s\n' "$CHANGED" | grep -qE '^\.github/' && lanes+="CI/workflow "
   printf '%s\n' "$CHANGED" | grep -qE '^(\.claude/|docs/|CLAUDE\.md|scripts/)' && lanes+="Docs/dev-tooling "

@@ -32,8 +32,7 @@ persisted byte changes. The persona check would compare identical before-and-aft
 - 216 of the 229 top-level declarations in `app/src/main/java` that carry Kotlin's public default become
   `internal` (corrected at build: the enumeration script did not count two top-level `const val`s,
   `MODEL_HOST_OWN` and `MODEL_HOST_HUGGING_FACE` in `models/ModelDelivery.kt`; the check's scanner found them);
-  in the first draft's words, 214 of 227 become
-  `internal`; the 13 the framework constructs BY NAME stay public, and their app-only companion members and
+  the 13 the framework constructs BY NAME stay public, and their app-only companion members and
   public members become `internal` where the compiler otherwise reports "exposes internal type". The Room
   database is not one of the 13 (coverage A1): `Room.databaseBuilder` receives the class object and reflects
   only the generated `EnviousWisprDatabase_Impl` (external), so `EnviousWisprDatabase` and its three DAO
@@ -76,7 +75,10 @@ new download state is reported as a failure).
 
 **Population A, top-level public defaults.** Producer: every `.kt` under `app/src/main/java`. Measured by
 `scratchpad/191-public-decls.py` on `0da76e4`: 227 declarations (139 `class`, 63 `object`, 15 `interface`,
-10 `fun`) across 196 files; 187 more are already `internal` and 127 `private`. Thirteen extend a class the
+10 `fun`), plus two top-level `const val`s that script did not count and the check's scanner found at build
+(229 in all: `scripts/check-visibility.py --root <git archive of 0da76e4>` prints 216 rule-A hits, the 229
+minus the 13 allowlisted), in 112 of the 196 files under `app/src/main/java`; 187 more are already
+`internal` and 127 `private`. Thirteen extend a class the
 framework constructs by name, all twelve manifest components plus the worker (WorkManager reconstructs it
 from the class name it persisted, `models/ModelDeliveryWorker.kt:25`); the Room database
 (`history/EnviousWisprDatabase.kt:19`) is handed to Room as a class object and goes internal with its DAOs:
@@ -187,11 +189,11 @@ Swift access levels (macOS has no module boundary of this kind).
 ## 3. Design
 
 1. **Sweep A (mechanical, scripted, one commit).** `scratchpad/191-sweep-visibility.py` inserts `internal `
-   before each of the 214 declarations (the 227 minus the 13 framework rows), file by file, at the exact
+   before each of the enumerated declarations (216 as built: the 229 minus the 13 framework rows), file by file, at the exact
    line the enumeration names. Compile; where the compiler reports "exposes internal type", make the named
    member of the framework class `internal` too; where a framework-constructed or annotation-processed
    declaration genuinely needs public, add it to `scripts/visibility-allowlist.txt` with the reason. The
-   alternative, hand-editing 196 files, was rejected: a script driven by the enumeration cannot skip one.
+   alternative, hand-editing 112 files, was rejected: a script driven by the enumeration cannot skip one.
 2. **Sweep B (12 sites by hand, one commit).** Each `else` arm becomes the `Replacement left side` the
    §2.5.1 table names for its site, with the old right-hand side verbatim, so behaviour is byte-for-byte
    the old default for every existing member. The alternative of adding a new "unknown" branch was
@@ -259,7 +261,7 @@ regexes. The allowlist lives in `scripts/` so the check reads a file the founder
 Python.
 
 ## 4. Contract deltas
-- 214 declarations: visible inside `:app` (main, debug, test, androidTest) and to nothing else. Consumers
+- 216 declarations: visible inside `:app` (main, debug, test, androidTest) and to nothing else. Consumers
   outside the module: none exist (§2.5.1).
 - 12 `when` sites: the same value for every existing member; a new member is a compile error at the site.
 - Phase 3 Code lane: one more required artifact.
@@ -289,14 +291,17 @@ Not present in this change.
 Not present in this change (no runtime failure branch).
 
 ## 10. File-by-file changes
-- 196 files under `app/src/main/java`: `internal` on 214 declarations (the enumeration file
+- 112 files under `app/src/main/java`: `internal` on 216 declarations (the enumeration file
   `scratchpad/191-public-decls.txt` is the list; the commit body carries its count, the framework 13 and the
   compiler-reported members).
 - The 12 `when` sites in §2.5.1.
 - `scripts/check-visibility.py` (new), `scripts/visibility-allowlist.txt` (new, the 13 class-name entry points with reasons),
   `scripts/validate-pr.sh` and `scripts/check-validation.sh` (the `visibility` obligation for `Code`).
-- `app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt` (new) and thirteen fixture trees under
-  `app/src/test/resources/visibility/`.
+- `app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt` (new) and the fixture trees under
+  `app/src/test/resources/visibility/`, one per case; count them with `ls app/src/test/resources/visibility`
+  rather than here (code review round 1 added six: explicit `public`, a same-line annotation, `fun
+  interface`, a sealed child in another file, a lowercase enum with a `;` body, and the
+  `visibility-open-when` marker that must pass).
 - `docs/audits/2026-09-21-191-revert-receipts.txt` (new): the build commands with exit statuses, and every
   receipt of §11.2 with its red output (R3's three compiler errors verbatim).
 - `.claude/knowledge/architecture.md` (the `internal` default is now enforced; where) and the filed rule
@@ -329,8 +334,8 @@ Not present in this change (no runtime failure branch).
 Compile-time only. Rollback is `git revert` of three commits; nothing persisted changes shape.
 
 ## 13. Ship criteria specific to THIS change
-- `scripts/check-visibility.py` exits 0 on the tree and on the open mixed fixture, and exactly 1 on each of
-  the twelve rejecting fixtures (`VisibilityCheckTest` (proposed) rows).
+- `scripts/check-visibility.py` exits 0 on the tree and on each passing fixture, and exactly 1 on each
+  rejecting fixture (`VisibilityCheckTest` (proposed) rows; the fixtures are the list).
 - `scripts/measure-tests.sh` count reported; `:app:assembleDebug`, `:app:compileDebugUnitTestKotlin` (external) and
   `:app:compileDebugAndroidTestKotlin` (external) green, each command and exit status recorded in the receipts file.
 - Receipt R3 in `docs/audits/2026-09-21-191-revert-receipts.txt` shows three compiler errors for one added enum member.

@@ -22,6 +22,10 @@ Rule B. A `when (subject) {` block whose every non-else arm names a member of ON
     scripts/check-visibility.py                 # the repository's app/src/main/java
     scripts/check-visibility.py --root <dir>    # another tree with the same layout (the test fixtures)
 
+An explicit `public` is the default written out and is refused the same way (allowlist it with a reason).
+A `when` over an OPEN subject whose arms name members of one closed set keeps its `else` by carrying
+`// visibility-open-when: <reason>` on the `when`'s line.
+
 Exit 0 when clean, 1 with one `file:line: <rule> <what>` per hit, 2 on a usage or I/O error. Never
 greps outside the scoped root. Wired as the Code lane's `visibility` obligation by scripts/validate-pr.sh
 and required by scripts/check-validation.sh; pinned in both directions by VisibilityCheckTest.
@@ -160,7 +164,10 @@ def depth_at_line_starts(code):
 # Rule A
 # ---------------------------------------------------------------------------------------------------
 
-DECL_LINE = re.compile(r"^\s*(?P<words>(?:[A-Za-z_]\w*\s+)*?)(?P<kw>class|object|interface|fun|val|var|typealias)\b(?P<rest>.*)$")
+# Leading annotations, with an optional use-site target and balanced arguments, are consumed before the
+# modifiers so `@JvmName("x") fun leak()` and `@get:Synchronized val n` are read as the declarations they are.
+LEADING_ANNOTATIONS = re.compile(r"^\s*(?:@(?:\w+:)?[\w.]+(?:\([^()]*(?:\([^()]*\)[^()]*)*\))?\s*)*")
+DECL_LINE = re.compile(r"^(?P<words>(?:[A-Za-z_]\w*\s+)*?)(?P<kw>class|object|interface|fun|val|var|typealias)\b(?P<rest>.*)$")
 NAME_AFTER = re.compile(r"^\s*(?:<[^>]*>\s*)?(?:[\w.]+\.)?(?P<name>`[^`]+`|[A-Za-z_]\w*)")
 
 
@@ -172,16 +179,23 @@ def top_level_public(code, allowlisted_names):
     for idx, line in enumerate(lines):
         if depths[idx] != 0:
             continue
-        m = DECL_LINE.match(line)
+        m = DECL_LINE.match(line[LEADING_ANNOTATIONS.match(line).end():])
         if not m:
             continue
         words = m.group("words").split()
-        if any(w in VISIBILITY for w in words):
+        # Only `private` and `internal` narrow the surface: an explicit `public` is the public default
+        # written out, and `protected` cannot be top-level (code review F1).
+        if any(w in ("private", "internal") for w in words):
             continue
-        if any(w not in MODIFIERS and not w.startswith("@") for w in words):
+        if any(w not in MODIFIERS and w != "public" for w in words):
             continue  # not a declaration line (e.g. `return fun ...` cannot occur at depth 0 anyway)
-        # the name: on this line, or the first token of the next non-blank line (coverage D2)
+        kw = m.group("kw")
         rest = m.group("rest")
+        if kw == "fun" and re.match(r"\s+interface\b", rest):
+            # `fun interface Name`: `fun` is the modifier, `interface` the keyword (code review F3)
+            kw = "interface"
+            rest = re.sub(r"^\s+interface\b", "", rest)
+        # the name: on this line, or the first token of the next non-blank line (coverage D2)
         nm = NAME_AFTER.match(rest)
         if nm is None:
             look = idx + 1
@@ -193,7 +207,7 @@ def top_level_public(code, allowlisted_names):
         name = nm.group("name").strip("`")
         if name in allowlisted_names:
             continue
-        hits.append((idx + 1, m.group("kw"), name))
+        hits.append((idx + 1, kw, name))
     return hits
 
 
@@ -204,7 +218,7 @@ def top_level_public(code, allowlisted_names):
 ENUM_DECL = re.compile(r"\benum\s+class\s+(?P<name>[A-Za-z_]\w*)[^{]*\{", re.S)
 SEALED_DECL = re.compile(r"\bsealed\s+(?:class|interface)\s+(?P<name>[A-Za-z_]\w*)")
 SEALED_CHILD = re.compile(r"\b(?:data\s+)?(?:object|class)\s+(?P<child>[A-Za-z_]\w*)\s*(?:\([^()]*(?:\([^()]*\)[^()]*)*\))?\s*:\s*(?:[\w.]+\.)?(?P<parent>[A-Za-z_]\w*)\b")
-ENUM_MEMBER = re.compile(r"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?P<member>[A-Z][A-Z0-9_]*)\s*(?:\(|,|;|$)")
+ENUM_MEMBER = re.compile(r"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?P<member>`[^`]+`|[A-Za-z_]\w*)\s*(?:\(|\{|,|;|$)")
 
 
 def closed_sets(code_by_file):
@@ -230,19 +244,23 @@ def closed_sets(code_by_file):
             for raw in code[body_start:j].replace(",", "\n").split("\n"):
                 em = ENUM_MEMBER.match(raw)
                 if em:
-                    members.add(em.group("member"))
+                    members.add(em.group("member").strip("`"))
             if members:
                 sets.setdefault(m.group("name"), set()).update(members)
-        sealed = {m.group("name") for m in SEALED_DECL.finditer(code)}
-        if sealed:
-            for cm in SEALED_CHILD.finditer(code):
-                if cm.group("parent") in sealed:
-                    sets.setdefault(cm.group("parent"), set()).add(cm.group("child"))
+    # Sealed children may sit in any file of the parent's package (Kotlin 1.5+), so the parents are
+    # collected across the whole tree first and the children in a second pass (code review F5).
+    sealed = set()
+    for code in code_by_file.values():
+        sealed.update(m.group("name") for m in SEALED_DECL.finditer(code))
+    for code in code_by_file.values():
+        for cm in SEALED_CHILD.finditer(code):
+            if cm.group("parent") in sealed:
+                sets.setdefault(cm.group("parent"), set()).add(cm.group("child"))
     return sets
 
 
 ARM = re.compile(r"^\s*(?P<left>.+?)\s*->")
-MEMBER_REF = re.compile(r"^(?:is\s+)?(?:[\w.]+\.)?(?P<type>[A-Za-z_]\w*)\.(?P<member>[A-Za-z_]\w*)$|^(?P<bare>[A-Za-z_]\w*)$")
+MEMBER_REF = re.compile(r"^(?:is\s+)?(?:(?:[\w.]+\.)?(?P<type>[A-Za-z_]\w*)\.(?P<member>`[^`]+`|[A-Za-z_]\w*)|(?P<bare>`[^`]+`|[A-Za-z_]\w*))$")
 
 
 def arm_members(left, sets):
@@ -256,20 +274,29 @@ def arm_members(left, sets):
         if not m:
             return None
         if m.group("bare"):
-            owners = [t for t, ms in sets.items() if m.group("bare") in ms]
+            bare = m.group("bare").strip("`")
+            owners = [t for t, ms in sets.items() if bare in ms]
             if len(owners) != 1:
                 return None
-            found.append((owners[0], m.group("bare")))
+            found.append((owners[0], bare))
         else:
-            t, member = m.group("type"), m.group("member")
+            t, member = m.group("type"), m.group("member").strip("`")
             if t not in sets or member not in sets[t]:
                 return None
             found.append((t, member))
     return found
 
 
-def else_over_closed_set(code, sets):
+OPEN_WHEN = re.compile(r"visibility-open-when:\s*\S")
+
+
+def else_over_closed_set(code, sets, raw):
     """Rule B hits: (line, type) for an `else ->` in a when whose other arms all name one closed set.
+
+    A `when` over an OPEN subject whose arms happen to be members of one closed set (`when (x: Any) {
+    Color.RED -> …; else -> … }`) is legitimate and needs its `else`; the text has no types, so the author
+    states it on the `when`'s own line with `// visibility-open-when: <reason>` (code review F4), read from
+    the RAW line because comments are blanked in `code`.
 
     Works on the code-only TEXT, not on lines: the subject may hold nested parentheses
     (`when (val verdict = adapter.keyCheckVerdict(a, b))`), and a whole `when` may sit on one line with
@@ -294,6 +321,9 @@ def else_over_closed_set(code, sets):
         while k < len(code) and code[k] in " \t\r\n":
             k += 1
         if k >= len(code) or code[k] != "{":
+            continue
+        when_line = code.count("\n", 0, m.start())
+        if OPEN_WHEN.search(raw.split("\n")[when_line]):
             continue
         # the block: from `{` to its matching `}`
         depth = 0
@@ -378,12 +408,14 @@ def main(argv):
         return 2
     allow = load_allowlist(ALLOWLIST if root == REPO else os.path.join(root, "scripts", "visibility-allowlist.txt"))
     code_by_file = {}
+    raw_by_file = {}
     for dirpath, _, names in os.walk(source):
         for name in sorted(names):
             if name.endswith(".kt"):
                 path = os.path.join(dirpath, name)
                 with open(path, encoding="utf-8") as fh:
-                    code_by_file[path] = code_only(fh.read())
+                    raw_by_file[path] = fh.read()
+                code_by_file[path] = code_only(raw_by_file[path])
     sets = closed_sets(code_by_file)
     hits = []
     for path in sorted(code_by_file):
@@ -391,7 +423,7 @@ def main(argv):
         code = code_by_file[path]
         for line, kw, name in top_level_public(code, allow.get(rel, set())):
             hits.append(f"{rel}:{line}: public-default top-level {kw} {name} (make it internal or private, or allowlist `{rel}:{name}` with a reason)")
-        for line, type_name in else_over_closed_set(code, sets):
+        for line, type_name in else_over_closed_set(code, sets, raw_by_file[path]):
             hits.append(f"{rel}:{line}: else over the closed set {type_name} (name its remaining members; the compiler then owns exhaustiveness)")
     if hits:
         for h in hits:

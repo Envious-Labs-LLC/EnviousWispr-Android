@@ -1,7 +1,7 @@
 # Issue #191 — App-only code is public and new states can silently take default branches — 2026-09-21
 
 GitHub issue: `#191`. Tier: SMALL by the issue (REF-08, "-20 lines net"); the diff touches many files but moves
-no logic, no process, no package and no AIDL. Status: DRAFT for the coverage round.
+no logic, no process, no package and no AIDL. Status: DRAFT after the coverage round (A1, B1, B2, C1 to C5, D1 to D3, E1, E2, F1, F2, G1 folded in); grounded round 1 next.
 
 Consolidation: this plan is one document; §2.5 carries the measured populations once and §§3 to 11 point back at it.
 
@@ -29,10 +29,16 @@ persisted byte changes. The persona check would compare identical before-and-aft
 
 ## 0. TL;DR
 
-- 213 of the 227 top-level declarations in `app/src/main/java` that carry Kotlin's public default become
-  `internal`; the 14 the framework constructs by name stay public, and their app-only companion members and
-  public members become `internal` where the compiler otherwise reports "exposes internal type".
-- The 14 `else ->` arms over an app enum or sealed type become explicit members, so a new member breaks the
+- 214 of the 227 top-level declarations in `app/src/main/java` that carry Kotlin's public default become
+  `internal`; the 13 the framework constructs BY NAME stay public, and their app-only companion members and
+  public members become `internal` where the compiler otherwise reports "exposes internal type". The Room
+  database is not one of the 13 (coverage A1): `Room.databaseBuilder` receives the class object and reflects
+  only the generated `EnviousWisprDatabase_Impl` (external), so `EnviousWisprDatabase` and its three DAO
+  interfaces become `internal` together, which keeps the three abstract DAO accessors
+  (`history/EnviousWisprDatabase.kt:20-22`, coverage B1) public members of an internal class, unmangled, so the
+  generated Java implementation still overrides them by their JVM names. If the build refuses, the four are
+  allowlisted with that reason and the plan says so at build.
+- The 12 `else ->` arms over an app enum or sealed type become explicit members, so a new member breaks the
   build at each of those sites (Kotlin 2.0 makes a non-exhaustive `when` over an enum or sealed type an
   error, statement or expression).
 - `scripts/check-visibility.py` rejects a new public-default top-level declaration outside an allowlist, and
@@ -50,9 +56,9 @@ new download state is reported as a failure).
 ## 2. Goals & non-goals
 
 ### 2.1 Goals
-- Every app-only top-level declaration is `internal` or `private`; only framework-constructed components are
-  public (§2.5.1 lists the 14).
-- Every `when` over a closed set has no `else` (§2.5.1 lists the 14 sites).
+- Every app-only top-level declaration is `internal` or `private`; only components the framework constructs
+  by name are public (§2.5.1 lists the 13).
+- Every `when` over a closed set has no `else` (§2.5.1 lists the 12 sites).
 - A check fails on a staged violation of either kind and passes on the shipped tree.
 
 ### 2.2 Non-goals
@@ -66,13 +72,19 @@ new download state is reported as a failure).
 
 **Population A, top-level public defaults.** Producer: every `.kt` under `app/src/main/java`. Measured by
 `scratchpad/191-public-decls.py` on `0da76e4`: 227 declarations (139 `class`, 63 `object`, 15 `interface`,
-10 `fun`) across 196 files; 187 more are already `internal` and 127 `private`. Fourteen extend a class the
-framework constructs by name, all twelve manifest components plus the worker and the Room database:
-`AsrService`, `AudioCaptureService`, `EnviousWisprDatabase`, `ModelBootstrapApplication`,
+10 `fun`) across 196 files; 187 more are already `internal` and 127 `private`. Thirteen extend a class the
+framework constructs by name, all twelve manifest components plus the worker (WorkManager reconstructs it
+from the class name it persisted, `models/ModelDeliveryWorker.kt:25`); the Room database
+(`history/EnviousWisprDatabase.kt:19`) is handed to Room as a class object and goes internal with its DAOs:
+`AsrService`, `AudioCaptureService`, `ModelBootstrapApplication`,
 `ModelDeliveryCancelReceiver`, `ModelDeliveryWorker`, `PasteAccessibilityService`, `PolishService`,
 `DictationTileService`, `AccessibilityGuideActivity`, `DictationSessionService`, `SettingsActivity`,
 `VoiceInputActivity`, `SilenceVadService` (the manifest's `android:name` set, read with
-`grep 'android:name="\.' app/src/main/AndroidManifest.xml`, is exactly the twelve).
+`grep 'android:name="\.' app/src/main/AndroidManifest.xml`, is exactly the twelve). The compiler-reported
+"exposes internal type" members are recorded in chunk 1's commit body by owner and signature (coverage B1);
+none of the 13 classes' members is consumed reflectively or by the system, since the binder objects are private,
+the debug receivers are same-module, and `PendingIntent` carries action strings, never companion fields
+(coverage B2, `audio/AudioCaptureService.kt:197-284`, `app/src/debug/java/com/envi/wispr/debug/DebugDumpReceiver.kt:27-30`).
 Consumers of a public declaration outside `:app`: none. `accelerator-benchmark/build.gradle.kts` and
 `llama-android/build.gradle.kts` contain no `project(":app")` (`grep` on both, no hit); `test` and
 `androidTest` are friend source sets of `:app`, so `internal` stays visible to every existing test.
@@ -80,7 +92,9 @@ Consumers of a public declaration outside `:app`: none. `accelerator-benchmark/b
 **Population B, `else` over a closed set.** Producer: every `else ->` in `app/src/main/java`, 109 by
 `grep -rn "else ->"`; `scratchpad/191-else-sites.py` attributes each to its `when`: 57 have no subject
 (`when { … }`, where `else` is the only total match) and 52 have one. Reading each subject's declaration
-(`scratchpad/191-else-context.py`), 14 are over an app enum or sealed type:
+(`scratchpad/191-else-context.py`), 12 are over an app enum or sealed type (the first draft counted
+`ui/DictationSessionCoordinator.kt:319`, whose `else` belongs to the OUTER `when (action: String)`; the inner
+sealed `when` there is already exhaustive, coverage C2):
 
 | Site | Subject | Closed set (declaration) |
 |---|---|---|
@@ -88,14 +102,13 @@ Consumers of a public declaration outside `:app`: none. `accelerator-benchmark/b
 | `models/ModelDeliveryNotification.kt:72` | `state` | `DownloadState` |
 | `models/ModelDeliveryWorker.kt:142` | `result.state` | `DownloadState` |
 | `paste/InsertionAttempt.kt:334` | `byWindow` | `AccessibilityInsertionRules.Judgement` (`paste/AccessibilityInsertionRules.kt:25`) |
-| `providers/ProviderModelDiscoveryClient.kt:117` | `verdict` | `ProviderKeyCheck` (`providers/ProviderKeyCheck.kt:10`, sealed) |
-| `ui/DictationSessionCoordinator.kt:249` | `state.get()` | `SessionState` (`:124`, private enum) |
-| `ui/DictationSessionCoordinator.kt:254` | `state.get()` | `SessionState` |
-| `ui/DictationSessionCoordinator.kt:260` | `state.get()` | `SessionState` |
-| `ui/DictationSessionCoordinator.kt:319` | `resolveCommand(...)` | `BubbleRequestLedger.CommandDecision` (`shortcuts/BubbleRequests.kt:68`, sealed) |
+| `providers/ProviderModelDiscoveryClient.kt:117` | `verdict` | `ProviderKeyCheck` (`providers/ProviderKeyCheck.kt:10`, sealed: `Accepted`, `NotApplicable` as `data object`; `Rejected`, `Denied`, `Unverified` as `data class`, so the arms are `is` checks, coverage C3) |
+| `ui/DictationSessionCoordinator.kt:249` | `state.get()` | `SessionState` (`:124`, private enum of 7: IDLE, STARTING, RECORDING, PROCESSING, CANCELLING, FINISHING, ERROR); the CANCEL `else` covers IDLE, CANCELLING, FINISHING, ERROR (coverage C5) |
+| `ui/DictationSessionCoordinator.kt:254` | `state.get()` | `SessionState`; the STOP `else` covers IDLE, PROCESSING, CANCELLING, FINISHING, ERROR |
+| `ui/DictationSessionCoordinator.kt:260` | `state.get()` | `SessionState`; the TOGGLE `else` covers PROCESSING, CANCELLING, FINISHING, ERROR |
 | `ui/OnboardingDemo.kt:135` | `moment.scene` | `DemoScene` (`ui/OnboardingDemoScript.kt:8`) |
 | `ui/OnboardingScreen.kt:73` | `stage` | `OnboardingStage` (`ui/OnboardingPolicy.kt:12`) |
-| `ui/OnboardingScreen.kt:199` | `action` | `ModelUiAction` (`models/ModelDeliveryUi.kt:3`) |
+| `ui/OnboardingScreen.kt:199` | `action` | `ModelUiAction?` (`models/ModelDeliveryUi.kt:3`; the subject is `active?.action`, so the replacement keeps `null ->` with the old right-hand side, coverage C4) |
 | `ui/OnboardingViewModel.kt:272` | `outcome` | `PracticeOutcome` (`ui/OnboardingPolicy.kt:36`) |
 
 The other 38 subjects are `Int`, `String`, `Char`, `Byte`, `Any?` or `Throwable` (for example
@@ -159,34 +172,49 @@ Swift access levels (macOS has no module boundary of this kind).
 ## 3. Design
 
 1. **Sweep A (mechanical, scripted, one commit).** `scratchpad/191-sweep-visibility.py` inserts `internal `
-   before each of the 213 declarations (the 227 minus the 14 framework rows), file by file, at the exact
+   before each of the 214 declarations (the 227 minus the 13 framework rows), file by file, at the exact
    line the enumeration names. Compile; where the compiler reports "exposes internal type", make the named
    member of the framework class `internal` too; where a framework-constructed or annotation-processed
    declaration genuinely needs public, add it to `scripts/visibility-allowlist.txt` with the reason. The
    alternative, hand-editing 196 files, was rejected: a script driven by the enumeration cannot skip one.
-2. **Sweep B (14 sites by hand, one commit).** Each `else` arm is replaced by the members it covered today,
+2. **Sweep B (12 sites by hand, one commit).** Each `else` arm is replaced by the members it covered today,
    with the SAME right-hand side, so behaviour is byte-for-byte the old default for every existing member.
    Where the old `else` covered one member, the arm names it; where it covered several, they share the
-   arm. The alternative of adding a new "unknown" branch was rejected: the point is that there is no
-   unknown branch.
+   arm; a sealed member that is a class takes an `is` arm; a nullable subject keeps a `null ->` arm with
+   the old right-hand side. The alternative of adding a new "unknown" branch was rejected: the point is
+   that there is no unknown branch.
 3. **The check, `scripts/check-visibility.py` (one commit).** Scope: `app/src/main/java/**/*.kt`.
-   - A: a top-level `class|object|interface|fun|val|var|typealias` line with no `private|internal`
-     modifier fails unless the declaration name is in `scripts/visibility-allowlist.txt` (one name per
-     line, `#` reasons); the shipped allowlist is the 14 framework classes.
-   - B: for every `when (subject) {` block, if any arm's left side is Name.MEMBER or a bare MEMBER
-     where `Name` is an enum/sealed type declared under `app/src/main/java` and the member one of its
-     members (both sets read from the source by regex: `enum class Name … { A, B, … }` and
-     `object|class|data class X : Name` inside a sealed declaration), then an `else ->` arm in that block
-     fails. Exemption: none; a genuinely open subject never names a closed member on its arms.
-   - Exit 0/1, prints every hit with `file:line`; `--detect-only` is not needed (always applicable to the
-     Code lane). `scripts/validate-pr.sh` runs it for the Code lane and records `visibility.txt`;
-     `scripts/check-validation.sh` requires it for `Code`. FACT: lanes gains the artifact and obligation
-     id `visibility` (a rule-file edit the classifier refuses for the session; the replacement line is
-     filed for the founder like the pass rule).
-   - A JVM drift guard, `VisibilityCheckTest` (Drift Guard), runs the script on the tree and asserts exit 0,
-     and runs it on two staged fixtures under `app/src/test/resources/visibility/` (a public class, an
-     `else` over an enum) and asserts exit 1 with the expected line, so the check's own two directions are
-     pinned.
+   - A: a top-level declaration (column 0; the keyword `class|object|interface|fun|val|var|typealias`
+     with its modifiers, possibly after annotation lines, and possibly with the name on the next line,
+     coverage D2) with no `private|internal` modifier fails unless its name is in
+     `scripts/visibility-allowlist.txt` (one name per line, `#` reasons); the shipped allowlist is the 13
+     framework classes. Column 0 is what makes it top-level: a public companion member is indented and is
+     not this rule's population (§2.2 non-goal; the compiler's "exposes internal type" handles the 13).
+   - B: closedness is read from the ARMS as a set, never from one label (coverage D1): a `when (subject) {`
+     block is treated as closed only when EVERY non-`else` arm's left side is a member of ONE app enum or
+     sealed type (a bare member name, a qualified one, or an `is` test on a sealed child; the member sets are read from
+     the source by regex over `enum class` bodies at any nesting depth and over `object|data object|class|
+     data class X : Sealed` children, coverage D3) or the literal `null`; then an `else ->` arm fails. A
+     block with a range, a guard, a literal, a type test on a foreign type or a Boolean subject is open to
+     the check and passes; the compiler, not the check, is the authority once the `else` is gone. So the
+     check is a drift guard for the shape this change leaves, not a type checker.
+   - `--root <dir>` scans that tree's `app/src/main/java` instead of the repository's (coverage F2), which
+     is how the JVM test runs it on fixtures. Exit 0/1, prints every hit with `file:line`.
+   - Phase 3 (coverage E1, E2): `scripts/validate-pr.sh`'s Code block runs the check and records
+     `visibility.txt` (always non-empty: the hits, or `clean`), marks `visibility` satisfied only on exit
+     0; `OBLIGATIONS` and `REQUIRED["Code"]` in `scripts/check-validation.sh` gain `visibility`; it is
+     never a `skip-note.txt` entry. Older Code runs under `.validation/runs/` lack the artifact and would
+     fail re-verification, which is accepted (they are history, not evidence for a new PR); Docs-only runs
+     are untouched. FACT: lanes gains the artifact and obligation id `visibility` (a rule-file edit the
+     classifier refuses for the session; the replacement line is filed for the founder like the pass rule).
+   - A JVM drift guard, `VisibilityCheckTest` (Drift Guard), resolves the repository root from
+     the `app/` working directory of `:app:testDebugUnitTest` (`File("..").canonicalFile`), runs the script
+     on the tree and asserts exit code exactly 0; and runs it with `--root` on fixture trees under
+     `app/src/test/resources/visibility/<case>/app/src/main/java/` (a public class; a public class whose
+     name is on the next line; an `else` over an enum; an `else` over a `data object` sealed member; a
+     nested enum matched bare; an open `when` mixing a member with a range, which must PASS) and asserts
+     exit code exactly 1 with the expected `file:line` in stdout, or exactly 0 for the open case. A process
+     that cannot launch is a test failure, never a pass (coverage F1).
 
 ## 3b. Ownership justification
 The check lives in `scripts/` beside `check-cited-symbols.py` because it is a source-text guard with a
@@ -225,12 +253,13 @@ Not present in this change.
 Not present in this change (no runtime failure branch).
 
 ## 10. File-by-file changes
-- 196 files under `app/src/main/java`: `internal` on 213 declarations (the enumeration file
-  `scratchpad/191-public-decls.txt` is the list; the commit body carries its count and the framework 14).
-- The 14 `when` sites in §2.5.1.
+- 196 files under `app/src/main/java`: `internal` on 214 declarations (the enumeration file
+  `scratchpad/191-public-decls.txt` is the list; the commit body carries its count, the framework 13 and the
+  compiler-reported members).
+- The 12 `when` sites in §2.5.1.
 - `scripts/check-visibility.py` (new), `scripts/visibility-allowlist.txt` (new, 14 names with reasons),
   `scripts/validate-pr.sh` and `scripts/check-validation.sh` (the `visibility` obligation for `Code`).
-- `app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt` (new) and two fixtures under
+- `app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt` (new) and six fixture trees under
   `app/src/test/resources/visibility/`.
 - `.claude/knowledge/architecture.md` (the `internal` default is now enforced; where) and the filed rule
   line for FACT: lanes.
@@ -246,14 +275,16 @@ Not present in this change (no runtime failure branch).
 - Emulator, wispr-eyes, debug build of the final commit: three `dictate_emulator` takes into Gmail (judge
   the editor's text), one `debug_insert`, one silence-ended take with auto-stop on (as #188 staged it), and
   `look()` on the Transcription, Models and Permissions pages (the onboarding and delivery `when`s draw
-  there). Restore afterwards. NOT RUN: anything on the founder's phone.
+  there). Restore afterwards. NOT RUN: anything on the founder's phone. Not exercised by the emulator takes
+  (coverage G1): WorkManager reconstructing a pre-update persisted `ModelDeliveryWorker` row by class
+  name; the class stays public and its JVM name does not change, so nothing in this change can alter it.
 
 ### 11.2 Other obligations
 | Test | Class | Proves | Revert that turns it red |
 |---|---|---|---|
 | `VisibilityCheckTest.theTreeHasNoPublicDefaultOutsideTheAllowlist` (proposed) | Drift Guard | the check exits 0 on the tree | drop `internal` from one class |
-| `VisibilityCheckTest.aStagedPublicClassIsRefused` (proposed) | Harness Contract | the check's A direction fires on the fixture | delete the fixture's hit from the script's regex |
-| `VisibilityCheckTest.aStagedElseOverAnEnumIsRefused` (proposed) | Harness Contract | the B direction fires | same |
+| `VisibilityCheckTest.aStagedPublicClassIsRefused` (proposed) | Harness Contract | the A direction fires on the fixture with exit code exactly 1 and the expected `file:line` | delete the fixture's hit from the script's regex |
+| `VisibilityCheckTest.aStagedElseOverAnEnumIsRefused` (proposed) | Harness Contract | the B direction fires (enum, `data object`, nested enum) and the open mixed `when` passes | same |
 | the compiler | — | a new `DownloadState` member breaks `ModelDeliveryWorker.kt`, `ModelDeliveryNotification.kt` and `OnboardingScreen.kt` | add `DownloadState.QUEUED` and read the three errors (receipt R3, then remove it) |
 
 ## 12. Blast radius & rollback

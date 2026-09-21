@@ -57,6 +57,8 @@ class AudioServiceShapeTest {
             assertTrue("onDestroy clears $it", destroy.contains(it))
         }
         assertTrue("the publisher is closed on destroy, after the join", destroy.indexOf("takeEvents.close()") > destroy.indexOf("thread.join("))
+        // F6: a refused start carries nothing of the previous take.
+        assertTrue(member(service, "private fun publishStartRefused(takeId: String, failure: Int)").contains("takeEvents.publishEnded(takeId, TERMINAL_REASON_NONE, failure, null, SILENCE_STATUS_DISABLED, 0f, null)"))
     }
 
     @Test

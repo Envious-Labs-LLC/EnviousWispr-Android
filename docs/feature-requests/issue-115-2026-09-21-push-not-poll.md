@@ -2,7 +2,7 @@
 
 GitHub issue: `#115` (with REF-04 and the History write ordering folded in by the founder's two comments).
 Tier: LARGE (session ownership, the AIDL surface, both the session and the audio process, three services'
-teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT after the coverage round (A1, A2, B1, C1, C2, D1, D2, E1 to E4, F1, G1, G2, H1 folded in; H2 half adopted); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G3.1, G4.1 to G4.3, G5.1 to G5.5 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.3, G2.1, G3.1 to G3.4 folded in); round 3 PROCEED-WITH-REVISIONS (G1.1 a fifth exit: the pre-committed consequence applied, §3 A2's ending prose is a table from the code; G2.1; G3.1, G3.2); round 4 PROCEED-WITH-REVISIONS (G1.1 the detector closed on the thread-start failure row; G1.2 the setup-exception row split before and after the thread start; G3.1); round 5 next.
+teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT after the coverage round (A1, A2, B1, C1, C2, D1, D2, E1 to E4, F1, G1, G2, H1 folded in; H2 half adopted); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G3.1, G4.1 to G4.3, G5.1 to G5.5 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.3, G2.1, G3.1 to G3.4 folded in); round 3 PROCEED-WITH-REVISIONS (G1.1 a fifth exit: the pre-committed consequence applied, §3 A2's ending prose is a table from the code; G2.1; G3.1, G3.2); round 4 PROCEED-WITH-REVISIONS (G1.1 the detector closed on the thread-start failure row; G1.2 the setup-exception row split before and after the thread start; G3.1); round 5 PROCEED-AS-PLANNED (confirming). Gate 2 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 

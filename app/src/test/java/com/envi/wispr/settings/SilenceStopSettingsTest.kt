@@ -30,19 +30,23 @@ class SilenceStopSettingsTest {
         // Since #186 the collector lives in SessionPreferencesSource, fed the authoritative flow by the
         // Service; beginSession awaits its readiness signal.
         assertTrue(read("ui/DictationSessionService.kt").contains("preferenceStates = AppPreferences(applicationContext).authoritativeState,"))
+        // Since #193 the collector replaces ONE atomic snapshot holding every value, and only then
+        // completes the first-answer signal; the take reads the frozen snapshot, never the live source.
         val source = read("ui/SessionPreferencesSource.kt")
         val block = source.substringAfter("preferenceStates.collect")
-            .substringBefore("cleanupPreferencesReady.complete(Unit)")
-        assertTrue("the switch is read before the gate", block.contains("autoStopOnSilence = preferences.autoStopOnSilenceEnabled"))
+            .substringBefore("settingsAnswered.complete(Unit)")
+        assertTrue("the switch is inside the snapshot replaced before the answer", block.contains("autoStopOnSilence = preferences.autoStopOnSilenceEnabled"))
         assertTrue("and so is the wait", block.contains("silencePauseSeconds = preferences.silencePauseSeconds"))
+        assertTrue("one whole replace, not field writes", block.contains("settingsSnapshot.set(") && !block.contains("@Volatile"))
     }
 
     @Test
     fun theTakeFreezesTheSettingsRatherThanReadingThemAsItGoes() {
-        // Since #186 the frozen fields are read off SessionPreferencesSource at the one start call in the coordinator.
+        // Since #193 the start call reads the take's FROZEN snapshot (`sessionPreferences`), never the
+        // live source, so a settings emission after the take's answer belongs to the next take.
         val source = read("ui/DictationSessionCoordinator.kt")
         val start = source.substringAfter("pipeline.capture?.startCaptureForTake(").substringBefore(")")
-        listOf("preferences.autoStopOnSilence", "preferences.silencePauseSeconds", "preferences.inputDevicePick", "preferences.keepEarbudsReady", "takeId").forEach {
+        listOf("sessionPreferences.autoStopOnSilence", "sessionPreferences.silencePauseSeconds", "sessionPreferences.inputDevicePick", "sessionPreferences.keepEarbudsReady", "takeId").forEach {
             assertTrue("the start call carries $it", start.contains(it))
         }
     }
@@ -52,7 +56,7 @@ class SilenceStopSettingsTest {
         val body = read("ui/DictationSessionCoordinator.kt")
             .substringAfter("private fun publishSilenceNoticeIfNeeded(")
             .substringBefore("private fun stopAndTranscribe(")
-        assertTrue("nothing to say when the user has it off", body.contains("if (!preferences.autoStopOnSilence || silenceNoticeShown) return"))
+        assertTrue("nothing to say when the user has it off", body.contains("if (!sessionPreferences.autoStopOnSilence || silenceNoticeShown) return"))
         assertTrue("and only for the unavailable state", body.contains("!= AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return"))
         assertTrue("shown once per take", body.contains("silenceNoticeShown = true"))
     }

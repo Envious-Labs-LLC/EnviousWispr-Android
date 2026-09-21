@@ -390,7 +390,9 @@ class InsertionOutcomeMessagesTest {
             "clipboardPolicy is no longer nullable, so the session owner cannot tell an unloaded " +
                 "setting from a decided one and the listening notification is built from a " +
                 "default whose auto-copy value is true",
-            source.contains("@Volatile var clipboardPolicy: ClipboardInsertionPolicy? = null"),
+            // Since #193 the field is a getter over the atomic settings snapshot, still nullable.
+            source.contains("val clipboardPolicy: ClipboardInsertionPolicy?\n        get() = settingsSnapshot.get().clipboardPolicy") &&
+                source.contains("val clipboardPolicy: ClipboardInsertionPolicy? = null,"),
         )
         val session = read("ui/DictationSessionService.kt")
         val promote = slice(session, "private fun promoteToForeground(", "\n    private fun ")

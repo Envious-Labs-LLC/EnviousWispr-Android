@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.flow
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
@@ -420,22 +421,133 @@ class DictationSessionCoordinatorTest {
         assertTrue(row.interrupted)
     }
 
+    private fun fallbackWarnings(): List<String> = rig.log.lines.filter { it.contains("Settings reader fell back") }
+
+    private fun completeTake(coordinator: DictationSessionCoordinator, spoken: String, polished: String) {
+        val polish = stopAndTranscribe(coordinator, spoken)
+        polish.listener!!.onOutcome(polish.outcome(polished))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+    }
+
+    /**
+     * Product Outcome (#193): when this fails, Frank presses the button and is told his settings could not
+     * be loaded instead of being heard. A settings flow that throws before its first emission: capture is
+     * asked to start (the rig's bound is 5 s; the answer is immediate), the take transcribes and inserts
+     * on the defaults, the facts name the reader, and exactly one warning is logged.
+     * REVERT: restore the `showError` ending in `beginSession`.
+     */
     @Test
-    fun settingsNeverReadyEndsStartingWithSentence() {
-        val neverReady = SessionPreferencesSource(
+    fun aFailedSettingsReadStartsCaptureOnDefaults() {
+        val failing = SessionPreferencesSource(
+            preferenceStates = flow { throw java.io.IOException("store unreadable") },
+            terms = rig.terms,
+            migrateLegacyTerms = {},
+            log = rig.log,
+        )
+        val coordinator = rig.coordinator(preferences = failing)
+        startAndGoLive(coordinator)
+        completeTake(coordinator, "hello world", "Hello world.")
+
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+        assertEquals("settings:exception:IOException", rig.endings.facts.single().settingsFallback)
+        assertEquals("exactly one warning for the fallback take", 1, fallbackWarnings().size)
+        assertTrue("no ending sentence for a limb", rig.host.events.none { it.startsWith("toast") })
+    }
+
+    /** Product Outcome (#193): a word-list read that throws leaves the take with the built-in vocabulary only. */
+    @Test
+    fun aFailedVocabularyReadStartsCaptureWithoutUserTerms() {
+        val failing = SessionPreferencesSource(
+            preferenceStates = rig.preferenceStates,
+            terms = flow { throw IllegalStateException("database closed") },
+            migrateLegacyTerms = {},
+            log = rig.log,
+        )
+        val coordinator = rig.coordinator(preferences = failing)
+        startAndGoLive(coordinator)
+        completeTake(coordinator, "hello world", "Hello world.")
+
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+        assertEquals("terms:exception:IllegalStateException", rig.endings.facts.single().settingsFallback)
+        assertEquals(1, fallbackWarnings().size)
+    }
+
+    /**
+     * Product Outcome (#193): a store that never answers cannot hold the microphone. Both flows stay
+     * silent; capture starts after the bound on the defaults with `timed_out` in the facts.
+     * REVERT: make the bound end the take.
+     */
+    @Test
+    fun aSilentStoreStartsOnTheLastSnapshotAfterTheBound() {
+        val silent = SessionPreferencesSource(
             preferenceStates = flow { awaitCancellation() },
             terms = flow<List<CustomTerm>> { awaitCancellation() },
             migrateLegacyTerms = {},
             log = rig.log,
         )
-        val coordinator = rig.coordinator(preferences = neverReady, settingsWaitMs = 200L)
-        coordinator.onCreated()
-        rig.command(coordinator, DictationSessionService.ACTION_START)
+        val coordinator = rig.coordinator(preferences = silent, answerBoundMs = 200L)
+        startAndGoLive(coordinator)
+        completeTake(coordinator, "hello world", "Hello world.")
 
-        assertEquals(TerminalReason.SETTINGS_UNAVAILABLE, rig.endings.awaitOne())
-        rig.host.awaitStopped()
-        assertTrue(rig.host.events.contains("toast:Settings could not be loaded. Try again."))
-        assertTrue("capture is never asked to start", rig.capture.events.isEmpty())
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+        assertEquals("both:timed_out:timed_out", rig.endings.facts.single().settingsFallback)
+        assertEquals(1, fallbackWarnings().size)
+    }
+
+    /**
+     * Product Outcome (#193): a reader that answered once and then failed keeps the values it answered
+     * with. Non-default values land (auto-stop on, a custom term), then the flows throw; the take runs
+     * with those values and names the exception.
+     * REVERT: reset the snapshot's values in the collector's catch.
+     */
+    @Test
+    fun aFailureAfterFreshUsesLastSuccessfulSnapshot() {
+        val term = CustomTerm(spelling = "Envious", aliases = listOf("envious"))
+        val failing = SessionPreferencesSource(
+            preferenceStates = flow {
+                emit(AppPreferencesState(autoStopOnSilenceEnabled = true, silencePauseSeconds = 2.5f))
+                throw java.io.IOException("store went away")
+            },
+            terms = flow {
+                emit(listOf(term))
+                throw IllegalStateException("database closed")
+            },
+            migrateLegacyTerms = {},
+            log = rig.log,
+        )
+        val coordinator = rig.coordinator(preferences = failing)
+        // Both readers must have FAILED before the take starts, or the take reads a Fresh snapshot
+        // between the emission and the throw and the row measures the race, not the property. The
+        // subject's own warning lines are the signal.
+        coordinator.onCreated()
+        rig.log.awaitLine("Unable to load cleanup preferences")
+        rig.log.awaitLine("Unable to load custom terms")
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        rig.surface.awaitShown()
+        completeTake(coordinator, "hello envious", "Hello envious.")
+
+        assertEquals("the last successful auto-stop value reached capture", "start(autoStop=true, pause=2.5)", rig.capture.startArguments.last())
+        assertEquals("both:exception:IOException:exception:IllegalStateException", rig.endings.facts.single().settingsFallback)
+        assertEquals("the custom term reached the matcher before polish", "hello Envious", rig.polish.lastRawText)
+    }
+
+    /**
+     * Drift Guard (#193): an ordinary take freezes ONE consistent snapshot and waits for the readers'
+     * first REAL answer (a take started on defaults before the first emission gave a user with auto-stop a
+     * manual take after every cold start). The flows emit after `onCreated`; the take runs with those
+     * values and carries no fallback token. REVERT: start before the first answer.
+     */
+    @Test
+    fun anOrdinaryTakeFreezesOneConsistentSnapshot() {
+        rig.preferenceStates.value = AppPreferencesState(autoStopOnSilenceEnabled = true, silencePauseSeconds = 1.5f)
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        completeTake(coordinator, "hello world", "Hello world.")
+
+        assertEquals("start(autoStop=true, pause=1.5)", rig.capture.startArguments.last())
+        assertNull("an ordinary take carries no fallback token", rig.endings.facts.single().settingsFallback)
+        assertTrue(fallbackWarnings().isEmpty())
     }
 
     @Test

@@ -159,8 +159,9 @@ class LiveGateWiringTest {
     @Test
     fun theSessionCarriesTheSavedSettingAndWaitsForLiveUnderTheLock() {
         assertTrue(preferences.contains("keepEarbudsReady = preferences.keepEarbudsReady"))
-                val start = body(session, "private fun tryStartRecording()")
-        listOf("preferences.autoStopOnSilence", "preferences.silencePauseSeconds", "preferences.inputDevicePick", "preferences.keepEarbudsReady", "takeId").forEach {
+        // Since #193 the start call reads the take's FROZEN snapshot, never the live source.
+        val start = body(session, "private fun tryStartRecording()")
+        listOf("sessionPreferences.autoStopOnSilence", "sessionPreferences.silencePauseSeconds", "sessionPreferences.inputDevicePick", "sessionPreferences.keepEarbudsReady", "takeId").forEach {
             assertTrue("the start call carries $it", start.substringAfter("startCaptureForTake(").substringBefore(")").contains(it))
         }
         val publish = body(session, "private fun publishLive(")

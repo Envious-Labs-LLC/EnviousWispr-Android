@@ -104,7 +104,7 @@ internal class DictationSessionRig {
 
     fun coordinator(
         preferences: SessionPreferencesSource = preferencesSource,
-        settingsWaitMs: Long = 5_000L,
+        answerBoundMs: Long = 5_000L,
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
@@ -118,7 +118,7 @@ internal class DictationSessionRig {
         scope = scope,
         mainDispatcher = mainDispatcher,
         polishTimeout = polishTimeout,
-        settingsWaitMs = settingsWaitMs,
+        answerBoundMs = answerBoundMs,
         tipGate = BluetoothTipGate(),
         polishLedger = PolishRequestLedger(PolishRequestIdSource { System.nanoTime() }),
         endingSink = endings::record,
@@ -146,10 +146,13 @@ internal class DictationSessionRig {
 
     class Endings {
         val reasons = CopyOnWriteArrayList<TerminalReason>()
+        /** The facts each ending was committed with (#193 reads `settingsFallback` off them). */
+        val facts = CopyOnWriteArrayList<TakeFacts>()
         private val latch = CountDownLatch(1)
 
         fun record(facts: TakeFacts, reason: TerminalReason) {
             reasons += reason
+            this.facts += facts
             latch.countDown()
         }
 
@@ -163,6 +166,15 @@ internal class DictationSessionRig {
 
     class FakeLog : SessionLog {
         val lines = CopyOnWriteArrayList<String>()
+
+        /** Waits for the subject to log a line containing [fragment]; the line is the subject's own signal. */
+        fun awaitLine(fragment: String) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (lines.none { it.contains(fragment) }) {
+                check(System.nanoTime() < deadline) { "no log line containing '$fragment'; lines: $lines" }
+                Thread.sleep(5)
+            }
+        }
         override fun log(message: String) { lines += "I $message" }
         override fun warn(message: String) { lines += "W $message" }
         override fun error(message: String, throwable: Throwable?) { lines += "E $message" }
@@ -292,8 +304,11 @@ internal class DictationSessionRig {
             check(stopRequested.await(10, TimeUnit.SECONDS)) { "capture was never asked to stop; events: $events" }
         }
 
+        /** The settings each start call carried, as one literal per call (#193). */
+        val startArguments = CopyOnWriteArrayList<String>()
         override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean {
             events += "start"
+            startArguments += "start(autoStop=$autoStopOnSilence, pause=$pauseSeconds)"
             if (!startResult) {
                 started.countDown()
                 return false
@@ -384,9 +399,12 @@ internal class DictationSessionRig {
         val cancelled = CopyOnWriteArrayList<Long>()
         val warmed = CopyOnWriteArrayList<PolishPolicy>()
         private val requested = CountDownLatch(1)
+        /** The raw text the owner handed the engine, after vocabulary restoration (#193). */
+        @Volatile var lastRawText: String? = null
         override fun warmUpWithPolicy(policy: PolishPolicy) { warmed += policy }
         override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
             if (throwOnRequest) throw IllegalStateException("engine gone")
+            lastRawText = rawText
             this.requestId = requestId
             this.listener = listener
             requested.countDown()

@@ -42,6 +42,11 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
     @Volatile var historySave: String? = null
     /** The speech process's typed failure; reported only on an `ASR_FAILED` ending. */
     @Volatile var asrFailure: AsrFailureReason? = null
+    /**
+     * Which settings readers fell back and why, as one content-free token (`settings:<reason>`,
+     * `terms:<reason>`, `both:<reason>:<reason>`); null on an ordinary take (#193).
+     */
+    @Volatile var settingsFallback: String? = null
 
     /** The row, built from whatever was measured by the time [reason] was committed. */
     fun terminal(reason: TerminalReason): AnalyticsEvent.DictationTerminal = AnalyticsEvent.DictationTerminal(
@@ -65,6 +70,7 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
         polishMs = polishMs,
         polishStatus = polishStatus,
         historySave = historySave,
+        settingsFallback = settingsFallback,
     )
 
     companion object {

@@ -62,8 +62,8 @@ internal enum class TerminalReason(val result: TerminalResult) {
     ASR_PROCESS_DIED(TerminalResult.ASR_INTERRUPTED),
     POLISH_PROCESS_DIED(TerminalResult.FAILED),
 
-    // Failures before capture.
-    SETTINGS_UNAVAILABLE(TerminalResult.FAILED),
+    // Failures before capture. A settings or vocabulary read that fails is not one (#193): the take
+    // starts on the last values and the failure is a fact of the take.
     AUDIO_BIND_FAILED(TerminalResult.FAILED),
     ASR_BIND_FAILED(TerminalResult.FAILED),
     POLISH_BIND_FAILED(TerminalResult.FAILED),

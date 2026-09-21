@@ -2,7 +2,7 @@
 
 GitHub issue: `#115` (with REF-04 and the History write ordering folded in by the founder's two comments).
 Tier: LARGE (session ownership, the AIDL surface, both the session and the audio process, three services'
-teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT for the coverage round.
+teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT after the coverage round (A1, A2, B1, C1, C2, D1, D2, E1 to E4, F1, G1, G2, H1 folded in; H2 half adopted); grounded round 1 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -140,7 +140,9 @@ executor is a pool, so `processing` then `asr_error` land in either order (#186 
 | `silenceStopStatus()` | `publishSilenceNoticeIfNeeded` `:718`, `stopAndTranscribe` `:829` | `onSilenceStatus(status)` pushed on change; the stop reads the last pushed value |
 | `inputRouteKind()`, `inputRouteReason()`, `liveAfterMs()` | `publishMicrophoneNoticesIfNeeded` `:731`, `publishLive` `:559-561` | carried on `onLive(forced, routeKind, routeReason, liveAfterMs)` |
 | `waitForFileReady(2000)` | `stopAndTranscribe` path, `waitForLive` failures | gone: `onEnded` carries the closed file's path; the failure paths that stop the service keep `stopCapture()` (a command, bounded by the binder's own timeout? NO: a binder call has no timeout; see §2.5.4) |
-| `stopCapture()`, `finishTake()`, `startCaptureForTake(...)`, `takePeakAmplitude()`, `effectiveInputDevice()`, `audioFilePath()` | commands and one-shot reads at the ends | stay synchronous; each runs on a coroutine or the main thread, and a hang there is the SAME wedge, ended by the same bound (§3 A5): the bound is armed from `startCaptureForTake` until `onEnded` |
+| `takePeakAmplitude()`, `effectiveInputDevice()`, `audioFilePath()`, `lastStartFailure()` | one-shot reads at the ends | gone (coverage A2): every fact the owner read after an ending rides `onEnded` (peak, device label, path, the start failure code); no synchronous read remains after an event ends or advances the take |
+| `stopCapture()`, `finishTake()`, `startCaptureForTake(...)` | commands | stay synchronous COMMANDS, each on the owner's scope, never main; a hang there is the same wedge, and the bound (§3 A5) is armed from before the listener is registered until the binding is released, so it covers a command outstanding after `onEnded` (`finishTake`) too |
+| `listenForSpectrum`, `stopListeningForSpectrum` | the picture (#187) | unchanged; part of the closed `CaptureLink` population (coverage A1) |
 
 **Consumers of the pushed facts.** `surface.updateElapsed(second)`, `publishDurationWarningIfNeeded(elapsedMs)`,
 `publishSilenceNoticeIfNeeded`, `publishMicrophoneNoticesIfNeeded`, `publishLive(forced)`, the ending `when`
@@ -226,7 +228,7 @@ application-owned queue hangs off. No History queue exists (`grep -rn "Queue" ap
 ### A. Push, not poll (chunk A)
 A1. **`ITakeListener` (proposed)**, `app/src/main/aidl/com/envi/wispr/audio/ITakeListener.aidl`, all `oneway`:
    `onLive` (proposed) `(boolean forced, int routeKind, int routeReason, long liveAfterMs)`, `onTick` (proposed) `(long elapsedMs)`,
-   `onSilenceStatus` (proposed) `(int status)`, `onEnded(int terminalReason, String audioFilePath, int silenceStatus, float takePeakAmplitude, String effectiveInputDevice)`.
+   `onSilenceStatus` (proposed) `(int status)`, `onEnded(int terminalReason, int startFailure, String audioFilePath, int silenceStatus, float takePeakAmplitude, String effectiveInputDevice)`.
    `IAudioCaptureService` appends `registerTakeListener(ITakeListener)` and `unregisterTakeListener(ITakeListener)`
    after `unregisterSpectrumListener`; the polled getters stay, marked LEGACY like `getSpectrumBands`.
 A2. **`TakeEventPublisher` (proposed)** in `:audio`, service-scoped like `WarmHoldOwner`, holding one
@@ -244,22 +246,35 @@ A3. **The owner** registers its listener in `startCaptureForTake`'s caller (`try
    the route facts stamped; `onTick` → `updateElapsed`, `publishDurationWarningIfNeeded`,
    `publishMicrophoneNoticesIfNeeded` once (the tip gate); `onSilenceStatus` → `publishSilenceNoticeIfNeeded`
    with the pushed value; `onEnded` → the existing `when (CaptureEnding.fromAidl(reason))` with the path
-   handed to `stopAndTranscribe`, `takeFacts.captureTerminal`, `takeFacts.silenceStopStatus` from the pushed
-   value. `startPolling`, `waitForLive`, `DictationPollingThread`, `LIVE_POLL_MS` and the `liveState()`,
+   handed to `stopAndTranscribe`, `takeFacts.captureTerminal`, `takeFacts.silenceStopStatus`,
+   `takeFacts.peakAmplitude` (from the payload's peak, replacing `takePeakAmplitude()`) and `captureDeviceLabel`
+   for the row's `captureDevice` (from the payload's label, replacing `effectiveInputDevice()`), with no
+   replacement getter call (coverage B1). `startPolling`, `waitForLive`, `DictationPollingThread`, `LIVE_POLL_MS` and the `liveState()`,
    `isCapturing()`, `elapsedMs()`, `terminalReason()`, `silenceStopStatus()`, `inputRouteKind()`,
-   `inputRouteReason()`, `liveAfterMs()`, `waitForFileReady()` members of `CaptureLink` are deleted
-   (`GR-MIGRATION-COMPLETE`); `lastStartFailure()` stays for the ending-before-live case.
+   `inputRouteReason()`, `liveAfterMs()`, `waitForFileReady()`, `takePeakAmplitude()`, `effectiveInputDevice()`,
+   `audioFilePath()` and `lastStartFailure()` members of `CaptureLink` are deleted (`GR-MIGRATION-COMPLETE`);
+   `onEnded` carries the start failure code, so the ending-before-live case reads nothing. After the change the
+   only synchronous calls into `:audio` are the three commands and the two listener registrations.
 A4. **Live wait.** STARTING ends by `onLive` (→ RECORDING), by `onEnded` before live (→ the existing
    `CAPTURE_ENDED_BEFORE_LIVE` / `CAPTURE_START_EARBUDS_REFUSED` by reading `lastStartFailure()` once), or by the
    existing `LIVE_WAIT_BOUND_MS` deadline, now a main-thread `postDelayed` instead of a polling thread.
 A5. **The wedge bound.** `TAKE_SILENT_BOUND_MS` (proposed, 3 000 ms, revisited after §11.1 b): a main-thread
-   `Runnable` re-posted on every event from the pusher and armed at `startCaptureForTake`; when it fires with the
-   take still STARTING or RECORDING, `handleServiceFailure(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE)`
+   `Runnable` re-posted on every event from the pusher, armed BEFORE the listener is registered and the start
+   command is sent, and effective until the binding is released (coverage C1: it covers a start that never
+   returns, a registration that hangs, a command outstanding after `onEnded` such as `finishTake`, and a wedge
+   after the take moved to PROCESSING or CANCELLING while a capture command was still out); when it fires,
+   `handleServiceFailure(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE)` if the take is STARTING or RECORDING, else
+   the outstanding command is abandoned and the binding released (the take's words are already in hand)
    (proposed member, `TerminalResult.AUDIO_INTERRUPTED`, sentence in `TakeNotices`: "The microphone stopped
    answering. Try again.", `TelemetryChannels` both sets, `TakeNoticesTest` and `TakeFactsTest` rows), then
    `pipeline.stopAudioService()` and `unbind` (a binder to a wedged process is released, never called). The
-   bound is disarmed by `onEnded` and by every terminal path. No timer exists outside a take
-   (RULE: no-idle-cost).
+   bound is disarmed when the last outstanding command returns after `onEnded`, and by every terminal path's
+   release of the binding. No timer exists outside a take (RULE: no-idle-cost). Non-triggers, each a row
+   (coverage C2): a long silence with auto-stop OFF (ticks continue; the pusher is the capture loop, not the
+   detector), the picture push stopping (a different listener), a STARTING gate open longer than the bound
+   (ticks start at the first buffer, BEFORE the gate opens: `onTick` is sent from the loop from the first read,
+   live or not), and a paused tick source (the only thing that pauses the capture loop is a blocked
+   `AudioRecord.read`, which IS the wedge).
 A6. **Commands off main.** `stopCapture()` and `finishTake()` are called from `stopAndTranscribe` and
    `finishTakeOrStop`, which run on the owner's scope today except the cancel path; the plan routes the cancel's
    `stopCapture` through the scope too, so no synchronous binder call to `:audio` runs on the Service's main
@@ -271,25 +286,46 @@ B1. **`HistoryWriteQueue` (proposed)**, `history/HistoryWriteQueue.kt`, owned by
    (unlimited) drained by ONE coroutine on `Dispatchers.IO` in an application `SupervisorJob` scope; each write
    is a `suspend (TranscriptRepository) -> Unit` with a content-free label for the log; a write that throws is
    logged by label and the drain continues. `enqueue` never suspends and never blocks.
-B2. `updateDraftStatus`, `discardDraft`, `setDraftStatus`'s callers, the destroy `interrupted` write and the
-   paste service's outcome write enqueue instead of `scope.launch`/`historyScope.launch`. `pendingHistoryUpdates`
-   and the destroy join are deleted. The `draftCreation` id: the queue write resolves it INSIDE the worker
-   (`draftCreation.await()` there, on the worker, never `runBlocking`), so the ordering is by ENQUEUE time.
+B2. The draft INSERT (`:577-595`, today `scope.async` on the owner's scope) is the FIRST queued write of a take
+   (coverage D1): it runs on the queue's worker under application ownership, publishes its id to a
+   `CompletableDeferred<Long>` the later queued writes await INSIDE the worker, and is never cancelled by
+   `destroy` (the owner's scope cancel no longer touches it). `surface.attachTranscript(id)` and the journal
+   association run from the same queued job. `updateDraftStatus`, `discardDraft`, `setDraftStatus`'s callers, the
+   destroy `interrupted` write and the paste service's outcome write enqueue instead of
+   `scope.launch`/`historyScope.launch`; `pendingHistoryUpdates` and the destroy join are deleted. Ordering is by
+   ENQUEUE time, on one worker, so a row's writes land in issue order.
+   **Writer inventory** (coverage D2, `TranscriptRepository.kt:12-69`): per-take writers are `insert`,
+   `updateStatus`, `discard`, `finalize`, `finalizeInsertionOutcome` (the owner and the paste service) and
+   they ALL go through the queue; `setKept`, `delete`, `deleteAll`, `pruneWordlessRows` and
+   `recoverStaleOpenRows` are the History screen's and the start-up recovery's writers, on their own scopes,
+   and stay outside it. The single-writer claim is narrowed to per-take writes.
 B3. `asrNotReadyEndsProcessing` asserts `status == asr_error` again; the rig's fake DAO gains a staged-delay mode
    (two worker threads, the first write delayed) that reproduces the race on 87e07ca (P4).
 
 ### C. Teardown without a blocking wait (chunk C)
 C1. `DictationSessionCoordinator.destroy`: enqueue the `interrupted` write FIRST (it needs the id: the queue
-   worker awaits `draftCreation`), then `serviceJob.cancel()` (no join), then the existing in-memory
+   worker awaits the draft's deferred), then `serviceJob.cancel()` (no join), then the existing in-memory
    invalidation and release; the `runBlocking` blocks are deleted. The late-polish-callback race the join
-   protected against is closed by the `TakeArbiter`'s existing latch: `destroy` claims the ending first, so a
-   late publication cannot write `ready` (§5 audits this).
+   protected against (coverage E1): every finalization write ADMITTED before `destroy` was already enqueued
+   before the `interrupted` write, so the queue applies it first and the `interrupted` write lands last; a
+   finalization not yet admitted loses the `TakeArbiter` claim to `destroy` and never enqueues. Nothing can
+   restore `ready` after `interrupted`.
 C2. `stopAndTranscribe`'s `runBlocking { draftCreation.await() }` (`:838`) becomes an enqueued write that awaits
    the id on the worker.
-C3. `PasteAccessibilityService.onDestroy`: the outcome and position writes are already launched; the
-   `joinAll` is deleted and `markStopWasClean` is enqueued as the LAST job on the queue.
+C3. `PasteAccessibilityService.onDestroy`: the outcome write is enqueued (it is a per-take writer); the
+   `joinAll` is deleted and `markStopWasClean` is enqueued as the LAST job on the queue. The bubble-position
+   saves (`:303`) stay on the service's scope and teardown may discard an in-flight one (coverage E3): the
+   position is a preference whose next save wins, and the last landed value is what the bubble reopens at.
+   Teardown never calls a synchronous unregister on the audio binder (coverage E4): the listener registration is
+   released by `unbindService` alone, on every path, including the wedge.
 C4. `AudioCaptureService.onDestroy`: `stopRecording()` signals; the `thread.join(2_000L)` and its branch are
-   deleted; the comment's abandonment contract stands from the moment `onDestroy` returns.
+   deleted; the comment's abandonment contract stands from the moment `onDestroy` returns. The interleaving
+   where the old capture thread still owns `AudioRecord` when a new take starts in the SAME process (coverage
+   E2): `startRecording` refuses while `session != null` (`:328`), and `releaseSession` clears `session` only
+   after `closeResources` released the recorder, so a new take cannot open a second recorder while the old one
+   is held; a thread parked inside `AudioRecord.read` keeps `session` set and the next start fails with
+   `START_FAILURE_OTHER`, which the owner reports as `CAPTURE_ENDED_BEFORE_LIVE`; measured at build by
+   `AudioLimbCloseTest`'s stuck-thread row starting a second take.
 
 **Pipe or bucket.** The leak is created wherever the owner ASKS or WAITS; a bound on the polling thread alone
 (the issue's shape 2) is a bucket. Chunk A removes the asks (pipe); the wedge bound is the one bucket that must
@@ -373,8 +409,14 @@ push and produces its own reason. The queue is the only History writer in the de
   press stop: measure that the recorder stays up with no sentence (P1 red-by-today), then `kill -CONT` and
   `restore()`. (b) After chunk A: three ordinary takes ending by stop, by silence and by the cap (the cap on the
   emulator: NOT RUN, ten minutes; stop and silence only), transcribed and inserted by COMMIT, every `onTick`
-  gap recorded from the owner's log (P3). (c) The frozen-pusher scene: the wedge sentence within the bound, the
-  next take normal. (d) The killed-pusher scene (`kill -9` by pid): the existing sentence, the next take normal.
+  gap recorded from the owner's log (P3). (c) The frozen-pusher scene (`kill -STOP` by pid): the wedge sentence within
+  the bound; a frozen process keeps its binder alive from the owner's view and `stopService` cannot make it
+  run teardown (coverage H1), so the scene then `kill -CONT`s (or `kill -9`s) the pid and only THEN runs the
+  next take, which must be normal; the record states which. (d) The killed-pusher scene (`kill -9` by pid):
+  the existing sentence, the next take normal. (g) The cap: one take with auto-stop OFF left running to the
+  ten-minute cap on the emulator (coverage H2), ending by the pushed `MaxDuration` with its sentence and the
+  words transcribed. A blocked Room write on the emulator is NOT stageable without a debug seam on the
+  database, which would be a test seam on production storage; it stays a rig row.
   (e) After chunk C: force-stop during a take and the next take starts; the History row reads `interrupted`.
   (f) `restore()`. Founder's phone: NOT RUN (his instruction); build delivered through Play.
 - The stalled Room write and the stalled capture thread: JVM rig only, stated in `hardware-uat.json`.
@@ -384,7 +426,12 @@ push and produces its own reason. The queue is the only History writer in the de
 | Test | Class | Proves | Revert that turns it red |
 |---|---|---|---|
 | `DictationSessionCoordinatorTest.aSilentAudioProcessEndsTheTakeWithinTheBound` (proposed) | Product Outcome | the fake pushes `onLive` then nothing; the take ends `AUDIO_PROCESS_UNRESPONSIVE` with the sentence within the rig's bound; capture is stopped and the service unbound | disarm the bound |
-| `DictationSessionCoordinatorTest.aPushedEndingTranscribesWithoutAsking` (proposed) | Product Outcome | `onLive`, ticks, `onEnded(manual, path)`: the take transcribes and inserts; the fake records ZERO calls to the deleted getters (they no longer exist: the fake cannot be asked) | none needed: compile-time |
+| `DictationSessionCoordinatorTest.aPushedEndingTranscribesWithoutAsking` (proposed) | Product Outcome | `onLive`, ticks, `onEnded(manual, path)`: the take transcribes and inserts | reintroduce a polled getter on `CaptureLink` and call it: the shape row below goes red on the name, and this row goes red because the fake's getter throws (coverage G2) |
+| `DictationSessionCoordinatorTest.audioDiedWhileRecordingEndsAsFailure` (exists) | Product Outcome | process death still ends the take with its sentence on the push design | remove the disconnect handler |
+| `DictationSessionCoordinatorTest.theNextTakeStartsAfterAWedge` (proposed) | Product Outcome | after the wedge ending, a new take on a fresh fake goes live and completes | leave the bound armed or the binding held |
+| a paste-service shape row (`paste/AutoPasteWiringTest` grown, or a new `PasteServiceTeardownTest` (proposed)) | Drift Guard | `onDestroy` has no `runBlocking`/`joinAll`; the outcome write enqueues | restore the drain |
+| `AudioServiceShapeTest` (grown, coverage G1) | Drift Guard | the only synchronous AIDL calls the owner makes are `startCaptureForTake`, `stopCapture`, `finishTake` and the two registrations (a token inventory over `PipelineBindings`) | add a getter call |
+| the instrumentation client's binding | Drift Guard | `app/src/androidTest` binds `IAudioCaptureService` by the unchanged transaction numbers: the AIDL append row plus one instrumented row already binding (UNCHECKED which; named at build) | reorder |
 | `DictationSessionCoordinatorTest.aLateEndingAfterTheBoundIsDropped` (proposed) | Drift Guard | `onEnded` after the bound fired changes nothing | remove the RECORDING check |
 | `DictationSessionCoordinatorTest.asrNotReadyEndsProcessing` (grown) | Product Outcome | status `asr_error` AND insertion result, with the racing fake DAO | launch the writes instead of enqueueing |
 | `HistoryWriteQueueTest.writesLandInIssueOrderAcrossWorkers` (proposed) | Product Outcome | two enqueued writes with the first delayed land first-then-second | drain on two workers |
@@ -396,8 +443,8 @@ push and produces its own reason. The queue is the only History writer in the de
 
 ## 12. Blast radius & rollback
 Every take's live wait, tick and ending; every History write in the default process; three teardowns. Chunked
-so each lands usable; rollback is the PR revert. The appended AIDL methods are harmless to revert (append-only
-both ways).
+so each lands usable; rollback is the PR revert of the Kotlin. The appended AIDL methods are NOT reverted once
+any client shipped against them (coverage F1): they stay as legacy transactions, like `getSpectrumBands`.
 
 ## 13. Ship criteria specific to THIS change
 - P1 measured red-by-today on the rig and the emulator before chunk A; P3's tick gaps under 1 s on the emulator

@@ -141,13 +141,14 @@ class SilenceStopWiringTest {
 
     @Test
     fun nothingAfterTheTakeEndsCanTellHowItEnded() {
+        // Since #186 the ending is classified in the coordinator, the owner the Service delegates to.
         // The strongest statement available about insertion without a real editor in front of a person:
         // a silence-stopped take and a hand-stopped one are INDISTINGUISHABLE to everything downstream,
         // so transcription, polish and insertion cannot behave differently after one.
         //
         // Enumerated from the producer rather than from a guess: every reader of the ending in the whole
         // app, then the absence of any reader inside the path that runs afterwards.
-        val session = File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+        val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
 
         val readers = Regex("CaptureEnding\\.fromAidl\\(").findAll(session).count()
         assertEquals("the ending is classified in exactly one place", 1, readers)
@@ -195,7 +196,7 @@ class SilenceStopWiringTest {
         assertTrue("an already-terminal status is left alone",
             abandon.contains("SILENCE_STATUS_UNAVAILABLE,\n                SILENCE_STATUS_LOST_AFTER_READY -> return"))
 
-        val notice = File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+        val notice = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
         assertTrue("only the never-became-available status speaks",
             notice.contains("!= AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return"))
     }
@@ -205,7 +206,7 @@ class SilenceStopWiringTest {
         // Capture that stopped without publishing a reason has no success to report, and the type says
         // so. Grouping it with the successes sends partial audio on as though it were finished.
         assertFalse(CaptureEnding.StillRunning.transcribes)
-        val session = File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+        val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
         val terminal = session.substringAfter("when (CaptureEnding.fromAidl").substringBefore("break")
         val failureArm = terminal.substringBefore("CaptureEnding.Manual")
         assertTrue("StillRunning belongs in the failure arm", failureArm.contains("CaptureEnding.StillRunning"))

@@ -19,7 +19,9 @@ import java.io.File
 class LiveAudioMeterWiringTest {
 
     private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
-    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+    /** The owner since #186: the meter moved from the Service to the coordinator with its seams (`surface` over the overlay state). */
+    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+    private val recorder = File("src/main/java/com/envi/wispr/ui/RecorderSurface.kt").readText()
     private val overlayState = File("src/main/java/com/envi/wispr/shortcuts/RecordingOverlayState.kt").readText()
     private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
     private val meterView = File("src/main/java/com/envi/wispr/paste/RecordingLevelMeterView.kt").readText()
@@ -34,10 +36,14 @@ class LiveAudioMeterWiringTest {
     @Test
     fun theSessionOwnerReadsThePictureOnItsOwnThreadAndPublishesIt() {
         val meter = body(session, "private fun startMeter()")
-        assertTrue("the meter thread must read the capture service's picture", meter.contains("service.spectrumBands"))
-        assertTrue("the read must be caught where it happens", meter.contains("runCatching { service.spectrumBands }"))
-        assertTrue("a throwing read must publish the empty picture, so the rail rests", meter.contains("getOrElse { RecordingOverlayState.NO_BANDS }"))
-        assertTrue("the picture must reach the recorder with the take's serial", meter.contains("RecordingOverlayState.updateBands(takeSerial, bands)"))
+        assertTrue("the meter thread must read the capture service's picture", meter.contains("service.spectrumBands()"))
+        assertTrue("the read must be caught where it happens", meter.contains("runCatching { service.spectrumBands() }"))
+        assertTrue("a throwing read must publish the empty picture, so the rail rests", meter.contains("getOrElse { surface.emptyBands() }"))
+        assertTrue("the picture must reach the recorder with the take's serial", meter.contains("surface.updateBands(takeSerial, bands)"))
+        // The seam is only as good as its production delegate (Codex review C1, 2026-09-20).
+        assertTrue(recorder.contains("override fun updateBands(takeSerial: Long, bands: FloatArray) = RecordingOverlayState.updateBands(takeSerial, bands)"))
+        assertTrue(recorder.contains("override fun currentTakeSerial(): Long = RecordingOverlayState.snapshots.value.takeSerial"))
+        assertTrue(recorder.contains("override fun emptyBands(): FloatArray = RecordingOverlayState.NO_BANDS"))
         assertTrue("the meter runs on its own thread, never in the polling tick", meter.contains("\"DictationMeterThread\""))
         assertTrue("and starting it cannot end the take", meter.contains("runCatching {\n            Thread("))
         val polling = body(session, "private fun startPolling()")
@@ -48,8 +54,8 @@ class LiveAudioMeterWiringTest {
     @Test
     fun theMeterExitsWhenItsTakeIsOver() {
         val meter = body(session, "private fun startMeter()")
-        assertTrue("the serial is captured once, when the take starts", meter.contains("val takeSerial = RecordingOverlayState.snapshots.value.takeSerial"))
-        assertTrue("and compared after every read, so a read that returned in a later take leaves", meter.contains("if (RecordingOverlayState.snapshots.value.takeSerial != takeSerial) break"))
+        assertTrue("the serial is captured once, when the take starts", meter.contains("val takeSerial = surface.currentTakeSerial()"))
+        assertTrue("and compared after every read, so a read that returned in a later take leaves", meter.contains("if (surface.currentTakeSerial() != takeSerial) break"))
         assertTrue("the loop lives only while recording", meter.contains("while (state.get() == SessionState.RECORDING)"))
     }
 

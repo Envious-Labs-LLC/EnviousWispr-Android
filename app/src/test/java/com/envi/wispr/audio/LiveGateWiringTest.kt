@@ -12,7 +12,13 @@ import java.io.File
  */
 class LiveGateWiringTest {
     private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
-    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
+    /**
+     * Since #186 the owner is the coordinator; the three connections live in `PipelineBindings` and the
+     * preference writes in `SessionPreferencesSource`. Each pin below reads the file its statement moved to.
+     */
+    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+    private val preferences = File("src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt").readText()
+    private val bindings = File("src/main/java/com/envi/wispr/ui/PipelineBindings.kt").readText()
 
     private fun body(source: String, head: String): String =
         source.substringAfter(head).substringBefore("\n    private fun ").substringBefore("\n    override fun ")
@@ -95,8 +101,12 @@ class LiveGateWiringTest {
         assertTrue("the device list is reconciled after registering, so a removal in between is not missed",
             watch.indexOf("registerAudioDeviceCallback") < watch.indexOf("availableCommunicationDevices.any"))
         assertTrue(body(capture, "private fun releaseSession(").contains("unregisterAudioDeviceCallback(w)"))
-        val disconnect = session.substringAfter("private val audioConnection").substringBefore("private val asrConnection")
+        val disconnect = body(session, "override fun onCaptureDisconnected()")
         assertTrue(disconnect.contains("seen == SessionState.RECORDING || seen == SessionState.STARTING"))
+        // The link is cleared BEFORE the owner hears of the death, as the proxy field was (Codex review C1).
+        val clear = bindings.indexOf("capture = null")
+        val notify = bindings.indexOf("listener?.onCaptureDisconnected()")
+        assertTrue("the capture link must be cleared before the disconnect listener runs", clear >= 0 && notify > clear)
     }
 
     @Test
@@ -107,8 +117,8 @@ class LiveGateWiringTest {
         val lockedCas = Regex("synchronized\\(publishLock\\) \\{\\s*\\n\\s*if \\(!state\\.compareAndSet\\(SessionState\\.(STARTING|RECORDING), SessionState\\.\\w+\\)\\)").findAll(session).count()
         assertTrue("every CAS out of STARTING/RECORDING ($casLines) sits under publishLock ($lockedCas)", casLines == lockedCas)
         val wait = body(session, "private fun waitForLive()")
-        assertTrue("publication is posted to the main thread, where commands are dispatched", wait.contains("mainHandler.post { publishLive(forced) }"))
-        assertTrue(body(session, "private fun publishLive(").contains("Looper.myLooper() == Looper.getMainLooper()"))
+        assertTrue("publication is posted to the main thread, where commands are dispatched", wait.contains("host.postToMain { publishLive(forced) }"))
+        assertTrue(body(session, "private fun publishLive(").contains("check(host.onMainThread())"))
         assertTrue("the waiter claims failure before any cleanup", wait.indexOf("failWhileStarting(") < wait.indexOf("waitForFileReady"))
         assertFalse("the waiter never overwrites another owner with showError", wait.contains("showError("))
     }
@@ -125,15 +135,18 @@ class LiveGateWiringTest {
 
     @Test
     fun theSessionCarriesTheSavedSettingAndWaitsForLiveUnderTheLock() {
-        assertTrue(session.contains("keepEarbudsReady = preferences.keepEarbudsReady"))
-        assertTrue(session.contains("startCaptureForTake(autoStopOnSilence, silencePauseSeconds, inputDevicePick, keepEarbudsReady, takeId)"))
+        assertTrue(preferences.contains("keepEarbudsReady = preferences.keepEarbudsReady"))
+                val start = body(session, "private fun tryStartRecording()")
+        listOf("preferences.autoStopOnSilence", "preferences.silencePauseSeconds", "preferences.inputDevicePick", "preferences.keepEarbudsReady", "takeId").forEach {
+            assertTrue("the start call carries $it", start.substringAfter("startCaptureForTake(").substringBefore(")").contains(it))
+        }
         val publish = body(session, "private fun publishLive(")
         assertTrue(publish.contains("synchronized(publishLock)"))
-        assertTrue(publish.indexOf("compareAndSet(SessionState.STARTING, SessionState.RECORDING)") < publish.indexOf("RecordingOverlayState.show()"))
-        val destroy = session.substringAfter("override fun onDestroy()")
+        assertTrue(publish.indexOf("compareAndSet(SessionState.STARTING, SessionState.RECORDING)") < publish.indexOf("surface.show()"))
+        val destroy = session.substringAfter("fun destroy()")
         assertTrue("teardown invalidates under the same lock, before cleanup", destroy.indexOf("synchronized(publishLock)") < destroy.indexOf("serviceJob.cancel()"))
         val wait = body(session, "private fun waitForLive()")
-        listOf("state.get() != SessionState.STARTING", "audioService ?: return", "!capturing", "LIVE_WAIT_BOUND_MS").forEach {
+        listOf("state.get() != SessionState.STARTING", "pipeline.capture ?: return", "!capturing", "LIVE_WAIT_BOUND_MS").forEach {
             assertTrue("the waiter has its exit: $it", wait.contains(it))
         }
     }
@@ -153,8 +166,8 @@ class LiveGateWiringTest {
         val cancel = body(session, "private fun cancelCaptureAndFinish(")
         assertTrue(cancel.contains("finishTakeOrStop()"))
         val error = body(session, "private fun announceError(")
-        assertTrue(error.contains("stopAudioCaptureService()"))
+        assertTrue(error.contains("pipeline.stopAudioService()"))
         val finish = body(session, "private fun finishTakeOrStop()")
-        assertTrue(finish.contains("if (!held) stopAudioCaptureService()"))
+        assertTrue(finish.contains("if (!held) pipeline.stopAudioService()"))
     }
 }

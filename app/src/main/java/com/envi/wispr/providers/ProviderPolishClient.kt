@@ -20,126 +20,6 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
-enum class SelfHostedProtocol {
-    OPENAI_COMPATIBLE,
-    OLLAMA,
-}
-
-/**
- * A self-hosted endpoint is accepted only as explicit user configuration. Callers must not fill
- * it from transcript text, provider responses, redirects, or other untrusted input; validation
- * constrains the URI, while the caller-owned settings layer must establish that provenance.
- */
-data class ProviderPolishRequest(
-    val provider: Provider,
-    val model: String,
-    val prompt: String,
-    val apiKey: String? = null,
-    val endpoint: String? = null,
-    val selfHostedProtocol: SelfHostedProtocol = SelfHostedProtocol.OPENAI_COMPATIBLE,
-) {
-    override fun toString(): String =
-        "ProviderPolishRequest(provider=$provider, model=<redacted>, prompt=<redacted>, apiKey=<redacted>)"
-}
-
-enum class ProviderFailureKind {
-    NO_API_KEY,
-    INVALID_CONFIGURATION,
-    NETWORK,
-    TIMEOUT,
-    CANCELLED,
-    HTTP_ERROR,
-    MALFORMED_RESPONSE,
-    RESPONSE_TOO_LARGE,
-    REDIRECT_REJECTED,
-}
-
-sealed interface ProviderPolishResult {
-    data class Success(val text: String) : ProviderPolishResult {
-        override fun toString(): String = "Success(text=<redacted>)"
-    }
-    data class Failure(
-        val kind: ProviderFailureKind,
-        val statusCode: Int? = null,
-        /** Set only on `HTTP_ERROR`, from the provider's error body, which itself goes no further. */
-        val signal: ProviderErrorSignal? = null,
-    ) : ProviderPolishResult
-}
-
-/**
- * What a provider's error BODY said beyond its status (#77), as a closed signal so the body, which can
- * echo the prompt, never leaves this client. The markers are the ones the macOS connectors match.
- */
-enum class ProviderErrorSignal {
-    KEY_REJECTED,
-    OUT_OF_CREDITS,
-    INPUT_TOO_LONG,
-    CONTENT_BLOCKED,
-    ;
-
-    companion object {
-        /** Exhaustive over [Provider]; a provider with no body markers answers null for every body. */
-        fun classify(provider: Provider, status: Int, body: String): ProviderErrorSignal? = when (provider) {
-            Provider.OPENAI -> when (status) {
-                429 -> if (body.contains("insufficient_quota")) OUT_OF_CREDITS else null
-                400 -> when {
-                    body.contains("context_length_exceeded") -> INPUT_TOO_LONG
-                    body.contains("content_filter") || body.contains("content_policy") -> CONTENT_BLOCKED
-                    else -> null
-                }
-                else -> null
-            }
-            Provider.GEMINI -> when (status) {
-                400 -> when {
-                    body.contains("API_KEY_INVALID") -> KEY_REJECTED
-                    body.contains("exceeds the maximum number of tokens") -> INPUT_TOO_LONG
-                    body.contains("PROHIBITED_CONTENT") || body.contains("blockReason") -> CONTENT_BLOCKED
-                    else -> null
-                }
-                else -> null
-            }
-            Provider.CLAUDE -> when (status) {
-                400 -> when {
-                    body.contains("credit balance") -> OUT_OF_CREDITS
-                    body.contains("prompt is too long") -> INPUT_TOO_LONG
-                    else -> null
-                }
-                else -> null
-            }
-            Provider.SELF_HOSTED_POLISH -> null
-        }
-    }
-}
-
-/** Cancellation is thread-safe and can interrupt a request that is blocked in HttpURLConnection. */
-class ProviderCancellation {
-    private val lock = Any()
-    @Volatile private var cancelled = false
-    private val callbacks = mutableListOf<() -> Unit>()
-
-    val isCancelled: Boolean get() = cancelled
-
-    fun cancel() {
-        val snapshot = synchronized(lock) {
-            if (cancelled) return
-            cancelled = true
-            callbacks.toList().also { callbacks.clear() }
-        }
-        snapshot.forEach { callback -> callback() }
-    }
-
-    internal fun onCancel(callback: () -> Unit): AutoCloseable {
-        val invokeImmediately = synchronized(lock) {
-            if (cancelled) true else {
-                callbacks += callback
-                false
-            }
-        }
-        if (invokeImmediately) callback()
-        return AutoCloseable { synchronized(lock) { callbacks.remove(callback) } }
-    }
-}
-
 /**
  * Small platform-only provider client. It deliberately does not log request bodies, response
  * bodies, endpoint credentials, or API keys. The caller can keep the raw transcript when every
@@ -280,7 +160,7 @@ class ProviderPolishClient(
         if (apiKey.isBlank() || apiKey.any(Char::isISOControl)) {
             return ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST)
         }
-        val plan = RequestPlan(url, authHeaders(provider, apiKey), body = null, responseFormat = ResponseFormat.NONE, method = "GET")
+        val plan = RequestPlan(url, authHeaders(provider, apiKey), body = null, responseFormat = ProviderReplyFormat.NONE, method = "GET")
         // The constructor's timeouts still apply (a test shortens them); the check never waits past macOS's 15 s.
         val verdict = when (
             val transport = run(
@@ -343,7 +223,7 @@ class ProviderPolishClient(
             val url = if (provider == Provider.CLAUDE) {
                 URI(listUrl.toString() + (if (listUrl.rawQuery == null) "?" else "&") + "limit=1000" + (afterId?.let { "&after_id=${encodePath(it)}" } ?: ""))
             } else listUrl
-            val plan = RequestPlan(url, authHeaders(provider, apiKey), body = null, responseFormat = ResponseFormat.NONE, method = "GET")
+            val plan = RequestPlan(url, authHeaders(provider, apiKey), body = null, responseFormat = ProviderReplyFormat.NONE, method = "GET")
             val left = remaining()
             if (left <= 0) return ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.TIMED_OUT))
             when (val transport = run(plan, ProviderCancellation(), left.coerceAtMost(KEY_CHECK_TIMEOUT_MS), connectTimeoutMs.coerceIn(1, MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, KEY_CHECK_TIMEOUT_MS))) {
@@ -565,14 +445,7 @@ class ProviderPolishClient(
         value?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
 
     private fun parseModelRows(provider: Provider, body: String): ModelPage? {
-        val root = try {
-            JsonParser(body).parse()
-        } catch (_: IllegalArgumentException) {
-            return null
-        } catch (_: StackOverflowError) {
-            return null
-        }
-        val map = root as? Map<*, *> ?: return null
+        val map = ProviderJson.parseOrNull(body)?.root as? Map<*, *> ?: return null
         return when (provider) {
             Provider.OPENAI -> {
                 val data = map["data"] as? List<*> ?: return null
@@ -640,13 +513,7 @@ class ProviderPolishClient(
 
     /** A 200 counts only when the body is the provider's own list envelope, so a captive portal cannot accept a key. */
     private fun hasModelList(provider: Provider, body: String): Boolean {
-        val root = try {
-            JsonParser(body).parse()
-        } catch (_: IllegalArgumentException) {
-            return false
-        } catch (_: StackOverflowError) {
-            return false
-        }
+        val root = ProviderJson.parseOrNull(body)?.root ?: return false
         val field = when (provider) {
             Provider.OPENAI, Provider.CLAUDE -> "data"
             Provider.GEMINI -> "models"
@@ -793,7 +660,7 @@ class ProviderPolishClient(
                 } else {
                     "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"input\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))},\"store\":false}"
                 },
-                responseFormat = ResponseFormat.OPENAI_RESPONSES,
+                responseFormat = ProviderReplyFormat.OPENAI_RESPONSES,
             )
             Provider.GEMINI -> {
                 // Gemini names the model in the PATH, so a test override keeps that shape (the fake server
@@ -818,7 +685,7 @@ class ProviderPolishClient(
                     } else {
                         "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}]}"
                     },
-                    responseFormat = ResponseFormat.GEMINI,
+                    responseFormat = ProviderReplyFormat.GEMINI,
                 )
             }
             Provider.CLAUDE -> RequestPlan(
@@ -833,7 +700,7 @@ class ProviderPolishClient(
                 } else {
                     "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}"
                 },
-                responseFormat = ResponseFormat.CLAUDE,
+                responseFormat = ProviderReplyFormat.CLAUDE,
             )
             Provider.SELF_HOSTED_POLISH -> {
                 if (probe != null) return null
@@ -849,8 +716,8 @@ class ProviderPolishClient(
                     // Both protocols take the same chat body; only the path and the answer's shape differ.
                     body = "{\"model\":${jsonString(request.model)},\"messages\":[{\"role\":\"system\",\"content\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))}},{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}],\"stream\":false}",
                     responseFormat = when (request.selfHostedProtocol) {
-                        SelfHostedProtocol.OPENAI_COMPATIBLE -> ResponseFormat.OPENAI_CHAT
-                        SelfHostedProtocol.OLLAMA -> ResponseFormat.OLLAMA
+                        SelfHostedProtocol.OPENAI_COMPATIBLE -> ProviderReplyFormat.OPENAI_CHAT
+                        SelfHostedProtocol.OLLAMA -> ProviderReplyFormat.OLLAMA
                     },
                 )
             }
@@ -921,15 +788,9 @@ class ProviderPolishClient(
         }
     }
 
-    private fun parseResponse(format: ResponseFormat, body: String): ProviderPolishResult {
-        val root = try {
-            JsonParser(body).parse()
-        } catch (_: IllegalArgumentException) {
-            return ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
-        } catch (_: StackOverflowError) {
-            return ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
-        }
-        val text = replyText(format, root)
+    private fun parseResponse(format: ProviderReplyFormat, body: String): ProviderPolishResult {
+        val parsed = ProviderJson.parseOrNull(body) ?: return ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
+        val text = format.replyText(parsed.root)
         return if (text == null || text.isEmpty() || !ProviderPolishPrompt.isTranscriptOnly(text)) {
             ProviderPolishResult.Failure(ProviderFailureKind.MALFORMED_RESPONSE)
         } else {
@@ -938,73 +799,15 @@ class ProviderPolishClient(
     }
 
     /**
-     * The reply text a parsed body carries, trimmed, or null when it carries none.
-     *
-     * ONE owner for "where does this provider put its answer", used by [parseResponse] and by the model
-     * probe (#104 review round 1). The probe used to look for a `"text"` label in the raw body, which is a
-     * second reading of the same envelope and disagreed with this one in both directions: a multipart reply
-     * whose FIRST part is empty reads as no answer, and a whitespace-only answer reads as an answer even
-     * though polish rejects it. A model must not be offered or hidden on a judgement the polish path does
-     * not share.
-     *
-     * The judgement that stays HERE and out of the probe is [ProviderPolishPrompt.isTranscriptOnly]: it
-     * asks whether a polish reply is the transcript rather than commentary about it, and the probe sends
-     * the word "Hi" rather than a transcript, so applying it would refuse working models.
-     */
-    private fun replyText(format: ResponseFormat, root: Any?): String? = when (format) {
-        ResponseFormat.OPENAI_RESPONSES -> root.firstMessageTextAt("output")
-        ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "message", "content")
-        ResponseFormat.GEMINI -> root.firstTextAt("candidates", 0, "content", "parts")
-        ResponseFormat.CLAUDE -> root.firstTextAt("content")
-        ResponseFormat.OLLAMA -> root.stringAt("message", "content") ?: root.stringAt("response")
-        ResponseFormat.NONE -> null
-    }?.substringAfterLast("</think>")?.trim()
-
-    /**
      * What this probe body carried, judged the way polish judges a real reply.
      *
      * A body that will not parse is NO_TEXT rather than inconclusive: every provider here answers a 200
      * with JSON, so one that does not is not a model this app can use.
      */
-    private fun probeReply(format: ResponseFormat, body: String): ModelListRules.ProbeReply {
-        val root = try {
-            JsonParser(body).parse()
-        } catch (_: IllegalArgumentException) {
-            return ModelListRules.ProbeReply.NO_TEXT
-        } catch (_: StackOverflowError) {
-            return ModelListRules.ProbeReply.NO_TEXT
-        }
-        if (!replyText(format, root).isNullOrEmpty()) return ModelListRules.ProbeReply.TEXT
-        return if (endedOfItsOwnAccord(format, root)) ModelListRules.ProbeReply.NO_TEXT else ModelListRules.ProbeReply.INCONCLUSIVE
-    }
-
-    /**
-     * Did the model finish because it had finished, rather than because something stopped it?
-     *
-     * **Asked in the positive on purpose.** Listing the ways a reply can be cut short — an output cap, a
-     * safety block, a recitation block, a language refusal, a tool-call fault — is a list that needs
-     * extending whenever a provider adds a reason, and every missing entry silently condemns a working
-     * model. Normal completion is ONE value per provider and providers do not add new ways to succeed.
-     *
-     * An absent, misspelt or unexpected marker therefore reads as "not proved", which is the safe answer
-     * in both directions: the model stays on screen and is never chosen for the user.
-     *
-     * Exhaustive with no `else`, so a new response format must declare its own value.
-     * `ResponseFormat.NONE` is the key check and never asks for text at all.
-     */
-    private fun endedOfItsOwnAccord(format: ResponseFormat, root: Any?): Boolean = when (format) {
-        // Measured 2026-09-02: gpt-4.1-mini answers `completed` with text at the probe's 16-token cap,
-        // while gpt-5-mini and gpt-5-nano answer `incomplete` / `max_output_tokens` with none.
-        ResponseFormat.OPENAI_RESPONSES -> root.stringAt("status") == "completed"
-        ResponseFormat.OPENAI_CHAT -> root.stringAt("choices", 0, "finish_reason") == "stop"
-        ResponseFormat.GEMINI -> root.stringAt("candidates", 0, "finishReason") == "STOP"
-        // Anthropic ends a normal turn with `end_turn`, or with `stop_sequence` when one was matched. We
-        // send no stop sequences, so only the first is reachable today; both are the model finishing.
-        // Documented rather than measured: reaching it needs a Claude model that writes nothing at all,
-        // and both models the founder's key reaches answered within the cap on 2026-09-02.
-        ResponseFormat.CLAUDE -> root.stringAt("stop_reason") in setOf("end_turn", "stop_sequence")
-        ResponseFormat.OLLAMA -> root.stringAt("done_reason") == "stop"
-        ResponseFormat.NONE -> false
+    private fun probeReply(format: ProviderReplyFormat, body: String): ModelListRules.ProbeReply {
+        val parsed = ProviderJson.parseOrNull(body) ?: return ModelListRules.ProbeReply.NO_TEXT
+        if (!format.replyText(parsed.root).isNullOrEmpty()) return ModelListRules.ProbeReply.TEXT
+        return if (format.endedOfItsOwnAccord(parsed.root)) ModelListRules.ProbeReply.NO_TEXT else ModelListRules.ProbeReply.INCONCLUSIVE
     }
 
     private fun ensureActive(cancellation: ProviderCancellation, deadline: Long) {
@@ -1059,21 +862,11 @@ class ProviderPolishClient(
         val headers: Map<String, String>,
         /** Null sends no body and no Content-Type: the key check's GET. */
         val body: String?,
-        val responseFormat: ResponseFormat,
+        val responseFormat: ProviderReplyFormat,
         val method: String = "POST",
     ) {
         override fun toString(): String =
             "RequestPlan(url=<redacted>, headers=<redacted>, body=<redacted>, responseFormat=$responseFormat)"
-    }
-
-    private enum class ResponseFormat {
-        OPENAI_RESPONSES,
-        OPENAI_CHAT,
-        GEMINI,
-        CLAUDE,
-        OLLAMA,
-        /** The key check: the body is judged by [hasModelList], never parsed for text. */
-        NONE,
     }
 
     /** What one connection produced, before any parsing: the provider's status with its body, or the failure that stopped the read. */
@@ -1147,177 +940,5 @@ class ProviderPolishClient(
         /** The Mac's retry policy (#4): two retries, 1 s then 3 s, all inside the one polish deadline. */
         const val MAX_RETRIES = 2
         val RETRY_DELAYS_MS: List<Long> = listOf(1_000L, 3_000L)
-    }
-}
-
-private fun Any?.valueAt(vararg path: Any): Any? {
-    var value: Any? = this
-    for (part in path) {
-        value = when (part) {
-            is String -> (value as? Map<*, *>)?.get(part)
-            is Int -> (value as? List<*>)?.getOrNull(part)
-            else -> null
-        }
-        if (value == null) return null
-    }
-    return value
-}
-
-private fun Any?.stringAt(vararg path: Any): String? = valueAt(*path) as? String
-
-private fun Any?.firstTextAt(vararg path: Any): String? =
-    (valueAt(*path) as? List<*>)
-        ?.asSequence()
-        ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
-        ?.firstOrNull { it.isNotEmpty() }
-
-/**
- * OpenAI's Responses API `output` array holds typed items — `message`, `reasoning`, tool and
- * function calls among them — and a reasoning model can place a `reasoning` item before the
- * assistant's own `message` item. Reading a fixed index (`output[0]`) breaks the moment that
- * happens, silently, as `MALFORMED_RESPONSE`. This instead finds the first item whose `type` is
- * either absent (accepted for backward compatibility with a minimal payload shape) or exactly
- * `"message"`, skipping any other typed item ahead of it — matching OpenAI's own migration
- * guidance to iterate items by type rather than assume position (found and fixed in code review
- * on issue #62, 2026-09-01; full parser gap tracked separately as #65 for the remaining formats
- * this file does not touch here).
- */
-private fun Any?.firstMessageTextAt(vararg path: Any): String? =
-    (valueAt(*path) as? List<*>)
-        ?.asSequence()
-        ?.filterIsInstance<Map<*, *>>()
-        ?.firstOrNull { item -> (item["type"] as? String)?.let { it == "message" } ?: true }
-        ?.get("content")
-        .firstTextAt()
-
-private class JsonParser(private val input: String) {
-    private var index = 0
-
-    fun parse(): Any? {
-        skipWhitespace()
-        val value = parseValue()
-        skipWhitespace()
-        require(index == input.length) { "trailing JSON" }
-        return value
-    }
-
-    private fun parseValue(): Any? {
-        skipWhitespace()
-        require(index < input.length) { "missing value" }
-        return when (input[index]) {
-            '{' -> parseObject()
-            '[' -> parseArray()
-            '"' -> parseString()
-            't' -> parseLiteral("true", true)
-            'f' -> parseLiteral("false", false)
-            'n' -> parseLiteral("null", null)
-            '-', in '0'..'9' -> parseNumber()
-            else -> throw IllegalArgumentException("invalid JSON")
-        }
-    }
-
-    private fun parseObject(): Map<String, Any?> {
-        expect('{')
-        val result = linkedMapOf<String, Any?>()
-        skipWhitespace()
-        if (consume('}')) return result
-        while (true) {
-            skipWhitespace()
-            val key = parseString()
-            skipWhitespace()
-            expect(':')
-            result[key] = parseValue()
-            skipWhitespace()
-            if (consume('}')) return result
-            expect(',')
-        }
-    }
-
-    private fun parseArray(): List<Any?> {
-        expect('[')
-        val result = mutableListOf<Any?>()
-        skipWhitespace()
-        if (consume(']')) return result
-        while (true) {
-            result += parseValue()
-            skipWhitespace()
-            if (consume(']')) return result
-            expect(',')
-        }
-    }
-
-    private fun parseString(): String {
-        expect('"')
-        val result = StringBuilder()
-        while (index < input.length) {
-            val char = input[index++]
-            when (char) {
-                '"' -> return result.toString()
-                '\\' -> {
-                    require(index < input.length) { "unfinished escape" }
-                    when (val escaped = input[index++]) {
-                        '"', '\\', '/' -> result.append(escaped)
-                        'b' -> result.append('\b')
-                        'f' -> result.append('\u000C')
-                        'n' -> result.append('\n')
-                        'r' -> result.append('\r')
-                        't' -> result.append('\t')
-                        'u' -> {
-                            require(index + 4 <= input.length) { "short unicode escape" }
-                            result.append(input.substring(index, index + 4).toInt(16).toChar())
-                            index += 4
-                        }
-                        else -> throw IllegalArgumentException("invalid escape")
-                    }
-                }
-                else -> {
-                    require(char.code >= 0x20) { "control in string" }
-                    result.append(char)
-                }
-            }
-        }
-        throw IllegalArgumentException("unfinished string")
-    }
-
-    private fun parseNumber(): Number {
-        val start = index
-        consume('-')
-        if (consume('0')) Unit else {
-            require(index < input.length && input[index] in '1'..'9') { "invalid number" }
-            while (index < input.length && input[index].isDigit()) index++
-        }
-        if (consume('.')) {
-            require(index < input.length && input[index].isDigit()) { "invalid fraction" }
-            while (index < input.length && input[index].isDigit()) index++
-        }
-        if (index < input.length && (input[index] == 'e' || input[index] == 'E')) {
-            index++
-            if (index < input.length && (input[index] == '+' || input[index] == '-')) index++
-            require(index < input.length && input[index].isDigit()) { "invalid exponent" }
-            while (index < input.length && input[index].isDigit()) index++
-        }
-        return input.substring(start, index).toDoubleOrNull() ?: throw IllegalArgumentException("invalid number")
-    }
-
-    private fun parseLiteral(literal: String, value: Any?): Any? {
-        require(input.startsWith(literal, index)) { "invalid literal" }
-        index += literal.length
-        return value
-    }
-
-    private fun skipWhitespace() {
-        while (index < input.length && input[index].isWhitespace()) index++
-    }
-
-    private fun expect(char: Char) {
-        require(index < input.length && input[index++] == char) { "expected $char" }
-    }
-
-    private fun consume(char: Char): Boolean {
-        if (index < input.length && input[index] == char) {
-            index++
-            return true
-        }
-        return false
     }
 }

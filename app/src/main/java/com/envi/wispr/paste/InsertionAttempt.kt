@@ -322,6 +322,10 @@ internal class InsertionAttempt(
         val window = if (record.action == AccessibilityInsertionRules.Action.COMMIT) readSurrounding() else null
         val byWindow = window?.let { AccessibilityInsertionRules.judgeWindow(record, it) }
         if (byWindow != null) {
+            if (byWindow == Judgement.MISS) {
+                val rescued = rescueCommitMissWithNode(record)
+                if (rescued != null) return rescued
+            }
             lastJudgement = byWindow
             if (byWindow == Judgement.MISS) sawMiss = true
             evidence = Evidence.SURROUNDING
@@ -352,6 +356,30 @@ internal class InsertionAttempt(
                 "hint=${read?.isShowingHintText ?: false} baselineKnown=${record.beforeText != null}"
         }
         return verdict(judgement)
+    }
+
+    /**
+     * A COMMIT-route window MISS means the pipe's re-read did not show the payload. On some editors
+     * (Chrome web inputs) that re-read is STALE: it answers with the pre-write context and offset=0
+     * even after the write landed, so [AccessibilityInsertionRules.judgeWindow] sees a document-start
+     * read too short to hold the payload and returns MISS. Before accepting that and dropping to the
+     * clipboard, read the pinned node once: the node holds the field's own text and is what verifies
+     * the PASTE route reliably on these same editors. ONLY a node judge of VERIFIED overrides the
+     * window MISS; a missing, unreadable, partial, or genuinely empty field keeps the MISS and the
+     * clipboard fallback, so a real dropped write is never trusted. The write is not re-issued: this
+     * only re-reads. Returns a Verified tick on rescue, or null to keep the window verdict.
+     */
+    private fun rescueCommitMissWithNode(record: Verification): Tick? {
+        val read = try {
+            editor.readTarget()
+        } catch (error: Exception) {
+            null
+        } ?: return null
+        if (AccessibilityInsertionRules.judge(record, read) != Judgement.VERIFIED) return null
+        lastJudgement = Judgement.VERIFIED
+        evidence = Evidence.NODE
+        lastMissShape = null
+        return verdict(Judgement.VERIFIED)
     }
 
     private fun verdict(judgement: Judgement): Tick = when {

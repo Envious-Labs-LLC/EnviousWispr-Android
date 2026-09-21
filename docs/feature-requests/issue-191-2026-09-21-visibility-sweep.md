@@ -1,7 +1,7 @@
 # Issue #191 — App-only code is public and new states can silently take default branches — 2026-09-21
 
 GitHub issue: `#191`. Tier: SMALL by the issue (REF-08, "-20 lines net"); the diff touches many files but moves
-no logic, no process, no package and no AIDL. Status: DRAFT after the coverage round (A1, B1, B2, C1 to C5, D1 to D3, E1, E2, F1, F2, G1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G2.2, G3.1, G4.1 to G4.6 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.5, G2.1); the second round of the same class, stale prose beside an enumeration, so every restated count and member list in prose now points at the one table; round 3 PROCEED-WITH-REVISIONS on a new axis (G2.1, the check's rule A binds name to path and reads scope by brace depth); round 4 PROCEED-WITH-REVISIONS on the scanner (G1.1, string templates nest); round 5 next.
+no logic, no process, no package and no AIDL. Status: DRAFT after the coverage round (A1, B1, B2, C1 to C5, D1 to D3, E1, E2, F1, F2, G1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G2.2, G3.1, G4.1 to G4.6 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.5, G2.1); the second round of the same class, stale prose beside an enumeration, so every restated count and member list in prose now points at the one table; round 3 PROCEED-WITH-REVISIONS on a new axis (G2.1, the check's rule A binds name to path and reads scope by brace depth); round 4 PROCEED-WITH-REVISIONS on the scanner (G1.1, string templates nest); round 5 PROCEED-WITH-REVISIONS (G1.1, escapes), the third finding on the scanner axis, so the scanner is now specified from the Kotlin lexical grammar as a closed list with one fixture per state; round 6 next.
 
 Consolidation: this plan is one document; §2.5 carries the measured populations once and §§3 to 11 point back at it.
 
@@ -197,14 +197,24 @@ Swift access levels (macOS has no module boundary of this kind).
    - A: a top-level declaration (the keyword `class|object|interface|fun|val|var|typealias` with its
      modifiers, possibly after annotation lines, and possibly with the name on the next line, coverage
      D2) with no `private|internal` modifier fails unless it is in `scripts/visibility-allowlist.txt`.
-     Top-level means brace depth zero: the script tracks `{`/`}` outside string literals and comments,
-     never indentation, so an indented top-level declaration is still top-level and an indented
-     companion member is not (round G3). The scanner is a small state machine over the file's characters:
-     code, line comment, block comment (nesting), `"…"` string, `"""…"""` raw string, `'…'` character
-     literal, and inside a string a `${ … }` template pushes a nested CODE state, so a lambda or a nested
-     string inside a template (`InsertionAttempt.kt:354`, `record.selection?.let { "${it.start}/${it.end}" }`)
-     cannot leave the depth wrong (round G4); a fixture places an indented public top-level class after
-     exactly that construct and must fail. An allowlist entry binds the declaration to its file,
+     Top-level means brace depth zero, read by a scanner specified from the Kotlin lexical grammar as a
+     CLOSED list of states (rounds G3 to G5 each named one more member; this is the whole population),
+     never by indentation:
+     - code: `{` and `}` change the depth; `//` enters line comment; `/*` enters block comment; `"""`
+       enters raw string; `"` enters string; `'` enters character literal.
+     - line comment: ends at the newline.
+     - block comment: nests (`/*` inside increments, `*/` decrements), so a KDoc holding `{` is inert.
+     - string: an escape sequence (a backslash and one character, or a backslash-u and four hex digits) is
+       consumed before any delimiter test, so an escaped quote or an escaped dollar cannot end the string
+       or start a template (`providers/GeminiAdapter.kt:32`, an escaped-quote JSON template); `$` followed
+       by an identifier is inert; `${` pushes a nested CODE state that pops at its matching `}` (a lambda
+       or a nested string inside it is read by the same rules, `paste/InsertionAttempt.kt:354`); `"` ends
+       the string.
+     - raw string: no escapes; `${` pushes a nested code state as above; ends at `"""` followed by no
+       further `"` (a run of four or more quotes ends the literal at its last three).
+     - character literal: one escape sequence or one character, then `'`.
+     One rejecting fixture per state places an indented public top-level class after that construct and
+     must fail; the open fixture proves a genuine nested declaration is not top-level. An allowlist entry binds the declaration to its file,
      `app/src/main/java/com/envi/wispr/ui/SettingsActivity.kt:SettingsActivity`, one per line with a
      `#` reason, so a new declaration reusing an allowlisted name in another file fails; the shipped
      allowlist is the 13 framework classes. A public companion member is not this rule's population
@@ -231,8 +241,10 @@ Swift access levels (macOS has no module boundary of this kind).
      the `app/` working directory of `:app:testDebugUnitTest` (`File("..").canonicalFile`), runs the script
      on the tree and asserts exit code exactly 0; and runs it with `--root` on fixture trees under
      `app/src/test/resources/visibility/<case>/app/src/main/java/` (a public class; a public class whose
-     name is on the next line; an INDENTED public top-level class; the same after a nested string template; an
-     allowlisted name declared in the wrong file; an `else` over an enum; an `else` over a `data object` sealed member; a nested enum
+     name is on the next line; an INDENTED public top-level class after each of the six scanner states (a line comment, a
+     nesting block comment, an escaped-quote string with a template, a nested-template lambda, a raw
+     string with a template and a quote run, a character literal holding a brace); an allowlisted name
+     declared in the wrong file; an `else` over an enum; an `else` over a `data object` sealed member; a nested enum
      matched bare; an open `when` mixing a member with a range, which must PASS) and asserts
      exit code exactly 1 with the expected `file:line` in stdout, or exactly 0 for the open case. A process
      that cannot launch is a test failure, never a pass (coverage F1).
@@ -280,7 +292,7 @@ Not present in this change (no runtime failure branch).
 - The 12 `when` sites in §2.5.1.
 - `scripts/check-visibility.py` (new), `scripts/visibility-allowlist.txt` (new, the 13 class-name entry points with reasons),
   `scripts/validate-pr.sh` and `scripts/check-validation.sh` (the `visibility` obligation for `Code`).
-- `app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt` (new) and nine fixture trees under
+- `app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt` (new) and thirteen fixture trees under
   `app/src/test/resources/visibility/`.
 - `docs/audits/2026-09-21-191-revert-receipts.txt` (new): the build commands with exit statuses, and every
   receipt of §11.2 with its red output (R3's three compiler errors verbatim).
@@ -315,7 +327,7 @@ Compile-time only. Rollback is `git revert` of three commits; nothing persisted 
 
 ## 13. Ship criteria specific to THIS change
 - `scripts/check-visibility.py` exits 0 on the tree and on the open mixed fixture, and exactly 1 on each of
-  the eight rejecting fixtures (`VisibilityCheckTest` (proposed) rows).
+  the twelve rejecting fixtures (`VisibilityCheckTest` (proposed) rows).
 - `scripts/measure-tests.sh` count reported; `:app:assembleDebug`, `:app:compileDebugUnitTestKotlin` (external) and
   `:app:compileDebugAndroidTestKotlin` (external) green, each command and exit status recorded in the receipts file.
 - Receipt R3 in `docs/audits/2026-09-21-191-revert-receipts.txt` shows three compiler errors for one added enum member.

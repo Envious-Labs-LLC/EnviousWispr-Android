@@ -2,7 +2,7 @@
 
 GitHub issue: `#115` (with REF-04 and the History write ordering folded in by the founder's two comments).
 Tier: LARGE (session ownership, the AIDL surface, both the session and the audio process, three services'
-teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT after the coverage round (A1, A2, B1, C1, C2, D1, D2, E1 to E4, F1, G1, G2, H1 folded in; H2 half adopted); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G3.1, G4.1 to G4.3, G5.1 to G5.5 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.3, G2.1, G3.1 to G3.4 folded in); round 3 next.
+teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT after the coverage round (A1, A2, B1, C1, C2, D1, D2, E1 to E4, F1, G1, G2, H1 folded in; H2 half adopted); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G3.1, G4.1 to G4.3, G5.1 to G5.5 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.3, G2.1, G3.1 to G3.4 folded in); round 3 PROCEED-WITH-REVISIONS (G1.1 a fifth exit: the pre-committed consequence applied, §3 A2's ending prose is a table from the code; G2.1; G3.1, G3.2); round 4 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -247,15 +247,25 @@ A2. **`TakeEventPublisher` (proposed)** in `:audio`, service-scoped like `WarmHo
    value for the timer only once RECORDING and treats every tick as liveness. The detector's
    three status-writing paths in `DetectorFeed.kt` (round G1.2) → `onSilenceStatus`: after
    `markRequestedButRefused` (`:88-90`), after the PREPARING-to-READY compare-and-set (`:257-260`), and after
-   every successful abandon transition (`:312-325`). Endings (round G1.1): every ending AFTER a session exists
-   reaches `releaseSession`; it publishes `onEnded` as its FINAL operation, after `closeResources`, `session =
-   null` (`:678-680`), the detector and picture closes, the diagnostic line and the service-lifetime work
-   (`:685-695`; round G3.2). Every `false` return from `startRecording` BEFORE a session exists (`:323`,
-   `:334-339`) publishes a start-refused `onEnded` directly, carrying the failure code and no path, so the
-   owner never waits for an ending that has no session to produce it; for the legacy start transactions
-   (`startCapture`, `startCaptureWithSilenceStop`, `startCaptureWithInputDevice`,
-   `startCaptureWithInputDeviceHeld`, `IAudioCaptureService.aidl:6,25,49,77`) no listener is registered and
-   the publication is best-effort: their `false` return remains their complete contract (round G1.3).
+   every successful abandon transition (`:312-325`). **Endings, one publisher per exit** (round G3 applied the
+   pre-committed consequence: the prose is replaced by this table, every row from `AudioCaptureService.kt` at
+   87e07ca; a fifth-exit finding in round 3 was the trigger):
+
+   | Exit | Session state at the exit | Cleanup owner | Ending publisher |
+   |---|---|---|---|
+   | busy: `session != null` at `:323` | the previous take's session still open | none (nothing was created) | direct start-refused `onEnded` (code `START_FAILURE_OTHER`; the previous take's own ending is published by ITS `releaseSession`) |
+   | route refusal `:334-339` | none | that exit (`routeHold.release()`, `stopSelf()`) | direct start-refused `onEnded` (`START_FAILURE_NO_INPUT_DEVICE`) |
+   | buffer-size failure `:356-361` | none | that exit | direct start-refused `onEnded` (`START_FAILURE_OTHER`) |
+   | thread-start failure `:466-475` | `session = newSession` at `:426` then cleared HERE (`session = null`, `closeResources`) | that exit, not `releaseSession` | direct start-refused `onEnded` (`START_FAILURE_OTHER`) |
+   | immediate post-start result false at `:492` (`thread.isAlive && session === newSession && isRecording.get()`) | a session exists; its ending (the earbud refusal or a loop ending) is already claimed | `releaseSession`, from the capture loop | `releaseSession`'s final `onEnded`; this exit publishes nothing |
+   | setup exceptions `:493-508` (`SecurityException`, `Exception`) | none if thrown before `:426`; SET and not cleared if thrown after (pre-existing; the catch closes `record` and `output` but not `session`) | that catch | direct start-refused `onEnded` (`START_FAILURE_OTHER`); the build clears `session` in that catch too, so the next start is not refused as busy for a session that has no thread |
+   | every ending after the loop started (stop, silence, cap, byte ceiling, capture error, teardown) | a session exists | `releaseSession` (`:668-695`) | `releaseSession`'s FINAL operation, after `closeResources`, `session = null`, the detector and picture closes, the diagnostic line and the service-lifetime work (round G3.2) |
+
+   Exactly one publisher per row; the direct publisher carries the failure code and no path, so the owner never
+   waits for an ending no session can produce. For the four legacy start transactions (`startCapture`,
+   `startCaptureWithSilenceStop`, `startCaptureWithInputDevice`, `startCaptureWithInputDeviceHeld`,
+   `IAudioCaptureService.aidl:6,25,49,77`) no listener is registered and the direct publication is best-effort:
+   their `false` return remains their complete contract (round G1.3).
 A3. **The owner** registers its listener in `startCaptureForTake`'s caller (`tryStartRecording`, next to
    `listenForPicture`) BEFORE the start call, so no event can precede registration; each event is
    `host.postToMain { … }` and then handled by the existing code paths: `onLive` → `publishLive(forced)` with
@@ -270,7 +280,7 @@ A3. **The owner** registers its listener in `startCaptureForTake`'s caller (`try
    `inputRouteReason()`, `liveAfterMs()`, `waitForFileReady()`, `takePeakAmplitude()`, `effectiveInputDevice()`,
    `audioFilePath()` and `lastStartFailure()` members of `CaptureLink` are deleted (`GR-MIGRATION-COMPLETE`);
    `onEnded` carries the start failure code, so the ending-before-live case reads nothing. After the change the
-   only synchronous calls into `:audio` are the three commands and the two listener registrations.
+   only synchronous calls into `:audio` are the three commands and the four listener members.
 A4. **Live wait.** STARTING ends by `onLive` (→ RECORDING), by `onEnded` before live (→ the existing
    `CAPTURE_ENDED_BEFORE_LIVE` / `CAPTURE_START_EARBUDS_REFUSED` from the payload's start failure code), or by the
    existing `LIVE_WAIT_BOUND_MS` deadline, now a main-thread `postDelayed` instead of a polling thread.
@@ -333,7 +343,11 @@ C1. `DictationSessionCoordinator.destroy` (round G4.1, the order): FIRST invalid
    `publishLock` the publication is RESERVED and its non-suspending History write ENQUEUED as one operation
    (round G2, G2.1); `destroy` takes the same `publishLock` before enqueueing `interrupted`, so it cannot land
    between a reservation and its enqueue; `polishSubmissionLock` stays limited to polish request submission and
-   cancellation. The deleted join protected nothing else (round G4.3, G3.4): `sessionPreferences` is written
+   cancellation. `destroy` enqueues `interrupted` ONLY when `arbiter.interrupt` wins (round G3, G2.1): the
+   terminal `commitNow` sites (`:429`, `:449`, `:876`, `:888`, `:910`, `:1413`, `:1441`) already own their later
+   queued status or discard write, and the two text publications (`:974`, `publishFallback` `:1018-1028`) both
+   converge on the reservation at `:1091`, with copy-only and the unscheduled handoff downstream of it
+   (`:1154-1228`). The deleted join protected nothing else (round G4.3, G3.4): `sessionPreferences` is written
    only under the STARTING check (`:385-388`); `rawTranscript` (`:905-916`) may still change after `destroy`,
    but the cancelled scope and the claimed arbiter prevent every later publication or write from it. The late-polish-callback race the join
    protected against (coverage E1): every finalization write ADMITTED before `destroy` was already enqueued
@@ -400,7 +414,7 @@ was (§2.5.4).
 | Failure mode | Origin | Caller | What the user sees | Persisted state | Retry |
 |---|---|---|---|---|---|
 | `:audio` dies mid-take | the OS | `onServiceDisconnected` | the existing "Microphone service stopped unexpectedly" | `interrupted`-class row as today | next take |
-| `:audio` freezes (no events for the bound) | the OS or a native hang | the wedge bound | "The microphone stopped answering. Try again." within ~3 s | row discarded as a mid-take failure (as `CAPTURE_FAILED_MID_TAKE`) | next take (the service is stopped and unbound; a frozen process is killed by the OS or by `stopService`) |
+| `:audio` freezes (no events for the bound) | the OS or a native hang | the wedge bound | "The microphone stopped answering. Try again." within ~3 s | row discarded as a mid-take failure (as `CAPTURE_FAILED_MID_TAKE`) | next take only after the frozen process is explicitly continued or killed (`stopService` cannot make a stopped process run teardown); on a device the OS kills a frozen app process on the next memory pressure or the user force-stops it |
 | `onEnded` arrives after the bound fired | a slow pusher | main thread | nothing more; the take already ended | unchanged | none |
 | a History write throws | Room | the queue worker | nothing; the next write proceeds | that write lost, logged by label | `recoverStaleDrafts` on next start |
 | the process dies with writes queued | the OS | none | nothing | those writes lost, as before | `recoverStaleDrafts` |

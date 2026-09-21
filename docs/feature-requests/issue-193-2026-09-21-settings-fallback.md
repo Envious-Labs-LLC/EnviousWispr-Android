@@ -1,7 +1,7 @@
 # Issue #193 — A settings or vocabulary read failure prevents recording instead of falling back — 2026-09-21
 
 GitHub issue: `#193`. Tier: MEDIUM (a service's start path, new runtime behaviour; `workflow-process.md`
-RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 next.
+RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G2.1, G2.2, G4.1, G5.1 to G5.3 folded in); round 2 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -18,9 +18,9 @@ vocabulary), `app/src/test/**` (coordinator rows, contract rows). `mixed_pr: tru
 and vocabulary fail open before capture").
 
 **Hardware UAT:** Y. The heart's start. On the emulator through wispr-eyes (the founder's phone is his today): an
-ordinary take still runs with the user's real settings (auto-stop honoured on a cold start); the fail-open path
-is staged on the JVM rig with injected flow failures, because a DataStore or Room failure cannot be staged on
-a device without corrupting the founder's data (§11.1 says which rows stand in).
+ordinary take still runs with the user's real settings (auto-stop honoured on a cold start). Injected failures
+run on the JVM rig; the disposable emulator stages settings corruption and measures whether Room corruption
+reaches the terms reader; neither runs on the founder's phone (§11.1).
 
 ## Preface — User Rubric
 
@@ -179,14 +179,27 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
    `clipboardPolicy = null`, auto-stop off, `InputDevicePick.AUTO`, tips on, earbuds hold on).
    A reader whose flow COMPLETES before its first emission (coverage B1) answers `Failed(completed_without_value)`
    at once from the collector's normal exit, never staying `Pending` until the bound.
-3. **`awaitAnswers(boundMs)` (proposed) replaces `awaitReady`:** waits for both deferreds under the bound;
-   on expiry marks each still-`Pending` reader `Failed(timed_out)`. Returns a `PreferenceStart` (proposed):
-   `settings: PreferenceRead`, `terms: PreferenceRead`. It never returns "not ready".
+3. **`awaitAnswers(boundMs)` (proposed) replaces `awaitReady`:** each reader's answer is a
+   `CompletableDeferred<PreferenceRead>` completed EXACTLY ONCE by its collector, after the emitted fields are
+   written: `Fresh` on the first emission, `Failed(exception:<name>)` from the catch,
+   `Failed(completed_without_value)` from a normal exit with no emission. The bound never writes the reader:
+   `withTimeoutOrNull(boundMs) { deferred.await() }` returning null is the CALLER's `Failed(timed_out)` for
+   THIS take, so a late first emission still completes the deferred as `Fresh` for later takes, and a race
+   between the bound and the first emission has one winner per take with no torn state (round G1.1). Later
+   emissions update the cached fields for later takes and never rewrite an answer. Returns a
+   `PreferenceStart` (proposed): `settings: PreferenceRead`, `terms: PreferenceRead`. It never returns "not
+   ready".
 4. **`beginSession`:** `awaitAnswers` under `SETTINGS_ANSWER_BOUND_MS` (proposed) (2 000 ms,
    replacing `SETTINGS_WAIT_MS`); if either is `Failed`, `takeFacts.settingsFallback` (proposed) = a token
    naming which (`settings`, `terms`, `both`) and the reasons, one `log.warn`, one breadcrumb
-   `take` / `settings_fallback` (proposed); then the existing snapshot, compile, policy and bind, unchanged. The
+   `take` / `settings_fallback` (proposed); then the existing snapshot, compile, policy and bind. The
    `showError(SETTINGS_UNAVAILABLE)` branch is deleted.
+   **The four capture fields are frozen with the snapshot** (round G2.1): `SessionPreferences` gains
+   `autoStopOnSilence`, `silencePauseSeconds`, `inputDevicePick`, `keepEarbudsReady` and `showBluetoothTips`,
+   written by `freeze` at the answer; `tryStartRecording` (`:461-464`), `publishSilenceNoticeIfNeeded` (`:710`)
+   and `publishMicrophoneNoticesIfNeeded` (`:732`) read `sessionPreferences`, never the live source, so a
+   late emission after the bound cannot change a take already started. `takeFacts.inputDevice` (`:334`) is
+   written from the same frozen snapshot after the answer, not before it (round G2.2).
 5. **`SETTINGS_UNAVAILABLE` removed** from `TerminalReason`, `TakeNotices`, both `TelemetryChannels` sets,
    and the three tests that name it (the compiler finds the `when`s).
 6. **Telemetry:** `DictationTerminal` gains `settingsFallback: String?` (proposed) carried from `TakeFacts`,
@@ -222,7 +235,8 @@ the take starts on the same last values, `Failed` again, one more line. Restarti
 
 ## 6. Consumer matrix
 - `beginSession`: the wait's shape changes; everything after it is unchanged.
-- `tryStartRecording`, `:334`, `:710`, `:732`, `promoteToForeground`: read the same fields; unchanged.
+- `tryStartRecording`, `:334`, `:710`, `:732`: read the frozen `sessionPreferences` (§3.4) instead of the
+  live source. `promoteToForeground`: reads the live nullable `clipboardPolicy`; unchanged.
 - `TakeFacts` → `DictationTerminal`: one new nullable property; `TelemetryContractsTest` and
   `TakeFactsTest` rows updated; PostHog consumers see a new optional key.
 - `TakeNotices`, `TelemetryChannels`: one member fewer.
@@ -234,7 +248,7 @@ the take starts on the same last values, `Failed` again, one more line. Restarti
 | settings flow throws on first read | DataStore | `beginSession` | the recorder comes up at once; the take runs on defaults; one debug line | the take's facts carry `settings_fallback=settings:exception:<name>` | next take: same, until the process restarts (§14) |
 | terms flow throws | Room | `beginSession` | the take runs without custom words | `terms:exception:<name>` | same |
 | both throw | both | `beginSession` | defaults, no custom words | `both:...` | same |
-| neither answers within the bound | a hung store | `beginSession` | starts on the last snapshot after 2 s | `...:timed_out` | the collectors keep running; a later emission updates the fields for the next take |
+| neither answers within the bound | a hung store | `beginSession` | starts on the last snapshot after 2 s; the running take keeps its frozen values | `...:timed_out` | the collectors keep running; a later emission updates the fields for the NEXT take only |
 | settings throw after a Fresh read | DataStore, mid-process | a later take | runs on the last good values | `settings:exception:<name>` | same |
 | ordinary cold start | none | `beginSession` | unchanged: the user's real values, auto-stop honoured | `settings_fallback` null | none |
 
@@ -251,7 +265,8 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
 
 ## 10. File-by-file changes
 - `app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt`: `PreferenceRead`, `PreferenceStart`,
-  the two read fields, the catch completes with `Failed`, `awaitAnswers`.
+  the two answer deferreds, the catch and the normal exit complete with `Failed`, `awaitAnswers`;
+  `SessionPreferences` gains the five capture and notice fields and `freeze` writes them.
 - `app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt`: `beginSession` wait and facts;
   `SETTINGS_ANSWER_BOUND_MS`.
 - `app/src/main/java/com/envi/wispr/ui/TerminalReason.kt`, `TakeNotices.kt`,
@@ -267,8 +282,8 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
 1. Classes: the two injected-failure rows and the bound row are Product Outcome (when they fail, Frank
    cannot dictate); the consistent-snapshot row and the telemetry contract row are Drift Guards.
 2. Reverts: §11.2.
-3. Not tested: a real corrupt DataStore on a device (cannot be staged without destroying the founder's data;
-   the rig's flow failure is the same code path, the collector's catch).
+3. Not tested: any corruption on the founder's phone. The emulator stages the settings file (§11.1 d) and
+   measures the Room file (§11.1 e); the rig's injected failures exercise the same collector catch.
 
 ### 11.1 Hardware UAT spec
 - Emulator, wispr-eyes, debug build of the final commit: (a) three cold-start ordinary takes into Gmail with
@@ -277,11 +292,12 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
   toggle, `route=COMMIT`; (c) `restore()` puts the switch back. Founder's phone: NOT RUN (his instruction);
   build delivered through Play for his ordinary use.
 - The failure path on a real foreground-service start (coverage F1), on the DISPOSABLE emulator only: (d)
-  corrupt the settings store in place (`run-as com.envi.wispr` on the debug build; write garbage over
-  `files/datastore/enviouswispr_settings.preferences_pb`), force-stop, start a take through the launcher,
-  expect the listening notification up, capture started, spoken text in Gmail by `route=COMMIT`, ONE
-  `settings_fallback` warning naming `settings:exception:CorruptionException`; then delete the corrupt file
-  so DataStore recreates defaults, and re-check an ordinary take. (e) the same for the word list: corrupt
+  stop the debug app through wispr-eyes, overwrite `files/datastore/enviouswispr_settings.preferences_pb`
+  with garbage (`run-as com.envi.wispr`, the default DataStore path with no corruption handler,
+  `AppPreferences.kt:22`), relaunch, start a take through the launcher and measure: the listening
+  notification up, capture started, spoken text in Gmail by `route=COMMIT`, ONE `settings_fallback` warning
+  naming `settings:exception:CorruptionException`; then stop again, delete the file, relaunch, and verify
+  DataStore recreates defaults with an ordinary take (`settings_fallback` null). (e) the same for the word list: corrupt
   `databases/enviouswispr.db`; if Android's default corruption handler silently recreates the database
   (a plausible outcome, to be measured, not assumed), record the terms path as NOT STAGEABLE on a device
   with that evidence and the rig row stands in. Never on the founder's phone.
@@ -304,10 +320,10 @@ Every take's start passes through `beginSession`; the change is the shape of one
 PR. No schema, no migration, no stored format.
 
 ## 13. Ship criteria specific to THIS change
-- P1 red-by-today then green; the four rows green; receipts red.
+- P1 red-by-today then green; all five coordinator rows green; receipts red.
 - P2 measured on the emulator: readers' answer time under 500 ms on three cold starts, or the plan is
   re-examined before shipping.
-- Emulator (a), (b), (c) as in §11.1; Codex all-clear with a confirming rerun.
+- Emulator checks (a) through (e) as specified in §11.1; Codex all-clear with a confirming rerun.
 
 ## 14. Open questions
 - Should a `Failed` collector be restarted on the next take (a retry of the read) rather than left ended? Default

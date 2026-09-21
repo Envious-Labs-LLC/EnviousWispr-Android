@@ -549,10 +549,13 @@ internal class DictationSessionCoordinator(
         host.postToMainDelayed(TAKE_SILENT_BOUND_MS, silenceBound)
     }
 
-    /** Disarmed when the take's binding is released, and only then (a command may still be outstanding). */
+    /**
+     * Main thread, when the take's binding is released and only then (a command may still be outstanding).
+     * On an ordinary ending the bound is still pending (the process answered every second and the take
+     * ended by its own ending), so the cancel is the ordinary path, not a defence; both runnables are
+     * cancelled because neither may outlive the binding they watch.
+     */
     private fun disarmSilenceBound() {
-        // Cancel unconditionally: a heartbeat queued behind the firing bound re-posts it after the flag
-        // dropped, and that copy must not outlive the binding.
         silenceBoundArmed.set(false)
         host.cancelMainDelayed(silenceBound)
         host.cancelMainDelayed(liveDeadline)

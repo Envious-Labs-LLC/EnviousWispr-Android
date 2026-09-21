@@ -224,11 +224,17 @@ internal class DictationSessionRig {
         override fun postToMainDelayed(delayMs: Long, runnable: Runnable) { delayedPostLog += delayMs; delayed += delayMs to runnable }
         override fun cancelMainDelayed(runnable: Runnable) { delayed.removeIf { it.second === runnable } }
 
-        /** Test time passes: every delayed post with [delayMs] due fires, on main, in the order it was posted. */
+        /**
+         * Test time passes: every delayed post with [delayMs] due fires, on main, in the order it was
+         * posted. Selected and removed ON main, as a Handler would, so a re-arm racing the test thread
+         * cannot leave the fired entry behind or fire the re-posted one twice.
+         */
         fun fireDelayed(delayMs: Long) {
-            val due = delayed.filter { it.first == delayMs }
-            delayed.removeAll(due)
-            due.forEach { (_, runnable) -> onMain { runnable.run() } }
+            onMain {
+                val due = delayed.filter { it.first == delayMs }
+                delayed.removeAll(due)
+                due.forEach { (_, runnable) -> runnable.run() }
+            }
         }
         override fun onMainThread(): Boolean = Thread.currentThread() === mainThread
         override fun elapsedRealtimeMs(): Long = System.nanoTime() / 1_000_000L

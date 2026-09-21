@@ -332,6 +332,9 @@ class DictationSessionCoordinatorTest {
         assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
         rig.host.awaitStopped()
         assertEquals(listOf("listenForTake", "start", "listen", "stop", "finishTake"), rig.capture.events.toList())
+        // The bound was pending through the whole healthy take; it goes with the binding.
+        // REVERT: drop the cancel from `disarmSilenceBound`.
+        assertTrue("no bound left armed after an ordinary take", rig.host.delayed.isEmpty())
     }
 
     @Test

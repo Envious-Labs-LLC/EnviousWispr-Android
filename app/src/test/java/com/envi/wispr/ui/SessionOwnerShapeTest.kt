@@ -99,21 +99,25 @@ class SessionOwnerShapeTest {
             "val h = '\\''" to "val h = " + blank(4),
             "val i = \"a \${pin()} b\"" to "val i = " + blank(5) + "pin()" + blank(4),
             "// pin\nval j = 1" to blank(6) + "\nval j = 1",
+            // An emoji is one code point and two UTF-16 units; the service blanks it to ONE space and the
+            // reader walks by code points (two production files hold one: DeterministicCleanup.kt, OnboardingDemo.kt).
+            "// \uD83C\uDF99\nval k = 1" to blank(4) + "\nval k = 1",
         )
-        val fixture = File.createTempFile("code-only", ".kt")
-        // The same shapes with no final newline: the service prints a separator after the text and the
-        // reader must give it back (Codex code review round 6; one production file ends without one).
-        val unterminated = File.createTempFile("code-only-unterminated", ".kt")
+        // Four files in one call: the shapes terminated, the shapes unterminated (one production file
+        // ends without a newline, Codex code review round 6), a blank-only file of two newlines (round 7)
+        // and an empty file; each answer must come back byte for byte and in order.
+        val expected = shapes.joinToString("\n") { it.second }
+        val fixtures = listOf(
+            shapes.joinToString("\n") { it.first } + "\n" to expected + "\n",
+            shapes.joinToString("\n") { it.first } to expected,
+            "\n\n" to "\n\n",
+            "" to "",
+        ).map { (text, want) -> File.createTempFile("code-only", ".kt").apply { writeText(text) } to want }
         try {
-            fixture.writeText(shapes.joinToString("\n") { it.first } + "\n")
-            unterminated.writeText(shapes.joinToString("\n") { it.first })
-            val expected = shapes.joinToString("\n") { it.second }
-            val answers = codeOnly(listOf(fixture, unterminated))
-            assertEquals(expected + "\n", answers.getValue(fixture))
-            assertEquals(expected, answers.getValue(unterminated))
+            val answers = codeOnly(fixtures.map { it.first })
+            fixtures.forEach { (file, want) -> assertEquals(file.readText().take(20), want, answers.getValue(file)) }
         } finally {
-            fixture.delete()
-            unterminated.delete()
+            fixtures.forEach { it.first.delete() }
         }
     }
 
@@ -127,31 +131,33 @@ class SessionOwnerShapeTest {
         val out = process.inputStream.bufferedReader().readText()
         assertTrue("the check must finish", process.waitFor(120, TimeUnit.SECONDS))
         assertEquals("the check must answer:\n$out", 0, process.exitValue())
-        val byPath = files.associateBy { it.path }
+        // The stream is `=== <path>\n`, the answer, then one newline that is the answer's own or one the
+        // service adds, per file in order. The answer has exactly the file's LENGTH in CODE POINTS (the
+        // service blanks, never deletes, and counts as Python does; Kotlin's `length` is UTF-16 units and
+        // an emoji in a comment is one point but two units), so the reader walks by code points and
+        // never splits on newlines: rounds 6 and 7
+        // each found a newline shape a split-and-join reader rebuilt wrongly (no final newline; a
+        // blank-only file), and the class is closed here rather than patched a third time. A service
+        // that changed a length would land the next header check on the wrong bytes, loudly.
         val result = LinkedHashMap<File, String>()
-        var current: File? = null
-        val body = StringBuilder()
-        fun close() {
-            current?.let { file ->
-                // In the stream every answer is followed by one newline (the text's own, or one the
-                // service adds) and then a header or the end, so the newline before a header and the one
-                // before the end are both separators; the file's own final newline is put back from the
-                // file (Codex code review round 6: one production file ends without one).
-                result[file] = body.toString() + if (file.readText().endsWith("\n")) "\n" else ""
+        var pos = 0
+        for (file in files) {
+            val header = "=== ${file.path}\n"
+            assertEquals("answer ${result.size + 1} of ${files.size} is for ${file.path}", header, out.substring(pos, minOf(out.length, pos + header.length)))
+            pos += header.length
+            val text = file.readText()
+            val points = text.codePointCount(0, text.length)
+            assertTrue("the answer for ${file.path} is complete", out.codePointCount(pos, out.length) >= points)
+            val end = out.offsetByCodePoints(pos, points)
+            val answer = out.substring(pos, end)
+            pos = end
+            if (!text.endsWith("\n")) {
+                assertEquals("the service ends an unterminated answer with one newline", "\n", out.substring(pos, minOf(out.length, pos + 1)))
+                pos += 1
             }
-            body.setLength(0)
+            result[file] = answer
         }
-        val segments = out.split("\n").let { if (it.last().isEmpty()) it.dropLast(1) else it }
-        for (line in segments) {
-            if (line.startsWith("=== ")) {
-                close()
-                current = byPath.getValue(line.removePrefix("=== "))
-            } else if (current != null) {
-                if (body.isNotEmpty()) body.append('\n')
-                body.append(line)
-            }
-        }
-        close()
+        assertEquals("nothing after the last answer", out.length, pos)
         assertEquals("every file answered", files.size, result.size)
         return result
     }

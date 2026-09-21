@@ -124,6 +124,71 @@ class DictationSessionCoordinatorTest {
         assertEquals(listOf("vibrate:SESSION_CANCELED"), rig.host.events.filter { it.startsWith("vibrate") })
     }
 
+    /**
+     * Drift Guard on the owner's contract (#192): the field a take aims at is pinned ONCE, at admission,
+     * and no later command touches it. Before #192 the launcher pinned again on the TOGGLE that stops a
+     * take, so the words followed the user to whichever field they had reached; the owner itself never
+     * did, which is why this row is a guard on the owner and the emulator scenario is the fix's proof.
+     * REVERT: pin inside the TOGGLE, STOP or CANCEL arm of `handleCommand`; the count goes past one.
+     */
+    @Test
+    fun aStoppingToggleNeverRepinsTheTarget() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        assertEquals("one pin at admission", 1L, rig.insertion.pins.get())
+        rig.command(coordinator, DictationSessionService.ACTION_TOGGLE)
+        rig.speech.awaitRequest().onResult("hello world")
+        rig.polish.awaitRequest { "log: ${rig.log.lines}; uncaught: ${rig.uncaught}" }
+        // The stop, the transcription and the insertion all ran with the pin from admission.
+        rig.polish.listener!!.onOutcome(rig.polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals("the stopping toggle took no second pin", 1L, rig.insertion.pins.get())
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+    }
+
+    /** Same contract on the STOP command (#192); one rig holds one take, so CANCEL has its own row. */
+    @Test
+    fun aStopNeverRepinsTheTarget() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals("a STOP took no second pin", 1L, rig.insertion.pins.get())
+    }
+
+    /** Same contract on the CANCEL command (#192). */
+    @Test
+    fun aCancelNeverRepinsTheTarget() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        assertEquals(TerminalReason.CANCELLED_RECORDING, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals("a CANCEL took no second pin", 1L, rig.insertion.pins.get())
+    }
+
+    /**
+     * Drift Guard on the owner's contract (#192): a START that arrives while a take is RECORDING is
+     * refused and takes no pin; the running take keeps the field it was admitted with.
+     * REVERT: pin before the IDLE check in the START arm of `handleCommand`.
+     */
+    @Test
+    fun aRefusedBusyStartNeverPinsTheTarget() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        // The refusal is synchronous on the fake main thread; the next command proves the take is still
+        // the first one (a CANCEL ends it as CANCELLED_RECORDING, which a second admitted take could not).
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        assertEquals(TerminalReason.CANCELLED_RECORDING, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals("the refused START took no pin", 1L, rig.insertion.pins.get())
+        assertEquals("capture was asked to start once", 1, rig.capture.events.count { it == "start" })
+    }
+
     @Test
     fun cancelWhileRecordingLeavesNoRow() {
         val coordinator = rig.coordinator()

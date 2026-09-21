@@ -1,0 +1,15 @@
+emulator-5554 True True
+restore: ['a11y-state back to {"accessibility_enabled": "0", "enabled_accessibility_services": "com.envi.wispr/com.envi.wispr.paste.PasteAccessibilityService"}']
+com.google.android.gm is on screen
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+host microphone already off
+injected 27 packets, 2.6s of audio
+focused 'Subject' (subject)
+recording before toggle: True
+recording after toggle: False
+last take: {'started': True, 'ended_by': 'a stop request', 'bytes': 491008, 'seconds': 15.3, 'warned_at_ms': None, 'hit_the_cap': False, 'transcribed_chars': 38, 'handoff': 'SCHEDULED', 'insertion': None}
+   node: {'text': 'These words belong to the first field.', 'desc': '', 'hint': None, 'cls': None, 'focused': False}
+   node: {'text': 'Subject', 'desc': '', 'hint': None, 'cls': None, 'focused': True}
+   node: {'text': 'Compose email', 'desc': '', 'hint': None, 'cls': None, 'focused': False}
+['nothing was changed']

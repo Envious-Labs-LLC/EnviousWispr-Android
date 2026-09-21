@@ -9,7 +9,6 @@ import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.core.content.ContextCompat
-import com.envi.wispr.paste.PasteAccessibilityService
 
 /** Samsung side-button trampoline. It never owns a recording session or visible window. */
 class VoiceInputActivity : Activity() {
@@ -65,16 +64,10 @@ class VoiceInputActivity : Activity() {
             intent.getBooleanExtra(EXTRA_TOGGLE, false) -> DictationSessionService.ACTION_TOGGLE
             else -> DictationSessionService.ACTION_TOGGLE
         }
-        if (action == DictationSessionService.ACTION_START ||
-            action == DictationSessionService.ACTION_TOGGLE
-        ) {
-            // Pinned here because this window is closing and the user's editor is still focused.
-            // The ANSWER is deliberately not carried: the session pins again in `beginSession` and
-            // that later value is the one every announcement is judged against. Keeping this one
-            // too would put two records of one fact in two components with different lifetimes,
-            // and this one dies first.
-            PasteAccessibilityService.pinTargetForDictation()
-        }
+        // No pin here. The session owner makes the single pin attempt in `beginSession`, and that
+        // result is the record every announcement is judged against. A pin taken by this window ran
+        // on every START or TOGGLE press, including the TOGGLE that stops a take, and moved the words
+        // to whichever field the user had reached by then (#192).
         val trigger = triggerOf(intent.action, intent.getStringExtra(EXTRA_TRIGGER_SOURCE))
         runCatching { DictationSessionService.sendCommand(this, action, intent.getStringExtra(EXTRA_REQUEST), trigger) }
             .onFailure {

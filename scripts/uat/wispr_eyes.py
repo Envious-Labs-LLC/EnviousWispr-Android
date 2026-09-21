@@ -1499,6 +1499,68 @@ def cancel_dictation():
     _dictation("cancel")
 
 
+def toggle_dictation():
+    """The side button pressed AGAIN during a take: the bare toggle, the same intent the Samsung side
+    button sends, with no `stop` extra. It is the only way to drive the launcher's stop path (#192: the
+    launcher used to pin the focused editor before the owner decided that this toggle meant stop, so a
+    take started in one editor could land in another). Allowed only while a take is live, so this never
+    means "start"; `open_recorder()` alone starts takes.
+
+    The liveness check and the intent are two steps, so a take that ends between them (silence, the cap)
+    would make the toggle START one; `_press_launcher` compares the identity of the newest capture
+    `recording_start` line before and after, and cancels a take identified as new before raising.
+    """
+    _press_launcher("toggle", "")
+
+
+def _newest_recording_start():
+    """The newest `recording_start` line the capture wrote, or None when the tail holds none.
+
+    The IDENTITY of that line is the witness a rolling tail cannot fake: a new take writes a new line
+    with its own timestamp, while a tail that rolled older lines out still ends at the same newest line.
+    A count of lines across two snapshots can read equal or lower after a new start (round G2).
+    """
+    lines = [line for line in logs(lines=600).splitlines() if "recording_start" in line]
+    return lines[-1] if lines else None
+
+
+def _press_launcher(what, flag, deadline_s=3.0):
+    """Send one launcher press during a live take and prove afterwards that it did not begin a take.
+
+    The liveness check and the intent are two steps. A take ending between the liveness check and intent
+    delivery turns the toggle into a start. The proof is the newest
+    `recording_start` line before the press against the newest one seen during `deadline_s` after it
+    (`_newest_recording_start`): a different line is a take this press began, which is cancelled before
+    raising; a tail with no start line at all after the press is "cannot tell", which also raises, never
+    "no new take". One quiet observation is not proof while a take can still be STARTING, so the whole
+    deadline is watched.
+    """
+    if not recording():
+        raise Blocked(f"{what!r} through the launcher is only sent during a live take here, and nothing is "
+                      "recording; a take is started only by `open_recorder()`")
+    newest_before = _newest_recording_start()
+    if newest_before is None:
+        raise Blocked("the log holds no recording_start line for the live take, so a new take could not be "
+                      "told from it; not pressing")
+    remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)} {flag}".strip(), check=False)
+    if remote != 0 or "Error" in out:
+        detail = out.strip().splitlines()[-1] if out.strip() else "no message"
+        raise Blocked(f"the recorder would not accept the {what}: {detail}")
+    _STATE["tree"] = None
+    waited = 0.0
+    while waited < deadline_s:
+        time.sleep(0.5)
+        waited += 0.5
+        newest = _newest_recording_start()
+        if newest is None:
+            raise Blocked(f"after the {what} the log tail held no recording_start line, so whether the press "
+                          "began a take cannot be told; check the phone by hand")
+        if newest != newest_before:
+            _dictation("cancel")
+            raise Blocked(f"the take had ended before the {what} landed, so the press began a new take; it "
+                          "was cancelled. The scenario has to be run again.")
+
+
 @_atomic_change
 def _kill_take():
     """Close the microphone, and let NOTHING come before it.

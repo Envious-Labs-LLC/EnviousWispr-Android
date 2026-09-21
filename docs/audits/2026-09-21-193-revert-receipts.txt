@@ -1,4 +1,4 @@
-Revert receipts for #193 at 876f0a2 (2026-09-21 14:39)
+Revert receipts for #193 at 6e12188 (2026-09-21 14:47)
 
 applied R1
 R1: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt; gradle exit 1; expected red: the three failure rows and the completes-without-value row (the take ends instead of starting)

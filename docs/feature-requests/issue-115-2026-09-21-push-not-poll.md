@@ -2,7 +2,7 @@
 
 GitHub issue: `#115` (with REF-04 and the History write ordering folded in by the founder's two comments).
 Tier: LARGE (session ownership, the AIDL surface, both the session and the audio process, three services'
-teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT after the coverage round (A1, A2, B1, C1, C2, D1, D2, E1 to E4, F1, G1, G2, H1 folded in; H2 half adopted); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G3.1, G4.1 to G4.3, G5.1 to G5.5 folded in); round 2 next.
+teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT after the coverage round (A1, A2, B1, C1, C2, D1, D2, E1 to E4, F1, G1, G2, H1 folded in; H2 half adopted); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G3.1, G4.1 to G4.3, G5.1 to G5.5 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.3, G2.1, G3.1 to G3.4 folded in); round 3 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -198,8 +198,9 @@ application-owned queue hangs off. No History queue exists (`grep -rn "Queue" ap
   ending push carrying the path (and `stopAudioService` after).
 - **The queue and process death.** A queue in the Application's scope survives a Service's destroy but not
   the process; a write still queued when the process dies is lost exactly as a launched job was. The
-  `interrupted` write at destroy is enqueued FIRST in `destroy` (before anything else) so it is the next
-  write applied; `TranscriptDao.recoverStaleDrafts` on the next start remains the backstop, unchanged.
+  `interrupted` write at destroy is enqueued right after the state invalidation and the arbiter claim (§3 C1's
+  order) so it is the next write applied after every admitted finalization; `TranscriptDao.recoverStaleDrafts`
+  on the next start remains the backstop, unchanged.
 - **The clean-stop marker.** `PasteAccessibilityService.onDestroy` marks the stop clean AFTER its blocking
   drain on purpose (a kill during the drain must not read as clean). With the queue, the marker is written BY
   the queue as the last enqueued job, so the ordering survives without the wait.
@@ -234,20 +235,27 @@ A1. **`ITakeListener` (proposed)**, `app/src/main/aidl/com/envi/wispr/audio/ITak
    after `unregisterSpectrumListener`; the polled getters stay, marked LEGACY like `getSpectrumBands`.
 A2. **`TakeEventPublisher` (proposed)** in `:audio`, service-scoped like `WarmHoldOwner`, holding one
    `AtomicReference<ITakeListener?>`; every call is `runCatching` (a dead owner must not throw into the capture
-   loop) and never waits. Sites: `markLive` path (`:554`, the first buffer after the gate opens) → `onLive`;
-   the capture loop → `onTick(elapsedMs)` immediately after each positive `AudioRecord.read`, BEFORE the gate
-   branch (`:552`), at most once per elapsed second, so a heartbeat flows from the first read whether or not
-   the gate has opened (round G5.5: the loop cannot write before the gate, so a tick tied to the write would
-   start late); the owner uses the elapsed value for the timer only once RECORDING and treats every tick as
-   liveness. On the capture thread, our own reader thread where the picture is already offered
-   (`protect-audio-asr-stability` forbids work on the audio callback thread, which this is not). The detector's
+   loop) and never waits. Like `PicturePublisher`, it owns ONE worker thread: the capture thread only does a
+   primitive clock comparison and a non-blocking offer per read, and the worker makes the at-most-once-per-second
+   binder call under `runCatching` (round G2, G1.2: a `oneway` transaction still allocates a Parcel and can
+   back-pressure its caller, so it never runs on the capture thread). Sites: the first ADMITTED block, after
+   `output.write`, `bytesWritten` and `liveVisible = true` complete (`:558-560`; round G3.1: live is published
+   only once the on-disk readiness point is reached) → `onLive`; each positive `AudioRecord.read`, BEFORE the
+   gate branch (`:552`) → an offer the worker throttles by MONOTONIC WALL-CLOCK second (round G1.1: elapsed is
+   zero before live, `:264-270`, so throttling by elapsed second would send one heartbeat and trip the bound)
+   into `onTick(elapsedMs)`, carrying zero before live and the live-based elapsed after; the owner uses the
+   value for the timer only once RECORDING and treats every tick as liveness. The detector's
    three status-writing paths in `DetectorFeed.kt` (round G1.2) → `onSilenceStatus`: after
    `markRequestedButRefused` (`:88-90`), after the PREPARING-to-READY compare-and-set (`:257-260`), and after
    every successful abandon transition (`:312-325`). Endings (round G1.1): every ending AFTER a session exists
-   reaches `releaseSession`, which publishes `onEnded` after `closeResources` and `session = null`
-   (`:678-680`) and mutates nothing afterwards; every `false` return from `startRecording` BEFORE a session
-   exists (`:323`, `:334-339`) publishes a start-refused `onEnded` directly, carrying the failure code and no
-   path, so the owner never waits for an ending that has no session to produce it.
+   reaches `releaseSession`; it publishes `onEnded` as its FINAL operation, after `closeResources`, `session =
+   null` (`:678-680`), the detector and picture closes, the diagnostic line and the service-lifetime work
+   (`:685-695`; round G3.2). Every `false` return from `startRecording` BEFORE a session exists (`:323`,
+   `:334-339`) publishes a start-refused `onEnded` directly, carrying the failure code and no path, so the
+   owner never waits for an ending that has no session to produce it; for the legacy start transactions
+   (`startCapture`, `startCaptureWithSilenceStop`, `startCaptureWithInputDevice`,
+   `startCaptureWithInputDeviceHeld`, `IAudioCaptureService.aidl:6,25,49,77`) no listener is registered and
+   the publication is best-effort: their `false` return remains their complete contract (round G1.3).
 A3. **The owner** registers its listener in `startCaptureForTake`'s caller (`tryStartRecording`, next to
    `listenForPicture`) BEFORE the start call, so no event can precede registration; each event is
    `host.postToMain { … }` and then handled by the existing code paths: `onLive` → `publishLive(forced)` with
@@ -320,12 +328,14 @@ B3. `asrNotReadyEndsProcessing` asserts `status == asr_error` again; the rig's f
 C1. `DictationSessionCoordinator.destroy` (round G4.1, the order): FIRST invalidate state and claim the arbiter
    under `publishLock` (as today, `:1570-1585`); THEN enqueue the `interrupted` write, after every previously
    RESERVED finalization is guaranteed enqueued; then `serviceJob.cancel()` without joining; cancel polish;
-   release capture and the bindings. The `runBlocking` blocks are deleted. Finalization admission (`:1091-1112`)
-   includes its queue enqueue ATOMICALLY under the same reservation (round G4.2), so `destroy` cannot enqueue
-   `interrupted` between a reservation and its finalization's enqueue. The deleted join protected nothing else
-   (round G4.3): `sessionPreferences` is written only under the STARTING check (`:385-388`), and `rawTranscript`
-   is assigned outside the job (`:905-916`) by a publication that must hold the arbiter, which `destroy` now
-   owns. The late-polish-callback race the join
+   release capture and the bindings. The `runBlocking` blocks are deleted. Finalization admission (`:1091-1112`,
+   today outside any coordinator lock): the immutable finalization payload is prepared first, then under
+   `publishLock` the publication is RESERVED and its non-suspending History write ENQUEUED as one operation
+   (round G2, G2.1); `destroy` takes the same `publishLock` before enqueueing `interrupted`, so it cannot land
+   between a reservation and its enqueue; `polishSubmissionLock` stays limited to polish request submission and
+   cancellation. The deleted join protected nothing else (round G4.3, G3.4): `sessionPreferences` is written
+   only under the STARTING check (`:385-388`); `rawTranscript` (`:905-916`) may still change after `destroy`,
+   but the cancelled scope and the claimed arbiter prevent every later publication or write from it. The late-polish-callback race the join
    protected against (coverage E1): every finalization write ADMITTED before `destroy` was already enqueued
    before the `interrupted` write, so the queue applies it first and the `interrupted` write lands last; a
    finalization not yet admitted loses the `TakeArbiter` claim to `destroy` and never enqueues. Nothing can
@@ -371,8 +381,9 @@ dies with the binding, never unregistered by a call). Exits from
 STARTING: `onLive`, `onEnded` before live, the live deadline, the wedge bound, cancel, destroy,
 `onServiceDisconnected`. Exits from RECORDING: `onEnded` (five reasons), the wedge bound, cancel, destroy,
 `onServiceDisconnected`. Every exit claims the `TakeArbiter` first; a late `onEnded` after a claimed ending is
-dropped by the RECORDING check on the main thread. Destroy: the `interrupted` write enqueued, the job cancelled,
-the arbiter claimed, the binding unbound (which drops the listener; no unregister call). Queue: the worker outlives
+dropped by the RECORDING check on the main thread. Destroy, in §3 C1's order: state invalidated and the arbiter
+claimed under `publishLock`, the `interrupted` write enqueued, the job cancelled without joining, polish
+cancelled, capture and the bindings released (unbinding drops the listener; no unregister call). Queue: the worker outlives
 every Service and dies with the process; a write left in the channel at process death is lost as a launched job
 was (§2.5.4).
 
@@ -450,7 +461,7 @@ push and produces its own reason. The queue is the sole ORDERED writer for per-t
 | `DictationSessionCoordinatorTest.audioDiedWhileRecordingEndsAsFailure` (exists) | Product Outcome | process death still ends the take with its sentence on the push design | remove the disconnect handler |
 | `DictationSessionCoordinatorTest.theNextTakeStartsAfterAWedge` (proposed) | Product Outcome | after the wedge ending, a new take on a fresh fake goes live and completes | leave the bound armed or the binding held |
 | a paste-service shape row (`paste/AutoPasteWiringTest` grown, or a new `PasteServiceTeardownTest` (proposed)) | Drift Guard | `onDestroy` has no `runBlocking`/`joinAll`; the outcome write enqueues | restore the drain |
-| `AudioServiceShapeTest` (grown, coverage G1) | Drift Guard | the only synchronous AIDL calls the owner makes are `startCaptureForTake`, `stopCapture`, `finishTake` and the two registrations (a token inventory over `PipelineBindings`) | add a getter call |
+| `AudioServiceShapeTest` (grown, coverage G1) | Drift Guard | the only synchronous AIDL calls the owner makes are `startCaptureForTake`, `stopCapture`, `finishTake` and the four listener members (a token inventory over `PipelineBindings`) | add a getter call |
 | the instrumentation client's binding | Drift Guard | `app/src/androidTest` binds `IAudioCaptureService` by the unchanged transaction numbers: the AIDL append row plus one instrumented row already binding (UNCHECKED which; named at build) | reorder |
 | `DictationSessionCoordinatorTest.aLateEndingAfterTheBoundIsDropped` (proposed) | Drift Guard | `onEnded` after the bound fired changes nothing | remove the RECORDING check |
 | `DictationSessionCoordinatorTest.asrNotReadyEndsProcessing` (grown) | Product Outcome | status `asr_error` AND insertion result, with the racing fake DAO | launch the writes instead of enqueueing |

@@ -74,7 +74,7 @@ told which of the six concerns a line belongs to.
 **Polish.** `polish/PolishService.kt:44` constructs `ProviderPolishClient()`; `:378-386` builds a
 `ProviderPolishRequest` (key from `secrets.get`, endpoint and protocol from the policy) and calls
 `polish(request, entry.cancellation)`, in the `:polish` process, on the service's worker. The client
-validates, plans the request (`requestPlan`), sizes the body, then loops `attemptOnce` → `run` →
+validates, plans the request (`requestPlan` (removed)), sizes the body, then loops `attemptOnce` → `run` →
 `REQUEST_EXECUTOR.submit { executeRequest }` → `readResponse` → `parseResponse` → `replyText` under one
 deadline. `ProviderCancellation.cancel()` (called from `PolishService` on `cancel(requestId)`) fires
 `onCancel` hooks that disconnect the live connection and release the retry latch.
@@ -82,7 +82,7 @@ deadline. `ProviderCancellation.cancel()` (called from `PolishService` on `cance
 **Key check.** `providers/ProviderConfigurationRepository.kt:33` defaults `keyCheck: ProviderKeyChecker =
 ProviderPolishClient()`; `saveProvider` calls `check(provider, apiKey)` before writing a key. `check`
 builds a GET `RequestPlan` with `authHeaders`, runs it through the same `run`, and classifies status and
-envelope with `classifyKeyCheck` / `hasModelList`.
+envelope with `classifyKeyCheck` (removed) / `hasModelList`.
 
 **Discovery.** `ui/AppViewModel.kt:153` defaults `discoverer: ProviderModelDiscoverer =
 ProviderPolishClient()`; `ProviderConfigurationRepository.discoverModelsWithStoredKey(provider, discoverer)`
@@ -105,7 +105,7 @@ Command: `/usr/bin/grep -rn "ProviderPolishClient\b" app/src/main` (pasted in th
 - **Per-provider tables that exist today**: `Provider.capabilities()` and `Provider.disclosure()`
   (`Provider.kt`, stay), `ProviderConfigurationValidator.validate` (stays), and inside the client,
   `ModelListRules` and `ProviderRetryPolicy`: `ProviderErrorSignal.classify`, `classifyKeyCheck`,
-  `probeOutcome`, `claudePagination`, `filter`, `isRetryable`'s `provider != GEMINI` on 429,
+  `probeOutcome`, `claudePagination` (removed), `filter`, `isRetryable`'s `provider != GEMINI` on 429,
   `displayName`, `requestPlan`, `authHeaders`, `parseModelRows`, `hasModelList`. After the change the
   adapters own every provider-specific wire shape, error marker, key verdict, probe verdict, pagination
   decision, model filter, display-name rule, retry decision and rate-limit reading; the full population
@@ -204,7 +204,7 @@ in `com.envi.wispr.providers`, all `internal` except the types that already cros
    The moved KDoc for `requestPlan`, `replyText` and `ResponseFormat.NONE` is rewritten to describe the
    cross-type call path rather than link private members in another file.
 4. **`ProviderReplyFormat.kt`** (proposed): `ProviderReplyFormat` (proposed), an internal enum replacing
-   `ResponseFormat`, with `replyText(root)` and `endedOfItsOwnAccord(root)` as members. The `NONE` member
+   `ResponseFormat` (removed), with `replyText(root)` and `endedOfItsOwnAccord(root)` as members. The `NONE` member
    stays for the list GET. The `Any?.valueAt/stringAt/firstTextAt/firstMessageTextAt` helpers move here,
    private.
 5. **`ProviderAdapter.kt`** (proposed): `ProviderAdapter` (proposed), an internal interface:

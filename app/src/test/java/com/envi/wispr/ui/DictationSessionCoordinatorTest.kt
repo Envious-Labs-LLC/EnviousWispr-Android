@@ -590,6 +590,26 @@ class DictationSessionCoordinatorTest {
         assertTrue(row.interrupted)
     }
 
+    /**
+     * Product Outcome (#115, chunk B): when this fails, a dictation that finished and reached the editor
+     * is later shown as "interrupted" in History because the Service's ordinary stop wrote over it.
+     * `interrupted` is queued ONLY when the interrupt won the take; after a completed take it loses.
+     * REVERT: enqueue `interrupted` in `destroy` whether or not `arbiter.interrupt` won.
+     */
+    @Test
+    fun destroyAfterACompletedTakeLeavesTheRowAlone() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        rig.onMain { coordinator.destroy() }
+        val row = theOnlyRow()
+        assertEquals("ready_for_insertion", row.status)
+        assertFalse(row.interrupted)
+    }
+
     @Test
     fun destroyWhileStartingMarksInterrupted() {
         val coordinator = rig.coordinator()

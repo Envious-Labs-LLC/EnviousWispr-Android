@@ -19,7 +19,7 @@ import androidx.room.Transaction
  * `terminal_reason`), so a reader of the phone's database and a reader of PostHog see the same names.
  */
 @Entity(tableName = "take_journal")
-data class TakeJournalEntry(
+internal data class TakeJournalEntry(
     @PrimaryKey @ColumnInfo(name = "take_id") val takeId: String,
     /** The main-process run that admitted the take; an open entry from another run is an interruption. */
     @ColumnInfo(name = "process_run_id") val processRunId: String,
@@ -40,7 +40,7 @@ data class TakeJournalEntry(
 )
 
 /** Where a take is, in wire spelling. The sequence is the ordering the journal enforces. */
-enum class TakeStage(val seq: Int) {
+internal enum class TakeStage(val seq: Int) {
     ADMITTED(0),
     RECORDING(1),
     PROCESSING(2),
@@ -48,7 +48,7 @@ enum class TakeStage(val seq: Int) {
 }
 
 @Dao
-interface TakeJournalDao {
+internal interface TakeJournalDao {
     /** Admission inserts only when the row is absent; it never replaces one (G3 E3). */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun admit(entry: TakeJournalEntry): Long

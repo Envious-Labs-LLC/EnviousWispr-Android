@@ -1,7 +1,7 @@
 package com.envi.wispr.model
 
 /** User-selectable idle eviction policy for memory-heavy offline models. */
-enum class ModelUnloadPolicy(val idleMinutes: Int?) {
+internal enum class ModelUnloadPolicy(val idleMinutes: Int?) {
     NEVER(null),
     IMMEDIATELY(0),
     AFTER_2_MINUTES(2),
@@ -11,7 +11,7 @@ enum class ModelUnloadPolicy(val idleMinutes: Int?) {
     AFTER_60_MINUTES(60),
 }
 
-object ModelLifecyclePolicy {
+internal object ModelLifecyclePolicy {
     fun shouldUnload(policy: ModelUnloadPolicy, idleMs: Long): Boolean =
         policy.idleMinutes != null && idleMs >= policy.idleMinutes * 60_000L
 }

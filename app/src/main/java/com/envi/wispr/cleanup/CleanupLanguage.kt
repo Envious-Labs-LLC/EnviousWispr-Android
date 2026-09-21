@@ -10,7 +10,7 @@ package com.envi.wispr.cleanup
  *
  * Ported from macOS `DictationLanguageResolver`, whose `Resolution` carries the same abstention.
  */
-sealed interface CleanupLanguage {
+internal sealed interface CleanupLanguage {
 
     /** Nothing established the language. Cleanup behaves exactly as it did before #107. */
     data object Unknown : CleanupLanguage
@@ -20,7 +20,7 @@ sealed interface CleanupLanguage {
 }
 
 /** What the detector said, with no policy applied. [code] is whatever tag the detector uses. */
-data class DetectedLanguage(val code: String, val confidence: Float)
+internal data class DetectedLanguage(val code: String, val confidence: Float)
 
 /**
  * Reads the language of a finished transcript. No policy, no thresholds: it reports what it thinks and
@@ -30,7 +30,7 @@ data class DetectedLanguage(val code: String, val confidence: Float)
  * be made to reproducibly land either side of a confidence floor across model versions, so the boundary
  * is tested through a fake, and the real one is measured on hardware rather than asserted here.
  */
-fun interface LanguageDetector {
+internal fun interface LanguageDetector {
     fun detect(text: String): DetectedLanguage?
 }
 
@@ -43,7 +43,7 @@ fun interface LanguageDetector {
  * same question from the English side, because our shared set had `um` DELETED outright on 2026-09-02
  * (#107) and English users lost the commonest filler there is.
  */
-object CleanupLanguagePolicy {
+internal object CleanupLanguagePolicy {
 
     /**
      * How sure the detector must be before its answer is acted on.

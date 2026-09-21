@@ -6,7 +6,7 @@ package com.envi.wispr.polish
  * are what History stores; [notice] is what the completion surface shows, or null when there is nothing
  * to say. `DictationSessionService.publishResult` is the only caller.
  */
-data class PolishPublicationFacts(
+internal data class PolishPublicationFacts(
     val reasonToken: String,
     val statusCode: Int,
     val contextToken: String,

@@ -25,7 +25,7 @@ import java.util.UUID
  * Identity is not the privacy boundary (founder 2026-09-15); content is. This value never identifies
  * a person, only an install, and it is never sent anywhere but the two vendors.
  */
-object InstallIdentity {
+internal object InstallIdentity {
 
     sealed class Resolution {
         /** [minted] is true only in the process that created the file: the install's first run. */

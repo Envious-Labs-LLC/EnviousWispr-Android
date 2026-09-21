@@ -17,7 +17,7 @@ import com.envi.wispr.providers.SelfHostedProtocol
  * Hand-written Parcelable: `writeToParcel` and `CREATOR` sit side by side so the field order
  * cannot drift apart. No parcelize plugin is applied in this app.
  */
-sealed class PolishPolicy : Parcelable {
+internal sealed class PolishPolicy : Parcelable {
     /** AI Polish is off; the deterministic rules run alone. */
     object Off : PolishPolicy()
 

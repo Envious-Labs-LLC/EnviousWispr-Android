@@ -12,7 +12,7 @@ import com.envi.wispr.history.TranscriptEntity
  * constant added here without a sentence fails the fast gate instead of reaching a user as
  * `Status: insertion interrupted`.
  */
-object InsertionResults {
+internal object InsertionResults {
 
     /** The session owner wrote the words to the clipboard itself; the service was never reached. */
     const val CLIPBOARD = "clipboard"

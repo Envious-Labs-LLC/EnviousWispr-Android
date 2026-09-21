@@ -10,7 +10,7 @@ package com.envi.wispr.asr
  * mapped to a real member (`validation-discipline.md`: an unrecognised input must not fall into a
  * plausible default).
  */
-enum class AsrFailureReason(val code: Int) {
+internal enum class AsrFailureReason(val code: Int) {
     /** A code this build does not recognise. Never emitted by the service. */
     UNKNOWN(0),
 

@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicReference
  * expiry-owned exit and a timer firing late never runs its action. Pure Kotlin over an injected scheduler;
  * `EngineDeadlineTest` drives both orders.
  */
-class EngineDeadline(private val scheduler: ScheduledExecutorService) {
+internal class EngineDeadline(private val scheduler: ScheduledExecutorService) {
 
     enum class State { ARMED, CANCELLED, EXPIRED }
 
@@ -53,7 +53,7 @@ class EngineDeadline(private val scheduler: ScheduledExecutorService) {
  * cooperative budget to that value and the hard budget to the value plus a grace; anything else is the
  * shipped pair. `EngineDeadlineTest` pins the bounds.
  */
-data class LocalPolishBudget(val cooperativeMs: Long, val hardMs: Long) {
+internal data class LocalPolishBudget(val cooperativeMs: Long, val hardMs: Long) {
     companion object {
         const val COOPERATIVE_MS = 10_000L
         const val HARD_MS = 12_000L

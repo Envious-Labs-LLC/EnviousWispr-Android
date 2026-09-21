@@ -2,7 +2,7 @@ package com.envi.wispr.polish
 
 import kotlin.math.roundToInt
 
-object S1PromptBuilder {
+internal object S1PromptBuilder {
     private const val MAX_CUSTOM_WORDS = 50
     private const val MAX_CUSTOM_WORD_LENGTH = 50
 

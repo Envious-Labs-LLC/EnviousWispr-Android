@@ -7,7 +7,7 @@ import android.os.Parcelable
  * The whole answer to one polish request. [engine] is the History label vocabulary
  * (`PolishEngineLabels` or an engine's display name); [statusCode] is 0 when no HTTP status applies.
  */
-data class PolishOutcome(
+internal data class PolishOutcome(
     val requestId: Long,
     val text: String,
     val engine: String,

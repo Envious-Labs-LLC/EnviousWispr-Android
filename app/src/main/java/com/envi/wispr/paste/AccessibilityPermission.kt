@@ -11,7 +11,7 @@ import android.provider.Settings
  * crashed, which is issue #16. `PasteAccessibilityService.isBound` answers that half, and
  * `AutoPasteReadiness.evaluate` combines them.
  */
-object AccessibilityPermission {
+internal object AccessibilityPermission {
 
     fun isGranted(context: Context): Boolean {
         val component = ComponentName(context, PasteAccessibilityService::class.java)

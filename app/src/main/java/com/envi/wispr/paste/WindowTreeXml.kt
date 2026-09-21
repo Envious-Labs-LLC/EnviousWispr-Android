@@ -14,7 +14,7 @@ import android.view.accessibility.AccessibilityWindowInfo
  * line that touches the framework. Every string attribute goes through one escaper, because the
  * value that breaks the XML is never the one a test happened to try.
  */
-object WindowTreeXml {
+internal object WindowTreeXml {
     /** One node of an accessibility tree, in the shape the harness reads. */
     interface TreeNode {
         val text: String

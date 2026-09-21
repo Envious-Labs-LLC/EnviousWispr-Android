@@ -24,7 +24,7 @@ import kotlinx.coroutines.launch
  * Nothing here blocks a take. The queue is unbounded and every call returns at once; the caller that
  * wants to know admission landed waits on the returned [Deferred] under its own deadline.
  */
-class TakeJournalWriter(
+internal class TakeJournalWriter(
     private val dao: TakeJournalDao,
     private val processRunId: String,
     private val capture: (AnalyticsEvent) -> Unit,

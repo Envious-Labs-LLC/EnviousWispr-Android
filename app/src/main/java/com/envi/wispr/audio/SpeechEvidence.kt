@@ -14,7 +14,7 @@ import com.envi.wispr.ui.TerminalReason
  * Chunk C of #176 records the peak on every `dictation.terminal` row, and the floor is re-set from that
  * distribution; until then the split is a hypothesis and the knowledge file says so.
  */
-object SpeechEvidence {
+internal object SpeechEvidence {
     const val PEAK_FLOOR = 0.01f
 
     /** [peak] is the capture process's reading, or null when it could not be read. */

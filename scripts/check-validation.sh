@@ -36,9 +36,9 @@ run, strict, head, digest = sys.argv[1], sys.argv[2] == "1", sys.argv[3], sys.ar
 fails, warns = [], []
 
 LANES = {"Code", "Benchmark", "CI/workflow", "Docs/dev-tooling"}
-OBLIGATIONS = {"tests", "codex-review", "hardware-uat", "benchmark-assemble", "workflow-run", "cited-symbols"}
+OBLIGATIONS = {"tests", "codex-review", "hardware-uat", "benchmark-assemble", "workflow-run", "cited-symbols", "visibility"}
 REQUIRED = {
-    "Code": ["unit-tests.xml", "codex-review.md"],
+    "Code": ["unit-tests.xml", "codex-review.md", "visibility.txt"],
     "Benchmark": ["benchmark-assemble.log"],
     "CI/workflow": ["workflow-run.txt"],
     "Docs/dev-tooling": ["cited-symbols.txt"],
@@ -149,6 +149,14 @@ for name in satisfied + skipped:
 overlap = set(satisfied) & set(skipped)
 if overlap:
     fails.append(f"obligation both satisfied and skipped: {sorted(overlap)}")
+
+# A non-empty visibility.txt holding hits is a FAILED check, never satisfaction (#191): the Code lane
+# needs the obligation SATISFIED, and it can never be skipped.
+if "Code" in detected and "visibility" not in satisfied:
+    fails.append("Code: the visibility obligation is not in obligations_satisfied; "
+                 "scripts/check-visibility.py must exit 0 (its hits are in visibility.txt)")
+if "visibility" in skipped:
+    fails.append("the visibility obligation can never be skipped")
 
 for lane in detected:
     for artifact in REQUIRED.get(lane, []):

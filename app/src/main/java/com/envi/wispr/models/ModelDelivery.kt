@@ -8,8 +8,8 @@ import java.net.URI
 import java.nio.file.Files
 import java.security.MessageDigest
 
-enum class DownloadState { DOWNLOADING, PAUSED, VERIFYING, READY, FAILED, CANCELLED, REPAIR_NEEDED }
-data class DownloadStatus(
+internal enum class DownloadState { DOWNLOADING, PAUSED, VERIFYING, READY, FAILED, CANCELLED, REPAIR_NEEDED }
+internal data class DownloadStatus(
     val state: DownloadState,
     val bytes: Long = 0,
     val total: Long = 0,
@@ -20,10 +20,10 @@ data class DownloadStatus(
 private val MODEL_CONTROL_LOCK = Any()
 private val MODEL_OPERATION_LOCKS = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
-enum class ModelDeliveryControlState { ACTIVE, PAUSED, CANCELLED }
+internal enum class ModelDeliveryControlState { ACTIVE, PAUSED, CANCELLED }
 
 /** Small app-private control record shared by the UI, WorkManager, and the downloader. */
-class ModelDeliveryControlStore(private val root: File) {
+internal class ModelDeliveryControlStore(private val root: File) {
     fun read(model: ModelDescriptor): ModelDeliveryControlState = synchronized(MODEL_CONTROL_LOCK) {
         runCatching { File(directory(), "${model.id}.state").readText().trim() }
             .mapCatching { ModelDeliveryControlState.valueOf(it) }
@@ -48,16 +48,16 @@ class ModelDeliveryControlStore(private val root: File) {
     private fun directory() = File(root, ".model-controls")
 }
 
-interface DownloadControl {
+internal interface DownloadControl {
     fun isPaused(): Boolean = false
     fun isCancelled(): Boolean = false
     fun isStopped(): Boolean = false
 }
 
-data class TransportResponse(val stream: InputStream, val resumed: Boolean)
-fun interface ModelTransport { fun open(url: String, offset: Long): TransportResponse }
+internal data class TransportResponse(val stream: InputStream, val resumed: Boolean)
+internal fun interface ModelTransport { fun open(url: String, offset: Long): TransportResponse }
 
-class ModelDeliveryStore(private val root: File) {
+internal class ModelDeliveryStore(private val root: File) {
     // Mutations of the same canonical model directory serialize across store instances.
     // Control records have a separate short lock so Pause can interrupt a blocked transfer.
     private fun lock(model: ModelDescriptor): Any = MODEL_OPERATION_LOCKS.computeIfAbsent(
@@ -293,10 +293,10 @@ class ModelDeliveryStore(private val root: File) {
 }
 
 /** The two hosts a model may come from, and nothing else; a redirect may not leave its host either. */
-const val MODEL_HOST_OWN = "models.enviouslabs.co"
-const val MODEL_HOST_HUGGING_FACE = "huggingface.co"
+internal const val MODEL_HOST_OWN = "models.enviouslabs.co"
+internal const val MODEL_HOST_HUGGING_FACE = "huggingface.co"
 
-fun validateModelSource(url: String): Boolean = runCatching {
+internal fun validateModelSource(url: String): Boolean = runCatching {
     val uri = URI(url)
     uri.scheme == "https" && uri.host?.isNotBlank() == true && uri.userInfo == null && uri.fragment == null &&
         (uri.port == -1 || uri.port == 443) && when (uri.host) {

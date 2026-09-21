@@ -37,7 +37,7 @@ package com.envi.wispr.audio
  *
  * **These are DISPLAY and POLICY numbers.** Nothing about the audio itself changes.
  */
-object RecordingLimits {
+internal object RecordingLimits {
 
     /** How long one take may run before it is stopped and transcribed. */
     const val MAX_DURATION_MS = 600_000L

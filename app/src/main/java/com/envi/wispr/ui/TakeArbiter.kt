@@ -20,7 +20,7 @@ package com.envi.wispr.ui
  * throws. [onCommit] is called exactly once, outside the lock, with the committed reason; the sink is
  * a limb (a no-op in chunk A2, the telemetry facade from chunk C).
  */
-class TakeArbiter private constructor(
+internal class TakeArbiter private constructor(
     private val onCommit: (TerminalReason) -> Unit,
     /** True for [closed]: no take was ever admitted, so every claim loses and nothing is reported. */
     private val closedByConstruction: Boolean,

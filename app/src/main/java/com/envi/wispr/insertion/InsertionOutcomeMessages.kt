@@ -29,7 +29,7 @@ import com.envi.wispr.paste.InsertionHandoff
  * dead service makes the entry point unknowable, which is reasoned about on
  * `InsertionHandoff.SERVICE_NOT_RUNNING` in [autoPasteWasExpectedToWork].
  */
-class FallbackAnnouncement private constructor(val line: String) {
+internal class FallbackAnnouncement private constructor(val line: String) {
     companion object {
 
         /**
@@ -100,7 +100,7 @@ class FallbackAnnouncement private constructor(val line: String) {
  * 2. **What is said is a measured destination, never an inferred cause.** See
  *    [FallbackAnnouncement].
  */
-object InsertionOutcomeMessages {
+internal object InsertionOutcomeMessages {
 
     /**
      * The line under "EnviousWispr is listening", written before the words exist.

@@ -14,7 +14,7 @@ package com.envi.wispr.telemetry
  *
  * Pure: no SDK types, no clock, no random source.
  */
-object TelemetryVolumePolicy {
+internal object TelemetryVolumePolicy {
     /** Bumped whenever a rule changes what leaves. 1: #176, nothing sampled, SDK context reduced. */
     const val POLICY_VERSION = 1
     const val POLICY_VERSION_KEY = "telemetry_policy_version"

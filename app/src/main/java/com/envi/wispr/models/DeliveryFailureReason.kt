@@ -8,7 +8,7 @@ import java.io.IOException
  * full disk and a corrupt download were one bar on a chart. Closed and pinned: the wire value is the
  * lowercase name, and a reader groups by it.
  */
-enum class DeliveryFailureReason {
+internal enum class DeliveryFailureReason {
     /** The manifest says the model is not available on this build. */
     MANIFEST_UNAVAILABLE,
     /** The connection could not be opened, or died mid-stream: the network, not the server's answer. */
@@ -48,13 +48,13 @@ enum class DeliveryFailureReason {
 }
 
 /** An `IOException` that already knows why: raised where the cause is decided, read once at the catch. */
-class ModelDeliveryException(val reason: DeliveryFailureReason, message: String) : IOException(message)
+internal class ModelDeliveryException(val reason: DeliveryFailureReason, message: String) : IOException(message)
 
 /**
  * Which roof served the bytes, as a closed token for the `source_host` property: the host string
  * itself stays in the log. Decided from the manifest's two hosts; anything else is `unknown`.
  */
-enum class ModelSourceHost(val wire: String) {
+internal enum class ModelSourceHost(val wire: String) {
     MIRROR("mirror"),
     HUGGING_FACE("huggingface"),
     UNKNOWN("unknown"),

@@ -36,7 +36,7 @@ class VoiceInputActivity : Activity() {
         const val EXTRA_TRIGGER_SOURCE = "trigger_source"
 
         /** The surface this launch names, from its extra or its action. Pure, for `TriggerSourceTest`. */
-        fun triggerOf(action: String?, extra: String?): TriggerSource = when {
+        internal fun triggerOf(action: String?, extra: String?): TriggerSource = when {
             extra != null -> TriggerSource.fromExtra(extra)
             action == Intent.ACTION_ASSIST -> TriggerSource.ASSIST
             else -> TriggerSource.UNKNOWN

@@ -8,7 +8,7 @@ import com.envi.wispr.polish.PolishPolicy
  * total of about 5.4 s on the S26 Ultra (#72). Cloud: the client's own 30 s cap plus a margin, so a slow
  * but valid provider answer is never thrown away by the watchdog first. `PolishWatchdogBudgetTest` pins it.
  */
-object PolishWatchdogBudget {
+internal object PolishWatchdogBudget {
     const val LOCAL_MS = 15_000L
     const val CLOUD_MS = 35_000L
 

@@ -9,7 +9,7 @@ package com.envi.wispr.paste
  * shared by the bubble and both pills, no outline on any of them, and the clock and the level rail
  * carrying a thin dark ink edge so they read on a white page as well as a dark one.
  */
-enum class BubbleLook(
+internal enum class BubbleLook(
     /** What DataStore holds. Never renamed: a stored key that no longer parses falls to [DEFAULT]. */
     val storageKey: String,
     /** What the settings list shows. */

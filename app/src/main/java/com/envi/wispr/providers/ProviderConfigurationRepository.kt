@@ -9,7 +9,7 @@ import com.envi.wispr.polish.S1Structure
 import com.envi.wispr.polish.S1Styling
 
 /** Explicit polish policy persisted independently from the selected provider credentials. */
-enum class PolishMode {
+internal enum class PolishMode {
     OFF,
     OFFLINE_S1,
     PROVIDER,
@@ -20,7 +20,7 @@ enum class PolishMode {
  * to [SecretStore]; this class never writes a key to SharedPreferences. The endpoint is accepted
  * here only as explicit user configuration and is revalidated every time it is loaded.
  */
-class ProviderConfigurationRepository internal constructor(
+internal class ProviderConfigurationRepository internal constructor(
     private val preferences: SharedPreferences,
     private val secrets: SecretStore,
     /** Asked before any cloud key is written (#61); the production checker is the cloud client itself. */
@@ -310,14 +310,14 @@ class ProviderConfigurationRepository internal constructor(
 }
 
 /** The credential-free part of a stored selection: what [ProviderConfigurationRepository.decodeSelection] can read. */
-data class StoredSelection(
+internal data class StoredSelection(
     val provider: Provider,
     val model: String,
     val endpoint: String?,
     val protocol: SelfHostedProtocol,
 )
 
-data class SelectedProviderConfiguration(
+internal data class SelectedProviderConfiguration(
     val provider: Provider,
     val model: String,
     val endpoint: String?,
@@ -339,5 +339,5 @@ data class SelectedProviderConfiguration(
  * reached the Keystore, and the compensation failed too. The stored key and the stored metadata may now
  * disagree, and the only honest repair is to remove the provider and set it up again.
  */
-class InconsistentProviderStorageException(val provider: Provider, cause: Throwable?) :
+internal class InconsistentProviderStorageException(val provider: Provider, cause: Throwable?) :
     IllegalStateException("provider storage is inconsistent for ${provider.name}", cause)

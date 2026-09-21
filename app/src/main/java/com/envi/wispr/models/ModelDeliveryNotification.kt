@@ -11,7 +11,7 @@ import androidx.core.app.NotificationCompat
 import java.util.Locale
 
 /** Low-importance, content-free progress notification for large local model transfers. */
-object ModelDeliveryNotification {
+internal object ModelDeliveryNotification {
     const val ACTION_CANCEL = "com.envi.wispr.models.CANCEL_DELIVERY"
     const val ACTION_PAUSE = "com.envi.wispr.models.PAUSE_DELIVERY"
     const val ACTION_RESUME = "com.envi.wispr.models.RESUME_DELIVERY"
@@ -53,7 +53,7 @@ object ModelDeliveryNotification {
             DownloadState.REPAIR_NEEDED -> reason ?: "Model needs repair"
             DownloadState.FAILED -> reason ?: "Model download failed"
             DownloadState.CANCELLED -> "Download cancelled"
-            else -> if (total > 0) "${formatBytes(bytes)} of ${formatBytes(total)}" else "Preparing download"
+            DownloadState.DOWNLOADING, DownloadState.PAUSED -> if (total > 0) "${formatBytes(bytes)} of ${formatBytes(total)}" else "Preparing download"
         }
         fun actionIntent(action: String) = Intent(context, ModelDeliveryCancelReceiver::class.java)
             .setAction(action)
@@ -69,7 +69,7 @@ object ModelDeliveryNotification {
         val transferAction = when (state) {
             DownloadState.PAUSED -> "Resume" to actionPendingIntent(ACTION_RESUME, notificationId(model) + 11)
             DownloadState.DOWNLOADING, DownloadState.VERIFYING -> "Pause" to actionPendingIntent(ACTION_PAUSE, notificationId(model) + 11)
-            else -> null
+            DownloadState.READY, DownloadState.FAILED, DownloadState.CANCELLED, DownloadState.REPAIR_NEEDED -> null
         }
         return NotificationCompat.Builder(context, channelId(model))
             .setSmallIcon(android.R.drawable.stat_sys_download)

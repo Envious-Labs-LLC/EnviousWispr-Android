@@ -18,7 +18,7 @@ package com.envi.wispr.polish
  * change on the screen applies from the NEXT recording (issue #69 owns why the engine reads no
  * preference itself).
  */
-enum class S1Styling(val token: String) {
+internal enum class S1Styling(val token: String) {
     CASUAL("casual"),
     SEMI_CASUAL("semi-casual"),
 
@@ -43,7 +43,7 @@ enum class S1Styling(val token: String) {
  * never inferred per transcript. The Mac measured it: 104/114 list cases format under `lists`, and
  * 23/1,348 non-list cases over-trigger.
  */
-enum class S1Structure(val token: String) {
+internal enum class S1Structure(val token: String) {
     PROSE("prose"),
     LISTS("lists");
 
@@ -57,7 +57,7 @@ enum class S1Structure(val token: String) {
  * weights, a note-to-self and a code comment were byte-identical under both values, and only text that
  * already carried a greeting or a sign-off gained email layout. `general` is the neutral value.
  */
-enum class S1Context(val token: String) {
+internal enum class S1Context(val token: String) {
     GENERAL("general"),
     EMAIL("email");
 
@@ -67,7 +67,7 @@ enum class S1Context(val token: String) {
 }
 
 /** The three axes together, and the one place the control line is composed. */
-data class S1ControlSettings(
+internal data class S1ControlSettings(
     val styling: S1Styling,
     val structure: S1Structure,
     val context: S1Context,

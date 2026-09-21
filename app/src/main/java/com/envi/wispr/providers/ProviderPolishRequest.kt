@@ -5,7 +5,7 @@ package com.envi.wispr.providers
  * `ProviderPolishClient.kt` (#189); the wire shape behind it is the adapters' business.
  */
 
-enum class SelfHostedProtocol {
+internal enum class SelfHostedProtocol {
     OPENAI_COMPATIBLE,
     OLLAMA,
 }
@@ -15,7 +15,7 @@ enum class SelfHostedProtocol {
  * it from transcript text, provider responses, redirects, or other untrusted input; validation
  * constrains the URI, while the caller-owned settings layer must establish that provenance.
  */
-data class ProviderPolishRequest(
+internal data class ProviderPolishRequest(
     val provider: Provider,
     val model: String,
     val prompt: String,
@@ -27,7 +27,7 @@ data class ProviderPolishRequest(
         "ProviderPolishRequest(provider=$provider, model=<redacted>, prompt=<redacted>, apiKey=<redacted>)"
 }
 
-enum class ProviderFailureKind {
+internal enum class ProviderFailureKind {
     NO_API_KEY,
     INVALID_CONFIGURATION,
     NETWORK,
@@ -39,7 +39,7 @@ enum class ProviderFailureKind {
     REDIRECT_REJECTED,
 }
 
-sealed interface ProviderPolishResult {
+internal sealed interface ProviderPolishResult {
     data class Success(val text: String) : ProviderPolishResult {
         override fun toString(): String = "Success(text=<redacted>)"
     }
@@ -56,7 +56,7 @@ sealed interface ProviderPolishResult {
  * echo the prompt, never leaves the client. Each adapter's `errorSignal` owns its provider's markers, the
  * ones the macOS connectors match.
  */
-enum class ProviderErrorSignal {
+internal enum class ProviderErrorSignal {
     KEY_REJECTED,
     OUT_OF_CREDITS,
     INPUT_TOO_LONG,

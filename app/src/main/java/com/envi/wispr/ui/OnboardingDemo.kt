@@ -132,7 +132,7 @@ private fun DemoCaption(moment: DemoMoment, palette: DemoPalette) {
     val (title, sub) = when (moment.scene) {
         DemoScene.BUBBLE -> DemoScript.bubbleCaption(moment.t)
         DemoScene.APPS -> moment.scene.caption to "Messages, notes, search, and more."
-        else -> moment.scene.caption to ""
+        DemoScene.TAP, DemoScene.HOLD, DemoScene.YOURS -> moment.scene.caption to ""
     }
     // Each bubble beat fades in, so the reader notices the words changed.
     val fade = if (moment.scene == DemoScene.BUBBLE) {

@@ -9,7 +9,7 @@ import com.envi.wispr.providers.ProviderFailureKind
  * Carried in `PolishOutcome` over the binder and logged by name only. Phase 4 of the AI Polish
  * refinement roadmap renders it; phase 7 splits `HTTP_ERROR` by the status that travels beside it.
  */
-enum class PolishReason {
+internal enum class PolishReason {
     POLISHED,
     OFF,
     NO_SPEECH,

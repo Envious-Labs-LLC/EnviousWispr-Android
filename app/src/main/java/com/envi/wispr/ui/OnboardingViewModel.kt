@@ -269,7 +269,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
                 practiceComplete = true
                 saved["practice_complete"] = true
             }
-            else -> Unit
+            PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED, null -> Unit
         }
     }
 

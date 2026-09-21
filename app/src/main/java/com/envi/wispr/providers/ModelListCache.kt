@@ -11,7 +11,7 @@ import org.json.JSONObject
  * for the SAVED credential (the view model decides when), holds model rows and a time, never a key or any
  * derivative of one, and is never consulted at dictation time.
  */
-class ModelListCache internal constructor(private val preferences: SharedPreferences) {
+internal class ModelListCache internal constructor(private val preferences: SharedPreferences) {
     constructor(context: Context) : this(
         context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE),
     )

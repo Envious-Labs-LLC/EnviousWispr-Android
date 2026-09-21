@@ -9,7 +9,7 @@ import java.util.UUID
  * [seq] alone; [held] rides along so the owner's published snapshot can say which gesture a take
  * answers, which the onboarding practice reads to tell a tap lesson from a hold lesson.
  */
-data class BubbleRequestToken(val epoch: String, val seq: Long, val held: Boolean = false) {
+internal data class BubbleRequestToken(val epoch: String, val seq: Long, val held: Boolean = false) {
     fun encode(): String = "$epoch:$seq:${if (held) HELD else TAPPED}"
 
     companion object {
@@ -52,7 +52,7 @@ data class BubbleRequestToken(val epoch: String, val seq: Long, val held: Boolea
  *   without its release; for the same `seq`, cancelled wins;
  * - the admitted take's `seq`, matched BEFORE the mark is consulted, because admission set the mark to it.
  */
-open class BubbleRequestLedger internal constructor(private val epoch: String) {
+internal open class BubbleRequestLedger internal constructor(private val epoch: String) {
 
     sealed class StartDecision {
         /** Another process's token, or a `seq` at or below the high-water mark. Nothing changes. */
@@ -136,4 +136,4 @@ open class BubbleRequestLedger internal constructor(private val epoch: String) {
 }
 
 /** The app's one ledger, shared by the overlay (mints) and the session owner (resolves). */
-object BubbleRequests : BubbleRequestLedger(UUID.randomUUID().toString().substring(0, 8))
+internal object BubbleRequests : BubbleRequestLedger(UUID.randomUUID().toString().substring(0, 8))

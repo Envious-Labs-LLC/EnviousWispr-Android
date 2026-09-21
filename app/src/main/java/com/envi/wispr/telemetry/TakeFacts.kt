@@ -17,7 +17,7 @@ import com.envi.wispr.ui.TriggerSource
  * Every value is already a closed token, a number or a boolean. No sentence, label or transcript can
  * be stored here: the capture device's display name and the polish engine's label have no field.
  */
-class TakeFacts(val takeId: String, val trigger: TriggerSource) {
+internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
     @Volatile var routeKind: InputRouteKind? = null
     @Volatile var routeReason: InputRouteReason? = null
     @Volatile var liveAfterMs: Long? = null

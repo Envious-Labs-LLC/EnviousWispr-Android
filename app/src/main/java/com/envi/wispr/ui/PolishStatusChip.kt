@@ -24,11 +24,11 @@ import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.capabilities
 
-enum class PolishStatusKind { OFF, LOCAL, OPENAI, GEMINI, CLAUDE, SELF_HOSTED }
-enum class PolishStatusDot { GREEN, RED, NEUTRAL }
+internal enum class PolishStatusKind { OFF, LOCAL, OPENAI, GEMINI, CLAUDE, SELF_HOSTED }
+internal enum class PolishStatusDot { GREEN, RED, NEUTRAL }
 
 /** What the app-bar badge on the AI Polish tab shows. Built only from persisted, saved state. */
-data class PolishStatusChip(
+internal data class PolishStatusChip(
     val kind: PolishStatusKind,
     val label: String,
     val dot: PolishStatusDot,
@@ -54,7 +54,7 @@ data class PolishStatusChip(
  * no actual key is a known-broken state (dictation will fail with a missing-key error), not a working
  * one.
  */
-fun polishStatusChip(settings: ProviderSettingsUiState, s1State: ModelUiState): PolishStatusChip = when (settings.mode) {
+internal fun polishStatusChip(settings: ProviderSettingsUiState, s1State: ModelUiState): PolishStatusChip = when (settings.mode) {
     PolishMode.OFF -> PolishStatusChip(PolishStatusKind.OFF, "Polish off", PolishStatusDot.NEUTRAL)
 
     PolishMode.OFFLINE_S1 -> PolishStatusChip(

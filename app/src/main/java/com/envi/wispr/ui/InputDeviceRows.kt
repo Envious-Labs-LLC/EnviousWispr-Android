@@ -15,7 +15,7 @@ import com.envi.wispr.audio.InputRouteReason
  * listed device replaces the memory. Android keeps ONE stored pick where the Mac keeps two, because the
  * resolver already falls back per take; the page only has to show that fallback.
  */
-object InputDeviceRows {
+internal object InputDeviceRows {
     /** What Auto does, on the row, when a device is picked and connected. */
     const val AUTO_EXPLAINER = "Earbuds when they are connected, otherwise the phone"
 

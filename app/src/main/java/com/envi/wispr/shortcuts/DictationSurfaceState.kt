@@ -4,7 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.service.quicksettings.TileService
 
-object DictationSurfaceState {
+internal object DictationSurfaceState {
     enum class Phase {
         IDLE,
         LISTENING,

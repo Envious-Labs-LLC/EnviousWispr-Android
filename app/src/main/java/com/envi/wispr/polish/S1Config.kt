@@ -1,6 +1,6 @@
 package com.envi.wispr.polish
 
-object S1Config {
+internal object S1Config {
     const val MODEL_NAME = "S1-mini"
     const val MODEL_CREATOR = "Superwhisper"
     const val MODEL_REPOSITORY = "superwhisper/s1-mini-GGUF"

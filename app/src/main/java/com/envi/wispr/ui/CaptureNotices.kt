@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the app's own device list. Which start failure gets which sentence is `TakeNotices.startFailureReason`
  * plus `TakeNotices.line` (issue #176): the code decides the ending, the ending decides the words.
  */
-object CaptureNotices {
+internal object CaptureNotices {
     /** macOS `Recording failure` copy, verbatim from the catalog. */
     const val NO_MICROPHONE = "No microphone found. Please connect one."
 
@@ -34,7 +34,7 @@ object CaptureNotices {
  * actually started on a Bluetooth microphone. Process-scoped on purpose: the recorder line is a nudge,
  * not a setting, and a nudge that repeats every take teaches the user to stop reading the recorder.
  */
-class BluetoothTipGate {
+internal class BluetoothTipGate {
     private val shown = AtomicBoolean(false)
 
     companion object {

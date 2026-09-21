@@ -10,7 +10,7 @@ import com.envi.wispr.insertion.InsertionResults
 import kotlinx.coroutines.flow.Flow
 
 @Dao
-interface TranscriptDao {
+internal interface TranscriptDao {
     @Query("SELECT * FROM transcripts ORDER BY kept DESC, createdAtMs DESC, id DESC")
     fun observeAll(): Flow<List<TranscriptEntity>>
 

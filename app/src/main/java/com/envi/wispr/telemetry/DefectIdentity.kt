@@ -12,7 +12,7 @@ package com.envi.wispr.telemetry
  *
  * The `cause` is attached for its TYPE and frames; its message is dropped by `PayloadSanitizer`.
  */
-sealed class AppDefect(val fingerprint: String, val semanticId: String, val cause: Throwable? = null) {
+internal sealed class AppDefect(val fingerprint: String, val semanticId: String, val cause: Throwable? = null) {
     /** The silence detector's synchronous call passed its deadline; the process is about to kill itself. */
     class VadCallWedged(val callName: String) : AppDefect("vad_call_wedged", "vad.call_wedged")
 

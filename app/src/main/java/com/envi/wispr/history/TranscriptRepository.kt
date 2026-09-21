@@ -2,7 +2,7 @@ package com.envi.wispr.history
 
 import kotlinx.coroutines.flow.Flow
 
-class TranscriptRepository(private val dao: TranscriptDao, private val clock: () -> Long = System::currentTimeMillis) {
+internal class TranscriptRepository(private val dao: TranscriptDao, private val clock: () -> Long = System::currentTimeMillis) {
     companion object {
         /** Exceeds the 2.5 second insertion retry window, allowing live rows to finish. */
         const val STALE_OPEN_ROW_AGE_MS = HistoryRecovery.STALE_OPEN_ROW_AGE_MS

@@ -1,7 +1,7 @@
 package com.envi.wispr.cleanup
 
 /** Why the pipeline ended where it did, so a consumer never infers it from two booleans. */
-enum class PipelineOutcome {
+internal enum class PipelineOutcome {
     /** Deterministic cleanup returned the original text; the model was not consulted. */
     CLEANUP_RECOVERED,
     /** Cleanup left nothing to polish; the model was not consulted. */
@@ -17,7 +17,7 @@ enum class PipelineOutcome {
     MODEL_ACCEPTED,
 }
 
-data class PolishPipelineResult(
+internal data class PolishPipelineResult(
     val text: String,
     val usedModel: Boolean,
     val recovered: Boolean,
@@ -27,7 +27,7 @@ data class PolishPipelineResult(
 )
 
 /** Pure ordering boundary for cleanup, optional S1, safety validation, and spelling restoration. */
-object PolishPipeline {
+internal object PolishPipeline {
     fun run(
         rawText: String,
         options: CleanupOptions = CleanupOptions(),

@@ -1,17 +1,11 @@
 package com.envi.wispr.audio
 
 import android.app.Service
-import android.content.Context
 import android.content.Intent
-import android.content.ServiceConnection
-import android.media.AudioAttributes
-import android.media.AudioDeviceCallback
-import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioRouting
-import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.HandlerThread
@@ -23,7 +17,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
@@ -118,20 +111,11 @@ class AudioCaptureService : Service() {
     @Volatile private var lastEffective: EffectiveDevice? = null
     @Volatile private var lastStartFailure = START_FAILURE_NONE
 
-    /**
-     * The warm hold between takes, or null. Written under [sessionLock]. The sink it holds is identified
-     * by type and product name (never by id, which changes between reads on this phone).
-     */
-    @Volatile private var warmHold: WarmHold? = null
-    @Volatile private var heldSinkType: Int = -1
-    @Volatile private var heldSinkName: String = ""
-    @Volatile private var holdExpiry: Runnable? = null
+    /** The warm hold between takes, one owner for the service's lifetime (#188). Built in [onCreate]. */
+    private lateinit var warmHold: WarmHoldOwner
 
     /** Set first thing in `onDestroy`: no take that ends after this may start a hold (Codex review 1). */
     @Volatile private var destroyed = false
-
-    private var holdCommListener: AudioManager.OnCommunicationDeviceChangedListener? = null
-    private var holdDeviceCallback: AudioDeviceCallback? = null
 
     /**
      * Owns every routing callback and nothing else. A callback carries the session it was registered
@@ -196,6 +180,19 @@ class AudioCaptureService : Service() {
         super.onCreate()
         routeThread = HandlerThread("AudioRouteThread").also { it.start() }
         routeHandler = Handler(routeThread.looper)
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        warmHold = WarmHoldOwner(
+            tag = TAG,
+            scheduler = routeScheduler,
+            locked = { block -> synchronized(sessionLock) { block() } },
+            addCommListener = { audioManager.addOnCommunicationDeviceChangedListener({ routeHandler.post(it) }, it) },
+            removeCommListener = { audioManager.removeOnCommunicationDeviceChangedListener(it) },
+            registerDeviceCallback = { audioManager.registerAudioDeviceCallback(it, routeHandler) },
+            unregisterDeviceCallback = { audioManager.unregisterAudioDeviceCallback(it) },
+            keepAlive = { startService(Intent(this, AudioCaptureService::class.java)) },
+            // A new take keeps the service; every other end lets it go once no session is open.
+            onIdle = { if (session == null) stopSelf() },
+        )
     }
 
     private val binder = object : IAudioCaptureService.Stub() {
@@ -232,7 +229,7 @@ class AudioCaptureService : Service() {
             return if (live > 0L) live - active.route.startedAtMs else 0L
         }
 
-        override fun finishTake(): Boolean = this@AudioCaptureService.finishTake()
+        override fun finishTake(): Boolean = synchronized(sessionLock) { this@AudioCaptureService.warmHold.finishTake() }
 
         override fun getEffectiveInputDevice(): String = this@AudioCaptureService.lastEffective?.label().orEmpty()
         override fun getInputRouteKind(): Int = this@AudioCaptureService.lastEffective?.kind?.code ?: InputRouteKind.NONE.code
@@ -298,7 +295,7 @@ class AudioCaptureService : Service() {
      * restart after a kill would have nothing to hold, so it ends at once.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        synchronized(sessionLock) { if (warmHold?.isActive != true && session == null) stopSelf() }
+        synchronized(sessionLock) { if (!warmHold.isActive && session == null) stopSelf() }
         return START_NOT_STICKY
     }
 
@@ -334,13 +331,7 @@ class AudioCaptureService : Service() {
             val routeHold = TakeRoute.newHold(audioManager, routingListener)
             // A warm hold hands its route to this take (the link stays up; V13: live at ~120 ms). Any hold
             // that does not match the resolved target is ended by resolveRoute before it sets anything.
-            // The identity is read BEFORE the handover: handOver ends the hold, and the hold's end clears
-            // its bookkeeping synchronously (Codex review 1).
-            val handedOver = warmHold?.let { hold ->
-                val type = heldSinkType
-                val name = heldSinkName
-                hold.handOver()?.let { HandedRoute(it, type, name) }
-            }
+            val handedOver = warmHold.handOver()
             val route = TakeRoute.resolve(audioManager, pick, routeHold, handedOver, TAG) ?: run {
                 lastStartFailure = START_FAILURE_NO_INPUT_DEVICE
                 routeHold.release()
@@ -684,7 +675,8 @@ class AudioCaptureService : Service() {
             active.route.observeFinal(active.record)
             // The one handoff point every ending reaches: a manual stop, the silence stop and both caps
             // may keep the earbuds warm; an error ending and teardown release everything.
-            holding = holdEligible(active) && startWarmHold(active)
+            holding = warmHold.eligible(active.route, active.endingClaim.ending, active.keepEarbudsReady, destroyed) &&
+                warmHold.start(active.route)
             closeResources(active, keepRoute = holding)
             lastSilenceStatus = active.detector.status
             session = null
@@ -718,158 +710,6 @@ class AudioCaptureService : Service() {
         closeResources(active.record, active.output)
     }
 
-    // ---- The warm hold ----
-
-    /** Under `sessionLock`. */
-    private fun holdEligible(active: CaptureSession): Boolean {
-        if (destroyed) return false
-        if (!active.keepEarbudsReady || !active.route.targetBluetooth || active.route.sink == null) return false
-        if (active.route.hold.isReleased) return false
-        if (active.route.effective.currentKind != InputRouteKind.BLUETOOTH) return false
-        // Exhaustive, no else: a new ending decides here whether it keeps the earbuds warm.
-        return when (active.endingClaim.ending) {
-            CaptureEnding.Manual, CaptureEnding.Silence, CaptureEnding.MaxDuration -> true
-            CaptureEnding.StillRunning, CaptureEnding.Failure -> false
-        }
-    }
-
-    /** Under `sessionLock`. True when the hold is playing and now owns the route. */
-    private fun startWarmHold(active: CaptureSession): Boolean {
-        val sink = active.route.sink ?: return false
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        val label = active.route.effective.label()
-        val hold = WarmHold(
-            route = active.route.hold,
-            track = AudioTrackSilence(),
-            onEnded = { reason -> onHoldEnded(reason, label) },
-        )
-        heldSinkType = sink.type
-        heldSinkName = sink.productName?.toString().orEmpty()
-        warmHold = hold
-        if (!hold.start()) {
-            clearHoldBookkeeping()
-            return false
-        }
-        val expiry = Runnable { synchronized(sessionLock) { if (warmHold === hold) hold.end(WarmHold.END_EXPIRED) } }
-        holdExpiry = expiry
-        routeHandler.postDelayed(expiry, WarmHold.HOLD_MS)
-        val commListener = AudioManager.OnCommunicationDeviceChangedListener { device ->
-            val ours = device != null && device.type == heldSinkType && device.productName?.toString().orEmpty() == heldSinkName
-            if (!ours) synchronized(sessionLock) { if (warmHold === hold) hold.end(WarmHold.END_DEVICE_CHANGED) }
-        }
-        val deviceCallback = object : AudioDeviceCallback() {
-            override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) {
-                val gone = removed.any { it.type == heldSinkType && it.productName?.toString().orEmpty() == heldSinkName }
-                if (gone) synchronized(sessionLock) { if (warmHold === hold) hold.end(WarmHold.END_DEVICE_REMOVED) }
-            }
-        }
-        holdCommListener = commListener
-        holdDeviceCallback = deviceCallback
-        runCatching { audioManager.addOnCommunicationDeviceChangedListener({ routeHandler.post(it) }, commListener) }
-            .onFailure { DebugLogger.warn(TAG, "hold listener not registered: ${it.message}") }
-        runCatching { audioManager.registerAudioDeviceCallback(deviceCallback, routeHandler) }
-            .onFailure { DebugLogger.warn(TAG, "hold device callback not registered: ${it.message}") }
-        DebugLogger.log(TAG, "route hold start=$label ms=${WarmHold.HOLD_MS}")
-        return true
-    }
-
-    /** Runs inside `WarmHold.end` or `handOver`, under `sessionLock`. */
-    private fun onHoldEnded(reason: String, label: String) {
-        DebugLogger.log(TAG, "route hold end=$reason device=$label")
-        clearHoldBookkeeping()
-        // A new take keeps the service; every other end lets it go once no session is open.
-        if (reason != WarmHold.END_NEW_TAKE && session == null) stopSelf()
-    }
-
-    /** Under `sessionLock`. Forgets the hold's listeners and identity; the hold object itself is done. */
-    private fun clearHoldBookkeeping() {
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        holdExpiry?.let { routeHandler.removeCallbacks(it) }
-        holdExpiry = null
-        holdCommListener?.let { l -> runCatching { audioManager.removeOnCommunicationDeviceChangedListener(l) } }
-        holdCommListener = null
-        holdDeviceCallback?.let { c -> runCatching { audioManager.unregisterAudioDeviceCallback(c) } }
-        holdDeviceCallback = null
-        warmHold = null
-        heldSinkType = -1
-        heldSinkName = ""
-    }
-
-    /**
-     * The session owner is done with this take. When a hold is running the service gives itself a
-     * started lifetime, so the owner's unbind does not destroy it; the hold's end stops it. False means
-     * "nothing to keep", and the owner stops the service as it always did.
-     */
-    private fun finishTake(): Boolean {
-        synchronized(sessionLock) {
-            val hold = warmHold ?: return false
-            if (!hold.isActive) return false
-            return runCatching {
-                startService(Intent(this, AudioCaptureService::class.java))
-                true
-            }.getOrElse { e ->
-                DebugLogger.warn(TAG, "hold could not keep the service: ${e.message}")
-                hold.end(WarmHold.END_TRACK_FAILED)
-                false
-            }
-        }
-    }
-
-    /**
-     * The platform half of the hold: a silent `VOICE_COMMUNICATION` stream, which is what Android keys
-     * the communication route on (any active playback for the uid). Its own thread paces on the blocking
-     * write; `stop()` unblocks it.
-     */
-    private class AudioTrackSilence : WarmHold.SilentTrack {
-        private var track: AudioTrack? = null
-        private var thread: Thread? = null
-        @Volatile private var stopped = false
-
-        override fun play() {
-            val rate = PcmAudio.SAMPLE_RATE
-            val minimum = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            val built = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build(),
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(rate)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .build(),
-                )
-                .setBufferSizeInBytes(maxOf(minimum, rate * PcmAudio.BYTES_PER_SAMPLE))
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
-            if (built.state != AudioTrack.STATE_INITIALIZED) {
-                built.release()
-                throw IllegalStateException("silent track not initialized")
-            }
-            track = built
-            built.play()
-            val zeros = ByteArray(rate / 10 * PcmAudio.BYTES_PER_SAMPLE)
-            thread = Thread({
-                while (!stopped) {
-                    val n = built.write(zeros, 0, zeros.size)
-                    if (n < 0) break
-                }
-            }, "WarmHoldSilence").apply { start() }
-        }
-
-        override fun stop() {
-            stopped = true
-            track?.let { t ->
-                runCatching { t.stop() }
-                runCatching { t.release() }
-            }
-            track = null
-        }
-    }
-
     private fun closeResources(record: AudioRecord?, output: FileOutputStream?) {
         runCatching { output?.flush() }
             .onFailure { DebugLogger.warn(TAG, "Failed to flush audio file: ${it.message}") }
@@ -898,7 +738,7 @@ class AudioCaptureService : Service() {
         // Ordered: no hold may start after this flag, so the take stopRecording ends below cannot open
         // one after the route thread is gone (Codex review 1).
         destroyed = true
-        synchronized(sessionLock) { warmHold?.end(WarmHold.END_DESTROYED) }
+        synchronized(sessionLock) { warmHold.close(WarmHold.END_DESTROYED) }
         stopRecording()
         session?.let { active ->
             active.detector.close()
@@ -921,7 +761,7 @@ class AudioCaptureService : Service() {
             }
         }
         // A hold that slipped in between the flag and the join is ended here, before its expiry dies.
-        synchronized(sessionLock) { warmHold?.end(WarmHold.END_DESTROYED) }
+        synchronized(sessionLock) { warmHold.close(WarmHold.END_DESTROYED) }
         // After the join: the capture thread's cleanup removed its listener; nothing else posts here.
         routeThread.quitSafely()
         super.onDestroy()

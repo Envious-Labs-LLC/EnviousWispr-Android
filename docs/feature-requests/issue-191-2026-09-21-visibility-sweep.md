@@ -231,7 +231,11 @@ Swift access levels (macOS has no module boundary of this kind).
      data class X : Sealed` children, coverage D3) or the literal `null`; then an `else ->` arm fails. A
      block with a range, a guard, a literal, a type test on a foreign type or a Boolean subject is open to
      the check and passes; the compiler, not the check, is the authority once the `else` is gone. So the
-     check is a drift guard for the shape this change leaves, not a type checker.
+     check is a drift guard for the shape this change leaves, not a type checker. Two
+     more limits from code review round 2: the `visibility-open-when` marker counts only inside a real
+     `//` comment (the scanner reports where line comments start); and a simple type name that is a
+     closed set in more than one package (`Outcome`, `Phase`, `State`, nested enums in several packages)
+     is ambiguous and left open, the compiler alone owning those `when`s.
    - `--root <dir>` scans that tree's `app/src/main/java` instead of the repository's (coverage F2), which
      is how the JVM test runs it on fixtures. Exit 0/1, prints every hit with `file:line`.
    - Phase 3 (coverage E1, E2): `scripts/validate-pr.sh`'s Code block runs the check and records

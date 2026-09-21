@@ -1,7 +1,7 @@
 # Issue #191 — App-only code is public and new states can silently take default branches — 2026-09-21
 
 GitHub issue: `#191`. Tier: SMALL by the issue (REF-08, "-20 lines net"); the diff touches many files but moves
-no logic, no process, no package and no AIDL. Status: DRAFT after the coverage round (A1, B1, B2, C1 to C5, D1 to D3, E1, E2, F1, F2, G1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G2.2, G3.1, G4.1 to G4.6 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.5, G2.1); the second round of the same class, stale prose beside an enumeration, so every restated count and member list in prose now points at the one table; round 3 next.
+no logic, no process, no package and no AIDL. Status: DRAFT after the coverage round (A1, B1, B2, C1 to C5, D1 to D3, E1, E2, F1, F2, G1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G2.2, G3.1, G4.1 to G4.6 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.5, G2.1); the second round of the same class, stale prose beside an enumeration, so every restated count and member list in prose now points at the one table; round 3 PROCEED-WITH-REVISIONS on a new axis (G2.1, the check's rule A binds name to path and reads scope by brace depth); round 4 next.
 
 Consolidation: this plan is one document; §2.5 carries the measured populations once and §§3 to 11 point back at it.
 
@@ -194,12 +194,16 @@ Swift access levels (macOS has no module boundary of this kind).
    the old default for every existing member. The alternative of adding a new "unknown" branch was
    rejected: the point is that there is no unknown branch.
 3. **The check, `scripts/check-visibility.py` (one commit).** Scope: `app/src/main/java/**/*.kt`.
-   - A: a top-level declaration (column 0; the keyword `class|object|interface|fun|val|var|typealias`
-     with its modifiers, possibly after annotation lines, and possibly with the name on the next line,
-     coverage D2) with no `private|internal` modifier fails unless its name is in
-     `scripts/visibility-allowlist.txt` (one name per line, `#` reasons); the shipped allowlist is the 13
-     framework classes. Column 0 is what makes it top-level: a public companion member is indented and is
-     not this rule's population (§2.2 non-goal; the compiler's "exposes internal type" handles the 13).
+   - A: a top-level declaration (the keyword `class|object|interface|fun|val|var|typealias` with its
+     modifiers, possibly after annotation lines, and possibly with the name on the next line, coverage
+     D2) with no `private|internal` modifier fails unless it is in `scripts/visibility-allowlist.txt`.
+     Top-level means brace depth zero: the script tracks `{`/`}` outside string literals and comments,
+     never indentation, so an indented top-level declaration is still top-level and an indented
+     companion member is not (round G3). An allowlist entry binds the declaration to its file,
+     `app/src/main/java/com/envi/wispr/ui/SettingsActivity.kt:SettingsActivity`, one per line with a
+     `#` reason, so a new declaration reusing an allowlisted name in another file fails; the shipped
+     allowlist is the 13 framework classes. A public companion member is not this rule's population
+     (§2.2 non-goal; the compiler's "exposes internal type" handles the 13).
    - B: closedness is read from the ARMS as a set, never from one label (coverage D1): a `when (subject) {`
      block is treated as closed only when EVERY non-`else` arm's left side is a member of ONE app enum or
      sealed type (a bare member name, a qualified one, or an `is` test on a sealed child; the member sets are read from
@@ -222,8 +226,9 @@ Swift access levels (macOS has no module boundary of this kind).
      the `app/` working directory of `:app:testDebugUnitTest` (`File("..").canonicalFile`), runs the script
      on the tree and asserts exit code exactly 0; and runs it with `--root` on fixture trees under
      `app/src/test/resources/visibility/<case>/app/src/main/java/` (a public class; a public class whose
-     name is on the next line; an `else` over an enum; an `else` over a `data object` sealed member; a
-     nested enum matched bare; an open `when` mixing a member with a range, which must PASS) and asserts
+     name is on the next line; an INDENTED public top-level class; an allowlisted name declared in the
+     wrong file; an `else` over an enum; an `else` over a `data object` sealed member; a nested enum
+     matched bare; an open `when` mixing a member with a range, which must PASS) and asserts
      exit code exactly 1 with the expected `file:line` in stdout, or exactly 0 for the open case. A process
      that cannot launch is a test failure, never a pass (coverage F1).
 
@@ -270,7 +275,7 @@ Not present in this change (no runtime failure branch).
 - The 12 `when` sites in §2.5.1.
 - `scripts/check-visibility.py` (new), `scripts/visibility-allowlist.txt` (new, the 13 class-name entry points with reasons),
   `scripts/validate-pr.sh` and `scripts/check-validation.sh` (the `visibility` obligation for `Code`).
-- `app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt` (new) and six fixture trees under
+- `app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt` (new) and eight fixture trees under
   `app/src/test/resources/visibility/`.
 - `docs/audits/2026-09-21-191-revert-receipts.txt` (new): the build commands with exit statuses, and every
   receipt of §11.2 with its red output (R3's three compiler errors verbatim).
@@ -305,7 +310,7 @@ Compile-time only. Rollback is `git revert` of three commits; nothing persisted 
 
 ## 13. Ship criteria specific to THIS change
 - `scripts/check-visibility.py` exits 0 on the tree and on the open mixed fixture, and exactly 1 on each of
-  the five rejecting fixtures (`VisibilityCheckTest` (proposed) rows).
+  the seven rejecting fixtures (`VisibilityCheckTest` (proposed) rows).
 - `scripts/measure-tests.sh` count reported; `:app:assembleDebug`, `:app:compileDebugUnitTestKotlin` (external) and
   `:app:compileDebugAndroidTestKotlin` (external) green, each command and exit status recorded in the receipts file.
 - Receipt R3 in `docs/audits/2026-09-21-191-revert-receipts.txt` shows three compiler errors for one added enum member.

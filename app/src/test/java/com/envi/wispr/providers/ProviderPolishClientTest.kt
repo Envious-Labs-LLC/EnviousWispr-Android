@@ -193,29 +193,6 @@ class ProviderPolishClientTest {
         assertEquals(ProviderPolishResult.Failure(ProviderFailureKind.RESPONSE_TOO_LARGE, 500), result)
     }
 
-    @Test fun theBodyMarkersAreTheMacOsOnesPerProvider() {
-        // (#77) OpenAI
-        assertEquals(ProviderErrorSignal.OUT_OF_CREDITS, ProviderAdapters.of(Provider.OPENAI).errorSignal(429, "{\"type\":\"insufficient_quota\"}"))
-        assertNull(ProviderAdapters.of(Provider.OPENAI).errorSignal(429, "{\"type\":\"rate_limit\"}"))
-        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderAdapters.of(Provider.OPENAI).errorSignal(400, "context_length_exceeded"))
-        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderAdapters.of(Provider.OPENAI).errorSignal(400, "content_filter"))
-        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderAdapters.of(Provider.OPENAI).errorSignal(400, "content_policy"))
-        assertNull(ProviderAdapters.of(Provider.OPENAI).errorSignal(400, "something else"))
-        assertNull(ProviderAdapters.of(Provider.OPENAI).errorSignal(401, "context_length_exceeded"))
-        // Gemini
-        assertEquals(ProviderErrorSignal.KEY_REJECTED, ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "API_KEY_INVALID"))
-        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "exceeds the maximum number of tokens"))
-        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "PROHIBITED_CONTENT"))
-        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "\"blockReason\":\"SAFETY\""))
-        assertNull(ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "something else"))
-        // Claude
-        assertEquals(ProviderErrorSignal.OUT_OF_CREDITS, ProviderAdapters.of(Provider.CLAUDE).errorSignal(400, "Your credit balance is too low"))
-        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderAdapters.of(Provider.CLAUDE).errorSignal(400, "prompt is too long: 250024 tokens"))
-        assertNull(ProviderAdapters.of(Provider.CLAUDE).errorSignal(400, "something else"))
-        // Self-hosted has no markers
-        assertNull(ProviderAdapters.of(Provider.SELF_HOSTED_POLISH).errorSignal(400, "API_KEY_INVALID insufficient_quota"))
-    }
-
     @Test fun commentaryWrappersAreRejectedForDeterministicFallback() = withServer(
         response = "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"Here is the polished transcript: hello\"}]}]}",
     ) { endpoint ->

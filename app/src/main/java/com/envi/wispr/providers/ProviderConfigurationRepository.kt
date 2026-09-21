@@ -30,7 +30,7 @@ class ProviderConfigurationRepository internal constructor(
     constructor(
         context: Context,
         secrets: SecretStore = AndroidKeystoreSecretStore(context.applicationContext),
-        keyCheck: ProviderKeyChecker = ProviderPolishClient(),
+        keyCheck: ProviderKeyChecker = ProviderModelDiscoveryClient(),
     ) : this(
         context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE),
         secrets,

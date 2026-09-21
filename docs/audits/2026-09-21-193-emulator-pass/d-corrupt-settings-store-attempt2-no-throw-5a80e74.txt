@@ -1,0 +1,33 @@
+emulator-5554 True True
+store before: RC=1
+stop_app: None
+corrupt: RC=0
+bytes: 0f 0f 0f 0f
+RC=0
+store after: -rw-rw-rw- 1 u0_a227 u0_a227 4 2026-09-21 15:02 files/datastore/enviouswispr_settings.preferences_pb
+RC=0
+bound: True
+--- take on a corrupt settings store
+   restore: ['nothing was changed']
+pressed 'Compose' at (1068, 2644)
+   focused 'Compose email' (editor)
+   verdict: ['VERIFIED: a take ran, ended by a stop request', 'VERIFIED: 29 characters came back from the speech engine', "VERIFIED: the same editor now holds the sentence; it ends 'The fallback take lands here.' (29 chars)"]
+   routes: ['insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=7']
+   fallback lines: []
+   collector lines: []
+   FGS lines: 2
+stop_app: None
+delete: RC=0
+store gone: RC=1
+bound: True
+--- ordinary take after the store was recreated
+   restore: ['nothing was changed']
+pressed 'Compose' at (1068, 2644)
+   focused 'Compose email' (editor)
+   verdict: ['VERIFIED: a take ran, ended by a stop request', 'VERIFIED: 24 characters came back from the speech engine', "ISSUE: the editor changed but does not hold the sentence in order; it ends 'Recover take lands here.' (24 chars)"]
+   routes: ['insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=4']
+   fallback lines: []
+   collector lines: []
+   FGS lines: 2
+store recreated: RC=1
+['nothing was changed']

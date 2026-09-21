@@ -28,66 +28,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.work.WorkManager
-import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
-import com.envi.wispr.history.TranscriptEntity
-import com.envi.wispr.audio.InputDevicePick
-import com.envi.wispr.paste.BubbleLook
-import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.SelfHostedProtocol
-import com.envi.wispr.vocabulary.CustomTerm
-import com.envi.wispr.vocabulary.CustomTermRecord
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
 
 @Composable
 internal fun EnviousWisprApp(
     uiState: EnviousWisprUiState,
-    onStartDictation: () -> Unit,
-    onRequestMicrophone: () -> Unit,
-    onRequestNotifications: () -> Unit,
-    onOpenAccessibility: () -> Unit,
-    licenseNotices: String,
-    onOnboardingStep: (Int) -> Unit,
-    onDismissOnboarding: () -> Unit,
-    onResumeOnboarding: () -> Unit,
-    onCompleteOnboarding: () -> Unit,
-    onCustomTermSearchChange: (String) -> Unit,
-    onAddCustomTerm: (CustomTerm) -> Unit,
-    onEditCustomTerm: (CustomTermRecord, CustomTerm) -> Unit,
-    onDeleteCustomTerm: (CustomTermRecord) -> Unit,
-    onBulkDeleteCustomTerms: (Set<Long>) -> Unit,
-    onImportCustomTerms: (String) -> Unit,
-    onFillerRemovalChanged: (Boolean) -> Unit,
-    onEmojiFormatterChanged: (Boolean) -> Unit,
-    onSpokenPunctuationChanged: (Boolean) -> Unit,
-    onAutoStopOnSilenceChanged: (Boolean) -> Unit,
-    onSilencePauseSecondsChanged: (Float) -> Unit,
-    onInputDevicePickChanged: (InputDevicePick) -> Unit,
-    onShowBluetoothTipsChanged: (Boolean) -> Unit,
-    onKeepEarbudsReadyChanged: (Boolean) -> Unit,
-    onAutoCopyChanged: (Boolean) -> Unit,
-    onRestoreClipboardChanged: (Boolean) -> Unit,
-    onSmartInsertionChanged: (Boolean) -> Unit,
-    onDynamicColorChanged: (Boolean) -> Unit,
-    onBubbleLookChanged: (BubbleLook) -> Unit,
-    onSetPolishMode: (PolishMode) -> Int,
-    onSetS1Control: (S1ControlSettings) -> Int,
-    onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol, Int?) -> Int,
-    onClearProviderSettings: (Provider) -> Int,
     providerDiscovery: ProviderDiscoveryUiState,
-    onCheckKey: (Provider, String?) -> Int,
-    onKeyDraftChanged: (Provider) -> Unit,
-    onLoadCachedModels: (Provider) -> Unit,
-    onHistorySearchChange: (String) -> Unit,
-    onKeepHistory: (TranscriptEntity) -> Unit,
-    onDeleteHistory: (TranscriptEntity) -> Unit,
-    onDeleteAllHistory: () -> Unit,
-    onRefreshReadiness: () -> Unit,
+    licenseNotices: String,
+    actions: AppActions,
 ) {
     val context = LocalContext.current
     if (uiState.loading) {
@@ -99,19 +54,19 @@ internal fun EnviousWisprApp(
         return
     }
 
-    ModelWorkReadinessObserver(onRefreshReadiness)
+    ModelWorkReadinessObserver(actions.shell.onRefreshReadiness)
 
     if (uiState.shouldShowOnboarding) {
         OnboardingScreen(
             step = uiState.preferences.onboardingStep,
             readiness = uiState.readiness,
             autoPaste = uiState.autoPaste,
-            onStepChange = onOnboardingStep,
-            onDismiss = onDismissOnboarding,
-            onRequestMicrophone = onRequestMicrophone,
-            onRequestNotifications = onRequestNotifications,
-            onOpenAccessibility = onOpenAccessibility,
-            onComplete = onCompleteOnboarding,
+            onStepChange = actions.onboarding.onStep,
+            onDismiss = actions.onboarding.onDismiss,
+            onRequestMicrophone = actions.permissions.onRequestMicrophone,
+            onRequestNotifications = actions.permissions.onRequestNotifications,
+            onOpenAccessibility = actions.permissions.onOpenAccessibility,
+            onComplete = actions.onboarding.onComplete,
             look = uiState.preferences.bubbleLook,
         )
         return
@@ -186,7 +141,7 @@ internal fun EnviousWisprApp(
             onSelectDestination = { destinationName = it.name },
             onStartDictation = {
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                onStartDictation()
+                actions.shell.onStartDictation()
             },
             // `uiState.providerSettings` starts at its placeholder default (mode = OFFLINE_S1) and only
             // becomes real once the ViewModel's async initial load lands (`loading` flips to false) —
@@ -212,10 +167,10 @@ internal fun EnviousWisprApp(
                             error = uiState.historyError,
                             expandedId = expandedTranscriptId,
                             onExpandedChange = { expandedTranscriptId = it },
-                            onSearchChange = onHistorySearchChange,
-                            onKeep = onKeepHistory,
-                            onDelete = onDeleteHistory,
-                            onDeleteAll = onDeleteAllHistory,
+                            onSearchChange = actions.history.onSearchChange,
+                            onKeep = actions.history.onKeep,
+                            onDelete = actions.history.onDelete,
+                            onDeleteAll = actions.history.onDeleteAll,
                         )
                         AppDestination.Dictionary -> DictionaryScreen(
                             terms = uiState.customTerms,
@@ -223,68 +178,68 @@ internal fun EnviousWisprApp(
                             search = uiState.customTermSearch,
                             message = uiState.customTermMessage,
                             error = uiState.customTermError,
-                            onSearchChange = onCustomTermSearchChange,
-                            onAdd = onAddCustomTerm,
-                            onEdit = onEditCustomTerm,
-                            onDelete = onDeleteCustomTerm,
-                            onBulkDelete = onBulkDeleteCustomTerms,
-                            onImport = onImportCustomTerms,
+                            onSearchChange = actions.dictionary.onSearchChange,
+                            onAdd = actions.dictionary.onAdd,
+                            onEdit = actions.dictionary.onEdit,
+                            onDelete = actions.dictionary.onDelete,
+                            onBulkDelete = actions.dictionary.onBulkDelete,
+                            onImport = actions.dictionary.onImport,
                         )
                         AppDestination.Transcription -> TranscriptionScreen(
                             readiness = uiState.readiness,
                             preferences = uiState.preferences,
-                            onRefreshReadiness = onRefreshReadiness,
-                            onFillerRemovalChanged = onFillerRemovalChanged,
-                            onEmojiFormatterChanged = onEmojiFormatterChanged,
-                            onSpokenPunctuationChanged = onSpokenPunctuationChanged,
-                            onAutoStopOnSilenceChanged = onAutoStopOnSilenceChanged,
-                            onSilencePauseSecondsChanged = onSilencePauseSecondsChanged,
+                            onRefreshReadiness = actions.shell.onRefreshReadiness,
+                            onFillerRemovalChanged = actions.transcription.onFillerRemovalChanged,
+                            onEmojiFormatterChanged = actions.transcription.onEmojiFormatterChanged,
+                            onSpokenPunctuationChanged = actions.transcription.onSpokenPunctuationChanged,
+                            onAutoStopOnSilenceChanged = actions.transcription.onAutoStopOnSilenceChanged,
+                            onSilencePauseSecondsChanged = actions.transcription.onSilencePauseSecondsChanged,
                         )
                         AppDestination.Polish -> PolishScreen(
                             settings = uiState.providerSettings,
                             s1State = polishS1State,
                             discovery = providerDiscovery,
-                            onSetMode = onSetPolishMode,
-                            onSetS1Control = onSetS1Control,
+                            onSetMode = actions.polish.onSetMode,
+                            onSetS1Control = actions.polish.onSetS1Control,
                             onSave = { provider, model, apiKey, discoverySequence ->
-                                onSaveProviderSettings(provider, model, null, apiKey, SelfHostedProtocol.OPENAI_COMPATIBLE, discoverySequence)
+                                actions.polish.onSaveProviderSettings(provider, model, null, apiKey, SelfHostedProtocol.OPENAI_COMPATIBLE, discoverySequence)
                             },
-                            onClearProvider = onClearProviderSettings,
-                            onCheckKey = onCheckKey,
-                            onKeyDraftChanged = onKeyDraftChanged,
-                            onLoadCachedModels = onLoadCachedModels,
-                            onRefreshReadiness = onRefreshReadiness,
+                            onClearProvider = actions.polish.onClearProvider,
+                            onCheckKey = actions.polish.onCheckKey,
+                            onKeyDraftChanged = actions.polish.onKeyDraftChanged,
+                            onLoadCachedModels = actions.polish.onLoadCachedModels,
+                            onRefreshReadiness = actions.shell.onRefreshReadiness,
                         )
                     }
                     is Screen.Page -> when (current.page) {
                         SettingsPage.WhatsNew -> WhatsNewPage()
                         SettingsPage.Appearance -> AppearancePage(
                             preferences = uiState.preferences,
-                            onDynamicColorChanged = onDynamicColorChanged,
-                            onBubbleLookChanged = onBubbleLookChanged,
+                            onDynamicColorChanged = actions.appearance.onDynamicColorChanged,
+                            onBubbleLookChanged = actions.appearance.onBubbleLookChanged,
                         )
                         SettingsPage.Microphone -> MicrophonePage(
                             readiness = uiState.readiness,
                             preferences = uiState.preferences,
-                            onRequestMicrophone = onRequestMicrophone,
-                            onInputDevicePickChanged = onInputDevicePickChanged,
-                            onShowBluetoothTipsChanged = onShowBluetoothTipsChanged,
-                            onKeepEarbudsReadyChanged = onKeepEarbudsReadyChanged,
+                            onRequestMicrophone = actions.permissions.onRequestMicrophone,
+                            onInputDevicePickChanged = actions.microphone.onInputDevicePickChanged,
+                            onShowBluetoothTipsChanged = actions.microphone.onShowBluetoothTipsChanged,
+                            onKeepEarbudsReadyChanged = actions.microphone.onKeepEarbudsReadyChanged,
                         )
                         SettingsPage.Sounds -> SoundsPage()
                         SettingsPage.Clipboard -> ClipboardPage(
                             preferences = uiState.preferences,
-                            onAutoCopyChanged = onAutoCopyChanged,
-                            onRestoreClipboardChanged = onRestoreClipboardChanged,
-                            onSmartInsertionChanged = onSmartInsertionChanged,
+                            onAutoCopyChanged = actions.clipboard.onAutoCopyChanged,
+                            onRestoreClipboardChanged = actions.clipboard.onRestoreClipboardChanged,
+                            onSmartInsertionChanged = actions.clipboard.onSmartInsertionChanged,
                         )
                         SettingsPage.Permissions -> PermissionsPage(
                             readiness = uiState.readiness,
                             autoPaste = uiState.autoPaste,
-                            onContinueSetup = onResumeOnboarding,
-                            onRequestMicrophone = onRequestMicrophone,
-                            onRequestNotifications = onRequestNotifications,
-                            onOpenAccessibility = onOpenAccessibility,
+                            onContinueSetup = actions.onboarding.onResume,
+                            onRequestMicrophone = actions.permissions.onRequestMicrophone,
+                            onRequestNotifications = actions.permissions.onRequestNotifications,
+                            onOpenAccessibility = actions.permissions.onOpenAccessibility,
                         )
                         SettingsPage.Privacy -> PrivacyPage()
                         SettingsPage.Storage -> StoragePage()

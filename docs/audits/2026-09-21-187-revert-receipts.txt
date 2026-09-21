@@ -13,3 +13,7 @@ startCaptureIsStillTheFirstTransactionAndNothingWasReordered | app/src/main/aidl
 theOwnerRegistersForThePictureWhenTheTakeGoesLiveAndUnregistersWhenItEnds | app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt: '        }, "DictationPollingThread").start()\n        listenF' -> '        }, "DictationPollingThread").start()\n    }' | com.envi.wispr.ui.DictationSessionCoordinatorTest | 24/1/0 at 2026-09-21T07:45:00 | RED
 
 # Restored: git status --short is empty after every mutant.
+
+# Device receipt, emulator-5554 (EnviousWispr_Android_16_Play), am instrument, 2026-09-21:
+aRegisteredListenerReceivesThePictureDuringATake | AudioCaptureService.kt: the pushSpectrum call after the arraycopy removed | CaptureWithSilenceStopDeviceTest (am instrument) | Tests run: 1, Failures: 1, "a picture must arrive over the callback within five seconds of a take starting; none did" | RED
+# Control: the same row on the unmutated build, OK (1 test), 2.0 s. Restored with git checkout, rebuilt, reinstalled.

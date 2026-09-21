@@ -64,10 +64,10 @@ class VoiceInputActivity : Activity() {
             intent.getBooleanExtra(EXTRA_TOGGLE, false) -> DictationSessionService.ACTION_TOGGLE
             else -> DictationSessionService.ACTION_TOGGLE
         }
-        // No pin here. The session owner pins the focused editor once, in `beginSession`, and that
-        // is the only record of which field this take aims at. A pin taken by this window ran on
-        // every press, including the TOGGLE that STOPS a take, and moved the words to whichever field
-        // the user had reached by then (#192).
+        // No pin here. The session owner makes the single pin attempt in `beginSession`, and that
+        // result is the record every announcement is judged against. A pin taken by this window ran
+        // on every START or TOGGLE press, including the TOGGLE that stops a take, and moved the words
+        // to whichever field the user had reached by then (#192).
         val trigger = triggerOf(intent.action, intent.getStringExtra(EXTRA_TRIGGER_SOURCE))
         runCatching { DictationSessionService.sendCommand(this, action, intent.getStringExtra(EXTRA_REQUEST), trigger) }
             .onFailure {

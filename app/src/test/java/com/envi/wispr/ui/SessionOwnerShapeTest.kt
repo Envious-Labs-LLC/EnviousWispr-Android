@@ -39,26 +39,38 @@ class SessionOwnerShapeTest {
     /**
      * Drift Guard (#192): the session owner is the only component that pins the field a take aims at,
      * and it pins once, at admission. The launcher and the bubble's direct start each pinned too, so a
-     * TOGGLE that STOPPED a take re-pinned the field the user had moved to. The property is the absence
-     * of a pin call from those two sources and exactly one call in the owner, inside `beginSession`.
+     * TOGGLE that STOPPED a take re-pinned the field the user had moved to. The property is the whole
+     * inventory of pin CALLS across production source (Codex code review round 1, 2026-09-21: a check on
+     * three named regions stays green when a fourth file reaches the pin through a helper): the owner's
+     * one call inside `beginSession`, the gateway's delegation, and the companion's call into the
+     * private pin. Any other file, or a second call in these, fails.
      * REVERT: restore `PasteAccessibilityService.pinTargetForDictation()` in the launcher, or
      * `pinTarget()` in `startDictationFromBubble`.
      */
     @Test
     fun onlyTheOwnerPinsTheTarget() {
-        val launcher = File("src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt").readText()
-        assertFalse("the launcher pins nothing; the owner pins in beginSession", launcher.contains("pinTarget"))
-
-        val paste = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText()
-        val bubbleStart = paste.substring(paste.indexOf("fun startDictationFromBubble("))
-            .let { it.substring(0, it.indexOf("\n    }\n")) }
-        assertFalse("the bubble's direct start pins nothing", bubbleStart.contains("pinTarget"))
+        val callSites = File("src/main/java").walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .flatMap { file ->
+                file.readLines().asSequence().mapIndexedNotNull { index, line ->
+                    // A declaration is not a call; the gateway declares AND calls on one line, so the
+                    // declaration is cut out and whatever call remains counts.
+                    val code = line.substringBefore("//").replace(Regex("""\bfun\s+pinTarget(ForDictation)?\([^)]*\)"""), "")
+                    val isCall = code.contains("pinTargetForDictation(") || code.contains("pinTarget(")
+                    if (isCall) "${file.name}:${index + 1}" else null
+                }
+            }
+            .toList()
+        assertEquals(
+            "the owner, the gateway and the companion are the only pin callers; the line numbers move, the file set does not",
+            listOf("DictationSessionCoordinator.kt", "InsertionGateway.kt", "PasteAccessibilityService.kt"),
+            callSites.map { it.substringBefore(":") }.sorted(),
+        )
 
         val coordinator = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
-        assertEquals("the owner pins exactly once", 1, coordinator.split(".pinTargetForDictation()").size - 1)
         val beginSession = coordinator.substring(coordinator.indexOf("private fun beginSession("))
             .let { it.substring(0, it.indexOf("\n    private fun ")) }
-        assertTrue("the one pin is inside beginSession", beginSession.contains(".pinTargetForDictation()"))
+        assertTrue("the owner's one call is inside beginSession", beginSession.contains(".pinTargetForDictation()"))
     }
 
     @Test

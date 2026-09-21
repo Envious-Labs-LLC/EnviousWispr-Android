@@ -173,8 +173,8 @@ class PasteAccessibilityService : AccessibilityService() {
         }
 
         /**
-         * Pins the focused editor for the take the session owner is admitting; the owner is the only
-         * caller, once per take, through `InsertionGateway` (#192).
+         * The single pin attempt for the take the session owner is admitting; the owner is the only
+         * caller, once per take, through `InsertionGateway`, and the answer may be no pin (#192).
          *
          * The answer is [DictationTargetPin] rather than a Boolean because the session has to
          * carry WHY nothing was pinned all the way to the announcement. See
@@ -437,8 +437,8 @@ class PasteAccessibilityService : AccessibilityService() {
      * The bubble's direct route into the session owner: start the owner as a foreground service.
      * Returns false when this process may not do that (no microphone permission, or Android refusing
      * a foreground start from a bound accessibility service), and the caller falls back to the
-     * transparent launcher. The focused editor is not pinned here: the owner pins it once in
-     * `beginSession`, the one record every announcement is judged against (#192).
+     * transparent launcher. The focused editor is not pinned here: the owner makes the single pin
+     * attempt in `beginSession`, and that result is the record every announcement is judged against (#192).
      *
      * The direct route exists because launching an activity, even a 1x1 non-focusable one, pauses the
      * user's app and Chrome then hides its keyboard (measured on the Android 16 emulator, 2026-09-12).

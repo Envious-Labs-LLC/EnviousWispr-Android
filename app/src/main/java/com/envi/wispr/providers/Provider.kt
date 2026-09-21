@@ -1,6 +1,6 @@
 package com.envi.wispr.providers
 
-/** Providers supported by the configuration layer. ProviderPolishClient owns network calls. */
+/** Providers supported by the configuration layer. The wire shape per provider is its `ProviderAdapter`; `ProviderPolishClient` and `ProviderModelDiscoveryClient` make the calls. */
 enum class Provider {
     OPENAI,
     GEMINI,

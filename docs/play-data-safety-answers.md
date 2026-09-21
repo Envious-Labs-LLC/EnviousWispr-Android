@@ -14,7 +14,9 @@ the code:
 - `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, and the user's own
   self-hosted endpoint — cloud polish ONLY, reached only when the user turns on cloud polish and supplies
   their own key. The selected transcript TEXT plus the custom-words list is sent, straight to the provider
-  the user chose, under the user's own key. `providers/ProviderPolishClient.kt`,
+  the user chose, under the user's own key. `providers/ProviderPolishClient.kt` sends it through
+  `providers/HttpProviderTransport.kt`; the exact body per provider is `providers/OpenAiAdapter.kt`,
+  `GeminiAdapter.kt`, `ClaudeAdapter.kt`, `SelfHostedAdapter.kt`; the prompt is
   `providers/ProviderPolishPrompt.kt`.
 
 - `us.i.posthog.com` (usage rows) and `o4511097055477760.ingest.us.sentry.io` (crash reports and our own

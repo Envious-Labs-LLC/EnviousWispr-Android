@@ -28,7 +28,7 @@ import com.envi.wispr.providers.ModelListRules
 import com.envi.wispr.providers.ProviderDiscovery
 import com.envi.wispr.providers.ProviderKeyCheck
 import com.envi.wispr.providers.ProviderModelDiscoverer
-import com.envi.wispr.providers.ProviderPolishClient
+import com.envi.wispr.providers.ProviderModelDiscoveryClient
 import com.envi.wispr.polish.PolishFailure
 import com.envi.wispr.polish.S1ControlSettings
 import kotlinx.coroutines.flow.asStateFlow
@@ -150,7 +150,7 @@ class EnviousWisprViewModel(
     private val appContext: Context,
     private val clock: () -> Long = System::currentTimeMillis,
     /** The live model list (#84): the discoverer and the per-provider cache, both replaceable by a test. */
-    private val discoverer: ProviderModelDiscoverer = ProviderPolishClient(),
+    private val discoverer: ProviderModelDiscoverer = ProviderModelDiscoveryClient(),
     private val modelCache: ModelListCache = ModelListCache(appContext),
 ) : ViewModel() {
     private val providerDiscoveryState = MutableStateFlow(ProviderDiscoveryUiState())

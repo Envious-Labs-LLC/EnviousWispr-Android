@@ -1,5 +1,7 @@
 package com.envi.wispr.polish
 
+import com.envi.wispr.providers.ProviderAdapters
+
 /**
  * What a person is told when a polish did not do its job (#77): one member per sentence, derived in ONE
  * place ([from]) from the engine's reason, the HTTP status and the latched policy. The sentences are the
@@ -110,7 +112,7 @@ enum class PolishFailure(val leadIn: LeadIn) {
             403 -> ACCESS_DENIED
             404 -> MODEL_UNAVAILABLE
             413 -> INPUT_TOO_LONG
-            429 -> if (context is PolishContext.Cloud && context.provider == com.envi.wispr.providers.Provider.GEMINI) RATE_OR_QUOTA else RATE_LIMITED
+            429 -> if (context is PolishContext.Cloud) ProviderAdapters.of(context.provider).rateLimitFailure else RATE_LIMITED
             in 500..599 -> PROVIDER_ERROR
             in 400..499 -> BAD_REQUEST
             else -> UNEXPECTED

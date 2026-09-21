@@ -28,7 +28,7 @@ sealed interface ProviderKeyCheck {
     data class Unverified(val failure: PolishFailure, val status: Int? = null) : ProviderKeyCheck
 }
 
-/** The seam the repository is given; [ProviderPolishClient] is the production implementation. */
+/** The seam the repository is given; [ProviderModelDiscoveryClient] is the production implementation. */
 fun interface ProviderKeyChecker {
     fun check(provider: Provider, apiKey: String): ProviderKeyCheck
 }

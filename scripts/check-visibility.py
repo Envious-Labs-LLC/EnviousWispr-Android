@@ -23,6 +23,10 @@ Rule B. A `when (subject) {` block whose every non-else arm names a member of ON
     scripts/check-visibility.py --root <dir>    # another tree with the same layout (the test fixtures)
 
 An explicit `public` is the default written out and is refused the same way (allowlist it with a reason).
+A simple type name that is a closed set in more than one package (today `Outcome`, `Phase` and `State`,
+nested enums in several packages) is ambiguous to a text checker and is left OPEN: an `else` over one of
+those passes here and the compiler alone owns it. Qualify such arms and nothing changes; the limit is
+recorded rather than guessed around.
 A `when` over an OPEN subject whose arms name members of one closed set keeps its `else` by carrying
 `// visibility-open-when: <reason>` on the `when`'s line.
 
@@ -49,8 +53,9 @@ VISIBILITY = {"private", "internal", "protected", "public"}
 # The scanner: which characters are CODE, so braces and declarations are read only there.
 # ---------------------------------------------------------------------------------------------------
 
-def code_mask(text):
-    """For each character, True when it is code (not a comment, string or character literal).
+def code_mask(text, comment_starts=None):
+    """For each character, True when it is code (not a comment, string or character literal). When
+    `comment_starts` is a list, the index of every `//` that opens a line comment is appended to it.
 
     Kotlin lexical states, the closed list the plan names: code, line comment, block comment (nesting),
     string ("…" with escapes and `${ }` templates), raw string (\"\"\"…\"\"\" with templates, ending at the
@@ -70,6 +75,8 @@ def code_mask(text):
         kind = state if isinstance(state, str) else state[0]
         if kind == "code":
             if text.startswith("//", i):
+                if comment_starts is not None:
+                    comment_starts.append(i)
                 stack.append("line"); i += 2; continue
             if text.startswith("/*", i):
                 stack.append(("block", 1)); i += 2; continue
@@ -221,10 +228,22 @@ SEALED_CHILD = re.compile(r"\b(?:data\s+)?(?:object|class)\s+(?P<child>[A-Za-z_]
 ENUM_MEMBER = re.compile(r"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?P<member>`[^`]+`|[A-Za-z_]\w*)\s*(?:\(|\{|,|;|$)")
 
 
+PACKAGE = re.compile(r"^\s*package\s+([\w.]+)", re.M)
+
+
 def closed_sets(code_by_file):
-    """{TypeName: {members}} for every enum class and sealed type declared in the tree."""
-    sets = {}
+    """{TypeName: {members}} for every enum class and sealed type declared in the tree.
+
+    Types are collected per PACKAGE (a sealed type's children must sit in its package, so a child in
+    package B never joins a parent of the same simple name in package A), then keyed by simple name for
+    the arms, which name types by simple name. A simple name that is a closed set in two packages is
+    ambiguous and is DROPPED: such a `when` stays open to this check and the compiler keeps owning it
+    (code review round 2).
+    """
+    by_package = {}  # (package, TypeName) -> {members}
     for code in code_by_file.values():
+        pm = PACKAGE.search(code)
+        package = pm.group(1) if pm else ""
         for m in ENUM_DECL.finditer(code):
             body_start = m.end()
             # the enum entries run to the first `;` or the closing brace at the same depth
@@ -246,16 +265,29 @@ def closed_sets(code_by_file):
                 if em:
                     members.add(em.group("member").strip("`"))
             if members:
-                sets.setdefault(m.group("name"), set()).update(members)
-    # Sealed children may sit in any file of the parent's package (Kotlin 1.5+), so the parents are
-    # collected across the whole tree first and the children in a second pass (code review F5).
+                by_package.setdefault((package, m.group("name")), set()).update(members)
+    # Sealed children may sit in any file of the parent's PACKAGE (Kotlin 1.5+), so the parents are
+    # collected across the whole tree first and the children in a second pass, joined per package.
     sealed = set()
     for code in code_by_file.values():
-        sealed.update(m.group("name") for m in SEALED_DECL.finditer(code))
+        pm = PACKAGE.search(code)
+        package = pm.group(1) if pm else ""
+        sealed.update((package, m.group("name")) for m in SEALED_DECL.finditer(code))
     for code in code_by_file.values():
+        pm = PACKAGE.search(code)
+        package = pm.group(1) if pm else ""
         for cm in SEALED_CHILD.finditer(code):
-            if cm.group("parent") in sealed:
-                sets.setdefault(cm.group("parent"), set()).add(cm.group("child"))
+            key = (package, cm.group("parent"))
+            if key in sealed:
+                by_package.setdefault(key, set()).add(cm.group("child"))
+    sets = {}
+    ambiguous = set()
+    for (package, name), members in by_package.items():
+        if name in sets:
+            ambiguous.add(name)
+        sets.setdefault(name, set()).update(members)
+    for name in ambiguous:
+        del sets[name]
     return sets
 
 
@@ -290,6 +322,19 @@ def arm_members(left, sets):
 OPEN_WHEN = re.compile(r"visibility-open-when:\s*\S")
 
 
+def line_comments(raw):
+    """{line index: the text of the `//` comment on that line}, from the scanner, so a `//` inside a string
+    literal is not a comment (code review round 2)."""
+    starts = []
+    code_mask(raw, starts)
+    result = {}
+    for start in starts:
+        line = raw.count("\n", 0, start)
+        end = raw.find("\n", start)
+        result[line] = raw[start:end if end >= 0 else len(raw)]
+    return result
+
+
 def else_over_closed_set(code, sets, raw):
     """Rule B hits: (line, type) for an `else ->` in a when whose other arms all name one closed set.
 
@@ -304,6 +349,7 @@ def else_over_closed_set(code, sets, raw):
     segments split at newlines and semicolons.
     """
     hits = []
+    comments = line_comments(raw)
     for m in re.finditer(r"\bwhen\s*\(", code):
         # the subject: balanced parentheses from the `(`
         i = m.end() - 1
@@ -323,7 +369,7 @@ def else_over_closed_set(code, sets, raw):
         if k >= len(code) or code[k] != "{":
             continue
         when_line = code.count("\n", 0, m.start())
-        if OPEN_WHEN.search(raw.split("\n")[when_line]):
+        if OPEN_WHEN.search(comments.get(when_line, "")):
             continue
         # the block: from `{` to its matching `}`
         depth = 0

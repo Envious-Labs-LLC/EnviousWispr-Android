@@ -98,5 +98,11 @@ class VisibilityCheckTest {
         // when's own line (`// visibility-open-when: <reason>`).
         val marked = run("--root", File(fixtures, "open-when-marker").path)
         assertEquals("the marker with a reason must let the else stand:\n${marked.out}", 0, marked.exit)
+        // Code review round 2: the marker counts only inside a real comment, and a simple name that is a
+        // closed set in two packages is ambiguous, so its when stays open to the check.
+        rejected("open-when-marker-in-string", "app/src/main/java/com/envi/wispr/Any.kt:7: else over the closed set Color")
+        val collision = run("--root", File(fixtures, "cross-package-name-collision").path)
+        assertEquals("two sealed Shapes in two packages are ambiguous, so the else stands:\n${collision.out}", 0, collision.exit)
+        assertTrue(collision.out.contains("0 closed sets known"))
     }
 }

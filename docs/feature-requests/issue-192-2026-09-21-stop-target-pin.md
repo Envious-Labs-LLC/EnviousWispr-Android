@@ -1,7 +1,7 @@
 # Issue #192 — Stopping from the side button can send a dictation to the wrong text field — 2026-09-21
 
 GitHub issue: `#192`. Tier: LARGE (the insertion path and the session owner's contract, `workflow-process.md`
-RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the newest-line identity replaces the count; G2.1 to G2.3); round 3 PIVOT by the pre-committed consequence (a third weakness in the launcher press's proof: G2.1 the new-start harness row appended a line so a count-based proof would still pass; `press_start_while_recording()` deleted, the busy-start emulator scenario NOT RUN, G3.1 docstring); round 4 PROCEED-WITH-REVISIONS (G1.1 to G1.4, stale wording after the deletion); round 5 PROCEED-AS-PLANNED (confirming). Gate 2 next.
+RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the newest-line identity replaces the count; G2.1 to G2.3); round 3 PIVOT by the pre-committed consequence (a third weakness in the launcher press's proof: G2.1 the new-start harness row appended a line so a count-based proof would still pass; `press_start_while_recording()` deleted, the busy-start emulator scenario NOT RUN, G3.1 docstring); round 4 PROCEED-WITH-REVISIONS (G1.1 to G1.4, stale wording after the deletion); round 5 PROCEED-AS-PLANNED (confirming). Gate 2 posted 2026-09-21; BUILT at `50ace8e` (code review rounds 1 to 9 to ALL-CLEAR, round 10 confirming); emulator pass recorded in `docs/audits/2026-09-21-192-emulator-pass/`, with one expectation CORRECTED AT BUILD (§11.1).
 
 Consolidation: this plan is one document; §2.5 carries the reproduction and the trace once and §§3 to 11 point back at it.
 
@@ -18,7 +18,11 @@ insertion-fails-safe-never-silently ("return to the tracked editor").
 
 **Hardware UAT:** Y. The heart's insertion stage. On the emulator through wispr-eyes (the founder's phone is his
 today): a person starts a dictation in one field, moves to another field while still speaking, presses the side
-button to stop, and the words land in the FIRST field; the second field stays empty. The busy-start
+button to stop, and the words never land in the SECOND field. **Corrected at build:** with the pin
+held on the first field and that field no longer focused, insertion runs today's fail-safe (the words go
+to the clipboard, announced) rather than into the first field; both fields stay empty. Writing into the
+pinned field while a sibling field holds focus is the macOS "AX direct" behaviour (catalog
+`frozen-delivery-target`, macOS partial) and is filed as #201, not smuggled into this deletion. The busy-start
 behaviour (a second start attempt while a take is running) is NOT RUN on the emulator; its JVM rig row
 keeps the owner contract.
 
@@ -204,7 +208,8 @@ across a component boundary for no gain.
 | Failure mode | Origin | Caller | What the user sees | Persisted state | Retry |
 |---|---|---|---|---|---|
 | A's node is destroyed while recording (the user closed A) | the app | `pasteWhenTargetReturns` | the existing clipboard line for a stale target | as today | none |
-| A still exists but its window lost focus (the user moved to B, the case of this issue) | the user | insertion | the words in A: the pin is untouched after the change; insertion returns to the tracked editor | as today | none |
+| A still exists but its window lost focus (the user moved to another app) | the user | insertion | the words in A when the user returns to it within the wait, else the clipboard line (`NEVER_RETURNED`); the pin is untouched after the change | as today | none |
+| A still exists and a SIBLING field in the same window took focus (the user moved to B, the case of this issue) | the user | insertion | **measured at build:** the pin stays on A, insertion waits for A to be focused again, then the clipboard line (`NEVER_RETURNED`, announced); nothing is written to B. Before the change the words were written INTO B. Writing into A while B holds focus is #201 | as today | none |
 | the accessibility service is torn down mid-take (`:1267-1269` clears `pinnedTarget`) | Android | `handoffToJudge` (`DictationTargetPin.kt:57-72`) | `PINNED` at start plus `NO_PINNED_TARGET` at insertion judges as `SERVICE_NOT_RUNNING`, announced; unchanged by this plan | as today | none |
 | `pasteWhenTargetReturns` while `pendingInsertion != null` | a dictation started on top of one still inserting | insertion | `INSERTION_BUSY` at start becomes `INSERTION_ALREADY_PENDING`, announced; unchanged (the start pin still runs at `:351`) | as today | none |
 | the owner's START pin finds no editor | focus not on an editor at start | `beginSession` | today's `NO_PINNED_TARGET` behaviour | as today | none |
@@ -244,10 +249,15 @@ Unchanged: `InsertionJudgement.handoffToJudge` with `targetPinAtStart` and the c
    `aRefusedBusyStartNeverPinsTheTarget` keeps the owner's contract on the JVM).
 
 ### 11.1 Hardware UAT spec
-- Emulator, wispr-eyes, debug build of the final commit: (a) the reproduction scenario, expected body holds the
-  sentence and Subject stays empty, `Pinned original editor` logged ONCE; (b) the busy-start scenario: NOT RUN on the
+- Emulator, wispr-eyes, debug build of the final commit: (a) the reproduction scenario, expected Subject stays
+  empty and `Pinned original editor` logged ONCE. **Measured at `50ace8e`:** one pin line, Subject empty, body
+  empty, `outcome=NEVER_RETURNED` after 21 attempts and the words on the clipboard (the keyboard offered them);
+  on `6a0f5c4` the same scene wrote the sentence into Subject with two pin lines. The plan's "body holds the
+  sentence" expectation was wrong: both routes require the pinned editor to be FOCUSED at insertion time
+  (`PasteAccessibilityService.withPinnedNode`), so the fail-safe is the outcome while Subject holds focus; (b) the busy-start scenario: NOT RUN on the
   emulator (round G3; JVM rig row only); (c) three ordinary takes into Gmail
-  (the START pin still lands); (d) `restore()`. Founder's phone: NOT RUN (his instruction); build delivered
+  (the START pin still lands; measured: three judged takes, `pins=1` and `route=COMMIT outcome=VERIFIED` on each,
+  with three empty-transcription reruns, the known emulator injected-audio flake); (d) `restore()`. Founder's phone: NOT RUN (his instruction); build delivered
   through Play for his ordinary use, and the issue's "two real apps" phone pass is listed for him.
 
 ### 11.2 Other obligations

@@ -53,8 +53,21 @@ class SessionOwnerShapeTest {
             .filter { it.isFile && it.extension == "kt" }
             .flatMap { file ->
                 // Block comments are cut first (a KDoc naming the call is prose, not a call; Codex code
-                // review round 2), then each line's `//` tail.
-                file.readText().replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), "")
+                // review round 2), then each line's `//` tail. The cut is a lazy regex, so a `/*` inside
+                // a string literal would swallow code up to the next `*/` and hide a restored pin call
+                // SILENTLY (round 3). Zero such strings exist in `app/src/main` (measured 2026-09-21), so
+                // the trap is armed as a LOUD refusal instead of a scanner: a line that opens a string
+                // and then a block comment fails this row by name. A `/*` on a later line of a
+                // multi-line raw string is outside this refusal.
+                val text = file.readText()
+                text.lines().forEachIndexed { index, line ->
+                    val code = line.substringBefore("//")
+                    assertFalse(
+                        "${file.name}:${index + 1} opens a string literal that contains /*; this row's comment cut cannot read it",
+                        Regex("\"[^\"]*/\\*[^\"]*\"|\"\"\".*/\\*").containsMatchIn(code.replace(Regex("""/\*.*?\*/"""), "")),
+                    )
+                }
+                text.replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), "")
                     .lines().asSequence().mapIndexedNotNull { index, line ->
                     // A declaration is not a call; the gateway declares AND calls on one line, so the
                     // declaration is cut out and whatever call remains counts.

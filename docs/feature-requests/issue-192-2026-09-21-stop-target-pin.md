@@ -1,7 +1,7 @@
 # Issue #192 — Stopping from the side button can send a dictation to the wrong text field — 2026-09-21
 
 GitHub issue: `#192`. Tier: LARGE (the insertion path and the session owner's contract, `workflow-process.md`
-RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the newest-line identity replaces the count; G2.1 to G2.3); round 3 next.
+RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the newest-line identity replaces the count; G2.1 to G2.3); round 3 PIVOT by the pre-committed consequence (a third weakness in the launcher press's proof: G2.1 the new-start harness row appended a line so a count-based proof would still pass; `press_start_while_recording()` deleted, the busy-start emulator scenario NOT RUN, G3.1 docstring); round 4 next.
 
 Consolidation: this plan is one document; §2.5 carries the reproduction and the trace once and §§3 to 11 point back at it.
 
@@ -51,9 +51,9 @@ search), Elena, Frank: all want the same rung; none wants the words to follow th
 - Guards: two coordinator rows on the JVM rig (a TOGGLE that stops, a STOP, a CANCEL, and a busy START
   each leave the pin count at one; an admitted take pins exactly once), one shape row (the two files
   contain no pin call), and the reproduction scenario on the emulator run twice (before: wrong field;
-  after: right field) plus the busy-start scenario.
-- Two harness calls, `toggle_dictation()` (the bare side-button intent during a live take) and
-  `press_start_while_recording()` (the launcher's START during a live take).
+  after: right field). The busy-start scenario is NOT RUN on the emulator (round G3): its rig row keeps the
+  owner's contract.
+- One harness call, `toggle_dictation()` (the bare side-button intent during a live take).
 
 ## 1. Problem
 
@@ -167,12 +167,14 @@ none about insertion targets), so nothing settled is being redesigned.
    function's KDoc (`:437-443`) to say the owner pins after admission. Alternative rejected: carrying the
    launcher's answer into the command so the owner reuses it, which keeps two writers.
 2. Guards, §11.2.
-3. Harness: `toggle_dictation()` and `press_start_while_recording()` in `scripts/uat/wispr_eyes.py`, both
-   through `_press_launcher`, allowed only while `recording()`; the after-the-fact proof that the press began
-   no take is the IDENTITY of the newest `recording_start` line before against during three seconds after
-   (a count across two rolling tails can read equal or lower after a new start, round G2); a different line
-   means a take this press began, cancelled before raising; no start line at all after the press is "cannot
-   tell" and raises without cancelling.
+3. Harness: `toggle_dictation()` in `scripts/uat/wispr_eyes.py`, through `_press_launcher`, allowed only
+   while `recording()`; the after-the-fact proof that the press began no take is the IDENTITY of the newest
+   `recording_start` line before against during three seconds after (a count across two rolling tails can
+   read equal or lower after a new start, round G2); a different line means a take this press began,
+   cancelled before raising; no start line at all after the press is "cannot tell" and raises without
+   cancelling. `press_start_while_recording()` was deleted in round G3 under the pre-committed consequence
+   (three rounds each found the press's proof weak on a new axis); the busy-start scenario is NOT RUN on
+   the emulator and its rig row `aRefusedBusyStartNeverPinsTheTarget` keeps the owner's contract.
 
 ## 3b. Ownership justification
 The pin stays on `PasteAccessibilityService` (it owns the node) and its ONE writer becomes the owner's
@@ -219,12 +221,12 @@ Unchanged: `InsertionJudgement.handoffToJudge` with `targetPinAtStart` and the c
   gains an `AtomicLong` pin counter incremented inside `pinTargetForDictation` (coverage D1); the rig's
   `command(coordinator, ACTION_TOGGLE)` reaches `stopAndTranscribe` synchronously once RECORDING is staged.
 - `app/src/test/java/com/envi/wispr/ui/SessionOwnerShapeTest.kt`: one row.
-- `scripts/uat/wispr_eyes.py`: `toggle_dictation()` and `press_start_while_recording()` (the launcher's
-  `--ez start true`), both allowed only while `recording()`; because the liveness check and the intent are
-  two steps, both presses prove afterwards, from the identity of the newest `recording_start` line watched
-  for three seconds, that they began no take, and cancel and raise otherwise (coverage E1, rounds G1 and
-  G2). `scripts/uat/test_wispr_eyes.py` gains four rows on `_press_launcher` with its four seams stubbed
-  (`recording`, `logs`, `_adb`, `_dictation`): no new start; a new start cancelled and refused; a rolled
+- `scripts/uat/wispr_eyes.py`: `toggle_dictation()`, allowed only while `recording()`; because the liveness
+  check and the intent are two steps, the press proves afterwards, from the identity of the newest
+  `recording_start` line watched for three seconds, that it began no take, and cancels and raises otherwise
+  (coverage E1, rounds G1 to G3). `scripts/uat/test_wispr_eyes.py` gains four rows on `_press_launcher`
+  with its four seams stubbed (`recording`, `logs`, `_adb`, `_dictation`): no new start; a new start that
+  REPLACES the old line in a rolled tail (same count, different identity) cancelled and refused; a rolled
   tail with no start line refused without a cancel; nothing recording sends no intent.
 - `docs/audits/2026-09-21-192-revert-receipts.txt`, `docs/audits/2026-09-21-192-emulator-pass/` (the before and after logs).
 
@@ -233,16 +235,17 @@ Unchanged: `InsertionJudgement.handoffToJudge` with `targetPinAtStart` and the c
    `beginSession`), which the owner already keeps today, so they pass with the fix reverted and are not
    the fix's oracle; the shape row is the Drift Guard that goes red on either restored pre-pin; the
    emulator scenario is the Product Outcome proof and detects the launcher revert (the bubble's direct
-   start is not stageable without the pill tap). The harness presses share `_press_launcher`, which owns the proof and the cancel, so it has its
+   start is not stageable without the pill tap). The harness press goes through `_press_launcher`, which owns the proof and the cancel, so it has its
    own four Harness Contract rows in `scripts/uat/test_wispr_eyes.py`.
 2. Reverts: §11.2.
-3. Not tested: the bubble's direct start on the emulator (needs the pill tap; declared NOT RUN).
+3. Not tested: the bubble's direct start on the emulator (needs the pill tap; declared NOT RUN); the
+   busy START on the emulator (its harness press was deleted in round G3; declared NOT RUN; the rig row
+   `aRefusedBusyStartNeverPinsTheTarget` keeps the owner's contract on the JVM).
 
 ### 11.1 Hardware UAT spec
 - Emulator, wispr-eyes, debug build of the final commit: (a) the reproduction scenario, expected body holds the
-  sentence and Subject stays empty, `Pinned original editor` logged ONCE; (b) the busy-start scenario: start in
-  the body, inject, focus Subject, `press_start_while_recording()` (the launcher's `--ez start true`), expect the
-  owner's busy refusal and, after `toggle_dictation()`, the body holding the sentence and Subject empty; (c) three ordinary takes into Gmail
+  sentence and Subject stays empty, `Pinned original editor` logged ONCE; (b) the busy-start scenario: NOT RUN on the
+  emulator (round G3; JVM rig row only); (c) three ordinary takes into Gmail
   (the START pin still lands); (d) `restore()`. Founder's phone: NOT RUN (his instruction); build delivered
   through Play for his ordinary use, and the issue's "two real apps" phone pass is listed for him.
 

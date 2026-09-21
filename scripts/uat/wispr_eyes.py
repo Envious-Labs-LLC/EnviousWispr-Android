@@ -1507,18 +1507,10 @@ def toggle_dictation():
     means "start"; `open_recorder()` alone starts takes.
 
     The liveness check and the intent are two steps, so a take that ends between them (silence, the cap)
-    would make the toggle START one; `_press_launcher` proves afterwards, from the capture's own count of
-    starts, that it did not, and cancels the take it began otherwise.
+    would make the toggle START one; `_press_launcher` compares the identity of the newest capture
+    `recording_start` line before and after, and cancels a take identified as new before raising.
     """
     _press_launcher("toggle", "")
-
-
-def press_start_while_recording():
-    """The launcher's explicit START (`--ez start true`, which the bubble's fallback sends; the tile and
-    the app's own button send TOGGLE) while a take is live, which the owner refuses as busy (#192: the launcher used to pin the
-    focused editor before that refusal). Allowed only while a take is live, with the same after-the-fact
-    close as `toggle_dictation()`."""
-    _press_launcher("start", "--ez start true")
 
 
 def _newest_recording_start():

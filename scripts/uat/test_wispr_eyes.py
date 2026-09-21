@@ -1314,7 +1314,9 @@ def main():
     world["presses"].clear()
     def press_and_start(command, timeout=60, check=True, serial=None):
         world["presses"].append(command)
-        world["tail"].append("09-21 11:46:06.000 I AudioCapture: recording_start [+0ms]")
+        # The tail ROLLS: the old start line is gone and the new one takes its place, so the count stays at
+        # one and only the identity changes. A count-based proof would read "no new take" here.
+        world["tail"] = ["09-21 11:46:06.000 I AudioCapture: recording_start [+0ms]"]
         return (0, "")
     eyes._adb = press_and_start
     try:
@@ -1331,7 +1333,7 @@ def main():
         return (0, "")
     eyes._adb = press_and_roll
     try:
-        eyes._press_launcher("start", "--ez start true", deadline_s=1.0)
+        eyes._press_launcher("toggle", "", deadline_s=1.0)
         check("a tail with no start line after the press is refused", False, "no refusal")
     except eyes.Blocked as refusal:
         check("a tail with no start line after the press is 'cannot tell', refused without a cancel",

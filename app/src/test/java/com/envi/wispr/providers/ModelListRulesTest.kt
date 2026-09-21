@@ -14,9 +14,7 @@ class ModelListRulesTest {
     private fun ids(vararg names: String) = names.map { ListedModel(it, null) }
 
     @Test fun filterDropsWhatCannotPolishText() {
-        val kept = ModelListRules.filter(
-            Provider.GEMINI,
-            ids(
+        val kept = ProviderAdapters.of(Provider.GEMINI).filterModelRows(ids(
                 "gemini-3.6-flash", "gemini-2.5-flash-image", "gemini-embedding-001", "gemma-3-27b", "gemini-3-tts",
                 "gemini-2.0-flash-exp-0827", "aqa", "gemini-3-flash-latest", "veo-lyria", "gemini-3.6-flash",
             ),
@@ -25,14 +23,12 @@ class ModelListRulesTest {
     }
 
     @Test fun filterDropsVersionedDuplicatesAndLatestAliases() {
-        val kept = ModelListRules.filter(Provider.GEMINI, ids("gemini-2.5-pro", "gemini-2.5-pro-001", "gemini-2.5-pro-002", "gemini-pro-latest")).map { it.id }
+        val kept = ProviderAdapters.of(Provider.GEMINI).filterModelRows(ids("gemini-2.5-pro", "gemini-2.5-pro-001", "gemini-2.5-pro-002", "gemini-pro-latest")).map { it.id }
         assertEquals(listOf("gemini-2.5-pro"), kept)
     }
 
     @Test fun openAiKeepsChatFamiliesMinusOtherModalitiesAndChatCompletionsOnlyIds() {
-        val kept = ModelListRules.filter(
-            Provider.OPENAI,
-            ids(
+        val kept = ProviderAdapters.of(Provider.OPENAI).filterModelRows(ids(
                 "gpt-5.6-terra", "gpt-4o-realtime-preview", "gpt-4o-audio-preview", "gpt-4o-search-preview", "gpt-4o-transcribe",
                 "o3", "o4-mini", "o1-mini", "o1-preview", "dall-e-3", "whisper-1", "text-embedding-3-small", "gpt-5.6-pro",
                 "codex-mini-latest", "gpt-5-codex",
@@ -43,8 +39,8 @@ class ModelListRulesTest {
 
     @Test fun filterDropsInvalidIdsAndSelfHosted() {
         val long = "g".repeat(ProviderPolishClient.MAX_MODEL_CHARS + 1)
-        assertEquals(emptyList<ListedModel>(), ModelListRules.filter(Provider.CLAUDE, ids("", " ", long, "bad\u0007id")))
-        assertEquals(emptyList<ListedModel>(), ModelListRules.filter(Provider.SELF_HOSTED_POLISH, ids("llama3.2")))
+        assertEquals(emptyList<ListedModel>(), ProviderAdapters.of(Provider.CLAUDE).filterModelRows(ids("", " ", long, "bad\u0007id")))
+        assertEquals(emptyList<ListedModel>(), ProviderAdapters.of(Provider.SELF_HOSTED_POLISH).filterModelRows(ids("llama3.2")))
     }
 
     @Test fun recommendedIsMiniNanoFlashOrHaikuWithoutADisqualifier() {
@@ -59,10 +55,10 @@ class ModelListRulesTest {
     }
 
     @Test fun displayNameUsesTheProvidersOrTitleCasesAnOpenAiId() {
-        assertEquals("Gemini 3.6 Flash", ModelListRules.displayName(Provider.GEMINI, "gemini-3.6-flash", "Gemini 3.6 Flash"))
-        assertEquals("gemini-3.6-flash", ModelListRules.displayName(Provider.GEMINI, "gemini-3.6-flash", null))
-        assertEquals("Gpt 4.1 Mini", ModelListRules.displayName(Provider.OPENAI, "gpt-4.1-mini", null))
-        assertEquals("claude-sonnet-5", ModelListRules.displayName(Provider.CLAUDE, "claude-sonnet-5", ""))
+        assertEquals("Gemini 3.6 Flash", ProviderAdapters.of(Provider.GEMINI).displayName("gemini-3.6-flash", "Gemini 3.6 Flash"))
+        assertEquals("gemini-3.6-flash", ProviderAdapters.of(Provider.GEMINI).displayName("gemini-3.6-flash", null))
+        assertEquals("Gpt 4.1 Mini", ProviderAdapters.of(Provider.OPENAI).displayName("gpt-4.1-mini", null))
+        assertEquals("claude-sonnet-5", ProviderAdapters.of(Provider.CLAUDE).displayName("claude-sonnet-5", ""))
     }
 
     @Test fun sortIsAvailableThenUnverifiedThenUnavailableRecommendedFirstThenByName() {
@@ -79,12 +75,12 @@ class ModelListRulesTest {
     }
 
     @Test fun claudePaginationStopsContinuesOrCallsACursorMalformed() {
-        assertEquals(ModelListRules.Pagination.Stop, ModelListRules.claudePagination(false, "x", emptySet()))
-        assertEquals(ModelListRules.Pagination.Continue("x"), ModelListRules.claudePagination(true, "x", emptySet()))
-        assertEquals(ModelListRules.Pagination.Continue("y"), ModelListRules.claudePagination(true, "y", setOf("x")))
-        assertEquals(ModelListRules.Pagination.Malformed, ModelListRules.claudePagination(true, null, emptySet()))
-        assertEquals(ModelListRules.Pagination.Malformed, ModelListRules.claudePagination(true, "", emptySet()))
-        assertEquals(ModelListRules.Pagination.Malformed, ModelListRules.claudePagination(true, "x", setOf("x")))
+        assertEquals(ClaudeAdapter.Pagination.Stop, ClaudeAdapter.pagination(false, "x", emptySet()))
+        assertEquals(ClaudeAdapter.Pagination.Continue("x"), ClaudeAdapter.pagination(true, "x", emptySet()))
+        assertEquals(ClaudeAdapter.Pagination.Continue("y"), ClaudeAdapter.pagination(true, "y", setOf("x")))
+        assertEquals(ClaudeAdapter.Pagination.Malformed, ClaudeAdapter.pagination(true, null, emptySet()))
+        assertEquals(ClaudeAdapter.Pagination.Malformed, ClaudeAdapter.pagination(true, "", emptySet()))
+        assertEquals(ClaudeAdapter.Pagination.Malformed, ClaudeAdapter.pagination(true, "x", setOf("x")))
     }
 
     @Test fun mergeAccessLetsAFreshUnverifiedBorrowACachedVerdictAndNothingElse() {
@@ -121,7 +117,7 @@ class ModelListRulesTest {
         // envelope shapes are asserted against a real server in `ProviderPolishClientTest`. Passing it in
         // keeps this table about STATUS, which is the only thing this function decides.
         fun a(p: Provider, s: Int?, b: String? = "{}", reply: ModelListRules.ProbeReply = ModelListRules.ProbeReply.TEXT) =
-            ModelListRules.probeOutcome(p, s, b, reply)
+            ProviderAdapters.of(p).probeOutcome(s, b, reply)
         assertEquals(ProbeOutcome.Access(ModelAccess.AVAILABLE), a(Provider.OPENAI, 200))
         // A 200 that carries no text is the transcribe case, and it is UNAVAILABLE, not available.
         assertEquals(ProbeOutcome.Access(ModelAccess.UNAVAILABLE), a(Provider.GEMINI, 200, reply = ModelListRules.ProbeReply.NO_TEXT))

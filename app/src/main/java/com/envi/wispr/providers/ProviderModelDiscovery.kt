@@ -52,7 +52,11 @@ sealed interface ProbeOutcome {
     data class KeyRejected(val status: Int) : ProbeOutcome
 }
 
-/** The pure rules: the macOS filter, classifier, sort, pagination decision and access merge. */
+/**
+ * The provider-independent rules: the shared filter checks, the Recommended classifier, the sort and the
+ * access merge. Every provider-specific decision (candidate ids, display name, probe verdict, paging) is the
+ * adapter's (#189).
+ */
 object ModelListRules {
     /** Ids containing any of these cannot polish text (macOS `excludePatterns`). */
     private val excludePatterns = listOf(
@@ -61,15 +65,6 @@ object ModelListRules {
     )
     private val versionedSuffixes = listOf("-001", "-002", "-003")
     private val aliasPatterns = listOf("latest")
-    private val openAiModalitySkips = listOf("realtime", "audio", "search", "transcribe")
-
-    /**
-     * Android sends every OpenAI request to the Responses API; these ids exist only on chat completions
-     * (OpenAI's model page and deprecations list, checked 2026-09-01 for `PolishModelCatalog`), so
-     * offering them would save a model that fails every dictation. The Mac excludes the opposite set.
-     */
-    private val openAiChatCompletionsOnly = setOf("o1-mini", "o1-preview")
-
     /**
      * THE TIER WORDS, AND THIS IS NOW A FALLBACK RATHER THAN THE RULE.
      *
@@ -103,8 +98,11 @@ object ModelListRules {
         "omni",
     )
 
-    /** Keeps the rows that can polish text, deduplicated by id, each id valid for a polish request. */
-    fun filter(provider: Provider, rows: List<ListedModel>): List<ListedModel> {
+    /**
+     * Keeps the rows that can polish text, deduplicated by id, each id valid for a polish request. The checks
+     * here are provider-independent; [candidate] is the adapter's own decision, given the lowercased id.
+     */
+    fun filter(rows: List<ListedModel>, candidate: (String) -> Boolean): List<ListedModel> {
         val seen = HashSet<String>()
         return rows.filter { row ->
             val id = row.id
@@ -114,34 +112,14 @@ object ModelListRules {
             if (excludePatterns.any { lowered.contains(it) }) return@filter false
             if (versionedSuffixes.any { lowered.endsWith(it) }) return@filter false
             if (aliasPatterns.any { lowered.contains(it) }) return@filter false
-            when (provider) {
-                Provider.OPENAI -> isOpenAiCandidate(lowered)
-                Provider.GEMINI, Provider.CLAUDE -> true
-                Provider.SELF_HOSTED_POLISH -> false
-            }
+            candidate(lowered)
         }
-    }
-
-    private fun isOpenAiCandidate(id: String): Boolean {
-        val chatCapable = id.startsWith("gpt-") || id.startsWith("o-") || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")
-        if (!chatCapable) return false
-        if (openAiModalitySkips.any { id.contains(it) }) return false
-        return id !in openAiChatCompletionsOnly
     }
 
     /** macOS `AIPolishModelClassifier.isRecommendedForCleanup`: a positive token and no disqualifier. */
     fun isRecommended(id: String): Boolean {
         val tokens = id.lowercase().split('-', '.', '_', '/').filter { it.isNotEmpty() }.toSet()
         return tokens.any { it in recommendedTokens } && tokens.none { it in disqualifierTokens }
-    }
-
-    /** The display name the page shows: the provider's own when it gave one, else the id in title case. */
-    fun displayName(provider: Provider, id: String, given: String?): String {
-        if (!given.isNullOrBlank()) return given
-        return when (provider) {
-            Provider.OPENAI -> id.split('-').filter { it.isNotEmpty() }.joinToString(" ") { part -> part.replaceFirstChar { it.uppercaseChar() } }
-            Provider.GEMINI, Provider.CLAUDE, Provider.SELF_HOSTED_POLISH -> id
-        }
     }
 
     /** The order the page shows: available, then unverified, then unavailable (locked last). */
@@ -159,19 +137,6 @@ object ModelListRules {
             { it.displayName.lowercase() },
         ),
     )
-
-    sealed interface Pagination {
-        data class Continue(val afterId: String) : Pagination
-        data object Stop : Pagination
-        data object Malformed : Pagination
-    }
-
-    /** macOS `claudePaginationDecision`: stop on no more; a missing, empty or repeated cursor is malformed. */
-    fun claudePagination(hasMore: Boolean, lastId: String?, seen: Set<String>): Pagination = when {
-        !hasMore -> Pagination.Stop
-        lastId.isNullOrEmpty() || lastId in seen -> Pagination.Malformed
-        else -> Pagination.Continue(lastId)
-    }
 
     /**
      * The fresh rows own every field; only a fresh UNVERIFIED access borrows a cached AVAILABLE or
@@ -218,49 +183,4 @@ object ModelListRules {
         INCONCLUSIVE,
     }
 
-    /**
-     * The probe verdict per provider (macOS `probeOpenAI` / `probeGemini` / `probeClaude`).
-     *
-     * [reply] is the caller's reading of the body, produced by the SAME parser polish uses. It is a
-     * required argument with no default, because a default here would be a silent answer at every call
-     * site that forgot it.
-     */
-    fun probeOutcome(provider: Provider, status: Int?, body: String?, reply: ProbeReply): ProbeOutcome {
-        if (status == null) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
-        if (status == 401) return ProbeOutcome.KeyRejected(status)
-        if (status == 400 && body != null && ProviderErrorSignal.classify(provider, status, body) == ProviderErrorSignal.KEY_REJECTED) {
-            return ProbeOutcome.KeyRejected(status)
-        }
-        val access = when {
-            // 200 IS NOT ENOUGH. The probe asks the model to answer the word "Hi" with a tiny output cap,
-            // and a model that answers 200 with no text cannot polish anything: measured 2026-09-02,
-            // gemini-3.5-transcribe returns an empty string to a real cleanup request, so it was shipping
-            // as AVAILABLE while silently returning the user's raw words on every dictation. Green must
-            // mean the outcome happened (validation-discipline RULE: verify-the-feature-not-the-crash).
-            status == 200 -> when (reply) {
-                ProbeReply.TEXT -> ModelAccess.AVAILABLE
-                ProbeReply.NO_TEXT -> ModelAccess.UNAVAILABLE
-                // Not "broken", and not "fine": nothing was proved. UNVERIFIED rows stay on screen and
-                // `recommendedPick` never chooses one, so the model is still offered to a user who asks
-                // for it by name and is never selected on their behalf. That is the only classification
-                // that is safe in BOTH directions, which is why the unreadable cases land here.
-                ProbeReply.INCONCLUSIVE -> ModelAccess.UNVERIFIED
-            }
-            status == 429 -> when (provider) {
-                Provider.GEMINI -> if (body?.contains("limit: 0") == true) ModelAccess.UNAVAILABLE else ModelAccess.AVAILABLE
-                Provider.CLAUDE -> ModelAccess.AVAILABLE
-                Provider.OPENAI, Provider.SELF_HOSTED_POLISH -> ModelAccess.UNVERIFIED
-            }
-            status == 403 || status == 404 -> ModelAccess.UNAVAILABLE
-            status in 500..599 -> if (provider == Provider.CLAUDE) ModelAccess.AVAILABLE else ModelAccess.UNVERIFIED
-            // A 400 that is not about the KEY is the provider saying this model cannot serve this request.
-            // It answered, so "we could not tell" is the wrong record: measured 2026-09-02, the two omni
-            // models and antigravity-preview all answer 400 INVALID_ARGUMENT and were being listed as
-            // merely untested. Key rejections were already taken above, so nothing about the key reaches
-            // here.
-            status == 400 -> ModelAccess.UNAVAILABLE
-            else -> ModelAccess.UNVERIFIED
-        }
-        return ProbeOutcome.Access(access)
-    }
 }

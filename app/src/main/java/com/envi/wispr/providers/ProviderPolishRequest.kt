@@ -53,45 +53,12 @@ sealed interface ProviderPolishResult {
 
 /**
  * What a provider's error BODY said beyond its status (#77), as a closed signal so the body, which can
- * echo the prompt, never leaves this client. The markers are the ones the macOS connectors match.
+ * echo the prompt, never leaves the client. Each adapter's `errorSignal` owns its provider's markers, the
+ * ones the macOS connectors match.
  */
 enum class ProviderErrorSignal {
     KEY_REJECTED,
     OUT_OF_CREDITS,
     INPUT_TOO_LONG,
     CONTENT_BLOCKED,
-    ;
-
-    companion object {
-        /** Exhaustive over [Provider]; a provider with no body markers answers null for every body. */
-        fun classify(provider: Provider, status: Int, body: String): ProviderErrorSignal? = when (provider) {
-            Provider.OPENAI -> when (status) {
-                429 -> if (body.contains("insufficient_quota")) OUT_OF_CREDITS else null
-                400 -> when {
-                    body.contains("context_length_exceeded") -> INPUT_TOO_LONG
-                    body.contains("content_filter") || body.contains("content_policy") -> CONTENT_BLOCKED
-                    else -> null
-                }
-                else -> null
-            }
-            Provider.GEMINI -> when (status) {
-                400 -> when {
-                    body.contains("API_KEY_INVALID") -> KEY_REJECTED
-                    body.contains("exceeds the maximum number of tokens") -> INPUT_TOO_LONG
-                    body.contains("PROHIBITED_CONTENT") || body.contains("blockReason") -> CONTENT_BLOCKED
-                    else -> null
-                }
-                else -> null
-            }
-            Provider.CLAUDE -> when (status) {
-                400 -> when {
-                    body.contains("credit balance") -> OUT_OF_CREDITS
-                    body.contains("prompt is too long") -> INPUT_TOO_LONG
-                    else -> null
-                }
-                else -> null
-            }
-            Provider.SELF_HOSTED_POLISH -> null
-        }
-    }
 }

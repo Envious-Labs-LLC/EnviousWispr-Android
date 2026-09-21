@@ -195,25 +195,25 @@ class ProviderPolishClientTest {
 
     @Test fun theBodyMarkersAreTheMacOsOnesPerProvider() {
         // (#77) OpenAI
-        assertEquals(ProviderErrorSignal.OUT_OF_CREDITS, ProviderErrorSignal.classify(Provider.OPENAI, 429, "{\"type\":\"insufficient_quota\"}"))
-        assertNull(ProviderErrorSignal.classify(Provider.OPENAI, 429, "{\"type\":\"rate_limit\"}"))
-        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderErrorSignal.classify(Provider.OPENAI, 400, "context_length_exceeded"))
-        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderErrorSignal.classify(Provider.OPENAI, 400, "content_filter"))
-        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderErrorSignal.classify(Provider.OPENAI, 400, "content_policy"))
-        assertNull(ProviderErrorSignal.classify(Provider.OPENAI, 400, "something else"))
-        assertNull(ProviderErrorSignal.classify(Provider.OPENAI, 401, "context_length_exceeded"))
+        assertEquals(ProviderErrorSignal.OUT_OF_CREDITS, ProviderAdapters.of(Provider.OPENAI).errorSignal(429, "{\"type\":\"insufficient_quota\"}"))
+        assertNull(ProviderAdapters.of(Provider.OPENAI).errorSignal(429, "{\"type\":\"rate_limit\"}"))
+        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderAdapters.of(Provider.OPENAI).errorSignal(400, "context_length_exceeded"))
+        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderAdapters.of(Provider.OPENAI).errorSignal(400, "content_filter"))
+        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderAdapters.of(Provider.OPENAI).errorSignal(400, "content_policy"))
+        assertNull(ProviderAdapters.of(Provider.OPENAI).errorSignal(400, "something else"))
+        assertNull(ProviderAdapters.of(Provider.OPENAI).errorSignal(401, "context_length_exceeded"))
         // Gemini
-        assertEquals(ProviderErrorSignal.KEY_REJECTED, ProviderErrorSignal.classify(Provider.GEMINI, 400, "API_KEY_INVALID"))
-        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderErrorSignal.classify(Provider.GEMINI, 400, "exceeds the maximum number of tokens"))
-        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderErrorSignal.classify(Provider.GEMINI, 400, "PROHIBITED_CONTENT"))
-        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderErrorSignal.classify(Provider.GEMINI, 400, "\"blockReason\":\"SAFETY\""))
-        assertNull(ProviderErrorSignal.classify(Provider.GEMINI, 400, "something else"))
+        assertEquals(ProviderErrorSignal.KEY_REJECTED, ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "API_KEY_INVALID"))
+        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "exceeds the maximum number of tokens"))
+        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "PROHIBITED_CONTENT"))
+        assertEquals(ProviderErrorSignal.CONTENT_BLOCKED, ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "\"blockReason\":\"SAFETY\""))
+        assertNull(ProviderAdapters.of(Provider.GEMINI).errorSignal(400, "something else"))
         // Claude
-        assertEquals(ProviderErrorSignal.OUT_OF_CREDITS, ProviderErrorSignal.classify(Provider.CLAUDE, 400, "Your credit balance is too low"))
-        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderErrorSignal.classify(Provider.CLAUDE, 400, "prompt is too long: 250024 tokens"))
-        assertNull(ProviderErrorSignal.classify(Provider.CLAUDE, 400, "something else"))
+        assertEquals(ProviderErrorSignal.OUT_OF_CREDITS, ProviderAdapters.of(Provider.CLAUDE).errorSignal(400, "Your credit balance is too low"))
+        assertEquals(ProviderErrorSignal.INPUT_TOO_LONG, ProviderAdapters.of(Provider.CLAUDE).errorSignal(400, "prompt is too long: 250024 tokens"))
+        assertNull(ProviderAdapters.of(Provider.CLAUDE).errorSignal(400, "something else"))
         // Self-hosted has no markers
-        assertNull(ProviderErrorSignal.classify(Provider.SELF_HOSTED_POLISH, 400, "API_KEY_INVALID insufficient_quota"))
+        assertNull(ProviderAdapters.of(Provider.SELF_HOSTED_POLISH).errorSignal(400, "API_KEY_INVALID insufficient_quota"))
     }
 
     @Test fun commentaryWrappersAreRejectedForDeterministicFallback() = withServer(
@@ -984,7 +984,7 @@ class ProviderPolishClientTest {
             // The retry really does carry the suppression and more room, or it is the same ask twice.
             val retry = asks["gpt-reasoner"]!!.single { isRetry(it.body) }.body
             assertTrue(retry, retry.contains("\"effort\":\"minimal\""))
-            assertTrue(retry, retry.contains("\"max_output_tokens\":${ProviderPolishClient.PROBE_RETRY_OUTPUT_TOKENS}"))
+            assertTrue(retry, retry.contains("\"max_output_tokens\":${ProviderAdapters.PROBE_RETRY_OUTPUT_TOKENS}"))
         }
     }
 

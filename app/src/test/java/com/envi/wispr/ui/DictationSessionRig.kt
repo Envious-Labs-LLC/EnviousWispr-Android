@@ -443,10 +443,29 @@ internal class DictationSessionRig {
             timeline += "listen"
             listening.countDown()
         }
+        /** When set, the registration is held until the test opens it: a wedged process that returns late. */
+        @Volatile var registrationGate: CountDownLatch? = null
+        private val registering = CountDownLatch(1)
+
+        /** The owner reached the registration (it may still be held by [registrationGate]). */
+        fun awaitRegistering() {
+            check(registering.await(10, TimeUnit.SECONDS)) { "the owner never registered for the take's events; events: $events" }
+        }
+
+        private val registered = CountDownLatch(1)
+
+        /** The registration returned (after any gate). */
+        fun awaitRegistered() {
+            check(registered.await(10, TimeUnit.SECONDS)) { "the registration never returned; events: $events" }
+        }
+
         override fun listenForTake(listener: TakeListener) {
+            registering.countDown()
+            registrationGate?.await(10, TimeUnit.SECONDS)
             takeListener = listener
             commandThreads += Thread.currentThread().name
             events += "listenForTake"
+            registered.countDown()
         }
     }
 

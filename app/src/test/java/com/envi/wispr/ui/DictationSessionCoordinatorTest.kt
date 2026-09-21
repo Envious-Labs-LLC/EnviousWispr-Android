@@ -383,6 +383,30 @@ class DictationSessionCoordinatorTest {
         assertEquals("every command came down the lane; threads were ${rig.capture.commandThreads}", setOf("CaptureCommands"), rig.capture.commandThreads.toSet())
     }
 
+    /**
+     * Product Outcome (#115 review round 2, F1): the capture process wedges INSIDE the registration and
+     * returns after the silence bound already ended the take and released the binding. The late start
+     * must not begin a recording nobody owns: the lane rechecks the take before starting and the fake
+     * never sees "start". REVERT: drop the STARTING-and-same-take check before the start command.
+     */
+    @Test
+    fun aRegistrationThatReturnsAfterTheBoundNeverStartsAnOrphanTake() {
+        val gate = CountDownLatch(1)
+        rig.capture.registrationGate = gate
+        val coordinator = rig.coordinator()
+        coordinator.onCreated()
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        rig.capture.awaitRegistering()
+        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+        assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        gate.countDown()
+        // The lane runs the rest of the start command after the gate opens; wait for it to have done so.
+        rig.capture.awaitRegistered()
+        rig.onMain {}
+        assertEquals("the late registration landed but no start followed it", listOf("listenForTake"), rig.capture.events.toList())
+    }
+
     @Test
     fun cancelWhileRecordingLeavesNoRow() {
         val coordinator = rig.coordinator()

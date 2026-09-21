@@ -3,6 +3,7 @@ package com.envi.wispr.audio
 import com.envi.wispr.debug.DebugLogger
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 
@@ -16,10 +17,17 @@ import java.util.concurrent.locks.LockSupport
  * the worker is unparked, which is a permit write. A `oneway` binder transaction still allocates a Parcel
  * and can back-pressure its caller, so the worker makes every call, under `runCatching`: a dead or
  * unresponsive owner costs the event and nothing else, and never the capture loop. Delivery order is the
- * queue's, which is the order the events happened.
+ * queue's: the order the producers' offers linearised in, which for one producer is the order it offered.
  *
- * Every event names its take ([beginTake]): the listener slot is the binding's and a new owner can register
- * while the previous take's ending is still queued, so the owner discards events that are not its take's.
+ * Every event names its take, passed by the caller at each publish (never read from a shared field, which a
+ * detector callback outliving its take would read as the NEXT take's): the listener slot is the binding's
+ * and a new owner can register while the previous take's ending is still queued, so the owner discards
+ * events that are not its take's.
+ *
+ * [close] is the end of delivery: an offer already entered when close is called is still delivered, and
+ * one entered after it is dropped by contract, never lost by a race (the worker leaves only once no offer
+ * is in flight and the queue is empty). After the service's destroy nothing about any take can change, and
+ * the owner's silence bound covers a take whose ending was never published.
  *
  * Every event is a limb. The take does not know this class exists.
  */
@@ -52,9 +60,9 @@ internal class TakeEventPublisher(
 
     private val queue = ConcurrentLinkedQueue<Event>()
     private val closed = AtomicBoolean(false)
+    /** Offers between their entry and their enqueue; the worker leaves only when this is zero after close. */
+    private val inFlight = AtomicInteger(0)
     @Volatile private var lastTickNanos = Long.MIN_VALUE
-    /** The take whose events the capture thread and the detector publish; set under the service's session lock at start. */
-    @Volatile private var currentTakeId = ""
     private val worker = Thread({ drain() }, "TakeEventPublisher").apply { isDaemon = true }
 
     /** Starts the worker; called once by the service's `onCreate`, before any event can be offered. */
@@ -62,9 +70,8 @@ internal class TakeEventPublisher(
         runCatching { worker.start() }.onFailure { DebugLogger.warn(tag, "Take events unavailable: ${it.javaClass.simpleName}") }
     }
 
-    /** A new take: its id on every event that follows, and the next positive read sends a heartbeat at once. */
-    fun beginTake(takeId: String) {
-        currentTakeId = takeId
+    /** A new take: the next positive read sends a heartbeat at once. */
+    fun resetTicks() {
         lastTickNanos = Long.MIN_VALUE
     }
 
@@ -72,28 +79,25 @@ internal class TakeEventPublisher(
      * Capture thread only, after each positive read. One primitive comparison; at most one event a second.
      * **Nothing here logs, locks, waits or calls across a process**; the allocation is the event and its node.
      */
-    fun offerTick(elapsedMs: Long) {
+    fun offerTick(takeId: String, elapsedMs: Long) {
         val now = nowNanos()
         val last = lastTickNanos
         // The sentinel is tested by identity: `now - Long.MIN_VALUE` overflows negative and would swallow
         // the first heartbeat of every take (found by TakeEventPublisherTest).
         if (last != Long.MIN_VALUE && now - last < TICK_INTERVAL_NANOS) return
         lastTickNanos = now
-        offer(Event.Tick(currentTakeId, elapsedMs))
+        offer(Event.Tick(takeId, elapsedMs))
     }
 
-    fun publishLive(forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) {
-        offer(Event.Live(currentTakeId, forced, routeKind, routeReason, liveAfterMs))
+    fun publishLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) {
+        offer(Event.Live(takeId, forced, routeKind, routeReason, liveAfterMs))
     }
 
-    fun publishSilenceStatus(status: Int) {
-        offer(Event.SilenceStatus(currentTakeId, status))
+    fun publishSilenceStatus(takeId: String, status: Int) {
+        offer(Event.SilenceStatus(takeId, status))
     }
 
-    /**
-     * The last thing the capture process does for a take. Exactly once per take is the CALLER's contract;
-     * [takeId] is passed explicitly because a refused start ends a take that never became [currentTakeId].
-     */
+    /** The last thing the capture process does for a take. Exactly once per take is the CALLER's contract. */
     fun publishEnded(
         takeId: String,
         terminalReason: Int,
@@ -106,29 +110,37 @@ internal class TakeEventPublisher(
         offer(Event.Ended(takeId, terminalReason, startFailure, audioFilePath.orEmpty(), silenceStatus, takePeakAmplitude, effectiveInputDevice.orEmpty()))
     }
 
-    /** Stops the worker after it has drained what is queued. Idempotent; never joined. */
+    /** Stops the worker once every offer already in flight is delivered. Idempotent; never joined. */
     fun close() {
         if (!closed.compareAndSet(false, true)) return
         LockSupport.unpark(worker)
     }
 
     private fun offer(event: Event) {
-        queue.offer(event)
-        // A permit, never a lock: an unpark before the worker parks makes its next park return at once,
-        // so an offer racing the worker's empty check cannot be lost.
-        LockSupport.unpark(worker)
+        // Entered BEFORE the closed check, so a close that lands in between still waits for this offer;
+        // an offer that finds the flag already set is dropped by contract (see the class KDoc).
+        inFlight.incrementAndGet()
+        try {
+            if (closed.get()) return
+            queue.offer(event)
+        } finally {
+            inFlight.decrementAndGet()
+            // A permit, never a lock: an unpark before the worker parks makes its next park return at
+            // once, so an offer racing the worker's empty check cannot be lost.
+            LockSupport.unpark(worker)
+        }
     }
 
     /**
      * Parked between events: no timer, no wake at idle (`architecture-rules.md` RULE: no-idle-cost). The
-     * unpark from an offer or from [close] is the only thing that wakes it; after close, what is still
-     * queued is delivered and the worker leaves.
+     * unpark from an offer or from [close] is the only thing that wakes it; after close, what is queued
+     * and what is still being offered is delivered, then the worker leaves.
      */
     private fun drain() {
         while (true) {
             val event = queue.poll()
             if (event == null) {
-                if (closed.get()) return
+                if (closed.get() && inFlight.get() == 0 && queue.isEmpty()) return
                 LockSupport.park(this)
                 continue
             }

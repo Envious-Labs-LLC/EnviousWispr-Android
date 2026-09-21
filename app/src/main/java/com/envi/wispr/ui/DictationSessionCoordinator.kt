@@ -505,6 +505,10 @@ internal class DictationSessionCoordinator(
             val id = takeId
             captureStarted = commandCapture("start") { capture ->
                 capture.listenForTake(takeListener)
+                // A registration that wedged and then returned: the silence bound may already have
+                // ended this take and released the binding, and a start now would record for nobody
+                // (review round 2, F1). Checked on the lane, before the start and again after it.
+                if (state.get() != SessionState.STARTING || takeId != id) return@commandCapture
                 val started = try {
                     capture.startCaptureForTake(
                         preferences.autoStopOnSilence,
@@ -524,6 +528,11 @@ internal class DictationSessionCoordinator(
                     // Every refused start publishes its own ending with the failure code (the #115 plan's
                     // table, one publisher per exit). Nothing is read here.
                     log.warn("Capture start refused; the ending event carries why")
+                } else if (state.get() != SessionState.STARTING || takeId != id) {
+                    // The take ended while the start was in flight: no owner is listening for it.
+                    log.warn("Capture started for a take that already ended; stopping it")
+                    runCatching { capture.stopCapture() }
+                    pipeline.stopAudioService()
                 }
             }
         } catch (error: Exception) {
@@ -547,7 +556,7 @@ internal class DictationSessionCoordinator(
             captureCommands.execute {
                 runCatching { block(capture) }.onFailure { log.warn("Capture command failed ($what): ${it.javaClass.simpleName}") }
             }
-        }.isSuccess
+        }.onFailure { log.warn("Capture command not issued ($what): ${it.javaClass.simpleName}") }.isSuccess
     }
 
     /**

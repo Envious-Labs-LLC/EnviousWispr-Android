@@ -13,7 +13,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Harness and Drift rows on the take-event publisher (#115): what leaves the audio process, in what order,
- * under which take's id, throttled by which clock, and what a dead owner costs. The listener is a JVM fake
+ * under which take's id (passed at every publish), throttled by which clock, what close still delivers, and
+ * what a dead owner costs. The listener is a JVM fake
  * of the AIDL interface (`android.jar` returns defaults, so `asBinder` may answer null here).
  */
 class TakeEventPublisherTest {
@@ -55,12 +56,12 @@ class TakeEventPublisherTest {
         // Elapsed is 0 before live, so a throttle by elapsed second would send exactly one heartbeat and
         // then starve the owner's bound (#115 plan review, round 2).
         recorder.expect(2)
-        publisher.beginTake("t1")
-        publisher.offerTick(0L)
+        publisher.resetTicks()
+        publisher.offerTick("t1", 0L)
         now.set(500_000_000L)
-        publisher.offerTick(0L)
+        publisher.offerTick("t1", 0L)
         now.set(TakeEventPublisher.TICK_INTERVAL_NANOS)
-        publisher.offerTick(0L)
+        publisher.offerTick("t1", 0L)
         recorder.await()
         assertEquals(listOf("t1:tick(0)", "t1:tick(0)"), recorder.events.toList())
     }
@@ -68,10 +69,10 @@ class TakeEventPublisherTest {
     @Test
     fun eventsArriveInTheOrderTheyHappenedUnderTheirTakesId() {
         recorder.expect(4)
-        publisher.beginTake("t1")
-        publisher.publishLive(false, 1, 2, 120L)
-        publisher.offerTick(1_000L)
-        publisher.publishSilenceStatus(AudioCaptureService.SILENCE_STATUS_READY)
+        publisher.resetTicks()
+        publisher.publishLive("t1", false, 1, 2, 120L)
+        publisher.offerTick("t1", 1_000L)
+        publisher.publishSilenceStatus("t1", AudioCaptureService.SILENCE_STATUS_READY)
         publisher.publishEnded("t1", AudioCaptureService.TERMINAL_REASON_MANUAL, AudioCaptureService.START_FAILURE_NONE, "/tmp/take.pcm", AudioCaptureService.SILENCE_STATUS_READY, 0.5f, "Phone microphone")
         recorder.await()
         assertEquals(
@@ -86,7 +87,6 @@ class TakeEventPublisherTest {
         // owner's start is refused as busy. The refusal is published under the REQUESTED id with nothing of
         // the previous take, and the previous take's ending, later, still carries ITS id.
         recorder.expect(2)
-        publisher.beginTake("t1")
         publisher.publishEnded("t2", AudioCaptureService.TERMINAL_REASON_NONE, AudioCaptureService.START_FAILURE_OTHER, null, AudioCaptureService.SILENCE_STATUS_DISABLED, 0f, null)
         publisher.publishEnded("t1", AudioCaptureService.TERMINAL_REASON_MANUAL, AudioCaptureService.START_FAILURE_NONE, "/tmp/take.pcm", AudioCaptureService.SILENCE_STATUS_READY, 0.5f, "Phone microphone")
         recorder.await()
@@ -104,8 +104,7 @@ class TakeEventPublisherTest {
         // The service closes the publisher at the end of onDestroy, after the take's ending was queued:
         // that ending is the owner's signal and must not die with the worker. Idempotent close.
         recorder.expect(2)
-        publisher.beginTake("t1")
-        publisher.publishSilenceStatus(AudioCaptureService.SILENCE_STATUS_READY)
+        publisher.publishSilenceStatus("t1", AudioCaptureService.SILENCE_STATUS_READY)
         publisher.publishEnded("t1", AudioCaptureService.TERMINAL_REASON_MANUAL, AudioCaptureService.START_FAILURE_NONE, "/tmp/take.pcm", AudioCaptureService.SILENCE_STATUS_READY, 0.5f, "Phone microphone")
         publisher.close()
         publisher.close()
@@ -114,12 +113,29 @@ class TakeEventPublisherTest {
     }
 
     @Test
+    fun anOfferAfterCloseIsDroppedByContractAndTheWorkerLeaves() {
+        // Review round 2, F3: close waits for offers already in flight (the sequential half of that is
+        // the row above); an offer entered AFTER close is dropped, never delivered late by a worker that
+        // already left. The take an event describes is over once the service is destroyed.
+        recorder.expect(1)
+        publisher.publishSilenceStatus("t1", AudioCaptureService.SILENCE_STATUS_READY)
+        publisher.close()
+        recorder.await()
+        // The worker's exit is the signal, read from the thread itself (a private field, read here by
+        // reflection so production keeps its "never joined" contract).
+        val worker = TakeEventPublisher::class.java.getDeclaredField("worker").apply { isAccessible = true }.get(publisher) as Thread
+        worker.join(10_000L)
+        check(!worker.isAlive) { "the worker did not leave after close" }
+        publisher.publishSilenceStatus("t1", AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY)
+        assertEquals(listOf("t1:silence(2)"), recorder.events.toList())
+    }
+
+    @Test
     fun aDeadOwnerCostsTheEventAndNothingElse() {
         recorder.throwOnce = true
         recorder.expect(2)
-        publisher.beginTake("t1")
-        publisher.publishSilenceStatus(AudioCaptureService.SILENCE_STATUS_READY)
-        publisher.publishSilenceStatus(AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY)
+        publisher.publishSilenceStatus("t1", AudioCaptureService.SILENCE_STATUS_READY)
+        publisher.publishSilenceStatus("t1", AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY)
         recorder.await()
         assertEquals("the second event was delivered after the first threw", listOf("t1:silence(4)"), recorder.events.toList())
     }

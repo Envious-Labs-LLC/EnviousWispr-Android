@@ -352,7 +352,7 @@ class AudioCaptureService : Service() {
                 return false
             }
             lastStartFailure = START_FAILURE_NONE
-            takeEvents.beginTake(takeId)
+            takeEvents.resetTicks()
 
             // Route ownership exists BEFORE the session, so every failure path below can release it.
             val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
@@ -450,7 +450,9 @@ class AudioCaptureService : Service() {
                         autoStop = detectorEnabled,
                         bind = DetectorFeed.bindingThrough(this),
                         unbind = DetectorFeed.unbindingThrough(this),
-                        onStatus = takeEvents::publishSilenceStatus,
+                        // The session's own id, captured here: a callback outliving its take must not
+                        // borrow the next take's (review round 2, F2).
+                        onStatus = { status -> takeEvents.publishSilenceStatus(takeId, status) },
                     ),
                     picture = PicturePublisher(spectrumListener, TAG),
                     route = takeRoute,
@@ -582,7 +584,7 @@ class AudioCaptureService : Service() {
                 if (bytesRead == 0) continue
                 // The heartbeat, live or not, BEFORE the gate branch: its arrival is liveness to the owner
                 // (#115). One primitive comparison here; the publisher's worker makes the binder call.
-                takeEvents.offerTick(if (active.liveVisible) SystemClock.elapsedRealtime() - active.route.liveAtMs else 0L)
+                takeEvents.offerTick(active.takeId, if (active.liveVisible) SystemClock.elapsedRealtime() - active.route.liveAtMs else 0L)
 
                 // Until the gate opens, a read feeds the gate and nothing else: not the file, not the
                 // detector, not the picture, not the level. The take's clock starts when the gate opens.
@@ -599,6 +601,7 @@ class AudioCaptureService : Service() {
                     active.liveVisible = true
                     val effective = lastEffective
                     takeEvents.publishLive(
+                        active.takeId,
                         active.route.gate.state == LiveGate.State.FORCED,
                         effective?.kind?.code ?: InputRouteKind.NONE.code,
                         effective?.reasonCode() ?: InputRouteReason.AUTO.code,
@@ -677,9 +680,10 @@ class AudioCaptureService : Service() {
     /**
      * Publish the first ending claimed for [active] and stop the loop.
      *
-     * The published reason must outlive [releaseSession], because the client polls `getTerminalReason`
-     * only AFTER `isCapturing` has gone false, by which point the session is gone. So the value lives on
-     * the service while the CLAIM lives on the session, and the claim is what makes it first-wins.
+     * The published reason outlives [releaseSession] on the service for the legacy `getTerminalReason`
+     * getter (append-only interface; no production caller since #115), while the CLAIM lives on the
+     * session and is what makes it first-wins. The owner learns the reason from the ending
+     * [releaseSession] pushes, never from the getter.
      */
     private fun claimEnding(active: CaptureSession, reason: Int): Boolean {
         if (!active.endingClaim.claim(reason)) return false

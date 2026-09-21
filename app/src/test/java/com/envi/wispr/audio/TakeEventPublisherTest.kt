@@ -81,6 +81,19 @@ class TakeEventPublisherTest {
     }
 
     @Test
+    fun closeDeliversWhatWasQueuedBeforeTheWorkerLeaves() {
+        // The service closes the publisher at the end of onDestroy, after the take's ending was queued:
+        // that ending is the owner's signal and must not die with the worker. Idempotent close.
+        recorder.expect(2)
+        publisher.publishSilenceStatus(AudioCaptureService.SILENCE_STATUS_READY)
+        publisher.publishEnded(AudioCaptureService.TERMINAL_REASON_MANUAL, AudioCaptureService.START_FAILURE_NONE, "/tmp/take.pcm", AudioCaptureService.SILENCE_STATUS_READY, 0.5f, "Phone microphone")
+        publisher.close()
+        publisher.close()
+        recorder.await()
+        assertEquals(listOf("silence(2)", "ended(${AudioCaptureService.TERMINAL_REASON_MANUAL},0,/tmp/take.pcm,2,0.5,Phone microphone)"), recorder.events.toList())
+    }
+
+    @Test
     fun aDeadOwnerCostsTheEventAndNothingElse() {
         recorder.throwOnce = true
         recorder.expect(2)

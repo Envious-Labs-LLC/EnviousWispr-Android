@@ -2,7 +2,6 @@ package com.envi.wispr.audio
 
 import com.envi.wispr.debug.DebugLogger
 import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -26,9 +25,6 @@ internal class TakeEventPublisher(
     companion object {
         /** Heartbeats are throttled by WALL-CLOCK second: elapsed is 0 before live and would send one. */
         const val TICK_INTERVAL_NANOS = 1_000_000_000L
-
-        /** How long the worker waits for the next event before re-checking whether it was closed. */
-        const val WORKER_POLL_MS = 250L
     }
 
     private sealed interface Event {
@@ -100,13 +96,23 @@ internal class TakeEventPublisher(
         worker.interrupt()
     }
 
+    /**
+     * Parked on the queue between events: no timer, no wake at idle (`architecture-rules.md` RULE:
+     * no-idle-cost). The interrupt from [close] is the only other thing that wakes it; after it, what is
+     * still queued is delivered without waiting and the worker leaves.
+     */
     private fun drain() {
-        while (!closed.get() || queue.isNotEmpty()) {
-            val event = try {
-                queue.poll(WORKER_POLL_MS, TimeUnit.MILLISECONDS) ?: continue
-            } catch (_: InterruptedException) {
-                // Closed: drain whatever is left without waiting, then leave.
-                queue.poll() ?: break
+        var closing = false
+        while (true) {
+            val event = if (closing) {
+                queue.poll() ?: return
+            } else {
+                try {
+                    queue.take()
+                } catch (_: InterruptedException) {
+                    closing = true
+                    continue
+                }
             }
             val target = listener.get() ?: continue
             runCatching {

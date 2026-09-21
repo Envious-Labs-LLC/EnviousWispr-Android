@@ -847,6 +847,9 @@ class AudioCaptureService : Service() {
         synchronized(sessionLock) { warmHoldOwner.close(WarmHold.END_DESTROYED) }
         // After the join: the capture thread's cleanup removed its listener; nothing else posts here.
         routeThread.quitSafely()
+        // After the join too: a take that ended above published its ending through this worker, which
+        // delivers what is queued and then leaves (#115). Never joined.
+        takeEvents.close()
         super.onDestroy()
     }
 }

@@ -1,7 +1,7 @@
 # Issue #188 — One lifetime owner per audio resource — 2026-09-21
 
 GitHub issue: `#188`. Tier: MEDIUM by the issue (audio capture, one service) and treated as REFACTOR for review
-depth: the diff moves about 700 lines across the capture thread's boundary. Status: APPROVED (coverage, grounded G1 to G7, PROCEED-AS-PLANNED 2026-09-21; Gate 2 under the founder's standing approval of technical decisions). Built 2026-09-21 in four chunks; deviations from the approved text are marked "corrected at build" in place.
+depth: the diff moves about 700 lines across the capture thread's boundary. Status: SHIPPED in PR #199 (coverage, grounded G1 to G7, PROCEED-AS-PLANNED 2026-09-21; Gate 2 under the founder's standing approval of technical decisions; code review rounds 1 to 3, ALL-CLEAR). Built 2026-09-21 in four chunks; deviations from the approved text are marked "corrected at build" in place.
 
 Consolidation: this plan is one document; §2.5 carries the evidence once and §§3 to 11 point back at it.
 
@@ -63,9 +63,9 @@ lands in the same file.
 ## 2. Goals & non-goals
 
 ### 2.1 Goals
-- G1. Four internal types in `audio/`, each with one idempotent `close()`: `TakeRoute` (proposed),
-  `DetectorFeed` (proposed) and `PicturePublisher` (proposed) (per take, closed from `releaseSession`, and again from `onDestroy` for a take still
-  open) and `WarmHoldOwner` (proposed) (service-scoped, closed from `onDestroy`).
+- G1. Four internal types in `audio/`, each with one idempotent `close()`: `TakeRoute`,
+  `DetectorFeed` and `PicturePublisher` (per take, closed from `releaseSession`, and again from `onDestroy` for a take still
+  open) and `WarmHoldOwner` (service-scoped, closed from `onDestroy`).
 - G2. `AudioCaptureService` keeps the binder, `CaptureSession`, `startRecording`, `captureLoop`,
   `claimEnding`/`endTake`/`endTakeLocked`/`releaseSession`, `closeResources` for the record and file,
   `waitForFileReady`, `onDestroy`. Nothing else.
@@ -161,7 +161,7 @@ forwarded to the detector. #114 and #115 are open and land in this file. The aud
   The deadline, the VAD connection, the feeder and the analyser decide "am I still the live take" by
   `session === active` under `sessionLock` or by `stopRequested` (the routing listener uses
   `RouteHold.isReleased`; the sink and `markLive` callbacks only capture their take); an extracted type must not grow its own lock or its own
-  notion of session liveness: it receives `stillLive` (proposed), as `stillLive: () -> Boolean`
+  notion of session liveness: it receives `stillLive`, as `stillLive: () -> Boolean`
   (evaluated by the caller under the service's lock where the original did) and never reads the session
   slot. The three `warmHold === hold` checks are the hold's own identity, not the session's; they stay
   inside `WarmHoldOwner` and execute through `locked`. Where the original ran a block under `sessionLock` inside a callback (the
@@ -169,7 +169,7 @@ forwarded to the detector. #114 and #115 are open and land in this file. The aud
   Unit) -> Unit` runner from the service so the same lock is held.
 - **Ending a take is the service's.** The deadline calls `endTakeLocked` and writes `lastStartFailure`
   (`:839-841`); the feeder calls `endTake(active, SILENCE)` (`:1179`). `TakeRoute` receives
-  `onRefused` and `DetectorFeed` receives `endOnSilence` (proposed), each `() -> Unit`; they never hold a
+  `onRefused` and `DetectorFeed` receives `endOnSilence`, each `() -> Unit`; they never hold a
   reference to the service.
 - **The capture thread's contract survives the move.** `DetectorFeed.offer` and `PicturePublisher.offer`
   are the moved bodies of `offerToDetector` and lines `:920-921`; a source guard proves each body
@@ -220,7 +220,7 @@ fields named in §2.5.1 with the service's identity and lock decisions passed in
    (`offerToDetector`), `start(context, pauseSeconds, token, takeId, isCurrent, stillLive, endOnSilence)`
    (`startSilenceDetection` + `vadConnectionFor` + `feederLoop`), `abandon()`, `status: Int`,
    `close(context)` (abandon, interrupt, unbind; idempotent). Two liveness lambdas, because the code has
-   two checks: `isCurrent` (proposed), `isCurrent = { session === active }`, for `onServiceConnected` (`:307-310`) and
+   two checks: `isCurrent`, `isCurrent = { session === active }`, for `onServiceConnected` (`:307-310`) and
    `stillLive = { session === active && !active.stopRequested }` for the feeder (`:1116-1125`);
    `endOnSilence` is `{ endTake(active, SILENCE) }` (`:1179`).
 3. **`TakeRoute`** (proposed, per take): fields `hold: RouteHold`, `resolved: ResolvedRoute` (moved
@@ -229,22 +229,22 @@ fields named in §2.5.1 with the service's identity and lock decisions passed in
    write it; the capture loop `:874-875` and the binder read `active.route.liveAtMs`), the routing
    listener reference (moved from the service-local `routingListener` at `:471-475`, so the `RouteHold`
    remover is built by `TakeRoute`'s factory against the reference it owns), and `startedAtMs` received
-   at construction; `admissible()`, `applyPreferred(record)`, `registerListener` (proposed) as
+   at construction; `admissible()`, `applyPreferred(record)`, `registerListener` as
    `registerListener(record, handler, bytesWritten: () -> Long)` (the callback's log names the take's
    byte count, `:736`), `observeFinal(record)`, `watchSink(audioManager, handler)`, `markLive(handler)`,
-   `armDeadline(handler, locked, stillWaiting, onRefused)` where `stillWaiting` (proposed) is
+   `armDeadline(handler, locked, stillWaiting, onRefused)` where `stillWaiting` is
    `{ session === active && isRecording.get() && gate.state == WAITING }` under the service's lock and
-   `onRefused` (proposed) is `{ lastStartFailure = START_FAILURE_EARBUDS; endTakeLocked(active, ERROR) }`,
+   `onRefused` is `{ lastStartFailure = START_FAILURE_EARBUDS; endTakeLocked(active, ERROR) }`,
    `reset(audioManager)`, `close(handler, audioManager, keepRoute)` (deadline removed, sink watch
    unregistered, hold released or listener-only; idempotent). `resolveRoute` becomes
    `TakeRoute.resolve(...)` in its companion, the one function that runs before the session exists.
 4. **`WarmHoldOwner`** (proposed, on the service): the six fields; `handOver(): HandedRoute?`,
    `eligible(route, ending, keepEarbudsReady, destroyed)` (`keepEarbudsReady` stays on `CaptureSession`
    and is passed, `:148`, `:1365`), `start(route, sink, label, audioManager, handler, locked)`,
-   `keepAlive` (proposed), as `keepAlive()` (calls the injected `startService`, `:1447`), and one idempotent `close(reason)`
-   (proposed), the sole shutdown entry, which replaces the two `onDestroy` calls at `:1540` and `:1565`;
+   `keepAlive`, as `keepAlive()` (calls the injected `startService`, `:1447`), and one idempotent `close(reason)`
+  , the sole shutdown entry, which replaces the two `onDestroy` calls at `:1540` and `:1565`;
    `onHoldEnded`'s log and `clearHoldBookkeeping` are internal to the owner, and the one decision that
-   crosses ownership, service lifetime, is the injected `onIdle` (proposed), `onIdle = { if (session == null) stopSelf() }`
+   crosses ownership, service lifetime, is the injected `onIdle`, `onIdle = { if (session == null) stopSelf() }`
    called for every end except `END_NEW_TAKE` (`:1420`).
 
 `CaptureSession` keeps `record`, `file`, `output`, `startedAtMs`, `readBuffer`, `token`, `takeId`,
@@ -355,14 +355,15 @@ is untouched (`architecture-rules.md` FACT: heart-and-limbs).
 - `app/src/test/java/com/envi/wispr/audio/CaptureThreadPathTest.kt` (proposed, new): the allocation-free guard over the two `offer` bodies and `captureLoop`.
 - `app/src/test/java/com/envi/wispr/audio/AudioLimbCloseTest.kt` (new): the twice-close rows with fakes for the platform edges.
 - `app/src/test/java/com/envi/wispr/audio/AudioServiceShapeTest.kt` (proposed, new): the service declares none of the moved functions; each new type declares exactly one `close`; the identity checks live in the service only.
-- `docs/audits/2026-09-21-188-revert-receipts.txt` (proposed).
+- `docs/audits/2026-09-21-188-revert-receipts.txt`.
 - `.claude/knowledge/architecture.md` FACT: source-map, the `audio/` row names the four owners.
+- Names the build deleted from `AudioCaptureService.kt` (their bodies live in the four owners): `abandonDetector` (removed), `applyPreferredDevice` (removed), `holdEligible` (removed), `observeFinalRoute` (removed), `offerToDetector` (removed), `registerRoutingListener` (removed), `resetCommunicationDevice` (removed), `routeAdmissible` (removed), `spectrumPolls` (removed), `spectrumPushes` (removed), `startSilenceDetection` (removed), `startSpectrumAnalysis` (removed), `startWarmHold` (removed), `vadConnectionFor` (removed).
 
 ## 11. Testing
 
-1. **Classes.** The repointed rows keep their declared class (Drift Guards). `CaptureThreadPathTest` (proposed):
+1. **Classes.** The repointed rows keep their declared class (Drift Guards). `CaptureThreadPathTest`:
    Drift Guard (source text; when it fails a future edit put an allocation or a log on the capture thread,
-   which the user feels as dropped audio). `AudioServiceShapeTest` (proposed): Drift Guard. Product coverage stays
+   which the user feels as dropped audio). `AudioServiceShapeTest`: Drift Guard. Product coverage stays
    the device rows and the pass.
 2. **Reverts.** Named in §11.2, each performed once and seen red.
 3. **Not tested.** JVM construction of the service (impossible off the phone); the earbud cells on
@@ -393,11 +394,11 @@ is untouched (`architecture-rules.md` FACT: heart-and-limbs).
 | Test | Class | Proves | Revert that turns it red |
 |---|---|---|---|
 | every repointed row in the five guards | Drift Guard | the moved text is where the plan says | move one function back into the service |
-| `theCaptureThreadOffersAndNeverWaits` (proposed) in `CaptureThreadPathTest` | Drift Guard | `captureLoop` calls `detector.offer` and `picture.offer` and nothing else of the limbs; the two `offer` bodies contain no `ByteArray(`, `DebugLogger`, `synchronized`, `Thread.sleep`, `.transact`, `remote.` or string template | add a `DebugLogger.log` to `DetectorFeed.offer` |
-| `everyLimbIsClosedWhereEveryEndingReaches` (proposed) in `AudioServiceShapeTest` | Drift Guard | `releaseSession` calls `route.close`, `detector.close`, `picture.close`; `onDestroy` calls the same three and `warmHoldOwner.close(WarmHold.END_DESTROYED)` | drop `picture.close()` from `releaseSession` |
+| `theCaptureThreadOffersAndNeverWaits` in `CaptureThreadPathTest` | Drift Guard | `captureLoop` calls `detector.offer` and `picture.offer` and nothing else of the limbs; the two `offer` bodies contain no `ByteArray(`, `DebugLogger`, `synchronized`, `Thread.sleep`, `.transact`, `remote.` or string template | add a `DebugLogger.log` to `DetectorFeed.offer` |
+| `everyLimbIsClosedWhereEveryEndingReaches` in `AudioServiceShapeTest` | Drift Guard | `releaseSession` calls `route.close`, `detector.close`, `picture.close`; `onDestroy` calls the same three and `warmHoldOwner.close(WarmHold.END_DESTROYED)` | drop `picture.close()` from `releaseSession` |
 | the four `closing…Twice…Once` rows in `AudioLimbCloseTest`, one per owner, a JVM suite (built as four rows so a red names the owner; needs `unitTests.isReturnDefaultValues` in `app/build.gradle.kts` because the owners subclass `AudioDeviceCallback`, whose SDK stub constructor throws, and the cost is disclosed in the gradle comment) | Harness Contract | the subjects are the four REAL owner classes; the fakes are constructor-injected operations for every platform edge (`post`/`remove` on the handler, `unbind`, `unregister`, `release`, `interrupt`), each armed to count, and `close` is called twice; every operation counts exactly one | remove the owner's close guard while leaving an armed fake cleanup reference reachable, so its count becomes two (a nulled field or an idempotent platform object cannot mask it because the fake counts calls, not effects) |
-| `theServiceKeepsOnlyTheSessionAndTheBinder` (proposed) in `AudioServiceShapeTest` | Drift Guard | the service declares NONE of the functions and fields enumerated in §2.5.1 for the four lifecycles (the full list, generated from that section); each new type declares exactly one `fun close(`; `session ===`/`session !==` appear in the service only | move any one back |
-| `everyLogTemplateAndThreadNameSurvivesTheMove` (proposed) in `AudioServiceShapeTest` | Observability Contract | the multiset of `DebugLogger.<level>(TAG, "..."` templates and of `Thread(..., "<name>")` AND `HandlerThread("<name>")` literals (so `AudioRouteThread` `:334` is in it) across `audio/AudioCaptureService.kt` and the four new files equals the multiset captured from `2ed2cdf` (a literal list in the test) | drop or reword one template |
+| `theServiceKeepsOnlyTheSessionAndTheBinder` in `AudioServiceShapeTest` | Drift Guard | the service declares NONE of the functions and fields enumerated in §2.5.1 for the four lifecycles (the full list, generated from that section); each new type declares exactly one `fun close(`; `session ===`/`session !==` appear in the service only | move any one back |
+| `everyLogTemplateAndThreadNameSurvivesTheMove` in `AudioServiceShapeTest` | Observability Contract | the multiset of `DebugLogger.<level>(TAG, "..."` templates and of `Thread(..., "<name>")` AND `HandlerThread("<name>")` literals (so `AudioRouteThread` `:334` is in it) across `audio/AudioCaptureService.kt` and the four new files equals the multiset captured from `2ed2cdf` (a literal list in the test) | drop or reword one template |
 | `theCaptureThreadOffersAndNeverWaits` (forbidden tokens widened) | Drift Guard | as above plus `bindService(` and `unbindService(` in `captureLoop` and the two `offer` bodies | add a `bindService` to `DetectorFeed.offer` |
 
 ## 12. Blast radius & rollback

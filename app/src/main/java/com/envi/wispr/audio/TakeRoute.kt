@@ -262,8 +262,8 @@ internal class TakeRoute(
      * sound on the earbuds (FORCED), or, when the observed route is the phone with earbuds connected,
      * fail the take rather than record from the phone.
      *
-     * [locked] runs its block under the service's session lock; [stillWaiting] is the service's
-     * `session === active && isRecording && gate WAITING` check, evaluated inside it; [onRefused] is the
+     * [locked] runs its block under the service's session lock; [stillWaiting] is the service's check
+     * that this take is still the live one, recording, with the gate WAITING, evaluated inside it; [onRefused] is the
      * service's failure of the take (its `lastStartFailure` and `endTakeLocked`).
      */
     fun armDeadline(

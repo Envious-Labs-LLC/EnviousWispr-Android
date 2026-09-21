@@ -16,6 +16,8 @@ import java.io.File
 class SilenceStopWiringTest {
 
     private val service = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
+    /** Since #188 the ring, the staging, the feeder and the detector binding are one owner per take. */
+    private val feed = File("src/main/java/com/envi/wispr/audio/DetectorFeed.kt").readText()
     private val aidl = File("src/main/aidl/com/envi/wispr/audio/IAudioCaptureService.aidl").readText()
     private val manifest = File("src/main/AndroidManifest.xml").readText()
 
@@ -24,6 +26,15 @@ class SilenceStopWiringTest {
         assertTrue("$signature must exist", start >= 0)
         val end = service.indexOf("\n    private fun ", start + 1)
         return service.substring(start, if (end > start) end else service.length)
+    }
+
+    /** One member of the feed, whose members each carry a KDoc and are mostly public. */
+    private fun feedBody(signature: String): String {
+        val start = feed.indexOf(signature)
+        assertTrue("$signature must exist in DetectorFeed", start >= 0)
+        val end = listOf("\n    /**", "\n    private fun ", "\n    fun ")
+            .map { feed.indexOf(it, start + 1) }.filter { it > start }.minOrNull() ?: feed.length
+        return feed.substring(start, end)
     }
 
     @Test
@@ -65,7 +76,8 @@ class SilenceStopWiringTest {
         // The capture thread may not block, allocate, log on the hot path, or make a binder call. It
         // copies into a slot it already owns and moves on.
         val loop = bodyOf("private fun captureLoop(")
-        val offer = bodyOf("private fun offerToDetector(")
+        val offer = feedBody("fun offer(buffer: ByteArray, bytesRead: Int, position: Long)")
+        assertTrue("the capture thread hands every read to the feed", loop.contains("active.detector.offer(buffer, bytesRead, position)"))
         listOf(loop, offer).forEach { body ->
             assertFalse("no binder call on the capture thread", body.contains("vadService"))
             assertFalse("no bind on the capture thread", body.contains("bindService"))
@@ -80,13 +92,13 @@ class SilenceStopWiringTest {
         // Resuming after dropped audio breaks the model's recurrent continuity, so speech that resumed
         // inside the gap could read as silence. The flag is what the feeder actually reads: setting a
         // status the feeder never checks would look like giving up while still processing stale blocks.
-        val offer = bodyOf("private fun offerToDetector(")
-        assertTrue(offer.contains("if (!ring.offer(pending, READ_BLOCK_BYTES, active.pendingPosition)) {"))
-        assertTrue("the flag the feeder reads, not a status it ignores", offer.contains("abandonDetector(active)"))
-        assertTrue("and it stops feeding immediately", offer.contains("if (active.detectorAbandoned.get()) return"))
+        val offer = feedBody("fun offer(buffer: ByteArray, bytesRead: Int, position: Long)")
+        assertTrue(offer.contains("if (!ring.offer(pending, READ_BLOCK_BYTES, pendingPosition)) {"))
+        assertTrue("the flag the feeder reads, not a status it ignores", offer.contains("abandon()"))
+        assertTrue("and it stops feeding immediately", offer.contains("if (detectorAbandoned.get()) return"))
 
-        val feeder = bodyOf("private fun feederLoop(")
-        assertTrue("the feeder checks the flag", feeder.contains("active.detectorAbandoned.get()"))
+        val feeder = feedBody("private fun feederLoop(")
+        assertTrue("the feeder checks the flag", feeder.contains("detectorAbandoned.get()"))
         assertTrue("after every remote call, because a gap can open while one is in flight",
             feeder.contains("if (shouldStop()) return"))
     }
@@ -96,12 +108,12 @@ class SilenceStopWiringTest {
         // Android reconnects a disconnected binding on its own. Unbinding explicitly is what stops it
         // reconnecting into a take that already gave up on the detector.
         listOf("onServiceConnected", "onServiceDisconnected", "onNullBinding", "onBindingDied")
-            .forEach { assertTrue("$it must be handled", service.contains("override fun $it(")) }
+            .forEach { assertTrue("$it must be handled", feed.contains("override fun $it(")) }
 
-        val died = service.substringAfter("override fun onBindingDied(").substringBefore("}")
-        val nulled = service.substringAfter("override fun onNullBinding(").substringBefore("}")
-        assertTrue("a dead binding unbinds", died.contains("unbindVad(active)"))
-        assertTrue("a null binding unbinds", nulled.contains("unbindVad(active)"))
+        val died = feed.substringAfter("override fun onBindingDied(").substringBefore("}")
+        val nulled = feed.substringAfter("override fun onNullBinding(").substringBefore("}")
+        assertTrue("a dead binding unbinds", died.contains("unbindVad()"))
+        assertTrue("a null binding unbinds", nulled.contains("unbindVad()"))
     }
 
     @Test
@@ -109,10 +121,12 @@ class SilenceStopWiringTest {
         // The connection is built per take and closes over it, so a late callback has something to
         // compare against. A service-wide connection has nothing, and would clear the live take's
         // status or unbind its detector.
-        assertTrue(service.contains("private fun vadConnectionFor(active: CaptureSession)"))
-        val connected = service.substringAfter("override fun onServiceConnected(").substringBefore("override fun onServiceDisconnected(")
-        assertTrue("a late connection refuses and unbinds", connected.contains("if (session !== active)"))
-        assertTrue(connected.contains("unbindVad(active)"))
+        assertTrue(feed.contains("private fun connectionFor(isCurrent: () -> Boolean)"))
+        val connected = feed.substringAfter("override fun onServiceConnected(").substringBefore("override fun onServiceDisconnected(")
+        assertTrue("a late connection refuses and unbinds", connected.contains("if (!isCurrent())"))
+        assertTrue(connected.contains("unbindVad()"))
+        assertTrue("and the identity it asks is the service's own take check",
+            bodyOf("private fun startRecording(").contains("isCurrent = { session === newSession },"))
     }
 
     @Test
@@ -121,8 +135,10 @@ class SilenceStopWiringTest {
         // does not unblock it, so any join here would charge the user for the detector's problem.
         val release = bodyOf("private fun releaseSession(")
         assertFalse("no join of any kind on the teardown path", release.contains(".join("))
-        assertTrue("the file closes first", release.indexOf("closeResources(active)") < release.indexOf("detectorAbandoned"))
-        assertTrue("then the feeder is told to stop and abandoned", release.contains("active.feederThread?.interrupt()"))
+        assertTrue("the file closes first", release.indexOf("closeResources(active, keepRoute = holding)") < release.indexOf("active.detector.close()"))
+        val close = feedBody("fun close()")
+        assertFalse("and the feed's close joins nothing either", close.contains(".join("))
+        assertTrue("then the feeder is told to stop and abandoned", close.contains("detectorAbandoned.set(true)") && close.contains("interrupt(it)"))
     }
 
     @Test
@@ -130,11 +146,12 @@ class SilenceStopWiringTest {
         // Checking the session and THEN ending "the current one" leaves a window in which the old take
         // finishes and a new one starts, and the stale result stops the new recording. The name of the
         // take travels with the request instead, and is re-checked under the same lock that ends it.
-        val feeder = bodyOf("private fun feederLoop(")
-        assertTrue("the ending names its take", feeder.contains("endTake(active, TERMINAL_REASON_SILENCE)"))
-        assertFalse("never end whatever happens to be current", feeder.contains("if (session === active) endTake("))
-        assertTrue("and the token travels with every call", feeder.contains("remote.processBlock(active.token, block)"))
-        assertTrue(feeder.contains("remote.start(active.token, pauseSeconds)"))
+        val feeder = feedBody("private fun feederLoop(")
+        assertTrue("the ending is the injected decision, which names its take", feeder.contains("endOnSilence()"))
+        assertTrue(bodyOf("private fun startRecording(").contains("endOnSilence = { endTake(newSession, TERMINAL_REASON_SILENCE) },"))
+        assertFalse("never end whatever happens to be current", feeder.contains("session === ") && feeder.contains("endTake("))
+        assertTrue("and the token travels with every call", feeder.contains("remote.processBlock(token, block)"))
+        assertTrue(feeder.contains("remote.start(token, pauseSeconds)"))
 
         val endTake = bodyOf("private fun endTake(expected: CaptureSession")
         assertTrue("the identity check and the claim share one hold of the lock",
@@ -183,20 +200,21 @@ class SilenceStopWiringTest {
         assertTrue(start.contains("it <= SilenceStopDetector.MAX_PAUSE_SECONDS"))
         assertTrue("requested is not the same as enabled", start.contains("val detectorEnabled = autoStopOnSilence && validPause != null"))
         assertTrue("and the user is told, because they asked for it and cannot have it",
-            start.contains("newSession.silenceStatus.set(SILENCE_STATUS_UNAVAILABLE)"))
-        assertTrue("no detector is built for a refused request", start.contains("if (detectorEnabled) startSilenceDetection("))
+            start.contains("newSession.detector.markRequestedButRefused()") &&
+                feedBody("fun markRequestedButRefused()").contains("silenceStatus.set(AudioCaptureService.SILENCE_STATUS_UNAVAILABLE)"))
+        assertTrue("no detector is built for a refused request", start.contains("if (detectorEnabled) {\n                    newSession.detector.start("))
     }
 
     @Test
     fun losingTheDetectorAfterItWorkedIsSilentButLosingItBeforeIsNot() {
         // Both are "unavailable" to the code. Only one is worth interrupting someone for: a take that
         // never got a detector, versus a take whose recording is still perfectly correct.
-        val abandon = bodyOf("private fun abandonDetector(")
-        assertTrue(abandon.contains("SILENCE_STATUS_READY -> SILENCE_STATUS_LOST_AFTER_READY"))
+        val abandon = feedBody("fun abandon()")
+        assertTrue(abandon.contains("AudioCaptureService.SILENCE_STATUS_READY -> AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY"))
         assertTrue("and the first landing wins, so a second failure cannot rewrite it",
             abandon.contains("compareAndSet(previous, next)"))
         assertTrue("an already-terminal status is left alone",
-            abandon.contains("SILENCE_STATUS_UNAVAILABLE,\n                SILENCE_STATUS_LOST_AFTER_READY -> return"))
+            abandon.contains("AudioCaptureService.SILENCE_STATUS_UNAVAILABLE,\n                AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY -> return"))
 
         val notice = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
         assertTrue("only the never-became-available status speaks",
@@ -218,7 +236,7 @@ class SilenceStopWiringTest {
     fun theCaptureThreadDoesNotLogWhenTheDetectorFallsBehind() {
         // Logging is work, and the capture thread must do none that can make it late. The feeder does
         // the reporting, off this thread.
-        val offer = bodyOf("private fun offerToDetector(")
+        val offer = feedBody("fun offer(buffer: ByteArray, bytesRead: Int, position: Long)")
         assertFalse(offer.contains("DebugLogger"))
     }
 
@@ -234,9 +252,10 @@ class SilenceStopWiringTest {
         val start = bodyOf("private fun startRecording(")
         // detectorEnabled requires autoStopOnSilence, so the switch being off is sufficient on its own.
         assertTrue(start.contains("val detectorEnabled = autoStopOnSilence &&"))
-        assertTrue(start.contains("if (detectorEnabled) startSilenceDetection("))
-        assertTrue(start.contains("ring = if (detectorEnabled) BlockRing(RING_BLOCKS, READ_BLOCK_BYTES) else null"))
-        assertTrue(start.contains("pendingBlock = if (detectorEnabled) ByteArray(READ_BLOCK_BYTES) else null"))
+        assertTrue(start.contains("if (detectorEnabled) {\n                    newSession.detector.start("))
+        assertTrue("the feed is told the switch's state at construction", start.contains("autoStop = detectorEnabled,"))
+        assertTrue(feed.contains("private val ring: BlockRing? = if (autoStop) BlockRing(RING_BLOCKS, READ_BLOCK_BYTES) else null"))
+        assertTrue(feed.contains("private val pendingBlock: ByteArray? = if (autoStop) ByteArray(READ_BLOCK_BYTES) else null"))
     }
 
     @Test

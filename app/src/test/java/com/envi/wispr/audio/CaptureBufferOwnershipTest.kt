@@ -17,6 +17,10 @@ class CaptureBufferOwnershipTest {
 
     private val source =
         File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
+    private val detectorFeed =
+        File("src/main/java/com/envi/wispr/audio/DetectorFeed.kt").readText()
+    private val pcmAudio =
+        File("src/main/java/com/envi/wispr/audio/PcmAudio.kt").readText()
 
     private fun captureLoopBody(): String {
         val start = source.indexOf("private fun captureLoop(")
@@ -50,8 +54,8 @@ class CaptureBufferOwnershipTest {
             8_192,
         )
         assertTrue(
-            "the detector block is a named constant, not a literal at the call site",
-            source.contains("private const val READ_BLOCK_BYTES = 8_192"),
+            "the detector block is a named constant on the feed, not a literal at the call site (#188)",
+            detectorFeed.contains("const val READ_BLOCK_BYTES = 8_192"),
         )
     }
 
@@ -61,18 +65,22 @@ class CaptureBufferOwnershipTest {
         // syllable (#151). The detector still receives whole 256 ms blocks, staged from eight reads,
         // so shrinking the read while keeping the block constant is exactly what must be true here and
         // exactly what the block test above cannot see on its own.
-        assertTrue(source.contains("private const val READ_CHUNK_BYTES = 1_024"))
+        assertTrue(
+            "the read chunk is the audio format's constant, shared by the service and the picture (#188)",
+            pcmAudio.contains("const val READ_CHUNK_BYTES = 1_024"),
+        )
         assertTrue(
             "the session's read buffer is one chunk",
-            source.contains("readBuffer = ByteArray(READ_CHUNK_BYTES),"),
+            source.contains("readBuffer = ByteArray(PcmAudio.READ_CHUNK_BYTES),"),
         )
         assertFalse(
             "and never the detector block",
-            source.contains("readBuffer = ByteArray(READ_BLOCK_BYTES),"),
+            source.contains("readBuffer = ByteArray(DetectorFeed.READ_BLOCK_BYTES),"),
         )
         assertTrue(
-            "the detector ring and its staging keep the block",
-            source.contains("BlockRing(RING_BLOCKS, READ_BLOCK_BYTES)") && source.contains("pendingBlock = if (detectorEnabled) ByteArray(READ_BLOCK_BYTES)"),
+            "the detector ring and its staging keep the block, inside the feed (#188)",
+            detectorFeed.contains("if (autoStop) BlockRing(RING_BLOCKS, READ_BLOCK_BYTES) else null") &&
+                detectorFeed.contains("if (autoStop) ByteArray(READ_BLOCK_BYTES) else null"),
         )
     }
 
@@ -99,7 +107,7 @@ class CaptureBufferOwnershipTest {
     fun theRealBufferNumbersAreLoggedRatherThanAssumed() {
         // Whether the one-second floor binds cannot be settled from source, so the phone answers it.
         assertTrue(
-            source.contains("Buffer sizes: minimum=\$minimum coerced=\$coerced read=\$READ_CHUNK_BYTES block=\$READ_BLOCK_BYTES"),
+            source.contains("Buffer sizes: minimum=\$minimum coerced=\$coerced read=\${PcmAudio.READ_CHUNK_BYTES} block=\${DetectorFeed.READ_BLOCK_BYTES}"),
         )
         assertTrue(
             "and what Android actually allocated, which can exceed what was requested",

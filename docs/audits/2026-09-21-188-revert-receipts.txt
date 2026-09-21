@@ -29,3 +29,8 @@ R7 the hold's expiry is never removed: app/src/main/java/com/envi/wispr/audio/Wa
   test: com.envi.wispr.audio.AudioLimbCloseTest.closingTheWarmHoldTwiceEndsItOnce -> RED
   message: java.lang.AssertionError: the expiry is removed once expected:<1> but was:<0>
 
+
+R8 take the route clock before the recorder starts: app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt
+  test: com.envi.wispr.audio.LiveGateWiringTest.theBinderReportsReadyOnlyAfterTheFirstSavedByte -> RED
+  message: java.lang.AssertionError: the recorder starts before its route clock is captured, as before #188
+

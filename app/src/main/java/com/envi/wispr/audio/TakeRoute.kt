@@ -162,17 +162,17 @@ internal class TakeRoute(
     @Volatile private var deadline: Runnable? = null
     private val closed = AtomicBoolean(false)
 
-    /**
-     * Only a Bluetooth target, or any explicit pick, names a preferred device; Auto on wired, USB or the
-     * phone leaves today's behaviour untouched. A refusal is recorded and the take proceeds on whatever
-     * Android routes, reported truthfully by `routedDevice`, never by the target.
-     */
     /** Once, after `record.startRecording()` returned. */
     fun markRecorderStarted(atMs: Long) {
         check(startedAtMs == 0L) { "the recorder start was already marked" }
         startedAtMs = atMs
     }
 
+    /**
+     * Only a Bluetooth target, or any explicit pick, names a preferred device; Auto on wired, USB or the
+     * phone leaves today's behaviour untouched. A refusal is recorded and the take proceeds on whatever
+     * Android routes, reported truthfully by `routedDevice`, never by the target.
+     */
     fun applyPreferred(record: AudioRecord) {
         if (!resolved.needsBluetooth && resolved.reason != InputRouteReason.PICKED) return
         val accepted = runCatching { record.setPreferredDevice(resolved.info) }.getOrDefault(false)

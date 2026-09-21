@@ -44,34 +44,24 @@ class SessionOwnerShapeTest {
      * three named regions stays green when a fourth file reaches the pin through a helper): the owner's
      * one call inside `beginSession`, the gateway's delegation, and the companion's call into the
      * private pin. Any other file, or a second call in these, fails.
+     *
+     * Calls are read from CODE only, through [codeOnly]: rounds 2 to 4 each found a comment-or-string
+     * shape the previous text cut misread (a KDoc naming the call; a block-comment opener inside a string swallowing the
+     * code after it; a `//` inside a URL string truncating the line), so the cut is replaced by the
+     * closed list of Kotlin lexical states rather than a fourth patch.
      * REVERT: restore `PasteAccessibilityService.pinTargetForDictation()` in the launcher, or
-     * `pinTarget()` in `startDictationFromBubble`.
+     * `pinTarget()` in `startDictationFromBubble`; receipts R5 and R6 do so behind a block-comment-opener string and a
+     * `//` string and the row stays red.
      */
     @Test
     fun onlyTheOwnerPinsTheTarget() {
         val callSites = File("src/main/java").walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .flatMap { file ->
-                // Block comments are cut first (a KDoc naming the call is prose, not a call; Codex code
-                // review round 2), then each line's `//` tail. The cut is a lazy regex, so a `/*` inside
-                // a string literal would swallow code up to the next `*/` and hide a restored pin call
-                // SILENTLY (round 3). Zero such strings exist in `app/src/main` (measured 2026-09-21), so
-                // the trap is armed as a LOUD refusal instead of a scanner: a line that opens a string
-                // and then a block comment fails this row by name. A `/*` on a later line of a
-                // multi-line raw string is outside this refusal.
-                val text = file.readText()
-                text.lines().forEachIndexed { index, line ->
-                    val code = line.substringBefore("//")
-                    assertFalse(
-                        "${file.name}:${index + 1} opens a string literal that contains /*; this row's comment cut cannot read it",
-                        Regex("\"[^\"]*/\\*[^\"]*\"|\"\"\".*/\\*").containsMatchIn(code.replace(Regex("""/\*.*?\*/"""), "")),
-                    )
-                }
-                text.replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), "")
-                    .lines().asSequence().mapIndexedNotNull { index, line ->
+                codeOnly(file.readText()).lines().asSequence().mapIndexedNotNull { index, line ->
                     // A declaration is not a call; the gateway declares AND calls on one line, so the
                     // declaration is cut out and whatever call remains counts.
-                    val code = line.substringBefore("//").replace(Regex("""\bfun\s+pinTarget(ForDictation)?\([^)]*\)"""), "")
+                    val code = line.replace(Regex("""\bfun\s+pinTarget(ForDictation)?\([^)]*\)"""), "")
                     val isCall = code.contains("pinTargetForDictation(") || code.contains("pinTarget(")
                     if (isCall) "${file.name}:${index + 1}" else null
                 }
@@ -83,10 +73,91 @@ class SessionOwnerShapeTest {
             callSites.map { it.substringBefore(":") }.sorted(),
         )
 
-        val coordinator = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        val coordinator = codeOnly(File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText())
         val beginSession = coordinator.substring(coordinator.indexOf("private fun beginSession("))
             .let { it.substring(0, it.indexOf("\n    private fun ")) }
         assertTrue("the owner's one call is inside beginSession", beginSession.contains(".pinTargetForDictation()"))
+    }
+
+    /**
+     * Drift Guard on [codeOnly] itself, with literal expectations: each lexical state blanked, code kept,
+     * newlines kept so line numbers hold. REVERT: drop the `str` state's `//` handling; the URL row fails.
+     */
+    @Test
+    fun codeOnlyBlanksEveryNonCodeState() {
+        val blank = { n: Int -> " ".repeat(n) }
+        assertEquals("val a = 1 " + blank(7), codeOnly("val a = 1 // pin("))
+        assertEquals("val b = " + blank(10) + " 2", codeOnly("val b = /* pin( */ 2"))
+        assertEquals("val c = " + blank(20) + " 3", codeOnly("val c = /* a /* pin( */ b */ 3"))
+        assertEquals("val d = \"" + blank(17) + "\"", codeOnly("val d = \"https://x/pin( /*\""))
+        assertEquals("val e = \"" + blank(4) + "\" + f", codeOnly("val e = \"a\\\"b\" + f"))
+        assertEquals("val g = \"\"\"" + blank(7) + "\"\"\"", codeOnly("val g = \"\"\"// pin(\"\"\""))
+        assertEquals("val h = '" + blank(2) + "'", codeOnly("val h = '\\''"))
+        assertEquals("val i = \"" + blank(2) + "\${pin()}" + blank(2) + "\"", codeOnly("val i = \"a \${pin()} b\""))
+        assertEquals("a\n" + blank(6) + "\nb", codeOnly("a\n// pin\nb"))
+    }
+
+    /**
+     * Kotlin's lexical states, the closed list `scripts/check-visibility.py` (`code_mask`) implements:
+     * code, line comment, nesting block comment, string with escapes and `${ }` templates, raw string
+     * ending at the last three quotes of a run, character literal. Every non-code character becomes a
+     * space; newlines stay.
+     */
+    private fun codeOnly(text: String): String {
+        val out = StringBuilder(text.length)
+        // ("code", brace depth at entry) | "line" | ("block", nesting) | "str" | "raw" | "chr"
+        val stack = ArrayDeque<Pair<String, Int>>().apply { addLast("code" to 0) }
+        var depth = 0
+        var i = 0
+        fun blank(count: Int) { repeat(count) { k -> out.append(if (text[i + k] == '\n') '\n' else ' ') }; i += count }
+        while (i < text.length) {
+            val (kind, entry) = stack.last()
+            val c = text[i]
+            when (kind) {
+                "code" -> when {
+                    text.startsWith("//", i) -> { stack.addLast("line" to 0); blank(2) }
+                    text.startsWith("/*", i) -> { stack.addLast("block" to 1); blank(2) }
+                    text.startsWith("\"\"\"", i) -> { stack.addLast("raw" to 0); out.append("\"\"\""); i += 3 }
+                    c == '"' -> { stack.addLast("str" to 0); out.append(c); i += 1 }
+                    c == '\'' -> { stack.addLast("chr" to 0); out.append(c); i += 1 }
+                    c == '}' && stack.size > 1 && depth == entry -> { stack.removeLast(); out.append(c); i += 1 }
+                    else -> {
+                        if (c == '{') depth += 1 else if (c == '}') depth -= 1
+                        out.append(c); i += 1
+                    }
+                }
+                "line" -> { if (c == '\n') stack.removeLast(); blank(1) }
+                "block" -> when {
+                    text.startsWith("/*", i) -> { stack[stack.lastIndex] = "block" to entry + 1; blank(2) }
+                    text.startsWith("*/", i) -> { if (entry == 1) stack.removeLast() else stack[stack.lastIndex] = "block" to entry - 1; blank(2) }
+                    else -> blank(1)
+                }
+                "str" -> when {
+                    c == '\\' -> blank(if (text.startsWith("\\u", i)) 6 else 2)
+                    text.startsWith("\${", i) -> { stack.addLast("code" to depth); out.append("\${"); i += 2 }
+                    c == '"' -> { stack.removeLast(); out.append(c); i += 1 }
+                    else -> blank(1)
+                }
+                "raw" -> when {
+                    text.startsWith("\${", i) -> { stack.addLast("code" to depth); out.append("\${"); i += 2 }
+                    text.startsWith("\"\"\"", i) -> {
+                        var j = i
+                        while (j < text.length && text[j] == '"') j += 1
+                        // a run of quotes ends the literal at its last three
+                        blank(j - 3 - i); out.append("\"\"\""); i += 3
+                        stack.removeLast()
+                    }
+                    else -> blank(1)
+                }
+                "chr" -> when {
+                    c == '\\' -> blank(if (text.startsWith("\\u", i)) 6 else 2)
+                    c == '\'' -> { stack.removeLast(); out.append(c); i += 1 }
+                    else -> blank(1)
+                }
+                else -> error(kind)
+            }
+        }
+        return out.toString()
     }
 
     @Test

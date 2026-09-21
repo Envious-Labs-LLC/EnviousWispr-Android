@@ -182,8 +182,9 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
    row and `aFailureAfterFreshUsesLastSuccessfulSnapshot` need. A first-run failure carries the constructor
    defaults (`CleanupOptions()`, empty terms, `clipboardPolicy = null`, auto-stop off, `InputDevicePick.AUTO`,
    tips on, earbuds hold on). A reader whose flow COMPLETES before its first emission (coverage B1) becomes
-   `Failed(completed_without_value)` at once from the collector's normal exit. The eight `@Volatile` fields
-   become reads of the current snapshot (the notification's live `clipboardPolicy` read stays, §3.7).
+   `Failed(completed_without_value)` at once from the collector's normal exit. The former eight `@Volatile` fields now
+   live inside the atomic snapshots; only `clipboardPolicy` remains exposed, as the live nullable getter the
+   notification reads (§3.7).
 3. **`awaitAnswers(boundMs)` (proposed) replaces `awaitReady`:** each reader's `CompletableDeferred<Unit>`
    signals only that a FIRST answer exists (completed once, by the collector, after the snapshot is
    replaced); it carries no value. ONE `withTimeoutOrNull(boundMs)` encloses both waits under a single

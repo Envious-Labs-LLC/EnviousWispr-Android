@@ -157,7 +157,7 @@ internal class SessionPreferencesSource(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
-                    log.warn("Unable to migrate custom terms: ${error.message}")
+                    log.warn("Unable to migrate custom terms: ${error.javaClass.simpleName}")
                 }
                 terms.collect { userTerms ->
                     termsSnapshot.set(TermsSnapshot(PreferenceRead.Fresh, BuiltinVocabulary.withUserTerms(userTerms)))
@@ -171,8 +171,9 @@ internal class SessionPreferencesSource(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                log.warn("Unable to load custom terms: ${error.javaClass.simpleName}")
+                // The snapshot first, then the line: a reader waiting on the line sees the failed answer.
                 termsFailed(PreferenceRead.Failed.exception(error))
+                log.warn("Unable to load custom terms: ${error.javaClass.simpleName}")
             }
         }
         scope.launch {
@@ -198,8 +199,8 @@ internal class SessionPreferencesSource(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                log.warn("Unable to load cleanup preferences: ${error.javaClass.simpleName}")
                 settingsFailed(PreferenceRead.Failed.exception(error))
+                log.warn("Unable to load cleanup preferences: ${error.javaClass.simpleName}")
             }
         }
     }

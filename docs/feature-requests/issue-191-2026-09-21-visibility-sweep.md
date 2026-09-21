@@ -29,7 +29,10 @@ persisted byte changes. The persona check would compare identical before-and-aft
 
 ## 0. TL;DR
 
-- 214 of the 227 top-level declarations in `app/src/main/java` that carry Kotlin's public default become
+- 216 of the 229 top-level declarations in `app/src/main/java` that carry Kotlin's public default become
+  `internal` (corrected at build: the enumeration script did not count two top-level `const val`s,
+  `MODEL_HOST_OWN` and `MODEL_HOST_HUGGING_FACE` in `models/ModelDelivery.kt`; the check's scanner found them);
+  in the first draft's words, 214 of 227 become
   `internal`; the 13 the framework constructs BY NAME stay public, and their app-only companion members and
   public members become `internal` where the compiler otherwise reports "exposes internal type". The Room
   database is not one of the 13 (coverage A1): `Room.databaseBuilder` receives the class object and reflects

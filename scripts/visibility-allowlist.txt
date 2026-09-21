@@ -1,0 +1,17 @@
+# scripts/check-visibility.py rule A allowlist: `<path>:<Name>`, one per line. Only what Android constructs
+# by class NAME may stay public (#191, REF-08): the manifest components and the WorkManager worker. Every
+# other app-only declaration is internal or private; a public member of these that names an app type
+# is refused by the compiler ("exposes internal type"), not by this file.
+app/src/main/java/com/envi/wispr/asr/AsrService.kt:AsrService  # manifest <service>, process :asr
+app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt:AudioCaptureService  # manifest <service>, process :audio
+app/src/main/java/com/envi/wispr/models/ModelBootstrapApplication.kt:ModelBootstrapApplication  # manifest <application>
+app/src/main/java/com/envi/wispr/models/ModelDeliveryNotification.kt:ModelDeliveryCancelReceiver  # manifest <receiver>
+app/src/main/java/com/envi/wispr/models/ModelDeliveryWorker.kt:ModelDeliveryWorker  # WorkManager reconstructs it by class name
+app/src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt:PasteAccessibilityService  # manifest <service>, accessibility
+app/src/main/java/com/envi/wispr/polish/PolishService.kt:PolishService  # manifest <service>, process :polish
+app/src/main/java/com/envi/wispr/shortcuts/DictationTileService.kt:DictationTileService  # manifest <service>, quick settings tile
+app/src/main/java/com/envi/wispr/ui/AccessibilityGuideActivity.kt:AccessibilityGuideActivity  # manifest <activity>
+app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt:DictationSessionService  # manifest <service>
+app/src/main/java/com/envi/wispr/ui/SettingsActivity.kt:SettingsActivity  # manifest <activity>, the launcher
+app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt:VoiceInputActivity  # manifest <activity>, the recorder entry
+app/src/main/java/com/envi/wispr/vad/SilenceVadService.kt:SilenceVadService  # manifest <service>, process :vad

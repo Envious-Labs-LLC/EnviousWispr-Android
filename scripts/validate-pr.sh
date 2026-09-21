@@ -70,6 +70,14 @@ if printf '%s' "$DETECTED" | grep -q Code; then
   else
     SKIPPED+=("tests"); SKIPNOTE+="tests: skipped by --no-tests"$'\n'
   fi
+  # The visibility check (#191): never skipped, satisfied only on exit 0. The artifact is always
+  # non-empty (the hits, or the script's own `clean:` line), so a blank-file check cannot stand in for it.
+  if scripts/check-visibility.py > "$RUN/visibility.txt" 2>&1; then
+    SATISFIED+=("visibility"); echo "  visibility: $(head -1 "$RUN/visibility.txt")"
+  else
+    echo "  visibility FAILED — see $RUN/visibility.txt" >&2
+    cat "$RUN/visibility.txt" >&2
+  fi
 fi
 
 # ---- Docs lane: conditional, and the condition is answered by the tool's own extractor

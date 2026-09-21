@@ -293,8 +293,8 @@ internal class ModelDeliveryStore(private val root: File) {
 }
 
 /** The two hosts a model may come from, and nothing else; a redirect may not leave its host either. */
-const val MODEL_HOST_OWN = "models.enviouslabs.co"
-const val MODEL_HOST_HUGGING_FACE = "huggingface.co"
+internal const val MODEL_HOST_OWN = "models.enviouslabs.co"
+internal const val MODEL_HOST_HUGGING_FACE = "huggingface.co"
 
 internal fun validateModelSource(url: String): Boolean = runCatching {
     val uri = URI(url)

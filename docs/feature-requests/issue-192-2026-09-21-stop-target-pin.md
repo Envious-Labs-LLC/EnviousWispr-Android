@@ -1,7 +1,7 @@
 # Issue #192 — Stopping from the side button can send a dictation to the wrong text field — 2026-09-21
 
 GitHub issue: `#192`. Tier: LARGE (the insertion path and the session owner's contract, `workflow-process.md`
-RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the newest-line identity replaces the count; G2.1 to G2.3); round 3 PIVOT by the pre-committed consequence (a third weakness in the launcher press's proof: G2.1 the new-start harness row appended a line so a count-based proof would still pass; `press_start_while_recording()` deleted, the busy-start emulator scenario NOT RUN, G3.1 docstring); round 4 PROCEED-WITH-REVISIONS (G1.1 to G1.4, stale wording after the deletion); round 5 PROCEED-AS-PLANNED (confirming). Gate 2 posted 2026-09-21; BUILT at `50ace8e` (code review rounds 1 to 9 to ALL-CLEAR, round 10 confirming); emulator pass recorded in `docs/audits/2026-09-21-192-emulator-pass/`, with one expectation CORRECTED AT BUILD (§11.1).
+RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the newest-line identity replaces the count; G2.1 to G2.3); round 3 PIVOT by the pre-committed consequence (a third weakness in the launcher press's proof: G2.1 the new-start harness row appended a line so a count-based proof would still pass; the busy-start harness press (press_start_while_recording, since deleted) deleted, the busy-start emulator scenario NOT RUN, G3.1 docstring); round 4 PROCEED-WITH-REVISIONS (G1.1 to G1.4, stale wording after the deletion); round 5 PROCEED-AS-PLANNED (confirming). Gate 2 posted 2026-09-21; BUILT at `50ace8e` (code review rounds 1 to 9 to ALL-CLEAR, round 10 confirming); emulator pass recorded in `docs/audits/2026-09-21-192-emulator-pass/`, with one expectation CORRECTED AT BUILD (§11.1).
 
 Consolidation: this plan is one document; §2.5 carries the reproduction and the trace once and §§3 to 11 point back at it.
 
@@ -177,7 +177,7 @@ none about insertion targets), so nothing settled is being redesigned.
    `recording_start` line before against during three seconds after (a count across two rolling tails can
    read equal or lower after a new start, round G2); a different line means a take this press began,
    cancelled before raising; no start line at all after the press is "cannot tell" and raises without
-   cancelling. `press_start_while_recording()` was deleted in round G3 under the pre-committed consequence
+   cancelling. the busy-start harness press (press_start_while_recording, since deleted) was deleted in round G3 under the pre-committed consequence
    (three rounds each found the press's proof weak on a new axis); the busy-start scenario is NOT RUN on
    the emulator and its rig row `aRefusedBusyStartNeverPinsTheTarget` keeps the owner's contract.
 

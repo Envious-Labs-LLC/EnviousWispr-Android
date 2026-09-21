@@ -117,6 +117,30 @@ class AppShellNavigationTest {
         }
     }
 
+    /**
+     * The open page is `rememberSaveable` so a rotation or a process restart keeps the user where they
+     * were. Neither row above recreates the activity (#190 review G1), so this one does: `recreate()` runs
+     * the save, destroy and restore cycle a configuration change runs. REVERT: replace `settingsPageName`'s
+     * `rememberSaveable` with `remember`; the restored Storage assertion turns red.
+     */
+    @Test
+    fun anOpenSettingsPageSurvivesActivityRecreation() {
+        composeRule.onNodeWithContentDescription("Open settings menu").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Storage").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Space used by files in the models folder.").assertIsDisplayed()
+
+        composeRule.activityRule.scenario.recreate()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithContentDescription("Back").assertIsDisplayed()
+        composeRule.onNodeWithText("Space used by files in the models folder.").assertIsDisplayed()
+        // Leave the page so the next row's precondition does not depend on this row's outcome.
+        composeRule.onNodeWithContentDescription("Back").performClick()
+        composeRule.waitForIdle()
+    }
+
     @Test
     fun theBackArrowAlsoLeavesASettingsPage() {
         composeRule.onNodeWithContentDescription("Open settings menu").performClick()

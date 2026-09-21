@@ -1349,6 +1349,74 @@ def main():
         setattr(eyes, name, fn)
     eyes._STATE["serial"] = None
 
+    # ---- freeze / thaw / kill act on ONE verified pid or refuse (#115) ----
+    originals = {name: getattr(eyes, name) for name in ("_adb", "_JOURNAL", "devices", "is_emulator", "_spawn_debugger", "_kill_debugger", "_process_answers", "_adb_host")}
+    proc_book = Path(__file__).parent / ".test-proc-journal.json"
+    if proc_book.exists():
+        proc_book.unlink()
+    eyes._JOURNAL = proc_book
+    table = {"rows": [(100, "S", "com.envi.wispr"), (101, "S", "com.envi.wispr:audio")], "signals": [], "debuggers": [], "frozen": set(), "forwards": []}
+
+    def proc_adb(command, timeout=60, check=True, serial=None):
+        if command.startswith("ps -A"):
+            return 0, "  PID S NAME\n" + "".join(f"{pid} {state} {name}\n" for pid, state, name in table["rows"])
+        if command.startswith("run-as com.envi.wispr kill -9 "):
+            table["signals"].append(command)
+            pid = int(command.split()[-1])
+            table["rows"] = [row for row in table["rows"] if row[0] != pid]
+            return 0, ""
+        return 0, ""
+
+    def fake_spawn(port, log_path):
+        table["debuggers"].append(port)
+        table["frozen"].add(port)
+        with open(log_path, "w") as f:
+            f.write(eyes.JDB_SUSPENDED + "\n")
+        return 4242
+
+    def fake_kill(host_pid, port):
+        table["frozen"].discard(port)
+        return f"debugger pid {host_pid} ended"
+
+    eyes._adb = proc_adb
+    eyes._adb_host = lambda args: table["forwards"].append(tuple(args)) or ""
+    eyes._spawn_debugger = fake_spawn
+    eyes._kill_debugger = fake_kill
+    eyes._process_answers = lambda pid, within_s=3.0: not table["frozen"]
+    eyes.devices = lambda: [("emulator-5554", "sdk_gphone64_arm64")]
+    eyes.is_emulator = lambda serial=None: True
+    eyes._STATE["serial"] = "emulator-5554"
+    try:
+        eyes.freeze_process("com.envi.wispr:asr")
+        check("freezing a name with NO process is refused", False, "it froze")
+    except eyes.Blocked as refusal:
+        check("freezing a name with NO process is refused", "0 processes" in str(refusal) and table["debuggers"] == [], str(refusal)[:80])
+    table["rows"].append((102, "S", "com.envi.wispr:audio"))
+    try:
+        eyes.freeze_process("com.envi.wispr:audio")
+        check("freezing a name with TWO processes is refused", False, "it froze")
+    except eyes.Blocked as refusal:
+        check("freezing a name with TWO processes is refused", "2 processes" in str(refusal) and table["debuggers"] == [], str(refusal)[:80])
+    del table["rows"][-1]
+    line = eyes.freeze_process("com.envi.wispr:audio")
+    check("one match is frozen through a debugger on its own forwarded port", table["debuggers"] == [18700 + 101] and "pid 101" in line, (table["debuggers"], line))
+    owed = eyes._owed("emulator-5554")
+    check("and the thaw is owed in the book with the debugger's pid", len(owed) == 1 and owed[0][0] == "frozen-process" and json.loads(owed[0][1])["host_pid"] == 4242, owed)
+    restored = eyes.restore()
+    check("restore() ends the debugger and settles the debt", not table["frozen"] and eyes._owed("emulator-5554") == [], (table["frozen"], restored))
+    eyes.freeze_process("com.envi.wispr:audio")
+    line = eyes.kill_process("com.envi.wispr:audio")
+    check("a kill goes to the one pid from the app's own uid", table["signals"] == ["run-as com.envi.wispr kill -9 101"] and len(table["rows"]) == 1, (table["signals"], line))
+    restored = eyes.restore()
+    check("and restore() finds the frozen pid gone and settles it", eyes._owed("emulator-5554") == [], restored)
+    for name, fn in originals.items():
+        setattr(eyes, name, fn)
+    eyes._STATE["serial"] = None
+    eyes._STATE["restored_for"] = None
+    for leftover in (proc_book, Path(str(proc_book) + ".lock"), Path(proc_book).parent / ".test-proc-journal.lock", Path(proc_book).parent / "jdb-101.log"):
+        if leftover.exists():
+            leftover.unlink()
+
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")
     if FAILED:

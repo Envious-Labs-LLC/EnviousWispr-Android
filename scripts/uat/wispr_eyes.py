@@ -45,6 +45,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -2250,6 +2251,199 @@ def _rest_host_mic_off():
     return "host microphone off (resting state)"
 
 
+def _processes_named(name):
+    """Every process on the device named EXACTLY `name`, as (pid, state), from one `ps` read.
+
+    `ps -A -o PID,S,NAME` is toybox on Android 14+ (read on the AVD 2026-09-21). Exact name, never a
+    substring: `com.envi.wispr` is a prefix of every helper process, and a prefix match would pick four.
+    """
+    code, out = _adb("ps -A -o PID,S,NAME", check=False)
+    if code != 0:
+        raise Blocked(f"the process table could not be read ({out.strip()})")
+    rows = []
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == name:
+            rows.append((int(parts[0]), parts[1]))
+    return rows
+
+
+def _the_one_process(name, what):
+    """The pid of the ONE process named `name`, or a refusal naming the count and the candidates.
+
+    A harness that acts must refuse, not choose (`tools-and-apps.md` RULE:
+    a-harness-that-acts-must-refuse-not-choose): zero matches and two matches are both refusals.
+    """
+    rows = _processes_named(name)
+    if len(rows) != 1:
+        raise Blocked(f"{what} refused: {len(rows)} processes are named {name!r} ({rows}); exactly one "
+                      "is required, verified in this call")
+    return rows[0][0]
+
+
+JDB_CANDIDATES = ("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home/bin/jdb", "jdb")
+JDB_SUSPENDED = "All threads suspended."
+
+
+def _jdb():
+    for candidate in JDB_CANDIDATES:
+        found = shutil.which(candidate) if not os.path.isabs(candidate) else (candidate if os.path.exists(candidate) else None)
+        if found:
+            return found
+    raise Blocked("no `jdb` on this Mac, so a process cannot be frozen; install a JDK (`brew install openjdk@21`)")
+
+
+def _spawn_debugger(port, log_path):
+    """A debugger attached to the forwarded JDWP port that suspends every thread and then WAITS.
+
+    Measured on the AVD 2026-09-21: `kill -STOP` from `run-as` returns 0 and changes nothing (the process
+    reads S afterwards), and the Play image has no root, so the wedge is a JDWP `suspend`: binder calls
+    into the process then block (`dumpsys meminfo <pid>` takes its 5 s timeout instead of 0.0 s), and the
+    VM RESUMES the moment the debugger disconnects, which is what makes the thaw a kill of this process.
+    The `sleep` keeps jdb's stdin open so it outlives the Python that spawned it; its own session, so the
+    thaw can kill the whole group by the pid the book carries.
+    """
+    script = f"(echo suspend; exec sleep 100000) | {shlex.quote(_jdb())} -attach localhost:{port} > {shlex.quote(log_path)} 2>&1"
+    child = subprocess.Popen(["/bin/sh", "-c", script], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    return child.pid
+
+
+def _debugger_command(host_pid):
+    """The command line of `host_pid` on this Mac, or None when no such process exists."""
+    done = subprocess.run(["/bin/ps", "-o", "command=", "-p", str(host_pid)], capture_output=True, text=True)
+    line = done.stdout.strip()
+    return line or None
+
+
+def _kill_debugger(host_pid, port):
+    """End the debugger group identified by pid AND command line; verified gone afterwards."""
+    command = _debugger_command(host_pid)
+    if command is None:
+        return "debugger already gone"
+    if f"localhost:{port}" not in command or "jdb" not in command:
+        raise Blocked(f"host pid {host_pid} is not the debugger the book recorded ({command!r}); refusing to kill it")
+    os.killpg(host_pid, signal.SIGTERM)
+    for _ in range(50):
+        if _debugger_command(host_pid) is None:
+            return f"debugger pid {host_pid} ended"
+        time.sleep(0.1)
+    raise Blocked(f"the debugger pid {host_pid} did not end after SIGTERM; the process may still be frozen")
+
+
+def _process_answers(pid, within_s=3.0):
+    """Whether the device process answers a binder call within `within_s` (a frozen one takes the 5 s timeout)."""
+    started = time.monotonic()
+    try:
+        subprocess.run([ADB, "-s", device(), "shell", f"dumpsys meminfo {pid}"], capture_output=True, text=True, timeout=within_s + 6)
+    except subprocess.TimeoutExpired:
+        return False
+    return time.monotonic() - started < within_s
+
+
+def freeze_process(name=f"{PACKAGE}:audio"):
+    """Freeze one of OUR processes on the EMULATOR through a debugger, by a pid verified in this call, journaled.
+
+    For the #115 scenes: a frozen capture process is the wedge the owner must end a take over. The debt
+    (device pid, name, forwarded port, debugger pid) goes into the book BEFORE the debugger is spawned and is
+    completed once its pid is known, so `restore()` from any later process thaws it by ending that debugger.
+    Verified by the debugger's own line in its log, then by a binder probe that takes its timeout.
+    """
+    _require_emulator("freezing a process")
+    pid = _the_one_process(name, "freezing")
+    port = 18700 + pid % 1000
+    log_path = os.path.join(os.path.dirname(_JOURNAL), f"jdb-{pid}.log")
+    frozen = {"pid": pid, "name": name, "port": port, "host_pid": None}
+    entry = ("frozen-process", json.dumps(frozen, sort_keys=True))
+    with _journal_locked():
+        _owe_locked(entry, device())
+        if entry not in _owed():
+            raise Blocked("the freeze could not be written to the restore book, so it was not done")
+        _adb_host(["forward", f"tcp:{port}", f"jdwp:{pid}"])
+        frozen["host_pid"] = _spawn_debugger(port, log_path)
+        complete = ("frozen-process", json.dumps(frozen, sort_keys=True))
+        _settled_locked(entry, device())
+        _owe_locked(complete, device())
+    for _ in range(100):
+        time.sleep(0.1)
+        try:
+            with open(log_path) as f:
+                if JDB_SUSPENDED in f.read():
+                    break
+        except FileNotFoundError:
+            pass
+    else:
+        thaw_process(name)
+        raise Blocked(f"the debugger never reported {JDB_SUSPENDED!r} for pid {pid} ({name}); see {log_path}. Thawed.")
+    if _process_answers(pid):
+        thaw_process(name)
+        raise Blocked(f"pid {pid} ({name}) still answers a binder call after the suspend. Thawed.")
+    return f"froze {name} pid {pid} (debugger pid {frozen['host_pid']} on port {port})"
+
+
+def _adb_host(args):
+    """An adb command that is not `shell` (forward, forward --remove) against the selected device."""
+    done = subprocess.run([ADB, "-s", device(), *args], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise Blocked(f"adb {' '.join(args)} failed: {(done.stderr or done.stdout).strip()}")
+    return done.stdout.strip()
+
+
+def _thaw(frozen):
+    """End the debugger the book recorded, drop the forward, and read back that the process answers."""
+    lines = []
+    if frozen.get("host_pid") is not None:
+        lines.append(_kill_debugger(frozen["host_pid"], frozen["port"]))
+    if frozen.get("port") is not None:
+        subprocess.run([ADB, "-s", device(), "forward", "--remove", f"tcp:{frozen['port']}"], capture_output=True, text=True)
+    state = dict(_processes_named(frozen["name"])).get(frozen["pid"])
+    if state is None:
+        lines.append(f"{frozen['name']} pid {frozen['pid']} is gone; nothing to thaw")
+        return "; ".join(lines)
+    if not _process_answers(frozen["pid"]):
+        raise Blocked(f"pid {frozen['pid']} ({frozen['name']}) still does not answer after the debugger ended")
+    lines.append(f"thawed {frozen['name']} pid {frozen['pid']}")
+    return "; ".join(lines)
+
+
+@_atomic_change
+def thaw_process(name=f"{PACKAGE}:audio"):
+    """Thaw the process `freeze_process` froze, from the book, and settle the debt. Under the book's lock
+    for the whole read-act-settle, like `restore()`."""
+    _require_emulator("thawing a process")
+    lines = []
+    for entry in list(_owed()):
+        if entry[0] != "frozen-process":
+            continue
+        frozen = json.loads(entry[1])
+        if frozen["name"] != name:
+            continue
+        lines.append(_thaw(frozen))
+        _settled(entry)
+    return lines or [f"no frozen {name} is in the book"]
+
+
+def kill_process(name=f"{PACKAGE}:audio"):
+    """SIGKILL one of OUR processes on the EMULATOR, by a pid verified in this call, from the app's own uid.
+
+    `run-as <package> kill -9 <pid>` lands (measured on the AVD 2026-09-21; the shell uid cannot signal an
+    app process, and `-STOP` from `run-as` does not take). Android restarts a bound service's process on
+    the next bind, so nothing is owed afterwards. A frozen process dies too; its thaw debt is settled by
+    the gone-pid branch of `restore()`.
+    """
+    _require_emulator("killing a process")
+    pid = _the_one_process(name, "killing")
+    package = name.split(":")[0]
+    code, why = _adb(f"run-as {shlex.quote(package)} kill -9 {pid}", check=False)
+    if code != 0:
+        raise Blocked(f"pid {pid} ({name}) would not die: {why.strip()}")
+    for _ in range(30):
+        if pid not in dict(_processes_named(name)):
+            return f"killed {name} pid {pid}"
+        time.sleep(0.1)
+    raise Blocked(f"pid {pid} ({name}) is still in the process table 3 s after SIGKILL")
+
+
 def _pcm_from_sentence(sentence, path):
     """Say a sentence into a raw PCM file the emulator's microphone accepts: s16le, mono, 48 kHz."""
     for tool in ("say", "ffmpeg"):
@@ -2910,6 +3104,8 @@ def _restore_one_here(entry):
         if now != wanted:
             raise Blocked(f"the emulator's host microphone did not go back {previous}; it reads "
                           f"{'on' if now else 'off'}")
+    elif what == "frozen-process":
+        _thaw(json.loads(previous))
     elif what == "screen-timeout":
         _adb(f"settings put system screen_off_timeout {int(previous)}")
         _, now = _adb("settings get system screen_off_timeout")

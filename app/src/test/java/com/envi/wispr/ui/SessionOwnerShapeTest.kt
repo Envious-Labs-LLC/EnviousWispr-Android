@@ -52,7 +52,10 @@ class SessionOwnerShapeTest {
         val callSites = File("src/main/java").walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .flatMap { file ->
-                file.readLines().asSequence().mapIndexedNotNull { index, line ->
+                // Block comments are cut first (a KDoc naming the call is prose, not a call; Codex code
+                // review round 2), then each line's `//` tail.
+                file.readText().replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), "")
+                    .lines().asSequence().mapIndexedNotNull { index, line ->
                     // A declaration is not a call; the gateway declares AND calls on one line, so the
                     // declaration is cut out and whatever call remains counts.
                     val code = line.substringBefore("//").replace(Regex("""\bfun\s+pinTarget(ForDictation)?\([^)]*\)"""), "")

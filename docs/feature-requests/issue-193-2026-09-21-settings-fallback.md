@@ -1,7 +1,7 @@
 # Issue #193 — A settings or vocabulary read failure prevents recording instead of falling back — 2026-09-21
 
 GitHub issue: `#193`. Tier: MEDIUM (a service's start path, new runtime behaviour; `workflow-process.md`
-RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G2.1, G2.2, G4.1, G5.1 to G5.3 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the start carries the values; G3.1 one deadline; G3.2 the reader is never written by the bound); round 3 PROCEED-WITH-REVISIONS (G2.1 one atomic reader snapshot holds outcome and values, `Fresh → Failed` allowed; G2.2 outcome and values from one atomic read); round 4 PROCEED-WITH-REVISIONS (G1.1 no outcome field outside the snapshots; G2.1 three source-shape tests named); round 5 PROCEED-AS-PLANNED (confirming). Gate 2 posted 2026-09-21; BUILT at `5a80e74` (code review rounds 1 to 2 to ALL-CLEAR, round 3 confirming); emulator pass recorded in `docs/audits/2026-09-21-193-emulator-pass/` (P2 measured: foreground start to audio bind 349, 234, 417 ms on three cold starts; the settings-store corruption reached the reader as CorruptionException and the take started 29 ms later; the Room corruption is not stageable deterministically before a take, see e-corrupt-room-attempt3).
+RULE: tier-routing). Status: SHIPPED (the (proposed) marks deleted at build; deleted names carry (removed)) (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G2.1, G2.2, G4.1, G5.1 to G5.3 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the start carries the values; G3.1 one deadline; G3.2 the reader is never written by the bound); round 3 PROCEED-WITH-REVISIONS (G2.1 one atomic reader snapshot holds outcome and values, `Fresh → Failed` allowed; G2.2 outcome and values from one atomic read); round 4 PROCEED-WITH-REVISIONS (G1.1 no outcome field outside the snapshots; G2.1 three source-shape tests named); round 5 PROCEED-AS-PLANNED (confirming). Gate 2 posted 2026-09-21; BUILT at `5a80e74` (code review rounds 1 to 2 to ALL-CLEAR, round 3 confirming); emulator pass recorded in `docs/audits/2026-09-21-193-emulator-pass/` (P2 measured: foreground start to audio bind 349, 234, 417 ms on three cold starts; the settings-store corruption reached the reader as CorruptionException and the take started 29 ms later; the Room corruption is not stageable deterministically before a take, see e-corrupt-room-attempt3).
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -50,10 +50,10 @@ listening notification silent about the clipboard when the policy is a stand-in,
 ## 0. TL;DR
 
 - Today `DictationSessionCoordinator.beginSession` awaits two readiness signals from `SessionPreferencesSource`
-  for up to `SETTINGS_WAIT_MS` (10 s) and, if either never lands, ends the take as `SETTINGS_UNAVAILABLE`
+  for up to `SETTINGS_WAIT_MS` (removed) (10 s) and, if either never lands, ends the take as `SETTINGS_UNAVAILABLE`
   before capture is asked to start. A collector that THROWS never completes its signal, so a failed read is a
   ten-second wait and then no dictation.
-- After: each reader reports a typed answer, `PreferenceRead` (proposed): `Fresh` (the first emission landed),
+- After: each reader reports a typed answer, `PreferenceRead`: `Fresh` (the first emission landed),
   `Failed` (the collector's catch ran; the last good values stand), or `Pending` (nothing yet). The owner
   waits only for the two readers to ANSWER, under a short bound, and always starts capture: on the fresh
   values, or on the last successful snapshot (the defaults on a first run) with a typed limb outcome in the
@@ -65,14 +65,14 @@ listening notification silent about the clipboard when the policy is a stand-in,
   answer, never an end.
 - Guards: rig rows with an injected settings failure and an injected vocabulary failure (capture starts
   promptly; the take transcribes and inserts on the defaults), a row for the bound expiring (starts on the
-  last snapshot), the inverted `settingsNeverReadyEndsStartingWithSentence` row deleted, a row that an
+  last snapshot), the inverted `settingsNeverReadyEndsStartingWithSentence` (removed) row deleted, a row that an
   ordinary take still freezes one consistent snapshot, the telemetry contract row for the new facts.
 
 ## 1. Problem
 
 `SessionPreferencesSource.start` launches two collectors. Each completes a `CompletableDeferred` on its first
 emission; each catches `Exception`, logs one warning, and ENDS. `awaitReady(timeoutMs)` waits on both
-deferreds. `beginSession` (`DictationSessionCoordinator.kt:361-369`) calls it with `settingsWaitMs` and, on
+deferreds. `beginSession` (`DictationSessionCoordinator.kt:361-369`) calls it with `settingsWaitMs` (removed) and, on
 false, `showError(TerminalReason.SETTINGS_UNAVAILABLE)` ("Settings could not be loaded. Try again.",
 `TakeNotices.kt:51`). Capture is never asked to start. The audit's interleaving (REF-02) holds on db12eb5.
 
@@ -104,7 +104,7 @@ a stand-in must never be mistaken for the user's answer. `CustomTermRepository.o
 throws into the collector. `migrateLegacyTerms` runs before the terms collector, in its own try.
 
 **Owner.** `SessionPreferencesSource` (`ui/SessionPreferencesSource.kt`): eight `@Volatile` fields written by
-the two collectors; `cleanupPreferencesReady` and `structuredTermsReady`; `awaitReady`; `freeze`.
+the two collectors; `cleanupPreferencesReady` (removed) and `structuredTermsReady` (removed); `awaitReady` (removed); `freeze`.
 `clipboardPolicy` is nullable on purpose (its KDoc; a stand-in promised the clipboard to a user who had
 turned auto-copy off).
 
@@ -169,11 +169,11 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
 
 ## 3. Design
 
-1. **`PreferenceRead` (proposed), in `SessionPreferencesSource.kt`:** `sealed interface` with `Pending` (proposed),
+1. **`PreferenceRead`, in `SessionPreferencesSource.kt`:** `sealed interface` with `Pending`,
    `Fresh`, `Failed(val reason: String)` (the reason is a content-free token: `exception:<SimpleName>` or
    `timed_out`; never a message, `#194` territory). `PreferenceRead` exists only inside each
-   `AtomicReference<ReaderSnapshot>` and in `PreferenceStart`; no separate outcome field is written (round G4).
-2. **One atomic reader snapshot per reader** (round G3, G2.1): `ReaderSnapshot` (proposed), an immutable
+   `AtomicReference` of `SettingsSnapshot` or `TermsSnapshot` and in `PreferenceStart`; no separate outcome field is written (round G4).
+2. **One atomic reader snapshot per reader** (round G3, G2.1): `SettingsSnapshot` and `TermsSnapshot` (corrected at build: one type per reader, the plan's single `SettingsSnapshot` / `TermsSnapshot` (removed) name), each an immutable
    value holding the outcome (`PreferenceRead`) AND that reader's values (settings: cleanup options, the
    nullable clipboard policy, the four capture fields, the tips flag; terms: the term list), kept in an
    `AtomicReference`. The collector replaces it whole on every emission (`Fresh` + the new values) and on
@@ -185,11 +185,11 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
    `Failed(completed_without_value)` at once from the collector's normal exit. The former eight `@Volatile` fields now
    live inside the atomic snapshots; only `clipboardPolicy` remains exposed, as the live nullable getter the
    notification reads (§3.7).
-3. **`awaitAnswers(boundMs)` (proposed) replaces `awaitReady`:** each reader's `CompletableDeferred<Unit>`
+3. **`awaitAnswers(boundMs)` replaces `awaitReady`:** each reader's `CompletableDeferred<Unit>`
    signals only that a FIRST answer exists (completed once, by the collector, after the snapshot is
    replaced); it carries no value. ONE `withTimeoutOrNull(boundMs)` encloses both waits under a single
    2 000 ms deadline (round G3.1) and never writes a reader (round G3.2). After the wait, `awaitAnswers`
-   makes ONE atomic read of each reader's snapshot and builds `PreferenceStart` (proposed) from those two
+   makes ONE atomic read of each reader's snapshot and builds `PreferenceStart` from those two
    reads alone: outcome and values always come from the same snapshot, so there is no torn state (round G3,
    G2.2). A snapshot still `Pending` at that read yields the caller-local `Failed(timed_out)` with the
    snapshot's (default or last) values; a first emission that lands between the deadline and the read is a
@@ -197,10 +197,10 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
    "a timeout retains pre-emission values": the value read and the outcome read are one read, which is the
    property the finding protects; excluding a real late answer would need a second read). Later emissions
    replace the snapshot for later takes only. It never returns "not ready".
-4. **`beginSession`:** `awaitAnswers` under `SETTINGS_ANSWER_BOUND_MS` (proposed) (2 000 ms,
-   replacing `SETTINGS_WAIT_MS`); if either is `Failed`, `takeFacts.settingsFallback` (proposed) = a token
+4. **`beginSession`:** `awaitAnswers` under `SETTINGS_ANSWER_BOUND_MS` (2 000 ms,
+   replacing `SETTINGS_WAIT_MS`); if either is `Failed`, `takeFacts.settingsFallback` = a token
    naming which (`settings`, `terms`, `both`) and the reasons, one `log.warn`, one breadcrumb
-   `take` / `settings_fallback` (proposed); then the matcher is compiled from `start.terms`, the policy is
+   `take` / `settings_fallback`; then the matcher is compiled from `start.terms`, the policy is
    loaded, the journal admission is awaited, and `freeze(start, matcher, policy)` builds the take's
    `SessionPreferences` FROM THE RETURNED START ALONE: `beginSession` never rereads `structuredTerms` or any
    live source field after suspending (round G2, G1.1: `freeze` runs after the compile, the policy load and
@@ -214,7 +214,7 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
    written from the same frozen snapshot after the answer, not before it (round G2.2).
 5. **`SETTINGS_UNAVAILABLE` removed** from `TerminalReason`, `TakeNotices`, both `TelemetryChannels` sets,
    and the three tests that name it (the compiler finds the `when`s).
-6. **Telemetry:** `DictationTerminal` gains `settingsFallback: String?` (proposed) carried from `TakeFacts`,
+6. **Telemetry:** `DictationTerminal` gains `settingsFallback: String?` carried from `TakeFacts`,
    null on an ordinary take; the journal row is unchanged. The Sentry breadcrumb is category `take`, message
    `settings_fallback`, data `take_id` and `settings_fallback` (the same token), sent only on a fallback take;
    its shape and the null-omission case are pinned in the telemetry contract tests (coverage D1).
@@ -233,7 +233,7 @@ the source's caller as today's `settingsWaitMs` does (injected for tests).
 ## 4. Contract deltas
 - `SessionPreferencesSource.awaitReady(Long): Boolean` → `awaitAnswers(Long): PreferenceStart`.
 - `TerminalReason.SETTINGS_UNAVAILABLE` deleted; `TakeNotices` loses one sentence.
-- `AnalyticsEvent.DictationTerminal` gains one nullable property `settings_fallback` (proposed).
+- `AnalyticsEvent.DictationTerminal` gains one nullable property `settings_fallback`.
 - `DictationSessionCoordinator.SETTINGS_WAIT_MS` → `SETTINGS_ANSWER_BOUND_MS` (2 000).
 
 ## 5. State and lifecycle audit
@@ -277,7 +277,7 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
 `PreferenceRead` values at the moment of the wait, never re-read later.
 
 ## 10. File-by-file changes
-- `app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt`: `PreferenceRead`, `ReaderSnapshot`,
+- `app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt`: `PreferenceRead`, `SettingsSnapshot` / `TermsSnapshot`,
   `PreferenceStart`, two `AtomicReference` snapshots replaced whole by the collectors, two first-answer
   deferreds, `awaitAnswers` (one deadline, one atomic read per reader);
   `SessionPreferences` gains the five capture and notice fields and `freeze(start, matcher, policy)` writes
@@ -288,7 +288,7 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
   `telemetry/TelemetryChannels.kt`: the member removed.
 - `app/src/main/java/com/envi/wispr/telemetry/TakeFacts.kt`, `AnalyticsEvent.kt`: `settingsFallback`.
 - `app/src/test/java/com/envi/wispr/ui/DictationSessionCoordinatorTest.kt`: rows in §11.2; the inverted
-  row deleted. `DictationSessionRig.kt`: `settingsWaitMs` → `answerBoundMs` (proposed).
+  row deleted. `DictationSessionRig.kt`: `settingsWaitMs` → `answerBoundMs`.
 - `app/src/test/java/com/envi/wispr/ui/TakeNoticesTest.kt`, `telemetry/TakeFactsTest.kt`,
   `telemetry/TelemetryContractsTest.kt`: the member and the property.
 - Source-shape rows that pin the OLD shape (round G4): `settings/SilenceStopSettingsTest.kt:35` (the switch
@@ -328,11 +328,11 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
 
 | Test | Class | Proves | Revert that turns it red |
 |---|---|---|---|
-| `DictationSessionCoordinatorTest.aFailedSettingsReadStartsCaptureOnDefaults` (proposed) | Product Outcome | a settings flow that throws: capture is asked to start within the rig's bound, the take completes and inserts, `settings_fallback` names `settings` | restore the ending in `beginSession` |
-| `DictationSessionCoordinatorTest.aFailedVocabularyReadStartsCaptureWithoutUserTerms` (proposed) | Product Outcome | a terms flow that throws: capture starts, the take inserts, the matcher is the built-in one | same |
-| `DictationSessionCoordinatorTest.aSilentStoreStartsOnTheLastSnapshotAfterTheBound` (proposed) | Product Outcome | never-emitting flows: capture starts after the bound, `timed_out` in the facts | make the bound end the take |
-| `DictationSessionCoordinatorTest.anOrdinaryTakeFreezesOneConsistentSnapshot` (proposed) | Drift Guard | the flows emit once after `onCreated`; the take waits for them and runs with those values (auto-stop on), `settings_fallback` null | start before the first answer |
-| `DictationSessionCoordinatorTest.aFailureAfterFreshUsesLastSuccessfulSnapshot` (proposed) | Product Outcome | the flows emit non-default values (auto-stop on, one custom term), then throw; the next take freezes THOSE values with the exception token in the facts (coverage E1) | reset the fields in the catch |
+| `DictationSessionCoordinatorTest.aFailedSettingsReadStartsCaptureOnDefaults` | Product Outcome | a settings flow that throws: capture is asked to start within the rig's bound, the take completes and inserts, `settings_fallback` names `settings` | restore the ending in `beginSession` |
+| `DictationSessionCoordinatorTest.aFailedVocabularyReadStartsCaptureWithoutUserTerms` | Product Outcome | a terms flow that throws: capture starts, the take inserts, the matcher is the built-in one | same |
+| `DictationSessionCoordinatorTest.aSilentStoreStartsOnTheLastSnapshotAfterTheBound` | Product Outcome | never-emitting flows: capture starts after the bound, `timed_out` in the facts | make the bound end the take |
+| `DictationSessionCoordinatorTest.anOrdinaryTakeFreezesOneConsistentSnapshot` | Drift Guard | the flows emit once after `onCreated`; the take waits for them and runs with those values (auto-stop on), `settings_fallback` null | start before the first answer |
+| `DictationSessionCoordinatorTest.aFailureAfterFreshUsesLastSuccessfulSnapshot` | Product Outcome | the flows emit non-default values (auto-stop on, one custom term), then throw; the next take freezes THOSE values with the exception token in the facts (coverage E1) | reset the fields in the catch |
 | the two failure rows above also assert exactly ONE `settings_fallback` warning in the rig's log (coverage E2) | Product Outcome | one line per fallback take | delete or duplicate the warning |
 | `TelemetryContractsTest` / `TakeFactsTest` rows | Drift Guard | the property, its token shape, the breadcrumb's category, message and data keys, and the null-omission case | drop the property or the breadcrumb |
 | `settingsNeverReadyEndsStartingWithSentence` | deleted | | |

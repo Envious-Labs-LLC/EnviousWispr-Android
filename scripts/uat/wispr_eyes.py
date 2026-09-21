@@ -746,6 +746,12 @@ def find(text, exact=True, clickable=None, package=PACKAGE, stable=False):
         raise Blocked(f"nothing on screen matches {text!r}. What is there:\n"
                       f"{look(only_ours=True, nodes=snapshot)}")
     if len(matches) > 1:
+        # One control, several nodes: a button whose label is its own child reports the same text twice
+        # at the SAME centre (the Play Store's Update button, 2026-09-21). Two nodes that would be pressed
+        # at one point are one press, not a guess; the ambiguity this refuses is two DIFFERENT places.
+        if len({n["centre"] for n in matches}) == 1:
+            matches = [next((n for n in matches if n["clickable"]), matches[0])]
+    if len(matches) > 1:
         where = "; ".join(f"{_label(n)!r} at {n['centre']}" for n in matches)
         raise Blocked(
             f"{len(matches)} nodes match {text!r}, so which one to press is a guess: {where}. "

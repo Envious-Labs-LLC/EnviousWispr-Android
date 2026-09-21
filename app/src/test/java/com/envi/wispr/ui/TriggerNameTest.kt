@@ -17,6 +17,8 @@ class TriggerNameTest {
 
     private val userFacing = listOf(
         "ui/AppShell.kt",
+        "ui/AppNavigation.kt",
+        "ui/SettingsComponents.kt",
         "ui/OnboardingScreen.kt",
         "ui/SettingsPages.kt",
         "about/ReleaseNotes.kt",

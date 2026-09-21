@@ -24,8 +24,8 @@ import org.junit.runner.RunWith
  * the wrong one for a regression that appears months later, or by reading the file as source TEXT in
  * `paste/AutoPasteWiringTest`, which is a drift guard over string literals and cannot press anything.
  *
- * It drives the REAL activity rather than a harness. `AppShell` takes a ui state, a dozen callbacks and
- * queries WorkManager, so standing up a fake would mostly test the fake
+ * It drives the REAL activity rather than a harness. `AppShell` takes UI state plus one grouped-actions
+ * holder and queries WorkManager, so standing up a fake would mostly test the fake
  * (`testing-philosophy.md`: a unit test that stubs the service is a Harness Contract test, whatever it
  * is named). `createAndroidComposeRule` launches what the user launches.
  */
@@ -115,6 +115,30 @@ class AppShellNavigationTest {
         if (present(hasContentDescription("Back"))) {
             throw AssertionError("the way out must be gone once there is nothing to leave: 'Back' is still on screen")
         }
+    }
+
+    /**
+     * The open page is `rememberSaveable` so a rotation or a process restart keeps the user where they
+     * were. Neither row above recreates the activity (#190 review G1), so this one does: `recreate()` runs
+     * the save, destroy and restore cycle a configuration change runs. REVERT: replace `settingsPageName`'s
+     * `rememberSaveable` with `remember`; the restored Storage assertion turns red.
+     */
+    @Test
+    fun anOpenSettingsPageSurvivesActivityRecreation() {
+        composeRule.onNodeWithContentDescription("Open settings menu").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Storage").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Space used by files in the models folder.").assertIsDisplayed()
+
+        composeRule.activityRule.scenario.recreate()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithContentDescription("Back").assertIsDisplayed()
+        composeRule.onNodeWithText("Space used by files in the models folder.").assertIsDisplayed()
+        // Leave the page so the next row's precondition does not depend on this row's outcome.
+        composeRule.onNodeWithContentDescription("Back").performClick()
+        composeRule.waitForIdle()
     }
 
     @Test

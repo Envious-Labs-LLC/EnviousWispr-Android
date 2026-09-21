@@ -2975,7 +2975,7 @@ def _wait_for_the_take_to_finish(seconds=40):
 # an invisible one. `scan()` reports any page it meets that is not named here.
 TABS = ("History", "Dictionary", "Transcription", "AI Polish")
 PAGES = ("What's New", "Appearance", "Microphone", "Sounds", "Clipboard",
-         "Permissions", "Storage", "Open Source Licenses")
+         "Permissions", "Privacy", "Storage", "Open Source Licenses")
 
 
 def _tab_row(package=PACKAGE):

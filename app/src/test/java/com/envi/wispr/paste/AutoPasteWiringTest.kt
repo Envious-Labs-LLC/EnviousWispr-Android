@@ -280,12 +280,15 @@ class AutoPasteWiringTest {
      */
     @Test
     fun noReadinessSurfaceReportsThePermissionAsIfItWereLiveness() {
-        // Both files are read because the surfaces live in two of them since #47: the Permissions
-        // page in `ui/SettingsPages.kt`, onboarding step 4 in `ui/AppShell.kt`. `read` throws on a
-        // missing or empty file, so renaming one fails loudly rather than shrinking the haystack.
+        // Three files are read because the surfaces live across them: the Permissions page in
+        // `ui/SettingsPages.kt`, the status dot and its screen-reader sentence per availability in
+        // `ui/SettingsComponents.kt` (#190 moved them out of the shell), and the shell itself. `read`
+        // throws on a missing or empty file, so renaming one fails loudly rather than shrinking the
+        // haystack.
         val shell = read("ui/AppShell.kt")
         val pages = read("ui/SettingsPages.kt")
-        val source = shell + "\n" + pages
+        val components = read("ui/SettingsComponents.kt")
+        val source = shell + "\n" + pages + "\n" + components
         assertFalse(
             "A readiness screen reads the permission fact directly, so a surface can report a " +
                 "crashed service as Ready",
@@ -334,7 +337,7 @@ class AutoPasteWiringTest {
         // user who already granted the permission to grant it again.
         AutoPasteAvailability.entries.forEach { availability ->
             assertTrue(
-                "AppShell never mentions $availability, so a state the combinator can return has " +
+                "No screen file mentions $availability, so a state the combinator can return has " +
                     "no sentence on any screen",
                 source.contains("AutoPasteAvailability.$availability"),
             )

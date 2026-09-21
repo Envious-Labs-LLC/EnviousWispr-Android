@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
@@ -60,57 +61,82 @@ class SettingsActivity : ComponentActivity() {
             val providerDiscovery by viewModel.providerDiscovery.collectAsStateWithLifecycle()
 
             EnviousWisprTheme(dynamicColor = uiState.preferences.dynamicColorEnabled) {
+                val actions = remember(viewModel) {
+                    AppActions(
+                        shell = ShellActions(
+                            onStartDictation = {
+                                startActivity(Intent(this, VoiceInputActivity::class.java).putExtra(VoiceInputActivity.EXTRA_TRIGGER_SOURCE, TriggerSource.APP.wire))
+                            },
+                            onRefreshReadiness = ::refreshReadiness,
+                        ),
+                        permissions = PermissionActions(
+                            onRequestMicrophone = {
+                                requestPermissionWithRecovery(Manifest.permission.RECORD_AUDIO) { microphonePermission.launch(it) }
+                            },
+                            onRequestNotifications = {
+                                if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissionWithRecovery(Manifest.permission.POST_NOTIFICATIONS) { notificationPermission.launch(it) } else refreshReadiness()
+                            },
+                            onOpenAccessibility = {
+                                startActivity(Intent(this, AccessibilityGuideActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            },
+                        ),
+                        onboarding = OnboardingActions(
+                            onStep = viewModel::setOnboardingStep,
+                            onDismiss = viewModel::dismissOnboarding,
+                            onResume = viewModel::resumeOnboarding,
+                            onComplete = viewModel::completeOnboarding,
+                        ),
+                        history = HistoryActions(
+                            onSearchChange = viewModel::updateHistorySearch,
+                            onKeep = viewModel::setHistoryKept,
+                            onDelete = viewModel::deleteHistory,
+                            onDeleteAll = viewModel::deleteAllHistory,
+                        ),
+                        dictionary = DictionaryActions(
+                            onSearchChange = viewModel::updateCustomTermSearch,
+                            onAdd = viewModel::addCustomTerm,
+                            onEdit = viewModel::editCustomTerm,
+                            onDelete = viewModel::deleteCustomTerm,
+                            onBulkDelete = viewModel::bulkDeleteCustomTerms,
+                            onImport = viewModel::importCustomTerms,
+                        ),
+                        transcription = TranscriptionActions(
+                            onFillerRemovalChanged = viewModel::setFillerRemovalEnabled,
+                            onEmojiFormatterChanged = viewModel::setEmojiFormatterEnabled,
+                            onSpokenPunctuationChanged = viewModel::setSpokenPunctuationEnabled,
+                            onAutoStopOnSilenceChanged = viewModel::setAutoStopOnSilenceEnabled,
+                            onSilencePauseSecondsChanged = viewModel::setSilencePauseSeconds,
+                        ),
+                        polish = PolishActions(
+                            onSetMode = viewModel::setPolishMode,
+                            onSetS1Control = viewModel::setS1Control,
+                            onSaveProviderSettings = viewModel::saveProviderSettings,
+                            onClearProvider = viewModel::removeProviderKey,
+                            onCheckKey = viewModel::discoverModels,
+                            onKeyDraftChanged = viewModel::keyDraftChanged,
+                            onLoadCachedModels = viewModel::loadCachedModels,
+                        ),
+                        microphone = MicrophoneActions(
+                            onInputDevicePickChanged = viewModel::setInputDevicePick,
+                            onShowBluetoothTipsChanged = viewModel::setShowBluetoothTips,
+                            onKeepEarbudsReadyChanged = viewModel::setKeepEarbudsReady,
+                        ),
+                        clipboard = ClipboardActions(
+                            onAutoCopyChanged = viewModel::setAutoCopyToClipboard,
+                            onRestoreClipboardChanged = viewModel::setRestoreClipboardAfterPaste,
+                            onSmartInsertionChanged = viewModel::setSmartInsertionEnabled,
+                        ),
+                        appearance = AppearanceActions(
+                            onDynamicColorChanged = viewModel::setDynamicColorEnabled,
+                            onBubbleLookChanged = viewModel::setBubbleLook,
+                        ),
+                    )
+                }
                 EnviousWisprApp(
                     uiState = uiState,
-                    onStartDictation = {
-                        startActivity(Intent(this, VoiceInputActivity::class.java).putExtra(VoiceInputActivity.EXTRA_TRIGGER_SOURCE, TriggerSource.APP.wire))
-                    },
-                    onRequestMicrophone = {
-                        requestPermissionWithRecovery(Manifest.permission.RECORD_AUDIO) { microphonePermission.launch(it) }
-                    },
-                    onRequestNotifications = {
-                        if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissionWithRecovery(Manifest.permission.POST_NOTIFICATIONS) { notificationPermission.launch(it) } else refreshReadiness()
-                    },
-                    onOpenAccessibility = {
-                        startActivity(Intent(this, AccessibilityGuideActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    },
-                    licenseNotices = thirdPartyNotices,
-                    onOnboardingStep = viewModel::setOnboardingStep,
-                    onDismissOnboarding = viewModel::dismissOnboarding,
-                    onResumeOnboarding = viewModel::resumeOnboarding,
-                    onCompleteOnboarding = viewModel::completeOnboarding,
-                    onCustomTermSearchChange = viewModel::updateCustomTermSearch,
-                    onAddCustomTerm = viewModel::addCustomTerm,
-                    onEditCustomTerm = viewModel::editCustomTerm,
-                    onDeleteCustomTerm = viewModel::deleteCustomTerm,
-                    onBulkDeleteCustomTerms = viewModel::bulkDeleteCustomTerms,
-                    onImportCustomTerms = viewModel::importCustomTerms,
-                    onFillerRemovalChanged = viewModel::setFillerRemovalEnabled,
-                    onEmojiFormatterChanged = viewModel::setEmojiFormatterEnabled,
-                    onSpokenPunctuationChanged = viewModel::setSpokenPunctuationEnabled,
-                    onAutoStopOnSilenceChanged = viewModel::setAutoStopOnSilenceEnabled,
-                    onSilencePauseSecondsChanged = viewModel::setSilencePauseSeconds,
-                    onInputDevicePickChanged = viewModel::setInputDevicePick,
-                    onShowBluetoothTipsChanged = viewModel::setShowBluetoothTips,
-                    onKeepEarbudsReadyChanged = viewModel::setKeepEarbudsReady,
-                    onAutoCopyChanged = viewModel::setAutoCopyToClipboard,
-                    onRestoreClipboardChanged = viewModel::setRestoreClipboardAfterPaste,
-                    onSmartInsertionChanged = viewModel::setSmartInsertionEnabled,
-                    onDynamicColorChanged = viewModel::setDynamicColorEnabled,
-                    onBubbleLookChanged = viewModel::setBubbleLook,
-                    onSetPolishMode = viewModel::setPolishMode,
-                    onSetS1Control = viewModel::setS1Control,
-                    onSaveProviderSettings = viewModel::saveProviderSettings,
-                    onClearProviderSettings = viewModel::removeProviderKey,
                     providerDiscovery = providerDiscovery,
-                    onCheckKey = viewModel::discoverModels,
-                    onKeyDraftChanged = viewModel::keyDraftChanged,
-                    onLoadCachedModels = viewModel::loadCachedModels,
-                    onHistorySearchChange = viewModel::updateHistorySearch,
-                    onKeepHistory = viewModel::setHistoryKept,
-                    onDeleteHistory = viewModel::deleteHistory,
-                    onDeleteAllHistory = viewModel::deleteAllHistory,
-                    onRefreshReadiness = ::refreshReadiness,
+                    licenseNotices = thirdPartyNotices,
+                    actions = actions,
                 )
             }
         }

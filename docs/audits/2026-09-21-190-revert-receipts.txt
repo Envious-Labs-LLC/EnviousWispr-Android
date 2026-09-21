@@ -1,0 +1,21 @@
+# Revert receipts for #190, HEAD 0ae10e1, 2026-09-21T00:48:01
+# row | mutant | suite | tests/failures/errors with the mutant | verdict
+
+anUnknownSavedTabNameLandsOnHistory | AppNavigation.kt: 'AppDestination.entries.firstOrNull { it.name == savedName } ' -> 'AppDestination.entries.firstOrNull { it.name == sa' | ui.AppRoutesTest | 2/1/0 | RED
+anUnknownSavedPageNameShowsTheTab | AppNavigation.kt: 'savedName?.let { saved -> SettingsPage.entries.firstOrNull {' -> 'savedName?.let { saved -> SettingsPage.entries.fir' | ui.AppRoutesTest | 2/1/0 | RED
+drawerIsDerivedFromTheCompletePageEnums | AppNavigation.kt: 'val pages = SettingsPage.entries.filter { it.group == group ' -> 'val pages = SettingsPage.entries.filter { it.group' | ui.AppNavigationShapeTest | 1/1/0 | RED
+theShellDeclaresNoComponentAndNoChrome | AppShell.kt: '@Composable\ninternal fun EnviousWisprApp(' -> '@Composable\nprivate fun MenuGlyph() {}\n\n@Composabl' | ui.AppShellShapeTest | 3/1/0 | RED
+theRootTakesStatePlusGroupedActions | AppShell.kt: 'actions: AppActions,\n) {' -> 'actions: AppActions,\n    extra: Int = 0,\n) {' | ui.AppShellShapeTest | 3/1/0 | RED
+theActivityBuildsTheActionsOnce | SettingsActivity.kt: 'val actions = remember(viewModel) {\n                    AppA' -> 'val actions = run {\n                    AppActions' | ui.AppShellShapeTest | 3/1/0 | RED
+AutoPasteWiringTest (repointed haystack) | SettingsComponents.kt: 'AutoPasteAvailability.NOT_PERMITTED -> "Needs attention"' -> 'else -> "Needs attention"' | paste.AutoPasteWiringTest | 8/0/0 | STAYED GREEN
+TriggerNameTest (repointed files) | AppNavigation.kt: '/** The hamburger. Three lines, drawn rather than imported, ' -> '/** The hamburger, next to the right button. */' | ui.TriggerNameTest | 2/1/0 | RED
+
+AutoPasteWiringTest (repointed haystack, honest mutant) | SettingsComponents.kt: the token 'accessibilityPermitted' written into the components file | paste.AutoPasteWiringTest | 8/1/0 | RED
+# The arm-deletion mutant above stays green because SettingsPages.kt also names every member; the widened haystack's new coverage is the direct-permission prohibition, which the line above proves red.
+
+# Restored: git status --short is empty after every mutant.
+# The activity-recreation row's mutant (rememberSaveable -> remember on settingsPageName) is an instrumented row; its receipt is taken on the AVD.
+
+# Instrumented receipt, taken on the AVD (emulator-5554, EnviousWispr_Android_16_Play, debug build of 4fd1b21), 2026-09-21:
+anOpenSettingsPageSurvivesActivityRecreation | AppShell.kt: 'var settingsPageName by rememberSaveable { mutableStateOf<String?>(null) }' -> 'var settingsPageName by remember { mutableStateOf<String?>(null) }' | ui.AppShellNavigationTest (connectedDebugAndroidTest) | 3/1/0, report timestamp 2026-09-21T05:16:31, only the recreation row red | RED
+# Control: the same three rows against the restored tree, 3/0/0, report timestamp 2026-09-21T05:00:35 before the mutant and 2026-09-21T05:32:37 after the restore.

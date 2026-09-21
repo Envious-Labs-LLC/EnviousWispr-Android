@@ -1,4 +1,4 @@
-Revert receipts for #192 at d48ed64 (2026-09-21 13:12)
+Revert receipts for #192 at 60b2dc7 (2026-09-21 13:17)
 
 applied R1
 R1: revert applied to app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt; gradle exit 1; expected red: SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget

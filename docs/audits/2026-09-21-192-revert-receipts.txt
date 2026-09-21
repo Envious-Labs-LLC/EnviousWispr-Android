@@ -1,4 +1,4 @@
-Revert receipts for #192 at a6083b7 (2026-09-21 12:51)
+Revert receipts for #192 at 7042538 (2026-09-21 12:55)
 
 applied R1
 R1: revert applied to app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt; gradle exit 1; expected red: SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
@@ -22,4 +22,4 @@ R4: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordi
   RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
   restored: 0
 
-tree after: 1 dirty tracked files
+tree after, excluding this receipt: 0 dirty tracked files

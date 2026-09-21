@@ -556,7 +556,6 @@ internal class DictationSessionRig {
             events += "unbind"
             timeline += "unbind"
         }
-        override fun postUnbindToMain(beforeUnbind: () -> Unit) { mainExecutor.execute { run("post") { beforeUnbind(); unbind() } } }
         override fun stopAudioService() { events += "stopAudioService" }
 
         /** The platform reporting a helper's death, on main. */

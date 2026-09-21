@@ -841,29 +841,26 @@ class AudioCaptureService : Service() {
             active.detector.close(unbindNow = true)
             active.picture.close()
         }
-        val thread = captureThread
-        if (thread != null && thread !== Thread.currentThread()) {
-            thread.join(2_000L)
-            if (thread.isAlive) {
-                // The capture thread is the sole owner of AudioRecord and the file. Do not
-                // close either resource here after the bounded wait. Process termination of
-                // the isolated :audio service will reclaim them without an ANR-length wait.
-                DebugLogger.warn(TAG, "Capture thread did not finish during service teardown")
-            }
-        }
+        // NOT joined (#115): the capture thread is the sole owner of AudioRecord and the file, and it
+        // releases both in its own releaseSession whenever its read returns; a thread parked inside a
+        // read is abandoned to process termination rather than held on the main thread for two seconds.
+        // A new take in this process cannot open a second recorder while the old one is held:
+        // startRecording refuses while `session` is set, and releaseSession clears it only after the
+        // recorder is released.
         if (captureThread?.isAlive != true) {
             captureThread = null
             synchronized(sessionLock) {
                 isRecording.set(false)
             }
         }
-        // A hold that slipped in between the flag and the join is ended here, before its expiry dies.
+        // A hold that slipped in between the flag and the stop is ended here, before its expiry dies.
         synchronized(sessionLock) { warmHoldOwner.close(WarmHold.END_DESTROYED) }
-        // After the join: the capture thread's cleanup removed its listener; nothing else posts here.
+        // The route thread quits after what is already posted; the capture thread's cleanup removes its
+        // own listener when it runs.
         routeThread.quitSafely()
-        // After the join too: a take that ended above published its ending through this worker, which
-        // delivers what is queued and then leaves (#115). Never joined. Both slots cleared here as well:
-        // a destroyed service pushes nothing.
+        // A take that ended above published its ending through this worker, which delivers what is queued
+        // and then leaves (#115). Never joined. Both slots cleared here as well: a destroyed service
+        // pushes nothing.
         takeEvents.close()
         spectrumListener.set(null)
         takeListener.set(null)

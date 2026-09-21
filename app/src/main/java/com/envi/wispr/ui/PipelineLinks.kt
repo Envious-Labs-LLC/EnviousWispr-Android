@@ -129,12 +129,6 @@ internal interface PipelineController {
     /** Unbinds whatever is bound and clears the links. Idempotent. */
     fun unbind()
 
-    /**
-     * [beforeUnbind] then [unbind], posted to the main looper, for a cleanup thread that outlives the
-     * Service; the owner passes its idempotent polish-cancel backstop, as the old posted unbind ran it.
-     */
-    fun postUnbindToMain(beforeUnbind: () -> Unit)
-
     /** `stopService` on the capture service, for the paths that stop it rather than let it hold the earbuds. */
     fun stopAudioService()
 

@@ -144,7 +144,7 @@ class AudioServiceShapeTest {
             "warn: Auto-stop unavailable: the detector reported so",
             "warn: Auto-stop unavailable: the feeder failed, \${}",
             "warn: Bluetooth link refused for \${}; staying on the earbuds",
-            "warn: Capture thread did not finish during service teardown",
+            // "warn: Capture thread did not finish during service teardown" left with the join it announced (#115 chunk C).
             "warn: Detector unbind failed: \${}",
             "warn: Failed to close audio file: \${}",
             "warn: Failed to flush audio file: \${}",

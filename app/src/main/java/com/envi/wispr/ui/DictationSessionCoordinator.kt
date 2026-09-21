@@ -1784,23 +1784,19 @@ internal class DictationSessionCoordinator(
         serviceJob.cancel()
         val captureRunning = destroyedState == SessionState.RECORDING || destroyedState == SessionState.STARTING
         if (captureRunning && teardownStarted.compareAndSet(false, true)) {
-            // Captures the link and the controller only: the Service is dead once `onDestroy` returns,
-            // and this thread outlives it (`PipelineBindings` binds through the application context).
-            val capture = pipeline.capture
-            val pipeline = pipeline
+            // Down the lane, like every other call into the capture process (#115): the lane's daemon
+            // thread outlives the Service, and the link it captured stays valid after the unbind below.
             // The file is the capture process's one cache file and the next take overwrites it; nothing
-            // waits for it here (#115).
-            Thread({
-                runCatching { capture?.stopCapture() }
-                pipeline.stopAudioService()
-                pipeline.postUnbindToMain(::cancelOpenPolishRequest)
-            }, "DestroyedSessionCleanup").start()
-        } else {
-            if (sessionWasOpen) pipeline.stopAudioService()
-            cancelOpenPolishRequest()
-            pipeline.unbind()
+            // waits for it here.
+            commandCapture("stop at destroy") { it.stopCapture() }
         }
-        // No further command is accepted; a command already running finishes on its own thread.
+        // The service is stopped by intent whether or not that stop is ever delivered (a wedged process
+        // gets neither, and the OS or the user ends it); the bindings go now, on main, with nothing waited
+        // for.
+        if (sessionWasOpen) pipeline.stopAudioService()
+        cancelOpenPolishRequest()
+        pipeline.unbind()
+        // No further command is accepted; the stop above, if queued, still runs on the lane's own thread.
         captureCommands.shutdown()
     }
 }

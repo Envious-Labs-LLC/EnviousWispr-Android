@@ -47,15 +47,12 @@ import com.envi.wispr.ui.DictationSessionService
 import com.envi.wispr.settings.AppPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import java.util.UUID
 
 class PasteAccessibilityService : AccessibilityService() {
@@ -609,8 +606,7 @@ class PasteAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        // Retract the publication FIRST. Teardown below blocks this thread draining Room, and a
-        // reader during that window would otherwise see a healthy binding on a dying service.
+        // Retract the publication FIRST, so no reader sees a healthy binding on a dying service.
         if (instance === this) publishBinding(null)
         lookScope.cancel()
         getSystemService(AudioManager::class.java)?.unregisterAudioDeviceCallback(audioDeviceCallback)
@@ -620,25 +616,24 @@ class PasteAccessibilityService : AccessibilityService() {
         mainHandler.removeCallbacks(retryRunnable)
         retryScheduled = false
         cancelDiscoveryRetries()
-        // Announced BEFORE the blocking Room drain below, for the reason spelled out on
-        // recordAndAnnounce: what survives this teardown is the durable notification, and it only
-        // survives if it is handed to the system while this process is still alive.
+        // Announced here, for the reason spelled out on recordAndAnnounce: what survives this teardown
+        // is the durable notification, and it only survives if it is handed to the system while this
+        // process is still alive. Its History write goes on the application's queue (#115).
         pendingInsertion?.let { pending ->
             pending.targetPackage = pinnedTarget?.packageName
             logOutcome(pending, InsertionOutcomeLine.Outcome.DESTROYED, pinnedTarget?.packageName)
             recordAndAnnounce(ServiceFallbackReason.SERVICE_DESTROYED, pending)
         }
         pendingInsertion = null
-        runBlocking(Dispatchers.IO) {
-            historyScope.coroutineContext[Job]?.children?.toList()?.joinAll()
-        }
+        // Nothing is drained here (#115): the take's History writes are the application queue's, in
+        // order, and the bubble-position saves on this scope are a preference whose next save wins, so a
+        // cancelled in-flight one costs nothing the next open does not restore.
         historyScope.cancel()
         clearPinnedTarget()
         clearTarget()
-        // LAST, after the blocking Room drain above. Marking clean before it would record a system
-        // kill that lands during the drain as an orderly stop, which is the case the marker exists
-        // to catch.
-        markStopWasClean()
+        // LAST on the queue, behind the outcome write above: a system kill that lands while that write is
+        // still pending must not read as an orderly stop, which is the case the marker exists to catch.
+        ModelBootstrapApplication.historyWrites(applicationContext).enqueue("clean-stop marker") { markStopWasClean() }
         super.onDestroy()
     }
 

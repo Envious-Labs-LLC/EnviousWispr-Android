@@ -119,13 +119,6 @@ internal class PipelineBindings(
         polish = null
     }
 
-    override fun postUnbindToMain(beforeUnbind: () -> Unit) {
-        mainHandler.post {
-            beforeUnbind()
-            unbind()
-        }
-    }
-
     override fun stopAudioService() {
         runCatching { appContext.stopService(Intent(appContext, AudioCaptureService::class.java)) }
             .onFailure { error -> log.warn("Unable to stop audio capture service: ${error.message}") }

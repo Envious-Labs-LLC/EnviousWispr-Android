@@ -1,0 +1,25 @@
+Revert receipts for #192 at 685a22a (2026-09-21 12:43)
+
+applied R1
+R1: revert applied to app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt; gradle exit 1; expected red: SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  restored: 0
+
+applied R2
+R2: revert applied to app/src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt; gradle exit 1; expected red: SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  restored: 0
+
+applied R3
+R3: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt; gradle exit 1; expected red: aStoppingToggleNeverRepinsTheTarget (the toggle that stops re-pins) and onlyTheOwnerPinsTheTarget (a second owner call)
+  RED DictationSessionCoordinatorTest.aStoppingToggleNeverRepinsTheTarget
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  restored: 0
+
+applied R4
+R4: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt; gradle exit 1; expected red: aRefusedBusyStartNeverPinsTheTarget (the busy branch pins) and onlyTheOwnerPinsTheTarget (a second owner call)
+  RED DictationSessionCoordinatorTest.aRefusedBusyStartNeverPinsTheTarget
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  restored: 0
+
+tree after: 0 dirty tracked files

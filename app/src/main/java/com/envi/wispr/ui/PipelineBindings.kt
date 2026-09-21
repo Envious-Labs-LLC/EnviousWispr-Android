@@ -12,6 +12,7 @@ import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.audio.IAudioSpectrumListener
+import com.envi.wispr.audio.ITakeListener
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
 import com.envi.wispr.polish.PolishOutcome
@@ -132,43 +133,30 @@ internal class PipelineBindings(
 
     /** Pass-through; a binder exception escapes to the caller's `runCatching`, exactly as the proxy's did. */
     private class CaptureProxy(private val service: IAudioCaptureService) : CaptureLink {
-        /**
-         * The Stub registered with the audio process, kept so the unregister passes the SAME binder
-         * (#187). Written on the owner's main thread; its `onSpectrum` runs on binder threads.
-         */
-        @Volatile private var spectrumStub: IAudioSpectrumListener.Stub? = null
 
         override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean =
             service.startCaptureForTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)
-        override fun lastStartFailure(): Int = service.lastStartFailure
         override fun stopCapture() = service.stopCapture()
-        override fun waitForFileReady(timeoutMs: Long): Boolean = service.waitForFileReady(timeoutMs)
-        override fun liveState(): Int = service.liveState
-        override fun isCapturing(): Boolean = service.isCapturing
-        override fun audioFilePath(): String? = service.audioFilePath
-        override fun elapsedMs(): Long = service.elapsedMs
-        override fun silenceStopStatus(): Int = service.silenceStopStatus
-        override fun inputRouteKind(): Int = service.inputRouteKind
-        override fun inputRouteReason(): Int = service.inputRouteReason
-        override fun liveAfterMs(): Long = service.liveAfterMs
-        override fun terminalReason(): Int = service.terminalReason
         override fun listenForSpectrum(listener: SpectrumListener) {
             val stub = object : IAudioSpectrumListener.Stub() {
                 override fun onSpectrum(bands: FloatArray?) {
                     listener.onSpectrum(bands ?: FloatArray(0))
                 }
             }
-            spectrumStub = stub
             service.registerSpectrumListener(stub)
         }
-        override fun stopListeningForSpectrum() {
-            val stub = spectrumStub ?: return
-            spectrumStub = null
-            service.unregisterSpectrumListener(stub)
-        }
-        override fun effectiveInputDevice(): String? = service.effectiveInputDevice
-        override fun takePeakAmplitude(): Float = service.takePeakAmplitude
         override fun finishTake(): Boolean = service.finishTake()
+
+        override fun listenForTake(listener: TakeListener) {
+            val stub = object : ITakeListener.Stub() {
+                override fun onLive(forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) = listener.onLive(forced, routeKind, routeReason, liveAfterMs)
+                override fun onTick(elapsedMs: Long) = listener.onTick(elapsedMs)
+                override fun onSilenceStatus(status: Int) = listener.onSilenceStatus(status)
+                override fun onEnded(terminalReason: Int, startFailure: Int, audioFilePath: String?, silenceStatus: Int, takePeakAmplitude: Float, effectiveInputDevice: String?) =
+                    listener.onEnded(TakeEnding(terminalReason, startFailure, audioFilePath?.takeIf { it.isNotEmpty() }, silenceStatus, takePeakAmplitude, effectiveInputDevice.orEmpty()))
+            }
+            service.registerTakeListener(stub)
+        }
     }
 
     /**

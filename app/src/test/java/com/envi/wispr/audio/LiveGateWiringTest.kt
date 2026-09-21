@@ -138,11 +138,14 @@ class LiveGateWiringTest {
         val casLines = Regex("compareAndSet\\(SessionState\\.(STARTING|RECORDING), SessionState\\.\\w+\\)").findAll(session).count()
         val lockedCas = Regex("synchronized\\(publishLock\\) \\{\\s*\\n\\s*if \\(!state\\.compareAndSet\\(SessionState\\.(STARTING|RECORDING), SessionState\\.\\w+\\)\\)").findAll(session).count()
         assertTrue("every CAS out of STARTING/RECORDING ($casLines) sits under publishLock ($lockedCas)", casLines == lockedCas)
-        val wait = body(session, "private fun waitForLive()")
-        assertTrue("publication is posted to the main thread, where commands are dispatched", wait.contains("host.postToMain { publishLive(forced) }"))
+        // Since #115 the live event arrives on a binder thread and is posted to main, where commands
+        // are dispatched, before it publishes.
+        val listener = session.substringAfter("private val takeListener = object : TakeListener {").substringBefore("\n    }\n")
+        assertTrue("publication is posted to the main thread", listener.contains("host.postToMain { rearmSilenceBound(); publishLive(forced, routeKind, routeReason, liveAfterMs) }"))
         assertTrue(body(session, "private fun publishLive(").contains("check(host.onMainThread())"))
-        assertTrue("the waiter claims failure before any cleanup", wait.indexOf("failWhileStarting(") < wait.indexOf("waitForFileReady"))
-        assertFalse("the waiter never overwrites another owner with showError", wait.contains("showError("))
+        val deadline = body(session, "private fun onLiveDeadline()")
+        assertTrue("the deadline claims failure before any cleanup", deadline.indexOf("failWhileStarting(") < deadline.indexOf("stopCapture()"))
+        assertFalse("the deadline never overwrites another owner with showError", deadline.contains("showError("))
     }
 
     @Test
@@ -169,18 +172,21 @@ class LiveGateWiringTest {
         assertTrue(publish.indexOf("compareAndSet(SessionState.STARTING, SessionState.RECORDING)") < publish.indexOf("surface.show()"))
         val destroy = session.substringAfter("fun destroy()")
         assertTrue("teardown invalidates under the same lock, before cleanup", destroy.indexOf("synchronized(publishLock)") < destroy.indexOf("serviceJob.cancel()"))
-        val wait = body(session, "private fun waitForLive()")
-        listOf("state.get() != SessionState.STARTING", "pipeline.capture ?: return", "!capturing", "LIVE_WAIT_BOUND_MS").forEach {
-            assertTrue("the waiter has its exit: $it", wait.contains(it))
-        }
+        // Since #115 there is no waiter thread: the STARTING bound is a main-thread deadline armed before
+        // the start command and cancelled at live; the live event itself carries the transition.
+        assertTrue("the live deadline is armed before the start command", start.indexOf("host.postToMainDelayed(LIVE_WAIT_BOUND_MS, liveDeadline)") in 0 until start.indexOf("startCaptureForTake("))
+        assertTrue("the deadline fails the take only while STARTING", body(session, "private fun onLiveDeadline()").contains("if (state.get() != SessionState.STARTING) return"))
+        assertTrue("live cancels the deadline", publish.contains("host.cancelMainDelayed(liveDeadline)"))
+        assertFalse("no waiter thread remains", session.contains("waitForLive") || session.contains("LiveWaiter"))
     }
 
     @Test
     fun theHistoryDurationIsTheFileLengthReadBeforeTranscriptionCanDeleteIt() {
-        val stop = body(session, "private fun stopAndTranscribe()")
+        // Since #115 the file arrives CLOSED on the ending event; the duration is read from it there.
+        val stop = body(session, "private fun continueAfterEnding(")
         val duration = stop.indexOf("PcmAudio.durationSeconds(File(it).length())")
         assertTrue(duration > 0)
-        assertTrue("read after the file is ready", duration > stop.indexOf("waitForFileReady(2_000L)"))
+        assertTrue("read from the ending's path", stop.indexOf("val audioFilePath = ending.audioFilePath") in 0 until duration)
         assertTrue("and before the take is handed to the service", duration < stop.indexOf("finishTakeOrStop()"))
         assertFalse("no wall-clock fallback", stop.contains("System.currentTimeMillis() - recordingStartedAtMs"))
     }

@@ -1,5 +1,6 @@
 package com.envi.wispr.audio
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -32,6 +33,7 @@ class LiveAudioMeterWiringTest {
     private val aidl = File("src/main/aidl/com/envi/wispr/audio/IAudioCaptureService.aidl").readText()
     private val listenerAidl = File("src/main/aidl/com/envi/wispr/audio/IAudioSpectrumListener.aidl").readText()
     private val bindings = File("src/main/java/com/envi/wispr/ui/PipelineBindings.kt").readText()
+    private val links = File("src/main/java/com/envi/wispr/ui/PipelineLinks.kt").readText()
 
     /** The text of one named function, and a loud failure if the name is gone. */
     private fun body(source: String, declaration: String): String {
@@ -51,18 +53,22 @@ class LiveAudioMeterWiringTest {
         // The seam is only as good as its production delegate (Codex review C1, 2026-09-20).
         assertTrue(recorder.contains("override fun updateBands(takeSerial: Long, bands: FloatArray) = RecordingOverlayState.updateBands(takeSerial, bands)"))
         assertTrue(recorder.contains("override fun currentTakeSerial(): Long = RecordingOverlayState.snapshots.value.takeSerial"))
-        val polling = body(session, "private fun startPolling()")
-        assertTrue("the polling thread registers the listener once the take is live", polling.contains("listenForPicture()"))
-        assertTrue("and no meter thread remains", !session.contains("DictationMeterThread") && !session.contains("METER_INTERVAL_MS"))
+        // Since #115 there is no polling thread at all: the listener is registered at live, in
+        // publishLive after show() stamped the take's serial.
+        val publish = body(session, "private fun publishLive(")
+        assertTrue("live registers the picture listener after show()", publish.indexOf("surface.show()") in 0 until publish.indexOf("listenForPicture()"))
+        assertTrue("and no meter or polling thread remains", listOf("DictationMeterThread", "METER_INTERVAL_MS", "DictationPollingThread", "startPolling").none { session.contains(it) })
     }
 
     @Test
-    fun theOwnerUnsubscribesWhereEverySessionEnds() {
+    fun theOwnerNeverCallsTheCaptureProcessToDropASubscription() {
+        // Since #115 both subscriptions die with the binding: the owner makes no synchronous call to a
+        // capture process at teardown, because on the path that matters it is the process that stopped
+        // answering. The Kotlin link has no unregister member to call.
         val finish = body(session, "private fun finishSession()")
-        val unsubscribe = finish.indexOf("runCatching { pipeline.capture?.stopListeningForSpectrum() }")
-        val unbind = finish.indexOf("pipeline.unbind()")
-        assertTrue("finishSession unregisters the listener", unsubscribe >= 0)
-        assertTrue("before it unbinds", unbind > unsubscribe)
+        assertTrue("finishSession disarms the bound and unbinds", finish.indexOf("disarmSilenceBound()") in 0 until finish.indexOf("pipeline.unbind()"))
+        assertFalse(session.contains("stopListeningForSpectrum") || session.contains("stopListeningForTake"))
+        assertFalse(links.contains("stopListeningForSpectrum") || links.contains("stopListeningForTake"))
     }
 
     @Test
@@ -90,14 +96,13 @@ class LiveAudioMeterWiringTest {
     }
 
     @Test
-    fun theProxyRegistersAndUnregistersTheSameStub() {
+    fun theProxyRegistersAFreshStubAndKeepsNothing() {
+        // Since #115 the proxy registers and forgets: the slot is the binding's, dropped with it.
         val proxy = bindings.substringAfter("private class CaptureProxy(")
-        assertTrue("the proxy keeps the Stub it registered", proxy.contains("@Volatile private var spectrumStub: IAudioSpectrumListener.Stub? = null"))
-        val listen = proxy.substringAfter("override fun listenForSpectrum(listener: SpectrumListener) {").substringBefore("override fun stopListeningForSpectrum()")
+        val listen = proxy.substringAfter("override fun listenForSpectrum(listener: SpectrumListener) {").substringBefore("override fun finishTake()")
         assertTrue("it forwards every picture to the Kotlin listener", listen.contains("listener.onSpectrum(bands ?: FloatArray(0))"))
-        assertTrue("stores the Stub before registering it", listen.indexOf("spectrumStub = stub") in 0 until listen.indexOf("service.registerSpectrumListener(stub)"))
-        val stop = proxy.substringAfter("override fun stopListeningForSpectrum() {").substringBefore("override fun effectiveInputDevice()")
-        assertTrue("and unregisters exactly the stored Stub", stop.contains("val stub = spectrumStub ?: return") && stop.contains("service.unregisterSpectrumListener(stub)"))
+        assertTrue("and registers the Stub it just built", listen.contains("service.registerSpectrumListener(stub)"))
+        assertFalse("nothing is kept for an unregister that no longer exists", proxy.contains("spectrumStub") || proxy.contains("unregisterSpectrumListener"))
     }
 
     @Test

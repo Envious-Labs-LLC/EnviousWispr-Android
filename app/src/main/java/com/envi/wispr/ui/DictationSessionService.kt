@@ -134,6 +134,14 @@ class DictationSessionService : Service() {
             mainHandler.post(runnable)
         }
 
+        override fun postToMainDelayed(delayMs: Long, runnable: Runnable) {
+            mainHandler.postDelayed(runnable, delayMs)
+        }
+
+        override fun cancelMainDelayed(runnable: Runnable) {
+            mainHandler.removeCallbacks(runnable)
+        }
+
         override fun onMainThread(): Boolean = Looper.myLooper() == Looper.getMainLooper()
 
         override fun elapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()

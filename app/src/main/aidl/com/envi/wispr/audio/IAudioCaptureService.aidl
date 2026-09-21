@@ -1,6 +1,7 @@
 package com.envi.wispr.audio;
 
 import com.envi.wispr.audio.IAudioSpectrumListener;
+import com.envi.wispr.audio.ITakeListener;
 
 interface IAudioCaptureService {
     boolean startCapture();
@@ -117,4 +118,18 @@ interface IAudioCaptureService {
 
     /** Stop receiving the picture. A listener that is not the registered one is ignored. */
     void unregisterSpectrumListener(IAudioSpectrumListener listener);
+
+    /**
+     * The take's events are PUSHED to this one listener (#115): live, a heartbeat each second, the silence
+     * status, and the ending with the closed file's path. Register BEFORE startCaptureForTake so no event
+     * precedes the registration; the slot is the binding's and is dropped with it, so an owner tearing
+     * down never has to call anything on an unresponsive process. Since #115 the owner makes no other read
+     * on this interface: isCapturing, getTerminalReason, getElapsedMs, getLiveState, getLiveAfterMs,
+     * getSilenceStopStatus, getInputRouteKind, getInputRouteReason, getLastStartFailure, getAudioFilePath,
+     * getEffectiveInputDevice, getTakePeakAmplitude and waitForFileReady are LEGACY with no production
+     * caller, kept because this interface is append-only.
+     */
+    void registerTakeListener(ITakeListener listener);
+
+    void unregisterTakeListener(ITakeListener listener);
 }

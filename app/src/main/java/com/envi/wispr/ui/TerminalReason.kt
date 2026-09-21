@@ -59,6 +59,8 @@ internal enum class TerminalReason(val result: TerminalResult) {
 
     // A pipeline process went away mid-take. Three members, never one shared "service died".
     AUDIO_PROCESS_DIED(TerminalResult.AUDIO_INTERRUPTED),
+    /** The audio process stopped publishing the take's events for the silence bound: frozen or wedged, not dead (#115). */
+    AUDIO_PROCESS_UNRESPONSIVE(TerminalResult.AUDIO_INTERRUPTED),
     ASR_PROCESS_DIED(TerminalResult.ASR_INTERRUPTED),
     POLISH_PROCESS_DIED(TerminalResult.FAILED),
 

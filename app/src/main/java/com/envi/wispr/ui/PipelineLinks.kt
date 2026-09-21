@@ -17,31 +17,49 @@ internal fun interface SpectrumListener {
     fun onSpectrum(bands: FloatArray)
 }
 
-/** `IAudioCaptureService`, the members the owner uses. */
+/**
+ * The take's events as `ITakeListener` delivers them (#115). Every method arrives on a binder thread; the
+ * owner posts each to its main thread before acting, which serialises them in delivery order.
+ */
+internal interface TakeListener {
+    fun onLive(forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long)
+    fun onTick(elapsedMs: Long)
+    fun onSilenceStatus(status: Int)
+    fun onEnded(ending: TakeEnding)
+}
+
+/** The ending as `ITakeListener.onEnded` carries it: the closed file, and every fact the owner once asked for. */
+internal data class TakeEnding(
+    val terminalReason: Int,
+    val startFailure: Int,
+    /** The CLOSED file, or null for an ending with no file (a start refused before capture began). */
+    val audioFilePath: String?,
+    val silenceStatus: Int,
+    val takePeakAmplitude: Float,
+    val effectiveInputDevice: String,
+)
+
+/**
+ * `IAudioCaptureService`, the members the owner uses (#115): three COMMANDS and two listener members. The
+ * owner reads nothing from the audio process; every fact it needs is pushed through [TakeListener] and
+ * [SpectrumListener]. A synchronous call into a process that stops answering has no timeout, so the fewer
+ * there are the smaller the surface the owner's silence bound has to cover.
+ */
 internal interface CaptureLink {
     fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean
-    fun lastStartFailure(): Int
     fun stopCapture()
-    fun waitForFileReady(timeoutMs: Long): Boolean
-    fun liveState(): Int
-    fun isCapturing(): Boolean
-    fun audioFilePath(): String?
-    fun elapsedMs(): Long
-    fun silenceStopStatus(): Int
-    fun inputRouteKind(): Int
-    fun inputRouteReason(): Int
-    fun liveAfterMs(): Long
-    fun terminalReason(): Int
+    fun finishTake(): Boolean
     /**
      * Receive the recorder's picture as the audio process publishes it (#187): the production link
      * builds the binder Stub and registers it; a later call replaces the earlier registration.
      */
     fun listenForSpectrum(listener: SpectrumListener)
-    /** Unregister the Stub `listenForSpectrum` registered, if any. Idempotent. */
-    fun stopListeningForSpectrum()
-    fun effectiveInputDevice(): String?
-    fun takePeakAmplitude(): Float
-    fun finishTake(): Boolean
+    /**
+     * Receive the take's events (#115). Registered BEFORE `startCaptureForTake` so no event precedes it.
+     * Both listener slots are the binding's and die with it: the owner never calls the audio process to
+     * drop one, because on the path that matters most that process is the one that stopped answering.
+     */
+    fun listenForTake(listener: TakeListener)
 }
 
 /** The answer to one `IAsrService.transcribeFileForTake`; the engine answers once. */

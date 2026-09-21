@@ -215,6 +215,20 @@ internal class DictationSessionRig {
             stopped.countDown()
         }
         override fun postToMain(runnable: Runnable) { mainExecutor.execute { run("post", runnable) } }
+
+        /** Delayed posts, in order, never fired by a clock: [fireDelayed] runs them on the fake main thread. */
+        val delayed = CopyOnWriteArrayList<Pair<Long, Runnable>>()
+        /** How many delayed posts were made in all; a re-arm is a cancel and a new post. */
+        val delayedPosts = AtomicLong(0L)
+        override fun postToMainDelayed(delayMs: Long, runnable: Runnable) { delayedPosts.incrementAndGet(); delayed += delayMs to runnable }
+        override fun cancelMainDelayed(runnable: Runnable) { delayed.removeIf { it.second === runnable } }
+
+        /** Test time passes: every delayed post with [delayMs] due fires, on main, in the order it was posted. */
+        fun fireDelayed(delayMs: Long) {
+            val due = delayed.filter { it.first == delayMs }
+            delayed.removeAll(due)
+            due.forEach { (_, runnable) -> onMain { runnable.run() } }
+        }
         override fun onMainThread(): Boolean = Thread.currentThread() === mainThread
         override fun elapsedRealtimeMs(): Long = System.nanoTime() / 1_000_000L
 
@@ -276,23 +290,30 @@ internal class DictationSessionRig {
         override fun isBound(): Boolean = bound
     }
 
-    /** The capture process as the owner sees it. `startCaptureForTake` writes a small PCM file for the stop path to measure. */
+    /**
+     * The capture process as the owner sees it (#115): three commands in, the take's events out. Like the
+     * audio process it PUSHES: a successful start publishes live (unless [liveStateAfterStart] holds it
+     * WAITING), a stop or a cancel publishes the ending with the closed file, and a test can end the take on
+     * its own or go silent. Every push runs on its own thread, as a binder thread would.
+     * `startCaptureForTake` writes a small PCM file for the stop path to measure.
+     */
     inner class FakeCapture : CaptureLink {
         @Volatile var startResult = true
         @Volatile var startFailure = AudioCaptureService.START_FAILURE_NONE
         @Volatile var liveStateAfterStart = AudioCaptureService.LIVE_READY
-        @Volatile var fileReady = true
-        /** When set, `waitForFileReady` blocks until the test opens it: holds a cancel in CANCELLING. */
-        @Volatile var fileReadyGate: CountDownLatch? = null
+        /** When set, the ending is held until the test opens it: holds a cancel or a stop waiting for the file. */
+        @Volatile var endingGate: CountDownLatch? = null
+        /** When true the process is WEDGED: no event leaves it after live, whatever the owner asks. */
+        @Volatile var silent = false
         @Volatile var ending = AudioCaptureService.TERMINAL_REASON_MANUAL
         @Volatile var peak: Float = 0.5f
-        @Volatile var throwOnPeak = false
         @Volatile var capturing = false
-        @Volatile var live = AudioCaptureService.LIVE_WAITING
         @Volatile var audioFile: File? = null
         val events = CopyOnWriteArrayList<String>()
         private val started = CountDownLatch(1)
         private val stopRequested = CountDownLatch(1)
+        @Volatile private var takeListener: TakeListener? = null
+        private val ended = java.util.concurrent.atomic.AtomicBoolean(false)
 
         /** The owner asked capture to start. */
         fun awaitStarted() {
@@ -311,34 +332,64 @@ internal class DictationSessionRig {
             startArguments += "start(autoStop=$autoStopOnSilence, pause=$pauseSeconds)"
             if (!startResult) {
                 started.countDown()
+                // A refused start publishes its own ending with the failure code and no file (#115).
+                push { it.onEnded(TakeEnding(AudioCaptureService.TERMINAL_REASON_NONE, startFailure, null, AudioCaptureService.SILENCE_STATUS_DISABLED, 0f, "")) }
                 return false
             }
             audioFile = File.createTempFile("take", ".pcm").apply { writeBytes(ByteArray(32_000)) }
             capturing = true
-            live = liveStateAfterStart
             started.countDown()
+            when (liveStateAfterStart) {
+                AudioCaptureService.LIVE_READY -> push { it.onLive(false, 0, 0, 120L); it.onTick(0L) }
+                AudioCaptureService.LIVE_FORCED -> push { it.onLive(true, 0, 0, 120L); it.onTick(0L) }
+                else -> Unit
+            }
             return true
         }
-        override fun lastStartFailure(): Int = startFailure
+
         override fun stopCapture() {
             events += "stop"
             timeline += "capture-stop"
             capturing = false
             stopRequested.countDown()
+            publishEnding(ending)
         }
-        override fun waitForFileReady(timeoutMs: Long): Boolean {
-            fileReadyGate?.await(10, TimeUnit.SECONDS)
-            return fileReady
+
+        override fun finishTake(): Boolean {
+            events += "finishTake"
+            return false
         }
-        override fun liveState(): Int = live
-        override fun isCapturing(): Boolean = capturing
-        override fun audioFilePath(): String? = audioFile?.path
-        override fun elapsedMs(): Long = 1_000L
-        override fun silenceStopStatus(): Int = AudioCaptureService.SILENCE_STATUS_DISABLED
-        override fun inputRouteKind(): Int = 0
-        override fun inputRouteReason(): Int = 0
-        override fun liveAfterMs(): Long = 0L
-        override fun terminalReason(): Int = ending
+
+        /** The capture loop ended the take itself: silence, the cap, an error, or one before live. */
+        fun endOnItsOwn(reason: Int) {
+            capturing = false
+            publishEnding(reason)
+        }
+
+        /** A heartbeat from the capture loop, as the audio process sends one each second. */
+        fun tick(elapsedMs: Long) {
+            push { it.onTick(elapsedMs) }
+        }
+
+        /** The silence detector's status changed. */
+        fun silenceStatus(status: Int) {
+            push { it.onSilenceStatus(status) }
+        }
+
+        private fun publishEnding(reason: Int) {
+            if (!ended.compareAndSet(false, true)) return
+            push {
+                endingGate?.await(10, TimeUnit.SECONDS)
+                it.onEnded(TakeEnding(reason, startFailure, audioFile?.path, AudioCaptureService.SILENCE_STATUS_DISABLED, peak, "Phone microphone"))
+            }
+        }
+
+        private fun push(event: (TakeListener) -> Unit) {
+            if (silent) return
+            val target = takeListener ?: return
+            Thread({ event(target) }, "fake-audio-binder").start()
+        }
+
         /** The listener the owner registered, so a test can push a picture through it as the audio process would. */
         @Volatile var spectrumListener: SpectrumListener? = null
         private val listening = CountDownLatch(1)
@@ -354,26 +405,9 @@ internal class DictationSessionRig {
             timeline += "listen"
             listening.countDown()
         }
-        override fun stopListeningForSpectrum() {
-            if (spectrumListener == null) return
-            spectrumListener = null
-            events += "stopListening"
-            timeline += "stopListening"
-        }
-        override fun effectiveInputDevice(): String? = "Phone microphone"
-        override fun takePeakAmplitude(): Float {
-            if (throwOnPeak) throw IllegalStateException("peak unreadable")
-            return peak
-        }
-        override fun finishTake(): Boolean {
-            events += "finishTake"
-            return false
-        }
-
-        /** Capture ended on its own, as the polling thread will find. */
-        fun endOnItsOwn(reason: Int) {
-            ending = reason
-            capturing = false
+        override fun listenForTake(listener: TakeListener) {
+            takeListener = listener
+            events += "listenForTake"
         }
     }
 

@@ -59,6 +59,8 @@ class AudioServiceShapeTest {
         val expectedFunctions = setOf(
             "nextCaptureToken", "startRecording", "captureLoop", "claimEnding", "stopRecording",
             "endTake", "endTakeLocked", "releaseSession", "closeResources", "waitForFileReady",
+            // #115: the two publishers of a start refused before capture began.
+            "publishStartRefused", "failSetup",
         )
         val actualFunctions = Regex("^ {4}(?:(?:private|internal|public|protected|inline|suspend|operator|tailrec|infix)\\s+)*fun\\s+(\\w+)\\s*\\(", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
@@ -68,6 +70,8 @@ class AudioServiceShapeTest {
             "routeThread", "routeHandler", "routeScheduler", "isRecording", "captureThread", "lastAudioFile",
             "currentAmplitude", "spectrumListener", "takePeakAmplitude", "lastSilenceStatus", "terminalReason",
             "tokens", "binder",
+            // #115: the take-event listener slot and its publisher.
+            "takeListener", "takeEvents",
         )
         val actualFields = Regex("^ {4}(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:(?:private|internal|public|protected|lateinit|const)\\s+)*(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()

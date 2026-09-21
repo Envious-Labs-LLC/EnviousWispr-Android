@@ -45,6 +45,7 @@ internal object TakeNotices {
         -> null
 
         TerminalReason.AUDIO_PROCESS_DIED -> "Microphone service stopped unexpectedly"
+        TerminalReason.AUDIO_PROCESS_UNRESPONSIVE -> "The microphone stopped answering. Try again."
         TerminalReason.ASR_PROCESS_DIED -> "Speech service stopped before transcription finished"
         TerminalReason.POLISH_PROCESS_DIED -> "Polish service stopped before cleanup finished"
 

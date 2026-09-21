@@ -108,9 +108,9 @@ class DictationSessionCoordinatorTest {
 
         assertEquals(listOf(stamped), rig.surface.pictures.map { it.first })
         assertTrue("the pushed picture reached the recorder unchanged", rig.surface.pictures.single().second.contentEquals(picture))
-        val order = listOf("show", "listen", "updateBands:$stamped", "capture-stop", "stopListening", "unbind", "owner-stop")
+        val order = listOf("show", "listen", "updateBands:$stamped", "capture-stop", "unbind", "owner-stop")
         val seen = rig.timeline.filter { it in order }
-        assertEquals("show < listen < picture < capture stop < stopListening < unbind < owner stop; timeline was ${rig.timeline}", order, seen)
+        assertEquals("show < listen < picture < capture stop < unbind < owner stop; timeline was ${rig.timeline}", order, seen)
     }
 
     @Test
@@ -189,6 +189,147 @@ class DictationSessionCoordinatorTest {
         rig.host.awaitStopped()
         assertEquals("the refused START took no pin", 1L, rig.insertion.pins.get())
         assertEquals("capture was asked to start once", 1, rig.capture.events.count { it == "start" })
+    }
+
+    /**
+     * Product Outcome (#115): when this fails, Aaron says his whole PR description, presses stop, and the
+     * recorder sits there forever with his words inside it. The capture process publishes live and then
+     * nothing (a frozen or wedged process); the silence bound fires and the take ends with its sentence,
+     * the audio service is stopped by intent and the binding released, and NOTHING is called on the
+     * capture process itself. The bound is test time: the fake host fires the delayed post.
+     * REVERT: disarm the bound, or call the capture process on the wedge path.
+     */
+    @Test
+    fun aSilentAudioProcessEndsTheTakeWithinTheBound() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        // show() fires inside the live transition; the picture subscription follows it on the same main
+        // pass, so the snapshot waits for that pass to finish.
+        rig.onMain {}
+        rig.capture.silent = true
+        val callsBefore = rig.capture.events.toList()
+        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+
+        assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertTrue(rig.host.events.contains("toast:The microphone stopped answering. Try again."))
+        assertTrue("the audio service is stopped by intent", rig.pipeline.events.contains("stopAudioService"))
+        assertTrue("the binding is released", rig.pipeline.events.contains("unbind"))
+        assertEquals("nothing was asked of the wedged process", callsBefore, rig.capture.events.toList())
+        assertTrue("the draft is discarded", rig.dao.rows.isEmpty())
+    }
+
+    /**
+     * Product Outcome (#115): a stop went out and the capture process never published the ending, so
+     * the file never closed. The bound ends the take as the close that never came, the sentence it had.
+     * REVERT: let the bound only cover RECORDING.
+     */
+    @Test
+    fun aSilentCloseAfterAStopEndsAsTheCloseThatNeverCame() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.capture.silent = true
+        rig.command(coordinator, DictationSessionService.ACTION_STOP)
+        rig.capture.awaitStopRequested()
+        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+
+        assertEquals(TerminalReason.CAPTURE_CLOSE_UNSAFE, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertTrue(rig.dao.rows.isEmpty())
+    }
+
+    /**
+     * Drift Guard (#115): an ending that arrives after the bound already ended the take changes nothing;
+     * the take has one ending. REVERT: drop the state check in the ending handler.
+     */
+    @Test
+    fun aLateEndingAfterTheBoundIsDropped() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.capture.silent = true
+        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+        assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+
+        rig.capture.silent = false
+        rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_MANUAL)
+        rig.onMain {}
+        rig.onMain {}
+        assertEquals(listOf(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE), rig.endings.reasons.toList())
+        assertTrue("no transcription was asked for", rig.speech.listener == null)
+    }
+
+    /**
+     * Product Outcome (#115): the take after a wedge is an ordinary take. A fresh owner on a fresh
+     * capture process goes live and completes. REVERT: leave the bound armed or the binding held.
+     */
+    @Test
+    fun theNextTakeStartsAfterAWedge() {
+        val first = rig.coordinator()
+        startAndGoLive(first)
+        rig.capture.silent = true
+        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+        assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        rig.onMain {}
+        assertTrue("no bound is left armed once the binding is released: ${rig.host.delayed.map { it.first }} events=${rig.host.events}", rig.host.delayed.isEmpty())
+
+        val next = DictationSessionRig()
+        try {
+            val coordinator = next.coordinator()
+            coordinator.onCreated()
+            next.command(coordinator, DictationSessionService.ACTION_START)
+            next.surface.awaitShown()
+            next.command(coordinator, DictationSessionService.ACTION_STOP)
+            next.speech.awaitRequest().onResult("hello again")
+            val polish = next.polish
+            polish.awaitRequest { "log: ${next.log.lines}" }
+            polish.listener!!.onOutcome(polish.outcome("Hello again."))
+            assertEquals(TerminalReason.COMPLETED, next.endings.awaitOne())
+            assertEquals(listOf(1L to "Hello again."), next.insertion.pastes.toList())
+        } finally {
+            next.close()
+        }
+    }
+
+    /**
+     * Drift Guard (#115): every event from the capture process pushes the bound out, so a healthy take
+     * (a long silence with auto-stop off, a slow gate before live) never trips it: the bound entry is
+     * re-posted on each heartbeat and there is always exactly one. REVERT: stop re-arming on a tick.
+     */
+    @Test
+    fun aHeartbeatRearmsTheBound() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.onMain {}
+        val armed = rig.host.delayed.filter { it.first == DictationSessionCoordinator.TAKE_SILENT_BOUND_MS }
+        assertEquals("one bound armed", 1, armed.size)
+        val before = armed.single().second
+        rig.capture.tick(5_000L)
+        rig.onMain {}
+        rig.onMain {}
+        val after = rig.host.delayed.filter { it.first == DictationSessionCoordinator.TAKE_SILENT_BOUND_MS }
+        assertEquals("still exactly one bound", 1, after.size)
+        assertTrue("re-posted (cancelled and posted again), not left as it was", rig.host.delayedPosts.get() >= 2)
+        assertTrue(before === after.single().second)
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        assertEquals(TerminalReason.CANCELLED_RECORDING, rig.endings.awaitOne())
+    }
+
+    /**
+     * Drift Guard (#115): the owner ASKS the capture process nothing. Over a whole completed take the
+     * fake saw exactly the three commands and the two registrations, in this order.
+     * REVERT: add a read to `CaptureLink` and call it (the fake cannot be asked what it does not have).
+     */
+    @Test
+    fun theOwnerAsksTheCaptureProcessNothing() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals(listOf("listenForTake", "start", "listen", "stop", "finishTake"), rig.capture.events.toList())
     }
 
     @Test
@@ -279,24 +420,11 @@ class DictationSessionCoordinatorTest {
     }
 
     @Test
-    fun unmeasuredPeakLeavesNothing() {
-        rig.capture.throwOnPeak = true
-        val coordinator = rig.coordinator()
-        startAndGoLive(coordinator)
-        rig.command(coordinator, DictationSessionService.ACTION_STOP)
-        rig.speech.awaitRequest().onResult("")
-
-        assertEquals(TerminalReason.ASR_EMPTY_UNMEASURED, rig.endings.awaitOne())
-        rig.host.awaitStopped()
-        assertTrue(rig.dao.rows.isEmpty())
-    }
-
-    @Test
     fun refusedEarbudsEndsStarting() {
         val coordinator = rig.coordinator()
         startAndStayStarting(coordinator)
         rig.capture.startFailure = AudioCaptureService.START_FAILURE_EARBUDS
-        rig.capture.capturing = false
+        rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_ERROR)
 
         assertEquals(TerminalReason.CAPTURE_START_EARBUDS_REFUSED, rig.endings.awaitOne())
         rig.host.awaitStopped()
@@ -322,7 +450,7 @@ class DictationSessionCoordinatorTest {
         val coordinator = rig.coordinator()
         startAndStayStarting(coordinator)
         rig.capture.startFailure = AudioCaptureService.START_FAILURE_OTHER
-        rig.capture.capturing = false
+        rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_ERROR)
 
         assertEquals(TerminalReason.CAPTURE_ENDED_BEFORE_LIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
@@ -388,22 +516,23 @@ class DictationSessionCoordinatorTest {
     @Test
     fun destroyWhileCancellingMarksInterrupted() {
         val gate = CountDownLatch(1)
-        rig.capture.fileReadyGate = gate
+        rig.capture.endingGate = gate
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
         rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
-        // The cancel is inside waitForFileReady, held by the gate: the take is CANCELLING.
+        // The stop went out and the ending is held by the gate: the take is CANCELLING, waiting (#115).
         rig.capture.awaitStopRequested()
-        // destroy() interrupts the arbiter under the publish lock, then blocks main until the cancel's
-        // coroutine is joined; that coroutine is behind the gate. The gate opens only once the interrupt
+        // destroy() interrupts the arbiter under the publish lock. The gate opens only once the interrupt
         // has been COMMITTED (the ending sink fired), never on an earlier signal such as the recorder
         // hiding, which destroy does before the interrupt (a hosted-runner flake, 2026-09-20). The
-        // cancel's own commit then finds the take already interrupted and does nothing.
+        // cancel's own commit, when the ending lands, then finds the take already interrupted and does
+        // nothing.
         rig.postMain { coordinator.destroy() }
         assertEquals(TerminalReason.INTERRUPTED_CANCELLING, rig.endings.awaitOne())
         gate.countDown()
-        // destroy() returns only after it joined the cancel's coroutine, and this runs after it on the
-        // one main thread: by now the losing cancel has run its commit and lost.
+        // The ending is posted to main and its commit loses there; this runs after it on the one main
+        // thread.
+        rig.onMain {}
         rig.onMain {}
         assertEquals(listOf(TerminalReason.INTERRUPTED_CANCELLING), rig.endings.reasons.toList())
     }

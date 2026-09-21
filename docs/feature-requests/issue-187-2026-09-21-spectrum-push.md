@@ -1,6 +1,6 @@
 # Issue #187 — Push the recorder's picture from the audio process — 2026-09-21
 
-GitHub issue: `#187`. Tier: REFACTOR (an AIDL surface change; `workflow-process.md` RULE: tier-routing). Status: DRAFT.
+GitHub issue: `#187`. Tier: REFACTOR (an AIDL surface change; `workflow-process.md` RULE: tier-routing). Status: APPROVED (coverage, grounded G1 to G5, PROCEED-AS-PLANNED 2026-09-21; Gate 2 under the founder's standing approval of technical decisions).
 
 Consolidation: this plan is one document; §2.5 carries the evidence once and §§3 to 11 point back at it rather
 than repeating it.
@@ -18,10 +18,12 @@ below was re-read there and holds.
 the catalog row `live-audio-meter` (Android `shipped`), which this change does not alter.
 
 **Hardware UAT:** Y. The picture is a limb, but it rides the capture process (`architecture-rules.md` RULE:
-protect-audio-asr-stability: measured evidence from the physical phone). Success: the founder opens the
-recorder on the S26, speaks, and the bars move with his voice exactly as on build 149; a quiet room rests the
-rail; a take stopped by the side button, by silence and by cancel each leaves no picture behind; and the
-take-end diagnostic line reports pushes greater than zero and polls equal to zero.
+protect-audio-asr-stability: measured evidence from the physical phone). The pass is the session's (founder
+decision 2026-09-21). Success: on the emulator the rail battery (`scripts/uat/rail_signals.py`) judges every
+signal as it did on the baseline captured before this change; on the S26 a silent take
+(`scripts/uat/silent-audio/run.py`) lands its sentence while a screen recording of the pill shows the bars
+moving during the injected speech and resting after it; and the take-end diagnostic line on both devices
+reports pushes greater than zero and polls equal to zero.
 
 ## Preface — User Rubric
 
@@ -74,8 +76,9 @@ the user; the cost is budget spent on an optional picture and a design #188 must
 ## 2. Goals & non-goals
 
 ### 2.1 Goals
-- G1. No production code calls `getSpectrumBands` or `spectrumBands` (grep count in `app/src/main` is the
-  Stub override in `AudioCaptureService` and nothing else).
+- G1. No production code calls `getSpectrumBands` or `spectrumBands` (grep count over every `.kt` under
+  `app/src/main/java` is the Stub override in `AudioCaptureService` and nothing else; guarded
+  repository-wide, §11.2).
 - G2. The analyser thread pushes each published picture to at most one registered listener, at most once per
   wake, never from the capture thread, never under `bandsLock`.
 - G3. The owner registers once per take when the pill appears and unregisters where every take ends; a
@@ -165,19 +168,20 @@ failure costs the picture only (#151's comment, kept verbatim where it still hol
 - **Ordering.** Oneway calls to the same Stub dispatch in order (above), so pictures cannot overtake each
   other; they may run on different binder threads, and `RecordingOverlayState.change {}` serialises the
   commit under its lock.
-- **Dead client.** The app process dies or unbinds mid-take: the next push throws `RemoteException`; the
-  service clears the listener it was pushing to (identity compare) and logs once. `onUnbind` clears it too.
+- **Dead client.** If the app process dies, a later transact throws `RemoteException` and the service clears
+  the listener it was pushing to (identity compare), logging once. An ordinary unbind clears the slot in
+  `onUnbind`. Post-end picture delivery follows the §2.5.5 in-flight premise.
 - **Dead service.** `:audio` dies mid-take: `onCaptureDisconnected` already ends the take; no pushes arrive;
   the pill hides. Nothing to unregister; `stopListeningForSpectrum` is wrapped in `runCatching`.
 - **Stale take.** A push in flight when the take ends carries the serial the coordinator captured at
-  registration; `updateBands` refuses it under the same lock that commits `hide()`. Unchanged mechanism.
+  registration. Post-end picture delivery follows the §2.5.5 in-flight premise. Unchanged mechanism.
 - **Registration before or after start.** Registration happens in `publishLive` after `surface.show()`
   (where `startMeter()` is called today), so the serial is stamped first. Pictures analysed before
   registration are simply not delivered; the pill did not exist yet.
 - **Second registration on one binding.** The coordinator is one instance per session and unbinds at
   `finishSession` (`:1481`), so one binding sees one take. The service still replaces rather than
-  accumulates: one `@Volatile` slot, last registration wins, unregister compares `asBinder` (external) identity so a
-  late unregister cannot drop a newer listener.
+  accumulates: one `AtomicReference` slot, last registration wins, and unregister uses `asBinder` (external)
+  identity plus `compareAndSet(current, null)` so a late unregister cannot drop a newer listener.
 - **Instrumentation APK.** `app-debug-androidTest.apk` binds the real service by transaction number
   (`architecture-rules.md` RULE: aidl-is-append-only); the two new methods are appended after
   `getTakePeakAmplitude`, and `getSpectrumBands` stays.
@@ -193,6 +197,9 @@ failure costs the picture only (#151's comment, kept verbatim where it still hol
 | Every take ends through `finishSession` | `finishSession` (`:1471`) is reached from `stopAndTranscribe`'s publication, `cancelCaptureAndFinish` (`:1344,1363`), `endAsFailure`, `showError`; the rig's `awaitStopped` asserts "every terminal path ends in" the Service stopping; verified by reading each path again after the rebase (§13) |
 | The Stub cannot be built on the JVM | `PipelineLinks.kt` header: callback Stubs "extend `android.os.Binder` and cannot be constructed off the phone"; the rig fakes the link instead |
 | Oneway calls to one Stub keep order | IBinder reference, quoted in §2.5.2 |
+| A oneway `in float[]` is marshalled before the call returns, so the analyser may pass its own array | the generated proxy for the existing oneway `IPolishService.cancel` writes every argument into `_data` and only then calls `mRemote.transact(..., FLAG_ONEWAY)`, recycling the parcel in `finally` (`app/build/generated/aidl_source_output_dir/debug/out/com/envi/wispr/polish/IPolishService.java:342-352`); a `float[]` argument generates `writeFloatArray` (external) in the same position. Re-read the generated `IAudioSpectrumListener.java` after chunk 1 |
+| A push in flight when the client unbinds is harmless | `onUnbind` clears the slot on the service's main thread while the analyser (interrupted by `releaseSession`, `audio/AudioCaptureService.kt:1277`, never joined) may already hold a reference and push once more: the client's Stub object still exists in the app process after `unbindService`, so the call is delivered and `RecordingOverlayState.updateBands` treats it as today's meter thread's own in-flight read would (`finishSession` already called `showProcessing()` at `:1474`, which hides the pill and replaces its take serial (`shortcuts/RecordingOverlayState.kt:113-115`, a fresh `Snapshot` with `visible = false` and `takeSerial = 0`), so `updateBands` refuses the callback at `:142` just as the current meter breaks at its serial check (`:707`); `destroy()` called `hide()`, or the serial moved on); if the app process is gone instead, the push throws and clears the slot. Neither outcome reaches a user |
+| The instrumentation APK binds the real service by generated transaction numbers | `CaptureWithSilenceStopDeviceTest.kt:32` binds through `IAudioCaptureService.Stub.asInterface`, generated from the SAME `.aidl` at the same build, so numbers agree when both APKs are fresh; the append-only law protects an OLDER installed instrumentation APK against a NEWER production APK, which is the case the rule names |
 
 No problem-only Codex consult: the who-calls-whom is one caller and the lifecycle is the coordinator's own
 state machine, read above; the coverage round is the first reviewer.
@@ -207,13 +214,16 @@ method, `oneway void onSpectrum(in float[] bands);` (`onSpectrum` (proposed)). A
 `getSpectrumBands()` keeps its position with its comment rewritten: legacy transaction, no production caller
 since #187, kept because the interface is append-only.
 
-**Service.** `AudioCaptureService` gains `@Volatile private var spectrumListener: IAudioSpectrumListener?`
-(`spectrumListener` (proposed)), set by `registerSpectrumListener`, cleared by `unregisterSpectrumListener`
-when `listener.asBinder() == current.asBinder()`, by `onUnbind`, and by a failed push. `analyserLoop`, after
+**Service.** `AudioCaptureService` gains `spectrumListener` (proposed), an
+`AtomicReference<IAudioSpectrumListener?>`: `registerSpectrumListener` uses `set`; `unregisterSpectrumListener`
+reads the current value and, when `listener.asBinder() == current.asBinder()`, clears with
+`compareAndSet(current, null)`; a failed push clears with `compareAndSet(observedListener, null)`; `onUnbind`
+uses `set(null)`. So neither the unregister nor the cleanup can erase a newer registration. `analyserLoop`, after
 the `arraycopy` under the lock and OUTSIDE it, calls `pushSpectrum(bands)` (proposed): reads the slot once,
 calls `onSpectrum(bands)` (oneway marshals at call time, so the analyser's own array is safe to pass), and
 on `RemoteException` clears the slot if it still holds that listener and warns once per take. The failure
-branch that fills zeros also pushes zeros, so a rail whose analyser died rests. Two `AtomicInteger`
+branch fills both the local `bands` array and `publishedBands` (today it zeros `publishedBands` only,
+`:998`), then calls `pushSpectrum(bands)` outside `bandsLock`, so a rail whose analyser died rests. Two `AtomicInteger`
 counters on the `CaptureSession`, `spectrumPushes` (proposed) and `spectrumPolls` (proposed), are incremented by the
 push and by `getSpectrumBands`; `releaseSession` logs `Live picture: pushed=N polled=M` next to the
 existing take-end diagnostics (shape only).
@@ -242,9 +252,10 @@ thread: forbidden outright (RULE: protect-audio-asr-stability).
 
 ## 3b. Ownership justification
 
-The listener slot lives on `AudioCaptureService` because the binding, not the take, owns the client; the
-alternative was `CaptureSession`, but a registration can precede a session and would be lost, and the
-service already owns the binder. The push lives in `analyserLoop` because that thread already owns the
+The listener slot lives on `AudioCaptureService` because registration belongs to the service connection and
+must stay independent of `CaptureSession` cleanup (registration happens after `publishLive`, while the
+session exists, `:601`); the alternative was `CaptureSession`, whose release would drop a registration the
+binding still owns, and the service already owns the binder. The push lives in `analyserLoop` because that thread already owns the
 publish moment; the alternative was a third thread, which is one more lifetime for #188 to extract.
 
 ## 4. Contract deltas
@@ -252,7 +263,7 @@ publish moment; the alternative was a third thread, which is one more lifetime f
 | Type | Delta | Meaning to consumers |
 |---|---|---|
 | `IAudioCaptureService` | two appended registration transactions | a client may receive pushes; every existing transaction keeps its number and meaning |
-| `IAudioSpectrumListener` (proposed) | new oneway callback | at most one call per analyser wake, `BAND_COUNT` floats 0..1, in order, only while a take is open on that binding |
+| `IAudioSpectrumListener` (proposed) | new oneway callback | at most one call per analyser wake, `BAND_COUNT` floats 0..1, in order, originated while a take is open on that binding; post-end delivery follows the §2.5.5 in-flight premise |
 | `getSpectrumBands` | unchanged wire, comment rewritten | legacy; returns the same picture, counted as a poll |
 | `CaptureLink` | `spectrumBands()` removed; `listenForSpectrum`, `stopListeningForSpectrum` added | the owner cannot poll the picture; it subscribes |
 | `RecorderSurface` | `emptyBands()` removed | no caller publishes an empty picture from the owner; the service pushes zeros when its analyser fails |
@@ -263,9 +274,10 @@ publish moment; the alternative was a third thread, which is one more lifetime f
 | Population | Enumeration |
 |---|---|
 | Registration sites | one: `listenForPicture()` from `startPolling()` from `publishLive` |
-| Unregistration sites | one explicit: `finishSession`; two implicit on the service: `onUnbind`, failed push. The destroyed-session path (`destroy()`'s `DestroyedSessionCleanup` thread and its `postUnbindToMain`, `:1639`; the direct `pipeline.unbind()` at `:1644`) never reaches `finishSession`, so it relies on `onUnbind` clearing the slot: no push can arrive after the binding is gone |
-| Take exits that reach `finishSession` | `stopAndTranscribe` publication chain, `cancelCaptureAndFinish` (both branches), `endAsFailure`/`showError` paths, `handleServiceFailure`; re-read after rebase (§13) |
-| Threads that touch the listener slot | binder threads (register, unregister, unbind) and the analyser thread (push, clear on failure); the capture thread never (guard) |
+| Unregistration sites | one explicit: `finishSession`; two implicit on the service: `onUnbind`, failed push. The destroyed-session path (`destroy()`'s `DestroyedSessionCleanup` thread and its `postUnbindToMain`, `:1639`; the direct `pipeline.unbind()` at `:1644`) never reaches `finishSession`, so it relies on `onUnbind` clearing the slot; post-end delivery follows the §2.5.5 in-flight premise |
+| Take exits that reach `finishSession` | Direct callers of `finishSession()` on `9eb9161`: the empty-transcript ending in the speech callback (`:919`), `FINAL_TEXT_EMPTY` (`:1106`), the completed publication after the handoff (`:1234`), `cancelCaptureAndFinish` with no capture link (`:1344`) and after a clean stop (`:1363`), `cancelProcessing` (`:1401`), and `announceError` (`:1463`). Callers entering `announceError`: `endAsFailure` (`:1434`, reached from `showError` `:1423` and the direct `endAsFailure` calls at `:429`, `:449`, `:884`, `:898`, `:1356`) and `failWhileStarting` (`:1450`); `showError` is called at `:368`, `:396`, `:476`, `:494`, `:641`, `:647`, `:812`, `:851`, `:858`, `:906`, `:1468` (`handleServiceFailure`). Every one of these runs the `stopListeningForSpectrum` call inside `finishSession`; the two paths that do not reach it are `destroy()` (above) and a session that never left IDLE |
+| Threads that touch the service's listener slot | binder threads (register, unregister), the service's main thread (`onUnbind`), the analyser thread (push, clear on failure); the capture thread never (guard). The slot is an `AtomicReference`: registration `set`s, unregister and failed-push cleanup `compareAndSet(observedListener, null)`, so a late clear cannot erase a newer registration |
+| Threads that touch the app-side Stub field in `CaptureProxy` | the app main thread writes it (`publishLive` runs on main under `publishLock`, `:552-601`) and clears it (`finishSession`'s `postToMain` block, `:1479-1489`); binder threads in the app process run its `onSpectrum`. The field is `@Volatile`; `stopListeningForSpectrum` passes the exact Stub it stored |
 | Threads that call `surface.updateBands` | binder threads in the app process only, after this change; the coordinator's own threads never |
 | Serial comparisons | one, inside `RecordingOverlayState.updateBands` under `change {}`; the owner stamps, never compares (the meter's `break` on serial change goes with the loop) |
 | Counters reset | both on `CaptureSession` construction, per take |
@@ -274,7 +286,10 @@ publish moment; the alternative was a third thread, which is one more lifetime f
 
 | Contract delta | Consumer | Current | Required | Code change? | Verified by |
 |---|---|---|---|---|---|
+| `CaptureLink.spectrumBands` removed | `DictationSessionCoordinator.startMeter` (`:700-713`) | polls it on the meter thread | `listenForPicture` subscribes; the meter thread and `METER_INTERVAL_MS` are gone | yes | the repointed guards and the rig row |
 | `CaptureLink.spectrumBands` removed | `PipelineBindings.CaptureProxy` | forwards to the getter | method gone | yes | compile |
+| the meter thread gone | `LiveAudioMeterWiringTest` rows `theSessionOwnerReadsThePictureOnItsOwnThreadAndPublishesIt` (`:37`), `theMeterExitsWhenItsTakeIsOver` (`:55`), `thePictureIsOnlyEverReadInOnePlace` (`:63`) | assert the meter thread's text | repointed per §11.2, keeping the stale-take coverage (the serial is still stamped once and compared in `updateBands`) | yes | the tests |
+| `emptyBands` removed, the meter thread gone | `RecorderSurface.currentTakeSerial` KDoc (`ui/RecorderSurface.kt:22`, "the meter thread compares against it") | names the meter thread | reworded: "the listener stamps it on every picture; `updateBands` compares" | yes | read |
 | same | `DictationSessionRig.FakeCapture` | returns `FloatArray(0)` | fake gains `listenForSpectrum`/`stopListeningForSpectrum` recording events | yes | coordinator rows |
 | `RecorderSurface.emptyBands` removed | `OverlayRecorderSurface`, `FakeSurface` | return `NO_BANDS`/empty | gone | yes | compile |
 | appended AIDL | `SilenceStopWiringTest` order list | 23 names | 25 names | yes | the test |
@@ -289,7 +304,10 @@ publish moment; the alternative was a third thread, which is one more lifetime f
 | push throws (dead app process) | app | `pushSpectrum` | nothing (the app is gone) | none | next binding |
 | analyser throws | `:audio` | `analyserLoop` | rail rests (zeros pushed) | none | next take |
 | unregister throws | `:audio` | `finishSession` | nothing; `runCatching` | none | n/a |
-| push after `hide()` | `:audio` | `updateBands` | nothing; refused by serial/visible | none | n/a |
+| push after the take ended | `:audio` | `updateBands` | post-end picture delivery follows the §2.5.5 in-flight premise | none | n/a |
+| `:audio` dies mid-take | `:audio` | `onCaptureDisconnected` (`:408-416`) | the existing failure sentence; the pill hides; the analyser is gone with its process | none | next take |
+| take ends before the first analysed chunk | a very short take | `analyserLoop` | rail rests until hidden; `pushed=0` on the take-end line is valid for a take under one read | none | n/a |
+| take leaves RECORDING before registration | the polling thread (`:625-665`) finds capture ended before `listenForPicture` runs (`:678`) | `listenForPicture` | no picture; the listener stays registered until `finishSession`'s unregister or `onUnbind`, whichever the race reaches; a registration attempted after `pipeline.unbind()` finds `capture` null and does nothing | none | n/a |
 
 Copy: no new sentence. The one existing warning line, "Live picture unavailable for this take", is kept.
 
@@ -327,6 +345,10 @@ Copy: no new sentence. The one existing warning line, "Live picture unavailable 
 - `app/src/test/java/com/envi/wispr/ui/DictationSessionRig.kt`: fakes.
 - `app/src/test/java/com/envi/wispr/ui/DictationSessionCoordinatorTest.kt` (on the #186 branch): one row.
 - `app/src/androidTest/java/com/envi/wispr/CaptureWithSilenceStopDeviceTest.kt`: one row.
+- `docs/audits/2026-09-21-187-rail-baseline.txt`: the pre-change rail baseline (captured, seven signals PASS).
+- `docs/audits/2026-09-21-187-revert-receipts.txt`: the watched-red revert receipts.
+- `scripts/uat/rail_signals.py`: `find_pill` searches down to 0.97 of the screen, because the pill sits at
+  the bottom since the recorder moved (done with the baseline).
 - `.claude/rules/architecture-rules.md` RULE: no-idle-cost: name the push as the mechanism (one clause).
 - `.claude/knowledge/architecture.md`: the audio row names the listener.
 
@@ -346,11 +368,19 @@ Copy: no new sentence. The one existing warning line, "Live picture unavailable 
 ### 11.1 Hardware UAT spec
 
 - **Subsystem:** limb riding the heart's process.
-- **Recipe:** `device-testing.md` FACT: silent-physical-phone-audio-injection-for-night-uat for the phone;
-  on the emulator `scripts/uat/rail_signals.py` (injected tones and hiss, pill screen-recorded, bars measured
-  per frame) for the picture, plus one `dictate_emulator` take judged by the editor's text for the heart.
-- **Expected observation:** the rail battery reports the same bars-per-tone as on the current build; the
-  take-end line reads `pushed=` greater than zero and `polled=0`; the editor holds the sentence. The oracle
+- **Recipe:** `device-testing.md` FACT: silent-physical-phone-audio-injection-for-night-uat for the phone,
+  with a `screenrecord` around the take; on the emulator `scripts/uat/rail_signals.py` (injected tones and
+  hiss, pill screen-recorded, bars measured per frame) for the picture, plus one `dictate_emulator` take
+  judged by the editor's text for the heart.
+- **Baseline, captured BEFORE implementation:** `docs/audits/2026-09-21-187-rail-baseline.txt`, the rail
+  battery's full verdict on the emulator against the build-149 code (`83ded85`), seven signals passing, so
+  "the same bars-per-tone" compares two artifacts rather than a memory.
+- **Expected observation:** the rail battery's per-signal verdicts equal the baseline's; the take-end
+  line reads `pushed=` greater than zero and `polled=0` on the emulator and on the S26; the silent take's
+  editor holds the sentence; the S26 screen recording (started with `screenrecord` before the take, RULE:
+  record-the-screen-through-a-uat-take) shows the bars moving during the injected speech and resting after
+  it. The silent path bypasses the microphone, so it proves the picture pipeline on the phone's own build,
+  not the microphone's acoustics; that is the same limit the recipe already states. The oracle
   for "no polling" is the `polled` counter, incremented inside `getSpectrumBands` itself, which the buggy
   code (a surviving poller) cannot avoid incrementing. A Perfetto trace of one take is attempted once on the
   emulator as a second instrument; if the emulator's `perfetto` (external) lacks binder tracks it is recorded NOT RUN
@@ -361,12 +391,16 @@ Copy: no new sentence. The one existing warning line, "Live picture unavailable 
 
 | Test | Class | Proves | Revert that turns it red |
 |---|---|---|---|
-| `theOwnerSubscribesToThePictureAndNeverPollsIt` (proposed) (repointed from `theSessionOwnerReadsThePictureOnItsOwnThreadAndPublishesIt`) | Drift Guard | `listenForPicture` registers with the stamped serial inside `runCatching`; coordinator source has zero `spectrumBands`; `startPolling` calls it | reintroduce one `spectrumBands` read |
+| `theOwnerSubscribesToThePictureAndNeverPollsIt` (proposed) (repointed from `theSessionOwnerReadsThePictureOnItsOwnThreadAndPublishesIt`) | Drift Guard | `listenForPicture` registers with the stamped serial inside `runCatching`; `startPolling` calls it | delete the `runCatching` |
+| `nothingInProductionReadsThePicture` (proposed) (repointed from `thePictureIsOnlyEverReadInOnePlace`) | Drift Guard | over EVERY `.kt` under `app/src/main/java`, the only occurrence of `spectrumBands` or `getSpectrumBands` is the Stub override in `AudioCaptureService.kt` (G1, repository-wide, so a poller reintroduced in `CaptureProxy` or anywhere else turns it red) | add `service.spectrumBands` to `CaptureProxy` |
+| `theProxyRegistersAndUnregistersTheSameStub` (proposed) (new) | Drift Guard | `CaptureProxy` stores the Stub it built in a `@Volatile` field, passes that field to `registerSpectrumListener` and to `unregisterSpectrumListener`, and forwards `onSpectrum` to the Kotlin listener | unregister a fresh Stub instead of the stored one |
+| `theServiceClearsOnlyTheObservedListener` (proposed) (new) | Drift Guard | registration uses `set`, unregister and failed-push cleanup use `compareAndSet(observedListener, null)`, and `onUnbind` uses `set(null)` | replace either `compareAndSet` with check-then-`set(null)` |
+| `theCountersAndTheTakeEndLineAreWired` (proposed) (new) | Observability Contract | `pushSpectrum` increments `spectrumPushes`, `getSpectrumBands` increments `spectrumPolls`, `releaseSession` logs both with the literal `Live picture: pushed=` | drop the increment in the getter |
 | `theOwnerUnsubscribesWhereEverySessionEnds` (proposed) (new) | Drift Guard | `finishSession` calls `stopListeningForSpectrum` before `pipeline.unbind()` | delete the call |
 | `theAnalyserPushesOutsideTheLockAndNeverFromCapture` (proposed) (repointed from `theAudioProcessPublishesUnderOneLockAndTheGetterReadsUnderIt`) | Drift Guard | `pushSpectrum` is called after the `synchronized` block closes; `captureLoop` names neither `bandsLock` nor `spectrumListener`; a `RemoteException` clears the slot | move the push inside the lock |
 | `theListenerIsOnewayAndTheRegistrationIsAppendedLast` (proposed) (repointed from `theAidlMethodIsAppendedLast`) | Drift Guard | listener file contains `oneway void onSpectrum(in float[] bands);`; both register methods sit after `getTakePeakAmplitude` | drop `oneway` |
 | `startCaptureIsStillTheFirstTransactionAndNothingWasReordered` | Drift Guard | 25 names in order | swap the two new names |
-| `theOwnerRegistersForThePictureWhenTheTakeGoesLiveAndUnregistersWhenItEnds` (proposed) (new, rig) | Product Outcome | `FakeCapture.events` holds "listen" after "show" and "stopListening" before the Service stops; a picture pushed through the fake's listener reaches `FakeSurface.updateBands` with the stamped serial | delete `listenForPicture()` call |
+| `theOwnerRegistersForThePictureWhenTheTakeGoesLiveAndUnregistersWhenItEnds` (proposed) (new, rig) | Product Outcome | `FakeSurface`, `FakeCapture` and the owner-stop fake share one ordered event sink (a `timeline` list on the rig, proposed); `updateBands` records its serial and bands; the row asserts the order show < listen < updateBands (with the stamped serial and the pushed bands) < capture stop < stopListening < owner stop | delete the `listenForPicture()` call (no "listen", no picture) |
 | `aRegisteredListenerReceivesThePictureDuringATake` (proposed) (new, device) | Product Outcome | binding the real service, registering, a two-second take: at least one `onSpectrum` with `BAND_COUNT` floats, then none after unregister | comment out the push |
 
 ## 12. Blast radius & rollback
@@ -405,4 +439,4 @@ this); #115 (a wedged audio process; the oneway push cannot make it worse); cata
 - [x] §2.5 grounded in real code before §3 was written
 - [x] §4-9 answered, none struck through
 - [x] Lane declared and matching detection
-- [ ] Self-reviewed to all-clear before any reviewer saw it
+- [x] Self-reviewed to all-clear before any reviewer saw it

@@ -204,8 +204,11 @@ def find_pill(image):
     # The pill ground is a dark grey; the page behind it is near white. Rows and columns that are mostly
     # dark in the middle band of the screen belong to the pill.
     dark = (a.sum(axis=2) < 3 * 110)
-    # Only the middle of the screen: the status bar and the navigation bar are dark too.
-    top, bottom = int(h * 0.15), int(h * 0.85)
+    # Below the status bar and above the gesture bar: both are dark too. The pill sat mid-screen when
+    # this was written (2026-09-15) and sits at the bottom since the recorder moved there; the band
+    # reaches 0.97 so the bottom pill is inside it while the gesture bar's few rows stay outside.
+    # A dark page defeats this outright: the emulator must be in light mode (`cmd uimode night no`).
+    top, bottom = int(h * 0.15), int(h * 0.97)
     rowfrac = dark[top:bottom, wdt // 4: 3 * wdt // 4].mean(axis=1) > 0.3
     # The longest contiguous run of dark rows is the pill.
     best, start = (0, 0, 0), None

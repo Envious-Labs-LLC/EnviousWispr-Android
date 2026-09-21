@@ -2,6 +2,7 @@ package com.envi.wispr.ui
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
@@ -33,6 +34,31 @@ class SessionOwnerShapeTest {
         listOf("synchronized(", "compareAndSet(", "TakeArbiter", "PolishRequestLedger", "TerminalReason", "SessionState").forEach { token ->
             assertFalse("the Service source carries '$token', which only a state machine needs", service.contains(token))
         }
+    }
+
+    /**
+     * Drift Guard (#192): the session owner is the only component that pins the field a take aims at,
+     * and it pins once, at admission. The launcher and the bubble's direct start each pinned too, so a
+     * TOGGLE that STOPPED a take re-pinned the field the user had moved to. The property is the absence
+     * of a pin call from those two sources and exactly one call in the owner, inside `beginSession`.
+     * REVERT: restore `PasteAccessibilityService.pinTargetForDictation()` in the launcher, or
+     * `pinTarget()` in `startDictationFromBubble`.
+     */
+    @Test
+    fun onlyTheOwnerPinsTheTarget() {
+        val launcher = File("src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt").readText()
+        assertFalse("the launcher pins nothing; the owner pins in beginSession", launcher.contains("pinTarget"))
+
+        val paste = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText()
+        val bubbleStart = paste.substring(paste.indexOf("fun startDictationFromBubble("))
+            .let { it.substring(0, it.indexOf("\n    }\n")) }
+        assertFalse("the bubble's direct start pins nothing", bubbleStart.contains("pinTarget"))
+
+        val coordinator = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        assertEquals("the owner pins exactly once", 1, coordinator.split(".pinTargetForDictation()").size - 1)
+        val beginSession = coordinator.substring(coordinator.indexOf("private fun beginSession("))
+            .let { it.substring(0, it.indexOf("\n    private fun ")) }
+        assertTrue("the one pin is inside beginSession", beginSession.contains(".pinTargetForDictation()"))
     }
 
     @Test

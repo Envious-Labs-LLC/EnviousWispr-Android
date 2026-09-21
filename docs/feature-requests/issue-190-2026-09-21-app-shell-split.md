@@ -243,7 +243,7 @@ names it.
 | `AppActions` and ten groups (proposed) | new, `internal` | the activity fills them; the shell reads them |
 | `AppDestination`, `Screen`, `PageChrome`, `AppScaffold`, `SettingsDrawerSheet` | `private` → `internal` | reachable from the shell and from `app/src/test`; nothing else names them |
 | `AppRoutes` (proposed) | new; owns the two saved-name resolutions | the shell; `AppRoutesTest` |
-| the ten reusable components | file move, same names, same visibility | seven screen files compile unchanged |
+| the ten reusable components | file move, same names, same visibility | seven `ui/` files compile unchanged |
 | `SettingsPage`, `SettingsPageGroup` | file move | `SettingsPages.kt` and the drawer compile unchanged |
 
 ## 5. End-to-end state and lifecycle audit

@@ -24,8 +24,8 @@ import org.junit.runner.RunWith
  * the wrong one for a regression that appears months later, or by reading the file as source TEXT in
  * `paste/AutoPasteWiringTest`, which is a drift guard over string literals and cannot press anything.
  *
- * It drives the REAL activity rather than a harness. `AppShell` takes a ui state, a dozen callbacks and
- * queries WorkManager, so standing up a fake would mostly test the fake
+ * It drives the REAL activity rather than a harness. `AppShell` takes UI state plus one grouped-actions
+ * holder and queries WorkManager, so standing up a fake would mostly test the fake
  * (`testing-philosophy.md`: a unit test that stubs the service is a Harness Contract test, whatever it
  * is named). `createAndroidComposeRule` launches what the user launches.
  */

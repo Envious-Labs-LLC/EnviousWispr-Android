@@ -32,7 +32,6 @@ import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
-import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.SelfHostedProtocol
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch

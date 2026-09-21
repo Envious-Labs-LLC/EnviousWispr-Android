@@ -26,7 +26,7 @@ class PolishWatchdogBudgetTest {
 
     @Test fun theWatchdogSitsAboveEveryEngineSideBudget() {
         assertTrue("the engine's hard deadline must fire before the session gives up", LocalPolishBudget.HARD_MS < PolishWatchdogBudget.LOCAL_MS)
-        // ProviderPolishClient.DEFAULT_OVERALL_TIMEOUT_MS is 30 000 and its companion is private; the literal is the claim.
+        // ProviderPolishClient.DEFAULT_OVERALL_TIMEOUT_MS is 30_000; the literal binds the published engine-side cap.
         assertTrue("the cloud client's own cap must fire before the session gives up", 30_000L < PolishWatchdogBudget.CLOUD_MS)
     }
 }

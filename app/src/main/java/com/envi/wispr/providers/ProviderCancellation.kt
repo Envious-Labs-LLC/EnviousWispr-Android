@@ -1,7 +1,7 @@
 package com.envi.wispr.providers
 
 /** Cancellation is thread-safe and can interrupt a request that is blocked in HttpURLConnection. */
-class ProviderCancellation {
+internal class ProviderCancellation {
     private val lock = Any()
     @Volatile private var cancelled = false
     private val callbacks = mutableListOf<() -> Unit>()

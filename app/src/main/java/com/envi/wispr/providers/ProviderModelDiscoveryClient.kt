@@ -80,8 +80,8 @@ internal class ProviderModelDiscoveryClient(
 
     /**
      * The live model list (#84), the macOS `discoverModels` shape: the list GET (Claude paginated), the
-     * pure filter, then a five-token probe per model on [PROBE_EXECUTOR] so one request worker always
-     * stays free for a polish request, all under one whole-operation deadline. A probe that answers
+     * pure filter, then a five-token probe per model on [PROBE_EXECUTOR], leaving one request worker free
+     * for non-probe provider work in this process, all under one whole-operation deadline. A probe that answers
      * about the KEY (401, or a KEY_REJECTED body) refuses the whole discovery; a transport failure never
      * locks a row. Nothing here carries user content: the list has no body and the probe says "Hi".
      */

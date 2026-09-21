@@ -1,7 +1,7 @@
 # Issue #191 — App-only code is public and new states can silently take default branches — 2026-09-21
 
 GitHub issue: `#191`. Tier: SMALL by the issue (REF-08, "-20 lines net"); the diff touches many files but moves
-no logic, no process, no package and no AIDL. Status: DRAFT after the coverage round (A1, B1, B2, C1 to C5, D1 to D3, E1, E2, F1, F2, G1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G2.2, G3.1, G4.1 to G4.6 folded in); round 2 next.
+no logic, no process, no package and no AIDL. Status: DRAFT after the coverage round (A1, B1, B2, C1 to C5, D1 to D3, E1, E2, F1, F2, G1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G2.2, G3.1, G4.1 to G4.6 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.5, G2.1); the second round of the same class, stale prose beside an enumeration, so every restated count and member list in prose now points at the one table; round 3 next.
 
 Consolidation: this plan is one document; §2.5 carries the measured populations once and §§3 to 11 point back at it.
 
@@ -11,9 +11,9 @@ Consolidation: this plan is one document; §2.5 carries the measured populations
 ## Preface — Lane + Hardware UAT declaration
 
 **Lane:** Code — `app/src/main/**` (visibility modifiers and `when` arms), `app/src/test/**` (one new guard),
-`scripts/**` (the source check). `mixed_pr: true`: `Code` (`unit-tests.xml`, `codex-review.md`;
-`hardware-uat.json` because the sweep touches capture, ASR, polish and insertion files, so the emulator takes are
-the receipt) and `Docs/dev-tooling` (`cited-symbols`, conditional).
+`scripts/**` (the source check). `mixed_pr: true`: `Code` (`unit-tests.xml`, `codex-review.md`, `visibility.txt` (new in this
+change, §3.3), and `hardware-uat.json` because the sweep touches capture, ASR, polish and insertion files, so the
+emulator takes are the receipt) and `Docs/dev-tooling` (`cited-symbols`, conditional).
 
 **PAR rows closed:** none. Internal-only.
 
@@ -36,8 +36,9 @@ persisted byte changes. The persona check would compare identical before-and-aft
   only the generated `EnviousWisprDatabase_Impl` (external), so `EnviousWisprDatabase` and its three DAO
   interfaces become `internal` together, which keeps the three abstract DAO accessors
   (`history/EnviousWisprDatabase.kt:20-22`, coverage B1) public members of an internal class, unmangled, so the
-  generated Java implementation still overrides them by their JVM names. If the build refuses, the four are
-  allowlisted with that reason and the plan says so at build.
+  generated Java implementation still overrides them by their JVM names. The initial allowlist has 13
+  names; if compilation rejects any of the four Room types, the build STOPS and this plan's allowlist,
+  §2.5.1 count and sweep count are updated before the sweep continues.
 - The 12 `else ->` arms over an app enum or sealed type become explicit members, so a new member breaks the
   build at each of those sites (Kotlin 2.0 makes a non-exhaustive `when` over an enum or sealed type an
   error, statement or expression).
@@ -96,20 +97,24 @@ Consumers of a public declaration outside `:app`: none. `accelerator-benchmark/b
 `ui/DictationSessionCoordinator.kt:319`, whose `else` belongs to the OUTER `when (action: String)`; the inner
 sealed `when` there is already exhaustive, coverage C2):
 
-| Site | Subject | Closed set (declaration) |
-|---|---|---|
-| `models/ModelDeliveryNotification.kt:56` | `state` | `DownloadState` (`models/ModelDelivery.kt:11`, 7 members: DOWNLOADING, PAUSED, VERIFYING, READY, FAILED, CANCELLED, REPAIR_NEEDED) |
-| `models/ModelDeliveryNotification.kt:72` | `state` | `DownloadState` |
-| `models/ModelDeliveryWorker.kt:142` | `result.state` | `DownloadState` |
-| `paste/InsertionAttempt.kt:334` | `byWindow` | `AccessibilityInsertionRules.Judgement` (`paste/AccessibilityInsertionRules.kt:25`) |
-| `providers/ProviderModelDiscoveryClient.kt:117` | `verdict` | `ProviderKeyCheck` (`providers/ProviderKeyCheck.kt:10`, sealed: `Accepted`, `NotApplicable` as `data object`; `Rejected`, `Denied`, `Unverified` as `data class`, so the arms are `is` checks, coverage C3) |
-| `ui/DictationSessionCoordinator.kt:249` | `state.get()` | `SessionState` (`:124`, private enum of 7: IDLE, STARTING, RECORDING, PROCESSING, CANCELLING, FINISHING, ERROR); the CANCEL `else` covers IDLE, CANCELLING, FINISHING, ERROR (coverage C5) |
-| `ui/DictationSessionCoordinator.kt:254` | `state.get()` | `SessionState`; the STOP `else` covers IDLE, PROCESSING, CANCELLING, FINISHING, ERROR |
-| `ui/DictationSessionCoordinator.kt:260` | `state.get()` | `SessionState`; the TOGGLE `else` covers PROCESSING, CANCELLING, FINISHING, ERROR |
-| `ui/OnboardingDemo.kt:135` | `moment.scene` | `DemoScene` (`ui/OnboardingDemoScript.kt:8`) |
-| `ui/OnboardingScreen.kt:73` | `stage` | `OnboardingStage` (`ui/OnboardingPolicy.kt:12`) |
-| `ui/OnboardingScreen.kt:199` | `action` | `ModelUiAction?` (`models/ModelDeliveryUi.kt:3`; the subject is `active?.action`, so the replacement keeps `null ->` with the old right-hand side, coverage C4) |
-| `ui/OnboardingViewModel.kt:272` | `outcome` | `PracticeOutcome` (`ui/OnboardingPolicy.kt:36`) |
+The table is the ONE owner of what each `else` becomes: the `Replacement left side` column names every
+member, `is` subtype and `null` arm that replaces the `else`, each keeping the old right-hand side verbatim.
+Every other section that mentions these sites points here.
+
+| Site | Subject | Closed set (declaration, every member) | Replacement left side |
+|---|---|---|---|
+| `models/ModelDeliveryNotification.kt:56` | `state` | `DownloadState` (`models/ModelDelivery.kt:11`): DOWNLOADING, PAUSED, VERIFYING, READY, FAILED, CANCELLED, REPAIR_NEEDED | `DownloadState.DOWNLOADING, DownloadState.PAUSED ->` |
+| `models/ModelDeliveryNotification.kt:72` | `state` | `DownloadState` | `DownloadState.READY, DownloadState.FAILED, DownloadState.CANCELLED, DownloadState.REPAIR_NEEDED ->` |
+| `models/ModelDeliveryWorker.kt:142` | `result.state` | `DownloadState` | `DownloadState.DOWNLOADING, DownloadState.VERIFYING ->` |
+| `paste/InsertionAttempt.kt:334` | `byWindow` | `AccessibilityInsertionRules.Judgement` (`paste/AccessibilityInsertionRules.kt:25`): VERIFIED, MISS, UNREADABLE | `Judgement.MISS, Judgement.UNREADABLE ->` |
+| `providers/ProviderModelDiscoveryClient.kt:117` | `verdict` | `ProviderKeyCheck` (`providers/ProviderKeyCheck.kt:10`, sealed): `Accepted`, `NotApplicable` (`data object`), `Rejected`, `Denied`, `Unverified` (`data class`) | `ProviderKeyCheck.NotApplicable, is ProviderKeyCheck.Rejected, is ProviderKeyCheck.Denied, is ProviderKeyCheck.Unverified ->` |
+| `ui/DictationSessionCoordinator.kt:249` | `state.get()` | `SessionState` (`:124`, private): IDLE, STARTING, RECORDING, PROCESSING, CANCELLING, FINISHING, ERROR | CANCEL: `SessionState.IDLE, SessionState.CANCELLING, SessionState.FINISHING, SessionState.ERROR ->` |
+| `ui/DictationSessionCoordinator.kt:254` | `state.get()` | `SessionState` | STOP: `SessionState.IDLE, SessionState.PROCESSING, SessionState.CANCELLING, SessionState.FINISHING, SessionState.ERROR ->` |
+| `ui/DictationSessionCoordinator.kt:260` | `state.get()` | `SessionState` | TOGGLE: `SessionState.PROCESSING, SessionState.CANCELLING, SessionState.FINISHING, SessionState.ERROR ->` |
+| `ui/OnboardingDemo.kt:135` | `moment.scene` | `DemoScene` (`ui/OnboardingDemoScript.kt:8`): APPS, BUBBLE, TAP, HOLD, YOURS | `DemoScene.TAP, DemoScene.HOLD, DemoScene.YOURS ->` |
+| `ui/OnboardingScreen.kt:73` | `stage` | `OnboardingStage` (`ui/OnboardingPolicy.kt:12`): WELCOME, DOWNLOADS, PERMISSIONS, DEMO, PRACTICE | `OnboardingStage.WELCOME, OnboardingStage.DOWNLOADS, OnboardingStage.PERMISSIONS ->` |
+| `ui/OnboardingScreen.kt:199` | `action` (`active?.action`, nullable) | `ModelUiAction` (`models/ModelDeliveryUi.kt:3`): DOWNLOAD, PAUSE, RESUME, RETRY, REPAIR, REMOVE, UPDATE, CANCEL, NONE | `ModelUiAction.DOWNLOAD, ModelUiAction.RETRY, ModelUiAction.REPAIR, ModelUiAction.REMOVE, ModelUiAction.UPDATE, ModelUiAction.CANCEL, ModelUiAction.NONE, null ->` |
+| `ui/OnboardingViewModel.kt:272` | `outcome` | `PracticeOutcome` (`ui/OnboardingPolicy.kt:36`): WORKING, LANDED, LANDED_BY_TAP, NOTHING_LANDED | `PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED ->` |
 
 The other 40 subjects (52 minus the 12) are `Int`, `String`, `Char`, `Byte`, `Any?` or `Throwable` (for example
 `CaptureEnding.fromAidl(reason: Int)` `:81`, `PolishEngineLabels.kt:54` over a `String` vocabulary,
@@ -158,9 +163,9 @@ Swift access levels (macOS has no module boundary of this kind).
   app classes implementing them may be `internal`; the AIDL surface itself does not change.
 - **`debug` source set** (`DebugDumpReceiver` and the harness receivers) is the same module and variant;
   it reads `internal` types today already.
-- **Sealed `when` with a private enum** (`SessionState`): the three coordinator sites list the remaining
-  members explicitly (`PROCESSING`, `IDLE` as the `when` requires), keeping each arm's current behaviour
-  (`stopIfIdle()` / `Unit`), never a new one.
+- **`when` over a private enum** (`SessionState`): the three coordinator sites take exactly the CANCEL, STOP
+  and TOGGLE member groups in the §2.5.1 table's `Replacement left side` column, each keeping its current
+  right-hand side, never a new one.
 
 ### 5. High-risk premises, with evidence
 - "Removing `else` makes the compiler enforce the set": Kotlin 2.0.21 (`gradle/libs.versions.toml` or
@@ -173,8 +178,8 @@ Swift access levels (macOS has no module boundary of this kind).
   the suite; chunk 1 ends with `:app:compileDebugKotlin`, `:app:compileDebugUnitTestKotlin`,
   `:app:compileDebugAndroidTestKotlin` and the full suite green. If Room refuses an `internal` `@Dao` or
   `@Entity`, that declaration is allowlisted with the reason and the check reads the allowlist.
-- Codex problem-only consult: not run before §3, because every premise above has a mechanical oracle (the
-  compiler, a grep, the suite); the coverage round and the grounded rounds review the design.
+- Codex problem-only consult: performed as axis A of the coverage round (`docs/audits/2026-09-21-191-coverage.md`),
+  which found the Room row (A1) and the DAO accessors (B1); the grounded rounds review the revised plan.
 
 ## 3. Design
 
@@ -184,12 +189,10 @@ Swift access levels (macOS has no module boundary of this kind).
    member of the framework class `internal` too; where a framework-constructed or annotation-processed
    declaration genuinely needs public, add it to `scripts/visibility-allowlist.txt` with the reason. The
    alternative, hand-editing 196 files, was rejected: a script driven by the enumeration cannot skip one.
-2. **Sweep B (12 sites by hand, one commit).** Each `else` arm is replaced by the members it covered today,
-   with the SAME right-hand side, so behaviour is byte-for-byte the old default for every existing member.
-   Where the old `else` covered one member, the arm names it; where it covered several, they share the
-   arm; a sealed member that is a class takes an `is` arm; a nullable subject keeps a `null ->` arm with
-   the old right-hand side. The alternative of adding a new "unknown" branch was rejected: the point is
-   that there is no unknown branch.
+2. **Sweep B (12 sites by hand, one commit).** Each `else` arm becomes the `Replacement left side` the
+   §2.5.1 table names for its site, with the old right-hand side verbatim, so behaviour is byte-for-byte
+   the old default for every existing member. The alternative of adding a new "unknown" branch was
+   rejected: the point is that there is no unknown branch.
 3. **The check, `scripts/check-visibility.py` (one commit).** Scope: `app/src/main/java/**/*.kt`.
    - A: a top-level declaration (column 0; the keyword `class|object|interface|fun|val|var|typealias`
      with its modifiers, possibly after annotation lines, and possibly with the name on the next line,
@@ -269,6 +272,8 @@ Not present in this change (no runtime failure branch).
   `scripts/validate-pr.sh` and `scripts/check-validation.sh` (the `visibility` obligation for `Code`).
 - `app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt` (new) and six fixture trees under
   `app/src/test/resources/visibility/`.
+- `docs/audits/2026-09-21-191-revert-receipts.txt` (new): the build commands with exit statuses, and every
+  receipt of §11.2 with its red output (R3's three compiler errors verbatim).
 - `.claude/knowledge/architecture.md` (the `internal` default is now enforced; where) and the filed rule
   line for FACT: lanes.
 

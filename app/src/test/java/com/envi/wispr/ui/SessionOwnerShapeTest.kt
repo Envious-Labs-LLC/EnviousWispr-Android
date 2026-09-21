@@ -101,12 +101,19 @@ class SessionOwnerShapeTest {
             "// pin\nval j = 1" to blank(6) + "\nval j = 1",
         )
         val fixture = File.createTempFile("code-only", ".kt")
+        // The same shapes with no final newline: the service prints a separator after the text and the
+        // reader must give it back (Codex code review round 6; one production file ends without one).
+        val unterminated = File.createTempFile("code-only-unterminated", ".kt")
         try {
             fixture.writeText(shapes.joinToString("\n") { it.first } + "\n")
-            val expected = shapes.joinToString("\n") { it.second } + "\n"
-            assertEquals(expected, codeOnly(listOf(fixture)).values.single())
+            unterminated.writeText(shapes.joinToString("\n") { it.first })
+            val expected = shapes.joinToString("\n") { it.second }
+            val answers = codeOnly(listOf(fixture, unterminated))
+            assertEquals(expected + "\n", answers.getValue(fixture))
+            assertEquals(expected, answers.getValue(unterminated))
         } finally {
             fixture.delete()
+            unterminated.delete()
         }
     }
 
@@ -124,8 +131,18 @@ class SessionOwnerShapeTest {
         val result = LinkedHashMap<File, String>()
         var current: File? = null
         val body = StringBuilder()
-        fun close() { current?.let { result[it] = body.toString() }; body.setLength(0) }
-        for (line in out.split("\n")) {
+        fun close() {
+            current?.let { file ->
+                // In the stream every answer is followed by one newline (the text's own, or one the
+                // service adds) and then a header or the end, so the newline before a header and the one
+                // before the end are both separators; the file's own final newline is put back from the
+                // file (Codex code review round 6: one production file ends without one).
+                result[file] = body.toString() + if (file.readText().endsWith("\n")) "\n" else ""
+            }
+            body.setLength(0)
+        }
+        val segments = out.split("\n").let { if (it.last().isEmpty()) it.dropLast(1) else it }
+        for (line in segments) {
             if (line.startsWith("=== ")) {
                 close()
                 current = byPath.getValue(line.removePrefix("=== "))

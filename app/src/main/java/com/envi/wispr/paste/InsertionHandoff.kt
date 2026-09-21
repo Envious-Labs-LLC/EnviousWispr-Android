@@ -6,7 +6,7 @@ package com.envi.wispr.paste
  * Every non-scheduled case ends on the clipboard, which is why they were indistinguishable while
  * this was a Boolean. They need different diagnoses and, for the dead-service case, different copy.
  */
-enum class InsertionHandoff {
+internal enum class InsertionHandoff {
     /** The service accepted the text and is waiting for the pinned editor to return. */
     SCHEDULED,
 

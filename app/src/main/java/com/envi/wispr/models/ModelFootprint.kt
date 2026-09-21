@@ -21,7 +21,7 @@ import java.nio.file.attribute.BasicFileAttributes
  * The unit is BYTES, and formatting belongs to the UI. `ui/ModelCards.formatModelBytes` owns the
  * decimal-versus-binary decision and the reason for it.
  */
-object ModelFootprint {
+internal object ModelFootprint {
 
     /**
      * Total bytes of every regular file under [directory], including subdirectories.
@@ -133,7 +133,7 @@ object ModelFootprint {
  * [unclaimed] is derived rather than stored, so it cannot disagree with the two numbers it comes from,
  * and it cannot be negative because both came from the same traversal.
  */
-data class ModelFolderFootprint(
+internal data class ModelFolderFootprint(
     val perModel: Map<ModelDescriptor, Long>,
     val total: Long,
 ) {

@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * removal is conditional on the same entry so an older request's `finally` cannot remove a newer
  * one; a cancel is a no-op on an unknown or delivered id. Pure Kotlin so the JVM tests can race it.
  */
-class PolishRequestRegistry {
+internal class PolishRequestRegistry {
     class Entry internal constructor(val requestId: Long) {
         internal val cancellation = ProviderCancellation()
 

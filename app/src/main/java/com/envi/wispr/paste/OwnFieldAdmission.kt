@@ -13,7 +13,7 @@ package com.envi.wispr.paste
  * Process-local, like the overlay state bridge: the service, the session owner and the screen share
  * one process (`PasteServiceProcessManifestTest`).
  */
-object OwnFieldAdmission {
+internal object OwnFieldAdmission {
     @Volatile
     private var admittedViewId: String? = null
 

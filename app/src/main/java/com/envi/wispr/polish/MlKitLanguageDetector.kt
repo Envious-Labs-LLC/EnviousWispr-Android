@@ -59,7 +59,7 @@ import java.util.concurrent.atomic.AtomicReference
  * **A caller on the main thread would not be acceptable and must not reach this**
  * (`kotlin-patterns.md` RULE: never-block-a-binder-or-ui-thread).
  */
-class MlKitLanguageDetector(private val context: Context) : LanguageDetector, Closeable {
+internal class MlKitLanguageDetector(private val context: Context) : LanguageDetector, Closeable {
 
     private companion object {
         const val TAG = "LanguageDetector"

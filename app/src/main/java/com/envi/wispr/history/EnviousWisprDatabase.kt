@@ -16,7 +16,7 @@ import com.envi.wispr.vocabulary.CustomTermEntity
     version = 8,
     exportSchema = true,
 )
-abstract class EnviousWisprDatabase : RoomDatabase() {
+internal abstract class EnviousWisprDatabase : RoomDatabase() {
     abstract fun transcriptDao(): TranscriptDao
     abstract fun customTermDao(): CustomTermDao
     abstract fun takeJournalDao(): TakeJournalDao

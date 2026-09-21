@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference
  * Pure policy: the platform track and the timer are injected, so the start and every end path are
  * unit-tested. Exactly one end wins; every later end is a no-op.
  */
-class WarmHold(
+internal class WarmHold(
     /** The communication-device ownership carried over from the take. Released when the hold ends. */
     private val route: RouteHold,
     private val track: SilentTrack,

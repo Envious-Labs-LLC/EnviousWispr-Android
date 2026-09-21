@@ -12,7 +12,7 @@ package com.envi.wispr.insertion
  * Collapsed into one Boolean, the first case was silent for a user who had also declined
  * auto-paste, and the second buzzed and posted a notification on every working dictation.
  */
-enum class ClipboardOutcome {
+internal enum class ClipboardOutcome {
     /** The words are on the system clipboard. */
     COPIED,
 

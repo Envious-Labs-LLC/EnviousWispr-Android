@@ -10,7 +10,7 @@ package com.envi.wispr.insertion
  * copy the words to the clipboard and say nothing at all, which is the silence issue #16 reported,
  * reached from the one direction where the service dies with the words still in its hands.
  */
-enum class ServiceFallbackReason {
+internal enum class ServiceFallbackReason {
     /** The target field refused text by our own rule. Removed with issue #11. */
     SENSITIVE_FIELD,
 

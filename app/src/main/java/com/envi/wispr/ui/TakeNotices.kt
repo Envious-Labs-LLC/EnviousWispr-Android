@@ -12,7 +12,7 @@ import com.envi.wispr.audio.AudioCaptureService
  * purpose: a cancel is acknowledged by the haptic and the overlay closing, and a quiet room is not an
  * event worth reporting (founder, 2026-08-31).
  */
-object TakeNotices {
+internal object TakeNotices {
 
     /**
      * Today's line for every other start failure, unchanged. Also the live-wait deadline's line:

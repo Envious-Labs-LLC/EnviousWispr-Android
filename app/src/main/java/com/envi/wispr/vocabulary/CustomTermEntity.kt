@@ -8,7 +8,7 @@ import androidx.room.PrimaryKey
     tableName = "custom_terms",
     indices = [Index(value = ["spelling"]), Index(value = ["category"]), Index(value = ["priority"])],
 )
-data class CustomTermEntity(
+internal data class CustomTermEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val spelling: String,
     /** Escaped unit-separated aliases remain searchable while preserving arbitrary text. */
@@ -90,11 +90,11 @@ data class CustomTermEntity(
     }
 }
 
-data class CustomTermRecord(
+internal data class CustomTermRecord(
     val id: Long,
     val term: CustomTerm,
     val createdAtMs: Long,
     val updatedAtMs: Long,
 )
 
-fun CustomTermEntity.toRecord(): CustomTermRecord = CustomTermRecord(id, toCustomTerm(), createdAtMs, updatedAtMs)
+internal fun CustomTermEntity.toRecord(): CustomTermRecord = CustomTermRecord(id, toCustomTerm(), createdAtMs, updatedAtMs)

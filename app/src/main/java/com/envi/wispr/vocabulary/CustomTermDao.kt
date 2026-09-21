@@ -8,7 +8,7 @@ import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 @Dao
-interface CustomTermDao {
+internal interface CustomTermDao {
     @Query("SELECT * FROM custom_terms ORDER BY priority DESC, spelling COLLATE NOCASE ASC, id ASC")
     fun observeAll(): Flow<List<CustomTermEntity>>
 

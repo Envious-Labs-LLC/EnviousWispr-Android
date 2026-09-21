@@ -1,7 +1,7 @@
 package com.envi.wispr.audio
 
 /** Allocation-only PCM helpers shared by capture and offline ASR. */
-object PcmAudio {
+internal object PcmAudio {
     const val SAMPLE_RATE = 16_000
     const val BYTES_PER_SAMPLE = 2
 

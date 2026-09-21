@@ -12,7 +12,7 @@ import java.util.UUID
  * debuggable build and `production` otherwise, so the founder's Play builds are production dogfood, as on
  * the Mac. `processRunId` is one UUID per process start: the journal keys interruption on it.
  */
-class TelemetryConfig(
+internal class TelemetryConfig(
     val versionName: String,
     val appBuild: Int,
     val environment: String,

@@ -19,7 +19,7 @@ import com.envi.wispr.ui.TriggerSource
  * Event names are the Mac's where the meaning is the same, so one query spans both platforms under an
  * `app` filter. A property that is absent means "not measured", never zero (macOS #1809).
  */
-sealed class AnalyticsEvent(val name: String) {
+internal sealed class AnalyticsEvent(val name: String) {
     /** The properties as they enter the volume policy and the sanitizer; nulls are dropped there. */
     abstract fun properties(): Map<String, Any?>
 

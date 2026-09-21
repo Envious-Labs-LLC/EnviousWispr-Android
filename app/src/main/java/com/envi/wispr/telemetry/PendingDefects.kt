@@ -18,7 +18,7 @@ import java.util.UUID
  * no SDK acknowledgment and Sentry de-duplicates by event id within the day (G2 D6, G3 E1). Best effort,
  * and described as such.
  */
-object PendingDefects {
+internal object PendingDefects {
     private const val TAG = "PendingDefects"
     private const val DIR = "telemetry/pending-defects"
     private const val TEMP_SUFFIX = ".tmp"

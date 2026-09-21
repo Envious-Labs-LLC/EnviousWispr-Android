@@ -11,7 +11,7 @@ import androidx.core.app.NotificationCompat
 import java.util.Locale
 
 /** Low-importance, content-free progress notification for large local model transfers. */
-object ModelDeliveryNotification {
+internal object ModelDeliveryNotification {
     const val ACTION_CANCEL = "com.envi.wispr.models.CANCEL_DELIVERY"
     const val ACTION_PAUSE = "com.envi.wispr.models.PAUSE_DELIVERY"
     const val ACTION_RESUME = "com.envi.wispr.models.RESUME_DELIVERY"

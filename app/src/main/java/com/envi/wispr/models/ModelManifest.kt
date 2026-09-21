@@ -1,6 +1,6 @@
 package com.envi.wispr.models
 
-data class ModelFile(
+internal data class ModelFile(
     val name: String,
     val expectedBytes: Long,
     val sha256: String?,
@@ -16,7 +16,7 @@ data class ModelFile(
     val sources: List<String> get() = listOfNotNull(sourceUrl, fallbackUrl)
 }
 
-data class ModelDescriptor(
+internal data class ModelDescriptor(
     val id: String,
     val engineId: String,
     val displayName: String,
@@ -33,7 +33,7 @@ data class ModelDescriptor(
         }
 }
 
-object ModelManifest {
+internal object ModelManifest {
     private const val parakeetRepo = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
     private const val parakeetRevision = "2bda32ec70b097a55adaa07d9a7173915b43cc78"
     private const val s1Repo = "superwhisper/s1-mini-GGUF"

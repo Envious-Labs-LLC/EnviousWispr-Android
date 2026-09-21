@@ -1,7 +1,7 @@
 package com.envi.wispr.vocabulary
 
 /** The same runtime defaults shipped by EnviousWispr on macOS. User terms win by spelling. */
-object BuiltinVocabulary {
+internal object BuiltinVocabulary {
     val terms: List<CustomTerm> = listOf(
         CustomTerm(
             spelling = "EnviousWispr",

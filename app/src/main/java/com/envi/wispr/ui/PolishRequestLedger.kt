@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicLong
  * boxed identity, so any id above the small-value cache failed its own compare-and-swap. The test
  * caught it on the first run. Zero is never minted (`PolishRequestIdSource` starts at one).
  */
-class PolishRequestLedger(private val ids: PolishRequestIdSource = PolishRequestIdSource.shared) {
+internal class PolishRequestLedger(private val ids: PolishRequestIdSource = PolishRequestIdSource.shared) {
     private val open = AtomicLong(NONE)
 
     /** Mints a fresh id and makes it the open request, replacing any previous one. */

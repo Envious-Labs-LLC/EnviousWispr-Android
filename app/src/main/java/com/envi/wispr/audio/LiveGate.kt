@@ -13,7 +13,7 @@ package com.envi.wispr.audio
  *
  * A non-Bluetooth route is live on its first read: nothing changes for the phone or a wired headset.
  */
-class LiveGate(private val gated: Boolean) {
+internal class LiveGate(private val gated: Boolean) {
     enum class State { WAITING, READY, FORCED }
 
     @Volatile var state: State = if (gated) State.WAITING else State.READY

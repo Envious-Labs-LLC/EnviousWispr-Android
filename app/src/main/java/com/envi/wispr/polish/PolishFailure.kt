@@ -8,7 +8,7 @@ import com.envi.wispr.providers.ProviderAdapters
  * macOS set (catalog `user_copy`, surface `completion warning`); the two Android-only members say so.
  * A projection of the reason, never a re-classification: the published text is chosen elsewhere.
  */
-enum class PolishFailure(val leadIn: LeadIn) {
+internal enum class PolishFailure(val leadIn: LeadIn) {
     KEY_MISSING(LeadIn.SKIPPED),
     KEY_REJECTED(LeadIn.FAILED),
     ACCESS_DENIED(LeadIn.FAILED),

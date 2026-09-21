@@ -22,7 +22,7 @@ import kotlinx.coroutines.flow.first
  * the polish policy is `PolishContext`'s token. A read that fails is the `unknown` token for every
  * setting, so a stranger's phone that cannot read its preferences is visible as such.
  */
-object AppLaunchFacts {
+internal object AppLaunchFacts {
     const val UNKNOWN = "unknown"
 
     suspend fun read(context: Context, freshInstall: Boolean): AnalyticsEvent.AppLaunched {

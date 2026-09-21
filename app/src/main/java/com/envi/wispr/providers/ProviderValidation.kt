@@ -5,17 +5,17 @@ import java.net.IDN
 import java.net.URISyntaxException
 import java.util.Locale
 
-data class ProviderConfiguration(
+internal data class ProviderConfiguration(
     val provider: Provider,
     val endpoint: String? = null,
 )
 
-sealed interface ValidationResult {
+internal sealed interface ValidationResult {
     data object Valid : ValidationResult
     data class Invalid(val reason: ValidationReason) : ValidationResult
 }
 
-enum class ValidationReason {
+internal enum class ValidationReason {
     API_KEY_REQUIRED,
     API_KEY_MUST_NOT_CONTAIN_CONTROL_CHARACTERS,
     ENDPOINT_REQUIRED,
@@ -27,7 +27,7 @@ enum class ValidationReason {
     ENDPOINT_MUST_NOT_CONTAIN_WHITESPACE,
 }
 
-object ProviderConfigurationValidator {
+internal object ProviderConfigurationValidator {
     fun validate(configuration: ProviderConfiguration, apiKey: String?): ValidationResult {
         val capabilities = configuration.provider.capabilities()
         if (apiKey?.any(Char::isISOControl) == true) {

@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /** Process-local state bridge between the dictation session and accessibility overlay. */
-object RecordingOverlayState {
+internal object RecordingOverlayState {
     /**
      * Where the session owner says the take is. Written by the owner ONLY: the accessibility service
      * detaches its surface without touching this, so a reconnect renders whatever the owner retained

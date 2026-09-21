@@ -278,10 +278,10 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         private const val DOWNLOAD_PREFIX = "model-download-"
         private const val ADOPT_PREFIX = "model-adopt-"
 
-        fun downloadWorkName(model: ModelDescriptor): String = "$DOWNLOAD_PREFIX${model.id}"
-        fun adoptionWorkName(model: ModelDescriptor): String = "$ADOPT_PREFIX${model.id}"
+        internal fun downloadWorkName(model: ModelDescriptor): String = "$DOWNLOAD_PREFIX${model.id}"
+        internal fun adoptionWorkName(model: ModelDescriptor): String = "$ADOPT_PREFIX${model.id}"
 
-        fun enqueue(context: Context, model: ModelDescriptor) {
+        internal fun enqueue(context: Context, model: ModelDescriptor) {
             enqueueDownload(context, model, update = false)
         }
 
@@ -299,7 +299,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 if (restart) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, request)
         }
 
-        fun enqueueUpdate(context: Context, model: ModelDescriptor) {
+        internal fun enqueueUpdate(context: Context, model: ModelDescriptor) {
             enqueueDownload(context, model, update = true)
         }
 
@@ -312,7 +312,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request)
         }
 
-        fun enqueueRepair(context: Context, model: ModelDescriptor) {
+        internal fun enqueueRepair(context: Context, model: ModelDescriptor) {
             ModelDeliveryControlStore(ModelStorage.root(context)).clear(model)
             val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
                 .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id).putBoolean(KEY_REPAIR, true).build())
@@ -321,14 +321,14 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request)
         }
 
-        fun enqueueBootstrap(context: Context, model: ModelDescriptor) {
+        internal fun enqueueBootstrap(context: Context, model: ModelDescriptor) {
             val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>().setInputData(
                 Data.Builder().putString(KEY_MODEL_ID, model.id).putBoolean(KEY_ADOPT_ONLY, true).build()
             ).build()
             WorkManager.getInstance(context).enqueueUniqueWork(adoptionWorkName(model), ExistingWorkPolicy.KEEP, request)
         }
 
-        fun enqueueRemove(context: Context, model: ModelDescriptor) {
+        internal fun enqueueRemove(context: Context, model: ModelDescriptor) {
             ModelDeliveryControlStore(ModelStorage.root(context)).write(model, ModelDeliveryControlState.CANCELLED)
             val manager = WorkManager.getInstance(context)
             // Explicit cancellation makes removal win over a queued or running transfer.
@@ -340,25 +340,25 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             manager.enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request)
         }
 
-        fun cancel(context: Context, model: ModelDescriptor) {
+        internal fun cancel(context: Context, model: ModelDescriptor) {
             ModelDeliveryControlStore(ModelStorage.root(context)).write(model, ModelDeliveryControlState.CANCELLED)
             val manager = WorkManager.getInstance(context)
             manager.cancelUniqueWork(downloadWorkName(model))
             manager.cancelUniqueWork(adoptionWorkName(model))
         }
 
-        fun pause(context: Context, model: ModelDescriptor) {
+        internal fun pause(context: Context, model: ModelDescriptor) {
             ModelDeliveryControlStore(ModelStorage.root(context)).write(model, ModelDeliveryControlState.PAUSED)
             val manager = WorkManager.getInstance(context)
             manager.cancelUniqueWork(downloadWorkName(model))
             manager.cancelUniqueWork(adoptionWorkName(model))
         }
 
-        fun resume(context: Context, model: ModelDescriptor) {
+        internal fun resume(context: Context, model: ModelDescriptor) {
             enqueue(context, model)
         }
 
-        fun hasStaleInstallation(context: Context, model: ModelDescriptor): Boolean =
+        internal fun hasStaleInstallation(context: Context, model: ModelDescriptor): Boolean =
             ModelDeliveryStore(ModelStorage.root(context)).needsUpdate(model)
     }
 }

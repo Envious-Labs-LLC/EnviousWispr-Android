@@ -12,7 +12,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
 /** Local vocabulary contract. Keep this model independent of Room/UI for safe wiring. */
-data class CustomTerm(
+internal data class CustomTerm(
     val spelling: String,
     val aliases: List<String> = emptyList(),
     val category: String? = null,
@@ -30,7 +30,7 @@ data class CustomTerm(
     )
 }
 
-enum class MatchStrictness(val thresholdOverride: Double?) {
+internal enum class MatchStrictness(val thresholdOverride: Double?) {
     LOOSE(0.72),
     DEFAULT(null),
     STRICT(0.92);
@@ -45,7 +45,7 @@ enum class MatchStrictness(val thresholdOverride: Double?) {
     }
 }
 
-object CustomTermAuthoring {
+internal object CustomTermAuthoring {
     fun includePendingAlias(aliases: List<String>, pendingAlias: String): List<String> {
         val candidate = pendingAlias.trim()
         if (candidate.isEmpty() || aliases.any { it.equals(candidate, ignoreCase = true) }) {
@@ -55,7 +55,7 @@ object CustomTermAuthoring {
     }
 }
 
-data class ImportPreview(
+internal data class ImportPreview(
     val accepted: List<CustomTerm>,
     val collisions: List<CustomTerm>,
     val rejected: Int,
@@ -63,7 +63,7 @@ data class ImportPreview(
     val replaceCollisions: Boolean = false,
 )
 
-object VocabularyTransfer {
+internal object VocabularyTransfer {
     private const val HEADER = "enviouswispr-vocabulary-v2"
     private const val LEGACY_HEADER = "enviouswispr-vocabulary-v1"
     private const val MAC_FORMAT = "com.enviouswispr.custom-words"
@@ -366,12 +366,12 @@ object VocabularyTransfer {
     }
 }
 
-object AliasSuggestions {
+internal object AliasSuggestions {
     fun suggest(spelling: String): List<String> = spelling.trim().split(Regex("(?<=[a-z])(?=[A-Z])|\\s+|[-_]")).filter { it.length >= 2 }.distinct().take(5)
 }
 
-data class VocabularyPack(val id: String, val name: String, val terms: List<CustomTerm>, val enabled: Boolean = false)
+internal data class VocabularyPack(val id: String, val name: String, val terms: List<CustomTerm>, val enabled: Boolean = false)
 
-object QuickAddRanking {
+internal object QuickAddRanking {
     fun rank(query: String, terms: List<CustomTerm>): List<CustomTerm> = terms.sortedWith(compareByDescending<CustomTerm> { it.spelling.equals(query, true) }.thenByDescending { it.spelling.startsWith(query, true) }.thenByDescending { it.usageCount }.thenByDescending { it.priority })
 }

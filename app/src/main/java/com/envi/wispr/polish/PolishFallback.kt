@@ -24,7 +24,7 @@ import com.envi.wispr.cleanup.PolishPipeline
  * not make their answers identical: each terminal owns its own detector instance in its own process, so
  * one can succeed while the other times out or hits a recoverable vendor error on the same words.
  */
-object PolishFallback {
+internal object PolishFallback {
     fun deterministic(rawText: String, options: CleanupOptions, detector: LanguageDetector): String =
         PolishPipeline.run(rawText, options, CleanupLanguagePolicy.resolve(detector.detect(rawText))).text
 }

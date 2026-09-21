@@ -7,12 +7,12 @@ import com.envi.wispr.settings.CustomWordsStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-class DuplicateCustomTermException(spelling: String) : IllegalArgumentException("A custom term already exists for '$spelling'")
+internal class DuplicateCustomTermException(spelling: String) : IllegalArgumentException("A custom term already exists for '$spelling'")
 
-data class CustomTermImportResult(val added: Int, val updated: Int, val skipped: Int, val rejected: Int)
+internal data class CustomTermImportResult(val added: Int, val updated: Int, val skipped: Int, val rejected: Int)
 
 /** Transaction boundary for structured vocabulary mutations and legacy import. */
-class CustomTermRepository(private val database: EnviousWisprDatabase) {
+internal class CustomTermRepository(private val database: EnviousWisprDatabase) {
     constructor(context: Context) : this(EnviousWisprDatabase.get(context))
 
     private val dao: CustomTermDao = database.customTermDao()

@@ -60,7 +60,7 @@ class DictationSessionService : Service() {
          */
         const val EXTRA_TRIGGER_SOURCE = "trigger_source"
 
-        fun sendCommand(context: Context, action: String, requestToken: String? = null, trigger: TriggerSource? = null) {
+        internal fun sendCommand(context: Context, action: String, requestToken: String? = null, trigger: TriggerSource? = null) {
             val intent = Intent(context, DictationSessionService::class.java).setAction(action)
             if (requestToken != null) intent.putExtra(EXTRA_REQUEST, requestToken)
             if (trigger != null) intent.putExtra(EXTRA_TRIGGER_SOURCE, trigger.wire)

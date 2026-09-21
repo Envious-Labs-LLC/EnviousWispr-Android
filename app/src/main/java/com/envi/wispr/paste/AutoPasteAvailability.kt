@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.combine
  * the permission to grant it again is a wrong instruction on the screen they open when the product
  * looks broken.
  */
-enum class AutoPasteAvailability {
+internal enum class AutoPasteAvailability {
     /** The accessibility service is not enabled in Android settings. */
     NOT_PERMITTED,
 
@@ -25,7 +25,7 @@ enum class AutoPasteAvailability {
 }
 
 /** Combines the permission fact with the binding fact. Neither owns the answer alone. */
-object AutoPasteReadiness {
+internal object AutoPasteReadiness {
     /**
      * @param permittedInSettings the Android `ENABLED_ACCESSIBILITY_SERVICES` answer.
      * @param serviceBound whether a live service instance published itself.

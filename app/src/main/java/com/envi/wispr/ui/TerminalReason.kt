@@ -6,7 +6,7 @@ package com.envi.wispr.ui
  * reading to split it. The name IS the wire token; never rename a member without a version floor
  * (macOS RULE: enum-backed-properties-carry-retired-vocabularies-split-by-version).
  */
-enum class TerminalResult(val wire: String) {
+internal enum class TerminalResult(val wire: String) {
     COMPLETED("completed"),
     FAILED("failed"),
     CANCELLED("cancelled"),
@@ -32,7 +32,7 @@ enum class TerminalResult(val wire: String) {
  * `result` is what leaves the phone as `dictation.terminal.result`. Only [TerminalResult.FAILED]
  * members carry `reason` on the wire, and that reason is this member's name.
  */
-enum class TerminalReason(val result: TerminalResult) {
+internal enum class TerminalReason(val result: TerminalResult) {
     // Endings with words, or without a fault.
     COMPLETED(TerminalResult.COMPLETED),
     CANCELLED_STARTING(TerminalResult.CANCELLED),

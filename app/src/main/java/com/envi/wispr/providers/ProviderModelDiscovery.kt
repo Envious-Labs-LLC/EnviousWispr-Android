@@ -5,7 +5,7 @@ package com.envi.wispr.providers
  * key, filtered to models that can polish text, each probed with a five-token request so the ones the key
  * cannot reach show as locked, the cheap fast ones tagged Recommended.
  */
-enum class ModelAccess {
+internal enum class ModelAccess {
     /** The probe answered 200, or a transient limit the macOS rules read as available. */
     AVAILABLE,
     /** The provider refused this model for this key (403, 404). */
@@ -14,7 +14,7 @@ enum class ModelAccess {
     UNVERIFIED,
 }
 
-data class DiscoveredModel(
+internal data class DiscoveredModel(
     val id: String,
     val displayName: String,
     val access: ModelAccess,
@@ -30,7 +30,7 @@ data class DiscoveredModel(
     val releasedAt: Long? = null,
 )
 
-sealed interface ProviderDiscovery {
+internal sealed interface ProviderDiscovery {
     data class Listed(val models: List<DiscoveredModel>, val fetchedAt: Long) : ProviderDiscovery
 
     /** The list call or a probe answered about the KEY, not a model; carries the #61 verdict for the copy. */
@@ -38,15 +38,15 @@ sealed interface ProviderDiscovery {
 }
 
 /** A separate operation from [ProviderKeyChecker.check], so Save never pays for the probes. */
-fun interface ProviderModelDiscoverer {
+internal fun interface ProviderModelDiscoverer {
     fun discoverModels(provider: Provider, apiKey: String): ProviderDiscovery
 }
 
 /** One raw row from a provider's list, before filtering. */
-data class ListedModel(val id: String, val displayName: String?, val releasedAt: Long? = null)
+internal data class ListedModel(val id: String, val displayName: String?, val releasedAt: Long? = null)
 
 /** What one probe reply means; [KeyRejected] aborts the whole discovery. */
-sealed interface ProbeOutcome {
+internal sealed interface ProbeOutcome {
     data class Access(val access: ModelAccess) : ProbeOutcome
     /** The provider answered about the KEY; [status] is what it said (401, or Gemini's 400). */
     data class KeyRejected(val status: Int) : ProbeOutcome
@@ -57,7 +57,7 @@ sealed interface ProbeOutcome {
  * access merge. Every provider-specific decision (candidate ids, display name, probe verdict, paging) is the
  * adapter's (#189).
  */
-object ModelListRules {
+internal object ModelListRules {
     /** Ids containing any of these cannot polish text (macOS `excludePatterns`). */
     private val excludePatterns = listOf(
         "tts", "image", "robotics", "computer-use", "deep-research", "gemma", "exp-", "embedding", "aqa",

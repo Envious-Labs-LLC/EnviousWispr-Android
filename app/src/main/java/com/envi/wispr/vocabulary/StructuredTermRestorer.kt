@@ -9,7 +9,7 @@ import kotlin.math.abs
  * alias, exact single-word alias, fuzzy single-word alias, then fuzzy canonical fallback.
  * Earlier replacements are protected so a later pass can never rewrite them.
  */
-object StructuredTermRestorer {
+internal object StructuredTermRestorer {
     const val DEFAULT_THRESHOLD = 0.82
     const val MULTI_WORD_THRESHOLD = 0.85
     const val SHORT_TOKEN_THRESHOLD = 0.90

@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicLong
  * id is `max(previous + 1, clock)`, atomically; the clock only keeps ids increasing across
  * session-owner instances, and the `+ 1` keeps them distinct within one tick.
  */
-class PolishRequestIdSource(private val clock: () -> Long) {
+internal class PolishRequestIdSource(private val clock: () -> Long) {
     private val last = AtomicLong(0L)
 
     fun next(): Long = last.updateAndGet { previous -> maxOf(previous + 1, clock()) }

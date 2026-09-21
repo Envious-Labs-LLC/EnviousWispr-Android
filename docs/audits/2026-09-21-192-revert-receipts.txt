@@ -1,4 +1,4 @@
-Revert receipts for #192 at c9f741b (2026-09-21 12:59)
+Revert receipts for #192 at b83b29c (2026-09-21 13:06)
 
 applied R1
 R1: revert applied to app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt; gradle exit 1; expected red: SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
@@ -23,8 +23,13 @@ R4: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordi
   restored: 0
 
 applied R5
-R5: revert applied to app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt; gradle exit 1; expected red: onlyTheOwnerPinsTheTarget, refusing VoiceInputActivity.kt by name for the string holding /*
-  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget: java.lang.AssertionError: VoiceInputActivity.kt:71 opens a string literal that contains /*; this row's comment cut cannot read it
+R5: revert applied to app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt; gradle exit 1; expected red: onlyTheOwnerPinsTheTarget (the pin behind a string holding /* is still counted: four files)
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget: java.lang.AssertionError: the owner, the gateway and the companion are the only pin callers; the line numbers move, the file set does not expected:<[DictationSe
+  restored: 0
+
+applied R6
+R6: revert applied to app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt; gradle exit 1; expected red: onlyTheOwnerPinsTheTarget (the pin after a URL string holding // on the same line is still counted: four files)
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget: java.lang.AssertionError: the owner, the gateway and the companion are the only pin callers; the line numbers move, the file set does not expected:<[DictationSe
   restored: 0
 
 tree after, excluding this receipt: 0 dirty tracked files

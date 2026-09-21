@@ -2,7 +2,7 @@
 
 GitHub issue: `#115` (with REF-04 and the History write ordering folded in by the founder's two comments).
 Tier: LARGE (session ownership, the AIDL surface, both the session and the audio process, three services'
-teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT after the coverage round (A1, A2, B1, C1, C2, D1, D2, E1 to E4, F1, G1, G2, H1 folded in; H2 half adopted); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G3.1, G4.1 to G4.3, G5.1 to G5.5 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.3, G2.1, G3.1 to G3.4 folded in); round 3 PROCEED-WITH-REVISIONS (G1.1 a fifth exit: the pre-committed consequence applied, §3 A2's ending prose is a table from the code; G2.1; G3.1, G3.2); round 4 next.
+teardown; `workflow-process.md` RULE: tier-routing). Status: DRAFT after the coverage round (A1, A2, B1, C1, C2, D1, D2, E1 to E4, F1, G1, G2, H1 folded in; H2 half adopted); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G3.1, G4.1 to G4.3, G5.1 to G5.5 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.3, G2.1, G3.1 to G3.4 folded in); round 3 PROCEED-WITH-REVISIONS (G1.1 a fifth exit: the pre-committed consequence applied, §3 A2's ending prose is a table from the code; G2.1; G3.1, G3.2); round 4 PROCEED-WITH-REVISIONS (G1.1 the detector closed on the thread-start failure row; G1.2 the setup-exception row split before and after the thread start; G3.1); round 5 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -256,9 +256,10 @@ A2. **`TakeEventPublisher` (proposed)** in `:audio`, service-scoped like `WarmHo
    | busy: `session != null` at `:323` | the previous take's session still open | none (nothing was created) | direct start-refused `onEnded` (code `START_FAILURE_OTHER`; the previous take's own ending is published by ITS `releaseSession`) |
    | route refusal `:334-339` | none | that exit (`routeHold.release()`, `stopSelf()`) | direct start-refused `onEnded` (`START_FAILURE_NO_INPUT_DEVICE`) |
    | buffer-size failure `:356-361` | none | that exit | direct start-refused `onEnded` (`START_FAILURE_OTHER`) |
-   | thread-start failure `:466-475` | `session = newSession` at `:426` then cleared HERE (`session = null`, `closeResources`) | that exit, not `releaseSession` | direct start-refused `onEnded` (`START_FAILURE_OTHER`) |
+   | thread-start failure `:466-475` | `session = newSession` at `:426`; `DetectorFeed.start` already ran (`:453-461`) | that exit, not `releaseSession`: clear `session`, close resources, close the detector with immediate unbind, close the picture (round G4.1: the exit today leaves the detector running) | direct start-refused `onEnded` (`START_FAILURE_OTHER`) |
    | immediate post-start result false at `:492` (`thread.isAlive && session === newSession && isRecording.get()`) | a session exists; its ending (the earbud refusal or a loop ending) is already claimed | `releaseSession`, from the capture loop | `releaseSession`'s final `onEnded`; this exit publishes nothing |
-   | setup exceptions `:493-508` (`SecurityException`, `Exception`) | none if thrown before `:426`; SET and not cleared if thrown after (pre-existing; the catch closes `record` and `output` but not `session`) | that catch | direct start-refused `onEnded` (`START_FAILURE_OTHER`); the build clears `session` in that catch too, so the next start is not refused as busy for a session that has no thread |
+   | setup exception BEFORE the capture thread started (`:493-508` reached from before `:464`) | none, or set at `:426` with no thread | that catch: clear `session`, close locally (`record`, `output`, the detector and picture if started) | direct start-refused `onEnded` (`START_FAILURE_OTHER`) |
+   | setup exception AFTER the capture thread started (`:493-508` reached from `:476-491`: `picture.start`, `watchSink`, `armDeadline`) | set, with a LIVE capture thread that owns the recorder and the file | NOT that catch (clearing and closing from the binder thread would race the live thread, round G4.2): the catch claims `TERMINAL_REASON_ERROR` on the session and signals the recorder to stop; `releaseSession` alone cleans up | `releaseSession`'s final `onEnded`; the catch publishes nothing |
    | every ending after the loop started (stop, silence, cap, byte ceiling, capture error, teardown) | a session exists | `releaseSession` (`:668-695`) | `releaseSession`'s FINAL operation, after `closeResources`, `session = null`, the detector and picture closes, the diagnostic line and the service-lifetime work (round G3.2) |
 
    Exactly one publisher per row; the direct publisher carries the failure code and no path, so the owner never
@@ -396,8 +397,9 @@ STARTING: `onLive`, `onEnded` before live, the live deadline, the wedge bound, c
 `onServiceDisconnected`. Exits from RECORDING: `onEnded` (five reasons), the wedge bound, cancel, destroy,
 `onServiceDisconnected`. Every exit claims the `TakeArbiter` first; a late `onEnded` after a claimed ending is
 dropped by the RECORDING check on the main thread. Destroy, in §3 C1's order: state invalidated and the arbiter
-claimed under `publishLock`, the `interrupted` write enqueued, the job cancelled without joining, polish
-cancelled, capture and the bindings released (unbinding drops the listener; no unregister call). Queue: the worker outlives
+claimed under `publishLock`; the `interrupted` write enqueued ONLY if `arbiter.interrupt` won; the job cancelled
+without joining; polish cancelled; capture and the bindings released (unbinding drops the listener; no
+unregister call). Queue: the worker outlives
 every Service and dies with the process; a write left in the channel at process death is lost as a launched job
 was (§2.5.4).
 

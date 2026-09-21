@@ -95,6 +95,7 @@ class DictationSessionCoordinatorTest {
     fun theOwnerRegistersForThePictureWhenTheTakeGoesLiveAndUnregistersWhenItEnds() {
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
+        val stamped = rig.surface.currentTakeSerial()
         val listener = rig.capture.awaitListener()
         val picture = FloatArray(SpectrumAnalyzer.BAND_COUNT) { index -> index / 10f }
         listener.onSpectrum(picture)
@@ -103,7 +104,6 @@ class DictationSessionCoordinatorTest {
         assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
         rig.host.awaitStopped()
 
-        val stamped = rig.surface.currentTakeSerial()
         assertEquals(listOf(stamped), rig.surface.pictures.map { it.first })
         assertTrue("the pushed picture reached the recorder unchanged", rig.surface.pictures.single().second.contentEquals(picture))
         val order = listOf("show", "listen", "updateBands:$stamped", "capture-stop", "stopListening", "unbind", "owner-stop")

@@ -308,22 +308,21 @@ class CaptureWithSilenceStopDeviceTest {
                 "a picture must arrive over the callback within five seconds of a take starting; none did",
                 first.await(5, TimeUnit.SECONDS),
             )
-            capture.stopCapture()
-            assertTrue("the recording must have closed", capture.waitForFileReady(3_000L))
-            capture.unregisterSpectrumListener(listener)
-            val seenAtUnregister = delivered.get()
             assertEquals("every picture carries the full band count", 0, wrongLength.get())
 
-            // Nothing more after unregistering: a second take on the same binding pushes to nobody.
-            assumeTrue("the microphone must be available for the second take", capture.startCapture())
+            // Nothing more after unregistering, measured on the SAME take, which is still open and
+            // still analysing: a fixed window is the only instrument for an absence.
+            capture.unregisterSpectrumListener(listener)
+            val seenAtUnregister = delivered.get()
             Thread.sleep(1_500)
-            capture.stopCapture()
-            assertTrue("the second recording must have closed", capture.waitForFileReady(3_000L))
+            assertTrue("the take must still be open while the absence is measured", capture.isCapturing)
             assertEquals(
                 "no picture may arrive after the listener unregistered",
                 seenAtUnregister,
                 delivered.get(),
             )
+            capture.stopCapture()
+            assertTrue("the recording must have closed", capture.waitForFileReady(3_000L))
         } finally {
             runCatching { context.unbindService(connection) }
         }

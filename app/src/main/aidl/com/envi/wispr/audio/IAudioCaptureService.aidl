@@ -109,8 +109,9 @@ interface IAudioCaptureService {
     /**
      * Receive the recorder's live picture as the analyser publishes it (issue #187): at most one
      * IAudioSpectrumListener.onSpectrum per analyser wake, originated while a take is open on this binding.
-     * One listener per binding; a later registration replaces the earlier one. Cleared by
-     * unregisterSpectrumListener, by the binding going away, and by a push that finds the listener dead.
+     * One listener per service instance; a later registration from any binding replaces the earlier
+     * one. Cleared by unregisterSpectrumListener, by the last binding going away, and by a push that
+     * finds the listener dead.
      */
     void registerSpectrumListener(IAudioSpectrumListener listener);
 

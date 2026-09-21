@@ -425,7 +425,7 @@ class AudioCaptureService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
-    /** The client is gone: nothing is pushed to it any more. The service's main thread. */
+    /** The last binding is gone: clear future pushes; an analyser reference already read may still deliver once. Runs on the service main thread. */
     override fun onUnbind(intent: Intent?): Boolean {
         spectrumListener.set(null)
         return super.onUnbind(intent)
@@ -1305,8 +1305,6 @@ class AudioCaptureService : Service() {
             "Stopped by ${active.endingClaim.ending.label}. ${active.bytesWritten} bytes " +
                 "(${String.format("%.1f", PcmAudio.durationSeconds(active.bytesWritten))}s) -> ${active.file.absolutePath}",
         )
-        // Shape only. `polled` is the proof that no production code polls the picture any more (#187).
-        DebugLogger.log(TAG, "Live picture: pushed=${active.spectrumPushes.get()} polled=${active.spectrumPolls.get()}")
     }
 
     private fun releaseSession(active: CaptureSession) {
@@ -1338,6 +1336,10 @@ class AudioCaptureService : Service() {
         active.detectorAbandoned.set(true)
         active.feederThread?.interrupt()
         active.analyserThread?.interrupt()
+        // Once per take, on EVERY ending (a stop, a silence stop, a cap, a capture error, teardown):
+        // release is the one point they all reach. Shape only; `polled` is the proof that no production
+        // code polls the picture any more (#187).
+        DebugLogger.log(TAG, "Live picture: pushed=${active.spectrumPushes.get()} polled=${active.spectrumPolls.get()}")
         // A hold keeps the service alive; its end calls stopSelf (RULE: the service owns its own end).
         if (!holding) stopSelf()
     }

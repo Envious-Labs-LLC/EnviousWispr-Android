@@ -192,10 +192,12 @@ class LiveAudioMeterWiringTest {
         assertTrue("every poll of the legacy getter is counted", getter.contains("active.spectrumPolls.incrementAndGet()"))
         val push = body(capture, "private fun pushSpectrum(active: CaptureSession, bands: FloatArray)")
         assertTrue("every delivered push is counted", push.contains("active.spectrumPushes.incrementAndGet()"))
+        val release = body(capture, "private fun releaseSession(active: CaptureSession)")
         assertTrue(
-            "and the take-end line names both",
-            capture.contains("\"Live picture: pushed=\${active.spectrumPushes.get()} polled=\${active.spectrumPolls.get()}\""),
+            "and the take-end line names both, in releaseSession, which every ending reaches",
+            release.contains("\"Live picture: pushed=\${active.spectrumPushes.get()} polled=\${active.spectrumPolls.get()}\""),
         )
+        assertTrue("and nowhere else", Regex("Live picture: pushed=").findAll(capture).count() == 1)
     }
 
     @Test

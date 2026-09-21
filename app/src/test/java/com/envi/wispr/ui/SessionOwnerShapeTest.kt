@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * Drift Guard (#186): the Service is the Android shell and nothing else. A state machine cannot exist
@@ -45,119 +46,97 @@ class SessionOwnerShapeTest {
      * one call inside `beginSession`, the gateway's delegation, and the companion's call into the
      * private pin. Any other file, or a second call in these, fails.
      *
-     * Calls are read from CODE only, through [codeOnly]: rounds 2 to 4 each found a comment-or-string
-     * shape the previous text cut misread (a KDoc naming the call; a block-comment opener inside a string swallowing the
-     * code after it; a `//` inside a URL string truncating the line), so the cut is replaced by the
-     * closed list of Kotlin lexical states rather than a fourth patch.
+     * Calls are read from CODE only, through [codeOnly], which is `scripts/check-visibility.py` run as a
+     * service: rounds 2 to 5 each found a comment-or-string shape a local text reader misread (a KDoc
+     * naming the call; a block-comment opener inside a string swallowing the code after it; a `//`
+     * inside a URL string truncating the line; a port that kept delimiters its owner masks), so the
+     * lexical states have ONE owner, the shipped check, and this row carries none.
      * REVERT: restore `PasteAccessibilityService.pinTargetForDictation()` in the launcher, or
-     * `pinTarget()` in `startDictationFromBubble`; receipts R5 and R6 do so behind a block-comment-opener string and a
-     * `//` string and the row stays red.
+     * `pinTarget()` in `startDictationFromBubble`; receipts R5 and R6 do so behind a block-comment-opener
+     * string and a `//` string and the row stays red.
      */
     @Test
     fun onlyTheOwnerPinsTheTarget() {
-        val callSites = File("src/main/java").walkTopDown()
-            .filter { it.isFile && it.extension == "kt" }
-            .flatMap { file ->
-                codeOnly(file.readText()).lines().asSequence().mapIndexedNotNull { index, line ->
-                    // A declaration is not a call; the gateway declares AND calls on one line, so the
-                    // declaration is cut out and whatever call remains counts.
-                    val code = line.replace(Regex("""\bfun\s+pinTarget(ForDictation)?\([^)]*\)"""), "")
-                    val isCall = code.contains("pinTargetForDictation(") || code.contains("pinTarget(")
-                    if (isCall) "${file.name}:${index + 1}" else null
-                }
+        val sources = File("src/main/java").walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        val callSites = codeOnly(sources).flatMap { (file, code) ->
+            code.lines().mapIndexedNotNull { index, line ->
+                // A declaration is not a call; the gateway declares AND calls on one line, so the
+                // declaration is cut out and whatever call remains counts.
+                val rest = line.replace(Regex("""\bfun\s+pinTarget(ForDictation)?\([^)]*\)"""), "")
+                val isCall = rest.contains("pinTargetForDictation(") || rest.contains("pinTarget(")
+                if (isCall) "${file.name}:${index + 1}" else null
             }
-            .toList()
+        }
         assertEquals(
             "the owner, the gateway and the companion are the only pin callers; the line numbers move, the file set does not",
             listOf("DictationSessionCoordinator.kt", "InsertionGateway.kt", "PasteAccessibilityService.kt"),
             callSites.map { it.substringBefore(":") }.sorted(),
         )
 
-        val coordinator = codeOnly(File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText())
+        val coordinator = codeOnly(sources.filter { it.name == "DictationSessionCoordinator.kt" }).values.single()
         val beginSession = coordinator.substring(coordinator.indexOf("private fun beginSession("))
             .let { it.substring(0, it.indexOf("\n    private fun ")) }
         assertTrue("the owner's one call is inside beginSession", beginSession.contains(".pinTargetForDictation()"))
     }
 
     /**
-     * Drift Guard on [codeOnly] itself, with literal expectations: each lexical state blanked, code kept,
-     * newlines kept so line numbers hold. REVERT: drop the `str` state's `//` handling; the URL row fails.
+     * Contract row on the service this class reads through: each Kotlin lexical state blanked to spaces
+     * INCLUDING its delimiters (the owner's convention), code kept, newlines kept so line numbers hold.
+     * Expectations are literals built from `" ".repeat(n)`, never from the service.
+     * REVERT: in `scripts/check-visibility.py` `code_mask`, mask the `"` that opens a string as code; the
+     * string rows fail.
      */
     @Test
-    fun codeOnlyBlanksEveryNonCodeState() {
+    fun theCodeOnlyServiceBlanksEveryNonCodeState() {
         val blank = { n: Int -> " ".repeat(n) }
-        assertEquals("val a = 1 " + blank(7), codeOnly("val a = 1 // pin("))
-        assertEquals("val b = " + blank(10) + " 2", codeOnly("val b = /* pin( */ 2"))
-        assertEquals("val c = " + blank(20) + " 3", codeOnly("val c = /* a /* pin( */ b */ 3"))
-        assertEquals("val d = \"" + blank(17) + "\"", codeOnly("val d = \"https://x/pin( /*\""))
-        assertEquals("val e = \"" + blank(4) + "\" + f", codeOnly("val e = \"a\\\"b\" + f"))
-        assertEquals("val g = \"\"\"" + blank(7) + "\"\"\"", codeOnly("val g = \"\"\"// pin(\"\"\""))
-        assertEquals("val h = '" + blank(2) + "'", codeOnly("val h = '\\''"))
-        assertEquals("val i = \"" + blank(2) + "\${pin()}" + blank(2) + "\"", codeOnly("val i = \"a \${pin()} b\""))
-        assertEquals("a\n" + blank(6) + "\nb", codeOnly("a\n// pin\nb"))
+        val shapes = listOf(
+            "val a = 1 // pin(" to "val a = 1 " + blank(7),
+            "val b = /* pin( */ 2" to "val b = " + blank(10) + " 2",
+            "val c = /* a /* pin( */ b */ 3" to "val c = " + blank(20) + " 3",
+            "val d = \"https://x/pin( /*\"" to "val d = " + blank(19),
+            "val e = \"a\\\"b\" + f" to "val e = " + blank(6) + " + f",
+            "val g = \"\"\"// pin(\"\"\"" to "val g = " + blank(13),
+            "val h = '\\''" to "val h = " + blank(4),
+            "val i = \"a \${pin()} b\"" to "val i = " + blank(5) + "pin()" + blank(4),
+            "// pin\nval j = 1" to blank(6) + "\nval j = 1",
+        )
+        val fixture = File.createTempFile("code-only", ".kt")
+        try {
+            fixture.writeText(shapes.joinToString("\n") { it.first } + "\n")
+            val expected = shapes.joinToString("\n") { it.second } + "\n"
+            assertEquals(expected, codeOnly(listOf(fixture)).values.single())
+        } finally {
+            fixture.delete()
+        }
     }
 
-    /**
-     * Kotlin's lexical states, the closed list `scripts/check-visibility.py` (`code_mask`) implements:
-     * code, line comment, nesting block comment, string with escapes and `${ }` templates, raw string
-     * ending at the last three quotes of a run, character literal. Every non-code character becomes a
-     * space; newlines stay.
-     */
-    private fun codeOnly(text: String): String {
-        val out = StringBuilder(text.length)
-        // ("code", brace depth at entry) | "line" | ("block", nesting) | "str" | "raw" | "chr"
-        val stack = ArrayDeque<Pair<String, Int>>().apply { addLast("code" to 0) }
-        var depth = 0
-        var i = 0
-        fun blank(count: Int) { repeat(count) { k -> out.append(if (text[i + k] == '\n') '\n' else ' ') }; i += count }
-        while (i < text.length) {
-            val (kind, entry) = stack.last()
-            val c = text[i]
-            when (kind) {
-                "code" -> when {
-                    text.startsWith("//", i) -> { stack.addLast("line" to 0); blank(2) }
-                    text.startsWith("/*", i) -> { stack.addLast("block" to 1); blank(2) }
-                    text.startsWith("\"\"\"", i) -> { stack.addLast("raw" to 0); out.append("\"\"\""); i += 3 }
-                    c == '"' -> { stack.addLast("str" to 0); out.append(c); i += 1 }
-                    c == '\'' -> { stack.addLast("chr" to 0); out.append(c); i += 1 }
-                    c == '}' && stack.size > 1 && depth == entry -> { stack.removeLast(); out.append(c); i += 1 }
-                    else -> {
-                        if (c == '{') depth += 1 else if (c == '}') depth -= 1
-                        out.append(c); i += 1
-                    }
-                }
-                "line" -> { if (c == '\n') stack.removeLast(); blank(1) }
-                "block" -> when {
-                    text.startsWith("/*", i) -> { stack[stack.lastIndex] = "block" to entry + 1; blank(2) }
-                    text.startsWith("*/", i) -> { if (entry == 1) stack.removeLast() else stack[stack.lastIndex] = "block" to entry - 1; blank(2) }
-                    else -> blank(1)
-                }
-                "str" -> when {
-                    c == '\\' -> blank(if (text.startsWith("\\u", i)) 6 else 2)
-                    text.startsWith("\${", i) -> { stack.addLast("code" to depth); out.append("\${"); i += 2 }
-                    c == '"' -> { stack.removeLast(); out.append(c); i += 1 }
-                    else -> blank(1)
-                }
-                "raw" -> when {
-                    text.startsWith("\${", i) -> { stack.addLast("code" to depth); out.append("\${"); i += 2 }
-                    text.startsWith("\"\"\"", i) -> {
-                        var j = i
-                        while (j < text.length && text[j] == '"') j += 1
-                        // a run of quotes ends the literal at its last three
-                        blank(j - 3 - i); out.append("\"\"\""); i += 3
-                        stack.removeLast()
-                    }
-                    else -> blank(1)
-                }
-                "chr" -> when {
-                    c == '\\' -> blank(if (text.startsWith("\\u", i)) 6 else 2)
-                    c == '\'' -> { stack.removeLast(); out.append(c); i += 1 }
-                    else -> blank(1)
-                }
-                else -> error(kind)
+    /** `scripts/check-visibility.py --code-only`, one process for every file, keyed back by path. */
+    private fun codeOnly(files: List<File>): Map<File, String> {
+        val script = File("../scripts/check-visibility.py").canonicalFile
+        assertTrue("the check must exist at ${script.path}", script.isFile)
+        val process = ProcessBuilder(listOf("python3", script.path, "--code-only") + files.map { it.path })
+            .redirectErrorStream(true)
+            .start()
+        val out = process.inputStream.bufferedReader().readText()
+        assertTrue("the check must finish", process.waitFor(120, TimeUnit.SECONDS))
+        assertEquals("the check must answer:\n$out", 0, process.exitValue())
+        val byPath = files.associateBy { it.path }
+        val result = LinkedHashMap<File, String>()
+        var current: File? = null
+        val body = StringBuilder()
+        fun close() { current?.let { result[it] = body.toString() }; body.setLength(0) }
+        for (line in out.split("\n")) {
+            if (line.startsWith("=== ")) {
+                close()
+                current = byPath.getValue(line.removePrefix("=== "))
+            } else if (current != null) {
+                if (body.isNotEmpty()) body.append('\n')
+                body.append(line)
             }
         }
-        return out.toString()
+        close()
+        assertEquals("every file answered", files.size, result.size)
+        return result
     }
 
     @Test

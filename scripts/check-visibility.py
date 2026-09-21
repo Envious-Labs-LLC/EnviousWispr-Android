@@ -21,6 +21,7 @@ Rule B. A `when (subject) {` block whose every non-else arm names a member of ON
 
     scripts/check-visibility.py                 # the repository's app/src/main/java
     scripts/check-visibility.py --root <dir>    # another tree with the same layout (the test fixtures)
+    scripts/check-visibility.py --code-only <file>...   # print each file's code-only text after a `=== <file>` line
 
 An explicit `public` is the default written out and is refused the same way (allowlist it with a reason).
 A simple type name that is a closed set in more than one package (today `Outcome`, `Phase` and `State`,
@@ -442,6 +443,18 @@ def load_allowlist(path):
 
 def main(argv):
     root = REPO
+    if argv[:1] == ["--code-only"]:
+        # The scanner as a service for a reader in another language: `SessionOwnerShapeTest` inventories
+        # pin calls over code-only text and must not carry a second copy of the lexical states (#192).
+        if len(argv) < 2:
+            print("usage: check-visibility.py --code-only <file>...", file=sys.stderr)
+            return 2
+        for path in argv[1:]:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            print(f"=== {path}")
+            print(code_only(text), end="" if text.endswith("\n") else "\n")
+        return 0
     if "--root" in argv:
         i = argv.index("--root")
         if i + 1 >= len(argv):

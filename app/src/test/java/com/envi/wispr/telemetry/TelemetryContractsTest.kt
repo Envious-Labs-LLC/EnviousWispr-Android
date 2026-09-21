@@ -144,6 +144,7 @@ class TelemetryContractsTest {
             liveState = "ready", silenceStopStatus = "ready", captureTerminal = "manual", recordingSeconds = 4.2, inputDevice = "auto",
             asrMs = 830L, asrChars = 57, peakAmplitude = 0.31f, polishProvider = "offline",
             polishReason = PolishReason.POLISHED, polishMs = 410L, polishStatus = 0, historySave = "ok",
+            settingsFallback = "settings:exception:IOException",
         )
         val payload = PostHogBootstrap.processProperties(event.name, event.properties() + mapOf("\$user_agent" to "x", "\$os_name" to "Android"), config)
         val expected = mapOf(
@@ -166,6 +167,8 @@ class TelemetryContractsTest {
             "polish_ms" to 410L,
             "polish_status" to 0,
             "history_save" to "ok",
+            // #193: which settings readers fell back and why, a content-free token.
+            "settings_fallback" to "settings:exception:IOException",
             "\$os_name" to "Android",
             "app" to "enviouswispr-android",
             "environment" to "production",
@@ -185,11 +188,12 @@ class TelemetryContractsTest {
             asrFailure = AsrFailureReason.DECODE_FAILED, trigger = TriggerSource.ASSIST, routeKind = null,
             routeReason = null, liveAfterMs = null, liveState = null, silenceStopStatus = null, captureTerminal = null, recordingSeconds = null,
             inputDevice = null, asrMs = null, asrChars = null, peakAmplitude = null, polishProvider = null,
-            polishReason = null, polishMs = null, polishStatus = null, historySave = null,
+            polishReason = null, polishMs = null, polishStatus = null, historySave = null, settingsFallback = null,
         )
         val payload = PostHogBootstrap.processProperties(event.name, event.properties(), config)!!
         assertEquals("failed", payload["result"])
         assertEquals("ASR_FAILED", payload["reason"])
+        assertFalse("an ordinary take carries no settings_fallback key (#193)", payload.containsKey("settings_fallback"))
         assertEquals("DECODE_FAILED", payload["asr_failure_reason"])
         assertTrue("absent facts stay absent, never zero", !payload.containsKey("peak_amplitude") && !payload.containsKey("recording_s"))
     }
@@ -203,7 +207,7 @@ class TelemetryContractsTest {
         )
         val built = listOf(
             AnalyticsEvent.AppLaunched("m", "16", false, true, true, true, true, 0, emptyMap()).name,
-            AnalyticsEvent.DictationTerminal("t", TerminalReason.COMPLETED, null, TriggerSource.APP, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null).name,
+            AnalyticsEvent.DictationTerminal("t", TerminalReason.COMPLETED, null, TriggerSource.APP, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null).name,
             AnalyticsEvent.InsertionTerminal("t", null, InsertionResultKind.PASTED, InsertionRouteKind.PASTE, null, null, null, false).name,
             AnalyticsEvent.DictationInterrupted("t", TakeStage.RECORDING, "tile").name,
             AnalyticsEvent.DictationRefused("busy", TriggerSource.TILE).name,
@@ -219,6 +223,20 @@ class TelemetryContractsTest {
     }
 
     // ---- TelemetryFacadeTest: a limb before bootstrap
+
+    /**
+     * Drift Guard (#193): the Sentry breadcrumb a fallback take leaves has one shape, category `take`,
+     * message `settings_fallback`, data `take_id` and `settings_fallback`, sent only on a fallback take
+     * (inside the `fallbackToken()?.let` block). The facade has no test seam, so the shape is read from
+     * the owner's source. REVERT: rename the message or drop a data key in `beginSession`.
+     */
+    @Test
+    fun theSettingsFallbackBreadcrumbHasOneShapeAndIsSentOnlyOnAFallbackTake() {
+        val owner = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        val block = owner.substringAfter("start.fallbackToken()?.let { token ->").substringBefore("\n            }\n")
+        assertTrue(block.contains("""Telemetry.breadcrumb("take", "settings_fallback", mapOf("take_id" to takeId, "settings_fallback" to token))"""))
+        assertEquals("one breadcrumb, inside the fallback block only", 1, owner.split("\"settings_fallback\", mapOf(").size - 1)
+    }
 
     @Test
     fun everyFacadeEntryIsANoOpBeforeBootstrap() {

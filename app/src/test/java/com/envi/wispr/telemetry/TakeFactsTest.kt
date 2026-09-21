@@ -23,9 +23,9 @@ class TakeFactsTest {
     @Test
     fun anUnmeasuredTakeReportsOnlyItsIdentityResultAndTrigger() {
         val facts = TakeFacts("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d", TriggerSource.ASSIST)
-        val row = facts.terminal(TerminalReason.SETTINGS_UNAVAILABLE).properties().filterValues { it != null }
+        val row = facts.terminal(TerminalReason.AUDIO_BIND_FAILED).properties().filterValues { it != null }
         assertEquals(
-            mapOf("take_id" to "0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d", "result" to "failed", "reason" to "SETTINGS_UNAVAILABLE", "trigger_source" to "assist"),
+            mapOf("take_id" to "0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d", "result" to "failed", "reason" to "AUDIO_BIND_FAILED", "trigger_source" to "assist"),
             row,
         )
     }

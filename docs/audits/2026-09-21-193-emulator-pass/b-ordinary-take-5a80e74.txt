@@ -1,0 +1,8 @@
+emulator-5554 True True
+restore: ['nothing was changed'] switch: False
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+attempt 1: ['VERIFIED: a take ran, ended by a stop request', 'VERIFIED: 29 characters came back from the speech engine', "VERIFIED: the same editor now holds the sentence; it ends 'The ordinary take lands here.' (29 chars)"]
+   routes: ['insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=1']
+   fallback lines: []
+['nothing was changed']

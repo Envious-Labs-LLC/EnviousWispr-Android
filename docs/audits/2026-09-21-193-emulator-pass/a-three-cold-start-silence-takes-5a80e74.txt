@@ -1,0 +1,52 @@
+emulator-5554 True True
+--- cold-start take 1
+com.envi.wispr is on screen
+opened Transcription
+   restore: ['nothing was changed']
+   switch set: False now: True
+   stop_app: None
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+host microphone already off
+injected 30 packets, 2.9s of audio
+   ended on its own after injection: 2.113308906555176
+   foreground start -> audio bound: 349 ms (bounds the readers' wait from above)
+   last take: {'started': True, 'ended_by': 'silence', 'bytes': 335872, 'seconds': 10.5, 'warned_at_ms': None, 'hit_the_cap': False, 'transcribed_chars': None, 'handoff': None, 'insertion': None}
+--- cold-start take 2
+com.envi.wispr is on screen
+opened Transcription
+   restore: ['switch back to {"label": "Stop recording on silence", "was": false, "where": "Transcription"}']
+   switch set: False now: True
+   stop_app: None
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+host microphone already off
+injected 30 packets, 2.9s of audio
+   ended on its own after injection: 2.143440008163452
+   foreground start -> audio bound: 234 ms (bounds the readers' wait from above)
+   last take: {'started': True, 'ended_by': 'silence', 'bytes': 335872, 'seconds': 10.5, 'warned_at_ms': None, 'hit_the_cap': False, 'transcribed_chars': None, 'handoff': None, 'insertion': None}
+--- cold-start take 3
+com.envi.wispr is on screen
+opened Transcription
+   restore: ['switch back to {"label": "Stop recording on silence", "was": false, "where": "Transcription"}']
+   switch set: False now: True
+   stop_app: None
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+host microphone already off
+injected 30 packets, 2.9s of audio
+   ended on its own after injection: 2.1324830055236816
+   foreground start -> audio bound: 417 ms (bounds the readers' wait from above)
+   last take: {'started': True, 'ended_by': 'silence', 'bytes': 336384, 'seconds': 10.5, 'warned_at_ms': None, 'hit_the_cap': False, 'transcribed_chars': None, 'handoff': None, 'insertion': None}
+--- ordinary take with the switch OFF
+com.envi.wispr is on screen
+opened Transcription
+   restore: ['switch back to {"label": "Stop recording on silence", "was": false, "where": "Transcription"}'] switch now: False
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+    ['VERIFIED: a take ran, ended by a stop request', 'ISSUE: nothing was transcribed; either the stream never reached the microphone or the engine returned empty', "ISSUE: the editor is unchanged; it still holds ''"]
+   routes: ['insertion api=\'"\'"\' | grep -v adbd | tail -1\'; echo __RC=$?\'']
+   fallback lines: []
+com.envi.wispr is on screen
+opened Transcription
+['nothing was changed']

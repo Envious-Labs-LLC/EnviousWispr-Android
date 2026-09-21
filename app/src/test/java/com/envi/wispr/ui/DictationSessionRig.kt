@@ -249,7 +249,12 @@ internal class DictationSessionRig {
         @Volatile var bound = true
         val pastes = CopyOnWriteArrayList<Pair<Long, String>>()
         val releases = AtomicLong(0L)
-        override fun pinTargetForDictation(): DictationTargetPin = pin
+        /** Every pin the owner takes; the owner's contract is exactly one per admitted take (#192). */
+        val pins = AtomicLong(0L)
+        override fun pinTargetForDictation(): DictationTargetPin {
+            pins.incrementAndGet()
+            return pin
+        }
         override fun pinnedFieldId(): String? = "field-1"
         override fun releasePinnedTarget() { releases.incrementAndGet() }
         override fun pasteWhenTargetReturns(transcriptId: Long, text: String, policy: ClipboardInsertionPolicy, takeId: String): InsertionHandoff {

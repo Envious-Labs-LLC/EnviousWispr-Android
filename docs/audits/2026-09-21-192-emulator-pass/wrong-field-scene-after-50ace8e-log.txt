@@ -1,0 +1,9 @@
+# logcat -d -v time excerpt read right after the wrong-field scene on 50ace8e (the buffer was cleared by the next script; these lines are as printed at 13:30)
+09-21 13:29:58.540 I/PasteService(31433): Pinned original editor package=com.google.android.gm window=6162
+09-21 13:30:15.139 I/PasteService(31433): Insertion requested; waiting for the original editor
+09-21 13:30:15.142 I/DictationSession(31433): Auto-insert handed to accessibility target tracker (handoff=SCHEDULED)
+09-21 13:30:17.751 W/PasteService(31433): Original editor did not return after 21 attempts; clipboard only
+09-21 13:30:17.752 I/PasteService(31433): insertion api=36 route=NONE written=false returned=NONE evidence=NONE outcome=NEVER_RETURNED attempts=21 ms=2615 overrun=false target=com.google.android.gm
+09-21 13:30:17.808 I/ProactiveSuggestionsHolderManager( 1946): Requesting to show proactive suggestions: CLIPBOARD (the keyboard offering the sentence from the clipboard)
+
+# Reading: ONE pin per take (the fix); the words did NOT go to Subject (the defect in the title is gone); the pinned body was not focused at insertion time, so the existing fail-safe ran: clipboard plus the announcement. Before the change on 6a0f5c4 the same scene wrote the sentence INTO Subject with two pin lines.

@@ -1,0 +1,27 @@
+emulator-5554 True True
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+attempt 1 (empty transcription, rerun): ['VERIFIED: a take ran, ended by a stop request', 'ISSUE: nothing was transcribed; either the stream never reached the microphone or the engine returned empty', "ISSUE: the editor is unchanged; it still holds ''"]
+   pins=1 routes=['insertion api=\'"\'"\' | grep -v adbd | tail -1\'; echo __RC=$?\'']
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+attempt 2 (judged): ['VERIFIED: a take ran, ended by a stop request', 'VERIFIED: 35 characters came back from the speech engine', "VERIFIED: the same editor now holds the sentence; it ends 'The first ordinary take lands here.' (35 chars)"]
+   pins=1 routes=['insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=190 overrun=false target=com.google.andro', 'insertion api=\'"\'"\' | grep -v adbd | tail -1\'; echo __RC=$?\'']
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+attempt 3 (empty transcription, rerun): ['VERIFIED: a take ran, ended by a stop request', 'ISSUE: nothing was transcribed; either the stream never reached the microphone or the engine returned empty', "ISSUE: the editor is unchanged; it still holds ''"]
+   pins=1 routes=['insertion api=\'"\'"\' | grep -v adbd | tail -1\'; echo __RC=$?\'']
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+attempt 4 (empty transcription, rerun): ['VERIFIED: a take ran, ended by a stop request', 'ISSUE: nothing was transcribed; either the stream never reached the microphone or the engine returned empty', "ISSUE: the editor is unchanged; it still holds ''"]
+   pins=1 routes=['insertion api=\'"\'"\' | grep -v adbd | tail -1\'; echo __RC=$?\'']
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+attempt 5 (judged): ['VERIFIED: a take ran, ended by a stop request', 'VERIFIED: 38 characters came back from the speech engine', "ISSUE: the editor changed but does not hold the sentence in order; it ends 'A second ordinary take lance here too.' (38 chars)"]
+   pins=1 routes=['insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=54 overrun=false target=com.google.androi', 'insertion api=\'"\'"\' | grep -v adbd | tail -1\'; echo __RC=$?\'']
+pressed 'Compose' at (1068, 2644)
+focused 'Compose email' (editor)
+attempt 6 (judged): ['VERIFIED: a take ran, ended by a stop request', 'VERIFIED: 26 characters came back from the speech engine', "VERIFIED: the same editor now holds the sentence; it ends 'And the third one as well.' (26 chars)"]
+   pins=1 routes=['insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=39 overrun=false target=com.google.androi', 'insertion api=\'"\'"\' | grep -v adbd | tail -1\'; echo __RC=$?\'']
+good takes: 3 of 6 attempts
+['nothing was changed']

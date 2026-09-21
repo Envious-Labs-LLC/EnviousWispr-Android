@@ -15,3 +15,7 @@ AutoPasteWiringTest (repointed haystack, honest mutant) | SettingsComponents.kt:
 
 # Restored: git status --short is empty after every mutant.
 # The activity-recreation row's mutant (rememberSaveable -> remember on settingsPageName) is an instrumented row; its receipt is taken on the AVD.
+
+# Instrumented receipt, taken on the AVD (emulator-5554, EnviousWispr_Android_16_Play, debug build of 4fd1b21), 2026-09-21:
+anOpenSettingsPageSurvivesActivityRecreation | AppShell.kt: 'var settingsPageName by rememberSaveable { mutableStateOf<String?>(null) }' -> 'var settingsPageName by remember { mutableStateOf<String?>(null) }' | ui.AppShellNavigationTest (connectedDebugAndroidTest) | 3/1/0, report timestamp 2026-09-21T05:16:31, only the recreation row red | RED
+# Control: the same three rows against the restored tree, 3/0/0, report timestamp 2026-09-21T05:00:35 before the mutant and 2026-09-21T05:32:37 after the restore.

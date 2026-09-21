@@ -164,8 +164,9 @@ Four files in `com.envi.wispr.ui` where one stood:
    - `ShellActions` (proposed): `onStartDictation`, `onRefreshReadiness`
    - `PermissionActions` (proposed): `onRequestMicrophone`, `onRequestNotifications`, `onOpenAccessibility`
      (read by onboarding, the Microphone page and the Permissions page)
-   - `OnboardingActions` (proposed): `onOnboardingStep`, `onDismissOnboarding`, `onResumeOnboarding`,
-     `onCompleteOnboarding` (read by onboarding and the Permissions page's continue-setup control)
+   - `OnboardingActions` (proposed): `onStep`, `onDismiss`, `onResume`, `onComplete` (the group name
+     carries the "onboarding" the old root-level names spelled out; read by onboarding and the
+     Permissions page's continue-setup control)
    - `HistoryActions` (proposed): `onSearchChange`, `onKeep`, `onDelete`, `onDeleteAll`
    - `DictionaryActions` (proposed): `onSearchChange`, `onAdd`, `onEdit`, `onDelete`, `onBulkDelete`, `onImport`
    - `TranscriptionActions` (proposed): the five cleanup and silence callbacks

@@ -1,5 +1,6 @@
 package com.envi.wispr.audio
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -92,6 +93,19 @@ class LiveAudioMeterWiringTest {
         assertTrue(
             "the recorder must not reach for the capture service itself",
             !overlay.contains("currentAmplitude") && !meterView.contains("currentAmplitude"),
+        )
+    }
+
+    @Test
+    fun theCaptureProxyMakesThreeCommandsAndTwoRegistrationsAndAsksNothing() {
+        // Drift Guard (#115, coverage G1): a token inventory of every binder call the owner's capture
+        // proxy makes. Three commands and two listener registrations; no getter, no wait. A polled read
+        // reintroduced here is the fifth poll (#44) coming back under a new name.
+        val proxy = bindings.substringAfter("private class CaptureProxy(").substringBefore("private class SpeechProxy(")
+        val calls = Regex("service\\.([A-Za-z]+)\\(").findAll(proxy).map { it.groupValues[1] }.toSortedSet()
+        assertEquals(
+            sortedSetOf("finishTake", "registerSpectrumListener", "registerTakeListener", "startCaptureForTake", "stopCapture"),
+            calls,
         )
     }
 

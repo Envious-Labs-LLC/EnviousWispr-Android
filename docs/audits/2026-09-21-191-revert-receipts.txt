@@ -1,0 +1,31 @@
+# #191 revert receipts against 874db6c, 2026-09-21T14:57:25Z
+# Each edit applied once; the oracle run; the red output recorded; the file restored with git checkout.
+
+R1 drop internal from a non-allowlisted declaration (a plain enum, so it still compiles): app/src/main/java/com/envi/wispr/models/ModelDeliveryUi.kt
+  test: com.envi.wispr.VisibilityCheckTest.theTreeHasNoPublicDefaultOutsideTheAllowlist -> RED
+  message: java.lang.AssertionError: the shipped tree must be clean:
+
+R2 the check stops seeing rule A (its declaration regex no longer matches `class`): scripts/check-visibility.py
+  test: com.envi.wispr.VisibilityCheckTest.aStagedPublicClassIsRefused -> RED
+  message: java.lang.AssertionError: public-class must be refused with exit 1:
+  test: com.envi.wispr.VisibilityCheckTest.everyScannerStateStillSeesTheTopLevelAfterIt -> RED
+  message: java.lang.AssertionError: after-line-comment must be refused with exit 1:
+
+R2b the check stops seeing rule B (else arms are never collected): scripts/check-visibility.py
+  test: com.envi.wispr.VisibilityCheckTest.aStagedElseOverAnEnumIsRefused -> RED
+  message: java.lang.AssertionError: else-over-enum must be refused with exit 1:
+
+R3 a new DownloadState member (QUEUED) must break every decision site: app/src/main/java/com/envi/wispr/models/ModelDelivery.kt
+  command: ./gradlew :app:compileDebugKotlin -> exit 1, 4 error line(s)
+  e: models/ModelDeliveryNotification.kt:50:20 'when' expression must be exhaustive. Add the 'QUEUED' branch or an 'else' branch.
+  e: models/ModelDeliveryNotification.kt:69:30 'when' expression must be exhaustive. Add the 'QUEUED' branch or an 'else' branch.
+  e: models/ModelDeliveryWorker.kt:120:9 'when' expression must be exhaustive. Add the 'QUEUED' branch or an 'else' branch.
+  e: models/ModelDeliveryWorker.kt:120:9 Argument type mismatch: actual type is 'kotlin.Unit', but 'androidx.work.ListenableWorker.Result' was expected.
+  expected sites red: 3 of 3 (ModelDeliveryWorker.kt:120, ModelDeliveryNotification.kt:50, ModelDeliveryNotification.kt:69)
+
+
+# Build record against 874db6c
+  ./gradlew :app:compileDebugKotlin :app:compileDebugUnitTestKotlin :app:compileDebugAndroidTestKotlin --console=plain -q -> exit 0
+  ./gradlew :app:assembleDebug --console=plain -q -> exit 0
+  scripts/measure-tests.sh -> exit 0; tests=1000 suites=128 failures=0 errors=0 skipped=0
+  python3 scripts/check-visibility.py -> exit 0; clean: 196 files under app/src/main/java, 99 closed sets known

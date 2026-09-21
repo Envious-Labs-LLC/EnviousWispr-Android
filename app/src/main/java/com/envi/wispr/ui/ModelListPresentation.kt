@@ -160,7 +160,7 @@ object ModelListPresentation {
         // OpenAI models the last 29 are never probed however well they work. Hiding them would delete
         // working models from the list permanently, which is a worse failure than showing an untested one,
         // and the count line says how many were checked. The probe budget is spent NEWEST FIRST in
-        // `ProviderPolishClient`, so the untested tail is the oldest rows rather than an arbitrary set.
+        // `ProviderModelDiscoveryClient`, so the untested tail is the oldest rows rather than an arbitrary set.
         //
         // The SAVED model is never hidden even when it turns unusable, because a user has to be able to
         // see and change what they are currently running.

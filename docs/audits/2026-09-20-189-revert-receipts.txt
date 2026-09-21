@@ -1,0 +1,26 @@
+# Revert receipts for #189, HEAD af02671, 2026-09-20T23:33:50
+# row | mutant | suite | tests/failures/errors with the mutant | verdict
+
+openAiPolishPlanCarriesInstructionsInputAndStoreFalse | OpenAiAdapter.kt: ',\\"store\\":false}",\n        responseFormat = ProviderReplyFo' -> '}",\n        responseFormat = ProviderRep' | ProviderAdapterTest | 21/1/0 | RED
+geminiPolishPlanNamesTheModelInThePathAndUsesTheGoogleHeader | GeminiAdapter.kt: 'else URI(GEMINI_URL_PREFIX + encodePath(model) + ":generateC' -> 'else URI(GEMINI_URL_PREFIX + model + ":g' | ProviderAdapterTest | 21/1/0 | RED
+claudePolishPlanSendsVersionSystemAndMaxTokens | ClaudeAdapter.kt: 'const val CLAUDE_MAX_OUTPUT_TOKENS = 8192' -> 'const val CLAUDE_MAX_OUTPUT_TOKENS = 409' | ProviderAdapterTest | 21/1/0 | RED
+selfHostedPlansDifferOnlyInPathAndFormat | SelfHostedAdapter.kt: 'SelfHostedProtocol.OPENAI_COMPATIBLE -> "/v1/chat/completion' -> 'SelfHostedProtocol.OPENAI_COMPATIBLE -> ' | ProviderAdapterTest | 21/1/0 | RED
+probePlansPerStyle | ClaudeAdapter.kt: 'ProbeStyle.NO_REASONING -> null\n        ProbeStyle.DEFAULT -' -> 'ProbeStyle.NO_REASONING, ProbeStyle.DEFA' | ProviderAdapterTest | 21/1/0 | RED
+listUrlsAndPaging | ClaudeAdapter.kt: '+ (afterId?.let { "&after_id=${encodePath(it)}" } ?: "")' -> '' | ProviderAdapterTest | 21/1/0 | RED
+modelRowsPerProvider | OpenAiAdapter.kt: '(row["created"] as? Number)?.toLong()?.times(1000L)' -> '(row["created"] as? Number)?.toLong()' | ProviderAdapterTest | 21/1/0 | RED
+listEnvelopePerProvider | OpenAiAdapter.kt: '(ProviderJson.parseOrNull(body)?.root as? Map<*, *>)?.get("d' -> 'ProviderJson.parseOrNull(body)?.root is ' | ProviderAdapterTest | 21/1/0 | RED
+replyTextPerFormat | ProviderReplyFormat.kt: '?.firstOrNull { item -> (item["type"] as? String)?.let { it ' -> '?.firstOrNull()' | ProviderAdapterTest | 21/1/0 | RED
+endedOfItsOwnAccordPerFormat | ProviderReplyFormat.kt: 'OPENAI_RESPONSES -> root.stringAt("status") == "completed"' -> 'OPENAI_RESPONSES -> root.stringAt("statu' | ProviderAdapterTest | 21/1/0 | RED
+requestPlanToStringRedacts | HttpProviderTransport.kt: 'override fun toString(): String =\n        "RequestPlan(url=<' -> '' | ProviderAdapterTest | 21/1/0 | RED
+errorSignalPerAdapter | ClaudeAdapter.kt: 'body.contains("credit balance") -> ProviderErrorSignal.OUT_O' -> '' | ProviderAdapterTest | 21/1/0 | RED
+keyCheckVerdictPerAdapter | GeminiAdapter.kt: 'forbiddenVerdict = ProviderKeyCheck::Rejected,' -> 'forbiddenVerdict = ProviderKeyCheck::Den' | ProviderAdapterTest | 21/1/0 | RED
+probeOutcomeFollowsTheMacRulesPerProvider | ClaudeAdapter.kt: 'serverErrorAccess = ModelAccess.AVAILABLE,' -> 'serverErrorAccess = ModelAccess.UNVERIFI' | ProviderAdapterTest | 21/1/0 | RED
+openAiKeepsChatFamiliesMinusOtherModalitiesAndChatCompletionsOnlyIds | OpenAiAdapter.kt: 'return id !in openAiChatCompletionsOnly' -> 'return true' | ProviderAdapterTest | 21/1/0 | RED
+everyProviderResolvesToItsNamedAdapter | ProviderAdapter.kt: 'Provider.CLAUDE -> ClaudeAdapter' -> 'Provider.CLAUDE -> OpenAiAdapter' | ProviderAdapterTest | 21/4/0 | RED
+ProviderRetryPolicyTest.transientStatusesRetryExceptGeminisAmbiguousLimit | GeminiAdapter.kt: 'ProviderRetryPolicy.isRetryable(failure, retryRateLimit = fa' -> 'ProviderRetryPolicy.isRetryable(failure,' | ProviderRetryPolicyTest | 3/1/0 | RED
+acceptsEveryProviderEnvelopeShape | ProviderJson.kt: 'parseArray(depth + 1)' -> 'throw IllegalArgumentException("arrays r' | ProviderJsonTest | 3/2/0 | RED
+refusesNestingPastTheCapAndAcceptsAtIt | ProviderJson.kt: 'const val MAX_DEPTH = 64' -> 'const val MAX_DEPTH = 1_000' | ProviderJsonTest | 3/1/0 | RED
+theClientsAndTheTransportHoldNoProviderBranch | ProviderPolishClient.kt: 'val adapter = ProviderAdapters.of(request.provider)' -> 'val adapter = ProviderAdapters.of(reques' | ProviderClientShapeTest | 4/1/0 | RED
+PolishFailureTest (Gemini 429 copy) | GeminiAdapter.kt: 'override val rateLimitFailure = PolishFailure.RATE_OR_QUOTA' -> 'override val rateLimitFailure = PolishFa' | PolishFailureTest | 8/1/0 | RED
+
+# Restored: git status --short is empty; every mutant lived only between its apply and its checkout.

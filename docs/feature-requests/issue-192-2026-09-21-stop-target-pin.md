@@ -101,8 +101,9 @@ user's editor is still focused") from before #186, when the service pinned later
 #186 the coordinator pins in `beginSession` on the main thread and judges every announcement against
 that value, so the launcher pin is a second writer of one fact (`architecture-rules.md` RULE:
 own-state-locally). The bubble's direct route (`:436-450`) was added for #135 so Chrome keeps its keyboard;
-its pin was copied from the launcher. Catalog: macOS pins at the owner (`decision` rows on
-`multi-route-paste`; no Android decision on pre-command pinning).
+its pin was copied from the launcher. Catalog: no decision row mentions target pinning or the focused field at start (`sqlite3 … "SELECT
+decision_slug FROM decision WHERE lower(decision_text) LIKE '%pin%' OR … '%focused%'"` returns four rows,
+none about insertion targets), so nothing settled is being redesigned.
 
 ### 4. Boundaries a naive design misses
 - **Focus at the owner's pin.** The launcher is a 1x1 `FLAG_NOT_FOCUSABLE` window (`:88-96`), so the user's

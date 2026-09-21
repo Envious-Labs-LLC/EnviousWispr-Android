@@ -218,9 +218,10 @@ internal class DictationSessionRig {
 
         /** Delayed posts, in order, never fired by a clock: [fireDelayed] runs them on the fake main thread. */
         val delayed = CopyOnWriteArrayList<Pair<Long, Runnable>>()
-        /** How many delayed posts were made in all; a re-arm is a cancel and a new post. */
-        val delayedPosts = AtomicLong(0L)
-        override fun postToMainDelayed(delayMs: Long, runnable: Runnable) { delayedPosts.incrementAndGet(); delayed += delayMs to runnable }
+        /** Every delayed post ever made, by delay; a re-arm is a cancel and a NEW post with the same delay. */
+        val delayedPostLog = CopyOnWriteArrayList<Long>()
+        fun postsWithDelay(delayMs: Long): Int = delayedPostLog.count { it == delayMs }
+        override fun postToMainDelayed(delayMs: Long, runnable: Runnable) { delayedPostLog += delayMs; delayed += delayMs to runnable }
         override fun cancelMainDelayed(runnable: Runnable) { delayed.removeIf { it.second === runnable } }
 
         /** Test time passes: every delayed post with [delayMs] due fires, on main, in the order it was posted. */

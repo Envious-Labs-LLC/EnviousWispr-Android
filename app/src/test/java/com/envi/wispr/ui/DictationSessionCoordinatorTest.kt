@@ -305,12 +305,14 @@ class DictationSessionCoordinatorTest {
         val armed = rig.host.delayed.filter { it.first == DictationSessionCoordinator.TAKE_SILENT_BOUND_MS }
         assertEquals("one bound armed", 1, armed.size)
         val before = armed.single().second
+        val postsBefore = rig.host.postsWithDelay(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
         rig.capture.tick(5_000L)
         rig.onMain {}
         rig.onMain {}
         val after = rig.host.delayed.filter { it.first == DictationSessionCoordinator.TAKE_SILENT_BOUND_MS }
         assertEquals("still exactly one bound", 1, after.size)
-        assertTrue("re-posted (cancelled and posted again), not left as it was", rig.host.delayedPosts.get() >= 2)
+        // Counted by the bound's own delay, so the live deadline's post cannot stand in for a re-arm.
+        assertEquals("the heartbeat cancelled the bound and posted it again", postsBefore + 1, rig.host.postsWithDelay(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS))
         assertTrue(before === after.single().second)
         rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
         assertEquals(TerminalReason.CANCELLED_RECORDING, rig.endings.awaitOne())

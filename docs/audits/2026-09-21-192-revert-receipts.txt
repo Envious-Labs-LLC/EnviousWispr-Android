@@ -1,25 +1,30 @@
-Revert receipts for #192 at 7042538 (2026-09-21 12:55)
+Revert receipts for #192 at c9f741b (2026-09-21 12:59)
 
 applied R1
 R1: revert applied to app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt; gradle exit 1; expected red: SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
-  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget: java.lang.AssertionError: the owner, the gateway and the companion are the only pin callers; the line numbers move, the file set does not expected:<[DictationSe
   restored: 0
 
 applied R2
 R2: revert applied to app/src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt; gradle exit 1; expected red: SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
-  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget: java.lang.AssertionError: the owner, the gateway and the companion are the only pin callers; the line numbers move, the file set does not expected:<[DictationSe
   restored: 0
 
 applied R3
 R3: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt; gradle exit 1; expected red: aStoppingToggleNeverRepinsTheTarget (the toggle that stops re-pins) and onlyTheOwnerPinsTheTarget (a second owner call)
-  RED DictationSessionCoordinatorTest.aStoppingToggleNeverRepinsTheTarget
-  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  RED DictationSessionCoordinatorTest.aStoppingToggleNeverRepinsTheTarget: java.lang.AssertionError: the stopping toggle took no second pin expected:<1> but was:<2>
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget: java.lang.AssertionError: the owner, the gateway and the companion are the only pin callers; the line numbers move, the file set does not expected:<[DictationSe
   restored: 0
 
 applied R4
 R4: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt; gradle exit 1; expected red: aRefusedBusyStartNeverPinsTheTarget (the busy branch pins) and onlyTheOwnerPinsTheTarget (a second owner call)
-  RED DictationSessionCoordinatorTest.aRefusedBusyStartNeverPinsTheTarget
-  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget
+  RED DictationSessionCoordinatorTest.aRefusedBusyStartNeverPinsTheTarget: java.lang.AssertionError: the refused START took no pin expected:<1> but was:<2>
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget: java.lang.AssertionError: the owner, the gateway and the companion are the only pin callers; the line numbers move, the file set does not expected:<[DictationSe
+  restored: 0
+
+applied R5
+R5: revert applied to app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt; gradle exit 1; expected red: onlyTheOwnerPinsTheTarget, refusing VoiceInputActivity.kt by name for the string holding /*
+  RED SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget: java.lang.AssertionError: VoiceInputActivity.kt:71 opens a string literal that contains /*; this row's comment cut cannot read it
   restored: 0
 
 tree after, excluding this receipt: 0 dirty tracked files

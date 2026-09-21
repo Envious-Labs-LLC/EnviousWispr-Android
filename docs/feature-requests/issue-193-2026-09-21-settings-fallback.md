@@ -1,7 +1,7 @@
 # Issue #193 — A settings or vocabulary read failure prevents recording instead of falling back — 2026-09-21
 
 GitHub issue: `#193`. Tier: MEDIUM (a service's start path, new runtime behaviour; `workflow-process.md`
-RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G2.1, G2.2, G4.1, G5.1 to G5.3 folded in); round 2 next.
+RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G2.1, G2.2, G4.1, G5.1 to G5.3 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the start carries the values; G3.1 one deadline; G3.2 the reader is never written by the bound); round 3 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -183,16 +183,23 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
    `CompletableDeferred<PreferenceRead>` completed EXACTLY ONCE by its collector, after the emitted fields are
    written: `Fresh` on the first emission, `Failed(exception:<name>)` from the catch,
    `Failed(completed_without_value)` from a normal exit with no emission. The bound never writes the reader:
-   `withTimeoutOrNull(boundMs) { deferred.await() }` returning null is the CALLER's `Failed(timed_out)` for
-   THIS take, so a late first emission still completes the deferred as `Fresh` for later takes, and a race
-   between the bound and the first emission has one winner per take with no torn state (round G1.1). Later
-   emissions update the cached fields for later takes and never rewrite an answer. Returns a
-   `PreferenceStart` (proposed): `settings: PreferenceRead`, `terms: PreferenceRead`. It never returns "not
+   ONE `withTimeoutOrNull(boundMs)` encloses BOTH waits under a single 2 000 ms deadline (round G3.1); after
+   it, only a reader still unresolved receives the caller-local `Failed(timed_out)`, and the source's
+   deferred stays incomplete and may later complete `Fresh` for a later take (round G3.2). A race between
+   the deadline and a first emission has one winner per take with no torn state (round G1.1). Returns a
+   `PreferenceStart` (proposed) that CARRIES THE VALUES, not only the outcomes: `settings: PreferenceRead`,
+   `terms: PreferenceRead`, plus the cleanup options, the nullable clipboard policy, the four capture
+   fields, the tips flag and the terms list, all read from the source's fields inside `awaitAnswers`
+   immediately after the wait, before any further suspension (round G2, G1.1). It never returns "not
    ready".
 4. **`beginSession`:** `awaitAnswers` under `SETTINGS_ANSWER_BOUND_MS` (proposed) (2 000 ms,
    replacing `SETTINGS_WAIT_MS`); if either is `Failed`, `takeFacts.settingsFallback` (proposed) = a token
    naming which (`settings`, `terms`, `both`) and the reasons, one `log.warn`, one breadcrumb
-   `take` / `settings_fallback` (proposed); then the existing snapshot, compile, policy and bind. The
+   `take` / `settings_fallback` (proposed); then the matcher is compiled from `start.terms`, the policy is
+   loaded, the journal admission is awaited, and `freeze(start, matcher, policy)` builds the take's
+   `SessionPreferences` FROM THE RETURNED START ALONE: `beginSession` never rereads `structuredTerms` or any
+   live source field after suspending (round G2, G1.1: `freeze` runs after the compile, the policy load and
+   the journal wait, so a post-deadline emission would otherwise replace the live fields first). The
    `showError(SETTINGS_UNAVAILABLE)` branch is deleted.
    **The four capture fields are frozen with the snapshot** (round G2.1): `SessionPreferences` gains
    `autoStopOnSilence`, `silencePauseSeconds`, `inputDevicePick`, `keepEarbudsReady` and `showBluetoothTips`,
@@ -225,9 +232,10 @@ the source's caller as today's `settingsWaitMs` does (injected for tests).
 - `DictationSessionCoordinator.SETTINGS_WAIT_MS` → `SETTINGS_ANSWER_BOUND_MS` (2 000).
 
 ## 5. State and lifecycle audit
-Two readers, each `Pending → Fresh` (first emission), `Pending → Failed` (catch, a completion with no
-emission, or bound expiry), and
-`Fresh` stays `Fresh` on later emissions. `Failed` on a first run means constructor defaults; `Failed`
+Two readers, each `Pending → Fresh` (first emission) or `Pending → Failed` (catch, or a completion with
+no emission); the source's deferred is never written by the bound: after a take-local timeout it remains
+incomplete and may later complete `Fresh`, and `Failed(timed_out)` exists only in that take's immutable
+`PreferenceStart` (round G3.2). `Fresh` stays `Fresh` on later emissions. `Failed` on a first run means constructor defaults; `Failed`
 after a `Fresh` keeps the last written fields (the collector ended; no later emission overwrites). A
 second take in the same process after a `Failed` first read: the collector is not restarted (it ended), so
 the take starts on the same last values, `Failed` again, one more line. Restarting a failed collector is
@@ -266,7 +274,8 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
 ## 10. File-by-file changes
 - `app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt`: `PreferenceRead`, `PreferenceStart`,
   the two answer deferreds, the catch and the normal exit complete with `Failed`, `awaitAnswers`;
-  `SessionPreferences` gains the five capture and notice fields and `freeze` writes them.
+  `SessionPreferences` gains the five capture and notice fields and `freeze(start, matcher, policy)` writes
+  them from the start.
 - `app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt`: `beginSession` wait and facts;
   `SETTINGS_ANSWER_BOUND_MS`.
 - `app/src/main/java/com/envi/wispr/ui/TerminalReason.kt`, `TakeNotices.kt`,

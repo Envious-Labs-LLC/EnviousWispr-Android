@@ -1,7 +1,7 @@
 # Issue #191 — App-only code is public and new states can silently take default branches — 2026-09-21
 
 GitHub issue: `#191`. Tier: SMALL by the issue (REF-08, "-20 lines net"); the diff touches many files but moves
-no logic, no process, no package and no AIDL. Status: APPROVED (coverage round; grounded G1 to G6, PROCEED-AS-PLANNED 2026-09-21; Gate 2 under the founder's standing approval of technical decisions, phone excluded by his morning instruction).
+no logic, no process, no package and no AIDL. Status: SHIPPED (coverage round; grounded G1 to G6, PROCEED-AS-PLANNED 2026-09-21; Gate 2 under the founder's standing approval of technical decisions, phone excluded by his morning instruction; code review rounds 1 to 3, ALL-CLEAR; Phase 3 run 20260921T152939Z-000460a PASS --strict). Built in three chunks; corrections at build are marked in place.
 
 Consolidation: this plan is one document; §2.5 carries the measured populations once and §§3 to 11 point back at it.
 
@@ -312,7 +312,7 @@ Not present in this change (no runtime failure branch).
   line for FACT: lanes.
 
 ## 11. Testing
-1. Classes: `VisibilityCheckTest` (proposed) is a Drift Guard (when it fails, a public default or a closed-set `else`
+1. Classes: `VisibilityCheckTest` is a Drift Guard (when it fails, a public default or a closed-set `else`
    reached the tree, which the user feels the next time a state is added and takes the wrong branch). The
    suite's existing rows are the product coverage; none change.
 2. Reverts: §11.2, each once and seen red.
@@ -329,9 +329,9 @@ Not present in this change (no runtime failure branch).
 ### 11.2 Other obligations
 | Test | Class | Proves | Revert that turns it red |
 |---|---|---|---|
-| `VisibilityCheckTest.theTreeHasNoPublicDefaultOutsideTheAllowlist` (proposed) | Drift Guard | the check exits 0 on the tree | drop `internal` from one NON-allowlisted class |
-| `VisibilityCheckTest.aStagedPublicClassIsRefused` (proposed) | Harness Contract | the A direction fires on the fixture with exit code exactly 1 and the expected `file:line` | delete the fixture's hit from the script's regex |
-| `VisibilityCheckTest.aStagedElseOverAnEnumIsRefused` (proposed) | Harness Contract | the B direction fires (enum, `data object`, nested enum) and the open mixed `when` passes | same |
+| `VisibilityCheckTest.theTreeHasNoPublicDefaultOutsideTheAllowlist` | Drift Guard | the check exits 0 on the tree | drop `internal` from one NON-allowlisted class |
+| `VisibilityCheckTest.aStagedPublicClassIsRefused` | Harness Contract | the A direction fires on the fixture with exit code exactly 1 and the expected `file:line` | delete the fixture's hit from the script's regex |
+| `VisibilityCheckTest.aStagedElseOverAnEnumIsRefused` | Harness Contract | the B direction fires (enum, `data object`, nested enum) and the open mixed `when` passes | same |
 | the compiler | — | a new `DownloadState` member breaks `ModelDeliveryWorker.kt:142` and the two `ModelDeliveryNotification.kt` sites (`:56`, `:72`) | add `DownloadState.QUEUED`, read the three errors into `docs/audits/2026-09-21-191-revert-receipts.txt` with the command and exit status (receipt R3), then remove it |
 
 ## 12. Blast radius & rollback
@@ -339,7 +339,7 @@ Compile-time only. Rollback is `git revert` of three commits; nothing persisted 
 
 ## 13. Ship criteria specific to THIS change
 - `scripts/check-visibility.py` exits 0 on the tree and on each passing fixture, and exactly 1 on each
-  rejecting fixture (`VisibilityCheckTest` (proposed) rows; the fixtures are the list).
+  rejecting fixture (`VisibilityCheckTest` rows; the fixtures are the list).
 - `scripts/measure-tests.sh` count reported; `:app:assembleDebug`, `:app:compileDebugUnitTestKotlin` (external) and
   `:app:compileDebugAndroidTestKotlin` (external) green, each command and exit status recorded in the receipts file.
 - Receipt R3 in `docs/audits/2026-09-21-191-revert-receipts.txt` shows three compiler errors for one added enum member.

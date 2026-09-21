@@ -29,3 +29,6 @@ R3 a new DownloadState member (QUEUED) must break every decision site: app/src/m
   ./gradlew :app:assembleDebug --console=plain -q -> exit 0
   scripts/measure-tests.sh -> exit 0; tests=1000 suites=128 failures=0 errors=0 skipped=0
   python3 scripts/check-visibility.py -> exit 0; clean: 196 files under app/src/main/java, 99 closed sets known
+
+# Phase 3 negative control, 2026-09-21T15:33Z
+  a copy of the run with visibility removed from obligations_satisfied and hits in visibility.txt: check-validation.sh --strict -> FAIL (Code: the visibility obligation is not in obligations_satisfied), exit 2

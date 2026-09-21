@@ -42,6 +42,13 @@ EXACT_VS_SUBSTRING = """<?xml version='1.0' encoding='UTF-8'?>
   <node text="Remove all models" bounds="[180,1000][600,1057]" package="com.envi.wispr" clickable="true" enabled="true" />
 </hierarchy>"""
 
+ONE_BUTTON_TWO_NODES = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="Update" bounds="[700,820][868,884]" package="com.android.vending" clickable="true" enabled="true">
+    <node text="Update" bounds="[700,820][868,884]" package="com.android.vending" clickable="false" enabled="true" />
+  </node>
+</hierarchy>"""
+
 NOTHING_OF_OURS = """<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy rotation="0">
   <node text="Gmail" bounds="[0,100][100,200]" package="com.google.android.apps.nexuslauncher" clickable="true" enabled="true" />
@@ -193,6 +200,13 @@ def main():
         check("and substring matching would have been ambiguous", False, "it resolved to one")
     except eyes.Blocked as refusal:
         check("and substring matching would have been ambiguous", "2 nodes match" in str(refusal), refusal)
+    restore_adb(original)
+
+    # One control reported twice at the SAME point is one press, not a guess (the Play Store's Update
+    # button, 2026-09-21): the clickable node wins. Two nodes at DIFFERENT points still refuse (above).
+    original = with_screen(ONE_BUTTON_TWO_NODES)
+    found = eyes.find("Update", exact=True, package="com.android.vending")
+    check("two nodes at one point resolve to the clickable one", found["clickable"] and found["centre"] == (784, 852), found)
     restore_adb(original)
     original = with_screen(TWO_REMOVES)
 

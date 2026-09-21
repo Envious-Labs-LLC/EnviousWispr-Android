@@ -17,6 +17,7 @@ import android.media.MediaRecorder
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.RemoteException
 import android.os.SystemClock
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.vad.ISilenceVadService
@@ -28,6 +29,7 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 import kotlin.math.abs
 
@@ -182,6 +184,13 @@ class AudioCaptureService : Service() {
         @Volatile var analyserThread: Thread? = null
 
         /**
+         * How the picture left this take: pushes to the registered listener, and polls of the legacy
+         * getter. Shape only, logged once at release; `polled` must read 0 in production since #187.
+         */
+        val spectrumPushes = AtomicInteger(0)
+        val spectrumPolls = AtomicInteger(0)
+
+        /**
          * Everything about the detector belongs to the take that started it.
          *
          * Held here rather than on the service so that a feeder or a connection callback belonging to a
@@ -240,6 +249,15 @@ class AudioCaptureService : Service() {
     @Volatile private var captureThread: Thread? = null
     @Volatile private var lastAudioFile: File? = null
     @Volatile private var currentAmplitude = 0f
+    /**
+     * The one listener the picture is pushed to (#187). Owned by the BINDING, not the take: a
+     * registration survives a take's release and goes with the client (unregister, unbind, or a push
+     * that finds it dead). Registration `set`s; unregister and failed-push cleanup
+     * `compareAndSet(observed, null)`, so a late clear can never erase a newer registration. Read by
+     * the analyser thread, written by binder threads and the service's main thread; never touched by
+     * the capture thread.
+     */
+    private val spectrumListener = AtomicReference<IAudioSpectrumListener?>(null)
     /**
      * The loudest sample of the current or most recent take, 0..1 of full scale. Written on the capture
      * thread, reset at start, kept after the take ends until the next start (like `lastEffective`), so a
@@ -366,9 +384,22 @@ class AudioCaptureService : Service() {
         override fun getCurrentAmplitude(): Float = this@AudioCaptureService.currentAmplitude
 
         override fun getSpectrumBands(): FloatArray {
+            // LEGACY since #187: no production caller; counted so the take-end line can prove it.
             // Always BAND_COUNT long, never empty: the length is the contract. Zeros when no take is open.
             val active = this@AudioCaptureService.session ?: return FloatArray(SpectrumAnalyzer.BAND_COUNT)
+            active.spectrumPolls.incrementAndGet()
             return synchronized(active.bandsLock) { active.publishedBands.copyOf() }
+        }
+
+        override fun registerSpectrumListener(listener: IAudioSpectrumListener?) {
+            this@AudioCaptureService.spectrumListener.set(listener)
+        }
+
+        override fun unregisterSpectrumListener(listener: IAudioSpectrumListener?) {
+            val current = this@AudioCaptureService.spectrumListener.get() ?: return
+            if (listener != null && current.asBinder() == listener.asBinder()) {
+                this@AudioCaptureService.spectrumListener.compareAndSet(current, null)
+            }
         }
         override fun getAudioFilePath(): String? = this@AudioCaptureService.lastAudioFile?.absolutePath
 
@@ -393,6 +424,12 @@ class AudioCaptureService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
+
+    /** The last binding is gone: clear future pushes; an analyser reference already read may still deliver once. Runs on the service main thread. */
+    override fun onUnbind(intent: Intent?): Boolean {
+        spectrumListener.set(null)
+        return super.onUnbind(intent)
+    }
 
     /**
      * Started only by [finishTake], to outlive the owner's unbind while a hold runs. Never sticky: a
@@ -992,14 +1029,38 @@ class AudioCaptureService : Service() {
                     synchronized(active.bandsLock) {
                         System.arraycopy(bands, 0, active.publishedBands, 0, SpectrumAnalyzer.BAND_COUNT)
                     }
+                    // Outside the lock: the push is a binder transaction and the lock is the getter's.
+                    pushSpectrum(active, bands)
                 }
                 LockSupport.parkNanos(ANALYSER_PARK_NS)
             }
         } catch (e: Exception) {
+            bands.fill(0f)
             synchronized(active.bandsLock) { active.publishedBands.fill(0f) }
+            pushSpectrum(active, bands)
             DebugLogger.warn(TAG, "Live picture stopped for this take: ${e.message}")
         } finally {
             if (active.analyserThread === Thread.currentThread()) active.analyserThread = null
+        }
+    }
+
+    /**
+     * Analyser thread only. Hand one picture to the registered listener, if any (#187).
+     *
+     * `oneway`, so this never waits on the app process; the parcel is written before the call returns,
+     * so the analyser's own array is safe to pass. A dead client throws: the slot is cleared with
+     * `compareAndSet` so a registration that replaced this one in the meantime is kept, and the loss is
+     * logged once per take. The picture is a limb: nothing here can reach the capture thread or the take.
+     */
+    private fun pushSpectrum(active: CaptureSession, bands: FloatArray) {
+        val listener = spectrumListener.get() ?: return
+        try {
+            listener.onSpectrum(bands)
+            active.spectrumPushes.incrementAndGet()
+        } catch (e: RemoteException) {
+            if (spectrumListener.compareAndSet(listener, null)) {
+                DebugLogger.warn(TAG, "Live picture listener gone: ${e.javaClass.simpleName}")
+            }
         }
     }
 
@@ -1275,6 +1336,10 @@ class AudioCaptureService : Service() {
         active.detectorAbandoned.set(true)
         active.feederThread?.interrupt()
         active.analyserThread?.interrupt()
+        // Once per take, on EVERY ending (a stop, a silence stop, a cap, a capture error, teardown):
+        // release is the one point they all reach. Shape only; `polled` is the proof that no production
+        // code polls the picture any more (#187).
+        DebugLogger.log(TAG, "Live picture: pushed=${active.spectrumPushes.get()} polled=${active.spectrumPolls.get()}")
         // A hold keeps the service alive; its end calls stopSelf (RULE: the service owns its own end).
         if (!holding) stopSelf()
     }

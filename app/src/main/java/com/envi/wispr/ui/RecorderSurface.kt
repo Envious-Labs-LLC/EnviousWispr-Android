@@ -19,11 +19,8 @@ internal interface RecorderSurface {
     fun updateBands(takeSerial: Long, bands: FloatArray)
     fun hide()
 
-    /** The serial [show] stamped on the current take; the meter thread compares against it. */
+    /** The serial [show] stamped on the current take; the picture listener stamps it on every picture and [updateBands] compares. */
     fun currentTakeSerial(): Long
-
-    /** The resting picture, published when a meter reading throws. */
-    fun emptyBands(): FloatArray
 }
 
 /** Production: every call delegates to [RecordingOverlayState]. */
@@ -38,5 +35,4 @@ internal object OverlayRecorderSurface : RecorderSurface {
     override fun updateBands(takeSerial: Long, bands: FloatArray) = RecordingOverlayState.updateBands(takeSerial, bands)
     override fun hide() = RecordingOverlayState.hide()
     override fun currentTakeSerial(): Long = RecordingOverlayState.snapshots.value.takeSerial
-    override fun emptyBands(): FloatArray = RecordingOverlayState.NO_BANDS
 }

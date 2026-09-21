@@ -70,6 +70,13 @@ internal class DictationSessionRig {
         }
     }
 
+    /**
+     * One ordered record across the fakes, so a row can assert the order of events that different fakes
+     * see (the picture subscription: show, listen, a picture, capture stop, stopListening, owner stop; #187).
+     * Each fake keeps its own `events` too.
+     */
+    val timeline = CopyOnWriteArrayList<String>()
+
     val log = FakeLog()
     val host = FakeHost()
     val surface = FakeSurface()
@@ -192,6 +199,7 @@ internal class DictationSessionRig {
         override fun removeForegroundAndDismiss() { events += "foreground-removed" }
         override fun stopSelfNow() {
             events += "stopSelf"
+            timeline += "owner-stop"
             stopped.countDown()
         }
         override fun postToMain(runnable: Runnable) { mainExecutor.execute { run("post", runnable) } }
@@ -204,7 +212,7 @@ internal class DictationSessionRig {
         }
     }
 
-    class FakeSurface : RecorderSurface {
+    inner class FakeSurface : RecorderSurface {
         val events = CopyOnWriteArrayList<String>()
         private val serial = AtomicLong(0L)
         private val shown = CountDownLatch(1)
@@ -219,15 +227,20 @@ internal class DictationSessionRig {
         override fun show() {
             serial.incrementAndGet()
             events += "show"
+            timeline += "show"
             shown.countDown()
         }
         override fun showProcessing() { events += "processing" }
         override fun showNotice(text: String) { events += "notice:$text" }
+        /** Every picture the owner published, with the serial it stamped. */
+        val pictures = CopyOnWriteArrayList<Pair<Long, FloatArray>>()
         override fun updateElapsed(seconds: Int) {}
-        override fun updateBands(takeSerial: Long, bands: FloatArray) {}
+        override fun updateBands(takeSerial: Long, bands: FloatArray) {
+            pictures += takeSerial to bands.copyOf()
+            timeline += "updateBands:$takeSerial"
+        }
         override fun hide() { events += "hide" }
         override fun currentTakeSerial(): Long = serial.get()
-        override fun emptyBands(): FloatArray = FloatArray(0)
     }
 
     class FakeInsertion : InsertionGateway {
@@ -247,7 +260,7 @@ internal class DictationSessionRig {
     }
 
     /** The capture process as the owner sees it. `startCaptureForTake` writes a small PCM file for the stop path to measure. */
-    class FakeCapture : CaptureLink {
+    inner class FakeCapture : CaptureLink {
         @Volatile var startResult = true
         @Volatile var startFailure = AudioCaptureService.START_FAILURE_NONE
         @Volatile var liveStateAfterStart = AudioCaptureService.LIVE_READY
@@ -289,6 +302,7 @@ internal class DictationSessionRig {
         override fun lastStartFailure(): Int = startFailure
         override fun stopCapture() {
             events += "stop"
+            timeline += "capture-stop"
             capturing = false
             stopRequested.countDown()
         }
@@ -305,7 +319,27 @@ internal class DictationSessionRig {
         override fun inputRouteReason(): Int = 0
         override fun liveAfterMs(): Long = 0L
         override fun terminalReason(): Int = ending
-        override fun spectrumBands(): FloatArray = FloatArray(0)
+        /** The listener the owner registered, so a test can push a picture through it as the audio process would. */
+        @Volatile var spectrumListener: SpectrumListener? = null
+        private val listening = CountDownLatch(1)
+
+        /** The listener the owner registered, once `listenForPicture` ran; a loud failure if it never did. */
+        fun awaitListener(): SpectrumListener {
+            check(listening.await(10, TimeUnit.SECONDS)) { "the owner never registered for the picture; events: $events" }
+            return checkNotNull(spectrumListener)
+        }
+        override fun listenForSpectrum(listener: SpectrumListener) {
+            spectrumListener = listener
+            events += "listen"
+            timeline += "listen"
+            listening.countDown()
+        }
+        override fun stopListeningForSpectrum() {
+            if (spectrumListener == null) return
+            spectrumListener = null
+            events += "stopListening"
+            timeline += "stopListening"
+        }
         override fun effectiveInputDevice(): String? = "Phone microphone"
         override fun takePeakAmplitude(): Float {
             if (throwOnPeak) throw IllegalStateException("peak unreadable")
@@ -385,7 +419,10 @@ internal class DictationSessionRig {
             }
             return bindResult
         }
-        override fun unbind() { events += "unbind" }
+        override fun unbind() {
+            events += "unbind"
+            timeline += "unbind"
+        }
         override fun postUnbindToMain(beforeUnbind: () -> Unit) { mainExecutor.execute { run("post") { beforeUnbind(); unbind() } } }
         override fun stopAudioService() { events += "stopAudioService" }
 

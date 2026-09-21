@@ -114,9 +114,6 @@ internal class DictationSessionCoordinator(
             "Reached the ${RecordingLimits.MAX_DURATION_MINUTES} minute limit. " +
                 "Working on what you said."
 
-        /** About thirty pictures a second: a syllable is about 100 ms and the analyser refreshes every 32 ms. */
-        private const val METER_INTERVAL_MS = 33L
-
         /** How long a take waits for its journal admission before starting anyway (a limb, never a gate). */
         const val JOURNAL_ADMISSION_DEADLINE_MS = 300L
 
@@ -675,40 +672,30 @@ internal class DictationSessionCoordinator(
                 Thread.sleep(100)
             }
         }, "DictationPollingThread").start()
-        startMeter()
+        listenForPicture()
     }
 
     /**
-     * The recorder's live picture, on its own thread, for exactly as long as the take is open.
+     * The recorder's live picture, PUSHED by the audio process for exactly as long as the take is open.
      *
-     * Its own thread rather than a step in the polling tick, because the picture is a limb and the
-     * tick is the heart: a slow, throwing or blocked reading here can delay nothing the take depends on
-     * (`architecture-rules.md` RULE: isolate-limbs). It is also the ONLY reader of the picture in the
-     * app. The recorder is pushed finished numbers rather than reaching for the capture service, so a
-     * second surface cannot become a second reader (RULE: no-idle-cost); the thread exists only while a
-     * take is open, so idle cost is unchanged.
+     * The audio process publishes each picture as its analyser finishes it (#187); until then this
+     * owner asked for it thirty times a second over a synchronous binder call, which the audio process
+     * answered under a lock with a copy. The picture is a limb and this is not the polling tick, so a
+     * failed registration can delay nothing the take depends on (`architecture-rules.md` RULE:
+     * isolate-limbs). It is also the ONLY subscriber in the app: the recorder is handed finished numbers,
+     * never a service to reach for, so a second surface cannot become a second reader (RULE: no-idle-cost).
      *
-     * Take identity is the snapshot's serial, captured here after `show()` stamped it. A reading that
-     * returns after the take ended carries a stale serial, which `updateBands` refuses under its lock,
-     * and the loop leaves as soon as it sees the serial move on. A THROWING reading publishes the empty
-     * picture so the rail rests; a reading that never returns (a wedged audio process, #115) reaches no
-     * branch at all and the rail holds its last picture until the pill hides, as the timer holds its
-     * last second.
+     * Take identity is the snapshot's serial, captured here after `show()` stamped it and stamped on every
+     * picture; `updateBands` refuses a picture whose serial is not the visible take's, under its own lock.
+     * A picture that never arrives (a wedged audio process, #115) leaves the rail holding its last shape
+     * until the pill hides, as the timer holds its last second. `finishSession` unregisters.
      *
-     * Failing to start this thread costs the picture only: the take and its polling thread carry on.
+     * Failing to register costs the picture only: the take and its polling thread carry on.
      */
-    private fun startMeter() {
+    private fun listenForPicture() {
         val takeSerial = surface.currentTakeSerial()
         runCatching {
-            Thread({
-                while (state.get() == SessionState.RECORDING) {
-                    val service = pipeline.capture ?: break
-                    val bands = runCatching { service.spectrumBands() }.getOrElse { surface.emptyBands() }
-                    if (surface.currentTakeSerial() != takeSerial) break
-                    surface.updateBands(takeSerial, bands)
-                    Thread.sleep(METER_INTERVAL_MS)
-                }
-            }, "DictationMeterThread").start()
+            pipeline.capture?.listenForSpectrum { bands -> surface.updateBands(takeSerial, bands) }
         }.onFailure { log.warn("Live picture unavailable for this take: ${it.message}") }
     }
 
@@ -1478,6 +1465,8 @@ internal class DictationSessionCoordinator(
             historyUpdates.joinAll()
             host.postToMain {
                 cancelOpenPolishRequest()
+                // The picture subscription goes with the binding; a failure here costs nothing.
+                runCatching { pipeline.capture?.stopListeningForSpectrum() }
                 pipeline.unbind()
                 host.removeForegroundAndDismiss()
                 // IDLE is published at the last moment this instance can still refuse a start: the

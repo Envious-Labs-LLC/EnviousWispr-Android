@@ -1499,6 +1499,24 @@ def cancel_dictation():
     _dictation("cancel")
 
 
+def toggle_dictation():
+    """The side button pressed AGAIN during a take: the bare toggle, the same intent the Samsung side
+    button sends, with no `stop` extra. It is the only way to drive the launcher's stop path (#192: the
+    launcher used to pin the focused editor before the owner decided that this toggle meant stop, so a
+    take started in one editor could land in another). Allowed only while a take is live, so this can
+    never begin one; `open_recorder()` alone starts takes.
+    """
+    if not recording():
+        raise Blocked("toggle_dictation() ends a live take by the side-button path; nothing is recording, "
+                      "and a take is started only by `open_recorder()`")
+    remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)}", check=False)
+    if remote != 0 or "Error" in out:
+        detail = out.strip().splitlines()[-1] if out.strip() else "no message"
+        raise Blocked(f"the recorder would not accept the toggle: {detail}")
+    time.sleep(1.5)
+    _STATE["tree"] = None
+
+
 @_atomic_change
 def _kill_take():
     """Close the microphone, and let NOTHING come before it.

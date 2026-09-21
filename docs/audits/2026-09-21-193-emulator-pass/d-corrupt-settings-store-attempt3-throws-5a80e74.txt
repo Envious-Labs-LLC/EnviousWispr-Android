@@ -1,0 +1,17 @@
+# (d) the real failed-read path, attempt 3, 2026-09-21 15:05 on 5a80e74: the settings store overwritten with 0f 0f 0f 0f (protobuf wire type 7, invalid) while the process was DEAD, then the accessibility rebind, then one take through the launcher into Gmail.
+# Attempts 1 and 2 (printable garbage; then 0f bytes written BEFORE the process was killed) produced no throw: printable bytes parse as unknown fields, and a live process had already read the file.
+
+verdict: VERIFIED: a take ran, ended by a stop request | VERIFIED: 29 characters came back from the speech engine | VERIFIED: the same editor now holds the sentence; it ends "The fallback take lands here." (29 chars)
+pids [13761]
+   09-21 15:05:14.237 W/DictationSession(13761): Unable to load cleanup preferences: CorruptionException
+   09-21 15:05:14.266 W/DictationSession(13761): Settings reader fell back; the take runs on the last values: settings:exception:CorruptionException
+   09-21 15:05:14.503 I/DictationSession(13761): Polish service connected
+   09-21 15:05:14.537 I/DictationSession(13761): Speech service connected
+   09-21 15:05:14.593 I/DictationSession(13761): Audio capture connected
+   09-21 15:05:14.754 I/DictationSession(13761): Recording started (live after 1 ms, forced=false)
+   09-21 15:05:24.777 I/DictationSession(13761): Stopping recording and starting transcription
+   09-21 15:05:25.543 I/DictationSession(13761): Take terminal: COMPLETED (completed)
+   09-21 15:05:25.618 I/DictationSession(13761): Auto-insert handed to accessibility target tracker (handoff=SCHEDULED)
+   09-21 15:05:26.848 W/DictationSession(13761): Unable to load cleanup preferences: CorruptionException   (a second Service instance after stopSelf; one line per instance)
+
+# Reading: the reader failed with CorruptionException, the take started 29 ms later on the defaults, spoken text reached Gmail by COMMIT, ONE fallback line per take. After the file was deleted and the app relaunched, an ordinary take ran with no fallback line (b-ordinary-take, and the second take in attempt 2).

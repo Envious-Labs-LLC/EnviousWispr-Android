@@ -1,0 +1,42 @@
+Revert receipts for #193 at 6e12188 (2026-09-21 14:47)
+
+applied R1
+R1: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt; gradle exit 1; expected red: the three failure rows and the completes-without-value row (the take ends instead of starting)
+  RED DictationSessionCoordinatorTest.aFailedSettingsReadStartsCaptureOnDefaults: java.lang.IllegalStateException: the take never went live; surface events so far: [starting, target:field-1, processing, processing, hide]
+  RED DictationSessionCoordinatorTest.aFailureAfterFreshUsesLastSuccessfulSnapshot: java.lang.IllegalStateException: the take never went live; surface events so far: [starting, target:field-1, processing, processing, hide]
+  RED DictationSessionCoordinatorTest.aReaderThatCompletesWithoutAValueFailsAtOnce: java.lang.IllegalStateException: the take never went live; surface events so far: [starting, target:field-1, processing, processing, hide]
+  RED DictationSessionCoordinatorTest.aFailedVocabularyReadStartsCaptureWithoutUserTerms: java.lang.IllegalStateException: the take never went live; surface events so far: [starting, target:field-1, processing, processing, hide]
+  RED DictationSessionCoordinatorTest.aSilentStoreStartsOnTheLastSnapshotAfterTheBound: java.lang.IllegalStateException: the take never went live; surface events so far: [starting, target:field-1, processing, processing, hide]
+  restored: 0
+
+applied R2
+R2: revert applied to app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt; gradle exit 1; expected red: aFailureAfterFreshUsesLastSuccessfulSnapshot (auto-stop reset to false)
+  RED DictationSessionCoordinatorTest.aFailureAfterFreshUsesLastSuccessfulSnapshot: org.junit.ComparisonFailure: the last successful auto-stop value reached capture expected:<start(autoStop=[true, pause=2].5)> but was:<start
+  restored: 0
+
+applied R3
+R3: revert applied to app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt; gradle exit 1; expected red: anOrdinaryTakeFreezesOneConsistentSnapshot (capture started on the defaults before the readers answered)
+  RED DictationSessionCoordinatorTest.aFailedSettingsReadStartsCaptureOnDefaults: org.junit.ComparisonFailure: expected:<settings:[exception:IOException]> but was:<settings:[timed_out]>
+  RED DictationSessionCoordinatorTest.aReaderThatCompletesWithoutAValueFailsAtOnce: org.junit.ComparisonFailure: expected:<both:[completed_without_value]:completed_without_v...> but was:<both:[timed_out]:completed_without_v.
+  RED DictationSessionCoordinatorTest.anOrdinaryTakeFreezesOneConsistentSnapshot: org.junit.ComparisonFailure: expected:<start(autoStop=[tru]e, pause=1.5)> but was:<start(autoStop=[fals]e, pause=1.5)>
+  restored: 0
+
+applied R4
+R4: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt; gradle exit 1; expected red: theSettingsFallbackBreadcrumbHasOneShapeAndIsSentOnlyOnAFallbackTake
+  RED TelemetryContractsTest.theSettingsFallbackBreadcrumbHasOneShapeAndIsSentOnlyOnAFallbackTake: java.lang.AssertionError
+  restored: 0
+
+applied R5
+R5: revert applied to app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt; gradle exit 1; expected red: the failure rows asserting exactly one warning
+  RED DictationSessionCoordinatorTest.aFailedSettingsReadStartsCaptureOnDefaults: java.lang.AssertionError: exactly one warning for the fallback take expected:<1> but was:<2>
+  RED DictationSessionCoordinatorTest.aReaderThatCompletesWithoutAValueFailsAtOnce: java.lang.AssertionError: expected:<1> but was:<2>
+  RED DictationSessionCoordinatorTest.aFailedVocabularyReadStartsCaptureWithoutUserTerms: java.lang.AssertionError: expected:<1> but was:<2>
+  RED DictationSessionCoordinatorTest.aSilentStoreStartsOnTheLastSnapshotAfterTheBound: java.lang.AssertionError: expected:<1> but was:<2>
+  restored: 0
+
+applied R6
+R6: revert applied to app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt; gradle exit 1; expected red: anOrdinaryTakeFreezesOneConsistentSnapshot (a completed flow marked Failed after its value)
+  RED DictationSessionCoordinatorTest.anOrdinaryTakeFreezesOneConsistentSnapshot: java.lang.AssertionError: an ordinary take carries no fallback token expected null, but was:<settings:completed_without_value>
+  restored: 0
+
+tree after, excluding this receipt: 0 dirty tracked files

@@ -35,6 +35,7 @@ internal object PayloadSanitizer {
         "live_after_ms", "live_state", "start_failure", "capture_terminal", "silence_stop_status",
         "recording_s", "input_device", "asr_ms", "asr_chars", "asr_cold_start", "peak_amplitude",
         "polish_provider", "polish_reason", "polish_ms", "polish_status", "history_save", "stage",
+        "settings_fallback",
         // insertion.terminal
         "handoff", "route", "target_app", "latency_ms", "clipboard_outcome", "recovered",
         // app.launched and settings

@@ -1,0 +1,16 @@
+--- (e) Room corruption, corrupted while the process is DEAD, then stop_app rebinds
+db before: -rw-rw---- 1 u0_a227 u0_a227  4096 2026-09-21 15:07 enviouswispr.db
+-rw------- 1 u0_a227 u0_a227 32768 2026-09-21 15:07 enviouswispr.db-shm
+-rw------- 1 u0_a227 u0_a227 65952 2026-09-21 15:07 enviouswispr.db-wal
+RC=0
+pid after force-stop: RC=1
+corrupt: RC=0
+header: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RC=0
+stop_app (rebinds the accessibility service): None bound: False
+restore: ['nothing was changed']
+verdict: []
+routes: []
+db after: -rw-rw---- 1 u0_a227 u0_a227  4096 2026-09-21 15:07 enviouswispr.db
+RC=0
+['nothing was changed']

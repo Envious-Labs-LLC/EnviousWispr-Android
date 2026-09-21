@@ -74,6 +74,7 @@ internal sealed class AnalyticsEvent(val name: String) {
         val polishMs: Long?,
         val polishStatus: Int?,
         val historySave: String?,
+        val settingsFallback: String?,
     ) : AnalyticsEvent("dictation.terminal") {
         override fun properties(): Map<String, Any?> = mapOf(
             "take_id" to takeId,
@@ -98,6 +99,7 @@ internal sealed class AnalyticsEvent(val name: String) {
             "polish_ms" to polishMs,
             "polish_status" to polishStatus,
             "history_save" to historySave,
+            "settings_fallback" to settingsFallback,
         )
     }
 

@@ -85,8 +85,8 @@ internal class DictationSessionCoordinator(
     /** `Dispatchers.Main.immediate` in production; a JVM test passes its single owner-thread dispatcher. */
     private val mainDispatcher: CoroutineDispatcher,
     private val polishTimeout: PolishTimeout = DelayPolishTimeout,
-    /** How long a take waits for the settings and custom words before failing; a test shortens it (#193 will remove the gate). */
-    private val settingsWaitMs: Long = SETTINGS_WAIT_MS,
+    /** How long a take waits for the settings readers to answer before starting on the last values; a test shortens it (#193). */
+    private val answerBoundMs: Long = SETTINGS_ANSWER_BOUND_MS,
     /** Process-scoped on purpose: the tip's once-per-process allowance outlives the Service instance. */
     private val tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS,
     /** The one first-wins gate on the polish answer; production mints ids off the device clock, a test off the JVM's. */
@@ -117,8 +117,13 @@ internal class DictationSessionCoordinator(
         /** How long a take waits for its journal admission before starting anyway (a limb, never a gate). */
         const val JOURNAL_ADMISSION_DEADLINE_MS = 300L
 
-        /** How long a take waits for the settings and custom words before failing (#193 will change this). */
-        const val SETTINGS_WAIT_MS = 10_000L
+        /**
+         * How long a take waits for the two settings readers to ANSWER (#193). Not a gate: a reader still
+         * silent at the deadline is a failed read for this take and the take starts on the last values.
+         * The wait exists only so an ordinary cold start runs on the user's real values, which DataStore
+         * and Room deliver in milliseconds; a hung store cannot hold the microphone longer than this.
+         */
+        const val SETTINGS_ANSWER_BOUND_MS = 2_000L
     }
 
     private enum class SessionState { IDLE, STARTING, RECORDING, PROCESSING, CANCELLING, FINISHING, ERROR }
@@ -331,7 +336,6 @@ internal class DictationSessionCoordinator(
         val trigger = admittedRequest?.let(::bubbleTrigger) ?: pendingTrigger
         pendingTrigger = TriggerSource.UNKNOWN
         val takeFacts = TakeFacts(takeId, trigger)
-        takeFacts.inputDevice = TakeFacts.inputDeviceToken(preferences.inputDevicePick)
         facts = takeFacts
         // The referee for THIS take, in memory, before anything else (G2 D2). Its sink is a limb: it
         // hands the committed reason to telemetry and never waits on storage or the network.
@@ -358,16 +362,17 @@ internal class DictationSessionCoordinator(
         recordingDurationMs = 0L
         lastElapsedSecond = -1
         scope.launch {
-            val ready = preferences.awaitReady(settingsWaitMs)
-            if (!ready) {
-                withContext(mainDispatcher) {
-                    if (state.get() == SessionState.STARTING) {
-                        showError(TerminalReason.SETTINGS_UNAVAILABLE)
-                    }
-                }
-                return@launch
+            // The readers are limbs (#193): a failed or silent read never ends the take. The start carries
+            // both outcomes and the values that came with them, taken by one atomic read each, and the
+            // take is built from it alone; nothing below rereads the live source after suspending.
+            val start = preferences.awaitAnswers(answerBoundMs)
+            start.fallbackToken()?.let { token ->
+                takeFacts.settingsFallback = token
+                log.warn("Settings reader fell back; the take runs on the last values: $token")
+                Telemetry.breadcrumb("take", "settings_fallback", mapOf("take_id" to takeId, "settings_fallback" to token))
             }
-            val termsSnapshot: List<CustomTerm> = preferences.structuredTerms
+            takeFacts.inputDevice = TakeFacts.inputDeviceToken(start.settings.inputDevicePick)
+            val termsSnapshot: List<CustomTerm> = start.terms.structuredTerms
             val matcher = withContext(Dispatchers.Default) {
                 StructuredTermRestorer.compile(termsSnapshot)
             }
@@ -379,7 +384,7 @@ internal class DictationSessionCoordinator(
             }
             withContext(mainDispatcher) {
                 if (state.get() != SessionState.STARTING) return@withContext
-                sessionPreferences = preferences.freeze(termsSnapshot, matcher, policy)
+                sessionPreferences = preferences.freeze(start, matcher, policy)
                 bindPipelineServices()
             }
         }
@@ -457,11 +462,13 @@ internal class DictationSessionCoordinator(
             forcedNoticeShown = false
             captureDeviceLabel = ""
             val started = runCatching {
+                // The frozen snapshot, never the live source: a settings emission after the take's answer
+                // belongs to the next take (#193).
                 pipeline.capture?.startCaptureForTake(
-                    preferences.autoStopOnSilence,
-                    preferences.silencePauseSeconds,
-                    preferences.inputDevicePick,
-                    preferences.keepEarbudsReady,
+                    sessionPreferences.autoStopOnSilence,
+                    sessionPreferences.silencePauseSeconds,
+                    sessionPreferences.inputDevicePick,
+                    sessionPreferences.keepEarbudsReady,
                     takeId,
                 )
             }.getOrNull()
@@ -707,7 +714,7 @@ internal class DictationSessionCoordinator(
      * the accessibility service runs, so clipboard-only mode gets the same sentence as a toast instead.
      */
     private fun publishSilenceNoticeIfNeeded(service: CaptureLink) {
-        if (!preferences.autoStopOnSilence || silenceNoticeShown) return
+        if (!sessionPreferences.autoStopOnSilence || silenceNoticeShown) return
         val status = runCatching { service.silenceStopStatus() }.getOrNull() ?: return
         if (status != AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return
         silenceNoticeShown = true
@@ -729,7 +736,7 @@ internal class DictationSessionCoordinator(
     private fun publishMicrophoneNoticesIfNeeded(service: CaptureLink) {
         if (silenceNoticeShown || forcedNoticeShown) return
         val kind = runCatching { service.inputRouteKind() }.getOrNull() ?: return
-        if (tipGate.shouldShow(kind, preferences.showBluetoothTips)) {
+        if (tipGate.shouldShow(kind, sessionPreferences.showBluetoothTips)) {
             log.log("Bluetooth tip shown")
             sayWhileRecording(CaptureNotices.BLUETOOTH_TIP)
         }

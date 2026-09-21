@@ -1,7 +1,7 @@
 # Issue #192 — Stopping from the side button can send a dictation to the wrong text field — 2026-09-21
 
 GitHub issue: `#192`. Tier: LARGE (the insertion path and the session owner's contract, `workflow-process.md`
-RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 next.
+RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 next.
 
 Consolidation: this plan is one document; §2.5 carries the reproduction and the trace once and §§3 to 11 point back at it.
 
@@ -10,7 +10,7 @@ Consolidation: this plan is one document; §2.5 carries the reproduction and the
 ## Preface — Lane + Hardware UAT declaration
 
 **Lane:** Code — `app/src/main/**` (two deletions), `app/src/test/**` (coordinator rows and a shape row),
-`scripts/uat/wispr_eyes.py` (one harness call). `mixed_pr: true`: `Code` (`unit-tests.xml`, `codex-review.md`,
+`scripts/uat/wispr_eyes.py` (two harness calls). `mixed_pr: true`: `Code` (`unit-tests.xml`, `codex-review.md`,
 `visibility.txt`, `hardware-uat.json`: the heart path) and `Docs/dev-tooling` (`cited-symbols`, conditional).
 
 **PAR rows closed:** none named; the outcome contract is `architecture-rules.md` RULE:
@@ -52,7 +52,8 @@ search), Elena, Frank: all want the same rung; none wants the words to follow th
   each leave the pin count at one; an admitted take pins exactly once), one shape row (the two files
   contain no pin call), and the reproduction scenario on the emulator run twice (before: wrong field;
   after: right field) plus the busy-start scenario.
-- One harness call, `toggle_dictation()`, the bare side-button intent during a live take.
+- Two harness calls, `toggle_dictation()` (the bare side-button intent during a live take) and
+  `press_start_while_recording()` (the launcher's START during a live take).
 
 ## 1. Problem
 
@@ -133,8 +134,8 @@ none about insertion targets), so nothing settled is being redesigned.
   `lastTarget` fails `isInFocusedWindow` (`:801`) and discovery (`:803`) returns no target where the old
   pre-pin, taken before the gap, would have succeeded. The evidence that settles it is the emulator run
   after the change: `Pinned original editor` logged ONCE per take and `route=COMMIT`, on three ordinary
-  takes and the two scenarios. If a START then misses its pin, the plan PIVOTS (the fallback design would
-  be for the owner to pin before it sends the command through the launcher path, never in the launcher).
+  takes and the two scenarios. If a launcher START then misses its pin, STOP and re-plan the START ordering with the
+  owner kept as the sole pin authority (never a pin back in the launcher).
   On the S26 the same sequence is UNVERIFIED and listed for the founder's next side-button dictation.
 - **The bubble's direct start (coverage B2)** creates no activity transition: the editor's window keeps
   focus through the same-process command unless an unrelated focus event intervenes; the bubble's
@@ -187,8 +188,8 @@ across a component boundary for no gain.
 ## 6. Consumer matrix
 | Contract delta | Consumer | Current | Required | Change? | Verified by |
 |---|---|---|---|---|---|
-| no launcher pin | the owner's `beginSession` | a valid pin already exists on START | pins from `lastTarget`/discovery | none | the emulator START run; rig row `aStoppingToggleNeverRepinsTheTarget` |
-| no launcher pin on TOGGLE-as-stop | the running take's target | replaced by the focused field | untouched | the deletion | rig row; the emulator reproduction after |
+| no launcher pin | the owner's `beginSession` | a valid pin already exists on START | pins from `lastTarget`/discovery | none | the shape row plus the emulator START runs |
+| no launcher pin on TOGGLE-as-stop | the running take's target | replaced by the focused field | untouched | the deletion | the shape row; the emulator reproduction after |
 | no bubble pin | the owner on a bubble start | a valid pin already exists | pins after admission | none | code review; the bubble path is not stageable on the emulator without the pill tap (declared) |
 
 ## 7. Failure-mode × caller table
@@ -215,8 +216,9 @@ Unchanged: `InsertionJudgement.handoffToJudge` with `targetPinAtStart` and the c
 - `app/src/test/java/com/envi/wispr/ui/SessionOwnerShapeTest.kt`: one row.
 - `scripts/uat/wispr_eyes.py`: `toggle_dictation()` and `press_start_while_recording()` (the launcher's
   `--ez start true`), both allowed only while `recording()`; because the liveness check and the intent are
-  two steps, a toggle that finds a live take AFTER landing (the earlier take had ended, so the toggle
-  started one) cancels it and raises (coverage E1). `scripts/uat/test_wispr_eyes.py` unchanged (no pure logic).
+  two steps, both presses prove afterwards, from the capture's own count of `recording_start` lines watched
+  for three seconds, that they began no take, and cancel and raise otherwise (coverage E1, round G1: one
+  quiet observation is not proof while a take can still be STARTING). `scripts/uat/test_wispr_eyes.py` unchanged (no pure logic).
 - `docs/audits/2026-09-21-192-revert-receipts.txt`, `docs/audits/2026-09-21-192-emulator-pass/` (the before and after logs).
 
 ## 11. Testing
@@ -245,7 +247,8 @@ Unchanged: `InsertionJudgement.handoffToJudge` with `targetPinAtStart` and the c
 | the emulator scenario | Product Outcome | body holds, Subject empty, one pin line | the build before the change (recorded) |
 
 ## 12. Blast radius & rollback
-Two deleted lines on the START path of every entry point; rollback is one revert. The risk is a START whose
+Two deleted pre-command pin calls, covering the launcher's START and TOGGLE (so TOGGLE-as-stop too) and
+the bubble's direct START; the tile-live and notification routes never pinned. Rollback is one revert. The risk is a START whose
 owner pin misses where the launcher's used to hit; the emulator START runs and the START-path rows watch it.
 
 ## 13. Ship criteria specific to THIS change

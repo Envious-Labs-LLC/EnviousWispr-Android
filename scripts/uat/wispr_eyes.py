@@ -1507,8 +1507,8 @@ def toggle_dictation():
     means "start"; `open_recorder()` alone starts takes.
 
     The liveness check and the intent are two steps, so a take that ends between them (silence, the cap)
-    would make the toggle START one. That window is closed after the fact: if a take is live once the
-    toggle has landed, it is the one this call started, and it is cancelled before raising.
+    would make the toggle START one; `_press_launcher` proves afterwards, from the capture's own count of
+    starts, that it did not, and cancels the take it began otherwise.
     """
     _press_launcher("toggle", "")
 
@@ -1521,25 +1521,35 @@ def press_start_while_recording():
     _press_launcher("start", "--ez start true")
 
 
+def _recording_starts():
+    """How many takes the log has seen begin: the count of `recording_start` lines, the capture's own witness."""
+    return sum(1 for line in logs(lines=600) if "recording_start" in line)
+
+
 def _press_launcher(what, flag):
+    """Send one launcher press during a live take and prove afterwards that it did not begin a take.
+
+    The liveness check and the intent are two steps. A take that ends between them turns a toggle into a
+    start, and turns a START into an admitted one instead of a busy refusal. The proof is the capture's
+    own count of `recording_start` lines: if it grows after the press, the press began a take, which is
+    cancelled before raising. One quiet observation is not proof (a new take can still be STARTING), so
+    the count is watched for three seconds.
+    """
     if not recording():
         raise Blocked(f"{what!r} through the launcher is only sent during a live take here, and nothing is "
                       "recording; a take is started only by `open_recorder()`")
+    starts_before = _recording_starts()
     remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)} {flag}".strip(), check=False)
     if remote != 0 or "Error" in out:
         detail = out.strip().splitlines()[-1] if out.strip() else "no message"
         raise Blocked(f"the recorder would not accept the {what}: {detail}")
-    time.sleep(1.5)
     _STATE["tree"] = None
-    if what == "toggle":
-        # A live take now is one this toggle STARTED (the earlier one had already ended): end it.
-        for _ in range(6):
-            if not recording():
-                return
-            time.sleep(0.5)
-        _dictation("cancel")
-        raise Blocked("the take had ended before the toggle landed, so the toggle started a new one; it was "
-                      "cancelled. The scenario has to be run again.")
+    for _ in range(6):
+        time.sleep(0.5)
+        if _recording_starts() > starts_before:
+            _dictation("cancel")
+            raise Blocked(f"the take had ended before the {what} landed, so the press began a new take; it "
+                          "was cancelled. The scenario has to be run again.")
 
 
 @_atomic_change

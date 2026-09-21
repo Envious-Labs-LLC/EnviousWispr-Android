@@ -53,7 +53,7 @@ internal object ModelDeliveryNotification {
             DownloadState.REPAIR_NEEDED -> reason ?: "Model needs repair"
             DownloadState.FAILED -> reason ?: "Model download failed"
             DownloadState.CANCELLED -> "Download cancelled"
-            else -> if (total > 0) "${formatBytes(bytes)} of ${formatBytes(total)}" else "Preparing download"
+            DownloadState.DOWNLOADING, DownloadState.PAUSED -> if (total > 0) "${formatBytes(bytes)} of ${formatBytes(total)}" else "Preparing download"
         }
         fun actionIntent(action: String) = Intent(context, ModelDeliveryCancelReceiver::class.java)
             .setAction(action)
@@ -69,7 +69,7 @@ internal object ModelDeliveryNotification {
         val transferAction = when (state) {
             DownloadState.PAUSED -> "Resume" to actionPendingIntent(ACTION_RESUME, notificationId(model) + 11)
             DownloadState.DOWNLOADING, DownloadState.VERIFYING -> "Pause" to actionPendingIntent(ACTION_PAUSE, notificationId(model) + 11)
-            else -> null
+            DownloadState.READY, DownloadState.FAILED, DownloadState.CANCELLED, DownloadState.REPAIR_NEEDED -> null
         }
         return NotificationCompat.Builder(context, channelId(model))
             .setSmallIcon(android.R.drawable.stat_sys_download)

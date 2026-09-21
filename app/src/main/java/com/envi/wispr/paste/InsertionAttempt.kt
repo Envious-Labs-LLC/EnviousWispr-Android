@@ -331,7 +331,7 @@ internal class InsertionAttempt(
             evidence = Evidence.SURROUNDING
             lastMissShape = when (byWindow) {
                 Judgement.VERIFIED -> null
-                else -> "judgement=${byWindow.name} evidence=SURROUNDING " +
+                Judgement.MISS, Judgement.UNREADABLE -> "judgement=${byWindow.name} evidence=SURROUNDING " +
                     "beforeLen=${window.before.length} afterLen=${window.after.length} " +
                     "insertedLen=${record.insertedText.length} offset=${window.offset}"
             }

@@ -139,7 +139,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state, result.message)
                 failure(result.message ?: "model download failed", result.state)
             }
-            else -> failure(result.state.name, result.state)
+            DownloadState.DOWNLOADING, DownloadState.VERIFYING -> failure(result.state.name, result.state)
         }
     }
 

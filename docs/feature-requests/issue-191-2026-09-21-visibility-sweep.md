@@ -114,7 +114,7 @@ Every other section that mentions these sites points here.
 | `ui/OnboardingDemo.kt:135` | `moment.scene` | `DemoScene` (`ui/OnboardingDemoScript.kt:8`): APPS, BUBBLE, TAP, HOLD, YOURS | `DemoScene.TAP, DemoScene.HOLD, DemoScene.YOURS ->` |
 | `ui/OnboardingScreen.kt:73` | `stage` | `OnboardingStage` (`ui/OnboardingPolicy.kt:12`): WELCOME, DOWNLOADS, PERMISSIONS, DEMO, PRACTICE | `OnboardingStage.WELCOME, OnboardingStage.DOWNLOADS, OnboardingStage.PERMISSIONS ->` |
 | `ui/OnboardingScreen.kt:199` | `action` (`active?.action`, nullable) | `ModelUiAction` (`models/ModelDeliveryUi.kt:3`): DOWNLOAD, PAUSE, RESUME, RETRY, REPAIR, REMOVE, UPDATE, CANCEL, NONE | `ModelUiAction.DOWNLOAD, ModelUiAction.RETRY, ModelUiAction.REPAIR, ModelUiAction.REMOVE, ModelUiAction.UPDATE, ModelUiAction.CANCEL, ModelUiAction.NONE, null ->` |
-| `ui/OnboardingViewModel.kt:272` | `outcome` | `PracticeOutcome` (`ui/OnboardingPolicy.kt:36`): WORKING, LANDED, LANDED_BY_TAP, NOTHING_LANDED | `PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED ->` |
+| `ui/OnboardingViewModel.kt:272` | `outcome` (nullable: `judgePracticeTake` returns `PracticeOutcome?`, corrected at build when the compiler asked for the `null` branch) | `PracticeOutcome` (`ui/OnboardingPolicy.kt:36`): WORKING, LANDED, LANDED_BY_TAP, NOTHING_LANDED | `PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED, null ->` |
 
 The other 40 subjects (52 minus the 12) are `Int`, `String`, `Char`, `Byte`, `Any?` or `Throwable` (for example
 `CaptureEnding.fromAidl(reason: Int)` `:81`, `PolishEngineLabels.kt:54` over a `String` vocabulary,

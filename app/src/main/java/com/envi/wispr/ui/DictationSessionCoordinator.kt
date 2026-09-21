@@ -246,18 +246,18 @@ internal class DictationSessionCoordinator(
                 SessionState.STARTING -> cancelStarting()
                 SessionState.RECORDING -> cancelRecording()
                 SessionState.PROCESSING -> cancelProcessing()
-                else -> stopIfIdle()
+                SessionState.IDLE, SessionState.CANCELLING, SessionState.FINISHING, SessionState.ERROR -> stopIfIdle()
             }
             DictationSessionService.ACTION_STOP -> when (state.get()) {
                 SessionState.STARTING -> cancelStarting()
                 SessionState.RECORDING -> stopAndTranscribe()
-                else -> stopIfIdle()
+                SessionState.IDLE, SessionState.PROCESSING, SessionState.CANCELLING, SessionState.FINISHING, SessionState.ERROR -> stopIfIdle()
             }
             DictationSessionService.ACTION_TOGGLE -> when (state.get()) {
                 SessionState.IDLE -> beginSession()
                 SessionState.STARTING -> cancelStarting()
                 SessionState.RECORDING -> stopAndTranscribe()
-                else -> Unit
+                SessionState.PROCESSING, SessionState.CANCELLING, SessionState.FINISHING, SessionState.ERROR -> Unit
             }
             DictationSessionService.ACTION_START -> if (state.get() == SessionState.IDLE) {
                 beginSession()

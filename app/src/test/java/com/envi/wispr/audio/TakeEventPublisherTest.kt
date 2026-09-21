@@ -112,20 +112,33 @@ class TakeEventPublisherTest {
         assertEquals(listOf("t1:silence(2)", "t1:ended(${AudioCaptureService.TERMINAL_REASON_MANUAL},0,/tmp/take.pcm,2,0.5,Phone microphone)"), recorder.events.toList())
     }
 
+    private fun <T> field(name: String): T {
+        @Suppress("UNCHECKED_CAST")
+        return TakeEventPublisher::class.java.getDeclaredField(name).apply { isAccessible = true }.get(publisher) as T
+    }
+
     @Test
-    fun anOfferAfterCloseIsDroppedByContractAndTheWorkerLeaves() {
-        // Review round 2, F3: close waits for offers already in flight (the sequential half of that is
-        // the row above); an offer entered AFTER close is dropped, never delivered late by a worker that
-        // already left. The take an event describes is over once the service is destroyed.
-        recorder.expect(1)
-        publisher.publishSilenceStatus("t1", AudioCaptureService.SILENCE_STATUS_READY)
+    fun closeWaitsForAnOfferAlreadyInFlightAndDropsOneThatComesLater() {
+        // Review round 2, F3. The interleaving is staged by hand through the class's own fields (reflection
+        // here; no production seam): a producer has ENTERED offer when close lands, its event reaches the
+        // queue only afterwards, and it must still be delivered before the worker leaves. An offer that
+        // enters after close is dropped by contract, never delivered late.
+        val worker: Thread = field("worker")
+        val inFlight: java.util.concurrent.atomic.AtomicInteger = field("inFlight")
+        val queue: java.util.Queue<Any> = field("queue")
+        val silenceStatus = Class.forName("com.envi.wispr.audio.TakeEventPublisher\$Event\$SilenceStatus")
+            .getDeclaredConstructor(String::class.java, Int::class.javaPrimitiveType).apply { isAccessible = true }
+        inFlight.incrementAndGet()
         publisher.close()
+        worker.join(300L)
+        check(worker.isAlive) { "the worker left while an offer was still in flight" }
+        recorder.expect(1)
+        queue.offer(silenceStatus.newInstance("t1", AudioCaptureService.SILENCE_STATUS_READY))
+        inFlight.decrementAndGet()
+        java.util.concurrent.locks.LockSupport.unpark(worker)
         recorder.await()
-        // The worker's exit is the signal, read from the thread itself (a private field, read here by
-        // reflection so production keeps its "never joined" contract).
-        val worker = TakeEventPublisher::class.java.getDeclaredField("worker").apply { isAccessible = true }.get(publisher) as Thread
         worker.join(10_000L)
-        check(!worker.isAlive) { "the worker did not leave after close" }
+        check(!worker.isAlive) { "the worker did not leave once nothing was in flight" }
         publisher.publishSilenceStatus("t1", AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY)
         assertEquals(listOf("t1:silence(2)"), recorder.events.toList())
     }

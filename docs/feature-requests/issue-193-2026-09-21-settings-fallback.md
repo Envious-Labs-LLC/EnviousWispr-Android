@@ -1,7 +1,7 @@
 # Issue #193 — A settings or vocabulary read failure prevents recording instead of falling back — 2026-09-21
 
 GitHub issue: `#193`. Tier: MEDIUM (a service's start path, new runtime behaviour; `workflow-process.md`
-RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G2.1, G2.2, G4.1, G5.1 to G5.3 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the start carries the values; G3.1 one deadline; G3.2 the reader is never written by the bound); round 3 PROCEED-WITH-REVISIONS (G2.1 one atomic reader snapshot holds outcome and values, `Fresh → Failed` allowed; G2.2 outcome and values from one atomic read); round 4 next.
+RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G2.1, G2.2, G4.1, G5.1 to G5.3 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the start carries the values; G3.1 one deadline; G3.2 the reader is never written by the bound); round 3 PROCEED-WITH-REVISIONS (G2.1 one atomic reader snapshot holds outcome and values, `Fresh → Failed` allowed; G2.2 outcome and values from one atomic read); round 4 PROCEED-WITH-REVISIONS (G1.1 no outcome field outside the snapshots; G2.1 three source-shape tests named); round 5 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -171,8 +171,8 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
 
 1. **`PreferenceRead` (proposed), in `SessionPreferencesSource.kt`:** `sealed interface` with `Pending` (proposed),
    `Fresh`, `Failed(val reason: String)` (the reason is a content-free token: `exception:<SimpleName>` or
-   `timed_out`; never a message, `#194` territory). Two fields, `settingsRead` (proposed) and `termsRead` (proposed),
-   `@Volatile`, start `Pending`.
+   `timed_out`; never a message, `#194` territory). `PreferenceRead` exists only inside each
+   `AtomicReference<ReaderSnapshot>` and in `PreferenceStart`; no separate outcome field is written (round G4).
 2. **One atomic reader snapshot per reader** (round G3, G2.1): `ReaderSnapshot` (proposed), an immutable
    value holding the outcome (`PreferenceRead`) AND that reader's values (settings: cleanup options, the
    nullable clipboard policy, the four capture fields, the tips flag; terms: the term list), kept in an
@@ -290,6 +290,13 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
   row deleted. `DictationSessionRig.kt`: `settingsWaitMs` → `answerBoundMs` (proposed).
 - `app/src/test/java/com/envi/wispr/ui/TakeNoticesTest.kt`, `telemetry/TakeFactsTest.kt`,
   `telemetry/TelemetryContractsTest.kt`: the member and the property.
+- Source-shape rows that pin the OLD shape (round G4): `settings/SilenceStopSettingsTest.kt:35` (the switch
+  written before `cleanupPreferencesReady.complete`) and `audio/LiveGateWiringTest.kt:161` (the earbud hold
+  written by the collector and the four live reads in `tryStartRecording`) are rewritten to pin the new
+  properties: the whole snapshot replaced BEFORE the first-answer deferred completes, and `tryStartRecording`
+  reading the frozen `sessionPreferences`; `insertion/InsertionOutcomeMessagesTest.kt:393` (the
+  `@Volatile var clipboardPolicy: ClipboardInsertionPolicy? = null` text) pins the nullable snapshot-backed
+  `clipboardPolicy` getter instead.
 - `docs/audits/2026-09-21-193-revert-receipts.txt`, `docs/audits/2026-09-21-193-emulator-pass/`.
 
 ## 11. Testing

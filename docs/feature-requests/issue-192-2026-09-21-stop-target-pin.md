@@ -1,7 +1,7 @@
 # Issue #192 — Stopping from the side button can send a dictation to the wrong text field — 2026-09-21
 
 GitHub issue: `#192`. Tier: LARGE (the insertion path and the session owner's contract, `workflow-process.md`
-RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT for the coverage round.
+RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 next.
 
 Consolidation: this plan is one document; §2.5 carries the reproduction and the trace once and §§3 to 11 point back at it.
 
@@ -90,6 +90,25 @@ reached from three call sites (`grep -rn "pinTargetForDictation\|pinTarget()" ap
 Consumers of the pin: `PasteAccessibilityService.pasteWhenTargetReturns` (the insertion) and
 `pinnedFieldId()` (the surface's target name). Both read `pinnedTarget` at insertion time.
 
+**Entry-point matrix (coverage A1), every command route into the owner and whether a pin runs before it:**
+| Route | Command | Pre-pin today | After |
+|---|---|---|---|
+| side button / launcher (`VoiceInputActivity.kt:61-79`) | START, TOGGLE | yes (`:76`) | none |
+| launcher | STOP, CANCEL | no | none |
+| bubble direct start (`PasteAccessibilityService.kt:444-449`) | START | yes (`:448`) | none |
+| bubble fallback through the launcher (`RecordingAccessibilityOverlay.kt:505-515`) | START | yes, via `:76` | none |
+| tile when IDLE (`DictationTileService.kt:47-51`, the launcher with TOGGLE) | TOGGLE | yes, via `:76` | none |
+| tile when live (`:43-45`, `sendCommand` directly) | TOGGLE | no | none |
+| the app's own button (the launcher) | TOGGLE | yes, via `:76` | none |
+| notification actions | STOP, CANCEL | no | none |
+There is no fourth pin call site (`grep -n "pinTarget" PasteAccessibilityService.kt`: `:182-185`
+`pinTargetForDictation`, `:448`, `:788` the function).
+
+**State inventory (coverage A2), `PasteAccessibilityService.kt` at `6a0f5c4`:** `pinnedTarget` is written at
+`:242`, `:808` and `:1269` and read at `:199`, `:377`, `:586-587`, `:625-626`, `:744`, `:790`, `:963`, `:1001`,
+`:1033`, `:1123`, `:1160`, `:1268`; `lastTarget` is written at `:237`, `:476`, `:715`, `:805`, `:1264` and read
+at `:395`, `:463`, `:801`, `:1263`. The change touches none of these; it removes two callers of `:788`.
+
 ### 2. Existing authority
 The owner's single pin at `:351` IS the authority; the two launcher pins are the duplicates the audit
 named. No other component writes `pinnedTarget` (`grep -n "pinnedTarget =" PasteAccessibilityService.kt`:
@@ -106,12 +125,20 @@ decision_slug FROM decision WHERE lower(decision_text) LIKE '%pin%' OR … '%foc
 none about insertion targets), so nothing settled is being redesigned.
 
 ### 4. Boundaries a naive design misses
-- **Focus at the owner's pin.** The launcher is a 1x1 `FLAG_NOT_FOCUSABLE` window (`:88-96`), so the user's
-  editor keeps input focus while it is up; the owner's pin at `:351` runs after the foreground start,
-  tens of milliseconds later, and on the harness path (`open_recorder` = the launcher) every take today
-  already gets its judged pin from `:351`. Deleting the launcher pin changes the START path only by
-  removing the earlier write; the emulator run proves the START pin still lands (`Pinned original editor`
-  once, `route=COMMIT`).
+- **Focus at the owner's pin (coverage B1, the premise this plan measures).** `sendCommand` runs before
+  `finish()` (`VoiceInputActivity.kt:79-83`), the owner receives it asynchronously, and the pin at `:351`
+  runs on the owner's main thread after `promoteToForeground`. Nothing in code guarantees the window-focus
+  state at that instant: the launcher is a 1x1 `FLAG_NOT_FOCUSABLE` window (`:88-96`) and should never take
+  focus, but if the platform passes through "no focused application window" while the launcher finishes,
+  `lastTarget` fails `isInFocusedWindow` (`:801`) and discovery (`:803`) returns no target where the old
+  pre-pin, taken before the gap, would have succeeded. The evidence that settles it is the emulator run
+  after the change: `Pinned original editor` logged ONCE per take and `route=COMMIT`, on three ordinary
+  takes and the two scenarios. If a START then misses its pin, the plan PIVOTS (the fallback design would
+  be for the owner to pin before it sends the command through the launcher path, never in the launcher).
+  On the S26 the same sequence is UNVERIFIED and listed for the founder's next side-button dictation.
+- **The bubble's direct start (coverage B2)** creates no activity transition: the editor's window keeps
+  focus through the same-process command unless an unrelated focus event intervenes; the bubble's
+  fallback (`RecordingAccessibilityOverlay.kt:510-515`) has the launcher sequence above.
 - **The bubble's direct start** runs in the accessibility service's own process, the DEFAULT process, the
   same one the coordinator pins from; deleting `:448` leaves the owner's pin as the only one on that path
   too.
@@ -167,7 +194,10 @@ across a component boundary for no gain.
 ## 7. Failure-mode × caller table
 | Failure mode | Origin | Caller | What the user sees | Persisted state | Retry |
 |---|---|---|---|---|---|
-| A is gone at insertion | the user closed A | insertion | the existing clipboard line | row `insertion_interrupted`-class as today | none |
+| A's node is destroyed while recording (the user closed A) | the app | `pasteWhenTargetReturns` | the existing clipboard line for a stale target | as today | none |
+| A still exists but its window lost focus (the user moved to B, the case of this issue) | the user | insertion | the words in A: the pin is untouched after the change; insertion returns to the tracked editor | as today | none |
+| the accessibility service is torn down mid-take (`:1267-1269` clears `pinnedTarget`) | Android | `handoffToJudge` (`DictationTargetPin.kt:57-72`) | `PINNED` at start plus `NO_PINNED_TARGET` at insertion judges as `SERVICE_NOT_RUNNING`, announced; unchanged by this plan | as today | none |
+| `pasteWhenTargetReturns` while `pendingInsertion != null` | a dictation started on top of one still inserting | insertion | `INSERTION_BUSY` at start becomes `INSERTION_ALREADY_PENDING`, announced; unchanged (the start pin still runs at `:351`) | as today | none |
 | the owner's START pin finds no editor | focus not on an editor at start | `beginSession` | today's `NO_PINNED_TARGET` behaviour | as today | none |
 
 ## 8. Caller-visible signals
@@ -179,30 +209,38 @@ Unchanged: `InsertionJudgement.handoffToJudge` with `targetPinAtStart` and the c
 ## 10. File-by-file changes
 - `app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt`: delete `:70-77`.
 - `app/src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt`: delete `:448`; KDoc.
-- `app/src/test/java/com/envi/wispr/ui/DictationSessionCoordinatorTest.kt`: two rows; `DictationSessionRig.FakeInsertion` counts pins.
+- `app/src/test/java/com/envi/wispr/ui/DictationSessionCoordinatorTest.kt`: two rows; `DictationSessionRig.FakeInsertion`
+  gains an `AtomicLong` pin counter incremented inside `pinTargetForDictation` (coverage D1); the rig's
+  `command(coordinator, ACTION_TOGGLE)` reaches `stopAndTranscribe` synchronously once RECORDING is staged.
 - `app/src/test/java/com/envi/wispr/ui/SessionOwnerShapeTest.kt`: one row.
-- `scripts/uat/wispr_eyes.py`: `toggle_dictation()`; `scripts/uat/test_wispr_eyes.py` unchanged (no pure logic).
+- `scripts/uat/wispr_eyes.py`: `toggle_dictation()` and `press_start_while_recording()` (the launcher's
+  `--ez start true`), both allowed only while `recording()`; because the liveness check and the intent are
+  two steps, a toggle that finds a live take AFTER landing (the earlier take had ended, so the toggle
+  started one) cancels it and raises (coverage E1). `scripts/uat/test_wispr_eyes.py` unchanged (no pure logic).
 - `docs/audits/2026-09-21-192-revert-receipts.txt`, `docs/audits/2026-09-21-192-emulator-pass/` (the before and after logs).
 
 ## 11. Testing
-1. Classes: the two rig rows are Product Outcome (when they fail, the user's words land in the wrong
-   field); the shape row is a Drift Guard; the harness call has no logic of its own.
+1. Classes (coverage D2): the two rig rows are Drift Guards on the OWNER's contract (no pin outside
+   `beginSession`), which the owner already keeps today, so they pass with the fix reverted and are not
+   the fix's oracle; the shape row is the Drift Guard that goes red on either restored pre-pin; the
+   emulator scenario is the Product Outcome proof and detects the launcher revert (the bubble's direct
+   start is not stageable without the pill tap). The harness calls have no logic of their own.
 2. Reverts: §11.2.
 3. Not tested: the bubble's direct start on the emulator (needs the pill tap; declared NOT RUN).
 
 ### 11.1 Hardware UAT spec
 - Emulator, wispr-eyes, debug build of the final commit: (a) the reproduction scenario, expected body holds the
   sentence and Subject stays empty, `Pinned original editor` logged ONCE; (b) the busy-start scenario: start in
-  the body, inject, focus Subject, `toggle_dictation(start=True)` (the launcher's `--ez start true`), expect a
-  refusal line and, after a real stop, the body holding the sentence; (c) three ordinary takes into Gmail
+  the body, inject, focus Subject, `press_start_while_recording()` (the launcher's `--ez start true`), expect the
+  owner's busy refusal and, after `toggle_dictation()`, the body holding the sentence and Subject empty; (c) three ordinary takes into Gmail
   (the START pin still lands); (d) `restore()`. Founder's phone: NOT RUN (his instruction); build delivered
   through Play for his ordinary use, and the issue's "two real apps" phone pass is listed for him.
 
 ### 11.2 Other obligations
 | Test | Class | Proves | Revert that turns it red |
 |---|---|---|---|
-| `DictationSessionCoordinatorTest.aStoppingToggleNeverRepinsTheTarget` (proposed) | Product Outcome | start (pin count 1), then TOGGLE while RECORDING, STOP and CANCEL paths: the fake gateway's pin count stays 1 | make the coordinator pin on every command |
-| `DictationSessionCoordinatorTest.aRefusedBusyStartNeverPinsTheTarget` (proposed) | Product Outcome | a START while RECORDING is refused and the pin count stays 1 | pin before admission |
+| `DictationSessionCoordinatorTest.aStoppingToggleNeverRepinsTheTarget` (proposed) | Drift Guard (owner contract) | start (pin count 1), then TOGGLE while RECORDING, STOP and CANCEL paths: the fake gateway's pin count stays 1 | make the coordinator pin on every command |
+| `DictationSessionCoordinatorTest.aRefusedBusyStartNeverPinsTheTarget` (proposed) | Drift Guard (owner contract) | a START while RECORDING is refused and the pin count stays 1 | pin before admission |
 | `SessionOwnerShapeTest.onlyTheOwnerPinsTheTarget` (proposed) | Drift Guard | `VoiceInputActivity.kt` and `startDictationFromBubble` contain no `pinTarget`; the coordinator calls `pinTargetForDictation` exactly once, inside `beginSession` | restore either deleted line |
 | the emulator scenario | Product Outcome | body holds, Subject empty, one pin line | the build before the change (recorded) |
 

@@ -1503,18 +1503,43 @@ def toggle_dictation():
     """The side button pressed AGAIN during a take: the bare toggle, the same intent the Samsung side
     button sends, with no `stop` extra. It is the only way to drive the launcher's stop path (#192: the
     launcher used to pin the focused editor before the owner decided that this toggle meant stop, so a
-    take started in one editor could land in another). Allowed only while a take is live, so this can
-    never begin one; `open_recorder()` alone starts takes.
+    take started in one editor could land in another). Allowed only while a take is live, so this never
+    means "start"; `open_recorder()` alone starts takes.
+
+    The liveness check and the intent are two steps, so a take that ends between them (silence, the cap)
+    would make the toggle START one. That window is closed after the fact: if a take is live once the
+    toggle has landed, it is the one this call started, and it is cancelled before raising.
     """
+    _press_launcher("toggle", "")
+
+
+def press_start_while_recording():
+    """The launcher's START (`--ez start true`: the tile, the app's button and the bubble's fallback all
+    send it) while a take is live, which the owner refuses as busy (#192: the launcher used to pin the
+    focused editor before that refusal). Allowed only while a take is live, with the same after-the-fact
+    close as `toggle_dictation()`."""
+    _press_launcher("start", "--ez start true")
+
+
+def _press_launcher(what, flag):
     if not recording():
-        raise Blocked("toggle_dictation() ends a live take by the side-button path; nothing is recording, "
-                      "and a take is started only by `open_recorder()`")
-    remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)}", check=False)
+        raise Blocked(f"{what!r} through the launcher is only sent during a live take here, and nothing is "
+                      "recording; a take is started only by `open_recorder()`")
+    remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)} {flag}".strip(), check=False)
     if remote != 0 or "Error" in out:
         detail = out.strip().splitlines()[-1] if out.strip() else "no message"
-        raise Blocked(f"the recorder would not accept the toggle: {detail}")
+        raise Blocked(f"the recorder would not accept the {what}: {detail}")
     time.sleep(1.5)
     _STATE["tree"] = None
+    if what == "toggle":
+        # A live take now is one this toggle STARTED (the earlier one had already ended): end it.
+        for _ in range(6):
+            if not recording():
+                return
+            time.sleep(0.5)
+        _dictation("cancel")
+        raise Blocked("the take had ended before the toggle landed, so the toggle started a new one; it was "
+                      "cancelled. The scenario has to be run again.")
 
 
 @_atomic_change

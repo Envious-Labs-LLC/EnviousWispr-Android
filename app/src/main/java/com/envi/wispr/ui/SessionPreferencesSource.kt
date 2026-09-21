@@ -163,8 +163,11 @@ internal class SessionPreferencesSource(
                     termsSnapshot.set(TermsSnapshot(PreferenceRead.Fresh, BuiltinVocabulary.withUserTerms(userTerms)))
                     termsAnswered.complete(Unit)
                 }
-                // A flow that completes before its first emission is a failed read, not a pending one.
-                termsFailed(PreferenceRead.Failed(PreferenceRead.Failed.COMPLETED_WITHOUT_VALUE))
+                // A flow that completes before its first emission is a failed read, not a pending one; one
+                // that completes after a value has answered and its values stand.
+                if (termsSnapshot.get().read == PreferenceRead.Pending) {
+                    termsFailed(PreferenceRead.Failed(PreferenceRead.Failed.COMPLETED_WITHOUT_VALUE))
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -189,7 +192,9 @@ internal class SessionPreferencesSource(
                     )
                     settingsAnswered.complete(Unit)
                 }
-                settingsFailed(PreferenceRead.Failed(PreferenceRead.Failed.COMPLETED_WITHOUT_VALUE))
+                if (settingsSnapshot.get().read == PreferenceRead.Pending) {
+                    settingsFailed(PreferenceRead.Failed(PreferenceRead.Failed.COMPLETED_WITHOUT_VALUE))
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

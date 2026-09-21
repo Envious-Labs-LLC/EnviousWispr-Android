@@ -7,6 +7,7 @@ import com.envi.wispr.paste.InsertionHandoff
 import com.envi.wispr.polish.PolishReason
 import com.envi.wispr.settings.AppPreferencesState
 import com.envi.wispr.vocabulary.CustomTerm
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.flow
 import org.junit.After
@@ -496,6 +497,29 @@ class DictationSessionCoordinatorTest {
     }
 
     /**
+     * Product Outcome (#193, coverage B1): a flow that completes without ever emitting is a failed read
+     * answered at once, not a silence that waits out the bound. Both flows complete empty; the take starts
+     * on the defaults with `completed_without_value` in the facts. A flow that completes AFTER a value has
+     * answered `Fresh` (the ordinary-take row below stages exactly that).
+     * REVERT: mark a completed flow `Failed` unconditionally, or not at all.
+     */
+    @Test
+    fun aReaderThatCompletesWithoutAValueFailsAtOnce() {
+        val empty = SessionPreferencesSource(
+            preferenceStates = flow { },
+            terms = flow { },
+            migrateLegacyTerms = {},
+            log = rig.log,
+        )
+        val coordinator = rig.coordinator(preferences = empty)
+        startAndGoLive(coordinator)
+        completeTake(coordinator, "hello world", "Hello world.")
+
+        assertEquals("both:completed_without_value:completed_without_value", rig.endings.facts.single().settingsFallback)
+        assertEquals(1, fallbackWarnings().size)
+    }
+
+    /**
      * Product Outcome (#193): a reader that answered once and then failed keeps the values it answered
      * with. Non-default values land (auto-stop on, a custom term), then the flows throw; the take runs
      * with those values and names the exception.
@@ -540,12 +564,24 @@ class DictationSessionCoordinatorTest {
      */
     @Test
     fun anOrdinaryTakeFreezesOneConsistentSnapshot() {
-        rig.preferenceStates.value = AppPreferencesState(autoStopOnSilenceEnabled = true, silencePauseSeconds = 1.5f)
-        val coordinator = rig.coordinator()
-        startAndGoLive(coordinator)
+        // The readers answer only when the test says so, AFTER the start command: a take that did not
+        // wait would start capture on the defaults (auto-stop off) and this row would read it.
+        val gate = CompletableDeferred<Unit>()
+        val late = SessionPreferencesSource(
+            preferenceStates = flow { gate.await(); emit(AppPreferencesState(autoStopOnSilenceEnabled = true, silencePauseSeconds = 1.5f)) },
+            terms = flow { gate.await(); emit(emptyList()) },
+            migrateLegacyTerms = {},
+            log = rig.log,
+        )
+        val coordinator = rig.coordinator(preferences = late)
+        coordinator.onCreated()
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        assertTrue("capture is not asked to start before the readers answer", rig.capture.startArguments.isEmpty())
+        gate.complete(Unit)
+        rig.surface.awaitShown()
         completeTake(coordinator, "hello world", "Hello world.")
 
-        assertEquals("start(autoStop=true, pause=1.5)", rig.capture.startArguments.last())
+        assertEquals("start(autoStop=true, pause=1.5)", rig.capture.startArguments.single())
         assertNull("an ordinary take carries no fallback token", rig.endings.facts.single().settingsFallback)
         assertTrue(fallbackWarnings().isEmpty())
     }

@@ -1296,6 +1296,57 @@ def main():
     ):
         check(name, needs_lock_review(one(snippet)) is should_flag)
 
+    # ---- the launcher presses during a live take (#192) prove they began no take ----------------------
+    # `_press_launcher` is stubbed at its four seams: recording(), logs() (the newest recording_start line),
+    # _adb (the press) and _dictation (the cancel). The proof is the identity of the newest start line.
+    originals = {name: getattr(eyes, name) for name in ("recording", "logs", "_adb", "_dictation")}
+    world = {"recording": True, "tail": ["09-21 11:45:53.000 I AudioCapture: recording_start [+0ms]"], "presses": [], "cancels": []}
+    eyes.recording = lambda: world["recording"]
+    eyes.logs = lambda pattern=None, lines=200: "\n".join(world["tail"][-lines:])
+    eyes._adb = lambda command, timeout=60, check=True, serial=None: (world["presses"].append(command), (0, ""))[1]
+    eyes._dictation = lambda what: world["cancels"].append(what)
+    eyes._STATE["serial"] = "fixture"
+    # 1. no new start: the newest line is unchanged through the deadline
+    eyes._press_launcher("toggle", "", deadline_s=1.0)
+    check("a press that began no take returns quietly and cancels nothing",
+          len(world["presses"]) == 1 and world["cancels"] == [], (world["presses"], world["cancels"]))
+    # 2. a new start after the press: a different newest line, cancelled and refused
+    world["presses"].clear()
+    def press_and_start(command, timeout=60, check=True, serial=None):
+        world["presses"].append(command)
+        world["tail"].append("09-21 11:46:06.000 I AudioCapture: recording_start [+0ms]")
+        return (0, "")
+    eyes._adb = press_and_start
+    try:
+        eyes._press_launcher("toggle", "", deadline_s=1.0)
+        check("a press that began a take is refused", False, "no refusal")
+    except eyes.Blocked as refusal:
+        check("a press that began a take is refused after cancelling it",
+              world["cancels"] == ["cancel"] and "began a new take" in str(refusal), (world["cancels"], str(refusal)[:80]))
+    # 3. a rolling tail that lost every start line after the press: cannot tell, refused, nothing cancelled
+    world.update({"tail": ["09-21 11:45:53.000 I AudioCapture: recording_start [+0ms]"], "presses": [], "cancels": []})
+    def press_and_roll(command, timeout=60, check=True, serial=None):
+        world["presses"].append(command)
+        world["tail"] = ["09-21 11:46:07.000 I AudioCapture: something else"]
+        return (0, "")
+    eyes._adb = press_and_roll
+    try:
+        eyes._press_launcher("start", "--ez start true", deadline_s=1.0)
+        check("a tail with no start line after the press is refused", False, "no refusal")
+    except eyes.Blocked as refusal:
+        check("a tail with no start line after the press is 'cannot tell', refused without a cancel",
+              world["cancels"] == [] and "cannot be told" in str(refusal), (world["cancels"], str(refusal)[:80]))
+    # 4. nothing recording: no press is sent at all
+    world.update({"recording": False, "presses": []})
+    try:
+        eyes._press_launcher("toggle", "", deadline_s=1.0)
+        check("with nothing recording the press is refused", False, "no refusal")
+    except eyes.Blocked:
+        check("with nothing recording no intent is sent", world["presses"] == [], world["presses"])
+    for name, fn in originals.items():
+        setattr(eyes, name, fn)
+    eyes._STATE["serial"] = None
+
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")
     if FAILED:

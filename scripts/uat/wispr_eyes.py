@@ -1514,39 +1514,56 @@ def toggle_dictation():
 
 
 def press_start_while_recording():
-    """The launcher's START (`--ez start true`: the tile, the app's button and the bubble's fallback all
-    send it) while a take is live, which the owner refuses as busy (#192: the launcher used to pin the
+    """The launcher's explicit START (`--ez start true`, which the bubble's fallback sends; the tile and
+    the app's own button send TOGGLE) while a take is live, which the owner refuses as busy (#192: the launcher used to pin the
     focused editor before that refusal). Allowed only while a take is live, with the same after-the-fact
     close as `toggle_dictation()`."""
     _press_launcher("start", "--ez start true")
 
 
-def _recording_starts():
-    """How many takes the log has seen begin: the count of `recording_start` lines, the capture's own witness."""
-    return sum(1 for line in logs(lines=600) if "recording_start" in line)
+def _newest_recording_start():
+    """The newest `recording_start` line the capture wrote, or None when the tail holds none.
+
+    The IDENTITY of that line is the witness a rolling tail cannot fake: a new take writes a new line
+    with its own timestamp, while a tail that rolled older lines out still ends at the same newest line.
+    A count of lines across two snapshots can read equal or lower after a new start (round G2).
+    """
+    lines = [line for line in logs(lines=600).splitlines() if "recording_start" in line]
+    return lines[-1] if lines else None
 
 
-def _press_launcher(what, flag):
+def _press_launcher(what, flag, deadline_s=3.0):
     """Send one launcher press during a live take and prove afterwards that it did not begin a take.
 
     The liveness check and the intent are two steps. A take that ends between them turns a toggle into a
-    start, and turns a START into an admitted one instead of a busy refusal. The proof is the capture's
-    own count of `recording_start` lines: if it grows after the press, the press began a take, which is
-    cancelled before raising. One quiet observation is not proof (a new take can still be STARTING), so
-    the count is watched for three seconds.
+    start, and turns a START into an admitted one instead of a busy refusal. The proof is the newest
+    `recording_start` line before the press against the newest one seen during `deadline_s` after it
+    (`_newest_recording_start`): a different line is a take this press began, which is cancelled before
+    raising; a tail with no start line at all after the press is "cannot tell", which also raises, never
+    "no new take". One quiet observation is not proof while a take can still be STARTING, so the whole
+    deadline is watched.
     """
     if not recording():
         raise Blocked(f"{what!r} through the launcher is only sent during a live take here, and nothing is "
                       "recording; a take is started only by `open_recorder()`")
-    starts_before = _recording_starts()
+    newest_before = _newest_recording_start()
+    if newest_before is None:
+        raise Blocked("the log holds no recording_start line for the live take, so a new take could not be "
+                      "told from it; not pressing")
     remote, out = _adb(f"am start -n {shlex.quote(RECORDER_ACTIVITY)} {flag}".strip(), check=False)
     if remote != 0 or "Error" in out:
         detail = out.strip().splitlines()[-1] if out.strip() else "no message"
         raise Blocked(f"the recorder would not accept the {what}: {detail}")
     _STATE["tree"] = None
-    for _ in range(6):
+    waited = 0.0
+    while waited < deadline_s:
         time.sleep(0.5)
-        if _recording_starts() > starts_before:
+        waited += 0.5
+        newest = _newest_recording_start()
+        if newest is None:
+            raise Blocked(f"after the {what} the log tail held no recording_start line, so whether the press "
+                          "began a take cannot be told; check the phone by hand")
+        if newest != newest_before:
             _dictation("cancel")
             raise Blocked(f"the take had ended before the {what} landed, so the press began a new take; it "
                           "was cancelled. The scenario has to be run again.")

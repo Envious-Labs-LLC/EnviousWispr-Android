@@ -1,7 +1,7 @@
 # Issue #192 — Stopping from the side button can send a dictation to the wrong text field — 2026-09-21
 
 GitHub issue: `#192`. Tier: LARGE (the insertion path and the session owner's contract, `workflow-process.md`
-RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 next.
+RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the newest-line identity replaces the count; G2.1 to G2.3); round 3 next.
 
 Consolidation: this plan is one document; §2.5 carries the reproduction and the trace once and §§3 to 11 point back at it.
 
@@ -167,7 +167,12 @@ none about insertion targets), so nothing settled is being redesigned.
    function's KDoc (`:437-443`) to say the owner pins after admission. Alternative rejected: carrying the
    launcher's answer into the command so the owner reuses it, which keeps two writers.
 2. Guards, §11.2.
-3. Harness: `toggle_dictation()` in `scripts/uat/wispr_eyes.py`, allowed only while `recording()`.
+3. Harness: `toggle_dictation()` and `press_start_while_recording()` in `scripts/uat/wispr_eyes.py`, both
+   through `_press_launcher`, allowed only while `recording()`; the after-the-fact proof that the press began
+   no take is the IDENTITY of the newest `recording_start` line before against during three seconds after
+   (a count across two rolling tails can read equal or lower after a new start, round G2); a different line
+   means a take this press began, cancelled before raising; no start line at all after the press is "cannot
+   tell" and raises without cancelling.
 
 ## 3b. Ownership justification
 The pin stays on `PasteAccessibilityService` (it owns the node) and its ONE writer becomes the owner's
@@ -216,9 +221,11 @@ Unchanged: `InsertionJudgement.handoffToJudge` with `targetPinAtStart` and the c
 - `app/src/test/java/com/envi/wispr/ui/SessionOwnerShapeTest.kt`: one row.
 - `scripts/uat/wispr_eyes.py`: `toggle_dictation()` and `press_start_while_recording()` (the launcher's
   `--ez start true`), both allowed only while `recording()`; because the liveness check and the intent are
-  two steps, both presses prove afterwards, from the capture's own count of `recording_start` lines watched
-  for three seconds, that they began no take, and cancel and raise otherwise (coverage E1, round G1: one
-  quiet observation is not proof while a take can still be STARTING). `scripts/uat/test_wispr_eyes.py` unchanged (no pure logic).
+  two steps, both presses prove afterwards, from the identity of the newest `recording_start` line watched
+  for three seconds, that they began no take, and cancel and raise otherwise (coverage E1, rounds G1 and
+  G2). `scripts/uat/test_wispr_eyes.py` gains four rows on `_press_launcher` with its four seams stubbed
+  (`recording`, `logs`, `_adb`, `_dictation`): no new start; a new start cancelled and refused; a rolled
+  tail with no start line refused without a cancel; nothing recording sends no intent.
 - `docs/audits/2026-09-21-192-revert-receipts.txt`, `docs/audits/2026-09-21-192-emulator-pass/` (the before and after logs).
 
 ## 11. Testing
@@ -226,7 +233,8 @@ Unchanged: `InsertionJudgement.handoffToJudge` with `targetPinAtStart` and the c
    `beginSession`), which the owner already keeps today, so they pass with the fix reverted and are not
    the fix's oracle; the shape row is the Drift Guard that goes red on either restored pre-pin; the
    emulator scenario is the Product Outcome proof and detects the launcher revert (the bubble's direct
-   start is not stageable without the pill tap). The harness calls have no logic of their own.
+   start is not stageable without the pill tap). The harness presses share `_press_launcher`, which owns the proof and the cancel, so it has its
+   own four Harness Contract rows in `scripts/uat/test_wispr_eyes.py`.
 2. Reverts: §11.2.
 3. Not tested: the bubble's direct start on the emulator (needs the pill tap; declared NOT RUN).
 

@@ -20,7 +20,7 @@ object PcmAudio {
      * cannot show a voice (#151). The capture service reads with it and the picture sizes its ring
      * from it (#188).
      */
-    const val READ_CHUNK_BYTES = 1_024
+    internal const val READ_CHUNK_BYTES = 1_024
 
     fun durationSeconds(byteCount: Long): Float =
         byteCount.toFloat() / (SAMPLE_RATE * BYTES_PER_SAMPLE)

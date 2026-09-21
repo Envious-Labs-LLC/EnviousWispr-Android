@@ -49,8 +49,6 @@ internal class TakeRoute(
     val gate: LiveGate,
     /** The take asked for earbuds (a Bluetooth target); the phone may then only record if picked. */
     val phonePicked: Boolean,
-    /** When the recorder started, so `live after N ms` can be logged. */
-    val startedAtMs: Long,
     private val listenerSlot: AtomicReference<Pair<AudioRecord, AudioRouting.OnRoutingChangedListener>?>,
     private val scheduler: RouteScheduler,
     private val unregisterDeviceCallback: (AudioDeviceCallback) -> Unit,
@@ -141,6 +139,14 @@ internal class TakeRoute(
     /** The communication sink the take selected, for the one reset and for the hold. Null off Bluetooth. */
     val sink: AudioDeviceInfo? get() = resolved.sink
 
+    /**
+     * When the recorder started, so `live after N ms` can be logged. Taken by [markRecorderStarted]
+     * right after `AudioRecord.startRecording()`, never earlier: the route request, the file and the
+     * recorder's own start are not the user's wait (Codex code review 1).
+     */
+    @Volatile var startedAtMs: Long = 0L
+        private set
+
     /** Set on the capture thread when the gate opens; the timer and the duration cap count from here. */
     @Volatile var liveAtMs: Long = 0L
 
@@ -161,6 +167,12 @@ internal class TakeRoute(
      * phone leaves today's behaviour untouched. A refusal is recorded and the take proceeds on whatever
      * Android routes, reported truthfully by `routedDevice`, never by the target.
      */
+    /** Once, after `record.startRecording()` returned. */
+    fun markRecorderStarted(atMs: Long) {
+        check(startedAtMs == 0L) { "the recorder start was already marked" }
+        startedAtMs = atMs
+    }
+
     fun applyPreferred(record: AudioRecord) {
         if (!resolved.needsBluetooth && resolved.reason != InputRouteReason.PICKED) return
         val accepted = runCatching { record.setPreferredDevice(resolved.info) }.getOrDefault(false)

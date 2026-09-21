@@ -52,6 +52,11 @@ class LiveGateWiringTest {
         assertTrue(getter.contains("if (!active.liveVisible) return LIVE_WAITING"))
         val elapsed = body(capture, "override fun getElapsedMs(): Long {")
         assertTrue("the timer counts from live", elapsed.contains("active?.route?.liveAtMs") && !elapsed.contains("startedAtMs"))
+        val start = body(capture, "private fun startRecording(")
+        assertTrue(
+            "the recorder starts before its route clock is captured, as before #188",
+            start.indexOf("record.startRecording()") in 0 until start.indexOf("takeRoute.markRecorderStarted(SystemClock.elapsedRealtime())"),
+        )
     }
 
     @Test

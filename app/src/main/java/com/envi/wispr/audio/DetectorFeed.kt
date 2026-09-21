@@ -75,7 +75,8 @@ internal class DetectorFeed(
         if (ring == null) AudioCaptureService.SILENCE_STATUS_DISABLED else AudioCaptureService.SILENCE_STATUS_PREPARING,
     )
     @Volatile private var vadService: ISilenceVadService? = null
-    @Volatile private var vadBound: Boolean = false
+    /** Exactly one unbind per bind: the feeder's exit and a teardown close can both reach [unbindVad]. */
+    private val vadBound = AtomicBoolean(false)
     @Volatile private var feederThread: Thread? = null
     @Volatile private var vadConnection: ServiceConnection? = null
     private val closed = AtomicBoolean(false)
@@ -175,9 +176,10 @@ internal class DetectorFeed(
         val connection = connectionFor(isCurrent)
         vadConnection = connection
 
-        vadBound = runCatching { bind(connection) }.getOrDefault(false)
+        val bound = runCatching { bind(connection) }.getOrDefault(false)
+        vadBound.set(bound)
 
-        if (!vadBound) {
+        if (!bound) {
             vadConnection = null
             abandon()
             DebugLogger.warn(tag, "Auto-stop unavailable: detector service could not be bound")
@@ -325,8 +327,7 @@ internal class DetectorFeed(
 
     /** Unbinds only this feed's own connection, so a finished take cannot unbind a running one's. */
     private fun unbindVad() {
-        if (!vadBound) return
-        vadBound = false
+        if (!vadBound.compareAndSet(true, false)) return
         val connection = vadConnection ?: return
         vadConnection = null
         vadService = null
@@ -335,14 +336,19 @@ internal class DetectorFeed(
     }
 
     /**
-     * Abandon, interrupt the feeder and unbind. Idempotent. Nothing here blocks: the feeder is told to
-     * stop and abandoned, and it holds no recorder, no stream, no ring slot and no reference to a later
-     * take. Read [status] BEFORE calling this, because abandoning can move it.
+     * Abandon and interrupt the feeder. Idempotent. Nothing here blocks: the feeder is told to stop and
+     * abandoned, and it holds no recorder, no stream, no ring slot and no reference to a later take.
+     * Read [status] BEFORE calling this, because abandoning can move it.
+     *
+     * The unbind is the feeder's, in its `finally`, on an ordinary release: the take's file is already
+     * closed and nothing waits on the detector. [unbindNow] is for teardown, where the process may not
+     * give the feeder another turn; [unbindVad] admits exactly one of the two.
      */
-    fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        detectorAbandoned.set(true)
-        feederThread?.let { runCatching { interrupt(it) } }
-        runCatching { unbindVad() }
+    fun close(unbindNow: Boolean) {
+        if (closed.compareAndSet(false, true)) {
+            detectorAbandoned.set(true)
+            feederThread?.let { runCatching { interrupt(it) } }
+        }
+        if (unbindNow) runCatching { unbindVad() }
     }
 }

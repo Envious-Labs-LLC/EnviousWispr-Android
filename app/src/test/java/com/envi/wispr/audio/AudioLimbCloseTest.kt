@@ -56,7 +56,6 @@ class AudioLimbCloseTest {
             effective = EffectiveDevice(InputRouteReason.PICKED),
             gate = LiveGate(gated = true),
             phonePicked = false,
-            startedAtMs = 0L,
             listenerSlot = AtomicReference(null),
             scheduler = scheduler,
             unregisterDeviceCallback = unregister,
@@ -88,8 +87,8 @@ class AudioLimbCloseTest {
         )
         feed.start(pauseSeconds = 1.5f, token = 1L, takeId = "t", isCurrent = { true }, stillLive = { true }, endOnSilence = {})
         assertEquals("the feed bound its detector once", 1, binds)
-        feed.close()
-        feed.close()
+        feed.close(unbindNow = true)
+        feed.close(unbindNow = true)
         assertEquals("the feeder is interrupted exactly once", 1, interrupts)
         assertEquals("the one connection is unbound exactly once, by the close or by the feeder's exit, never both", 1, unbinds)
     }

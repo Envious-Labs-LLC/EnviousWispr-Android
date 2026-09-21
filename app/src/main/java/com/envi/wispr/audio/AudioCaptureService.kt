@@ -75,7 +75,6 @@ class AudioCaptureService : Service() {
         val record: AudioRecord,
         val file: File,
         val output: FileOutputStream,
-        val startedAtMs: Long,
         val readBuffer: ByteArray,
         val token: Long,
         /** The silence detector's feed for this take; disabled when the user has auto-stop off (#188). */
@@ -382,7 +381,6 @@ class AudioCaptureService : Service() {
                     effective = effective,
                     gate = LiveGate(gated = route.needsBluetooth),
                     phonePicked = pick is InputDevicePick.Device && InputRouteKind.of(pick.type) == InputRouteKind.PHONE,
-                    startedAtMs = SystemClock.elapsedRealtime(),
                     listenerSlot = routingListener,
                     scheduler = routeScheduler,
                     unregisterDeviceCallback = { audioManager.unregisterAudioDeviceCallback(it) },
@@ -403,12 +401,12 @@ class AudioCaptureService : Service() {
                 // The route is the target from the first read when the preferred device was set first
                 // (V2, 2026-09-16: routedDevice already the SCO source at startRecording).
                 record.routedDevice?.let { effective.observe(it.type, it.productName?.toString().orEmpty()) }
+                takeRoute.markRecorderStarted(SystemClock.elapsedRealtime())
 
                 val newSession = CaptureSession(
                     record = record,
                     file = file,
                     output = output,
-                    startedAtMs = takeRoute.startedAtMs,
                     // Allocated HERE, before the thread starts, and never inside the capture loop. The
                     // capture thread may not allocate: it must do nothing that can make it late.
                     readBuffer = ByteArray(PcmAudio.READ_CHUNK_BYTES),
@@ -686,8 +684,8 @@ class AudioCaptureService : Service() {
 
         // Audio and the PCM file are already closed above. Detector cleanup therefore cannot delay the
         // file becoming ready, which is what the user is waiting for. Nothing here blocks: each owner's
-        // close tells its thread to stop and abandons it (#188).
-        active.detector.close()
+        // close tells its thread to stop and abandons it (#188); the feeder unbinds as it exits.
+        active.detector.close(unbindNow = false)
         active.picture.close()
         // Once per take, on EVERY ending (a stop, a silence stop, a cap, a capture error, teardown):
         // release is the one point they all reach. Shape only; `polled` is the proof that no production
@@ -741,7 +739,7 @@ class AudioCaptureService : Service() {
         synchronized(sessionLock) { warmHoldOwner.close(WarmHold.END_DESTROYED) }
         stopRecording()
         session?.let { active ->
-            active.detector.close()
+            active.detector.close(unbindNow = true)
             active.picture.close()
         }
         val thread = captureThread

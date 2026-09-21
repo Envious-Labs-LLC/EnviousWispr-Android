@@ -135,10 +135,11 @@ class SilenceStopWiringTest {
         // does not unblock it, so any join here would charge the user for the detector's problem.
         val release = bodyOf("private fun releaseSession(")
         assertFalse("no join of any kind on the teardown path", release.contains(".join("))
-        assertTrue("the file closes first", release.indexOf("closeResources(active, keepRoute = holding)") < release.indexOf("active.detector.close()"))
-        val close = feedBody("fun close()")
+        assertTrue("the file closes first", release.indexOf("closeResources(active, keepRoute = holding)") < release.indexOf("active.detector.close(unbindNow = false)"))
+        val close = feedBody("fun close(unbindNow: Boolean)")
         assertFalse("and the feed's close joins nothing either", close.contains(".join("))
         assertTrue("then the feeder is told to stop and abandoned", close.contains("detectorAbandoned.set(true)") && close.contains("interrupt(it)"))
+        assertTrue("and the unbind stays the feeder's on release", close.contains("if (unbindNow) runCatching { unbindVad() }"))
     }
 
     @Test

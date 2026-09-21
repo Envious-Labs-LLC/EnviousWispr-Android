@@ -67,7 +67,7 @@ class CaptureBufferOwnershipTest {
         // exactly what the block test above cannot see on its own.
         assertTrue(
             "the read chunk is the audio format's constant, shared by the service and the picture (#188)",
-            pcmAudio.contains("const val READ_CHUNK_BYTES = 1_024"),
+            pcmAudio.contains("internal const val READ_CHUNK_BYTES = 1_024"),
         )
         assertTrue(
             "the session's read buffer is one chunk",

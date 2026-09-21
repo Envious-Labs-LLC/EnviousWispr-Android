@@ -38,10 +38,10 @@ class AudioServiceShapeTest {
         val release = member(service, "private fun releaseSession(active: CaptureSession)")
         assertTrue("release closes the route through closeResources", release.contains("closeResources(active, keepRoute = holding)"))
         assertTrue(member(service, "private fun closeResources(active: CaptureSession, keepRoute: Boolean)").contains("active.route.close(keepRoute)"))
-        assertTrue(release.contains("active.detector.close()"))
+        assertTrue("release leaves the unbind to the feeder's exit, as before #188", release.contains("active.detector.close(unbindNow = false)"))
         assertTrue(release.contains("active.picture.close()"))
         val destroy = service.substringAfter("override fun onDestroy()")
-        assertTrue(destroy.contains("active.detector.close()"))
+        assertTrue("teardown unbinds now, as before #188", destroy.contains("active.detector.close(unbindNow = true)"))
         assertTrue(destroy.contains("active.picture.close()"))
         assertEquals("the hold is closed twice around the join, both through the owner", 2,
             Regex("warmHoldOwner\\.close\\(WarmHold\\.END_DESTROYED\\)").findAll(destroy).count())
@@ -53,30 +53,31 @@ class AudioServiceShapeTest {
 
     @Test
     fun theServiceKeepsOnlyTheSessionAndTheBinder() {
-        // The four lifecycles' members, enumerated from the pre-split service at 2ed2cdf (plan §2.5.1).
-        val movedFunctions = listOf(
-            "analyserLoop", "pushSpectrum", "startSpectrumAnalysis",
-            "offerToDetector", "feederLoop", "abandonDetector", "unbindVad", "vadConnectionFor", "startSilenceDetection",
-            "resolveRoute", "applyPreferredDevice", "registerRoutingListener", "observeFinalRoute", "routeAdmissible",
-            "watchSink", "armDeadline", "markLive", "resetCommunicationDevice",
-            "holdEligible", "startWarmHold", "onHoldEnded", "clearHoldBookkeeping", "finishTake",
+        // An ALLOWLIST of what the service may declare at class level, so a moved member coming back
+        // under any name is red, not only under its old one (Codex code review 1). A legitimate new
+        // member is added here on purpose, with the reason in the commit.
+        val expectedFunctions = setOf(
+            "nextCaptureToken", "startRecording", "captureLoop", "claimEnding", "stopRecording",
+            "endTake", "endTakeLocked", "releaseSession", "closeResources", "waitForFileReady",
         )
-        movedFunctions.forEach { name ->
-            assertFalse("the service must not declare $name any more", service.contains("private fun $name("))
-        }
+        val actualFunctions = Regex("^ {4}(?:(?:private|internal|public|protected|inline|suspend|operator|tailrec|infix)\\s+)*fun\\s+(\\w+)\\s*\\(", RegexOption.MULTILINE)
+            .findAll(service).map { it.groupValues[1] }.toSet()
+        assertEquals("the service declares only its own non-override functions", expectedFunctions, actualFunctions)
+        val expectedFields = setOf(
+            "sessionLock", "session", "lastEffective", "lastStartFailure", "warmHoldOwner", "destroyed",
+            "routeThread", "routeHandler", "routeScheduler", "isRecording", "captureThread", "lastAudioFile",
+            "currentAmplitude", "spectrumListener", "takePeakAmplitude", "lastSilenceStatus", "terminalReason",
+            "tokens", "binder",
+        )
+        val actualFields = Regex("^ {4}(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:(?:private|internal|public|protected|lateinit|const)\\s+)*(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
+            .findAll(service).map { it.groupValues[1] }.toSet()
+        assertEquals("the service holds only its own fields", expectedFields, actualFields)
+        val expectedSessionFields = setOf("record", "file", "output", "readBuffer", "token", "detector", "picture", "route", "keepEarbudsReady", "takeId", "liveVisible", "bytesWritten", "endingClaim", "stopRequested")
+        val actualSessionFields = Regex("^ {8}(?:@\\w+\\s+)*(?:(?:private|internal)\\s+)?(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
+            .findAll(service.substringAfter("private class CaptureSession(").substringBefore("\n    }\n")).map { it.groupValues[1] }.toSet()
+        assertEquals("the session carries the recorder, the file, the token and three owners, nothing of the owners' insides", expectedSessionFields, actualSessionFields)
         listOf("AudioTrackSilence", "HandedRoute", "ResolvedRoute").forEach { name ->
             assertFalse("the service must not declare class $name any more", Regex("class $name\\b").containsMatchIn(service))
-        }
-        val movedFields = listOf(
-            "spectrumRing", "publishedBands", "bandsLock", "analyserThread", "spectrumPushes", "spectrumPolls",
-            "ring", "pendingBlock", "pendingBytes", "pendingPosition", "detectorAbandoned", "silenceStatus",
-            "vadService", "vadBound", "feederThread", "vadConnection",
-            "routeHold", "gate", "targetBluetooth", "phonePicked", "sink", "liveAtMs", "deadline", "sinkGone", "sinkWatch", "effective",
-            "warmHold", "heldSinkType", "heldSinkName", "holdExpiry", "holdCommListener", "holdDeviceCallback",
-        )
-        movedFields.forEach { name ->
-            val declared = Regex("^ {4}(@Volatile )?(private )?(lateinit )?(val|var) $name\\b|^ {8}(@Volatile )?(private )?(val|var) $name\\b", RegexOption.MULTILINE)
-            assertFalse("the service must not hold the field $name any more", declared.containsMatchIn(service))
         }
         owners.forEach { (name, text) ->
             assertEquals("$name declares exactly one close", 1, Regex("fun close\\(").findAll(text).count())

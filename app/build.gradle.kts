@@ -76,6 +76,15 @@ android {
         }
     }
 
+    testOptions {
+        // The audio owners (#188) subclass `AudioDeviceCallback` and read `AudioDeviceInfo` inside
+        // their start paths; `AudioLimbCloseTest` constructs the REAL owners on the JVM and counts what
+        // `close` releases, which needs the SDK stubs' constructors to return rather than throw
+        // "Stub!". DISCLOSED COST: an unmocked Android call in any JVM test now returns 0/null/false
+        // instead of failing, so a JVM test must never assert on a value an Android stub produced.
+        unitTests.isReturnDefaultValues = true
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")

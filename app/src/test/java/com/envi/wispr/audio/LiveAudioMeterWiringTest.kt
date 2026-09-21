@@ -21,6 +21,8 @@ import java.io.File
 class LiveAudioMeterWiringTest {
 
     private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
+    /** The picture's owner since #188: ring, analyser thread, published bands and the push. */
+    private val picture = File("src/main/java/com/envi/wispr/audio/PicturePublisher.kt").readText()
     /** The owner since #186: the meter moved from the Service to the coordinator with its seams (`surface` over the overlay state). */
     private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
     private val recorder = File("src/main/java/com/envi/wispr/ui/RecorderSurface.kt").readText()
@@ -104,53 +106,60 @@ class LiveAudioMeterWiringTest {
         // (validation-discipline.md RULE: a-single-threaded-test-cannot-distinguish-atomic-from-check-then-act),
         // so the lock is asserted at the source: the copy in and the copy out both sit inside it, and
         // the push (a binder transaction) sits after the lock closes.
-        val loop = body(capture, "private fun analyserLoop(active: CaptureSession)")
-        val copyIn = "synchronized(active.bandsLock) {\n                        System.arraycopy(bands, 0, active.publishedBands, 0, SpectrumAnalyzer.BAND_COUNT)\n                    }"
+        val loop = body(picture, "private fun analyserLoop(stillLive: () -> Boolean)")
+        val copyIn = "synchronized(bandsLock) {\n                        System.arraycopy(bands, 0, publishedBands, 0, SpectrumAnalyzer.BAND_COUNT)\n                    }"
         assertTrue("the analyser copies its picture in under the lock", loop.contains(copyIn))
         assertTrue(
             "and pushes it after the lock closes, never inside it",
             loop.substringAfter(copyIn).trimStart().startsWith("// Outside the lock") &&
-                loop.substringAfter(copyIn).substringBefore("LockSupport.parkNanos").contains("pushSpectrum(active, bands)"),
+                loop.substringAfter(copyIn).substringBefore("LockSupport.parkNanos").contains("pushSpectrum(bands)"),
         )
         assertTrue(
             "a failure zeros the local picture and publishes it both ways before leaving",
-            loop.contains("bands.fill(0f)\n            synchronized(active.bandsLock) { active.publishedBands.fill(0f) }\n            pushSpectrum(active, bands)"),
+            loop.contains("bands.fill(0f)\n            synchronized(bandsLock) { publishedBands.fill(0f) }\n            pushSpectrum(bands)"),
         )
-        val push = body(capture, "private fun pushSpectrum(active: CaptureSession, bands: FloatArray)")
-        assertTrue("the push reads the slot once", push.contains("val listener = spectrumListener.get() ?: return"))
-        assertTrue("a dead client clears only the listener it was pushing to", push.contains("spectrumListener.compareAndSet(listener, null)"))
-        assertTrue("the capture thread never touches the listener", !body(capture, "private fun captureLoop(active: CaptureSession)").contains("spectrumListener"))
-        assertTrue("the getter copies out under the same lock", capture.contains("return synchronized(active.bandsLock) { active.publishedBands.copyOf() }"))
+        val push = body(picture, "private fun pushSpectrum(bands: FloatArray)")
+        assertTrue("the push reads the slot once", push.contains("val target = listener.get() ?: return"))
+        assertTrue("a dead client clears only the listener it was pushing to", push.contains("listener.compareAndSet(target, null)"))
+        val captureLoop = body(capture, "private fun captureLoop(active: CaptureSession)")
+        assertTrue("the capture thread never touches the listener", !captureLoop.contains("spectrumListener") && !captureLoop.contains("listener"))
+        val offer = body(picture, "fun offer(buffer: ByteArray, bytesRead: Int, position: Long)")
+        assertTrue("and its offer into the picture takes no lock", !offer.contains("synchronized") && !offer.contains("bandsLock"))
+        assertTrue("the getter copies out under the same lock", body(picture, "fun snapshot(): FloatArray").contains("return synchronized(bandsLock) { publishedBands.copyOf() }"))
         assertTrue(
             "and answers a full-length empty picture when no take is open, never an empty array",
-            capture.contains("?: return FloatArray(SpectrumAnalyzer.BAND_COUNT)"),
+            capture.contains("?: return FloatArray(SpectrumAnalyzer.BAND_COUNT)") && capture.contains("return active.picture.snapshot()"),
         )
-        assertTrue("the capture thread never takes that lock", !body(capture, "private fun captureLoop(active: CaptureSession)").contains("bandsLock"))
+        assertTrue("the capture thread never takes that lock", !captureLoop.contains("bandsLock"))
     }
 
     @Test
     fun theAnalyserDrainsTheRingWithPositionsAndPublishesOncePerWake() {
-        val loop = body(capture, "private fun analyserLoop(active: CaptureSession)")
-        assertTrue("every queued chunk is analysed before publishing", loop.contains("while (true) {\n                    val length = active.spectrumRing.poll(chunk)\n                    if (length < 0) break"))
-        assertTrue("each chunk carries its position from the ring's tag", loop.contains("analyzer.analyze(chunk, length, active.spectrumRing.lastPolledTag, bands)"))
+        val loop = body(picture, "private fun analyserLoop(stillLive: () -> Boolean)")
+        assertTrue("every queued chunk is analysed before publishing", loop.contains("while (true) {\n                    val length = spectrumRing.poll(chunk)\n                    if (length < 0) break"))
+        assertTrue("each chunk carries its position from the ring's tag", loop.contains("analyzer.analyze(chunk, length, spectrumRing.lastPolledTag, bands)"))
         assertTrue("and the picture is published after the last one", loop.indexOf("if (analysed) {") > loop.indexOf("analyzer.analyze("))
         val captureLoop = body(capture, "private fun captureLoop(active: CaptureSession)")
-        assertTrue("the capture thread offers every read with its take position", captureLoop.contains("active.spectrumRing.offer(buffer, bytesRead, position)"))
-        assertTrue("and wakes the analyser without a lock", captureLoop.contains("LockSupport.unpark(active.analyserThread)"))
+        assertTrue("the capture thread offers every read with its take position", captureLoop.contains("active.picture.offer(buffer, bytesRead, position)"))
+        val offer = body(picture, "fun offer(buffer: ByteArray, bytesRead: Int, position: Long)")
+        assertTrue("the offer queues the read", offer.contains("spectrumRing.offer(buffer, bytesRead, position)"))
+        assertTrue("and wakes the analyser without a lock", offer.contains("LockSupport.unpark(analyserThread)"))
     }
 
     @Test
     fun theAnalyserIsStartedAfterCaptureAndStoppedWithTheTake() {
-        val start = body(capture, "private fun startSpectrumAnalysis(active: CaptureSession)")
+        val start = body(picture, "fun start(stillLive: () -> Boolean)")
         assertTrue("its start failure is its own", start.contains("runCatching {") && start.contains("thread.start()"))
         assertTrue(
             "it starts only after the capture thread started",
-            capture.indexOf("startSpectrumAnalysis(newSession)") > capture.indexOf("Failed to start capture thread"),
+            capture.indexOf("newSession.picture.start(") > capture.indexOf("Failed to start capture thread"),
         )
+        val close = body(picture, "fun close()")
+        assertTrue("the owner's close interrupts the analyser once", close.contains("closed.compareAndSet(false, true)") && close.contains("interrupt(it)"))
         val release = body(capture, "private fun releaseSession(active: CaptureSession)")
-        assertTrue("release interrupts it", release.contains("active.analyserThread?.interrupt()"))
+        assertTrue("release closes it", release.contains("active.picture.close()"))
         val destroy = capture.substringAfter("override fun onDestroy()")
-        assertTrue("and so does destroy", destroy.contains("active.analyserThread?.interrupt()"))
+        assertTrue("and so does destroy", destroy.contains("active.picture.close()"))
     }
 
     @Test
@@ -189,13 +198,14 @@ class LiveAudioMeterWiringTest {
     fun theCountersAndTheTakeEndLineAreWired() {
         // Observability Contract: the take-end line is the oracle the hardware pass reads for "no polling".
         val getter = body(capture, "override fun getSpectrumBands(): FloatArray")
-        assertTrue("every poll of the legacy getter is counted", getter.contains("active.spectrumPolls.incrementAndGet()"))
-        val push = body(capture, "private fun pushSpectrum(active: CaptureSession, bands: FloatArray)")
-        assertTrue("every delivered push is counted", push.contains("active.spectrumPushes.incrementAndGet()"))
+        assertTrue("the legacy getter reads the owner's snapshot", getter.contains("return active.picture.snapshot()"))
+        assertTrue("and every snapshot is counted as a poll", body(picture, "fun snapshot(): FloatArray").contains("polls.incrementAndGet()"))
+        val push = body(picture, "private fun pushSpectrum(bands: FloatArray)")
+        assertTrue("every delivered push is counted", push.contains("pushes.incrementAndGet()"))
         val release = body(capture, "private fun releaseSession(active: CaptureSession)")
         assertTrue(
             "and the take-end line names both, in releaseSession, which every ending reaches",
-            release.contains("\"Live picture: pushed=\${active.spectrumPushes.get()} polled=\${active.spectrumPolls.get()}\""),
+            release.contains("\"Live picture: pushed=\${active.picture.pushes.get()} polled=\${active.picture.polls.get()}\""),
         )
         assertTrue("and nowhere else", Regex("Live picture: pushed=").findAll(capture).count() == 1)
     }

@@ -1,0 +1,38 @@
+== silence: two seconds of nothing
+silence: 161 frames, 132 with the rail readable, rest 6px peak 36px
+  active frames 0, quiet frames 132
+PASS: nothing lit
+== tone120: 120 Hz, a low voice's fundamental
+tone120: 160 frames, 132 with the rail readable, rest 6px peak 36px
+  active frames 35, quiet frames 96
+  expected bars [5] (band 0); 32/35 active frames agree
+  frames with a far-off bar above a third: 0
+PASS: the tone lit its own bars and nothing far from them
+== tone1k: 1 kHz
+tone1k: 160 frames, 134 with the rail readable, rest 6px peak 36px
+  active frames 33, quiet frames 100
+  expected bars [2, 8] (band 5); 33/33 active frames agree
+  frames with a far-off bar above a third: 0
+PASS: the tone lit its own bars and nothing far from them
+== tone5k: 5 kHz, the sibilant band
+tone5k: 160 frames, 133 with the rail readable, rest 6px peak 36px
+  active frames 34, quiet frames 98
+  expected bars [0, 10] (band 10); 34/34 active frames agree
+  frames with a far-off bar above a third: 0
+PASS: the tone lit its own bars and nothing far from them
+== sweep: 100 Hz to 6 kHz in three seconds
+sweep: 181 frames, 151 with the rail readable, rest 6px peak 36px
+  active frames 55, quiet frames 96
+  distance from centre: first frames 0.1, last frames 4.5
+  frames where the lit bars jumped back toward the centre: 0
+PASS: the lit bars travelled from the centre to the edges
+== noise: flat hiss that starts mid-take, four seconds
+noise: 200 frames, 170 with the rail readable, rest 6px peak 36px
+  active frames 33, quiet frames 132
+  hiss lit the rail for 1.6 s from its start, then 20 of the next 20 frames were dark
+PASS: a steady hiss is learned and goes dark
+== bursts: 300 Hz switched on and off four times a second
+bursts: 160 frames, 133 with the rail readable, rest 6px peak 36px
+  active frames 32, quiet frames 101
+  beats seen 7 (about 9 expected for 2.5 s at 4 per second); trace [0.07, 0.67, 0.97, 0.53, 0.73, 0.9, 0.97, 1.0, 0.5, 0.27, 0.83, 0.97, 0.97, 0.67, 0.4, 0.83, 0.93, 0.97, 0.7, 0.47, 0.87, 1.0, 0.97, 0.7, 0.37, 0.87, 1.0, 0.7, 0.4, 0.73, 0.9, 0.97, 0.97]
+PASS: the bars pulse with the bursts

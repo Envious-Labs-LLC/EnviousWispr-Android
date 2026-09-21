@@ -12,6 +12,9 @@ import java.io.File
  */
 class LiveGateWiringTest {
     private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
+    /** Since #188 the route (gate, deadline, sink watch) and the warm hold are owners of their own. */
+    private val route = File("src/main/java/com/envi/wispr/audio/TakeRoute.kt").readText()
+    private val hold = File("src/main/java/com/envi/wispr/audio/WarmHoldOwner.kt").readText()
     /**
      * Since #186 the owner is the coordinator; the three connections live in `PipelineBindings` and the
      * preference writes in `SessionPreferencesSource`. Each pin below reads the file its statement moved to.
@@ -23,13 +26,19 @@ class LiveGateWiringTest {
     private fun body(source: String, head: String): String =
         source.substringAfter(head).substringBefore("\n    private fun ").substringBefore("\n    override fun ")
 
+    /** One function of an owner class, where every member carries its own KDoc and most are public. */
+    private fun owned(source: String, head: String): String {
+        assertTrue("$head must exist", source.contains(head))
+        return source.substringAfter(head).substringBefore("\n    /**").substringBefore("\n    private fun ").substringBefore("\n    fun ")
+    }
+
     @Test
     fun bytesBeforeLiveAreNotWrittenAndFeedNothingButTheGate() {
         val loop = body(capture, "private fun captureLoop(")
-        val gateCheck = loop.indexOf("if (active.gate.state == LiveGate.State.WAITING)")
+        val gateCheck = loop.indexOf("if (active.route.gate.state == LiveGate.State.WAITING)")
         val write = loop.indexOf("active.output.write(buffer, 0, bytesRead)")
-        val detector = loop.indexOf("offerToDetector(active, buffer, bytesRead, position)")
-        val spectrum = loop.indexOf("active.spectrumRing.offer(")
+        val detector = loop.indexOf("active.detector.offer(buffer, bytesRead, position)")
+        val spectrum = loop.indexOf("active.picture.offer(")
         val amplitude = loop.indexOf("currentAmplitude =")
         assertTrue("the gate is consulted before the write", gateCheck in 0 until write)
         assertTrue("a waiting read skips the rest of the loop", loop.substring(gateCheck, write).contains("else continue"))
@@ -42,24 +51,32 @@ class LiveGateWiringTest {
         val getter = body(capture, "override fun getLiveState(): Int {")
         assertTrue(getter.contains("if (!active.liveVisible) return LIVE_WAITING"))
         val elapsed = body(capture, "override fun getElapsedMs(): Long {")
-        assertTrue("the timer counts from live", elapsed.contains("active?.liveAtMs") && !elapsed.contains("startedAtMs"))
+        assertTrue("the timer counts from live", elapsed.contains("active?.route?.liveAtMs") && !elapsed.contains("startedAtMs"))
+        val start = body(capture, "private fun startRecording(")
+        assertTrue(
+            "the recorder starts before its route clock is captured, as before #188",
+            start.indexOf("record.startRecording()") in 0 until start.indexOf("takeRoute.markRecorderStarted(SystemClock.elapsedRealtime())"),
+        )
     }
 
     @Test
     fun theDeadlineIsAClockOnTheRouteThreadAndResetsOnlyWhileTheSinkIsOffered() {
-        val arm = body(capture, "private fun armDeadline(")
-        assertTrue(arm.contains("routeHandler.postDelayed(runnable, LiveGate.DEADLINE_MS)"))
-        assertTrue("the second deadline is re-armed after the reset", arm.contains("routeHandler.postDelayed(this, LiveGate.DEADLINE_MS)"))
-        assertTrue("forcing asks whether the observed route may be forced", arm.contains("if (routeAdmissible(active))"))
-        assertTrue("an earbud target routed to the phone fails instead", arm.contains("lastStartFailure = START_FAILURE_EARBUDS"))
-        val reset = body(capture, "private fun resetCommunicationDevice(")
+        val arm = owned(route, "fun armDeadline(")
+        assertTrue(arm.contains("scheduler.postDelayed(runnable, LiveGate.DEADLINE_MS)"))
+        assertTrue("the second deadline is re-armed after the reset", arm.contains("scheduler.postDelayed(this, LiveGate.DEADLINE_MS)"))
+        assertTrue("the scheduler is the service's route thread", capture.contains("override fun postDelayed(runnable: Runnable, delayMs: Long) { routeHandler.postDelayed(runnable, delayMs) }"))
+        assertTrue("forcing asks whether the observed route may be forced", arm.contains("if (admissible())"))
+        assertTrue("an earbud target routed to the phone refuses instead", arm.contains("onRefused()"))
+        val start = body(capture, "private fun startRecording(")
+        assertTrue("and the service turns the refusal into a failed start", start.substringAfter("onRefused = {").substringBefore("}").contains("lastStartFailure = START_FAILURE_EARBUDS"))
+        val reset = owned(route, "private fun reset(audioManager: AudioManager): Boolean")
         assertTrue(reset.contains("availableCommunicationDevices.any"))
         assertTrue(reset.contains("clearCommunicationDevice()") && reset.contains("setCommunicationDevice(sink)"))
     }
 
     @Test
     fun aRefusedLinkNoLongerResolvesOntoThePhone() {
-        val resolve = body(capture, "private fun resolveRoute(")
+        val resolve = route.substringAfter("fun resolve(").substringBefore("\n    }\n")
         assertFalse(resolve.contains("allowBluetooth = false"))
         assertTrue(resolve.contains("reason = InputRouteReason.LINK_REFUSED"))
     }
@@ -67,40 +84,45 @@ class LiveGateWiringTest {
     @Test
     fun theHoldStartsFromTheOneReleasePathAndOnlyForFinishedTakes() {
         val release = body(capture, "private fun releaseSession(")
-        assertTrue(release.contains("holding = holdEligible(active) && startWarmHold(active)"))
+        assertTrue(release.contains("holding = warmHoldOwner.eligible(active.route, active.endingClaim.ending, active.keepEarbudsReady, destroyed) &&\n                warmHoldOwner.start(active.route)"))
         assertTrue(release.contains("closeResources(active, keepRoute = holding)"))
         assertTrue("a hold keeps the service alive", release.contains("if (!holding) stopSelf()"))
-        val eligible = body(capture, "private fun holdEligible(")
+        val eligible = owned(hold, "fun eligible(")
         assertTrue(eligible.contains("CaptureEnding.Manual, CaptureEnding.Silence, CaptureEnding.MaxDuration -> true"))
         assertTrue(eligible.contains("CaptureEnding.StillRunning, CaptureEnding.Failure -> false"))
-        assertTrue("the setting is read from the take, frozen at start", eligible.contains("active.keepEarbudsReady"))
-        assertTrue("only a take that ended on Bluetooth holds", eligible.contains("active.effective.currentKind != InputRouteKind.BLUETOOTH) return false"))
+        assertTrue("the setting is read from the take, frozen at start", eligible.contains("if (!keepEarbudsReady || !route.targetBluetooth || route.sink == null) return false"))
+        assertTrue("only a take that ended on Bluetooth holds", eligible.contains("route.effective.currentKind != InputRouteKind.BLUETOOTH) return false"))
     }
 
     @Test
     fun finishTakeGivesTheServiceAStartedLifetimeAndTheStartIsNotSticky() {
-        val finish = body(capture, "private fun finishTake(): Boolean {")
-        assertTrue(finish.contains("startService(Intent(this, AudioCaptureService::class.java))"))
+        val finish = owned(hold, "fun finishTake(): Boolean {")
+        assertTrue("the hold keeps the service through the injected edge", finish.contains("keepAlive()"))
+        assertTrue("which is a started lifetime", capture.contains("keepAlive = { startService(Intent(this, AudioCaptureService::class.java)) }"))
+        assertTrue("and the binder calls it under the session lock", capture.contains("override fun finishTake(): Boolean = synchronized(sessionLock) { this@AudioCaptureService.warmHoldOwner.finishTake() }"))
         val start = body(capture, "override fun onStartCommand(")
         assertTrue(start.contains("return START_NOT_STICKY"))
-        assertTrue(capture.contains("synchronized(sessionLock) { warmHold?.end(WarmHold.END_DESTROYED) }"))
+        assertTrue(start.contains("if (!warmHoldOwner.isActive && session == null) stopSelf()"))
+        assertTrue(capture.contains("synchronized(sessionLock) { warmHoldOwner.close(WarmHold.END_DESTROYED) }"))
+        assertTrue("the owner's close is the hold's end", owned(hold, "fun close(reason: String)").contains("warmHold?.end(reason)"))
         val destroy = capture.substringAfter("override fun onDestroy()")
         assertTrue("the flag precedes the stop that could end a take", destroy.indexOf("destroyed = true") < destroy.indexOf("stopRecording()"))
-        assertTrue("no hold may start after teardown began", body(capture, "private fun holdEligible(").contains("if (destroyed) return false"))
+        assertTrue("no hold may start after teardown began", owned(hold, "fun eligible(").contains("if (destroyed) return false"))
         assertTrue("a hold started before the join is ended before the route thread quits",
-            destroy.lastIndexOf("warmHold?.end(WarmHold.END_DESTROYED)") < destroy.indexOf("routeThread.quitSafely()"))
+            destroy.lastIndexOf("warmHoldOwner.close(WarmHold.END_DESTROYED)") < destroy.indexOf("routeThread.quitSafely()"))
     }
 
     @Test
     fun removedEarbudsAdmitThePhoneAndADeadAudioProcessEndsAStartingTake() {
-        val admissible = body(capture, "private fun routeAdmissible(")
-        assertTrue("disconnected earbuds are the one case the phone may record", admissible.contains("active.sinkGone"))
+        val admissible = owned(route, "fun admissible(): Boolean =")
+        assertTrue("disconnected earbuds are the one case the phone may record", admissible.contains("sinkGone"))
         val start = body(capture, "private fun startRecording(")
-        assertTrue(start.contains("watchSink(newSession)"))
-        val watch = body(capture, "private fun watchSink(")
+        assertTrue(start.contains("takeRoute.watchSink(audioManager, routeHandler)"))
+        val watch = owned(route, "fun watchSink(")
         assertTrue("the device list is reconciled after registering, so a removal in between is not missed",
             watch.indexOf("registerAudioDeviceCallback") < watch.indexOf("availableCommunicationDevices.any"))
-        assertTrue(body(capture, "private fun releaseSession(").contains("unregisterAudioDeviceCallback(w)"))
+        assertTrue("release stops the watch first", body(capture, "private fun releaseSession(").contains("active.route.stopWatching()"))
+        assertTrue("and stopping it unregisters the callback", owned(route, "fun stopWatching()").contains("unregisterDeviceCallback(it)"))
         val disconnect = body(session, "override fun onCaptureDisconnected()")
         assertTrue(disconnect.contains("seen == SessionState.RECORDING || seen == SessionState.STARTING"))
         // The link is cleared BEFORE the owner hears of the death, as the proxy field was (Codex review C1).
@@ -125,11 +147,12 @@ class LiveGateWiringTest {
 
     @Test
     fun theHeldIdentityIsReadBeforeTheHandoverClearsIt() {
-        val start = body(capture, "private fun startRecording(")
-        val read = start.indexOf("val type = heldSinkType")
-        val hand = start.indexOf("hold.handOver()")
+        val handOver = owned(hold, "fun handOver(): HandedRoute?")
+        val read = handOver.indexOf("val type = heldSinkType")
+        val hand = handOver.indexOf("hold.handOver()")
         assertTrue(read in 0 until hand)
-        val resolve = body(capture, "private fun resolveRoute(")
+        assertTrue("the service takes the handed route from the owner", body(capture, "private fun startRecording(").contains("val handedOver = warmHoldOwner.handOver()"))
+        val resolve = route.substringAfter("fun resolve(").substringBefore("\n    }\n")
         assertTrue(resolve.contains("handedOver.sinkType == sink.type && handedOver.sinkName == sink.name"))
     }
 

@@ -82,7 +82,7 @@ First release. Press, speak, and finished text lands in the app you were typing 
 | Claim | Why this is true today | Owner in code or docs |
 |---|---|---|
 | Your voice never leaves your phone | `INTERNET` reaches only model downloads and the user's own polish provider; audio is never sent on any path | `privacy/PrivacyDisclosure.kt`, `docs/play-data-safety-answers.md` |
-| Text leaves the phone only for the user's own cloud polish key | Cloud polish is opt-in, straight to the provider | `providers/ProviderPolishClient.kt` |
+| Text leaves the phone only for the user's own cloud polish key | Cloud polish is opt-in, straight to the provider | `providers/ProviderPolishClient.kt`, `providers/HttpProviderTransport.kt`, and the four provider adapter files |
 | On-device polish is built in | S1-mini on llama.cpp in `:polish`, CPU path, shipped | `.claude/knowledge/polish-engines.md` |
 | Providers: OpenAI, Anthropic, Google Gemini | The three a new install can connect; self-hosted exists only for a configuration an older build saved (`ui/PolishLadder.kt` excludes it from the pickable set) | `privacy/PrivacyDisclosure.kt`, `ui/PolishLadder.kt` |
 | Earbuds are the microphone when connected | PR #165, Auto prefers connected earbuds | `audio/InputDeviceResolver.kt` |

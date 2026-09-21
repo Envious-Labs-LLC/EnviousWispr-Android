@@ -30,7 +30,7 @@ class ProviderConfigurationRepository internal constructor(
     constructor(
         context: Context,
         secrets: SecretStore = AndroidKeystoreSecretStore(context.applicationContext),
-        keyCheck: ProviderKeyChecker = ProviderPolishClient(),
+        keyCheck: ProviderKeyChecker = ProviderModelDiscoveryClient(),
     ) : this(
         context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE),
         secrets,
@@ -170,7 +170,7 @@ class ProviderConfigurationRepository internal constructor(
             .putString(KEY_PROVIDER, provider.name)
             .putString(KEY_MODEL, model)
             .putString(KEY_PROTOCOL, selfHostedProtocol.name)
-        if (provider == Provider.SELF_HOSTED_POLISH) values.putString(KEY_ENDPOINT, endpoint)
+        if (provider.capabilities().requiresEndpoint) values.putString(KEY_ENDPOINT, endpoint)
         else values.remove(KEY_ENDPOINT)
         if (!values.commit()) {
             // Compensation: the metadata did not change, so the key must not have either. A compensation

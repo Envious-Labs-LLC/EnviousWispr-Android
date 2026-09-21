@@ -449,11 +449,13 @@ def main(argv):
         if len(argv) < 2:
             print("usage: check-visibility.py --code-only <file>...", file=sys.stderr)
             return 2
+        # newline="" keeps a CRLF as two characters, so the answer has the file's length for a reader
+        # that walks by length (Codex code review round 8; no CRLF file exists today, measured).
         for path in argv[1:]:
-            with open(path, encoding="utf-8") as fh:
+            with open(path, encoding="utf-8", newline="") as fh:
                 text = fh.read()
-            print(f"=== {path}")
-            print(code_only(text), end="" if text.endswith("\n") else "\n")
+            sys.stdout.write(f"=== {path}\n")
+            sys.stdout.write(code_only(text) + ("" if text.endswith("\n") else "\n"))
         return 0
     if "--root" in argv:
         i = argv.index("--root")

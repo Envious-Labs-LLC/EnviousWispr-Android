@@ -103,15 +103,19 @@ class SessionOwnerShapeTest {
             // reader walks by code points (two production files hold one: DeterministicCleanup.kt, OnboardingDemo.kt).
             "// \uD83C\uDF99\nval k = 1" to blank(4) + "\nval k = 1",
         )
-        // Four files in one call: the shapes terminated, the shapes unterminated (one production file
-        // ends without a newline, Codex code review round 6), a blank-only file of two newlines (round 7)
-        // and an empty file; each answer must come back byte for byte and in order.
+        // Five files in one call: the shapes terminated, the shapes unterminated (one production file
+        // ends without a newline, Codex code review round 6), a blank-only file of two newlines (round 7),
+        // an empty file, and a CRLF file (round 8); each answer must come back byte for byte and in order.
         val expected = shapes.joinToString("\n") { it.second }
         val fixtures = listOf(
             shapes.joinToString("\n") { it.first } + "\n" to expected + "\n",
             shapes.joinToString("\n") { it.first } to expected,
             "\n\n" to "\n\n",
             "" to "",
+            // CRLF kept as two characters on both sides (round 8; no production file uses CRLF today). The
+            // first CR sits inside the line comment, which runs to the LF, so it is blanked like any comment
+            // character; the second is code and stays.
+            "val l = 1 // pin(\r\nval m = 2\r\n" to "val l = 1 " + blank(8) + "\nval m = 2\r\n",
         ).map { (text, want) -> File.createTempFile("code-only", ".kt").apply { writeText(text) } to want }
         try {
             val answers = codeOnly(fixtures.map { it.first })

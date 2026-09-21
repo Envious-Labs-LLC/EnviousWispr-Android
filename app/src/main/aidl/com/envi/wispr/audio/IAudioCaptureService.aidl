@@ -1,5 +1,7 @@
 package com.envi.wispr.audio;
 
+import com.envi.wispr.audio.IAudioSpectrumListener;
+
 interface IAudioCaptureService {
     boolean startCapture();
     void stopCapture();
@@ -31,8 +33,11 @@ interface IAudioCaptureService {
     int getSilenceStopStatus();
 
     /**
-     * The recorder's live picture: SpectrumAnalyzer.BAND_COUNT pitch levels 0..1, lowest band first,
-     * from the newest 64 ms of the open take. Always that many, never empty; all zeros when no take is open.
+     * LEGACY since #187, no production caller: the picture is pushed to a registered
+     * IAudioSpectrumListener instead. Kept because this interface is append-only. Still answers:
+     * SpectrumAnalyzer.BAND_COUNT pitch levels 0..1, lowest band first, from the newest 64 ms of the open
+     * take; always that many, never empty; all zeros when no take is open. Each call is counted as a poll
+     * on the take-end diagnostic line.
      */
     float[] getSpectrumBands();
 
@@ -100,4 +105,15 @@ interface IAudioCaptureService {
      * once at stop: it is what lets an empty transcript be told apart from a quiet room (issue #176).
      */
     float getTakePeakAmplitude();
+
+    /**
+     * Receive the recorder's live picture as the analyser publishes it (issue #187): at most one
+     * IAudioSpectrumListener.onSpectrum per analyser wake, originated while a take is open on this binding.
+     * One listener per binding; a later registration replaces the earlier one. Cleared by
+     * unregisterSpectrumListener, by the binding going away, and by a push that finds the listener dead.
+     */
+    void registerSpectrumListener(IAudioSpectrumListener listener);
+
+    /** Stop receiving the picture. A listener that is not the registered one is ignored. */
+    void unregisterSpectrumListener(IAudioSpectrumListener listener);
 }

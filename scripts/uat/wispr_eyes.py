@@ -1527,8 +1527,8 @@ def _newest_recording_start():
 def _press_launcher(what, flag, deadline_s=3.0):
     """Send one launcher press during a live take and prove afterwards that it did not begin a take.
 
-    The liveness check and the intent are two steps. A take that ends between them turns a toggle into a
-    start, and turns a START into an admitted one instead of a busy refusal. The proof is the newest
+    The liveness check and the intent are two steps. A take ending between the liveness check and intent
+    delivery turns the toggle into a start. The proof is the newest
     `recording_start` line before the press against the newest one seen during `deadline_s` after it
     (`_newest_recording_start`): a different line is a take this press began, which is cancelled before
     raising; a tail with no start line at all after the press is "cannot tell", which also raises, never

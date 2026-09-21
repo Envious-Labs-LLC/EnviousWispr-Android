@@ -1,7 +1,7 @@
 # Issue #192 — Stopping from the side button can send a dictation to the wrong text field — 2026-09-21
 
 GitHub issue: `#192`. Tier: LARGE (the insertion path and the session owner's contract, `workflow-process.md`
-RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the newest-line identity replaces the count; G2.1 to G2.3); round 3 PIVOT by the pre-committed consequence (a third weakness in the launcher press's proof: G2.1 the new-start harness row appended a line so a count-based proof would still pass; `press_start_while_recording()` deleted, the busy-start emulator scenario NOT RUN, G3.1 docstring); round 4 next.
+RULE: tier-routing), although the diff deletes two calls and adds guards. Status: DRAFT after the coverage round (A1, A2, B1, B2, D1, D2, E1, F1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G2.1, G2.2, G4.1 to G4.4 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the newest-line identity replaces the count; G2.1 to G2.3); round 3 PIVOT by the pre-committed consequence (a third weakness in the launcher press's proof: G2.1 the new-start harness row appended a line so a count-based proof would still pass; `press_start_while_recording()` deleted, the busy-start emulator scenario NOT RUN, G3.1 docstring); round 4 PROCEED-WITH-REVISIONS (G1.1 to G1.4, stale wording after the deletion); round 5 next.
 
 Consolidation: this plan is one document; §2.5 carries the reproduction and the trace once and §§3 to 11 point back at it.
 
@@ -10,7 +10,7 @@ Consolidation: this plan is one document; §2.5 carries the reproduction and the
 ## Preface — Lane + Hardware UAT declaration
 
 **Lane:** Code — `app/src/main/**` (two deletions), `app/src/test/**` (coordinator rows and a shape row),
-`scripts/uat/wispr_eyes.py` (two harness calls). `mixed_pr: true`: `Code` (`unit-tests.xml`, `codex-review.md`,
+`scripts/uat/wispr_eyes.py` (one harness call). `mixed_pr: true`: `Code` (`unit-tests.xml`, `codex-review.md`,
 `visibility.txt`, `hardware-uat.json`: the heart path) and `Docs/dev-tooling` (`cited-symbols`, conditional).
 
 **PAR rows closed:** none named; the outcome contract is `architecture-rules.md` RULE:
@@ -18,8 +18,9 @@ insertion-fails-safe-never-silently ("return to the tracked editor").
 
 **Hardware UAT:** Y. The heart's insertion stage. On the emulator through wispr-eyes (the founder's phone is his
 today): a person starts a dictation in one field, moves to another field while still speaking, presses the side
-button to stop, and the words land in the FIRST field; the second field stays empty. Then the same with a
-second start attempt while a take is running: refused, and the running take still lands in its own field.
+button to stop, and the words land in the FIRST field; the second field stays empty. The busy-start
+behaviour (a second start attempt while a take is running) is NOT RUN on the emulator; its JVM rig row
+keeps the owner contract.
 
 ## Preface — User Rubric
 
@@ -134,7 +135,7 @@ none about insertion targets), so nothing settled is being redesigned.
   `lastTarget` fails `isInFocusedWindow` (`:801`) and discovery (`:803`) returns no target where the old
   pre-pin, taken before the gap, would have succeeded. The evidence that settles it is the emulator run
   after the change: `Pinned original editor` logged ONCE per take and `route=COMMIT`, on three ordinary
-  takes and the two scenarios. If a launcher START then misses its pin, STOP and re-plan the START ordering with the
+  takes and the reproduction scenario. If a launcher START then misses its pin, STOP and re-plan the START ordering with the
   owner kept as the sole pin authority (never a pin back in the launcher).
   On the S26 the same sequence is UNVERIFIED and listed for the founder's next side-button dictation.
 - **The bubble's direct start (coverage B2)** creates no activity transition: the editor's window keeps

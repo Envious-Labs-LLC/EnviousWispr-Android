@@ -203,9 +203,9 @@ class DictationSessionCoordinatorTest {
     fun aSilentAudioProcessEndsTheTakeWithinTheBound() {
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
-        // show() fires inside the live transition; the picture subscription follows it on the same main
-        // pass, so the snapshot waits for that pass to finish.
-        rig.onMain {}
+        // show() fires inside the live transition and the picture registration is issued from it on the
+        // capture command lane, so the snapshot waits for that registration to land.
+        rig.capture.awaitListener()
         rig.capture.silent = true
         val callsBefore = rig.capture.events.toList()
         rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
@@ -335,6 +335,52 @@ class DictationSessionCoordinatorTest {
         // The bound was pending through the whole healthy take; it goes with the binding.
         // REVERT: drop the cancel from `disarmSilenceBound`.
         assertTrue("no bound left armed after an ordinary take", rig.host.delayed.isEmpty())
+    }
+
+    /**
+     * Product Outcome (#115 review round 1, F2): back-to-back takes. The audio process's publisher is
+     * service-scoped and the previous take's ending can still be queued when the next owner registers;
+     * without take identity that ending was consumed as the NEW take's, which then failed as "ended before
+     * live" with the old file. Here another take's ending arrives while this take is STARTING: it changes
+     * nothing, this take goes live and completes, and the transcript is this take's file.
+     * REVERT: drop the `ours(...)` check in the take listener.
+     */
+    @Test
+    fun anotherTakesEndingIsDiscarded() {
+        val coordinator = rig.coordinator()
+        startAndStayStarting(coordinator)
+        rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_MANUAL, takeId = "the-previous-take")
+        rig.onMain {}
+        rig.onMain {}
+        assertTrue("no ending was committed for another take's event", rig.endings.reasons.isEmpty())
+        rig.capture.tick(0L)
+        rig.onMain {}
+        // Now this take goes live and completes as an ordinary take.
+        val own = rig.capture.currentTakeId
+        rig.capture.pushLive(own)
+        rig.surface.awaitShown()
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+    }
+
+    /**
+     * Drift Guard (#115 review round 1, F1): the owner's main thread never calls into the capture
+     * process. Every command the fake saw was issued from the one command lane, never from the fake main
+     * thread. REVERT: call `startCaptureForTake` or `listenForSpectrum` directly instead of through the lane.
+     */
+    @Test
+    fun noCaptureCommandRunsOnTheMainThread() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.capture.awaitListener()
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals("every command came down the lane; threads were ${rig.capture.commandThreads}", setOf("CaptureCommands"), rig.capture.commandThreads.toSet())
     }
 
     @Test
@@ -501,6 +547,8 @@ class DictationSessionCoordinatorTest {
         rig.onMain { coordinator.destroy() }
 
         assertEquals(TerminalReason.INTERRUPTED_STARTING, rig.endings.awaitOne())
+        // REVERT (#115 review round 1, F4): drop `disarmSilenceBound()` from `destroy`.
+        assertTrue("destroy disarms both delayed callbacks", rig.host.delayed.isEmpty())
         assertTrue("the surface is hidden by teardown", rig.surface.events.contains("hide"))
         assertTrue(rig.dao.rows.isEmpty())
     }
@@ -512,6 +560,8 @@ class DictationSessionCoordinatorTest {
         rig.onMain { coordinator.destroy() }
 
         assertEquals(TerminalReason.INTERRUPTED_RECORDING, rig.endings.awaitOne())
+        // REVERT (#115 review round 1, F4): drop `disarmSilenceBound()` from `destroy`.
+        assertTrue("destroy disarms both delayed callbacks", rig.host.delayed.isEmpty())
         val row = theOnlyRow()
         assertEquals("interrupted", row.status)
         assertTrue(row.interrupted)
@@ -551,6 +601,8 @@ class DictationSessionCoordinatorTest {
         rig.onMain { coordinator.destroy() }
 
         assertEquals(TerminalReason.INTERRUPTED_PROCESSING, rig.endings.awaitOne())
+        // REVERT (#115 review round 1, F4): drop `disarmSilenceBound()` from `destroy`.
+        assertTrue("destroy disarms both delayed callbacks", rig.host.delayed.isEmpty())
         val row = theOnlyRow()
         assertEquals("interrupted", row.status)
         assertTrue(row.interrupted)

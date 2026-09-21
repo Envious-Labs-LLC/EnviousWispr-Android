@@ -49,6 +49,14 @@ class AudioServiceShapeTest {
         // releaseSession closes the route with the recorder. A second close from onDestroy would race
         // the loop still reading the route, and today's teardown never released it from here either.
         assertFalse("onDestroy leaves the route to the capture thread", destroy.contains("route.close("))
+        // #115 review round 1, F8: the listener slots are the SERVICE's to clear; a warm hold keeps it
+        // alive past the owner's unbind, so both go on the last unbind and again on destroy.
+        val unbind = member(service, "override fun onUnbind(intent: Intent?): Boolean")
+        listOf("spectrumListener.set(null)", "takeListener.set(null)").forEach {
+            assertTrue("onUnbind clears $it", unbind.contains(it))
+            assertTrue("onDestroy clears $it", destroy.contains(it))
+        }
+        assertTrue("the publisher is closed on destroy, after the join", destroy.indexOf("takeEvents.close()") > destroy.indexOf("thread.join("))
     }
 
     @Test

@@ -149,11 +149,11 @@ internal class PipelineBindings(
 
         override fun listenForTake(listener: TakeListener) {
             val stub = object : ITakeListener.Stub() {
-                override fun onLive(forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) = listener.onLive(forced, routeKind, routeReason, liveAfterMs)
-                override fun onTick(elapsedMs: Long) = listener.onTick(elapsedMs)
-                override fun onSilenceStatus(status: Int) = listener.onSilenceStatus(status)
-                override fun onEnded(terminalReason: Int, startFailure: Int, audioFilePath: String?, silenceStatus: Int, takePeakAmplitude: Float, effectiveInputDevice: String?) =
-                    listener.onEnded(TakeEnding(terminalReason, startFailure, audioFilePath?.takeIf { it.isNotEmpty() }, silenceStatus, takePeakAmplitude, effectiveInputDevice.orEmpty()))
+                override fun onLive(takeId: String?, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) = listener.onLive(takeId.orEmpty(), forced, routeKind, routeReason, liveAfterMs)
+                override fun onTick(takeId: String?, elapsedMs: Long) = listener.onTick(takeId.orEmpty(), elapsedMs)
+                override fun onSilenceStatus(takeId: String?, status: Int) = listener.onSilenceStatus(takeId.orEmpty(), status)
+                override fun onEnded(takeId: String?, terminalReason: Int, startFailure: Int, audioFilePath: String?, silenceStatus: Int, takePeakAmplitude: Float, effectiveInputDevice: String?) =
+                    listener.onEnded(TakeEnding(takeId.orEmpty(), terminalReason, startFailure, audioFilePath?.takeIf { it.isNotEmpty() }, silenceStatus, takePeakAmplitude, effectiveInputDevice.orEmpty()))
             }
             service.registerTakeListener(stub)
         }

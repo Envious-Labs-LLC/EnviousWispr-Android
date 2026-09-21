@@ -74,9 +74,10 @@ internal object TakeNotices {
     }
 
     /**
-     * Which ending a refused capture start is, decided from the code the capture process reports over
-     * the binder (`IAudioCaptureService.getLastStartFailure`), never from a display label. The same
-     * table `CaptureNotices.startFailureLine` used to hold; the sentence now comes from [line].
+     * Which ending a refused capture start is, decided from the code the capture process pushes on the
+     * ending (`TakeEnding.startFailure`, through `ITakeListener.onEnded`; the `getLastStartFailure`
+     * getter stays legacy for the append-only interface), never from a display label. The same table
+     * `CaptureNotices.startFailureLine` used to hold; the sentence now comes from [line].
      */
     fun startFailureReason(lastStartFailure: Int): TerminalReason = when (lastStartFailure) {
         AudioCaptureService.START_FAILURE_NO_INPUT_DEVICE -> TerminalReason.CAPTURE_START_NO_MICROPHONE

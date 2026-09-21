@@ -22,14 +22,19 @@ internal fun interface SpectrumListener {
  * owner posts each to its main thread before acting, which serialises them in delivery order.
  */
 internal interface TakeListener {
-    fun onLive(forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long)
-    fun onTick(elapsedMs: Long)
-    fun onSilenceStatus(status: Int)
+    fun onLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long)
+    fun onTick(takeId: String, elapsedMs: Long)
+    fun onSilenceStatus(takeId: String, status: Int)
     fun onEnded(ending: TakeEnding)
 }
 
-/** The ending as `ITakeListener.onEnded` carries it: the closed file, and every fact the owner once asked for. */
+/**
+ * The ending as `ITakeListener.onEnded` carries it: the take it belongs to, the closed file, and every fact
+ * the owner once asked for. The owner discards an ending whose [takeId] is not its take's: the publisher is
+ * service-scoped, so a previous take's ending can reach the next take's listener.
+ */
 internal data class TakeEnding(
+    val takeId: String,
     val terminalReason: Int,
     val startFailure: Int,
     /** The CLOSED file, or null for an ending with no file (a start refused before capture began). */

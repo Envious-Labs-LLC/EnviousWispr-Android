@@ -45,8 +45,10 @@ class SilenceStopSettingsTest {
         // Since #193 the start call reads the take's FROZEN snapshot (`sessionPreferences`), never the
         // live source, so a settings emission after the take's answer belongs to the next take.
         val source = read("ui/DictationSessionCoordinator.kt")
-        val start = source.substringAfter("pipeline.capture?.startCaptureForTake(").substringBefore(")")
-        listOf("sessionPreferences.autoStopOnSilence", "sessionPreferences.silencePauseSeconds", "sessionPreferences.inputDevicePick", "sessionPreferences.keepEarbudsReady", "takeId").forEach {
+        val body = source.substringAfter("private fun tryStartRecording()").substringBefore("\n    private fun ")
+        assertTrue("the frozen snapshot is read once, on main", body.contains("val preferences = sessionPreferences"))
+        val start = body.substringAfter("capture.startCaptureForTake(").substringBefore(")")
+        listOf("preferences.autoStopOnSilence", "preferences.silencePauseSeconds", "preferences.inputDevicePick", "preferences.keepEarbudsReady", "id,").forEach {
             assertTrue("the start call carries $it", start.contains(it))
         }
     }

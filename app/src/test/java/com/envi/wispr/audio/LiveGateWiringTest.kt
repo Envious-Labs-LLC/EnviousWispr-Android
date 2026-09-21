@@ -141,7 +141,7 @@ class LiveGateWiringTest {
         // Since #115 the live event arrives on a binder thread and is posted to main, where commands
         // are dispatched, before it publishes.
         val listener = session.substringAfter("private val takeListener = object : TakeListener {").substringBefore("\n    }\n")
-        assertTrue("publication is posted to the main thread", listener.contains("host.postToMain { rearmSilenceBound(); publishLive(forced, routeKind, routeReason, liveAfterMs) }"))
+        assertTrue("publication is posted to the main thread, for this take's events only", listener.contains("host.postToMain { if (ours(takeId)) { rearmSilenceBound(); publishLive(forced, routeKind, routeReason, liveAfterMs) } }"))
         assertTrue(body(session, "private fun publishLive(").contains("check(host.onMainThread())"))
         val deadline = body(session, "private fun onLiveDeadline()")
         assertTrue("the deadline claims failure before any cleanup", deadline.indexOf("failWhileStarting(") < deadline.indexOf("stopCapture()"))
@@ -162,9 +162,11 @@ class LiveGateWiringTest {
     @Test
     fun theSessionCarriesTheSavedSettingAndWaitsForLiveUnderTheLock() {
         assertTrue(preferences.contains("keepEarbudsReady = preferences.keepEarbudsReady"))
-        // Since #193 the start call reads the take's FROZEN snapshot, never the live source.
+        // Since #193 the start call reads the take's FROZEN snapshot, never the live source; since #115
+        // the snapshot is taken on main and the call runs on the capture command lane.
         val start = body(session, "private fun tryStartRecording()")
-        listOf("sessionPreferences.autoStopOnSilence", "sessionPreferences.silencePauseSeconds", "sessionPreferences.inputDevicePick", "sessionPreferences.keepEarbudsReady", "takeId").forEach {
+        assertTrue("the snapshot is read on main before the command is issued", start.indexOf("val preferences = sessionPreferences") in 0 until start.indexOf("commandCapture(\"start\")"))
+        listOf("preferences.autoStopOnSilence", "preferences.silencePauseSeconds", "preferences.inputDevicePick", "preferences.keepEarbudsReady", "id,").forEach {
             assertTrue("the start call carries $it", start.substringAfter("startCaptureForTake(").substringBefore(")").contains(it))
         }
         val publish = body(session, "private fun publishLive(")

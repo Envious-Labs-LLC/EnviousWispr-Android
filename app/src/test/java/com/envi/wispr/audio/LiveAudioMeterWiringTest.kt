@@ -48,9 +48,11 @@ class LiveAudioMeterWiringTest {
         assertTrue("the serial is captured once, when the take starts", listen.contains("val takeSerial = surface.currentTakeSerial()"))
         assertTrue(
             "the owner registers a listener that stamps that serial on every picture",
-            listen.contains("pipeline.capture?.listenForSpectrum { bands -> surface.updateBands(takeSerial, bands) }"),
+            listen.contains("capture.listenForSpectrum { bands -> surface.updateBands(takeSerial, bands) }"),
         )
-        assertTrue("and registering cannot end the take", listen.contains("runCatching {\n            pipeline.capture?.listenForSpectrum"))
+        // Since #115 review round 1 the binder call runs on the capture command lane, never on main, and a
+        // failure there is logged by the lane and costs nothing else.
+        assertTrue("and registering runs on the lane and cannot end the take", listen.contains("commandCapture(\"listen for the picture\")"))
         // The seam is only as good as its production delegate (Codex review C1, 2026-09-20).
         assertTrue(recorder.contains("override fun updateBands(takeSerial: Long, bands: FloatArray) = RecordingOverlayState.updateBands(takeSerial, bands)"))
         assertTrue(recorder.contains("override fun currentTakeSerial(): Long = RecordingOverlayState.snapshots.value.takeSerial"))

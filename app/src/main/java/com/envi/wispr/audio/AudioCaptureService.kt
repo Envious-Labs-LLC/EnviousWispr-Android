@@ -301,9 +301,15 @@ class AudioCaptureService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
-    /** The last binding is gone: clear future pushes; an analyser reference already read may still deliver once. Runs on the service main thread. */
+    /**
+     * The last binding is gone: clear both listener slots so no future push reaches an owner that left; a
+     * reference already read may still deliver once (#115 review round 1, F8: a warm hold keeps this
+     * service alive past the owner's unbind, so the slot is not dropped by the binding going). Runs on the
+     * service main thread.
+     */
     override fun onUnbind(intent: Intent?): Boolean {
         spectrumListener.set(null)
+        takeListener.set(null)
         return super.onUnbind(intent)
     }
 
@@ -339,13 +345,14 @@ class AudioCaptureService : Service() {
             // Starting another take before that point would make the old thread write into
             // the new take's file or release the new take's AudioRecord.
             if (session != null) {
-                // The previous take publishes its own ending from releaseSession; this refusal is its own
-                // event, so the owner never waits for an ending no new session can produce (#115).
-                takeEvents.publishEnded(TERMINAL_REASON_NONE, START_FAILURE_OTHER, null, lastSilenceStatus, takePeakAmplitude, lastEffective?.label())
+                // The previous take publishes its own ending from releaseSession, under ITS id; this refusal
+                // is the REQUESTED take's own event, so the owner never waits for an ending no new session
+                // can produce (#115).
+                publishStartRefused(takeId, START_FAILURE_OTHER)
                 return false
             }
             lastStartFailure = START_FAILURE_NONE
-            takeEvents.resetTicks()
+            takeEvents.beginTake(takeId)
 
             // Route ownership exists BEFORE the session, so every failure path below can release it.
             val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
@@ -360,7 +367,7 @@ class AudioCaptureService : Service() {
                 routeHold.release()
                 DebugLogger.error(TAG, "No input device at all; refusing to start")
                 stopSelf()
-                publishStartRefused()
+                publishStartRefused(takeId, lastStartFailure)
                 return false
             }
 
@@ -383,7 +390,7 @@ class AudioCaptureService : Service() {
                 lastStartFailure = START_FAILURE_OTHER
                 routeHold.release()
                 stopSelf()
-                publishStartRefused()
+                publishStartRefused(takeId, lastStartFailure)
                 return false
             }
 
@@ -506,7 +513,7 @@ class AudioCaptureService : Service() {
                     stopSelf()
                     DebugLogger.error(TAG, "Failed to start capture thread", e)
                     lastStartFailure = START_FAILURE_OTHER
-                    publishStartRefused()
+                    publishStartRefused(takeId, lastStartFailure)
                     return false
                 }
                 newSession.picture.start(stillLive = { session === newSession && !newSession.stopRequested })
@@ -527,11 +534,11 @@ class AudioCaptureService : Service() {
                 return thread.isAlive && session === newSession && isRecording.get()
             } catch (e: SecurityException) {
                 DebugLogger.error(TAG, "RECORD_AUDIO permission not granted", e)
-                failSetup(threadStarted, record, output, routeHold)
+                failSetup(threadStarted, record, output, routeHold, takeId)
                 return false
             } catch (e: Exception) {
                 DebugLogger.error(TAG, "Failed to start recording", e)
-                failSetup(threadStarted, record, output, routeHold)
+                failSetup(threadStarted, record, output, routeHold, takeId)
                 return false
             }
         }
@@ -632,10 +639,12 @@ class AudioCaptureService : Service() {
 
     /**
      * A start refused before any capture began: the owner registered for the take's events and would
-     * otherwise wait for an ending no session can produce (#115). Carries the failure code and no path.
+     * otherwise wait for an ending no session can produce (#115). Carries the REQUESTED take's id, the
+     * failure code, no path, and nothing of the previous take: a disabled silence status, a zero peak and
+     * no device label (review round 1, F6).
      */
-    private fun publishStartRefused() {
-        takeEvents.publishEnded(TERMINAL_REASON_NONE, lastStartFailure, null, lastSilenceStatus, takePeakAmplitude, lastEffective?.label())
+    private fun publishStartRefused(takeId: String, failure: Int) {
+        takeEvents.publishEnded(takeId, TERMINAL_REASON_NONE, failure, null, SILENCE_STATUS_DISABLED, 0f, null)
     }
 
     /**
@@ -645,7 +654,7 @@ class AudioCaptureService : Service() {
      * error is claimed on the session and the recorder signalled, and `releaseSession` alone cleans up
      * and publishes (#115 review, round 4). Under `sessionLock` in both cases (the caller holds it).
      */
-    private fun failSetup(threadStarted: Boolean, record: AudioRecord?, output: java.io.FileOutputStream?, routeHold: RouteHold) {
+    private fun failSetup(threadStarted: Boolean, record: AudioRecord?, output: java.io.FileOutputStream?, routeHold: RouteHold, takeId: String) {
         lastStartFailure = START_FAILURE_OTHER
         val active = session
         if (threadStarted && active != null) {
@@ -662,7 +671,7 @@ class AudioCaptureService : Service() {
         routeHold.release()
         closeResources(record, output)
         stopSelf()
-        publishStartRefused()
+        publishStartRefused(takeId, lastStartFailure)
     }
 
     /**
@@ -771,6 +780,7 @@ class AudioCaptureService : Service() {
         // LAST, once per take, after every close and the service-lifetime work: the owner acts on this
         // event and nothing about the take changes after it (#115).
         takeEvents.publishEnded(
+            active.takeId,
             terminalReason,
             lastStartFailure,
             active.file.absolutePath,
@@ -848,8 +858,11 @@ class AudioCaptureService : Service() {
         // After the join: the capture thread's cleanup removed its listener; nothing else posts here.
         routeThread.quitSafely()
         // After the join too: a take that ended above published its ending through this worker, which
-        // delivers what is queued and then leaves (#115). Never joined.
+        // delivers what is queued and then leaves (#115). Never joined. Both slots cleared here as well:
+        // a destroyed service pushes nothing.
         takeEvents.close()
+        spectrumListener.set(null)
+        takeListener.set(null)
         super.onDestroy()
     }
 }

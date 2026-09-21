@@ -55,6 +55,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -222,6 +224,16 @@ internal class DictationSessionCoordinator(
     private val silenceBoundArmed = AtomicBoolean(false)
     private val silenceBound = Runnable { onCaptureSilent() }
     private val liveDeadline = Runnable { onLiveDeadline() }
+    /**
+     * Every synchronous call INTO the capture process runs here, one at a time, in the order issued, and
+     * never on the main thread (#115 review round 1, F1): a call into a process that has stopped answering
+     * has no timeout, and on main it would park the very thread the silence bound fires on. One lane, not
+     * the shared scope, so a stop can never overtake the start it belongs to. A lane parked in a wedged
+     * process stays parked; the instance ends through the bound and the next take has its own lane.
+     */
+    private val captureCommands: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "CaptureCommands").apply { isDaemon = true }
+    }
     @Volatile private var sessionPreferences = SessionPreferences()
     @Volatile private var silenceNoticeShown = false
     /** The take proceeded on earbuds that sent nothing; said once, before any other microphone line. */
@@ -486,55 +498,80 @@ internal class DictationSessionCoordinator(
             // covered. The take is STARTING until the capture process publishes live: the lips spin, no
             // pill, no timer, nothing written.
             armSilenceBound()
-            pipeline.capture?.listenForTake(takeListener)
             host.postToMainDelayed(LIVE_WAIT_BOUND_MS, liveDeadline)
-            val started = runCatching {
-                // The frozen snapshot, never the live source: a settings emission after the take's answer
-                // belongs to the next take (#193).
-                pipeline.capture?.startCaptureForTake(
-                    sessionPreferences.autoStopOnSilence,
-                    sessionPreferences.silencePauseSeconds,
-                    sessionPreferences.inputDevicePick,
-                    sessionPreferences.keepEarbudsReady,
-                    takeId,
-                )
-            }.getOrNull()
-            captureStarted = started == true
-            if (started != true) {
-                // Every refused start publishes its own ending with the failure code (the #115 plan's
-                // table, one publisher per exit), and a binder that threw ends the take through its
-                // ServiceConnection or the silence bound. Nothing is read here.
-                log.warn("Capture start refused; the ending event carries why")
+            // The frozen snapshot, never the live source: a settings emission after the take's answer
+            // belongs to the next take (#193).
+            val preferences = sessionPreferences
+            val id = takeId
+            captureStarted = commandCapture("start") { capture ->
+                capture.listenForTake(takeListener)
+                val started = try {
+                    capture.startCaptureForTake(
+                        preferences.autoStopOnSilence,
+                        preferences.silencePauseSeconds,
+                        preferences.inputDevicePick,
+                        preferences.keepEarbudsReady,
+                        id,
+                    )
+                } catch (error: Exception) {
+                    // A binder that threw: the process is gone or broken. Its ServiceConnection or the
+                    // silence bound would end the take too; this is the same ending, sooner.
+                    log.error("Failed to start recording", error)
+                    host.postToMain { showError(TerminalReason.START_EXCEPTION) }
+                    return@commandCapture
+                }
+                if (!started) {
+                    // Every refused start publishes its own ending with the failure code (the #115 plan's
+                    // table, one publisher per exit). Nothing is read here.
+                    log.warn("Capture start refused; the ending event carries why")
+                }
             }
         } catch (error: Exception) {
             if (captureStarted) {
-                val capture = pipeline.capture
-                scope.launch {
-                    runCatching { capture?.stopCapture() }
-                    pipeline.stopAudioService()
-                }
+                commandCapture("stop after a failed start") { it.stopCapture() }
+                pipeline.stopAudioService()
             }
             log.error("Failed to start recording", error)
             showError(TerminalReason.START_EXCEPTION)
         }
     }
 
-    /** The take's events, each posted to the main thread and handled there in delivery order (#115). */
+    /**
+     * Issue one call into the capture process on [captureCommands]; returns whether it was issued (the
+     * binding is present and the lane accepts work). The block's own failure is logged and costs nothing
+     * else: the take's ending comes from the process's events or from the silence bound, never from here.
+     */
+    private fun commandCapture(what: String, block: (CaptureLink) -> Unit): Boolean {
+        val capture = pipeline.capture ?: return false
+        return runCatching {
+            captureCommands.execute {
+                runCatching { block(capture) }.onFailure { log.warn("Capture command failed ($what): ${it.javaClass.simpleName}") }
+            }
+        }.isSuccess
+    }
+
+    /**
+     * The take's events, each posted to the main thread and handled there in delivery order (#115). An
+     * event from another take (the previous take's ending, queued in the service-scoped publisher before
+     * this owner registered) is discarded before it can re-arm the bound or touch any state.
+     */
     private val takeListener = object : TakeListener {
-        override fun onLive(forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) {
-            host.postToMain { rearmSilenceBound(); publishLive(forced, routeKind, routeReason, liveAfterMs) }
+        private fun ours(eventTakeId: String): Boolean = eventTakeId == takeId
+
+        override fun onLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) {
+            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); publishLive(forced, routeKind, routeReason, liveAfterMs) } }
         }
 
-        override fun onTick(elapsedMs: Long) {
-            host.postToMain { rearmSilenceBound(); onTakeTick(elapsedMs) }
+        override fun onTick(takeId: String, elapsedMs: Long) {
+            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); onTakeTick(elapsedMs) } }
         }
 
-        override fun onSilenceStatus(status: Int) {
-            host.postToMain { rearmSilenceBound(); publishSilenceNoticeIfNeeded(status) }
+        override fun onSilenceStatus(takeId: String, status: Int) {
+            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); publishSilenceNoticeIfNeeded(status) } }
         }
 
         override fun onEnded(ending: TakeEnding) {
-            host.postToMain { rearmSilenceBound(); onTakeEnded(ending) }
+            host.postToMain { if (ours(ending.takeId)) { rearmSilenceBound(); onTakeEnded(ending) } }
         }
     }
 
@@ -597,8 +634,7 @@ internal class DictationSessionCoordinator(
         if (state.get() != SessionState.STARTING) return
         if (!failWhileStarting(TerminalReason.LIVE_WAIT_DEADLINE)) return
         log.error("The route never went live within $LIVE_WAIT_BOUND_MS ms")
-        val capture = pipeline.capture
-        scope.launch { runCatching { capture?.stopCapture() } }
+        commandCapture("stop at the live deadline") { it.stopCapture() }
     }
 
     /** Main thread. A heartbeat: the timer while RECORDING; liveness in every state. */
@@ -702,8 +738,7 @@ internal class DictationSessionCoordinator(
         check(host.onMainThread()) { "publishLive runs on the main thread" }
         synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.RECORDING)) {
-                val capture = pipeline.capture
-                scope.launch { runCatching { capture?.stopCapture() } }
+                commandCapture("stop a take that went live after its ending") { it.stopCapture() }
                 return
             }
             host.cancelMainDelayed(liveDeadline)
@@ -780,10 +815,12 @@ internal class DictationSessionCoordinator(
      * Failing to register costs the picture only: the take carries on.
      */
     private fun listenForPicture() {
+        // The serial is read HERE, on main, right after show() stamped it; only the binder call moves to
+        // the lane (#115 review round 1, F1).
         val takeSerial = surface.currentTakeSerial()
-        runCatching {
-            pipeline.capture?.listenForSpectrum { bands -> surface.updateBands(takeSerial, bands) }
-        }.onFailure { log.warn("Live picture unavailable for this take: ${it.message}") }
+        commandCapture("listen for the picture") { capture ->
+            capture.listenForSpectrum { bands -> surface.updateBands(takeSerial, bands) }
+        }
     }
 
     /**
@@ -869,8 +906,7 @@ internal class DictationSessionCoordinator(
      */
     private fun stopAndTranscribe() {
         if (!enterProcessing()) return
-        val capture = pipeline.capture
-        scope.launch { runCatching { capture?.stopCapture() } }
+        commandCapture("stop") { it.stopCapture() }
     }
 
     /** The one RECORDING → PROCESSING transition, under [publishLock] (Codex review 3, 2026-09-18). */
@@ -1432,16 +1468,21 @@ internal class DictationSessionCoordinator(
         }
         pendingCancelReason = cancelled
         pendingCancel = cancel
-        scope.launch { runCatching { service.stopCapture() } }
+        commandCapture("stop for a cancel") { it.stopCapture() }
     }
 
     /**
      * The take is over: let the capture service keep the earbuds warm if it can (it then owns its own
-     * lifetime and the unbind must not stop it), otherwise stop it as before.
+     * lifetime and the unbind must not stop it), otherwise stop it as before. Issued on the lane and never
+     * awaited (#115 review round 1, F3): a process that answered its ending and then wedged must not hold
+     * the transcription; a call that fails or is never issued stops the service by intent.
      */
     private fun finishTakeOrStop() {
-        val held = runCatching { pipeline.capture?.finishTake() == true }.getOrDefault(false)
-        if (!held) pipeline.stopAudioService()
+        val issued = commandCapture("finishTake") { capture ->
+            val held = runCatching { capture.finishTake() }.getOrDefault(false)
+            if (!held) pipeline.stopAudioService()
+        }
+        if (!issued) pipeline.stopAudioService()
     }
 
     /**
@@ -1661,6 +1702,9 @@ internal class DictationSessionCoordinator(
             }
             seen
         }
+        // Both delayed callbacks go now, on main, before any blocking cleanup: a bound firing into a
+        // destroyed owner would act on a Service that is gone (#115 review round 1, F4).
+        disarmSilenceBound()
         cancelOpenPolishRequest()
         val sessionWasOpen = destroyedState == SessionState.STARTING ||
             destroyedState == SessionState.RECORDING ||
@@ -1717,6 +1761,8 @@ internal class DictationSessionCoordinator(
             cancelOpenPolishRequest()
             pipeline.unbind()
         }
+        // No further command is accepted; a command already running finishes on its own thread.
+        captureCommands.shutdown()
     }
 }
 

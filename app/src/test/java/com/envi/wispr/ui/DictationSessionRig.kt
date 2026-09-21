@@ -141,6 +141,7 @@ internal class DictationSessionRig {
 
     fun close() {
         mainExecutor.shutdownNow()
+        capture.close()
         capture.audioFile?.delete()
     }
 
@@ -301,10 +302,16 @@ internal class DictationSessionRig {
      * The capture process as the owner sees it (#115): three commands in, the take's events out. Like the
      * audio process it PUSHES: a successful start publishes live (unless [liveStateAfterStart] holds it
      * WAITING), a stop or a cancel publishes the ending with the closed file, and a test can end the take on
-     * its own or go silent. Every push runs on its own thread, as a binder thread would.
-     * `startCaptureForTake` writes a small PCM file for the stop path to measure.
+     * its own or go silent. Every push runs on ONE thread in the order pushed, as the audio process's one
+     * publisher worker delivers them (review round 1, F7). `startCaptureForTake` writes a small PCM file
+     * for the stop path to measure. Every event carries the id the start was given; [endOnItsOwn] can
+     * push another take's ending, which the owner must discard.
      */
     inner class FakeCapture : CaptureLink {
+        private val binderThread = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "fake-audio-binder") }
+        /** The id the owner passed to the last start; the fake's events carry it. */
+        @Volatile var currentTakeId = ""
+        fun close() = binderThread.shutdownNow()
         @Volatile var startResult = true
         @Volatile var startFailure = AudioCaptureService.START_FAILURE_NONE
         @Volatile var liveStateAfterStart = AudioCaptureService.LIVE_READY
@@ -334,21 +341,31 @@ internal class DictationSessionRig {
 
         /** The settings each start call carried, as one literal per call (#193). */
         val startArguments = CopyOnWriteArrayList<String>()
+        /** The thread each command arrived on; the owner's contract is one lane, never main (#115). */
+        val commandThreads = CopyOnWriteArrayList<String>()
+
+        /** Live, pushed by hand for a take that was held WAITING. */
+        fun pushLive(takeId: String) {
+            push { it.onLive(takeId, false, 0, 0, 120L); it.onTick(takeId, 0L) }
+        }
+
         override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean {
             events += "start"
+            commandThreads += Thread.currentThread().name
+            currentTakeId = takeId
             startArguments += "start(autoStop=$autoStopOnSilence, pause=$pauseSeconds)"
             if (!startResult) {
                 started.countDown()
                 // A refused start publishes its own ending with the failure code and no file (#115).
-                push { it.onEnded(TakeEnding(AudioCaptureService.TERMINAL_REASON_NONE, startFailure, null, AudioCaptureService.SILENCE_STATUS_DISABLED, 0f, "")) }
+                push { it.onEnded(TakeEnding(takeId, AudioCaptureService.TERMINAL_REASON_NONE, startFailure, null, AudioCaptureService.SILENCE_STATUS_DISABLED, 0f, "")) }
                 return false
             }
             audioFile = File.createTempFile("take", ".pcm").apply { writeBytes(ByteArray(32_000)) }
             capturing = true
             started.countDown()
             when (liveStateAfterStart) {
-                AudioCaptureService.LIVE_READY -> push { it.onLive(false, 0, 0, 120L); it.onTick(0L) }
-                AudioCaptureService.LIVE_FORCED -> push { it.onLive(true, 0, 0, 120L); it.onTick(0L) }
+                AudioCaptureService.LIVE_READY -> push { it.onLive(takeId, false, 0, 0, 120L); it.onTick(takeId, 0L) }
+                AudioCaptureService.LIVE_FORCED -> push { it.onLive(takeId, true, 0, 0, 120L); it.onTick(takeId, 0L) }
                 else -> Unit
             }
             return true
@@ -356,6 +373,7 @@ internal class DictationSessionRig {
 
         override fun stopCapture() {
             events += "stop"
+            commandThreads += Thread.currentThread().name
             timeline += "capture-stop"
             capturing = false
             stopRequested.countDown()
@@ -364,37 +382,49 @@ internal class DictationSessionRig {
 
         override fun finishTake(): Boolean {
             events += "finishTake"
+            commandThreads += Thread.currentThread().name
             return false
         }
 
-        /** The capture loop ended the take itself: silence, the cap, an error, or one before live. */
-        fun endOnItsOwn(reason: Int) {
+        /**
+         * The capture loop ended the take itself: silence, the cap, an error, or one before live. With
+         * [takeId] given, the ending belongs to ANOTHER take (the previous one, still queued in the
+         * service's publisher when this owner registered) and consumes none of this take's one ending.
+         */
+        fun endOnItsOwn(reason: Int, takeId: String = currentTakeId) {
+            if (takeId != currentTakeId) {
+                push { it.onEnded(TakeEnding(takeId, reason, startFailure, "/tmp/previous-take.pcm", AudioCaptureService.SILENCE_STATUS_READY, 0.9f, "Earbuds")) }
+                return
+            }
             capturing = false
             publishEnding(reason)
         }
 
         /** A heartbeat from the capture loop, as the audio process sends one each second. */
         fun tick(elapsedMs: Long) {
-            push { it.onTick(elapsedMs) }
+            val takeId = currentTakeId
+            push { it.onTick(takeId, elapsedMs) }
         }
 
         /** The silence detector's status changed. */
         fun silenceStatus(status: Int) {
-            push { it.onSilenceStatus(status) }
+            val takeId = currentTakeId
+            push { it.onSilenceStatus(takeId, status) }
         }
 
         private fun publishEnding(reason: Int) {
             if (!ended.compareAndSet(false, true)) return
+            val takeId = currentTakeId
             push {
                 endingGate?.await(10, TimeUnit.SECONDS)
-                it.onEnded(TakeEnding(reason, startFailure, audioFile?.path, AudioCaptureService.SILENCE_STATUS_DISABLED, peak, "Phone microphone"))
+                it.onEnded(TakeEnding(takeId, reason, startFailure, audioFile?.path, AudioCaptureService.SILENCE_STATUS_DISABLED, peak, "Phone microphone"))
             }
         }
 
         private fun push(event: (TakeListener) -> Unit) {
             if (silent) return
             val target = takeListener ?: return
-            Thread({ event(target) }, "fake-audio-binder").start()
+            binderThread.execute { event(target) }
         }
 
         /** The listener the owner registered, so a test can push a picture through it as the audio process would. */
@@ -408,12 +438,14 @@ internal class DictationSessionRig {
         }
         override fun listenForSpectrum(listener: SpectrumListener) {
             spectrumListener = listener
+            commandThreads += Thread.currentThread().name
             events += "listen"
             timeline += "listen"
             listening.countDown()
         }
         override fun listenForTake(listener: TakeListener) {
             takeListener = listener
+            commandThreads += Thread.currentThread().name
             events += "listenForTake"
         }
     }

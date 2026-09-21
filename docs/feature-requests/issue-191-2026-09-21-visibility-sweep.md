@@ -1,7 +1,7 @@
 # Issue #191 — App-only code is public and new states can silently take default branches — 2026-09-21
 
 GitHub issue: `#191`. Tier: SMALL by the issue (REF-08, "-20 lines net"); the diff touches many files but moves
-no logic, no process, no package and no AIDL. Status: DRAFT after the coverage round (A1, B1, B2, C1 to C5, D1 to D3, E1, E2, F1, F2, G1 folded in); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G1.2, G2.1, G2.2, G3.1, G4.1 to G4.6 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 to G1.5, G2.1); the second round of the same class, stale prose beside an enumeration, so every restated count and member list in prose now points at the one table; round 3 PROCEED-WITH-REVISIONS on a new axis (G2.1, the check's rule A binds name to path and reads scope by brace depth); round 4 PROCEED-WITH-REVISIONS on the scanner (G1.1, string templates nest); round 5 PROCEED-WITH-REVISIONS (G1.1, escapes), the third finding on the scanner axis, so the scanner is now specified from the Kotlin lexical grammar as a closed list with one fixture per state; round 6 next.
+no logic, no process, no package and no AIDL. Status: APPROVED (coverage round; grounded G1 to G6, PROCEED-AS-PLANNED 2026-09-21; Gate 2 under the founder's standing approval of technical decisions, phone excluded by his morning instruction).
 
 Consolidation: this plan is one document; §2.5 carries the measured populations once and §§3 to 11 point back at it.
 

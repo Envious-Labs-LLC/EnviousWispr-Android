@@ -12,6 +12,11 @@ import com.envi.wispr.polish.PolishPolicy
  * Stubs, which extend `android.os.Binder` and cannot be constructed off the phone.
  */
 
+/** One picture of the microphone, as `IAudioSpectrumListener.onSpectrum` delivers it (#187). */
+internal fun interface SpectrumListener {
+    fun onSpectrum(bands: FloatArray)
+}
+
 /** `IAudioCaptureService`, the members the owner uses. */
 internal interface CaptureLink {
     fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean
@@ -27,7 +32,13 @@ internal interface CaptureLink {
     fun inputRouteReason(): Int
     fun liveAfterMs(): Long
     fun terminalReason(): Int
-    fun spectrumBands(): FloatArray
+    /**
+     * Receive the recorder's picture as the audio process publishes it (#187): the production link
+     * builds the binder Stub and registers it; a later call replaces the earlier registration.
+     */
+    fun listenForSpectrum(listener: SpectrumListener)
+    /** Unregister the Stub `listenForSpectrum` registered, if any. Idempotent. */
+    fun stopListeningForSpectrum()
     fun effectiveInputDevice(): String?
     fun takePeakAmplitude(): Float
     fun finishTake(): Boolean

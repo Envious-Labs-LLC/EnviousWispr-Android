@@ -1,7 +1,7 @@
 # Issue #193 — A settings or vocabulary read failure prevents recording instead of falling back — 2026-09-21
 
 GitHub issue: `#193`. Tier: MEDIUM (a service's start path, new runtime behaviour; `workflow-process.md`
-RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G2.1, G2.2, G4.1, G5.1 to G5.3 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the start carries the values; G3.1 one deadline; G3.2 the reader is never written by the bound); round 3 next.
+RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 PROCEED-WITH-REVISIONS (G1.1, G2.1, G2.2, G4.1, G5.1 to G5.3 folded in); round 2 PROCEED-WITH-REVISIONS (G1.1 the start carries the values; G3.1 one deadline; G3.2 the reader is never written by the bound); round 3 PROCEED-WITH-REVISIONS (G2.1 one atomic reader snapshot holds outcome and values, `Fresh → Failed` allowed; G2.2 outcome and values from one atomic read); round 4 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -173,25 +173,29 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
    `Fresh`, `Failed(val reason: String)` (the reason is a content-free token: `exception:<SimpleName>` or
    `timed_out`; never a message, `#194` territory). Two fields, `settingsRead` (proposed) and `termsRead` (proposed),
    `@Volatile`, start `Pending`.
-2. **The collectors:** on first emission set `Fresh` and complete the deferred (as today); in the catch set
-   `Failed(exception:<name>)` and complete the deferred (today's catch only logs). The fields keep the last
-   good values; a first-run failure leaves the constructor defaults (`CleanupOptions()`, empty terms,
-   `clipboardPolicy = null`, auto-stop off, `InputDevicePick.AUTO`, tips on, earbuds hold on).
-   A reader whose flow COMPLETES before its first emission (coverage B1) answers `Failed(completed_without_value)`
-   at once from the collector's normal exit, never staying `Pending` until the bound.
-3. **`awaitAnswers(boundMs)` (proposed) replaces `awaitReady`:** each reader's answer is a
-   `CompletableDeferred<PreferenceRead>` completed EXACTLY ONCE by its collector, after the emitted fields are
-   written: `Fresh` on the first emission, `Failed(exception:<name>)` from the catch,
-   `Failed(completed_without_value)` from a normal exit with no emission. The bound never writes the reader:
-   ONE `withTimeoutOrNull(boundMs)` encloses BOTH waits under a single 2 000 ms deadline (round G3.1); after
-   it, only a reader still unresolved receives the caller-local `Failed(timed_out)`, and the source's
-   deferred stays incomplete and may later complete `Fresh` for a later take (round G3.2). A race between
-   the deadline and a first emission has one winner per take with no torn state (round G1.1). Returns a
-   `PreferenceStart` (proposed) that CARRIES THE VALUES, not only the outcomes: `settings: PreferenceRead`,
-   `terms: PreferenceRead`, plus the cleanup options, the nullable clipboard policy, the four capture
-   fields, the tips flag and the terms list, all read from the source's fields inside `awaitAnswers`
-   immediately after the wait, before any further suspension (round G2, G1.1). It never returns "not
-   ready".
+2. **One atomic reader snapshot per reader** (round G3, G2.1): `ReaderSnapshot` (proposed), an immutable
+   value holding the outcome (`PreferenceRead`) AND that reader's values (settings: cleanup options, the
+   nullable clipboard policy, the four capture fields, the tips flag; terms: the term list), kept in an
+   `AtomicReference`. The collector replaces it whole on every emission (`Fresh` + the new values) and on
+   failure (`Failed(exception:<name>)` + the LAST values, never the defaults), so a reader may go
+   `Fresh → Failed` without losing its last successful values, which is what §7's "failure after Fresh"
+   row and `aFailureAfterFreshUsesLastSuccessfulSnapshot` need. A first-run failure carries the constructor
+   defaults (`CleanupOptions()`, empty terms, `clipboardPolicy = null`, auto-stop off, `InputDevicePick.AUTO`,
+   tips on, earbuds hold on). A reader whose flow COMPLETES before its first emission (coverage B1) becomes
+   `Failed(completed_without_value)` at once from the collector's normal exit. The eight `@Volatile` fields
+   become reads of the current snapshot (the notification's live `clipboardPolicy` read stays, §3.7).
+3. **`awaitAnswers(boundMs)` (proposed) replaces `awaitReady`:** each reader's `CompletableDeferred<Unit>`
+   signals only that a FIRST answer exists (completed once, by the collector, after the snapshot is
+   replaced); it carries no value. ONE `withTimeoutOrNull(boundMs)` encloses both waits under a single
+   2 000 ms deadline (round G3.1) and never writes a reader (round G3.2). After the wait, `awaitAnswers`
+   makes ONE atomic read of each reader's snapshot and builds `PreferenceStart` (proposed) from those two
+   reads alone: outcome and values always come from the same snapshot, so there is no torn state (round G3,
+   G2.2). A snapshot still `Pending` at that read yields the caller-local `Failed(timed_out)` with the
+   snapshot's (default or last) values; a first emission that lands between the deadline and the read is a
+   `Fresh` answer for this take, consistent with its own values (a deviation from the round-3 wording
+   "a timeout retains pre-emission values": the value read and the outcome read are one read, which is the
+   property the finding protects; excluding a real late answer would need a second read). Later emissions
+   replace the snapshot for later takes only. It never returns "not ready".
 4. **`beginSession`:** `awaitAnswers` under `SETTINGS_ANSWER_BOUND_MS` (proposed) (2 000 ms,
    replacing `SETTINGS_WAIT_MS`); if either is `Failed`, `takeFacts.settingsFallback` (proposed) = a token
    naming which (`settings`, `terms`, `both`) and the reasons, one `log.warn`, one breadcrumb
@@ -272,8 +276,9 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
 `PreferenceRead` values at the moment of the wait, never re-read later.
 
 ## 10. File-by-file changes
-- `app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt`: `PreferenceRead`, `PreferenceStart`,
-  the two answer deferreds, the catch and the normal exit complete with `Failed`, `awaitAnswers`;
+- `app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt`: `PreferenceRead`, `ReaderSnapshot`,
+  `PreferenceStart`, two `AtomicReference` snapshots replaced whole by the collectors, two first-answer
+  deferreds, `awaitAnswers` (one deadline, one atomic read per reader);
   `SessionPreferences` gains the five capture and notice fields and `freeze(start, matcher, policy)` writes
   them from the start.
 - `app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt`: `beginSession` wait and facts;

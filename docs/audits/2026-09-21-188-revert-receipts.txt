@@ -1,0 +1,31 @@
+# #188 revert receipts against b945808, 2026-09-21T09:39:35Z
+# Each edit was applied once, the class run with --rerun-tasks, the red row recorded, the file restored with git checkout.
+
+R1 add a log to DetectorFeed.offer: app/src/main/java/com/envi/wispr/audio/DetectorFeed.kt
+  test: com.envi.wispr.audio.CaptureThreadPathTest.theCaptureThreadOffersAndNeverWaits -> RED
+  message: java.lang.AssertionError: DetectorFeed.offer must not contain DebugLogger
+
+R2 drop picture.close() from releaseSession: app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt
+  test: com.envi.wispr.audio.AudioServiceShapeTest.everyLimbIsClosedWhereEveryEndingReaches -> RED
+  message: java.lang.AssertionError
+
+R3 remove the close guard from PicturePublisher: app/src/main/java/com/envi/wispr/audio/PicturePublisher.kt
+  test: com.envi.wispr.audio.AudioLimbCloseTest.closingThePictureTwiceInterruptsTheAnalyserOnce -> RED
+  message: java.lang.AssertionError: the analyser is interrupted exactly once expected:<1> but was:<2>
+
+R4 move markLive back into the service: app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt
+  test: com.envi.wispr.audio.AudioServiceShapeTest.theServiceKeepsOnlyTheSessionAndTheBinder -> RED
+  message: java.lang.AssertionError: the service must not declare markLive any more
+
+R5 reword one log template in WarmHoldOwner: app/src/main/java/com/envi/wispr/audio/WarmHoldOwner.kt
+  test: com.envi.wispr.audio.AudioServiceShapeTest.everyLogTemplateAndThreadNameSurvivesTheMove -> RED
+  message: java.lang.AssertionError: every template and thread name must survive the move, unchanged and exactly as often expected:<[error: Capture thread error, error: Fa
+
+R6 a full ring sets the flag without abandon(): app/src/main/java/com/envi/wispr/audio/DetectorFeed.kt
+  test: com.envi.wispr.audio.SilenceStopWiringTest.aFullRingGivesUpOnAutoStopRatherThanResumingAcrossAGap -> RED
+  message: java.lang.AssertionError: the flag the feeder reads, not a status it ignores
+
+R7 the hold's expiry is never removed: app/src/main/java/com/envi/wispr/audio/WarmHoldOwner.kt
+  test: com.envi.wispr.audio.AudioLimbCloseTest.closingTheWarmHoldTwiceEndsItOnce -> RED
+  message: java.lang.AssertionError: the expiry is removed once expected:<1> but was:<0>
+

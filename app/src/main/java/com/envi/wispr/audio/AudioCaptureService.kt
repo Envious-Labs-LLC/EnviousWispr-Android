@@ -89,38 +89,15 @@ class AudioCaptureService : Service() {
         val detector: DetectorFeed,
         /** The recorder's live picture for this take (#188). */
         val picture: PicturePublisher,
-        /** What actually captured this take, in order. Read over the binder; outlives the session. */
-        val effective: EffectiveDevice,
-        /** This take's route ownership. Released in [closeResources], before the session slot frees. */
-        val routeHold: RouteHold,
-        /** Capture thread offers reads; the route thread reads the state and runs the deadline. */
-        val gate: LiveGate,
-        /** The take asked for earbuds (a Bluetooth target); the phone may then only record if picked. */
-        val targetBluetooth: Boolean,
-        val phonePicked: Boolean,
-        /** The communication sink the take selected, for the one reset and for the hold. Null off Bluetooth. */
-        val sink: AudioDeviceInfo?,
+        /** This take's route: the request, the gate, the listener, the sink watch and the deadline (#188). */
+        val route: TakeRoute,
         /** The setting, frozen per take like the pick. */
         val keepEarbudsReady: Boolean,
         /** The owner's per-take UUID, request context only; empty for a legacy start. Forwarded to the detector. */
         val takeId: String,
     ) {
-        /** Set on the capture thread when the gate opens; the timer and the duration cap count from here. */
-        @Volatile var liveAtMs: Long = 0L
-
         /** True once the first admitted block is on disk: only then does the binder report READY or FORCED. */
         @Volatile var liveVisible: Boolean = false
-
-        /** The route thread's deadline message for this take, removed at every end. */
-        @Volatile var deadline: Runnable? = null
-
-        /**
-         * The earbuds this take asked for have been removed (their sink left the device list). Set on
-         * the route thread by [sinkWatch]; read on the capture thread. Once true the phone may record:
-         * the earbuds are disconnected, which is the one case the founder's rule allows.
-         */
-        @Volatile var sinkGone: Boolean = false
-        @Volatile var sinkWatch: AudioDeviceCallback? = null
 
         /** Capture thread writes; read over the binder and by the routing listener's log line. */
         @Volatile var bytesWritten: Long = 0L
@@ -153,8 +130,6 @@ class AudioCaptureService : Service() {
     /** Set first thing in `onDestroy`: no take that ends after this may start a hold (Codex review 1). */
     @Volatile private var destroyed = false
 
-    /** A warm hold's route on its way to the next take, with the identity the hold was keeping. */
-    private class HandedRoute(val route: RouteHold, val sinkType: Int, val sinkName: String)
     private var holdCommListener: AudioManager.OnCommunicationDeviceChangedListener? = null
     private var holdDeviceCallback: AudioDeviceCallback? = null
 
@@ -164,6 +139,11 @@ class AudioCaptureService : Service() {
      */
     private lateinit var routeThread: HandlerThread
     private lateinit var routeHandler: Handler
+    private val routeScheduler = object : RouteScheduler {
+        override fun post(runnable: Runnable) { routeHandler.post(runnable) }
+        override fun postDelayed(runnable: Runnable, delayMs: Long) { routeHandler.postDelayed(runnable, delayMs) }
+        override fun removeCallbacks(runnable: Runnable) { routeHandler.removeCallbacks(runnable) }
+    }
     private val isRecording = AtomicBoolean(false)
     @Volatile private var captureThread: Thread? = null
     @Volatile private var lastAudioFile: File? = null
@@ -239,7 +219,7 @@ class AudioCaptureService : Service() {
         override fun getLiveState(): Int {
             val active = this@AudioCaptureService.session ?: return LIVE_WAITING
             if (!active.liveVisible) return LIVE_WAITING
-            return when (active.gate.state) {
+            return when (active.route.gate.state) {
                 LiveGate.State.WAITING -> LIVE_WAITING
                 LiveGate.State.READY -> LIVE_READY
                 LiveGate.State.FORCED -> LIVE_FORCED
@@ -248,8 +228,8 @@ class AudioCaptureService : Service() {
 
         override fun getLiveAfterMs(): Long {
             val active = this@AudioCaptureService.session ?: return 0L
-            val live = active.liveAtMs
-            return if (live > 0L) live - active.startedAtMs else 0L
+            val live = active.route.liveAtMs
+            return if (live > 0L) live - active.route.startedAtMs else 0L
         }
 
         override fun finishTake(): Boolean = this@AudioCaptureService.finishTake()
@@ -288,7 +268,7 @@ class AudioCaptureService : Service() {
         override fun getElapsedMs(): Long {
             val active = this@AudioCaptureService.session
             // From LIVE, not from the recorder's start: the wait for the earbuds is not the user's time.
-            val live = active?.liveAtMs ?: 0L
+            val live = active?.route?.liveAtMs ?: 0L
             return if (this@AudioCaptureService.isRecording.get() && active != null && live > 0L) {
                 SystemClock.elapsedRealtime() - live
             } else 0L
@@ -350,11 +330,8 @@ class AudioCaptureService : Service() {
             // Route ownership exists BEFORE the session, so every failure path below can release it.
             val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
             // Filled in once the listener exists; the hold removes exactly this one and no other.
-            var routingListener: Pair<AudioRecord, AudioRouting.OnRoutingChangedListener>? = null
-            val routeHold = RouteHold(
-                clearCommunicationDevice = { audioManager.clearCommunicationDevice() },
-                removeListener = { routingListener?.let { (r, l) -> r.removeOnRoutingChangedListener(l) } },
-            )
+            val routingListener = AtomicReference<Pair<AudioRecord, AudioRouting.OnRoutingChangedListener>?>(null)
+            val routeHold = TakeRoute.newHold(audioManager, routingListener)
             // A warm hold hands its route to this take (the link stays up; V13: live at ~120 ms). Any hold
             // that does not match the resolved target is ended by resolveRoute before it sets anything.
             // The identity is read BEFORE the handover: handOver ends the hold, and the hold's end clears
@@ -364,7 +341,7 @@ class AudioCaptureService : Service() {
                 val name = heldSinkName
                 hold.handOver()?.let { HandedRoute(it, type, name) }
             }
-            val route = resolveRoute(audioManager, pick, routeHold, handedOver) ?: run {
+            val route = TakeRoute.resolve(audioManager, pick, routeHold, handedOver, TAG) ?: run {
                 lastStartFailure = START_FAILURE_NO_INPUT_DEVICE
                 routeHold.release()
                 DebugLogger.error(TAG, "No input device at all; refusing to start")
@@ -408,7 +385,19 @@ class AudioCaptureService : Service() {
                     throw IllegalStateException("AudioRecord failed to initialize")
                 }
                 val effective = EffectiveDevice(route.reason)
-                applyPreferredDevice(record, route, effective, routeHold)
+                val takeRoute = TakeRoute(
+                    hold = routeHold,
+                    resolved = route,
+                    effective = effective,
+                    gate = LiveGate(gated = route.needsBluetooth),
+                    phonePicked = pick is InputDevicePick.Device && InputRouteKind.of(pick.type) == InputRouteKind.PHONE,
+                    startedAtMs = SystemClock.elapsedRealtime(),
+                    listenerSlot = routingListener,
+                    scheduler = routeScheduler,
+                    unregisterDeviceCallback = { audioManager.unregisterAudioDeviceCallback(it) },
+                    tag = TAG,
+                )
+                takeRoute.applyPreferred(record)
 
                 // cacheDir is app-internal and shared by this package's processes. It is
                 // excluded from user backups and is less exposed than shared storage.
@@ -428,7 +417,7 @@ class AudioCaptureService : Service() {
                     record = record,
                     file = file,
                     output = output,
-                    startedAtMs = SystemClock.elapsedRealtime(),
+                    startedAtMs = takeRoute.startedAtMs,
                     // Allocated HERE, before the thread starts, and never inside the capture loop. The
                     // capture thread may not allocate: it must do nothing that can make it late.
                     readBuffer = ByteArray(PcmAudio.READ_CHUNK_BYTES),
@@ -440,16 +429,11 @@ class AudioCaptureService : Service() {
                         unbind = DetectorFeed.unbindingThrough(this),
                     ),
                     picture = PicturePublisher(spectrumListener, TAG),
-                    effective = effective,
-                    routeHold = routeHold,
-                    gate = LiveGate(gated = route.needsBluetooth),
-                    targetBluetooth = route.needsBluetooth,
-                    phonePicked = pick is InputDevicePick.Device && InputRouteKind.of(pick.type) == InputRouteKind.PHONE,
-                    sink = route.sink,
+                    route = takeRoute,
                     keepEarbudsReady = keepEarbudsReady,
                     takeId = takeId,
                 )
-                registerRoutingListener(record, newSession)?.let { routingListener = record to it }
+                takeRoute.registerListener(record, routeHandler) { newSession.bytesWritten }
                 session = newSession
                 lastEffective = effective
                 lastAudioFile = file
@@ -503,10 +487,18 @@ class AudioCaptureService : Service() {
                 }
                 newSession.picture.start(stillLive = { session === newSession && !newSession.stopRequested })
                 if (route.needsBluetooth) {
-                    watchSink(newSession)
-                    armDeadline(newSession)
+                    takeRoute.watchSink(audioManager, routeHandler)
+                    takeRoute.armDeadline(
+                        audioManager = audioManager,
+                        locked = { block -> synchronized(sessionLock) { block() } },
+                        stillWaiting = { session === newSession && isRecording.get() && takeRoute.gate.state == LiveGate.State.WAITING },
+                        onRefused = {
+                            lastStartFailure = START_FAILURE_EARBUDS
+                            endTakeLocked(newSession, TERMINAL_REASON_ERROR)
+                        },
+                    )
                 } else {
-                    markLive(newSession)
+                    takeRoute.markLive()
                 }
                 return thread.isAlive && session === newSession && isRecording.get()
             } catch (e: SecurityException) {
@@ -529,245 +521,12 @@ class AudioCaptureService : Service() {
         }
     }
 
-    /** What `startRecording` needs to know about the chosen route, resolved under `sessionLock`. */
-    private class ResolvedRoute(
-        val target: InputDeviceCandidate,
-        val info: AudioDeviceInfo,
-        val reason: InputRouteReason,
-        val needsBluetooth: Boolean,
-        /** The communication sink selected for a Bluetooth target; null otherwise or when none was found. */
-        val sink: AudioDeviceInfo?,
-    )
-
-    /**
-     * Pick the device and, for a Bluetooth target, select the headset as the communication device: the
-     * one call that makes Android open the link for `VOICE_RECOGNITION` (measured 2026-09-16: the
-     * preferred device alone records silence; the communication device alone starts on the phone).
-     *
-     * A refusal on the Bluetooth path (no sink, `false`, a throw) does NOT re-resolve onto the phone: with
-     * earbuds connected the phone may only record when picked (founder rule 2026-09-18). The take keeps
-     * the earbud source with `LINK_REFUSED`, and the live gate's reset and notice speak for it. Returns
-     * null only when nothing at all can record.
-     *
-     * [handedOver] is a warm hold's route: when its sink is the one this take wants, the platform request
-     * is adopted untouched and no call is made; otherwise it is released here before anything is set.
-     */
-    private fun resolveRoute(
-        audioManager: AudioManager,
-        pick: InputDevicePick,
-        hold: RouteHold,
-        handedOver: HandedRoute?,
-    ): ResolvedRoute? {
-        val infos = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
-        val candidates = infos.map(InputDeviceCandidate::from)
-        val resolution = InputDeviceResolver.resolve(pick, candidates)
-        val target = resolution.target ?: run { handedOver?.route?.release(); return null }
-        var reason = resolution.reason
-        var sinkInfo: AudioDeviceInfo? = null
-
-        if (InputDeviceResolver.needsBluetoothRoute(target)) {
-            val opened = runCatching {
-                val available = audioManager.availableCommunicationDevices
-                val sink = InputDeviceResolver.communicationSinkFor(target, available.map(InputDeviceCandidate::from))
-                    ?: return@runCatching false
-                sinkInfo = available.first { it.id == sink.id }
-                val held = handedOver != null && handedOver.sinkType == sink.type && handedOver.sinkName == sink.name
-                if (held) {
-                    hold.adoptCommunicationFrom(handedOver!!.route)
-                    DebugLogger.log(TAG, "route adopt=${target.label} from the warm hold")
-                    true
-                } else {
-                    handedOver?.route?.release()
-                    audioManager.setCommunicationDevice(sinkInfo!!).also { if (it) hold.markCommunicationSet() }
-                }
-            }.getOrElse { e ->
-                DebugLogger.warn(TAG, "setCommunicationDevice threw: ${e.message}")
-                false
-            }
-            if (!opened) {
-                DebugLogger.warn(TAG, "Bluetooth link refused for ${target.label}; staying on the earbuds")
-                handedOver?.route?.release()
-                hold.releaseCommunicationDevice()
-                reason = InputRouteReason.LINK_REFUSED
-            }
-        } else {
-            handedOver?.route?.release()
-        }
-        val info = infos.firstOrNull { it.id == target.id } ?: return null
-        return ResolvedRoute(
-            target = target,
-            info = info,
-            reason = reason,
-            needsBluetooth = InputDeviceResolver.needsBluetoothRoute(target),
-            sink = sinkInfo,
-        )
-    }
-
-    /**
-     * Only a Bluetooth target, or any explicit pick, names a preferred device; Auto on wired, USB or the
-     * phone leaves today's behaviour untouched. A refusal is recorded and the take proceeds on whatever
-     * Android routes, reported truthfully by `routedDevice`, never by the target.
-     */
-    private fun applyPreferredDevice(record: AudioRecord, route: ResolvedRoute, effective: EffectiveDevice, hold: RouteHold) {
-        if (!route.needsBluetooth && route.reason != InputRouteReason.PICKED) return
-        val accepted = runCatching { record.setPreferredDevice(route.info) }.getOrDefault(false)
-        if (!accepted) {
-            DebugLogger.warn(TAG, "setPreferredDevice refused for ${route.target.label}")
-            effective.markReason(InputRouteReason.PREFERRED_REFUSED)
-            // The link is given back; listener ownership stays with the take so its route changes are recorded.
-            hold.releaseCommunicationDevice()
-        }
-    }
-
-    /**
-     * Registered on the route thread, removed by the hold. A callback checks the hold before writing so
-     * one already running when cleanup starts writes nothing; a callback for a dead session finds its
-     * own session object, never the live one.
-     */
-    private fun registerRoutingListener(record: AudioRecord, active: CaptureSession): AudioRouting.OnRoutingChangedListener? {
-        val listener = AudioRouting.OnRoutingChangedListener { router ->
-            if (active.routeHold.isReleased) return@OnRoutingChangedListener
-            val device = runCatching { router.routedDevice }.getOrNull() ?: return@OnRoutingChangedListener
-            active.effective.observe(device.type, device.productName?.toString().orEmpty())
-            DebugLogger.log(TAG, "route change=${active.effective.label()} at ${active.bytesWritten} bytes")
-        }
-        return runCatching {
-            record.addOnRoutingChangedListener(listener, routeHandler)
-        }.map {
-            active.routeHold.markListenerSet()
-            listener
-        }.onFailure { DebugLogger.warn(TAG, "Routing listener not registered: ${it.message}") }
-            .getOrNull()
-    }
-
-    /** Read the final route while the recorder is still active. Null preserves the history as it stands. */
-    private fun observeFinalRoute(active: CaptureSession) {
-        val device = runCatching { active.record.routedDevice }.getOrNull() ?: return
-        active.effective.observe(device.type, device.productName?.toString().orEmpty())
-    }
-
-    /**
-     * May a read on the OBSERVED route open the gate? An earbud target that Android is routing to the
-     * phone may not, unless the phone was picked or the earbuds have left: the founder's rule, applied
-     * to the observation and never to the request. A route not yet observed is not refused.
-     *
-     * The rule binds what this app SELECTS, and is enforced at the gate. A route Android moves by itself
-     * once the take is live (V7, a call taking the link) is recorded on the History card ("AirPods Pro 3,
-     * then Phone") and not fought: ending a take mid-sentence would lose the words, and capture must never
-     * fail (architecture: heart and limbs). Decided at Codex code review 5, 2026-09-18.
-     */
-    private fun routeAdmissible(active: CaptureSession): Boolean =
-        !active.targetBluetooth || active.phonePicked || active.sinkGone ||
-            active.effective.currentKind != InputRouteKind.PHONE
-
-    /**
-     * Watch the take's earbuds leave, on the route thread, so the gate can admit the phone once they
-     * are gone (V7: Android moves the route itself within 120 ms). Registered after the session exists,
-     * removed in [releaseSession].
-     */
-    private fun watchSink(active: CaptureSession) {
-        val sink = active.sink ?: return
-        val type = sink.type
-        val name = sink.productName?.toString().orEmpty()
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        val callback = object : AudioDeviceCallback() {
-            override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) {
-                if (removed.any { it.type == type && it.productName?.toString().orEmpty() == name }) {
-                    active.sinkGone = true
-                    DebugLogger.log(TAG, "route earbuds removed while ${active.gate.state}; the phone may record")
-                }
-            }
-        }
-        active.sinkWatch = callback
-        runCatching { audioManager.registerAudioDeviceCallback(callback, routeHandler) }
-            .onFailure { DebugLogger.warn(TAG, "sink watch not registered: ${it.message}") }
-        // Reconcile once: a removal between route resolution and this registration is not replayed by
-        // the callback (Codex review 5). The list is read AFTER registering, so nothing can fall between.
-        val stillOffered = runCatching {
-            audioManager.availableCommunicationDevices.any { it.type == type && it.productName?.toString().orEmpty() == name }
-        }.getOrDefault(true)
-        if (!stillOffered) {
-            active.sinkGone = true
-            DebugLogger.log(TAG, "route earbuds already gone at start; the phone may record")
-        }
-    }
-
-    /** Capture thread, on the read that opened the gate. */
-    private fun markLive(active: CaptureSession) {
-        active.liveAtMs = SystemClock.elapsedRealtime()
-        routeHandler.post {
-            active.deadline?.let { routeHandler.removeCallbacks(it) }
-            active.deadline = null
-            DebugLogger.log(
-                TAG,
-                "route live=${active.effective.label()} after ${active.liveAtMs - active.startedAtMs} ms " +
-                    "resets=${active.gate.resetsUsed} state=${active.gate.state}",
-            )
-        }
-    }
-
-    /**
-     * The live deadline runs on the route thread as a clock, so a blocked read cannot starve it. First
-     * miss: reset the communication device once, if the sink is still there. Second miss: proceed without
-     * sound on the earbuds (FORCED), or, when the observed route is the phone with earbuds connected,
-     * fail the take rather than record from the phone.
-     */
-    private fun armDeadline(active: CaptureSession) {
-        val runnable = object : Runnable {
-            override fun run() {
-                synchronized(sessionLock) {
-                    if (session !== active || !isRecording.get() || active.gate.state != LiveGate.State.WAITING) return
-                    when (active.gate.deadlinePassed()) {
-                        LiveGate.DeadlineAction.NONE -> return
-                        LiveGate.DeadlineAction.RESET -> {
-                            val reset = resetCommunicationDevice(active)
-                            DebugLogger.warn(TAG, "route reset=${active.effective.label()} performed=$reset after ${LiveGate.DEADLINE_MS} ms")
-                            active.deadline = this
-                            routeHandler.postDelayed(this, LiveGate.DEADLINE_MS)
-                        }
-                        LiveGate.DeadlineAction.FORCE -> {
-                            active.deadline = null
-                            if (routeAdmissible(active)) {
-                                active.gate.force()
-                                active.liveAtMs = SystemClock.elapsedRealtime()
-                                DebugLogger.warn(TAG, "route forced=${active.effective.label()} after ${active.liveAtMs - active.startedAtMs} ms")
-                            } else {
-                                lastStartFailure = START_FAILURE_EARBUDS
-                                DebugLogger.warn(TAG, "route refused=${active.effective.label()}: earbuds connected, phone would record; failing the take")
-                                endTakeLocked(active, TERMINAL_REASON_ERROR)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        active.deadline = runnable
-        routeHandler.postDelayed(runnable, LiveGate.DEADLINE_MS)
-    }
-
-    /** Route thread, under `sessionLock`. Clear and re-select the sink, only while it is still offered. */
-    private fun resetCommunicationDevice(active: CaptureSession): Boolean {
-        val sink = active.sink ?: return false
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        val stillThere = runCatching {
-            audioManager.availableCommunicationDevices.any { it.type == sink.type && it.productName?.toString() == sink.productName?.toString() }
-        }.getOrDefault(false)
-        if (!stillThere) return false
-        return runCatching {
-            audioManager.clearCommunicationDevice()
-            audioManager.setCommunicationDevice(sink).also { if (it) active.routeHold.markCommunicationSet() }
-        }.getOrElse { e ->
-            DebugLogger.warn(TAG, "communication device reset threw: ${e.message}")
-            false
-        }
-    }
-
     private fun captureLoop(active: CaptureSession) {
         val buffer = active.readBuffer
         try {
             while (isRecording.get() && session === active) {
                 // The cap counts from LIVE; the wait for the earbuds has its own bound in the session owner.
-                val live = active.liveAtMs
+                val live = active.route.liveAtMs
                 val elapsed = if (live > 0L) SystemClock.elapsedRealtime() - live else 0L
                 if (elapsed >= RecordingLimits.MAX_DURATION_MS) {
                     // The reason is the whole signal. The session owner reads it back through
@@ -801,9 +560,9 @@ class AudioCaptureService : Service() {
 
                 // Until the gate opens, a read feeds the gate and nothing else: not the file, not the
                 // detector, not the picture, not the level. The take's clock starts when the gate opens.
-                if (active.gate.state == LiveGate.State.WAITING) {
-                    val admissible = routeAdmissible(active)
-                    if (active.gate.offer(buffer, bytesRead, admissible)) markLive(active) else continue
+                if (active.route.gate.state == LiveGate.State.WAITING) {
+                    val admissible = active.route.admissible()
+                    if (active.route.gate.offer(buffer, bytesRead, admissible)) active.route.markLive() else continue
                 }
 
                 val position = active.bytesWritten
@@ -889,7 +648,7 @@ class AudioCaptureService : Service() {
         // routedDevice returns null once the recorder is inactive, so the final route is read HERE,
         // before stop(); a headset removed just before the stop is then in the record even when its
         // routing callback runs late. A null read preserves the history and proves nothing.
-        observeFinalRoute(active)
+        active.route.observeFinal(active.record)
         try {
             // stop() unblocks a pending read. Do not release here while the reader may
             // still be using the same AudioRecord instance.
@@ -920,14 +679,9 @@ class AudioCaptureService : Service() {
         var holding = false
         synchronized(sessionLock) {
             if (session !== active) return
-            active.deadline?.let { routeHandler.removeCallbacks(it) }
-            active.deadline = null
-            active.sinkWatch?.let { w ->
-                runCatching { (getSystemService(AUDIO_SERVICE) as AudioManager).unregisterAudioDeviceCallback(w) }
-            }
-            active.sinkWatch = null
+            active.route.stopWatching()
             // Capture-loop endings (cap, byte ceiling, error) reach here with the recorder still active.
-            observeFinalRoute(active)
+            active.route.observeFinal(active.record)
             // The one handoff point every ending reaches: a manual stop, the silence stop and both caps
             // may keep the earbuds warm; an error ending and teardown release everything.
             holding = holdEligible(active) && startWarmHold(active)
@@ -960,7 +714,7 @@ class AudioCaptureService : Service() {
      * communication ownership stays in the `RouteHold` the warm hold now carries.
      */
     private fun closeResources(active: CaptureSession, keepRoute: Boolean) {
-        if (keepRoute) active.routeHold.releaseListener() else active.routeHold.release()
+        active.route.close(keepRoute)
         closeResources(active.record, active.output)
     }
 
@@ -969,9 +723,9 @@ class AudioCaptureService : Service() {
     /** Under `sessionLock`. */
     private fun holdEligible(active: CaptureSession): Boolean {
         if (destroyed) return false
-        if (!active.keepEarbudsReady || !active.targetBluetooth || active.sink == null) return false
-        if (active.routeHold.isReleased) return false
-        if (active.effective.currentKind != InputRouteKind.BLUETOOTH) return false
+        if (!active.keepEarbudsReady || !active.route.targetBluetooth || active.route.sink == null) return false
+        if (active.route.hold.isReleased) return false
+        if (active.route.effective.currentKind != InputRouteKind.BLUETOOTH) return false
         // Exhaustive, no else: a new ending decides here whether it keeps the earbuds warm.
         return when (active.endingClaim.ending) {
             CaptureEnding.Manual, CaptureEnding.Silence, CaptureEnding.MaxDuration -> true
@@ -981,11 +735,11 @@ class AudioCaptureService : Service() {
 
     /** Under `sessionLock`. True when the hold is playing and now owns the route. */
     private fun startWarmHold(active: CaptureSession): Boolean {
-        val sink = active.sink ?: return false
+        val sink = active.route.sink ?: return false
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        val label = active.effective.label()
+        val label = active.route.effective.label()
         val hold = WarmHold(
-            route = active.routeHold,
+            route = active.route.hold,
             track = AudioTrackSilence(),
             onEnded = { reason -> onHoldEnded(reason, label) },
         )

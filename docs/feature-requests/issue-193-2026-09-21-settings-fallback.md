@@ -1,7 +1,7 @@
 # Issue #193 — A settings or vocabulary read failure prevents recording instead of falling back — 2026-09-21
 
 GitHub issue: `#193`. Tier: MEDIUM (a service's start path, new runtime behaviour; `workflow-process.md`
-RULE: tier-routing). Status: DRAFT for the coverage round.
+RULE: tier-routing). Status: DRAFT after the coverage round (B1, C1, D1, E1, E2, F1 folded in; G1 rejected with evidence); grounded round 1 next.
 
 Consolidation: this plan is one document; §2.5 carries the trace and the measured premises once and §§3 to 11 point back at it.
 
@@ -115,6 +115,11 @@ turned auto-copy off).
 (`:142-155`) reads the LIVE `clipboardPolicy` for the listening notification. The frozen `SessionPreferences`
 feeds cleanup, the matcher (`restoreTakeVocabulary`), the clipboard policy at insertion and the polish policy.
 
+**The polish policy reader already fails open** (coverage G1, rejected): `loadPolicy` is
+`ProviderConfigurationRepository.readPolicy` (`:247-248`), `runCatching { decodePolicy(readSnapshot()) }.getOrDefault(PolishPolicy.Off)`,
+and the `preferences.all` read runs inside the lambda, so `beginSession`'s `withContext(Dispatchers.IO) { loadPolicy() }`
+cannot throw from a store failure; it is outside this change and needs no reader state.
+
 **Consumers of `SETTINGS_UNAVAILABLE`** (closed world, `git grep`): `DictationSessionCoordinator.kt:365`
 (the only producer), `TakeNotices.kt:51`, `TerminalReason.kt:66`, `TelemetryChannels.kt:152,187` (two
 `when`s), tests `DictationSessionCoordinatorTest.kt:435`, `TakeNoticesTest.kt:33`, `TakeFactsTest.kt:26`.
@@ -172,6 +177,8 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
    `Failed(exception:<name>)` and complete the deferred (today's catch only logs). The fields keep the last
    good values; a first-run failure leaves the constructor defaults (`CleanupOptions()`, empty terms,
    `clipboardPolicy = null`, auto-stop off, `InputDevicePick.AUTO`, tips on, earbuds hold on).
+   A reader whose flow COMPLETES before its first emission (coverage B1) answers `Failed(completed_without_value)`
+   at once from the collector's normal exit, never staying `Pending` until the bound.
 3. **`awaitAnswers(boundMs)` (proposed) replaces `awaitReady`:** waits for both deferreds under the bound;
    on expiry marks each still-`Pending` reader `Failed(timed_out)`. Returns a `PreferenceStart` (proposed):
    `settings: PreferenceRead`, `terms: PreferenceRead`. It never returns "not ready".
@@ -183,7 +190,9 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
 5. **`SETTINGS_UNAVAILABLE` removed** from `TerminalReason`, `TakeNotices`, both `TelemetryChannels` sets,
    and the three tests that name it (the compiler finds the `when`s).
 6. **Telemetry:** `DictationTerminal` gains `settingsFallback: String?` (proposed) carried from `TakeFacts`,
-   null on an ordinary take; the journal row is unchanged (a Sentry breadcrumb carries the same token).
+   null on an ordinary take; the journal row is unchanged. The Sentry breadcrumb is category `take`, message
+   `settings_fallback`, data `take_id` and `settings_fallback` (the same token), sent only on a fallback take;
+   its shape and the null-omission case are pinned in the telemetry contract tests (coverage D1).
 7. **The notification** (`promoteToForeground`) is unchanged: it reads the live nullable `clipboardPolicy`.
 
 Alternatives: (a) a separate "last known settings" cache file: a second copy of the same values with its
@@ -203,7 +212,8 @@ the source's caller as today's `settingsWaitMs` does (injected for tests).
 - `DictationSessionCoordinator.SETTINGS_WAIT_MS` → `SETTINGS_ANSWER_BOUND_MS` (2 000).
 
 ## 5. State and lifecycle audit
-Two readers, each `Pending → Fresh` (first emission), `Pending → Failed` (catch, or bound expiry), and
+Two readers, each `Pending → Fresh` (first emission), `Pending → Failed` (catch, a completion with no
+emission, or bound expiry), and
 `Fresh` stays `Fresh` on later emissions. `Failed` on a first run means constructor defaults; `Failed`
 after a `Fresh` keeps the last written fields (the collector ended; no later emission overwrites). A
 second take in the same process after a `Failed` first read: the collector is not restarted (it ended), so
@@ -266,7 +276,15 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
   closed) and the debug line's answer time recorded (P2); (b) one take with the switch OFF ending by the
   toggle, `route=COMMIT`; (c) `restore()` puts the switch back. Founder's phone: NOT RUN (his instruction);
   build delivered through Play for his ordinary use.
-- The failure path itself: JVM rig only, stated in `hardware-uat.json` as NOT STAGEABLE on a device.
+- The failure path on a real foreground-service start (coverage F1), on the DISPOSABLE emulator only: (d)
+  corrupt the settings store in place (`run-as com.envi.wispr` on the debug build; write garbage over
+  `files/datastore/enviouswispr_settings.preferences_pb`), force-stop, start a take through the launcher,
+  expect the listening notification up, capture started, spoken text in Gmail by `route=COMMIT`, ONE
+  `settings_fallback` warning naming `settings:exception:CorruptionException`; then delete the corrupt file
+  so DataStore recreates defaults, and re-check an ordinary take. (e) the same for the word list: corrupt
+  `databases/enviouswispr.db`; if Android's default corruption handler silently recreates the database
+  (a plausible outcome, to be measured, not assumed), record the terms path as NOT STAGEABLE on a device
+  with that evidence and the rig row stands in. Never on the founder's phone.
 
 ### 11.2 Other obligations
 
@@ -276,7 +294,9 @@ stand-in clipboard policy is `freeze`'s existing null branch. The token in the f
 | `DictationSessionCoordinatorTest.aFailedVocabularyReadStartsCaptureWithoutUserTerms` (proposed) | Product Outcome | a terms flow that throws: capture starts, the take inserts, the matcher is the built-in one | same |
 | `DictationSessionCoordinatorTest.aSilentStoreStartsOnTheLastSnapshotAfterTheBound` (proposed) | Product Outcome | never-emitting flows: capture starts after the bound, `timed_out` in the facts | make the bound end the take |
 | `DictationSessionCoordinatorTest.anOrdinaryTakeFreezesOneConsistentSnapshot` (proposed) | Drift Guard | the flows emit once after `onCreated`; the take waits for them and runs with those values (auto-stop on), `settings_fallback` null | start before the first answer |
-| `TelemetryContractsTest` / `TakeFactsTest` rows | Drift Guard | the property and its token shape | drop the property |
+| `DictationSessionCoordinatorTest.aFailureAfterFreshUsesLastSuccessfulSnapshot` (proposed) | Product Outcome | the flows emit non-default values (auto-stop on, one custom term), then throw; the next take freezes THOSE values with the exception token in the facts (coverage E1) | reset the fields in the catch |
+| the two failure rows above also assert exactly ONE `settings_fallback` warning in the rig's log (coverage E2) | Product Outcome | one line per fallback take | delete or duplicate the warning |
+| `TelemetryContractsTest` / `TakeFactsTest` rows | Drift Guard | the property, its token shape, the breadcrumb's category, message and data keys, and the null-omission case | drop the property or the breadcrumb |
 | `settingsNeverReadyEndsStartingWithSentence` | deleted | | |
 
 ## 12. Blast radius & rollback
@@ -295,7 +315,10 @@ PR. No schema, no migration, no stored format.
   raise it.
 - The stand-in clipboard policy on a failed first read (auto-copy `true`): keep today's null branch, or make
   the stand-in auto-copy OFF? Default here: keep (a lost sentence for everyone else outweighs a surprise copy
-  for the one user who turned it off, and the notification already says nothing).
+  for the one user who turned it off, and the notification already says nothing). Both costs, stated
+  (coverage C1): keeping auto-copy ON may replace Elena's existing clipboard content without warning on a
+  fallback take whose insertion fails; turning it OFF may leave Frank without a recoverable transcript when
+  insertion fails on a fallback take.
 - A one-line notice for the wrong-not-broken case (§8)? Default: no.
 
 ## 15. Related

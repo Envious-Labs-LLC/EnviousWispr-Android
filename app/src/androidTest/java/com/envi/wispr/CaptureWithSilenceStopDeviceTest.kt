@@ -313,12 +313,24 @@ class CaptureWithSilenceStopDeviceTest {
             // Nothing more after unregistering, measured on the SAME take, which is still open and
             // still analysing: a fixed window is the only instrument for an absence.
             capture.unregisterSpectrumListener(listener)
-            val seenAtUnregister = delivered.get()
+            // A push already read or queued when unregister returned may still land (the plan's
+            // in-flight premise), so the count is allowed to settle first: unchanged for 200 ms, within
+            // two seconds, or the take never quiesced and that is the finding.
+            var settled = delivered.get()
+            var quiet = false
+            val settleDeadline = System.currentTimeMillis() + 2_000
+            while (System.currentTimeMillis() < settleDeadline) {
+                Thread.sleep(200)
+                val now = delivered.get()
+                if (now == settled) { quiet = true; break }
+                settled = now
+            }
+            assertTrue("pictures kept arriving for two seconds after the listener unregistered", quiet)
             Thread.sleep(1_500)
             assertTrue("the take must still be open while the absence is measured", capture.isCapturing)
             assertEquals(
-                "no picture may arrive after the listener unregistered",
-                seenAtUnregister,
+                "no picture may arrive after the listener unregistered and the in-flight one settled",
+                settled,
                 delivered.get(),
             )
             capture.stopCapture()

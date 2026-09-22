@@ -25,6 +25,9 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
     /** Capture reported it stopped, then said it was still running: our own protocol. */
     object CaptureStillRunningAfterStop : AppDefect("capture_still_running_after_stop", "capture.still_running_after_stop")
 
+    /** A recorder was never released, so a production start ended the capture process to recover (#213). */
+    object CaptureReleaseWedged : AppDefect("capture_release_wedged", "capture.release_wedged")
+
     /** The speech decoder call itself threw. */
     class AsrDecodeFailed(cause: Throwable?) : AppDefect("asr_decode_failed", "asr.decode_failed", cause)
 
@@ -53,7 +56,7 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
         /** Every member, for the snapshot test. Update together with the sealed set. */
         fun all(): List<AppDefect> = listOf(
             VadCallWedged("test"), LocalPolishDeadline, PolishProtocolViolation, CaptureStillRunningAfterStop,
-            AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
+            CaptureReleaseWedged, AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
             PolishWatchdogTimeout, HistoryContractViolation(null), DebugProbe,
         )
     }

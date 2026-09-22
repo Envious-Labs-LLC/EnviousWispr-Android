@@ -1477,7 +1477,7 @@ def main():
     eyes._STATE["serial"] = None
 
     # ---- freeze / thaw / kill act on ONE verified pid or refuse (#115) ----
-    originals = {name: getattr(eyes, name) for name in ("_adb", "_JOURNAL", "devices", "is_emulator", "_spawn_debugger", "_kill_debugger", "_process_answers", "_adb_host")}
+    originals = {name: getattr(eyes, name) for name in ("_adb", "_JOURNAL", "devices", "is_emulator", "_spawn_debugger", "_kill_debugger", "_process_answers", "_adb_host", "_replace_owed_locked", "_settled_locked")}
     proc_book = Path(__file__).parent / ".test-proc-journal.json"
     if proc_book.exists():
         proc_book.unlink()
@@ -1505,6 +1505,20 @@ def main():
         table["frozen"].discard(port)
         return f"debugger pid {host_pid} ended"
 
+    writes = {"replaced": 0, "settled_by_freeze": 0, "freezing": False}
+    real_replace, real_settle = eyes._replace_owed_locked, eyes._settled_locked
+
+    def counting_replace(old, new, serial):
+        writes["replaced"] += 1
+        return real_replace(old, new, serial)
+
+    def counting_settle(entry, serial):
+        if writes["freezing"]:
+            writes["settled_by_freeze"] += 1
+        return real_settle(entry, serial)
+
+    eyes._replace_owed_locked = counting_replace
+    eyes._settled_locked = counting_settle
     eyes._adb = proc_adb
     eyes._adb_host = lambda args: table["forwards"].append(tuple(args)) or ""
     eyes._spawn_debugger = fake_spawn
@@ -1525,7 +1539,11 @@ def main():
     except eyes.Blocked as refusal:
         check("freezing a name with TWO processes is refused", "2 processes" in str(refusal) and table["debuggers"] == [], str(refusal)[:80])
     del table["rows"][-1]
+    writes["freezing"] = True
     line = eyes.freeze_process("com.envi.wispr:audio")
+    writes["freezing"] = False
+    check("the completed debt replaces the first in ONE write, never settle-then-owe",
+          writes["replaced"] == 1 and writes["settled_by_freeze"] == 0, writes)
     check("one match is frozen through a debugger on its own forwarded port", table["debuggers"] == [18700 + 101] and "pid 101" in line, (table["debuggers"], line))
     owed = eyes._owed("emulator-5554")
     check("and the thaw is owed in the book with the debugger's pid", len(owed) == 1 and owed[0][0] == "frozen-process" and json.loads(owed[0][1])["host_pid"] == 4242, owed)
@@ -1541,6 +1559,149 @@ def main():
     eyes._STATE["serial"] = None
     eyes._STATE["restored_for"] = None
     for leftover in (proc_book, Path(str(proc_book) + ".lock"), Path(proc_book).parent / ".test-proc-journal.lock", Path(proc_book).parent / "jdb-101.log"):
+        if leftover.exists():
+            leftover.unlink()
+
+    # ---- #213: freeze_thread picks exactly one thread by its whole name -------------------------------
+    # The shape the Play AVD's jdb printed on 2026-09-22 (#213): decimal ids, varied classes, padded names.
+    listing = """Group system:
+  (java.lang.Thread)21318                                        Signal Catcher                     cond. waiting
+Group main:
+  (java.lang.Thread)21317                                        main                               running
+  (kotlinx.coroutines.scheduling.CoroutineScheduler$Worker)21328 DefaultDispatcher-worker-1         cond. waiting
+  (android.os.HandlerThread)21338                                AudioRouteThread                   running
+  (java.lang.Thread)21342                                        AudioCaptureThread                 running
+  (java.lang.Thread)21343                                        AudioCaptureThreadX                running
+"""
+    check("one thread matches by its whole name, never a prefix", eyes._thread_ids(listing, "AudioCaptureThread") == ["21342"],
+          eyes._thread_ids(listing, "AudioCaptureThread"))
+    check("a name with a single space is read whole", eyes._thread_ids(listing, "Signal Catcher") == ["21318"])
+    check("zero matches is an empty list, which freeze_thread refuses", eyes._thread_ids(listing, "NoSuchThread") == [])
+    doubled = listing + "  (java.lang.Thread)21399                                        AudioCaptureThread                 running\n"
+    check("a duplicate name returns both, which freeze_thread refuses", len(eyes._thread_ids(doubled, "AudioCaptureThread")) == 2)
+    thread_debt = ("frozen-process", json.dumps({"pid": 1, "name": "x", "port": 2, "host_pid": 3, "thread": "AudioCaptureThread"}))
+    process_debt = ("frozen-process", json.dumps({"pid": 1, "name": "x", "port": 2, "host_pid": 3}))
+    check("a thread freeze is recognised as one", eyes._frozen_thread_debt(thread_debt))
+    check("a whole-process freeze is never kept by keep_frozen_threads", not eyes._frozen_thread_debt(process_debt))
+    check("an unrelated debt is never kept", not eyes._frozen_thread_debt(("host-mic", "on")))
+
+    # ---- #213: freeze_thread DRIVEN through fakes: the commands it sends, the book before the suspend,
+    # the refusals, and both restore modes. The debugger's log is written by the fake as jdb would answer.
+    names = ("_adb", "_JOURNAL", "devices", "is_emulator", "_spawn_commandable_debugger", "_kill_debugger",
+             "_process_answers", "_adb_host", "_replace_owed_locked", "_debugger_on_port")
+    originals = {name: getattr(eyes, name) for name in names}
+    book_path = Path(__file__).parent / ".test-thread-journal.json"
+    if book_path.exists():
+        book_path.unlink()
+    eyes._JOURNAL = book_path
+    world = {"rows": [(100, "S", "com.envi.wispr"), (101, "S", "com.envi.wispr:audio")], "spawned": [],
+             "killed": [], "listing": listing, "commands_at_replace": []}
+
+    def thread_adb(command, timeout=60, check=True, serial=None):
+        if command.startswith("ps -A"):
+            return 0, "  PID S NAME\n" + "".join(f"{pid} {state} {name}\n" for pid, state, name in world["rows"])
+        return 0, ""
+
+    def fake_spawn_commandable(port, log_path, commands_path):
+        world["spawned"].append(port)
+        world["commands_path"] = commands_path
+        open(commands_path, "w").close()
+        with open(log_path, "w") as f:
+            f.write("Initializing jdb ...\n> " + world["listing"] + "> [1] com.envi.wispr.audio.AudioCaptureService.captureLoop\n")
+        return 5151
+
+    real_replace = originals["_replace_owed_locked"]
+
+    def recording_replace(old, new, serial):
+        path = world.get("commands_path")
+        world["commands_at_replace"].append(open(path).read() if path and Path(path).exists() else "")
+        return real_replace(old, new, serial)
+
+    eyes._adb = thread_adb
+    eyes._adb_host = lambda args: ""
+    eyes._spawn_commandable_debugger = fake_spawn_commandable
+    eyes._kill_debugger = lambda host_pid, port: world["killed"].append((host_pid, port)) or f"debugger {host_pid} ended"
+    eyes._process_answers = lambda pid, within_s=3.0: True
+    eyes._replace_owed_locked = recording_replace
+    eyes.devices = lambda: [("emulator-5554", "sdk_gphone64_arm64")]
+    eyes.is_emulator = lambda serial=None: True
+    eyes._STATE["serial"] = "emulator-5554"
+
+    line = eyes.freeze_thread("com.envi.wispr:audio", "AudioCaptureThread")
+    sent = open(world["commands_path"]).read()
+    check("freeze_thread lists threads, suspends the one id, then reads its stack",
+          sent == "threads\nsuspend 21342\nwhere 21342\n", repr(sent))
+    check("the book names the thread id BEFORE the suspend is sent",
+          len(world["commands_at_replace"]) == 2 and "suspend" not in world["commands_at_replace"][1], world["commands_at_replace"])
+    owed = eyes._owed("emulator-5554")
+    recorded = json.loads(owed[0][1]) if owed else {}
+    check("and the debt carries the debugger pid and the thread id", len(owed) == 1 and recorded.get("host_pid") == 5151 and recorded.get("thread_id") == "21342", owed)
+    check("it reports the frozen thread", "21342" in line and "captureLoop" in line, line)
+
+    kept = eyes.restore(keep_frozen_threads=True)
+    check("restore(keep_frozen_threads=True) keeps the thread freeze owed and ends no debugger",
+          len(eyes._owed("emulator-5554")) == 1 and world["killed"] == [], (kept, world["killed"]))
+    thawed = eyes.restore()
+    check("a plain restore() ends that debugger and clears the debt",
+          world["killed"] == [(5151, 18700 + 101)] and eyes._owed("emulator-5554") == [], (thawed, world["killed"]))
+
+    for label, text in (("zero", listing.replace("AudioCaptureThread ", "SomeOtherThread    ")),
+                        ("two", listing + "  (java.lang.Thread)21399                                        AudioCaptureThread                 running\n")):
+        world["listing"] = text
+        world["killed"] = []
+        try:
+            eyes.freeze_thread("com.envi.wispr:audio", "AudioCaptureThread")
+            check(f"{label} matching threads is refused", False, "it froze")
+        except eyes.Blocked as refusal:
+            check(f"{label} matching threads is refused, thawed, and leaves no debt",
+                  "exactly one is required" in str(refusal) and world["killed"] and eyes._owed("emulator-5554") == [],
+                  (str(refusal)[:80], world["killed"]))
+
+    # A debt written before its debugger's pid was (a crash mid-freeze): the one debugger GROUP on that port.
+    ps_one = (" 6262  6262 /bin/sh -c tail -f /x | /opt/jdb -attach localhost:18999 > /y 2>&1\n"
+              " 6263  6262 tail -f /x\n"
+              " 6264  6262 /opt/jdb -attach localhost:18999\n"
+              " 7000  7000 /opt/jdb -attach localhost:18000\n")
+    check("a shell leader and its jdb child are ONE debugger, resolved to the leader", eyes._debugger_group(ps_one, 18999) == 6262,
+          eyes._debugger_group(ps_one, 18999))
+    ps_two = ps_one + " 8000  8000 /opt/jdb -attach localhost:18999\n"
+    try:
+        eyes._debugger_group(ps_two, 18999)
+        check("two debugger groups on one port refuse", False, "it picked one")
+    except eyes.Blocked as refusal:
+        check("two debugger groups on one port refuse", "2 debugger process groups" in str(refusal), str(refusal))
+    try:
+        eyes._debugger_group(" 6264  6262 /opt/jdb -attach localhost:18999\n", 18999)
+        check("a group whose leader is gone refuses", False, "it returned a pid")
+    except eyes.Blocked:
+        check("a group whose leader is gone refuses", True)
+    check("no debugger on the port is None", eyes._debugger_group(ps_one, 18111) is None)
+    real_run = eyes.subprocess.run
+
+    class FailedPs:
+        returncode = 1
+        stdout = ""
+        stderr = "ps: failed"
+
+    eyes.subprocess.run = lambda *args, **kwargs: FailedPs()
+    try:
+        eyes._debugger_on_port(18999)
+        check("a failed ps refuses rather than reading as no debugger", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("a failed ps refuses rather than reading as no debugger", "ps failed" in str(refusal), str(refusal))
+    finally:
+        eyes.subprocess.run = real_run
+    world["killed"] = []
+    eyes._debugger_on_port = lambda port: 6262
+    lines = eyes._thaw({"pid": 999, "name": "com.envi.wispr:gone", "port": 18999, "host_pid": None, "thread": "T"})
+    check("a debt with no debugger pid is thawed through the group leader on its port", world["killed"] == [(6262, 18999)], (lines, world["killed"]))
+
+    for name, fn in originals.items():
+        setattr(eyes, name, fn)
+    eyes._STATE["serial"] = None
+    eyes._STATE["restored_for"] = None
+    for leftover in (book_path, Path(str(book_path) + ".lock"), book_path.parent / ".test-thread-journal.lock",
+                     book_path.parent / "jdb-101-thread.log", book_path.parent / "jdb-101-commands.txt"):
         if leftover.exists():
             leftover.unlink()
 

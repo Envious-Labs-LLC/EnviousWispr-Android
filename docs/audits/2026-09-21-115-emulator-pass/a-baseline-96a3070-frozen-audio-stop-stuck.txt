@@ -1,0 +1,14 @@
+scene a (baseline-96a3070): freeze the capture process, press stop
+recorder on screen before freeze: True
+froze com.envi.wispr:audio pid 23801 (debugger pid 86184 on port 19501)
+stop pressed
+owner REACHED NO ENDING 20 s after the stop (stuck)
+recorder pill on screen at that point: False
+debugger pid 86184 ended; thawed com.envi.wispr:audio pid 23801
+restored nothing was changed
+log 09-21 18:10:58.120 I/DictationSession(22344): Audio capture connected
+log 09-21 18:10:58.191 I/AudioCapture(23801): Recording started (PID: 23801, max: 600000ms, nativeFrames: 16000)
+log 09-21 18:10:58.218 I/DictationSession(22344): Recording started (live after 1 ms, forced=false)
+log 09-21 18:11:09.176 I/DictationSession(22344): Stopping recording and starting transcription
+log 09-21 18:11:32.483 I/AudioCapture(23801): Stopped by a stop request. 187392 bytes (5.9s) -> /data/user/0/com.envi.wispr/cache/recording.pcm
+last take: {'started': True, 'ended_by': 'a stop request', 'bytes': 187392, 'seconds': 5.9, 'warned_at_ms': None, 'hit_the_cap': False, 'transcribed_chars': None, 'handoff': None, 'insertion': None}

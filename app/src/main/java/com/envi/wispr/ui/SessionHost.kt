@@ -43,6 +43,12 @@ internal interface SessionHost {
 
     /** The Service's one `Handler(Looper.getMainLooper())`: FIFO on the main looper. */
     fun postToMain(runnable: Runnable)
+    /**
+     * Run [runnable] on the main thread after [delayMs], unless [cancelMainDelayed] removes it first. The
+     * owner's only timer, armed for exactly as long as a take's binding is up (#115; RULE: no-idle-cost).
+     */
+    fun postToMainDelayed(delayMs: Long, runnable: Runnable)
+    fun cancelMainDelayed(runnable: Runnable)
 
     fun onMainThread(): Boolean
 

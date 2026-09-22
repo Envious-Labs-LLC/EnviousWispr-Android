@@ -49,6 +49,16 @@ class AudioServiceShapeTest {
         // releaseSession closes the route with the recorder. A second close from onDestroy would race
         // the loop still reading the route, and today's teardown never released it from here either.
         assertFalse("onDestroy leaves the route to the capture thread", destroy.contains("route.close("))
+        // #115 review round 1, F8: the listener slots are the SERVICE's to clear; a warm hold keeps it
+        // alive past the owner's unbind, so both go on the last unbind and again on destroy.
+        val unbind = member(service, "override fun onUnbind(intent: Intent?): Boolean")
+        listOf("spectrumListener.set(null)", "takeListener.set(null)").forEach {
+            assertTrue("onUnbind clears $it", unbind.contains(it))
+            assertTrue("onDestroy clears $it", destroy.contains(it))
+        }
+        assertTrue("the publisher is closed on destroy, after the join", destroy.indexOf("takeEvents.close()") > destroy.indexOf("thread.join("))
+        // F6: a refused start carries nothing of the previous take.
+        assertTrue(member(service, "private fun publishStartRefused(takeId: String, failure: Int)").contains("takeEvents.publishEnded(takeId, TERMINAL_REASON_NONE, failure, null, SILENCE_STATUS_DISABLED, 0f, null)"))
     }
 
     @Test
@@ -59,6 +69,8 @@ class AudioServiceShapeTest {
         val expectedFunctions = setOf(
             "nextCaptureToken", "startRecording", "captureLoop", "claimEnding", "stopRecording",
             "endTake", "endTakeLocked", "releaseSession", "closeResources", "waitForFileReady",
+            // #115: the two publishers of a start refused before capture began.
+            "publishStartRefused", "failSetup",
         )
         val actualFunctions = Regex("^ {4}(?:(?:private|internal|public|protected|inline|suspend|operator|tailrec|infix)\\s+)*fun\\s+(\\w+)\\s*\\(", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
@@ -68,6 +80,8 @@ class AudioServiceShapeTest {
             "routeThread", "routeHandler", "routeScheduler", "isRecording", "captureThread", "lastAudioFile",
             "currentAmplitude", "spectrumListener", "takePeakAmplitude", "lastSilenceStatus", "terminalReason",
             "tokens", "binder",
+            // #115: the take-event listener slot and its publisher.
+            "takeListener", "takeEvents",
         )
         val actualFields = Regex("^ {4}(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:(?:private|internal|public|protected|lateinit|const)\\s+)*(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
@@ -98,6 +112,8 @@ class AudioServiceShapeTest {
             "error: Failed to start capture thread",
             "error: Failed to start recording",
             "error: No input device at all; refusing to start",
+            // #115 review (chunks B and C, F3): the process-scoped recorder lease refuses a second recorder.
+            "error: A recorder is still held in this process; refusing to start",
             "error: RECORD_AUDIO permission not granted",
             "log: Buffer sizes: minimum=\${} coerced=\${} read=\${} block=\${}",
             "log: Byte ceiling reached (\${} bytes), auto-stopping",
@@ -127,10 +143,12 @@ class AudioServiceShapeTest {
             "warn: Auto-stop unavailable: start failed, \${}",
             "warn: Auto-stop unavailable: the detector call failed",
             "warn: Auto-stop unavailable: the detector gave up mid-take",
+            // #115 review round 2: a failed recorder release keeps the process lease held.
+            "warn: Recorder release failed; the process's recorder lease stays held",
             "warn: Auto-stop unavailable: the detector reported so",
             "warn: Auto-stop unavailable: the feeder failed, \${}",
             "warn: Bluetooth link refused for \${}; staying on the earbuds",
-            "warn: Capture thread did not finish during service teardown",
+            // "warn: Capture thread did not finish during service teardown" left with the join it announced (#115 chunk C).
             "warn: Detector unbind failed: \${}",
             "warn: Failed to close audio file: \${}",
             "warn: Failed to flush audio file: \${}",

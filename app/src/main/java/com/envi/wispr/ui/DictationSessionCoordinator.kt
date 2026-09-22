@@ -12,6 +12,7 @@ import com.envi.wispr.audio.SpeechEvidence
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.TextSafety
 import com.envi.wispr.history.HistoryPublicationPolicy
+import com.envi.wispr.history.HistoryWriteQueue
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.insertion.ClipboardOutcome
@@ -41,20 +42,18 @@ import com.envi.wispr.telemetry.Telemetry
 import com.envi.wispr.telemetry.TelemetryChannels
 import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.StructuredTermRestorer
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -76,11 +75,14 @@ internal class DictationSessionCoordinator(
     private val insertion: InsertionGateway,
     private val log: SessionLog,
     private val preferences: SessionPreferencesSource,
+    /** Every per-take History write goes through here, in enqueue order, on the application's worker (#115). */
+    private val historyWrites: HistoryWriteQueue,
+    /** For the start-up recovery ONLY, on the session scope: a stalled recovery must not sit ahead of a take's writes on the queue. */
     private val transcripts: TranscriptRepository,
     private val languageDetector: LanguageDetector,
     private val loadPolicy: suspend () -> PolishPolicy,
     private val pipeline: PipelineController,
-    /** The one session scope; the Service's `SupervisorJob() + Dispatchers.IO`. Its job is joined on destroy. */
+    /** The one session scope; the Service's `SupervisorJob() + Dispatchers.IO`. Its job is cancelled on destroy, never joined (#115). */
     private val scope: CoroutineScope,
     /** `Dispatchers.Main.immediate` in production; a JVM test passes its single owner-thread dispatcher. */
     private val mainDispatcher: CoroutineDispatcher,
@@ -124,16 +126,22 @@ internal class DictationSessionCoordinator(
          * and Room deliver in milliseconds; a hung store cannot hold the microphone longer than this.
          */
         const val SETTINGS_ANSWER_BOUND_MS = 2_000L
+
+        /**
+         * How long the capture process may stay SILENT before the take treats it as unresponsive (#115).
+         * The capture loop heartbeats once a second from its first read; three missed beats is a process
+         * that is frozen or wedged, not slow (the emulator's measured gaps are recorded in the #115 plan).
+         * Armed before the take's listener is registered and disarmed when the binding is released, so it
+         * also covers a command outstanding after the ending; no timer exists outside a take.
+         */
+        const val TAKE_SILENT_BOUND_MS = 3_000L
     }
 
     private enum class SessionState { IDLE, STARTING, RECORDING, PROCESSING, CANCELLING, FINISHING, ERROR }
 
-    /** How often the live waiter asks the capture process. */
-    private val LIVE_POLL_MS = 20L
-
     /**
      * The STARTING bound: two live deadlines (one reset) plus a second, after which a take that never
-     * went live fails rather than spins.
+     * went live fails rather than spins. A main-thread timer since #115; the live waiter thread is gone.
      */
     private val LIVE_WAIT_BOUND_MS = 2 * LiveGate.DEADLINE_MS + 1_000L
 
@@ -180,9 +188,8 @@ internal class DictationSessionCoordinator(
     private val polishSubmissionLock = Any()
     private val teardownStarted = AtomicBoolean(false)
     private val draftId = AtomicLong(0L)
-    /** The injected scope's job, read once; `destroy` cancels and joins exactly this. */
+    /** The injected scope's job, read once; `destroy` cancels exactly this and never joins it (#115). */
     private val serviceJob: Job = requireNotNull(scope.coroutineContext[Job]) { "the session scope needs a Job" }
-    private val pendingHistoryUpdates = java.util.Collections.synchronizedList(mutableListOf<Job>())
 
     private var rawTranscript = ""
     // What the START of this dictation saw when it tried to pin an editor. Read at the end,
@@ -202,8 +209,37 @@ internal class DictationSessionCoordinator(
     @Volatile private var stopAfterRecording = false
     private var recordingStartedAtMs = 0L
     @Volatile private var recordingDurationMs = 0L
-    private var draftCreation: Deferred<Long>? = null
+    /**
+     * The take's History row id, completed by the queued draft insert ON THE QUEUE'S WORKER (#115). Every
+     * later write of the row is queued after that insert, so awaiting this inside a write never waits on
+     * anything but a write already applied; the owner itself never awaits it on main.
+     */
+    private var draftCreation: CompletableDeferred<Long>? = null
+    /** Set by [destroy]; the owner's surface is never touched from the application queue after it. */
+    private val destroyed = AtomicBoolean(false)
     private var lastElapsedSecond = -1
+    /**
+     * The take's cancel, reserved under [publishLock] and committed when the capture process publishes
+     * the ending (#115): a cancel no longer waits for the file itself.
+     */
+    @Volatile private var pendingCancel: TakeArbiter.Token? = null
+    @Volatile private var pendingCancelReason: TerminalReason = TerminalReason.CANCELLED_RECORDING
+    /** Set once the ending has been consumed for this take, so a duplicate or a late event changes nothing. */
+    private val endingConsumed = AtomicBoolean(false)
+    /** Whether the silence bound is armed; the runnable is re-posted on every event from the capture process. */
+    private val silenceBoundArmed = AtomicBoolean(false)
+    private val silenceBound = Runnable { onCaptureSilent() }
+    private val liveDeadline = Runnable { onLiveDeadline() }
+    /**
+     * Every synchronous call INTO the capture process runs here, one at a time, in the order issued, and
+     * never on the main thread (#115 review round 1, F1): a call into a process that has stopped answering
+     * has no timeout, and on main it would park the very thread the silence bound fires on. One lane, not
+     * the shared scope, so a stop can never overtake the start it belongs to. A lane parked in a wedged
+     * process stays parked; the instance ends through the bound and the next take has its own lane.
+     */
+    private val captureCommands: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "CaptureCommands").apply { isDaemon = true }
+    }
     @Volatile private var sessionPreferences = SessionPreferences()
     @Volatile private var silenceNoticeShown = false
     /** The take proceeded on earbuds that sent nothing; said once, before any other microphone line. */
@@ -216,8 +252,8 @@ internal class DictationSessionCoordinator(
      */
     private val publishLock = Any()
     /**
-     * What captured the take, read ONCE at stop after `waitForFileReady`, when the capture thread has
-     * exited and the record is complete. Empty means unknown and is stored as such (#26).
+     * What captured the take, carried on the ending the capture process publishes once its thread has
+     * exited and the record is complete (#115). Empty means unknown and is stored as such (#26).
      */
     @Volatile private var captureDeviceLabel = ""
     /** One warning per take, latched so the last minute is not announced ten times a second. */
@@ -228,10 +264,18 @@ internal class DictationSessionCoordinator(
 
     /** The Service's `onCreate` work that is the session's: stale-row recovery and the preference collectors. */
     fun onCreated() {
+        // On its own scope, never on the per-take queue (#115 review): a recovery stalled on the disk
+        // would otherwise sit ahead of every write of the take that follows. It closes rows an EARLIER
+        // process left open; the new take's rows are not among them.
         scope.launch {
             runCatching { transcripts.recoverStaleOpenRows(System.currentTimeMillis()) }
                 .onSuccess { recovered -> Telemetry.insertionsRecovered(recovered.readyRowIds) }
-                .onFailure { error -> log.warn("Unable to recover stale history: ${error.message}") }
+                .onFailure { error ->
+                    // A command that finds the owner IDLE stops the Service within milliseconds of this
+                    // launch (`stopIfIdle`); that cancellation is the ordinary case, not a failure, and the
+                    // next instance runs the recovery again (measured on the emulator 2026-09-21).
+                    if (error !is kotlinx.coroutines.CancellationException) log.warn("Unable to recover stale history: ${error.message}")
+                }
         }
         preferences.start(scope)
     }
@@ -361,6 +405,8 @@ internal class DictationSessionCoordinator(
         rawTranscript = ""
         recordingDurationMs = 0L
         lastElapsedSecond = -1
+        endingConsumed.set(false)
+        pendingCancel = null
         scope.launch {
             // The readers are limbs (#193): a failed or silent read never ends the take. The start carries
             // both outcomes and the values that came with them, taken by one atomic read each, and the
@@ -461,38 +507,52 @@ internal class DictationSessionCoordinator(
             durationWarningShown = false
             forcedNoticeShown = false
             captureDeviceLabel = ""
-            val started = runCatching {
-                // The frozen snapshot, never the live source: a settings emission after the take's answer
-                // belongs to the next take (#193).
-                pipeline.capture?.startCaptureForTake(
-                    sessionPreferences.autoStopOnSilence,
-                    sessionPreferences.silencePauseSeconds,
-                    sessionPreferences.inputDevicePick,
-                    sessionPreferences.keepEarbudsReady,
-                    takeId,
-                )
-            }.getOrNull()
-            if (started != true) {
-                // The one start failure with its own sentence is "nothing can record at all" (macOS copy).
-                val failure = runCatching { pipeline.capture?.lastStartFailure() }.getOrNull()
-                    ?: AudioCaptureService.START_FAILURE_OTHER
-                pipeline.stopAudioService()
-                showError(TakeNotices.startFailureReason(failure))
-                return
+            // The bound is armed and the listener registered BEFORE the start command (#115): a start that
+            // never returns, a registration that hangs, and an event that precedes registration are all
+            // covered. The take is STARTING until the capture process publishes live: the lips spin, no
+            // pill, no timer, nothing written.
+            armSilenceBound()
+            host.postToMainDelayed(LIVE_WAIT_BOUND_MS, liveDeadline)
+            // The frozen snapshot, never the live source: a settings emission after the take's answer
+            // belongs to the next take (#193).
+            val preferences = sessionPreferences
+            val id = takeId
+            captureStarted = commandCapture("start") { capture ->
+                capture.listenForTake(takeListener)
+                // A registration that wedged and then returned: the silence bound may already have
+                // ended this take and released the binding, and a start now would record for nobody
+                // (review round 2, F1). Checked on the lane, before the start and again after it.
+                if (state.get() != SessionState.STARTING || takeId != id) return@commandCapture
+                val started = try {
+                    capture.startCaptureForTake(
+                        preferences.autoStopOnSilence,
+                        preferences.silencePauseSeconds,
+                        preferences.inputDevicePick,
+                        preferences.keepEarbudsReady,
+                        id,
+                    )
+                } catch (error: Exception) {
+                    // A binder that threw: the process is gone or broken. Its ServiceConnection or the
+                    // silence bound would end the take too; this is the same ending, sooner.
+                    log.error("Failed to start recording", error)
+                    host.postToMain { showError(TerminalReason.START_EXCEPTION) }
+                    return@commandCapture
+                }
+                if (!started) {
+                    // Every refused start publishes its own ending with the failure code (the #115 plan's
+                    // table, one publisher per exit). Nothing is read here.
+                    log.warn("Capture start refused; the ending event carries why")
+                } else if (state.get() != SessionState.STARTING || takeId != id) {
+                    // The take ended while the start was in flight: no owner is listening for it.
+                    log.warn("Capture started for a take that already ended; stopping it")
+                    runCatching { capture.stopCapture() }
+                    pipeline.stopAudioService()
+                }
             }
-            captureStarted = true
-            // The take is STARTING until the chosen route delivers sound: the lips spin, no pill, no
-            // timer, nothing written. The waiter performs the RECORDING transition when the capture
-            // process reports live (issue #26, 2026-09-18).
-            Thread({ waitForLive() }, "LiveWaiter").start()
         } catch (error: Exception) {
             if (captureStarted) {
-                val capture = pipeline.capture
-                Thread({
-                    runCatching { capture?.stopCapture() }
-                    runCatching { capture?.waitForFileReady(2_000L) }
-                    pipeline.stopAudioService()
-                }, "StartCaptureFailureCleanup").start()
+                commandCapture("stop after a failed start") { it.stopCapture() }
+                pipeline.stopAudioService()
             }
             log.error("Failed to start recording", error)
             showError(TerminalReason.START_EXCEPTION)
@@ -500,109 +560,273 @@ internal class DictationSessionCoordinator(
     }
 
     /**
-     * Polls the capture process until the take is live, then publishes RECORDING. Four ways out without
-     * publishing: the state left STARTING (a cancel or teardown won), the binder is gone, capture ended
-     * during the wait (a deadline failure or a capture error), or the STARTING bound passed. None of
-     * them can publish a pill for an ended take, and none waits forever.
+     * Issue one call into the capture process on [captureCommands]; returns whether it was issued (the
+     * binding is present and the lane accepts work). The block's own failure is logged and costs nothing
+     * else: the take's ending comes from the process's events or from the silence bound, never from here.
      */
-    private fun waitForLive() {
-        val startedAt = host.elapsedRealtimeMs()
-        while (true) {
-            if (state.get() != SessionState.STARTING) return
-            val service = pipeline.capture ?: return // onServiceDisconnected ends the take for STARTING too.
-            val live = try {
-                service.liveState()
-            } catch (_: Exception) {
-                return // A dead binder: its ServiceConnection callback ends the take.
+    private fun commandCapture(what: String, block: (CaptureLink) -> Unit): Boolean {
+        val capture = pipeline.capture ?: return false
+        return runCatching {
+            captureCommands.execute {
+                runCatching { block(capture) }.onFailure { log.warn("Capture command failed ($what): ${it.javaClass.simpleName}") }
             }
-            if (live != AudioCaptureService.LIVE_WAITING) {
-                // Published on the MAIN thread, where every command is dispatched and where the
-                // bubble's early release sets its flag: the old start published there too, so a stop,
-                // cancel or release can never read STARTING and then act against a take this thread
-                // published in between (Codex review 4, 2026-09-18).
-                val forced = live == AudioCaptureService.LIVE_FORCED
-                host.postToMain { publishLive(forced) }
-                return
+        }.onFailure { log.warn("Capture command not issued ($what): ${it.javaClass.simpleName}") }.isSuccess
+    }
+
+    /**
+     * The take's events, each posted to the main thread and handled there in delivery order (#115). An
+     * event from another take (the previous take's ending, queued in the service-scoped publisher before
+     * this owner registered) is discarded before it can re-arm the bound or touch any state.
+     */
+    private val takeListener = object : TakeListener {
+        private fun ours(eventTakeId: String): Boolean = eventTakeId == takeId
+
+        override fun onLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) {
+            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); publishLive(forced, routeKind, routeReason, liveAfterMs) } }
+        }
+
+        override fun onTick(takeId: String, elapsedMs: Long) {
+            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); onTakeTick(elapsedMs) } }
+        }
+
+        override fun onSilenceStatus(takeId: String, status: Int) {
+            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); publishSilenceNoticeIfNeeded(status) } }
+        }
+
+        override fun onEnded(ending: TakeEnding) {
+            host.postToMain { if (ours(ending.takeId)) { rearmSilenceBound(); onTakeEnded(ending) } }
+        }
+    }
+
+    private fun armSilenceBound() {
+        if (silenceBoundArmed.compareAndSet(false, true)) host.postToMainDelayed(TAKE_SILENT_BOUND_MS, silenceBound)
+    }
+
+    /** Main thread. Every event from the capture process pushes the bound out; nothing else does. */
+    private fun rearmSilenceBound() {
+        if (!silenceBoundArmed.get()) return
+        host.cancelMainDelayed(silenceBound)
+        host.postToMainDelayed(TAKE_SILENT_BOUND_MS, silenceBound)
+    }
+
+    /**
+     * Main thread, when the take's binding is released and only then (a command may still be outstanding).
+     * On an ordinary ending the bound is still pending (the process answered every second and the take
+     * ended by its own ending), so the cancel is the ordinary path, not a defence; both runnables are
+     * cancelled because neither may outlive the binding they watch.
+     */
+    private fun disarmSilenceBound() {
+        silenceBoundArmed.set(false)
+        host.cancelMainDelayed(silenceBound)
+        host.cancelMainDelayed(liveDeadline)
+    }
+
+    /**
+     * Main thread. The capture process published nothing for [TAKE_SILENT_BOUND_MS]: frozen, wedged or
+     * gone without its ServiceConnection noticing. The hang becomes a reported ending (#115): a take still
+     * waiting for sound or recording ends as unresponsive; a stop or a cancel still waiting for the file
+     * ends as the close that never came; a take past its ending has its words already and only the
+     * binding is released. The capture process is never called again: `announceError` stops the service
+     * by intent and `finishSession` unbinds, and a frozen process cannot run either, so the next take
+     * waits for the OS or the user to kill it.
+     */
+    private fun onCaptureSilent() {
+        if (!silenceBoundArmed.compareAndSet(true, false)) return
+        log.error("Capture process silent for ${TAKE_SILENT_BOUND_MS}ms; ending the take")
+        when (state.get()) {
+            SessionState.STARTING -> failWhileStarting(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE)
+            SessionState.RECORDING -> handleServiceFailure(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE)
+            SessionState.PROCESSING -> if (!endingConsumed.get()) {
+                discardDraft()
+                showError(TerminalReason.CAPTURE_CLOSE_UNSAFE)
             }
-            val capturing = runCatching { service.isCapturing() }.getOrDefault(false)
-            if (!capturing) {
-                val failure = runCatching { service.lastStartFailure() }.getOrDefault(AudioCaptureService.START_FAILURE_OTHER)
-                val reason = if (failure == AudioCaptureService.START_FAILURE_EARBUDS) {
-                    TerminalReason.CAPTURE_START_EARBUDS_REFUSED
-                } else {
-                    TerminalReason.CAPTURE_ENDED_BEFORE_LIVE
+            SessionState.CANCELLING -> pendingCancel?.let { cancel ->
+                pendingCancel = null
+                if (arbiter.commit(cancel, TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)) {
+                    pipeline.stopAudioService()
+                    discardDraft()
+                    endAsFailure(TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)
                 }
-                // Claim first: a cancel that stopped capture between the two checks owns the take, and
-                // its stop must not read as a microphone failure.
+            }
+            SessionState.IDLE, SessionState.FINISHING, SessionState.ERROR -> Unit
+        }
+    }
+
+    /** Main thread. The STARTING bound passed with no live event. */
+    private fun onLiveDeadline() {
+        if (state.get() != SessionState.STARTING) return
+        if (!failWhileStarting(TerminalReason.LIVE_WAIT_DEADLINE)) return
+        log.error("The route never went live within $LIVE_WAIT_BOUND_MS ms")
+        commandCapture("stop at the live deadline") { it.stopCapture() }
+    }
+
+    /** Main thread. A heartbeat: the timer while RECORDING; liveness in every state. */
+    private fun onTakeTick(elapsedMs: Long) {
+        if (state.get() != SessionState.RECORDING) return
+        val second = (elapsedMs / 1_000L).toInt().coerceAtLeast(0)
+        if (second != lastElapsedSecond) {
+            lastElapsedSecond = second
+            surface.updateElapsed(second)
+        }
+        // Below the timer, and a limb: a failure here must not cost the take.
+        runCatching { publishDurationWarningIfNeeded(elapsedMs) }
+    }
+
+    /**
+     * Main thread. The take is over on the capture side and the file is closed (#115). Consumed once:
+     * the capture process publishes one ending per take, and a start refused as busy publishes for the
+     * refused start, which this take (still STARTING) reads as its own ending before live.
+     */
+    private fun onTakeEnded(ending: TakeEnding) {
+        if (!endingConsumed.compareAndSet(false, true)) return
+        val takeFacts = facts
+        captureDeviceLabel = ending.effectiveInputDevice
+        takePeakAmplitude = ending.takePeakAmplitude
+        takeFacts.peakAmplitude = ending.takePeakAmplitude
+        takeFacts.silenceStopStatus = runCatching { TakeFacts.silenceStatusToken(ending.silenceStatus) }.getOrNull()
+        when (state.get()) {
+            SessionState.STARTING -> {
+                // Ended before live: the earbud deadline, a start refused before capture began (no
+                // reason and no file: the one start failure with its own sentence is "nothing can record
+                // at all", macOS copy), or a capture that started and ended before the route went live.
+                val reason = when {
+                    ending.startFailure == AudioCaptureService.START_FAILURE_EARBUDS -> TerminalReason.CAPTURE_START_EARBUDS_REFUSED
+                    ending.terminalReason == AudioCaptureService.TERMINAL_REASON_NONE && ending.audioFilePath == null ->
+                        TakeNotices.startFailureReason(ending.startFailure)
+                    else -> TerminalReason.CAPTURE_ENDED_BEFORE_LIVE
+                }
                 if (!failWhileStarting(reason)) return
-                log.warn("Capture ended while waiting for the route to go live (failure=$failure)")
-                runCatching { service.waitForFileReady(2_000L) }
-                pipeline.stopAudioService()
-                return
+                log.warn("Capture ended while waiting for the route to go live (failure=${ending.startFailure})")
             }
-            if (host.elapsedRealtimeMs() - startedAt > LIVE_WAIT_BOUND_MS) {
-                if (!failWhileStarting(TerminalReason.LIVE_WAIT_DEADLINE)) return
-                log.error("The route never went live within $LIVE_WAIT_BOUND_MS ms")
-                runCatching { service.stopCapture() }
-                runCatching { service.waitForFileReady(2_000L) }
-                pipeline.stopAudioService()
-                return
+            SessionState.RECORDING -> {
+                // The ending as a fact for the take's row, stamped here at the ONE place it is
+                // classified; a stop the owner itself requested never reaches this branch and is
+                // stamped `manual` at the stop (issue #176).
+                takeFacts.captureTerminal = TakeFacts.captureEndingToken(ending.terminalReason)
+                // Exhaustive over CaptureEnding with no `else`, so a reason this build does not
+                // know cannot fall through into an ordinary transcription.
+                when (CaptureEnding.fromAidl(ending.terminalReason)) {
+                    // StillRunning belongs HERE. Capture that stopped without publishing a
+                    // reason has no successful ending to report, and the type says so:
+                    // StillRunning.transcribes is false. Grouping it with the successes would
+                    // send partial audio on as though it were a finished take.
+                    CaptureEnding.Failure -> {
+                        log.error("Audio capture ended without a successful reason")
+                        discardDraft()
+                        showError(TerminalReason.CAPTURE_FAILED_MID_TAKE)
+                    }
+
+                    CaptureEnding.StillRunning -> {
+                        log.error("Audio capture stopped without publishing a reason")
+                        discardDraft()
+                        showError(TerminalReason.CAPTURE_STILL_RUNNING_AFTER_STOP)
+                    }
+
+                    // The words up to the cap are kept and transcribed. What the user needs
+                    // to be told is why the recording ended without them asking, because a take
+                    // that stops on its own with no sentence reads as a fault.
+                    // Transcribe FIRST, then say why. The words are the thing that must
+                    // survive; the sentence explaining the ending is a limb, and putting it
+                    // ahead of the transition would let a failure in it cost the take.
+                    CaptureEnding.MaxDuration -> {
+                        if (enterProcessing()) {
+                            continueAfterEnding(ending)
+                            log.log("Take ended at the duration cap")
+                            sayAfterRecording(DURATION_REACHED_NOTICE)
+                        }
+                    }
+
+                    CaptureEnding.Manual,
+                    CaptureEnding.Silence -> if (enterProcessing()) continueAfterEnding(ending)
+                }
             }
-            Thread.sleep(LIVE_POLL_MS)
+            SessionState.PROCESSING -> continueAfterEnding(ending)
+            SessionState.CANCELLING -> pendingCancel?.let { cancel ->
+                pendingCancel = null
+                val cancelled = pendingCancelReason
+                scope.launch {
+                    if (!arbiter.commit(cancel, cancelled)) return@launch
+                    discardDraft()
+                    deleteCapturedAudio(ending.audioFilePath)
+                    finishTakeOrStop()
+                    finishSession()
+                }
+            }
+            SessionState.IDLE, SessionState.FINISHING, SessionState.ERROR -> Unit
         }
     }
 
     /** The one STARTING→RECORDING publication: main thread, under [publishLock]. */
-    private fun publishLive(forced: Boolean) {
+    private fun publishLive(forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) {
         check(host.onMainThread()) { "publishLive runs on the main thread" }
         synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.RECORDING)) {
-                pipeline.capture?.let { runCatching { it.stopCapture() } }
+                commandCapture("stop a take that went live after its ending") { it.stopCapture() }
                 return
             }
+            host.cancelMainDelayed(liveDeadline)
             recordingStartedAtMs = System.currentTimeMillis()
             val takeFacts = facts
-            pipeline.capture?.let { service ->
-                takeFacts.routeKind = runCatching { InputRouteKind.fromCode(service.inputRouteKind()) }.getOrNull()
-                takeFacts.routeReason = runCatching { InputRouteReason.fromCode(service.inputRouteReason()) }.getOrNull()
-                takeFacts.liveAfterMs = runCatching { service.liveAfterMs() }.getOrNull()
-            }
+            takeFacts.routeKind = runCatching { InputRouteKind.fromCode(routeKind) }.getOrNull()
+            takeFacts.routeReason = runCatching { InputRouteReason.fromCode(routeReason) }.getOrNull()
+            takeFacts.liveAfterMs = liveAfterMs
             takeFacts.liveState = if (forced) "forced" else "ready"
             Telemetry.journal?.advance(takeId, TakeStage.RECORDING)
             Telemetry.breadcrumb(
                 "take", "live",
                 mapOf("take_id" to takeId, "route_kind" to takeFacts.routeKind?.name?.lowercase(), "live_after_ms" to takeFacts.liveAfterMs, "live_state" to takeFacts.liveState),
             )
-            draftCreation = scope.async {
-                val id = transcripts.insert(
-                    TranscriptEntity(
-                        originalText = "",
-                        finalText = "",
-                        createdAtMs = System.currentTimeMillis(),
-                        durationMs = 0L,
-                        speechEngine = "Parakeet",
-                        polishEngine = PolishEngineLabels.NOT_RECORDED,
-                        polishLatencyMs = 0L,
-                        insertionResult = "pending",
-                        status = TranscriptEntity.STATUS_DRAFT,
-                    ),
-                )
+            // The FIRST queued write of the take (#115): it runs on the application's worker, under
+            // application ownership, so destroy cannot cancel it and every later write of the row is
+            // queued behind it. The id comes back through the deferred; the still-live owner attaches it
+            // to its surface from MAIN (a dead surface is never called from the queue).
+            val draft = CompletableDeferred<Long>()
+            draftCreation = draft
+            val rowTakeId = takeFacts.takeId
+            val createdAtMs = System.currentTimeMillis()
+            historyWrites.enqueue("draft insert") { repository ->
+                val id = try {
+                    repository.insert(
+                        TranscriptEntity(
+                            originalText = "",
+                            finalText = "",
+                            createdAtMs = createdAtMs,
+                            durationMs = 0L,
+                            speechEngine = "Parakeet",
+                            polishEngine = PolishEngineLabels.NOT_RECORDED,
+                            polishLatencyMs = 0L,
+                            insertionResult = "pending",
+                            status = TranscriptEntity.STATUS_DRAFT,
+                        ),
+                    )
+                } catch (error: Exception) {
+                    draft.completeExceptionally(error)
+                    throw error
+                }
+                draftId.set(id)
+                Telemetry.journal?.associate(rowTakeId, id)
+                draft.complete(id)
+            }
+            draft.invokeOnCompletion { cause ->
+                if (cause != null) return@invokeOnCompletion
+                val id = draft.getCompleted()
                 // The row's identity goes out on the bridge so a reader judges THIS take's row, never a
                 // row it guessed at by time or order (onboarding practice; Codex reviews 2 to 9).
-                surface.attachTranscript(id)
-                Telemetry.journal?.associate(takeFacts.takeId, id)
-                id
+                host.postToMain { if (!destroyed.get() && draftCreation === draft) surface.attachTranscript(id) }
             }
             host.updateSurfacePhase(DictationSurfaceState.Phase.LISTENING)
             surface.show()
             host.vibrate(HapticCue.SESSION_TRANSITION)
-            log.log("Recording started (live after ${runCatching { pipeline.capture?.liveAfterMs() }.getOrNull() ?: -1} ms, forced=$forced)")
+            log.log("Recording started (live after $liveAfterMs ms, forced=$forced)")
             if (forced) {
                 // Said first, so neither the tip nor a pick-missing line can take the slot from it.
                 forcedNoticeShown = true
                 sayWhileRecording(CaptureNotices.EARBUDS_SILENT)
             }
-            startPolling()
+            // Once, at live, from the pushed route kind (#115): the tip needs nothing more.
+            publishMicrophoneNoticesIfNeeded(routeKind)
+            // After show() stamped the take's serial, which the picture is judged against.
+            listenForPicture()
             if (stopAfterRecording) {
                 // The bubble's hold was already released. Consumed here, at the one transition the
                 // early release waits for, so a short hold keeps its words instead of losing them.
@@ -611,75 +835,6 @@ internal class DictationSessionCoordinator(
                 stopAndTranscribe()
             }
         }
-    }
-
-    private fun startPolling() {
-        Thread({
-            while (state.get() == SessionState.RECORDING) {
-                try {
-                    val service = pipeline.capture ?: break
-                    val elapsedMs = service.elapsedMs()
-                    val second = (elapsedMs / 1_000L).toInt().coerceAtLeast(0)
-                    if (second != lastElapsedSecond) {
-                        lastElapsedSecond = second
-                        surface.updateElapsed(second)
-                    }
-                    publishSilenceNoticeIfNeeded(service)
-                    publishMicrophoneNoticesIfNeeded(service)
-                    if (!service.isCapturing() && state.get() == SessionState.RECORDING) {
-                        val ending = service.terminalReason()
-                        // The ending as a fact for the take's row, stamped here at the ONE place it is
-                        // classified; a stop the owner itself requested never reaches this branch and is
-                        // stamped `manual` at the stop (issue #176).
-                        facts.captureTerminal = TakeFacts.captureEndingToken(ending)
-                        // Exhaustive over CaptureEnding with no `else`, so a reason this build does not
-                        // know cannot fall through into an ordinary transcription.
-                        when (CaptureEnding.fromAidl(ending)) {
-                            // StillRunning belongs HERE. Capture that stopped without publishing a
-                            // reason has no successful ending to report, and the type says so:
-                            // StillRunning.transcribes is false. Grouping it with the successes would
-                            // send partial audio on as though it were a finished take.
-                            CaptureEnding.Failure -> {
-                                log.error("Audio capture ended without a successful reason")
-                                discardDraft()
-                                showError(TerminalReason.CAPTURE_FAILED_MID_TAKE)
-                            }
-
-                            CaptureEnding.StillRunning -> {
-                                log.error("Audio capture stopped without publishing a reason")
-                                discardDraft()
-                                showError(TerminalReason.CAPTURE_STILL_RUNNING_AFTER_STOP)
-                            }
-
-                            // The words up to the cap are kept and transcribed. What the user needs
-                            // to be told is why the recording ended without them asking, because a take
-                            // that stops on its own with no sentence reads as a fault.
-                            // Transcribe FIRST, then say why. The words are the thing that must
-                            // survive; the sentence explaining the ending is a limb, and putting it
-                            // ahead of the transition would let a failure in it cost the take.
-                            CaptureEnding.MaxDuration -> {
-                                stopAndTranscribe()
-                                log.log("Take ended at the duration cap")
-                                sayAfterRecording(DURATION_REACHED_NOTICE)
-                            }
-
-                            CaptureEnding.Manual,
-                            CaptureEnding.Silence -> stopAndTranscribe()
-                        }
-                        break
-                    }
-                    // Both of these sit BELOW the terminal check, and the position is the isolation.
-                    // The warning is a limb: it tells the user something useful and nothing depends on
-                    // it, so a failure in it must not carry the loop past the check that starts
-                    // transcription. Above the check, a throw here would cost the take.
-                    publishDurationWarningIfNeeded(elapsedMs)
-                } catch (_: Exception) {
-                    // A binder disconnect is handled by its ServiceConnection callback.
-                }
-                Thread.sleep(100)
-            }
-        }, "DictationPollingThread").start()
-        listenForPicture()
     }
 
     /**
@@ -694,16 +849,19 @@ internal class DictationSessionCoordinator(
      *
      * Take identity is the snapshot's serial, captured here after `show()` stamped it and stamped on every
      * picture; `updateBands` refuses a picture whose serial is not the visible take's, under its own lock.
-     * A picture that never arrives (a wedged audio process, #115) leaves the rail holding its last shape
-     * until the pill hides, as the timer holds its last second. `finishSession` unregisters.
+     * A picture that never arrives leaves the rail holding its last shape until the pill hides; a capture
+     * process that also stops publishing take events ends the take through the silence bound (#115). The
+     * registration dies with the binding.
      *
-     * Failing to register costs the picture only: the take and its polling thread carry on.
+     * Failing to register costs the picture only: the take carries on.
      */
     private fun listenForPicture() {
+        // The serial is read HERE, on main, right after show() stamped it; only the binder call moves to
+        // the lane (#115 review round 1, F1).
         val takeSerial = surface.currentTakeSerial()
-        runCatching {
-            pipeline.capture?.listenForSpectrum { bands -> surface.updateBands(takeSerial, bands) }
-        }.onFailure { log.warn("Live picture unavailable for this take: ${it.message}") }
+        commandCapture("listen for the picture") { capture ->
+            capture.listenForSpectrum { bands -> surface.updateBands(takeSerial, bands) }
+        }
     }
 
     /**
@@ -713,9 +871,9 @@ internal class DictationSessionCoordinator(
      * several seconds into one is an interruption for nothing. The floating recorder only exists while
      * the accessibility service runs, so clipboard-only mode gets the same sentence as a toast instead.
      */
-    private fun publishSilenceNoticeIfNeeded(service: CaptureLink) {
+    private fun publishSilenceNoticeIfNeeded(status: Int) {
         if (!sessionPreferences.autoStopOnSilence || silenceNoticeShown) return
-        val status = runCatching { service.silenceStopStatus() }.getOrNull() ?: return
+        if (state.get() != SessionState.RECORDING) return
         if (status != AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return
         silenceNoticeShown = true
         sayWhileRecording(SILENCE_UNAVAILABLE_NOTICE)
@@ -733,9 +891,8 @@ internal class DictationSessionCoordinator(
      * The tip's once-per-process allowance is spent only when the tip is actually said, so a take that
      * had to say something else leaves it for the next Bluetooth take (Codex review 5, 2026-09-17).
      */
-    private fun publishMicrophoneNoticesIfNeeded(service: CaptureLink) {
+    private fun publishMicrophoneNoticesIfNeeded(kind: Int) {
         if (silenceNoticeShown || forcedNoticeShown) return
-        val kind = runCatching { service.inputRouteKind() }.getOrNull() ?: return
         if (tipGate.shouldShow(kind, sessionPreferences.showBluetoothTips)) {
             log.log("Bluetooth tip shown")
             sayWhileRecording(CaptureNotices.BLUETOOTH_TIP)
@@ -783,51 +940,49 @@ internal class DictationSessionCoordinator(
         }
     }
 
+    /**
+     * RECORDING → PROCESSING, the user's stop. The capture process is told to stop; the transcription
+     * continues in [continueAfterEnding] when it publishes the ending with the closed file (#115). If it
+     * never does, the silence bound ends the take as the close that never came.
+     */
     private fun stopAndTranscribe() {
-        // Under publishLock: the live waiter publishes RECORDING (pill, draft) under the same lock, so a
-        // stop that follows its CAS cannot run ahead of its publication (Codex review 3, 2026-09-18).
+        if (!enterProcessing()) return
+        commandCapture("stop") { it.stopCapture() }
+    }
+
+    /** The one RECORDING → PROCESSING transition, under [publishLock] (Codex review 3, 2026-09-18). */
+    private fun enterProcessing(): Boolean {
+        // Under publishLock: live publishes RECORDING (pill, draft) under the same lock, so a stop that
+        // follows its CAS cannot run ahead of its publication.
         synchronized(publishLock) {
-            if (!state.compareAndSet(SessionState.RECORDING, SessionState.PROCESSING)) return
+            if (!state.compareAndSet(SessionState.RECORDING, SessionState.PROCESSING)) return false
             surface.showProcessing()
         }
         host.updateSurfacePhase(DictationSurfaceState.Phase.PROCESSING)
         host.promoteToForeground(processing = true)
         host.vibrate(HapticCue.SESSION_TRANSITION)
         log.log("Stopping recording and starting transcription")
+        return true
+    }
 
-        Thread({
-            var audioReady = false
+    /**
+     * PROCESSING, with the capture process's ending in hand: the file is closed and every fact about the
+     * take is on the event (#115). Runs on the owner's scope; nothing here asks the capture process.
+     */
+    private fun continueAfterEnding(ending: TakeEnding) {
+        scope.launch {
             try {
-                pipeline.capture?.stopCapture()
-                audioReady = runCatching { pipeline.capture?.waitForFileReady(2_000L) == true }.getOrDefault(false)
-                if (!audioReady) {
-                    pipeline.stopAudioService()
-                    discardDraft()
-                    showError(TerminalReason.CAPTURE_CLOSE_UNSAFE)
-                    return@Thread
-                }
-                val audioFilePath = pipeline.capture?.audioFilePath()
+                val audioFilePath = ending.audioFilePath
                 // The duration is the audio's own length, read from the finished file NOW, before
-                // transcription deletes it: the elapsed getter is 0 once capture stops, and the wall
-                // clock counted the wait for the earbuds.
+                // transcription deletes it: the wall clock counted the wait for the earbuds.
                 recordingDurationMs = runCatching {
                     audioFilePath?.let { (PcmAudio.durationSeconds(File(it).length()) * 1000f).toLong() }
                 }.getOrNull()?.coerceAtLeast(0L) ?: 0L
-                // Complete once the capture thread has exited (waitForFileReady above joined it): the
-                // final route was observed before the recorder stopped, and the label persists in the
-                // capture process until its next start.
-                captureDeviceLabel = runCatching { pipeline.capture?.effectiveInputDevice() }.getOrNull().orEmpty()
-                // Same moment, same reason: the capture thread has exited, so the peak is the whole take's.
-                takePeakAmplitude = runCatching { pipeline.capture?.takePeakAmplitude() }.getOrNull()
                 val takeFacts = facts
-                takeFacts.peakAmplitude = takePeakAmplitude
                 takeFacts.recordingSeconds = recordingDurationMs / 1000.0
-                // Stamped by the polling loop when capture ended on its own; otherwise this stop is the
+                // Stamped by the ending handler when capture ended on its own; otherwise this stop is the
                 // owner's own request, which the capture process reports as a manual ending.
                 if (takeFacts.captureTerminal == null) takeFacts.captureTerminal = TakeFacts.MANUAL_ENDING
-                pipeline.capture?.let { service ->
-                    takeFacts.silenceStopStatus = runCatching { TakeFacts.silenceStatusToken(service.silenceStopStatus()) }.getOrNull()
-                }
                 Telemetry.journal?.advance(takeId, TakeStage.PROCESSING)
                 Telemetry.breadcrumb(
                     "take", "stopped",
@@ -835,22 +990,20 @@ internal class DictationSessionCoordinator(
                 )
                 finishTakeOrStop()
 
-                val readyDraftId = runCatching { runBlocking { draftCreation?.await() ?: 0L } }.getOrDefault(0L)
-                if (readyDraftId > 0L) {
-                    draftId.set(readyDraftId)
-                    updateDraftStatus(TranscriptEntity.STATUS_PROCESSING)
-                }
+                // Queued behind the draft insert; the id is resolved on the worker (#115). Nothing here
+                // waits on storage.
+                updateDraftStatus(TranscriptEntity.STATUS_PROCESSING)
                 if (audioFilePath.isNullOrBlank()) {
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                     showError(TerminalReason.AUDIO_FILE_MISSING)
-                    return@Thread
+                    return@launch
                 }
                 val speechService = pipeline.speech
                 if (speechService == null) {
                     deleteCapturedAudio(audioFilePath)
                     updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                     showError(TerminalReason.ASR_NOT_READY)
-                    return@Thread
+                    return@launch
                 }
                 log.mark("asr_request")
                 val asrRequestedAtMs = host.elapsedRealtimeMs()
@@ -894,12 +1047,12 @@ internal class DictationSessionCoordinator(
                 })
             } catch (error: Exception) {
                 pipeline.stopAudioService()
-                if (audioReady) deleteCapturedAudio(runCatching { pipeline.capture?.audioFilePath() }.getOrNull())
+                deleteCapturedAudio(ending.audioFilePath)
                 log.error("Transcription failed", error)
                 updateDraftStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                 showError(TerminalReason.ASR_CALLBACK_EXCEPTION)
             }
-        }, "TranscribeThread").start()
+        }
     }
 
     private fun polishAndPublish(rawText: String) {
@@ -1065,8 +1218,9 @@ internal class DictationSessionCoordinator(
     /**
      * The one place a polish outcome becomes a History row and, when it did not do its job, a sentence
      * (#77). Two routes reach it, the outcome callback and `publishFallback`; the facts are derived once
-     * here, and the notice is posted BEFORE persistence and insertion begin so it precedes the delivery
-     * line when both fire.
+     * here. The History write is enqueued WITH the reservation (#115); the notice is posted before the
+     * owner's continuation (the commit, the handoff) starts, so it precedes the delivery line when both
+     * fire.
      */
     private fun publishResult(
         text: String,
@@ -1086,21 +1240,62 @@ internal class DictationSessionCoordinator(
         takeFacts.polishStatus = statusCode
         Telemetry.breadcrumb("take", "polish_done", mapOf("take_id" to takeId, "polish_reason" to reason.name, "polish_ms" to latencyMs, "polish_provider" to takeFacts.polishProvider))
         TelemetryChannels.defectOf(reason)?.let { Telemetry.defect(it, mapOf("take_id" to takeId, "polish_status" to statusCode)) }
+        // The immutable payload FIRST, so the reservation and its write can be one operation below.
+        val finalText = text.ifBlank { rawTranscript }
+        val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine
+        val originalText = rawTranscript
+        val durationMs = recordingDurationMs
+        val captureDevice = captureDeviceLabel
+        val polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext)
         // RESERVE, never commit: `completed` is unknown until the History save returns (G2 D2). A cancel
-        // that already owns the take, or a second final callback, loses here and does nothing.
-        val publication = arbiter.reserve(Claimants.PUBLICATION)
+        // that already owns the take, or a second final callback, loses here and does nothing. Under
+        // publishLock, and the write is ENQUEUED in the same operation (#115): destroy takes the same lock
+        // before enqueueing `interrupted`, so a reserved finalization is always queued ahead of it and
+        // `interrupted` is the last word on the row.
+        val saved = CompletableDeferred<Result<Long>>()
+        val publication = synchronized(publishLock) {
+            val reserved = arbiter.reserve(Claimants.PUBLICATION) ?: return@synchronized null
+            if (finalText.isNotBlank()) {
+                historyWrites.enqueue("finalize") { repository ->
+                    saved.complete(
+                        runCatching {
+                            val existingId = resolvedDraftId()
+                            val persistedId = if (existingId > 0L) {
+                                val updated = repository.finalize(
+                                    id = existingId,
+                                    originalText = originalText,
+                                    finalText = finalText,
+                                    speechEngine = "Parakeet",
+                                    polishEngine = finalEngine,
+                                    polishLatencyMs = latencyMs,
+                                    insertionResult = "pending",
+                                    durationMs = durationMs,
+                                    polishReason = polishFacts.reasonToken,
+                                    polishStatus = polishFacts.statusCode,
+                                    polishContext = polishFacts.contextToken,
+                                    captureDevice = captureDevice,
+                                )
+                                if (updated > 0) existingId else repository.insertReadyTranscript(originalText, finalText, finalEngine, latencyMs, durationMs, captureDevice, polishFacts)
+                            } else {
+                                repository.insertReadyTranscript(originalText, finalText, finalEngine, latencyMs, durationMs, captureDevice, polishFacts)
+                            }
+                            draftId.set(persistedId)
+                            persistedId
+                        },
+                    )
+                }
+            }
+            reserved
+        }
         if (publication == null) {
             log.warn("Ignoring a final transcript that arrived after the take was claimed")
             return
         }
-        val finalText = text.ifBlank { rawTranscript }
-        val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine
         log.log("Polish result received ($finalEngine, ${latencyMs}ms, chars=${finalText.length})")
         if (finalText.isBlank()) {
             if (arbiter.commit(publication, TerminalReason.FINAL_TEXT_EMPTY)) finishSession()
             return
         }
-        val polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext)
         polishFacts.notice?.let { notice ->
             log.log("Polish notice shown: ${polishFacts.failure}")
             host.postToMain {
@@ -1110,30 +1305,8 @@ internal class DictationSessionCoordinator(
         }
 
         scope.launch {
-            val saveResult = runCatching {
-                val existingId = draftId.get()
-                val persistedId = if (existingId > 0L) {
-                    val updated = transcripts.finalize(
-                        id = existingId,
-                        originalText = rawTranscript,
-                        finalText = finalText,
-                        speechEngine = "Parakeet",
-                        polishEngine = finalEngine,
-                        polishLatencyMs = latencyMs,
-                        insertionResult = "pending",
-                        durationMs = recordingDurationMs,
-                        polishReason = polishFacts.reasonToken,
-                        polishStatus = polishFacts.statusCode,
-                        polishContext = polishFacts.contextToken,
-                        captureDevice = captureDeviceLabel,
-                    )
-                    if (updated > 0) existingId else insertReadyTranscript(finalText, finalEngine, latencyMs, polishFacts)
-                } else {
-                    insertReadyTranscript(finalText, finalEngine, latencyMs, polishFacts)
-                }
-                draftId.set(persistedId)
-                persistedId
-            }
+            // The save's result, from the queue's worker; the owner's coroutine waits on it, main never.
+            val saveResult = saved.await()
             val persistedId = saveResult.getOrNull() ?: 0L
             takeFacts.historySave = if (saveResult.isSuccess) "ok" else "failed"
             saveResult.exceptionOrNull()?.let { error ->
@@ -1229,25 +1402,32 @@ internal class DictationSessionCoordinator(
         }
     }
 
-    private suspend fun insertReadyTranscript(finalText: String, engine: String, latencyMs: Long, polishFacts: PolishPublicationFacts): Long {
-        return transcripts.insert(
-            TranscriptEntity(
-                originalText = rawTranscript,
-                finalText = finalText,
-                createdAtMs = System.currentTimeMillis(),
-                durationMs = recordingDurationMs,
-                speechEngine = "Parakeet",
-                polishEngine = engine,
-                polishLatencyMs = latencyMs,
-                insertionResult = "pending",
-                status = TranscriptEntity.STATUS_READY_FOR_INSERTION,
-                polishReason = polishFacts.reasonToken,
-                polishStatus = polishFacts.statusCode,
-                polishContext = polishFacts.contextToken,
-                captureDevice = captureDeviceLabel,
-            ),
-        )
-    }
+    /** The ready row when there is no draft to finalize; every value is the payload's, read before the reservation. */
+    private suspend fun TranscriptRepository.insertReadyTranscript(
+        originalText: String,
+        finalText: String,
+        engine: String,
+        latencyMs: Long,
+        durationMs: Long,
+        captureDevice: String,
+        polishFacts: PolishPublicationFacts,
+    ): Long = insert(
+        TranscriptEntity(
+            originalText = originalText,
+            finalText = finalText,
+            createdAtMs = System.currentTimeMillis(),
+            durationMs = durationMs,
+            speechEngine = "Parakeet",
+            polishEngine = engine,
+            polishLatencyMs = latencyMs,
+            insertionResult = "pending",
+            status = TranscriptEntity.STATUS_READY_FOR_INSERTION,
+            polishReason = polishFacts.reasonToken,
+            polishStatus = polishFacts.statusCode,
+            polishContext = polishFacts.contextToken,
+            captureDevice = captureDevice,
+        ),
+    )
 
     /** @return whether the words actually reached the clipboard, which the copy depends on. */
     private suspend fun keepOnClipboard(
@@ -1257,15 +1437,13 @@ internal class DictationSessionCoordinator(
         val copied = host.copyToClipboard(text)
         if (transcriptId <= 0L) return copied
 
-        runCatching {
-            transcripts.finalizeInsertionOutcome(
+        historyWrites.enqueue("clipboard-only outcome") { repository ->
+            repository.finalizeInsertionOutcome(
                 transcriptId,
                 TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
                 if (copied) InsertionResults.CLIPBOARD else InsertionResults.INSERTION_FAILED,
                 interrupted = true,
             )
-        }.onFailure { error ->
-            log.warn("Unable to finalize clipboard-only history: ${error.message}")
         }
         return copied
     }
@@ -1295,17 +1473,15 @@ internal class DictationSessionCoordinator(
         }
     }
 
-    private suspend fun keepInHistoryOnly(transcriptId: Long) {
+    private fun keepInHistoryOnly(transcriptId: Long) {
         if (transcriptId <= 0L) return
-        runCatching {
-            transcripts.finalizeInsertionOutcome(
+        historyWrites.enqueue("history-only outcome") { repository ->
+            repository.finalizeInsertionOutcome(
                 transcriptId,
                 TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
                 InsertionResults.HISTORY_ONLY,
                 interrupted = true,
             )
-        }.onFailure { error ->
-            log.warn("Unable to finalize history-only transcript: ${error.message}")
         }
     }
 
@@ -1328,43 +1504,47 @@ internal class DictationSessionCoordinator(
         insertion.releasePinnedTarget()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
         host.vibrate(HapticCue.SESSION_CANCELED)
-        scope.launch {
-            // A cancel before the capture process was even bound has nothing to stop: the quiet finish
-            // the old cancelStarting always took. Committed BEFORE the draft goes (G2 D2).
-            val service = pipeline.capture
-            if (service == null) {
+        // A cancel before the capture process was even bound has nothing to stop: the quiet finish the
+        // old cancelStarting always took. Committed BEFORE the draft goes (G2 D2).
+        val service = pipeline.capture
+        if (service == null) {
+            scope.launch {
                 if (!arbiter.commit(cancel, cancelled)) return@launch
                 discardDraft()
                 finishSession()
-                return@launch
             }
-            val ready = runCatching {
-                service.stopCapture()
-                service.waitForFileReady(2_000L)
-            }.getOrDefault(false)
-            // The outcome is known only now: a close that failed is a failure, not a cancel.
-            if (!ready) {
-                if (!arbiter.commit(cancel, TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)) return@launch
-                pipeline.stopAudioService()
-                discardDraft()
-                endAsFailure(TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)
-                return@launch
-            }
-            if (!arbiter.commit(cancel, cancelled)) return@launch
-            discardDraft()
-            deleteCapturedAudio(runCatching { service.audioFilePath() }.getOrNull())
-            finishTakeOrStop()
-            finishSession()
+            return
         }
+        // Otherwise the capture process is told to stop and the cancel is committed when it publishes the
+        // ending with the closed file (`onTakeEnded`, #115); a close that never comes is ended by the
+        // silence bound as CAPTURE_CLOSE_UNSAFE_ON_CANCEL, a failure and not a cancel, as before.
+        if (endingConsumed.get()) {
+            // The ending already arrived (a take that ended on its own as the cancel landed): commit now.
+            scope.launch {
+                if (!arbiter.commit(cancel, cancelled)) return@launch
+                discardDraft()
+                finishTakeOrStop()
+                finishSession()
+            }
+            return
+        }
+        pendingCancelReason = cancelled
+        pendingCancel = cancel
+        commandCapture("stop for a cancel") { it.stopCapture() }
     }
 
     /**
      * The take is over: let the capture service keep the earbuds warm if it can (it then owns its own
-     * lifetime and the unbind must not stop it), otherwise stop it as before.
+     * lifetime and the unbind must not stop it), otherwise stop it as before. Issued on the lane and never
+     * awaited (#115 review round 1, F3): a process that answered its ending and then wedged must not hold
+     * the transcription; a call that fails or is never issued stops the service by intent.
      */
     private fun finishTakeOrStop() {
-        val held = runCatching { pipeline.capture?.finishTake() == true }.getOrDefault(false)
-        if (!held) pipeline.stopAudioService()
+        val issued = commandCapture("finishTake") { capture ->
+            val held = runCatching { capture.finishTake() }.getOrDefault(false)
+            if (!held) pipeline.stopAudioService()
+        }
+        if (!issued) pipeline.stopAudioService()
     }
 
     /**
@@ -1467,13 +1647,14 @@ internal class DictationSessionCoordinator(
         cancelOpenPolishRequest()
         surface.showProcessing()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
-        val historyUpdates = synchronized(pendingHistoryUpdates) { pendingHistoryUpdates.toList() }
+        // The take's History writes are on the application's queue, in order; nothing here waits for
+        // them (#115). The Service may stop while the last of them is still landing.
         scope.launch {
-            historyUpdates.joinAll()
             host.postToMain {
                 cancelOpenPolishRequest()
-                // The picture subscription goes with the binding; a failure here costs nothing.
-                runCatching { pipeline.capture?.stopListeningForSpectrum() }
+                // Both subscriptions go with the binding; nothing is called on the capture process here,
+                // which may be the unresponsive process this take just ended over (#115).
+                disarmSilenceBound()
                 pipeline.unbind()
                 host.removeForegroundAndDismiss()
                 // IDLE is published at the last moment this instance can still refuse a start: the
@@ -1501,17 +1682,18 @@ internal class DictationSessionCoordinator(
     }
 
     private fun updateDraftStatus(status: String, interrupted: Boolean = false, insertionResult: String? = null) {
-        val update = scope.launch(start = CoroutineStart.LAZY) {
-            setDraftStatus(status, interrupted, insertionResult)
+        historyWrites.enqueue("draft status") { repository ->
+            val id = resolvedDraftId()
+            if (id > 0L) repository.updateStatus(id, status, interrupted, insertionResult)
         }
-        pendingHistoryUpdates += update
-        update.start()
     }
 
-    private suspend fun setDraftStatus(status: String, interrupted: Boolean = false, insertionResult: String? = null) {
-        val id = draftId.get().takeIf { it > 0L } ?: runCatching { draftCreation?.await() ?: 0L }.getOrDefault(0L)
-        if (id > 0L) transcripts.updateStatus(id, status, interrupted, insertionResult)
-    }
+    /**
+     * The row's id, ON THE QUEUE'S WORKER: the draft insert is queued before every other write of the row,
+     * so this awaits at most a write already applied; a failed insert or a take that never went live is 0.
+     */
+    private suspend fun resolvedDraftId(): Long =
+        draftId.get().takeIf { it > 0L } ?: runCatching { draftCreation?.await() ?: 0L }.getOrDefault(0L)
 
     /**
      * A dictation that produced no words leaves nothing behind.
@@ -1539,34 +1721,33 @@ internal class DictationSessionCoordinator(
      * anything and the row is the only signal that words were lost. That is why the prune leaves
      * `interrupted` rows alone.
      *
-     * The id is cleared after the delete. That does not make a late write impossible — `setDraftStatus`
-     * can still resolve the completed `draftCreation` to the old id — it makes one harmless: the
+     * The id is cleared after the delete. That does not make a late write impossible — a later queued
+     * write can still resolve the completed `draftCreation` to the old id — it makes one harmless: the
      * `UPDATE` matches zero rows and cannot bring the draft back.
      */
     private fun discardDraft() {
-        val discard = scope.launch(start = CoroutineStart.LAZY) {
-            val id = draftId.get().takeIf { it > 0L }
-                ?: runCatching { draftCreation?.await() ?: 0L }.getOrDefault(0L)
+        historyWrites.enqueue("discard") { repository ->
+            val id = resolvedDraftId()
             if (id > 0L) {
-                transcripts.discard(id)
+                repository.discard(id)
                 draftId.set(0L)
             }
         }
-        pendingHistoryUpdates += discard
-        discard.start()
     }
 
     /**
-     * The Service's `onDestroy` body, in the order it always ran: invalidate under [publishLock], close
-     * the ledger, resolve the interrupted row while its creation job is alive, cancel and join the
-     * session job, write `interrupted`, then clean up capture on its own thread or unbind here. The
-     * Service stops foreground and dismisses the notification after this returns. The `runBlocking`
-     * calls are a known conflict with `kotlin-patterns.md` RULE: never-block-a-binder-or-ui-thread,
-     * carried unchanged; #115 owns their removal.
+     * The Service's `onDestroy` body, on the main thread and never waiting on anything (#115): invalidate
+     * and claim the arbiter under [publishLock], and in the SAME operation enqueue the `interrupted` write
+     * when the interrupt won; disarm the bound; cancel the session job without joining it; cancel polish;
+     * then clean up capture on its own thread or unbind here. The Service stops foreground and dismisses
+     * the notification after this returns. A finalization reserved before this took the lock is already
+     * queued ahead of `interrupted`, so `interrupted` is the last word on the row; one not yet reserved
+     * loses the arbiter to this interrupt and never enqueues.
      */
     fun destroy() {
-        // Invalidate a live wait or a running take BEFORE any blocking cleanup, under the same lock the
-        // waiter publishes under: after this, no pill can appear for a take being torn down.
+        destroyed.set(true)
+        // Invalidate a live wait or a running take BEFORE any cleanup, under the same lock the live
+        // transition publishes under: after this, no pill can appear for a take being torn down.
         val destroyedState = synchronized(publishLock) {
             val seen = state.get()
             if (seen == SessionState.STARTING || seen == SessionState.RECORDING) state.set(SessionState.ERROR)
@@ -1574,71 +1755,58 @@ internal class DictationSessionCoordinator(
             // The synchronous lifecycle decision (G2 D2): `interrupted` is committed only when nothing
             // was, and it revokes an outstanding publication or cancel reservation so the displaced
             // worker can no longer commit, announce or hand off. Nothing here waits on storage.
-            when (seen) {
+            val interrupted = when (seen) {
                 SessionState.STARTING -> arbiter.interrupt(TerminalReason.INTERRUPTED_STARTING)
                 SessionState.RECORDING -> arbiter.interrupt(TerminalReason.INTERRUPTED_RECORDING)
                 SessionState.PROCESSING -> arbiter.interrupt(TerminalReason.INTERRUPTED_PROCESSING)
                 SessionState.CANCELLING -> arbiter.interrupt(TerminalReason.INTERRUPTED_CANCELLING)
                 SessionState.IDLE, SessionState.FINISHING, SessionState.ERROR -> false
             }
+            if (interrupted) {
+                // Only when the interrupt WON: every terminal commit site owns its own later status or
+                // discard write, and a reserved finalization is already queued (plan §3 C1).
+                historyWrites.enqueue("interrupted") { repository ->
+                    val id = resolvedDraftId()
+                    if (id > 0L) {
+                        repository.updateStatus(
+                            id,
+                            TranscriptEntity.STATUS_INTERRUPTED,
+                            interrupted = true,
+                            insertionResult = "not_attempted",
+                        )
+                    }
+                }
+            }
             seen
         }
+        // Both delayed callbacks go now, on main, before any blocking cleanup: a bound firing into a
+        // destroyed owner would act on a Service that is gone (#115 review round 1, F4).
+        disarmSilenceBound()
         cancelOpenPolishRequest()
         val sessionWasOpen = destroyedState == SessionState.STARTING ||
             destroyedState == SessionState.RECORDING ||
             destroyedState == SessionState.PROCESSING ||
             destroyedState == SessionState.CANCELLING
-        val interruptedDraftId = if (sessionWasOpen) {
-            runCatching {
-                runBlocking(Dispatchers.IO) {
-                    draftId.get().takeIf { it > 0L }
-                        ?: draftCreation?.await()?.takeIf { it > 0L }
-                        ?: 0L
-                }
-            }.onFailure { error ->
-                log.warn("Unable to resolve interrupted history row during teardown: ${error.message}")
-            }.getOrDefault(0L)
-        } else {
-            0L
-        }
-        // Stop any in-flight finalization before writing the terminal teardown state.
-        // This keeps a late polish callback from changing an interrupted row back to ready.
-        runBlocking(Dispatchers.IO) {
-            serviceJob.cancel()
-            serviceJob.join()
-        }
-        if (interruptedDraftId > 0L) {
-            runCatching {
-                runBlocking(Dispatchers.IO) {
-                    transcripts.updateStatus(
-                        interruptedDraftId,
-                        TranscriptEntity.STATUS_INTERRUPTED,
-                        interrupted = true,
-                        insertionResult = "not_attempted",
-                    )
-                }
-            }.onFailure { error ->
-                log.warn("Unable to mark interrupted session during teardown: ${error.message}")
-            }
-        }
+        // Cancelled, never joined (#115): a late polish callback cannot restore `ready` after
+        // `interrupted` because the finalization it would write either lost the arbiter above or was
+        // already queued ahead of the `interrupted` write.
+        serviceJob.cancel()
         val captureRunning = destroyedState == SessionState.RECORDING || destroyedState == SessionState.STARTING
         if (captureRunning && teardownStarted.compareAndSet(false, true)) {
-            // Captures the link and the controller only: the Service is dead once `onDestroy` returns,
-            // and this thread outlives it (`PipelineBindings` binds through the application context).
-            val capture = pipeline.capture
-            val pipeline = pipeline
-            Thread({
-                runCatching { capture?.stopCapture() }
-                val ready = runCatching { capture?.waitForFileReady(2_000L) == true }.getOrDefault(false)
-                if (ready) deleteCapturedAudio(runCatching { capture?.audioFilePath() }.getOrNull())
-                pipeline.stopAudioService()
-                pipeline.postUnbindToMain(::cancelOpenPolishRequest)
-            }, "DestroyedSessionCleanup").start()
-        } else {
-            if (sessionWasOpen) pipeline.stopAudioService()
-            cancelOpenPolishRequest()
-            pipeline.unbind()
+            // Down the lane, like every other call into the capture process (#115): the lane's daemon
+            // thread outlives the Service, and the link it captured stays valid after the unbind below.
+            // The file is the capture process's one cache file and the next take overwrites it; nothing
+            // waits for it here.
+            commandCapture("stop at destroy") { it.stopCapture() }
         }
+        // The service is stopped by intent whether or not that stop is ever delivered (a wedged process
+        // gets neither, and the OS or the user ends it); the bindings go now, on main, with nothing waited
+        // for.
+        if (sessionWasOpen) pipeline.stopAudioService()
+        cancelOpenPolishRequest()
+        pipeline.unbind()
+        // No further command is accepted; the stop above, if queued, still runs on the lane's own thread.
+        captureCommands.shutdown()
     }
 }
 

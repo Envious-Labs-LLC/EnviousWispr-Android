@@ -166,6 +166,30 @@ class SessionOwnerShapeTest {
         return result
     }
 
+    /**
+     * Drift Guard (#115): the owner never blocks and never polls. No `runBlocking`, no thread of its own,
+     * no sleep in the coordinator; no `runBlocking` or join in the three teardowns (the owner's `destroy`,
+     * the paste service's and the audio service's `onDestroy`). A blocking wait that comes back here is
+     * the hang this change removed, wherever it is placed. REVERT: restore any one of them.
+     */
+    @Test
+    fun theOwnerNeverBlocksAndNeverPolls() {
+        val coordinator = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        listOf("runBlocking", "Thread.sleep", "startPolling", "waitForFileReady", "Thread.join", ".join(").forEach {
+            assertFalse("the coordinator must not contain $it", coordinator.contains(it))
+        }
+        // The ONE thread the owner makes is the capture command lane's, inside its executor's factory;
+        // no other `Thread(` may appear (the old live waiter, poller, transcribe and cleanup threads).
+        assertEquals("one Thread( in the coordinator, the lane's", 1, Regex("""(^|[^A-Za-z0-9_.])Thread\(""").findAll(coordinator).count())
+        assertTrue(coordinator.contains("Thread(runnable, \"CaptureCommands\")"))
+        val paste = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText().substringAfter("override fun onDestroy()")
+        listOf("runBlocking", "joinAll", ".join(").forEach { assertFalse("the paste service's onDestroy must not contain $it", paste.contains(it)) }
+        assertTrue("the clean-stop marker is written in onDestroy itself, last", paste.substringBefore("super.onDestroy()").trimEnd().endsWith("markStopWasClean()"))
+        assertFalse("and never queued behind a History write", paste.contains("enqueue(\"clean-stop marker\")"))
+        val audio = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText().substringAfter("override fun onDestroy()")
+        listOf("runBlocking", ".join(", "Thread.sleep").forEach { assertFalse("the audio service's onDestroy must not contain $it", audio.contains(it)) }
+    }
+
     @Test
     fun serviceLineCountIsReported() {
         // A metric for the reader of the test output, not a threshold: 1,937 lines before #186.

@@ -30,6 +30,8 @@ internal class DetectorFeed(
     private val bind: (ServiceConnection) -> Boolean,
     private val unbind: (ServiceConnection) -> Unit,
     private val interrupt: (Thread) -> Unit = { it.interrupt() },
+    /** Fired with the new code at each of the three status writes, for the take-event push (#115). */
+    private val onStatus: (Int) -> Unit = {},
 ) {
     companion object {
         /**
@@ -87,6 +89,7 @@ internal class DetectorFeed(
     /** The caller asked for auto-stop and cannot have it (an out-of-range pause): the notice's state. */
     fun markRequestedButRefused() {
         silenceStatus.set(AudioCaptureService.SILENCE_STATUS_UNAVAILABLE)
+        onStatus(AudioCaptureService.SILENCE_STATUS_UNAVAILABLE)
     }
 
     /**
@@ -254,10 +257,13 @@ internal class DetectorFeed(
                         return
                     }
                     started = true
-                    silenceStatus.compareAndSet(
-                        AudioCaptureService.SILENCE_STATUS_PREPARING,
-                        AudioCaptureService.SILENCE_STATUS_READY,
-                    )
+                    if (silenceStatus.compareAndSet(
+                            AudioCaptureService.SILENCE_STATUS_PREPARING,
+                            AudioCaptureService.SILENCE_STATUS_READY,
+                        )
+                    ) {
+                        onStatus(AudioCaptureService.SILENCE_STATUS_READY)
+                    }
                 }
 
                 val length = ring.poll(block)
@@ -321,7 +327,10 @@ internal class DetectorFeed(
                 AudioCaptureService.SILENCE_STATUS_READY -> AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY
                 else -> AudioCaptureService.SILENCE_STATUS_UNAVAILABLE
             }
-            if (silenceStatus.compareAndSet(previous, next)) return
+            if (silenceStatus.compareAndSet(previous, next)) {
+                onStatus(next)
+                return
+            }
         }
     }
 

@@ -46,7 +46,11 @@ class LipsBubbleWiringTest {
             val body = session.substringAfter(head).substringBefore("\n    private fun ")
             assertTrue("$head delegates to the shared cancel", body.contains("cancelCaptureAndFinish("))
         }
-        listOf("private fun stopAndTranscribe()", "private fun cancelCaptureAndFinish(", "private fun announceError(")
+        // The stop delegates to the one RECORDING to PROCESSING transition (#115); it publishes there.
+        val stop = session.substringAfter("private fun stopAndTranscribe()").substringBefore("\n    private fun ")
+        assertTrue("stopAndTranscribe enters PROCESSING through the shared transition", stop.contains("enterProcessing()"))
+        assertFalse(stop.contains("surface.hide()"))
+        listOf("private fun enterProcessing()", "private fun cancelCaptureAndFinish(", "private fun announceError(")
             .forEach { head ->
                 val body = session.substringAfter(head).substringBefore("\n    private fun ")
                 assertTrue("$head must publish PROCESSING", body.contains("surface.showProcessing()"))

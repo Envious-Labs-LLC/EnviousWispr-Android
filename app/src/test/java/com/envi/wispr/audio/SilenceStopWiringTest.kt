@@ -58,6 +58,8 @@ class SilenceStopWiringTest {
                 "startCaptureForTake", "getTakePeakAmplitude",
                 // 2026-09-21, the pushed picture (#187): appended, never inserted.
                 "registerSpectrumListener", "unregisterSpectrumListener",
+                // 2026-09-21, the pushed take events (#115): appended, never inserted.
+                "registerTakeListener", "unregisterTakeListener",
             ),
             order,
         )

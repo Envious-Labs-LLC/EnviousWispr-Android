@@ -34,14 +34,19 @@ class PolishPublicationRoutesTest {
         assertEquals(1, Regex("""\bpublishResult\(""").findAll(fallback).count())
     }
 
-    @Test fun theFactsAreDerivedExactlyOnceAndTheNoticePrecedesPersistence() {
+    @Test fun theFactsAreDerivedOnceTheWriteIsEnqueuedWithTheReservationAndTheNoticePrecedesTheContinuation() {
         assertEquals(1, Regex("""PolishPublicationFacts\.from\(""").findAll(source).count())
-        val publication = section("private fun publishResult(", "private suspend fun insertReadyTranscript")
+        val publication = section("private fun publishResult(", "private suspend fun TranscriptRepository.insertReadyTranscript")
         val notice = publication.indexOf("host.showPolishNotice(notice)")
         // The host delegate must still reach the notification controller (Codex review C1, 2026-09-20).
         assertTrue(File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText().contains("DictationNotificationController.showPolishNotice(this@DictationSessionService, notice)"))
-        val persistence = publication.indexOf("scope.launch")
-        assertTrue("the notice is posted before the persistence coroutine starts", notice >= 0 && notice < persistence)
+        // Since #115 the History write is ENQUEUED in the same operation as the reservation, under the
+        // publish lock, so it precedes the notice in the source; the notice still precedes the owner's
+        // continuation coroutine, which is where the save's result is consumed.
+        val reservation = publication.indexOf("historyWrites.enqueue(\"finalize\")")
+        val continuation = publication.indexOf("scope.launch")
+        assertTrue("the write is enqueued with the reservation", reservation >= 0 && reservation < notice)
+        assertTrue("the notice is posted before the continuation coroutine starts", notice >= 0 && notice < continuation)
     }
 
     @Test fun theEightFallbackProducersCarryTheirReasonsAndTheReadyInsertStoresAllThreeFacts() {
@@ -49,7 +54,7 @@ class PolishPublicationRoutesTest {
         assertEquals(1, Regex("""publishFallback\([^\n]*PolishReason\.SERVICE_UNAVAILABLE\)""").findAll(source).count())
         assertEquals(1, Regex("""publishFallback\([^\n]*PolishReason\.WATCHDOG_TIMEOUT\)""").findAll(source).count())
         assertEquals(4, Regex("""publishFallback\([^\n]*PolishReason\.CALL_FAILED\)""").findAll(source).count())
-        val ready = section("private suspend fun insertReadyTranscript", "/** @return whether")
+        val ready = section("private suspend fun TranscriptRepository.insertReadyTranscript", "/** @return whether")
         assertTrue(ready.contains("polishReason = polishFacts.reasonToken"))
         assertTrue(ready.contains("polishStatus = polishFacts.statusCode"))
         assertTrue(ready.contains("polishContext = polishFacts.contextToken"))

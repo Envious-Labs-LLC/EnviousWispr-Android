@@ -49,6 +49,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 import time
 from contextlib import contextmanager
@@ -93,6 +94,12 @@ _JOURNAL = Path(os.path.expanduser("~/.cache/wispr-eyes/restore.json"))
 
 _STATE = {"serial": None, "restore": [], "tree": None, "holding_journal": False,
           "restored_for": None, "dump_path": None,
+          # THE LOG WINDOW (#161 H5). `clear_log()` records the device clock here; every log read is
+          # bounded to it, so an earlier take's lines cannot stand in for the take this process owns.
+          "log_since": None,
+          # HARDWARE IDENTITY PER TRANSPORT (#161 H7). One phone reaches adb as a USB serial, a network
+          # address and an mDNS name; the restore book is keyed by `ro.serialno`, never by the cable.
+          "identities": {},
           # THE EYE (#181). None: not probed yet. "fast": the debug build's dump receiver answers.
           # "slow": nobody answered the probe (a release build), so `uiautomator` for the rest of this
           # process. `eye_retry_after` counts slow reads still to go before the fast eye is tried again
@@ -187,10 +194,97 @@ def _journal_write(book):
     os.replace(beside, _JOURNAL)
 
 
+def _identity_of(transport):
+    """The hardware identity behind a transport serial (`ro.serialno`), read once per transport.
+
+    A property read that FAILS is not an identity: it is refused, never guessed, because a debt filed
+    under a guessed key is a debt nobody will pay.
+    """
+    cached = _STATE["identities"].get(transport)
+    if cached:
+        return cached
+    code, out, _ = _run([ADB, "-s", transport, "shell", "getprop ro.serialno"], timeout=20)
+    identity = out.strip()
+    if code != 0 or not identity or identity == "unknown":
+        raise Blocked(f"{transport} would not say what hardware it is (ro.serialno), so its restore "
+                      "book cannot be found")
+    _STATE["identities"][transport] = identity
+    return identity
+
+
+def _scope_key(scope):
+    """The book's key for a scope: the literal `host`, or the hardware identity behind a transport.
+
+    A transport that is NOT attached keeps the name it was filed under: nothing can be paid to it until
+    it is attached, and the moment it is, `_migrate_locked` moves its debts under the identity.
+    """
+    if scope == "host":
+        return "host"
+    transport = scope or _STATE["serial"]
+    cached = _STATE["identities"].get(transport)
+    if cached:
+        return cached
+    if transport not in {serial for serial, _ in devices()}:
+        return transport
+    return _identity_of(transport)
+
+
+def _migrate_locked(book, transports):
+    """Move debts filed under a TRANSPORT serial to the identity key of that hardware. Under the lock.
+
+    Older versions keyed the book by cable (`100.94.206.47:5555` and the USB serial were two books for
+    one phone, #161 finding 11). Every debt is MOVED, never dropped: the transport-keyed entries come
+    first (they are older), then the identity-keyed ones, with the first value per setting kept, the
+    same rule `_owe_locked` applies. Returns whether the book changed.
+    """
+    changed = False
+    # Group first, decide second, write last: two cables of one phone can carry DIFFERENT previous values
+    # for the same setting, and which one adb lists first is not a reason to prefer it (code review round
+    # 1). Identical duplicates collapse; a conflict is refused with every original key left untouched.
+    plan = {}
+    for transport in transports:
+        if transport == "host" or transport not in book:
+            continue
+        identity = _scope_key(transport)
+        if identity == transport:
+            continue
+        plan.setdefault(identity, []).append(transport)
+    for identity, sources in plan.items():
+        merged = [tuple(e) for e in book.get(identity, [])]
+        for transport in sources:
+            for entry in (tuple(e) for e in book[transport]):
+                clash = [old for old in merged if _debt_key(old) == _debt_key(entry)]
+                if clash and clash[0] != entry:
+                    raise Blocked(
+                        f"the restore book holds two different previous values for {entry[0]!r} on "
+                        f"{identity} ({clash[0][1]!r} and {entry[1]!r}, one under {transport}); nothing was "
+                        f"migrated. Read {_JOURNAL} and keep the value the phone really had."
+                    )
+                if not clash:
+                    merged.append(entry)
+        for transport in sources:
+            book.pop(transport)
+        book[identity] = [list(e) for e in merged]
+        changed = True
+    return changed
+
+
+def _attached_transports():
+    """Every transport adb lists right now; the set whose debts can be migrated and paid."""
+    return [serial for serial, _ in devices()]
+
+
 def _owed(serial=None):
     """Everything still owed back to a phone, as a list of (what, previous)."""
-    serial = serial or _STATE["serial"]
-    return [tuple(entry) for entry in _journal_read().get(serial or "", [])]
+    scope = serial or _STATE["serial"]
+    key = _scope_key(scope)
+    book = _journal_read()
+    if scope != "host" and any(t in book and _scope_key(t) != t for t in _attached_transports()):
+        with _journal_locked():
+            book = _journal_read()
+            if _migrate_locked(book, _attached_transports()):
+                _journal_write(book)
+    return [tuple(entry) for entry in book.get(key or "", [])]
 
 
 def _debt_key(entry):
@@ -217,7 +311,11 @@ def _owe(entry, serial=None):
 
 def _owe_locked(entry, serial):
     book = _journal_read()
-    owed = [tuple(e) for e in book.get(serial or "", [])]
+    scope = serial or _STATE["serial"]
+    key = _scope_key(scope)
+    if scope != "host" and _migrate_locked(book, _attached_transports()):
+        _journal_write(book)
+    owed = [tuple(e) for e in book.get(key or "", [])]
     # THE FIRST VALUE FOR EACH SETTING IS THE ONE TO KEEP, and this is not a tidiness rule. Staging
     # twice recorded "media volume was 8" and then "media volume was 3", and restoring both in order
     # ended at 3 with an empty book: the phone left changed and the tool reporting it clean.
@@ -226,7 +324,7 @@ def _owe_locked(entry, serial):
     # keying them all on the word `switch` would let one flipped switch hide the next.
     if not any(_debt_key(old) == _debt_key(entry) for old in owed):
         owed.append(entry)
-        book[serial or ""] = [list(e) for e in owed]
+        book[key or ""] = [list(e) for e in owed]
         _journal_write(book)
 
 
@@ -239,8 +337,12 @@ def _settled(entry, serial=None):
 
 def _settled_locked(entry, serial):
     book = _journal_read()
-    owed = [tuple(e) for e in book.get(serial or "", []) if tuple(e) != entry]
-    book[serial or ""] = [list(e) for e in owed]
+    scope = serial or _STATE["serial"]
+    key = _scope_key(scope)
+    if scope != "host":
+        _migrate_locked(book, _attached_transports())
+    owed = [tuple(e) for e in book.get(key or "", []) if tuple(e) != entry]
+    book[key or ""] = [list(e) for e in owed]
     _journal_write(book)
 
 
@@ -493,7 +595,17 @@ def bound():
     if "Bound services:" not in out:
         raise Blocked("the accessibility dump did not contain a bound-services line, so whether our "
                       "service is running is unknown")
-    return bool(re.search(r"Bound services:\{Service\[label=EnviousWispr", out))
+    # THE WHOLE BLOCK, NOT ITS HEAD (#161 finding 10). The bound entries carry the app LABEL only
+    # (`Service[label=EnviousWispr, feedbackType[...], ...]`, read 2026-09-22) and are comma-separated
+    # inside one `{...}`, so an older anchor on `{Service[label=EnviousWispr` was false whenever another
+    # service was listed first. The COMPONENT lives in the enabled block, so both are required.
+    bound_block = re.search(r"Bound services:\{(.*)\}\s*$", out, re.M)
+    enabled_block = re.search(r"Enabled services:\{(.*)\}\s*$", out, re.M)
+    if not bound_block or not enabled_block:
+        raise Blocked("the accessibility dump's bound or enabled block did not parse, so whether our "
+                      "service is running is unknown")
+    return ("label=EnviousWispr" in bound_block.group(1)
+            and ACCESSIBILITY_SERVICE in enabled_block.group(1))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1403,8 +1515,8 @@ def open_settings(dismiss_onboarding=False):
     if dismiss_onboarding and present("Set up later"):
         # DISMISSING ONBOARDING IS A CHANGE AND IT IS NOT JOURNALED, because it cannot be put back: the
         # app remembers that setup was skipped and nothing here can un-remember it. Said out loud rather
-        # than left for somebody to find. It is dev state on a phone with no users
-        # (`CLAUDE.md`: a wiped phone is cheap), and `dismiss_onboarding=False` refuses to touch it.
+        # than left for somebody to find. This is the founder's daily driver: onboarding state is not
+        # restored, app data is never wiped, and `dismiss_onboarding=False` refuses to touch it.
         tap("Set up later")
         if present("Set up later"):
             raise Blocked("onboarding would not dismiss; 'Set up later' is still on screen.")
@@ -1702,7 +1814,7 @@ def open_recorder(verify=True):
     #
     # A debt on disk does. `restore()` cancels any take this book still records, from ANY later session,
     # so "a recording is running and nobody knows" stops being reachable rather than becoming rarer.
-    # The named consequence for a fourth escape was to delete `check_recorder` and `test_dictation`;
+    # The named consequence for a fourth escape was to delete `check_recorder` and the speaker take suite (since deleted, #161);
     # that would not have fixed this, because the manual `with open_recorder()` block has the identical
     # window. The object was wrong, so this replaces it rather than performing it.
     # A DEBT OF ITS OWN, not one keyed on the phone. Two sessions using the same key let the first
@@ -1852,7 +1964,17 @@ def enable_auto_paste():
     before = _a11y_state()
     _owe(("a11y-state", json.dumps(before, sort_keys=True)))
     services = _a11y_services(before)
-    if ACCESSIBILITY_SERVICE not in services:
+    if ACCESSIBILITY_SERVICE in services:
+        # NAMED BUT NOT BOUND: an install over the app, or an instrumentation restart of its process
+        # (seen 2026-09-22), unbinds the service and re-putting the SAME string does not rebind it
+        # (`android-tooling.md` RULE: install-then-force-stop). Clear, settle, then set. The clear is
+        # written without `_put_a11y`'s exact read-back: the system normalises `accessibility_enabled`
+        # on its own right after the list empties (it read 1 with an empty list on this AVD), and the
+        # debt covering both keys is already in the book above.
+        _adb("settings delete secure enabled_accessibility_services", check=False)
+        _adb("settings put secure accessibility_enabled 0")
+        time.sleep(1.5)
+    else:
         services.append(ACCESSIBILITY_SERVICE)
     _put_a11y({"enabled_accessibility_services": ":".join(services),
                "accessibility_enabled": "1"})
@@ -1864,6 +1986,48 @@ def enable_auto_paste():
         "auto-paste was switched on but the service never bound, so text will still not reach the "
         "field you are typing in. Check the log for a crash in the accessibility service."
     )
+
+
+def rebind_auto_paste_if_unbound():
+    """REBIND our accessibility service when the settings already NAME it but it is not running; never enable it.
+
+    An install over the app, an instrumentation restart of its process, or a force-stop leaves the service
+    named in the settings and unbound (#161, seen 2026-09-22 after every `am instrument`). This helper is a
+    rebind only (code review round 2): when the list does NOT name our service it changes nothing and
+    returns, and the caller's `bound()` check reports BLOCKED, because switching a service ON is a real
+    change to the phone that `enable_auto_paste()` journals and `restore()` owns.
+
+    Two named states, two rules:
+    - named and `accessibility_enabled` reads 1: rebind, require the settings to read exactly what they
+      read before, and settle the debt the rebind journaled; nothing durable changed.
+    - named and the flag reads 0: rebind, and settle too, with the reason written here rather than hidden.
+      The flag is the SYSTEM's derived value while a service is listed: after a `put 0` with our service
+      named, the AVD read 1 back on its own (a restore of that state failed its read-back at 01:37 on
+      2026-09-22 and succeeded at 02:21, the same command), so a "named but 0" state is not one the phone
+      can reliably be put back INTO, and a debt naming it is a restore that fails at random. The review
+      names a phone or OEM that keeps that state deliberately; if one is ever met, this branch is where
+      the rule changes, and the settle is logged in the return value so the run's report shows it.
+    Returns what happened, for the report.
+    """
+    if bound():
+        return "auto-paste already bound"
+    before = _a11y_state()
+    if ACCESSIBILITY_SERVICE not in _a11y_services(before):
+        return "auto-paste is not enabled in the settings; nothing rebound"
+    with _journal_locked():
+        enable_auto_paste()
+        after = _a11y_state()
+        expected = dict(before, accessibility_enabled="1")
+        if after != expected:
+            return (f"auto-paste rebound but the settings read {after}, not {expected}; the debt is kept for "
+                    "restore()")
+        for entry in _owed():
+            if entry[0] == "a11y-state" and entry[1] == json.dumps(before, sort_keys=True):
+                _settled(entry)
+        if before["accessibility_enabled"] == "1":
+            return "auto-paste rebound (the settings already named and enabled it; nothing to restore)"
+        return ("auto-paste rebound; the settings named it with the flag at 0, a state the system does not "
+                "keep, so the flag's debt is settled (see rebind_auto_paste_if_unbound)")
 
 
 @_atomic_change
@@ -1913,167 +2077,9 @@ def stop_app():
 # --------------------------------------------------------------------------------------------------
 
 TEST_PACKAGE = f"{PACKAGE}.test"
-SPEAKER_ACTIVITY = f"{TEST_PACKAGE}/{PACKAGE}.SpeakerPlaybackActivity"
 UAT_FIXTURE = "enviouswispr-uat.pcm"
 FIXTURE_SAMPLE_RATE = 16_000
 FIXTURE_BYTES_PER_SAMPLE = 2
-
-
-def _media_volume():
-    # `check=True`: a failed read whose output happens to carry a plausible volume line was
-    # otherwise accepted as the phone's real volume, and journaled as the value to restore.
-    _, out = _adb("cmd media_session volume --stream 3 --get")
-    reading = re.search(r"volume is (\d+) in range \[0\.\.(\d+)\]", out or "")
-    if not reading:
-        raise Blocked(f"could not read the phone's media volume, so it could not be safely lowered: {out.strip()!r}")
-    return int(reading.group(1)), int(reading.group(2))
-
-
-@_atomic_change
-def stage_phone_speech(sentence, volume=3, use_fixture=True):
-    """Get everything ready to speak BEFORE the take starts. Returns the volume that was there.
-
-    **EVERYTHING EXPENSIVE HAPPENS HERE, and that is the whole point of the split.** Work done while a
-    take is running costs the take: `scripts/uat/dictate-once.sh`, which has always worked, does
-    exactly three things between start and stop, and a version of this that also checked the package,
-    read and wrote the media volume, wrote the utterance file and ran a full `dumpsys window windows`
-    inside that window lost the accessibility service and reported `handoff=SERVICE_NOT_RUNNING` —
-    the harness manufacturing the exact failure it exists to measure. The proven script's shape is the
-    one to copy, not to improve on.
-    """
-    if not isinstance(sentence, str) or not sentence.strip():
-        raise Blocked("a non-empty sentence is required")
-    if len(sentence.encode()) > 500:
-        raise Blocked("the phone's helper reads at most 500 bytes and says its own sentence beyond that")
-    installed = _adb(f"pm list packages {TEST_PACKAGE}", check=False)[1]
-    if TEST_PACKAGE not in installed:
-        raise Blocked(
-            f"{TEST_PACKAGE} is not installed, so the phone cannot speak for itself. Build and install "
-            "it (`phone-audio-playback.md`), or pass where='mac' to speak from the Mac instead."
-        )
-    current, ceiling = _media_volume()
-    if not isinstance(volume, int) or isinstance(volume, bool) or not 0 <= volume <= max(1, ceiling // 3):
-        raise Blocked(f"volume must be a whole number from 0 to {max(1, ceiling // 3)}; this is a low-volume tool")
-    _owe(("media-volume", str(current)))
-    _adb(f"cmd media_session volume --stream 3 --set {volume}")
-    # THE SENTENCE FILE IS OVERWRITTEN AND NOT JOURNALED. It belongs to the TEST package, the helper
-    # deletes it after reading, and nothing but this function ever writes it — so there is no previous
-    # value of anyone's to lose. Stated because "overwrites a file with no debt" is otherwise a gap a
-    # reader has to rediscover.
-    _adb(f"run-as {TEST_PACKAGE} mkdir -p files")
-    # THE SENTENCE IS DATA, AND A HEREDOC MADE IT SYNTAX. Quoting the outer `sh -c` does nothing about
-    # what is INSIDE it, so a sentence containing a line reading `WISPREOF` closed the heredoc and
-    # everything after it ran as shell on the founder's phone. `printf %s` with the sentence quoted as
-    # one argument has no such boundary.
-    _adb(f"printf %s {shlex.quote(sentence)} | run-as {shlex.quote(TEST_PACKAGE)} "
-         f"sh -c {shlex.quote('cat > files/speaker-utterance.txt')}")
-    # WHICH AUDIO WILL ACTUALLY PLAY, said out loud rather than assumed.
-    #
-    # `SpeakerPlaybackActivity` PREFERS `cache/enviouswispr-uat.pcm` and only falls back to the phone's
-    # own voice reading the sentence above. So with a fixture on the phone the caller's sentence is
-    # written, ignored, and deleted, and the run measures somebody else's words. Measured 2026-09-06:
-    # a run asking for "The quick brown fox jumps over the lazy dog." put
-    # "Der Zug war schon wieder 20 Minuten zu spät." into Chrome, and every content check against the
-    # fox would have failed while the product was working perfectly.
-    fixture, listing = _adb(f"run-as {TEST_PACKAGE} ls -l cache/{UAT_FIXTURE}", check=False)
-    if fixture == 0 and UAT_FIXTURE in listing and not use_fixture:
-        # PARK IT, so the phone reads the sentence that was asked for. Journaled and put back, because
-        # a fixture left parked changes what every later run plays without anyone deciding to.
-        parked = f"cache/{UAT_FIXTURE}.parked"
-        # REFUSE RATHER THAN OVERWRITE. Something already parked means an earlier run did not put its
-        # fixture back, and moving over it destroys that one with nothing recording it.
-        already, _ = _adb(f"run-as {TEST_PACKAGE} ls {shlex.quote(parked)}", check=False)
-        if already == 0:
-            raise Blocked(
-                f"{parked} already exists, so an earlier run left a fixture parked. Call restore() to "
-                "put it back before parking another one."
-            )
-        _owe(("parked-fixture", parked))
-        _adb(f"run-as {TEST_PACKAGE} mv cache/{UAT_FIXTURE} {shlex.quote(parked)}")
-        fixture = 1
-    if fixture == 0 and UAT_FIXTURE in listing:
-        # HOW LONG IT WILL PLAY, MEASURED NOW RATHER THAN GUESSED LATER. The fixture is 16 kHz mono
-        # signed 16-bit, so its length is arithmetic on its size and costs one `ls` before the take
-        # starts. A caller that instead waits a fixed number of seconds records the difference as
-        # silence, and the founder watches the recorder sit there after the audio has plainly stopped.
-        size = re.search(r"\s(\d{3,})\s", listing)
-        seconds = int(size.group(1)) / (FIXTURE_SAMPLE_RATE * FIXTURE_BYTES_PER_SAMPLE) if size else None
-        return current, {
-            "what": f"the recorded fixture cache/{UAT_FIXTURE}, NOT the sentence asked for",
-            "seconds": seconds,
-        }
-    # The phone's own voice has no length to measure in advance, so the caller must poll for the
-    # helper to close itself. Saying `None` is how that is communicated, rather than a made-up number.
-    return current, {"what": f"the phone's own voice reading {sentence!r}", "seconds": None}
-
-
-def play_staged_speech():
-    """Start the phone speaking, and REFUSE if it did not. ONE adb call: this runs inside a live take.
-
-    The launch's status was discarded, so a helper that never started left the caller watching for an
-    activity that was never there, finding none, and reporting that the sentence had been spoken.
-    """
-    remote, out = _adb(f"am start -n {shlex.quote(SPEAKER_ACTIVITY)}", check=False)
-    if remote != 0 or "Error" in out:
-        raise Blocked(f"the phone's speaker helper did not start: {out.strip() or 'no message'}")
-
-
-@_atomic_change
-def unstage_phone_speech():
-    """Put back EVERYTHING staging changed: the media volume, and the parked fixture.
-
-    The fixture matters as much as the volume and is easier to forget, because nothing on the phone
-    looks different afterwards. A run that parks it and does not put it back silently changes what every
-    later run plays, and the next person measures the phone's own voice while believing they measured
-    the recorded clip.
-    """
-    for entry in list(_owed()):
-        if entry[0] in ("media-volume", "parked-fixture"):
-            _restore_one(entry)
-            _settled(entry)
-
-
-def say_on_phone(sentence, volume=3, seconds=30, use_fixture=True):
-    """Speak out of the PHONE'S OWN speaker and wait for it to finish. Returns what it actually said.
-
-    A convenience over `stage_phone_speech` / `play_staged_speech` for when NO take is running.
-    **Do not call it during a dictation.** Its staging is several adb round trips, and work done inside
-    a live take is what loses the pinned editor; `test_dictation` stages first for that reason.
-
-    Speaking from the phone removes the one precondition the Mac path cannot check — that the phone is
-    near the Mac and pointed at it. Measured 2026-09-06 with the phone elsewhere: a 12.3 second take
-    decoded in 445 ms to `textChars=0`, a clean transcription of silence, which reads exactly like a
-    broken speech engine.
-    """
-    _, will_say = stage_phone_speech(sentence, volume=volume, use_fixture=use_fixture)
-    try:
-        started = time.monotonic()
-        play_staged_speech()
-        # The helper closes ITSELF when the audio ends, so the wait is on that rather than on a guessed
-        # duration: a fixed sleep either clips the sentence or records silence after it.
-        for _ in range(seconds * 2):
-            time.sleep(0.5)
-            # `check=True`, and the COUNT is parsed rather than searched for any digit. A failed read
-            # returned "", which contains no digit, which read as "the activity is gone" — so a broken
-            # connection reported that the phone had finished speaking when it may not have started.
-            # COUNTED HERE, not by a `grep -c` at the end of a pipe. A pipeline reports its LAST
-            # command's status, so a failed dump produced a confident `0` — "the phone has finished
-            # speaking" — from a measurement that did not happen.
-            _, activities = _adb("dumpsys activity activities", timeout=90)
-            running = str(sum(SPEAKER_ACTIVITY in line for line in activities.splitlines()))
-            counted = re.fullmatch(r"\s*(\d+)\s*", running)
-            if counted is None:
-                raise Blocked(
-                    "could not read whether the phone is still speaking, so how much of the sentence "
-                    f"reached the microphone is unknown. The phone answered {running.strip()!r}."
-                )
-            if counted.group(1) == "0":
-                break
-        else:
-            raise Blocked(f"the phone was still speaking after {seconds}s; the audio may be too long")
-        return {"seconds": time.monotonic() - started, "said": will_say["what"]}
-    finally:
-        unstage_phone_speech()
 
 
 def is_emulator(serial=None):
@@ -2526,6 +2532,25 @@ def _focused_field(target_package):
     return (node["package"], node["id"] or node["bounds"], node["text"])
 
 
+def _field_by_identity(package, identity):
+    """The ONE editor with this identity in the package, as (package, identity, text); None when gone.
+
+    The AFTER read of a take (#161, grounded round 1): focus is not required here, because the harness's
+    own launcher pauses the editor and hides its keyboard for a moment, and a verdict that needed focus
+    back would fail for the harness's reason, not the app's. Identity is the resource id, or the bounds
+    when the editor has none. Two matches is a refusal, never a pick.
+    """
+    fields = [n for n in tree(refresh=True) if n["kind"] == "EditText" and n["package"] == package
+              and (n["id"] or n["bounds"]) == identity]
+    if not fields:
+        return None
+    if len(fields) > 1:
+        raise Blocked(f"{len(fields)} editors in {package} share the identity {identity!r}, so which one "
+                      "holds the words is a guess")
+    node = fields[0]
+    return (node["package"], node["id"] or node["bounds"], node["text"])
+
+
 def _plain(text):
     """A text with only the app's own decoration removed: NFKC, case-folded, punctuation dropped,
     whitespace collapsed. NOT a tokenizer: three review rounds each found a script a tokenizer broke
@@ -2534,20 +2559,6 @@ def _plain(text):
     folded = unicodedata.normalize("NFKC", text or "").casefold()
     kept = "".join(c for c in folded if not unicodedata.category(c).startswith("P"))
     return " ".join(kept.split())
-
-
-def _sentence_landed(sentence, text):
-    """Whether the sentence appears in the text, exactly, once case, punctuation and spacing are aside.
-
-    Word membership alone passed "beta alpha" for "alpha beta" (review round 1, 2026-09-20); a word
-    tokenizer then failed Cyrillic, then combining marks and unspaced CJK (rounds 2 and 3), so this is a
-    substring match on `_plain`, which splits nothing.
-    """
-    # THE APP CAPITALISES THE FIRST LETTER, and case folding is not a bijection: Turkish `ı` folds
-    # differently from the `I` the app writes (review round 4), so the capitalised form is tried too.
-    got = _plain(text)
-    variants = {_plain(sentence), _plain(sentence[:1].upper() + sentence[1:])}
-    return any(wanted and wanted in got for wanted in variants)
 
 
 def _excerpt(text, keep=80):
@@ -2583,50 +2594,74 @@ def focus_field(label, package):
     return f"focused {label!r} ({field[1]})"
 
 
-def dictate_emulator(sentence="and I will send the deck tomorrow", target_package="com.google.android.gm"):
-    """One spoken take on the EMULATOR, fed over gRPC, judged by the editor's own text.
+def dictate_emulator(sentence, target_package="com.google.android.gm", expected_final=None, route=None,
+                     record=None):
+    """One spoken take on the EMULATOR, fed over gRPC, judged by the editor's own whole text.
 
     Replaces `scripts/uat/grpc-take.sh`, which tapped coordinates it had worked out by hand, turned the
     host microphone off and never back on, and trusted a log line. Here the take is owned by
-    `open_recorder()`, the microphone by `set_host_mic()` and its journal, and the verdict by the field
-    that was focused before the take and is still the same field after it.
+    `open_recorder()`, the microphone by `set_host_mic()` and its journal, and the verdict by the editor
+    that was uniquely focused before the take, read back by its identity after it.
+
+    `expected_final` is the caller's LITERAL whole final editor text (#161 finding 3): the speech engine
+    adds its own punctuation and the insertion its capitalisation and spacing, so it cannot be derived
+    from the sentence, and "the text changed" is not "the words landed". `route="COMMIT"` (or "PASTE")
+    makes any other route an ISSUE; without it the route is reported, never assumed. `record` is a host
+    path for an owned screen recording around the take (`screen_recording`).
     """
     _require_emulator("a spoken take")
     if _recording_is_off():
-        return [f"BLOCKED: {RECORDING_IS_OFF}"]
+        return [f"NOT RUN: {RECORDING_IS_OFF}"]
+    if not isinstance(expected_final, str):
+        return ["BLOCKED: expected_final is required: the literal whole text the editor must hold after "
+                "the take (the speech engine's punctuation and the insertion's spacing included)"]
+    if route is not None and route not in ("COMMIT", "PASTE"):
+        return ["BLOCKED: route must be 'COMMIT', 'PASTE' or None"]
     report = []
     restore()
     ready()
+    report.append(f"NOTE: {rebind_auto_paste_if_unbound()}")
     if not bound():
-        return ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
-                "enable_auto_paste() turns it back on."]
+        return report + ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
+                         "enable_auto_paste() turns it back on."]
     before = _focused_field(target_package)
     if before is None:
-        return [f"BLOCKED: no focused editor in {target_package} is on screen; tap into one first"]
+        return report + [f"BLOCKED: no focused editor in {target_package} is on screen; tap into one first"]
     scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wispr-eyes")
     os.makedirs(scratch, exist_ok=True)
     pcm = _pcm_from_sentence(sentence, os.path.join(scratch, f"utt-{uuid.uuid4().hex}.pcm"))
     report.append(f"NOTE: {sentence!r} was rendered to {pcm}")
     ending = None
+    recording_note = None
     try:
         # OFF AS THE RESTING STATE, never a switch inside the take: see _rest_host_mic_off. Done before
         # the audio is rendered so the switch, if one happens at all, is as far from the capture as the
         # call allows.
         report.append(f"NOTE: {_rest_host_mic_off()}")
         clear_log()
-        with open_recorder(verify=False):
-            time.sleep(3.0)  # the recogniser warms; injecting sooner is dropped (grpc-take.sh, 2026-09-13)
-            report.append(f"NOTE: {inject_audio(pcm)}")
-            time.sleep(2.0)
-            stop_dictation()
-            ending = _wait_for_the_take_to_finish()
+        with screen_recording(record):
+            with open_recorder(verify=False):
+                # THE OWNER'S OWN LIVE LINE, not a warm-up sleep (#161, grounded round 2): the line is
+                # written after the capture process admitted its first audio block, which is what
+                # "the microphone is ready for the audio" means.
+                report.append(f"NOTE: {_wait_for_owner_listening()}")
+                report.append(f"NOTE: {inject_audio(pcm)}")
+                time.sleep(2.0)
+                stop_dictation()
+                ending = _wait_for_the_take_to_finish()
     finally:
         for line in restore():
             report.append(f"NOTE: restored {line}")
+    recording_note = _STATE.get("last_screen_recording") if record else None
+    if recording_note:
+        report.append(f"NOTE: {recording_note}")
     if ending is None:
         report.append("ISSUE: the dictation never reached an ending, so nothing can be said about it")
         return report
     take = last_take()
+    if take["unknown"]:
+        report.append(f"ISSUE: UNKNOWN, {take['unknown']}")
+        return report
     report.append(f"VERIFIED: a take ran, ended by {take['ended_by']}" if take["ended_by"]
                   else "ISSUE: no take ending was logged")
     if take["transcribed_chars"]:
@@ -2634,27 +2669,63 @@ def dictate_emulator(sentence="and I will send the deck tomorrow", target_packag
     else:
         report.append("ISSUE: nothing was transcribed; either the stream never reached the microphone "
                       "or the engine returned empty")
-    _, route = _adb("logcat -d | grep 'insertion api=' | grep -v adbd | tail -1", check=False)
-    if route.strip():
-        report.append(f"NOTE: {route.strip()[-160:]}")
-    after = _focused_field(target_package)
-    if after is None:
-        report.append("ISSUE: no focused editor is on screen after the take, so where the words went "
-                      "is unknown")
-    elif after[:2] != before[:2]:
-        report.append("ISSUE: a DIFFERENT editor is focused now, so nothing here says where the words went")
-    elif after[2] == before[2]:
-        report.append(f"ISSUE: the editor is unchanged; it still holds {after[2]!r}")
-    else:
-        if not _sentence_landed(sentence, after[2]):
-            report.append(f"ISSUE: the editor changed but does not hold the sentence in order; it ends "
-                          f"{_excerpt(after[2])}")
-        else:
-            report.append(f"VERIFIED: the same editor now holds the sentence; it ends {_excerpt(after[2])}")
+    report.extend(_judge_insertion(take, target_package, route))
+    report.extend(_judge_editor(before, target_package, expected_final))
     return report
 
 
-def debug_insert(text, target_package=None):
+def _judge_insertion(take, target_package, route=None):
+    """The take's own outcome line, field by field: VERIFIED only when it says so (#161 finding 2)."""
+    outcome = take["insertion"]
+    if take["insertions"] != 1 or outcome is None:
+        return [f"ISSUE: {take['insertions']} insertion outcome lines were logged for this take, so its "
+                "delivery cannot be read"]
+    lines = [f"NOTE: insertion api={outcome['api']} route={outcome['route']} written={outcome['written']} "
+             f"evidence={outcome['evidence']} outcome={outcome['outcome']} attempts={outcome['attempts']} "
+             f"target={outcome['target']}"]
+    problems = []
+    if outcome["outcome"] != "VERIFIED":
+        problems.append(f"outcome={outcome['outcome']}")
+    if outcome["written"] != "true":
+        problems.append(f"written={outcome['written']}")
+    if target_package is not None and outcome["target"] != target_package:
+        problems.append(f"target={outcome['target']} (wanted {target_package})")
+    if route is not None and outcome["route"] != route:
+        problems.append(f"route={outcome['route']} (wanted {route})")
+    if problems:
+        lines.append("ISSUE: the app's own outcome line does not say the words were delivered: "
+                     + ", ".join(problems))
+    else:
+        lines.append(f"VERIFIED: route={outcome['route']}, the app's own outcome line says written, "
+                     f"verified, into {outcome['target']}")
+    return lines
+
+
+def _judge_editor(before, target_package, expected_final):
+    """The editor chosen BEFORE the take, read back by identity, its WHOLE text against the literal."""
+    after = _field_by_identity(before[0], before[1])
+    if after is None:
+        return ["ISSUE: the editor that was focused before the take is no longer on screen, so where "
+                "the words went is unknown"]
+    focused_now = _focused_field(target_package)
+    focus_note = ("the same editor is focused" if focused_now and focused_now[:2] == before[:2]
+                  else "focus is elsewhere for now (not part of the verdict)")
+    text = after[2] or ""
+    if text == expected_final:
+        return [f"VERIFIED: the editor's whole text now equals the expectation ({len(text)} chars); "
+                f"{focus_note}"]
+    # RAW tails, not `_excerpt`: that helper folds a no-break space into a space and strips, which hid the
+    # only difference on the first live run (Gmail stores the inserted trailing space as U+00A0).
+    return [f"ISSUE: the editor's whole text differs from the expectation; it ends {_raw_tail(text)}, "
+            f"expected {_raw_tail(expected_final)}; {focus_note}"]
+
+
+def _raw_tail(text, keep=80):
+    """The exact tail of a text with its real length, every character shown as Python would write it."""
+    return (repr(text) if len(text) <= keep else "…" + repr(text[-keep:])) + f" ({len(text)} chars)"
+
+
+def debug_insert(text, target_package=None, expected_final=None):
     """Insert a sentence through the app's real insertion path with NO audio, on the EMULATOR's DEBUG build.
 
     Replaces `scripts/uat/debug-insert.sh`. The debug-only broadcast pins the focused editor and
@@ -2662,9 +2733,13 @@ def debug_insert(text, target_package=None):
     editor's own text is the verdict, never the clipboard.
     """
     _require_emulator("the debug insert")
+    if not isinstance(expected_final, str):
+        return ["BLOCKED: expected_final is required: the literal whole text the editor must hold after "
+                "the insert (the insertion's own capitalisation and spacing included)"]
     ready()
+    report = [f"NOTE: {rebind_auto_paste_if_unbound()}"]
     if not bound():
-        return ["BLOCKED: auto-paste is switched off, so nothing can be inserted"]
+        return report + ["BLOCKED: auto-paste is switched off, so nothing can be inserted"]
     # THE PACKAGE's flag line is the bracketed one; the first bare `flags=0x0` belongs to a component
     # and read as "not debuggable" on the first live run (2026-09-20).
     _, dump = _adb(f"dumpsys package {PACKAGE} | grep -m1 DEBUGGABLE", check=False)
@@ -2675,21 +2750,177 @@ def debug_insert(text, target_package=None):
         return ["BLOCKED: no focused editor is on screen; tap into one first"]
     clear_log()
     _adb(f"am broadcast -a {PACKAGE}.debug.INSERT --es text {shlex.quote(text)} {PACKAGE}")
-    time.sleep(4)
-    report = []
-    # `grep -v adbd`: adbd logs the shell command it was asked to run, pattern included, so without it
-    # the last line read back is this very grep.
-    _, lines = _adb("logcat -d | grep -E 'insertion api=|DebugInsert: pin=' | grep -v adbd | tail -2",
-                    check=False)
-    for line in lines.strip().splitlines():
-        report.append(f"NOTE: {line.strip()[-160:]}")
-    after = _focused_field(target_package)
-    if after is None or after[:2] != before[:2]:
-        report.append("ISSUE: the focused editor changed or vanished, so where the text went is unknown")
-    elif text in (after[2] or ""):
-        report.append(f"VERIFIED: the same editor now holds the text; it ends {_excerpt(after[2])}")
-    else:
-        report.append(f"ISSUE: the editor reads {after[2]!r}, which does not contain {text!r}")
+    ending = _wait_for_the_take_to_finish(seconds=20)
+    if ending is None:
+        report.append("ISSUE: no insertion outcome was logged within 20 s, so where the text went is unknown")
+        return report
+    _, pin = _adb("logcat -d " + _log_window_args() + "| grep 'DebugInsert: pin=' | grep -v adbd | tail -1",
+                  check=False)
+    if pin.strip():
+        report.append(f"NOTE: {pin.strip()[-160:]}")
+    text_in_window = logs(lines=400)
+    take = {"insertion": _insertion_line(text_in_window),
+            "insertions": len(re.findall(r"insertion api=", text_in_window))}
+    report.extend(_judge_insertion(take, target_package, None))
+    report.extend(_judge_editor(before, target_package, expected_final))
+    return report
+
+
+TEST_RUNNER = f"{TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner"
+# The reserved status code and keys the device test publishes on the `am instrument -r` stream when it
+# is ready for the driver's audio (`VoicePipelineDeviceTest.DRIVER_READY_STATUS`). A bundle carrying this
+# code and `driver_phase=READY` is a driver-control event, never a test verdict (#161 T2).
+DRIVER_READY_STATUS = 161
+EXTERNAL_AUDIO_DONE = f"{PACKAGE}.debug.EXTERNAL_AUDIO_DONE"
+
+
+def _instrumentation_groups(stream):
+    """Yield each `INSTRUMENTATION_STATUS` bundle with its following `INSTRUMENTATION_STATUS_CODE`.
+
+    Raw `am instrument -r` prints every key of a bundle as `INSTRUMENTATION_STATUS: key=value` (a value
+    may run over several lines, a stack trace does) and then ONE `INSTRUMENTATION_STATUS_CODE: n`; the
+    final `INSTRUMENTATION_RESULT:`/`INSTRUMENTATION_CODE:` pair ends the run and is yielded as a group
+    with `code` None and the key `INSTRUMENTATION_CODE`.
+    """
+    bundle = {}
+    key = None
+    for raw in stream:
+        line = raw.rstrip("\n")
+        if line.startswith("INSTRUMENTATION_STATUS: "):
+            body = line[len("INSTRUMENTATION_STATUS: "):]
+            key, _, value = body.partition("=")
+            bundle[key] = value
+        elif line.startswith("INSTRUMENTATION_STATUS_CODE: "):
+            code = line[len("INSTRUMENTATION_STATUS_CODE: "):].strip()
+            yield {"code": int(code) if code.lstrip("-").isdigit() else None, **bundle}
+            bundle, key = {}, None
+        elif line.startswith("INSTRUMENTATION_RESULT: "):
+            body = line[len("INSTRUMENTATION_RESULT: "):]
+            key, _, value = body.partition("=")
+            bundle[key] = value
+        elif line.startswith("INSTRUMENTATION_CODE: "):
+            bundle["INSTRUMENTATION_CODE"] = line[len("INSTRUMENTATION_CODE: "):].strip()
+            yield {"code": None, **bundle}
+            return
+        elif key is not None:
+            bundle[key] = bundle[key] + "\n" + line
+    if bundle:
+        yield {"code": None, **bundle}
+
+
+def run_device_test(test, sentence, expected_final=None, timeout=240, starve=False):
+    """Run ONE instrumented row on the EMULATOR with this harness feeding its audio (#161 T2).
+
+    The row (`VoicePipelineDeviceTest`, `-e audio external`) starts the take itself, publishes
+    `driver_phase=READY` on the instrumentation stream once the owner reported LISTENING and its staging
+    is done, and waits for this driver's audio-done broadcast before it stops the take. Here: the test
+    APK must already be installed (`adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`;
+    never `connectedAndroidTest`, which uninstalls the app); the sentence is rendered to PCM; the stream
+    is read group by group; on the READY group carrying this run's token the audio is injected and the
+    done broadcast sent; every other group is a runner result and is reported as VERIFIED or ISSUE.
+
+    `expected_final` is passed through as `-e expected_final`; the row's own literal is used when None.
+    `starve=True` is the NEGATIVE CONTROL: the driver answers READY with the done broadcast and feeds no
+    audio at all, so a row that still passes is a row that proves nothing. On the phone this refuses:
+    the phone's driver is `scripts/uat/silent-audio/run.py`.
+    """
+    device()
+    if _recording_is_off():
+        return [f"NOT RUN: {RECORDING_IS_OFF}"]
+    _require_emulator("driving a device test's audio")
+    if not re.fullmatch(r"[A-Za-z_][\w.]*(#\w+)?", test):
+        return [f"BLOCKED: {test!r} is not a test class or class#method"]
+    _, path = _adb(f"pm path {TEST_PACKAGE}", check=False)
+    if "package:" not in path:
+        return [f"BLOCKED: the test APK {TEST_PACKAGE} is not installed; install it with "
+                "adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"]
+    report = [f"NOTE: {rebind_auto_paste_if_unbound()}"]
+    if not bound():
+        return report + ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
+                         "enable_auto_paste() turns it back on."]
+    token = uuid.uuid4().hex
+    scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wispr-eyes")
+    os.makedirs(scratch, exist_ok=True)
+    pcm = _pcm_from_sentence(sentence, os.path.join(scratch, f"utt-{uuid.uuid4().hex}.pcm"))
+    report.append(f"NOTE: {sentence!r} was rendered to {pcm}")
+    args = [ADB, "-s", device(), "shell", "am", "instrument", "-w", "-r",
+            "-e", "class", test, "-e", "audio", "external", "-e", "driver_token", token]
+    if expected_final is not None:
+        args += ["-e", "expected_final", expected_final]
+    args.append(TEST_RUNNER)
+    restore()
+    ready()
+    report.append(f"NOTE: {_rest_host_mic_off()}")
+    clear_log()
+    fed = False
+    rebound_checked = False
+    results = []
+    timed_out = []
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    # A TIMER, not a check between groups: the group reader blocks while the runner is silent, so a check
+    # that runs only when a group arrives never runs on a hung run (code review round 1).
+    timer = threading.Timer(timeout, lambda: (timed_out.append(True), process.kill()))
+    timer.start()
+    try:
+        for group in _instrumentation_groups(process.stdout):
+            if group.get("code") == DRIVER_READY_STATUS and group.get("driver_phase") == "READY":
+                if group.get("driver_token") != token:
+                    report.append("NOTE: a READY from another run was ignored (token mismatch)")
+                    continue
+                if starve:
+                    report.append("NOTE: STARVED on purpose: no audio fed (the negative control)")
+                else:
+                    report.append(f"NOTE: {inject_audio(pcm)}")
+                _adb(f"am broadcast -a {EXTERNAL_AUDIO_DONE} --es driver_token {token} {PACKAGE}")
+                report.append("NOTE: audio done broadcast sent")
+                fed = True
+                continue
+            if "INSTRUMENTATION_CODE" in group:
+                results.append(group)
+                break
+            if group.get("code") == 1 and group.get("test") and not rebound_checked:
+                # THE TEST HAS STARTED, so the app's process is up again. Instrumentation restarts that
+                # process and the accessibility service dies with it; on this AVD the system does not
+                # rebind it on its own (seen 2026-09-22: handoff=SERVICE_NOT_RUNNING), so the driver does,
+                # journaled, and the row waits on the service's own liveness fact before its take.
+                rebound_checked = True
+                if not bound():
+                    report.append(f"NOTE: the accessibility service was unbound by the instrumentation "
+                                  f"restart; {rebind_auto_paste_if_unbound()}")
+                continue
+            if group.get("code") in (0, -1, -2, -3, -4) and group.get("test"):
+                results.append(group)
+    finally:
+        timer.cancel()
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        for line in restore():
+            report.append(f"NOTE: restored {line}")
+    if timed_out:
+        report.append(f"ISSUE: the instrumentation ran past {timeout} s and was killed; UNKNOWN")
+    if not fed:
+        report.append("ISSUE: the row never said READY, so no audio was fed (staging, not the product)")
+    for group in results:
+        name = group.get("test", "")
+        cls = group.get("class", "").rsplit(".", 1)[-1]
+        code = group.get("code")
+        if code == 0:
+            report.append(f"VERIFIED: {cls}.{name} passed on the device")
+        elif code in (-1, -2):
+            stack = group.get("stack", "").strip().splitlines()
+            report.append(f"ISSUE: {cls}.{name} FAILED: {stack[0] if stack else 'no message'}")
+        elif code in (-3, -4):
+            first = group.get("stack", "").strip().splitlines()
+            report.append(f"NOT RUN: {cls}.{name} was skipped by its own precondition: "
+                          f"{first[0] if first else 'no reason given'}")
+        elif "INSTRUMENTATION_CODE" in group:
+            if group["INSTRUMENTATION_CODE"] != "-1":
+                report.append(f"ISSUE: the instrumentation ended with code {group['INSTRUMENTATION_CODE']}: "
+                              f"{group.get('shortMsg') or group.get('stream', '').strip()[-200:]}")
+    if not any(g.get("test") for g in results):
+        report.append("ISSUE: the runner reported no test at all; UNKNOWN")
     return report
 
 
@@ -2825,9 +3056,9 @@ def say(sentence, volume=25):
     **The phone has to be near the Mac.** That is the one precondition this cannot check, so a report
     says it rather than assuming it.
 
-    **On an emulator the voice goes through the cable instead** ([say_into_emulator]): `say_on_phone`
-    plays through the guest speaker, which no guest microphone hears, and the speaker-to-microphone
-    path was the flaky half of every emulator take.
+    **On an emulator the voice goes through the cable instead** ([say_into_emulator]): the phone-speaker
+    path (deleted in #161) played through the guest speaker, which no guest microphone hears, and the
+    speaker-to-microphone path was the flaky half of every emulator take.
     """
     if not isinstance(volume, int) or isinstance(volume, bool) or not 0 <= volume <= 40:
         raise Blocked("volume must be a whole number from 0 to 40; this is a low-volume tool")
@@ -2855,6 +3086,92 @@ def say(sentence, volume=25):
 # Reading what happened
 # --------------------------------------------------------------------------------------------------
 
+def _screenrecord_processes():
+    """Every `screenrecord` on the device as (pid, full command line), read from /proc, never by name alone."""
+    _, out = _adb("pidof screenrecord", check=False)
+    found = []
+    for pid in out.split():
+        if not pid.isdigit():
+            continue
+        _, cmd = _adb(f"cat /proc/{pid}/cmdline | tr '\\0' ' '", check=False)
+        found.append((pid, cmd.strip()))
+    return found
+
+
+@contextmanager
+def screen_recording(path=None):
+    """Record the screen around a take into `path` on the host, owned end to end (#161 finding 13).
+
+    `None` records nothing and yields None. Otherwise: any recorder already running is a refusal that
+    names every pid and command (never adopted, never killed); the debt is journaled BEFORE the recorder
+    starts; the started process is identified by a pid whose command line carries this run's token;
+    on exit `kill -2` goes to that pid alone, the pid must EXIT before the file is trusted, pulled and
+    deleted, and only then is the debt settled (`tools-and-apps.md` RULE:
+    identify-a-process-by-path-never-by-name). The file is evidence to look at, never a verdict.
+    """
+    if path is None:
+        yield None
+        return
+    token = uuid.uuid4().hex
+    remote = f"/sdcard/wispr-eyes/{token}.mp4"
+    # The host side is made ready BEFORE anything on the device changes: a pull that fails for a missing
+    # host folder would leave the debt and the file behind for a reason that was never the device's.
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    # UNDER THE LOCK from the check to the owned pid: the debt is in the book before the recorder exists,
+    # and no other session can settle it in the gap.
+    with _journal_locked():
+        existing = _screenrecord_processes()
+        if existing:
+            raise Blocked("a screen recorder is already running on the device and is not this run's: "
+                          + "; ".join(f"pid {pid}: {cmd}" for pid, cmd in existing))
+        _adb("mkdir -p /sdcard/wispr-eyes")
+        _owe(("screenrecord", token))
+        process = subprocess.Popen([ADB, "-s", device(), "shell", "screenrecord", "--time-limit", "180", remote],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        owned = None
+        for _ in range(20):
+            time.sleep(0.25)
+            mine = [(pid, cmd) for pid, cmd in _screenrecord_processes() if token in cmd]
+            if len(mine) == 1:
+                owned = mine[0]
+                break
+            if len(mine) > 1:
+                raise Blocked(f"{len(mine)} recorders carry this run's token, so none can be owned")
+        if owned is None:
+            process.kill()
+            raise Blocked("the screen recorder did not start (no process carries this run's token); the "
+                          f"debt {token} is kept until restore() finds nothing to kill")
+    _STATE["last_screen_recording"] = None
+    try:
+        yield f"screen recording in progress ({remote})"
+    finally:
+        _adb(f"kill -2 {owned[0]}", check=False)
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            raise Blocked(f"the screen recorder (pid {owned[0]}) did not exit after kill -2; the debt "
+                          f"{token} is kept and the file is left")
+        if any(pid == owned[0] for pid, _ in _screenrecord_processes()):
+            raise Blocked(f"the screen recorder pid {owned[0]} still exists after its handle closed; the "
+                          f"debt {token} is kept")
+        stat_code, size = _adb(f"stat -c %s {remote}", check=False)
+        if stat_code != 0 or not size.strip().isdigit() or int(size) <= 0:
+            raise Blocked(f"the screen recording at {remote} is missing or empty ({size.strip()!r}); the "
+                          f"device file and the debt {token} are kept")
+        code, _, err = _run([ADB, "-s", device(), "pull", remote, path], timeout=120)
+        if code != 0:
+            raise Blocked(f"the screen recording could not be pulled: {err.strip()}; the device file and the "
+                          f"debt {token} are kept")
+        pulled = os.path.getsize(path) if os.path.isfile(path) else -1
+        if pulled != int(size):
+            raise Blocked(f"the pulled recording is {pulled} bytes, the device file {size.strip()}; the "
+                          f"device file and the debt {token} are kept")
+        _adb(f"rm {remote}")
+        with _journal_locked():
+            _settled(("screenrecord", token))
+        _STATE["last_screen_recording"] = f"screen recording saved to {path} ({size.strip()} bytes)"
+
+
 def clear_log():
     """Clear the ring buffer so an absent line means absent rather than left over.
 
@@ -2870,6 +3187,16 @@ def clear_log():
     measures is seconds long, so the default buffer holds it.
     """
     _adb("logcat -c")
+    # THE WINDOW OPENS HERE (#161 H5). The device's own clock, so `-T` compares like with like; every
+    # read below is bounded to it, and a read with no window says so instead of pretending.
+    _, stamp = _adb("date '+%m-%d %H:%M:%S.000'")
+    _STATE["log_since"] = stamp.strip() or None
+
+
+def _log_window_args():
+    """The `-T` argument bounding a logcat read to this process's window, or nothing when none is open."""
+    since = _STATE["log_since"]
+    return f"-T {shlex.quote(since)} " if since else ""
 
 
 def keep_awake(minutes=30):
@@ -2918,27 +3245,54 @@ def logs(pattern=None, lines=200):
     # `check=False` then turned that into "nothing was logged" — which `recording()` reads as "the
     # microphone is closed". The filter also cannot be defeated by a tag containing a regex character.
     filters = " ".join(shlex.quote(f"{tag}:V") for tag in APP_TAGS)
-    _, out = _adb(f"logcat -d -v time {filters} {shlex.quote('*:S')}", timeout=90)
+    _, out = _adb(f"logcat -d {_log_window_args()}-v time {filters} {shlex.quote('*:S')}", timeout=90)
     selected = out.splitlines()[-lines:]
     if pattern:
         selected = [line for line in selected if re.search(pattern, line)]
     return "\n".join(selected).strip()
 
 
+_INSERTION_FIELDS = ("api", "route", "written", "returned", "evidence", "outcome", "attempts", "ms",
+                     "overrun", "target")
+
+
+def _insertion_line(text):
+    """The app's `insertion api=... route=... outcome=... target=...` line as a dict, or None.
+
+    One producer writes it (`paste/InsertionOutcomeLine.kt`), so the fields are read by name; a line
+    missing a field yields None for that field rather than a guess (#161 finding 2).
+    """
+    match = re.search(r"insertion api=\S+.*$", text, re.M)
+    if not match:
+        return None
+    line = match.group(0)
+    return {field: (m.group(1) if (m := re.search(rf"\b{field}=(\S+)", line)) else None)
+            for field in _INSERTION_FIELDS}
+
+
 def last_take():
     """What the most recent dictation did, as a small dictionary a person can read.
 
     Every field comes from a line the app itself wrote. A field is None when the app never said it,
-    which is different from zero and is left different.
+    which is different from zero and is left different. `bounded` says whether the read was limited to
+    this process's log window; `unknown` names why the take cannot be read (two takes in the window),
+    with every other field None, so a caller that does not look for it still cannot mistake two takes
+    for one (#161 finding 9).
     """
     text = logs(lines=400)
-    # ONE TAKE, THE LAST ONE. Every field below is the FIRST match in the text, so with two takes in
-    # the log a run could report one take's ending beside another take's character count and read as a
-    # single coherent result.
+    bounded = _STATE["log_since"] is not None
     starts = list(re.finditer(r"(?m)^.*\brecording_start\b.*$", text))
     if not starts:
         raise Blocked("the log holds no take at all since it was last cleared, so there is nothing to "
                       "report on. Call clear_log() before the take you mean to measure.")
+    if bounded and len(starts) > 1:
+        return {"unknown": f"{len(starts)} takes in the window; which one is meant is a guess",
+                "bounded": True, "started": True, "ended_by": None, "bytes": None, "seconds": None,
+                "warned_at_ms": None, "hit_the_cap": None, "transcribed_chars": None, "handoff": None,
+                "insertion": None, "insertions": len(re.findall(r"insertion api=", text))}
+    # ONE TAKE, THE LAST ONE. Every field below is the FIRST match in the text, so with two takes in
+    # the log a run could report one take's ending beside another take's character count and read as a
+    # single coherent result; an unbounded read keeps the old last-start rule.
     text = text[starts[-1].start():]
 
     def first(pattern, cast=str):
@@ -2958,7 +3312,12 @@ def last_take():
         "hit_the_cap": "Take ended at the duration cap" in text,
         "transcribed_chars": first(r"Transcription result received \(chars=(\d+)\)", int),
         "handoff": first(r"handoff=(\w+)"),
-        "insertion": first(r"Insertion completed via (\w+)"),
+        # The app writes `insertion api=... route=... outcome=...`; the older `Insertion completed via`
+        # key matched a line no producer writes (`grep -rn 'Insertion completed via' app/src` is empty).
+        "insertion": _insertion_line(text),
+        "insertions": len(re.findall(r"insertion api=", text)),
+        "bounded": bounded,
+        "unknown": None,
     }
 
 
@@ -3106,6 +3465,22 @@ def _restore_one_here(entry):
                           f"{'on' if now else 'off'}")
     elif what == "frozen-process":
         _thaw(json.loads(previous))
+    elif what == "screenrecord":
+        # A recorder that outlived the process that started it. Identified by the token in ITS command
+        # line, killed by that pid alone, and the debt is paid only once the pid is gone.
+        mine = [(pid, cmd) for pid, cmd in _screenrecord_processes() if previous in cmd]
+        if len(mine) > 1:
+            raise Blocked(f"{len(mine)} screen recorders carry the token {previous}; none is killed")
+        if mine:
+            _adb(f"kill -2 {mine[0][0]}", check=False)
+            for _ in range(30):
+                time.sleep(0.5)
+                if not any(pid == mine[0][0] for pid, _ in _screenrecord_processes()):
+                    break
+            else:
+                raise Blocked(f"the screen recorder pid {mine[0][0]} would not exit; the debt is kept and "
+                              "its file left")
+        _adb(f"rm -f /sdcard/wispr-eyes/{previous}.mp4", check=False)
     elif what == "screen-timeout":
         _adb(f"settings put system screen_off_timeout {int(previous)}")
         _, now = _adb("settings get system screen_off_timeout")
@@ -3135,9 +3510,9 @@ def _restore_locked():
     raises, so the next call tries again rather than reporting a rollback that did not happen.
 
     **What this does NOT cover, said plainly rather than implied:** a dictation this tool started and
-    the History row it produced, the app's foreground state, and onboarding once dismissed. Those are
-    dev state on a phone with no users (`CLAUDE.md`: a wiped phone is cheap), but they are not restored
-    and no report should say they were.
+    the History row it produced, the app's foreground state, and onboarding once dismissed. This is the
+    founder's daily driver: those are not restored, app data is never wiped and `com.envi.wispr` is
+    never uninstalled from here, and no report should say otherwise.
     """
     _STATE["restored_for"] = None
     done = []
@@ -3146,17 +3521,29 @@ def _restore_locked():
     # never settled: an unverified restore is not a restore. The other attached devices are driven
     # through `_as_serial`, so the selection this process made is untouched afterwards.
     selected = device()
-    attached = {serial for serial, _ in devices()}
-    others = sorted(scope for scope in _journal_read() if scope not in ("host", selected))
-    for scope in ["host", selected] + others:
-        if scope not in ("host", selected) and scope not in attached:
-            if _owed(scope):
-                done.append(f"{scope}: not attached, debt kept")
+    attached = [serial for serial, _ in devices()]
+    # EVERY ATTACHED TRANSPORT IS RESOLVED TO ITS HARDWARE FIRST (#161 H7): debts filed under a cable's
+    # name are moved under the identity they belong to, and each identity is paid through ONE attached
+    # transport that reaches it. A key that names no attached hardware is reported and kept.
+    book = _journal_read()
+    if _migrate_locked(book, attached):
+        _journal_write(book)
+    transport_for = {}
+    for transport in attached:
+        transport_for.setdefault(_scope_key(transport), transport)
+    selected_key = _scope_key(selected)
+    others = sorted(key for key in _journal_read() if key not in ("host", selected_key))
+    for key in ["host", selected_key] + others:
+        if key not in ("host", selected_key) and key not in transport_for:
+            if _journal_read().get(key):
+                done.append(f"{key}: not attached, debt kept")
             continue
+        scope = "host" if key == "host" else transport_for.get(key, selected)
+        where = "" if key in ("host", selected_key) else f" on {scope} [{key}]"
         for entry in list(_owed(scope)):
-            _restore_one(entry, serial=None if scope in ("host", selected) else scope)
+            _restore_one(entry, serial=None if key in ("host", selected_key) else scope)
             _settled_locked(entry, scope)
-            done.append(f"{entry[0]} back to {entry[1]}" + ("" if scope in ("host", selected) else f" on {scope}"))
+            done.append(f"{entry[0]} back to {entry[1]}{where}")
     _STATE["restore"] = []
     # THE SCREEN DUMP IS NOT DELETED, and that is the whole of it. `rm -f` on a fixed path removes
     # whatever is sitting there, and "it looks like XML" is a description, not proof of ownership: a
@@ -3174,7 +3561,7 @@ def _restore_locked():
 def check_recorder():
     """Does the floating recorder open, and can the user see it? One call, and it always tidies up."""
     if _recording_is_off():
-        return [f"BLOCKED: {RECORDING_IS_OFF}"]
+        return [f"NOT RUN: {RECORDING_IS_OFF}"]
     ready()
     report = []
     # The phone is left clean before anything is recorded on it, which is also what makes the take
@@ -3222,15 +3609,69 @@ _TERMINAL_LINES = (
 )
 
 
-def _wait_for_the_take_to_finish(seconds=40):
-    """Poll the log until the dictation reaches an ending, and say which one. None on a timeout."""
-    for _ in range(seconds * 2):
-        time.sleep(0.5)
-        text = logs(lines=200)
-        for marker in _TERMINAL_LINES:
-            if marker in text:
-                return marker
-    return None
+def _stream_log_until(markers, seconds, tags, reject=()):
+    """ONE blocking `logcat` reader over this process's window; the first line carrying a marker wins.
+
+    A line that carries a marker AND any `reject` substring is skipped: `Take terminal: COMPLETED` is
+    written BEFORE the accessibility service answers, so it must not end the wait (code review round 1).
+
+    Not a loop over `logcat -d` snapshots (#161, grounded rounds 3 and 4): a snapshot loop is a poll
+    with a budget, and a budget that runs out reads exactly like the subject never answering. The
+    timeout here is a failure bound, reported as None, never a product verdict.
+    """
+    filters = [f"{tag}:I" for tag in tags] + ["*:S"]
+    since = _STATE["log_since"]
+    args = [ADB, "-s", device(), "logcat", "-v", "time"] + (["-T", since] if since else []) + filters
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    # A TIMER, NOT select(): a text pipe reads ahead into its own buffer, so select() on the descriptor
+    # can say "nothing new" while a whole line already sits unread in Python (the first run of this
+    # missed the owner's live line that way). Killing the reader from a timer makes the blocking line
+    # iterator return, and the bound stays a bound.
+    timer = threading.Timer(seconds, process.kill)
+    timer.start()
+    try:
+        for line in process.stdout:
+            if any(bad in line for bad in reject):
+                continue
+            for marker in markers:
+                if marker in line:
+                    return marker
+        return None
+    finally:
+        timer.cancel()
+        process.kill()
+        process.wait(timeout=5)
+
+
+# WHAT ENDS A TAKE, for the wait: the accessibility service's own outcome line, the clipboard fallback the
+# owner logs when no service answered, an ASR failure, or a non-COMPLETED terminal. `Auto-insert handed`
+# and `Take terminal: COMPLETED` are written BEFORE the service answers and are not endings here (code
+# review round 1: returning on them recreated the early-completion gap).
+_TAKE_ENDINGS = (
+    "insertion api=", "kept on clipboard", "Transcription failed", "Speech recognition failed",
+    "No audio captured", "showError", "Take ended:", "Take terminal:",
+)
+_NOT_ENDINGS = ("Take terminal: COMPLETED", "Auto-insert handed")
+
+
+def _wait_for_the_take_to_finish(seconds=90):
+    """Block until the dictation reaches an ending the insertion has answered, and say which. None on the bound."""
+    return _stream_log_until(_TAKE_ENDINGS, seconds, ("DictationSession", "PasteService", "AsrService"),
+                             reject=_NOT_ENDINGS)
+
+
+def _wait_for_owner_listening(seconds=20):
+    """Block until the session owner says the take is live, the signal that the microphone is ready.
+
+    The owner writes `Recording started (live after ...)` once the capture process has admitted and
+    written its first audio block; the capture process's own `recording_start` comes earlier and is not
+    readiness (#161, grounded round 2). A timeout is a refusal about staging, never a verdict.
+    """
+    marker = _stream_log_until(("Recording started (live after",), seconds, ("DictationSession",))
+    if marker is None:
+        raise Blocked(f"the owner never said the take went live within {seconds} s, so no audio was "
+                      "fed; the microphone was never ready for it")
+    return "the owner reported the take live"
 
 
 # THE WHOLE APP, AS IT IS ON SCREEN. Walked by hand on 2026-09-06 and checked against the code that
@@ -3386,7 +3827,7 @@ def room_is_quiet(seconds=6):
     which is exactly when it is needed.
     """
     if _recording_is_off():
-        return [f"BLOCKED: {RECORDING_IS_OFF}"]
+        return [f"NOT RUN: {RECORDING_IS_OFF}"]
     ready()
     restore()
     clear_log()
@@ -3414,123 +3855,6 @@ def room_is_quiet(seconds=6):
     }
 
 
-def test_dictation(sentence="The quick brown fox jumps over the lazy dog.", volume=3,
-                   record_seconds=14, target_package="com.android.chrome", use_fixture=False):
-    """Speak into the phone and report what came back. The whole heart path, in one call.
-
-    **THE SHAPE IS COPIED FROM `scripts/uat/dictate-once.sh`, WHICH WORKS, AND THAT IS DELIBERATE.**
-    Between starting the take and stopping it this does exactly two things: wait, and launch the
-    speaker. Everything else — checking the test package, reading and lowering the media volume,
-    writing the sentence to the phone — happens BEFORE the take, and reading the screen happens after.
-
-    Measured 2026-09-06 against Chrome's address bar. A version that also read the recorder window
-    (`dumpsys window windows`, several seconds) and did its staging inside the take logged
-    `Pinned original editor package=com.android.chrome` and then, twenty-four seconds later,
-    `No editor was pinned for this dictation; clipboard only` with `handoff=SERVICE_NOT_RUNNING`. The
-    repository's own script, doing less, logged `handoff=SCHEDULED` on the same phone minutes later.
-    So the harness was producing the failure, and its log read exactly like a defect in the app's
-    insertion path.
-
-    **Point the phone at a real editor first.** Insertion is judged against the field the user was in,
-    so a run started from the app's own screens is testing something the product never does. Chrome's
-    address bar is the safe one: nothing is sent.
-    """
-    if _recording_is_off():
-        return [f"BLOCKED: {RECORDING_IS_OFF}"]
-    ready()
-    restore()
-    if not bound():
-        return ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
-                "enable_auto_paste() turns it back on."]
-    report = []
-
-    def field_now():
-        """The target editor's IDENTITY and its text. THE ORACLE, and it is not the clipboard.
-
-        Publishing to the clipboard is the app's documented FALLBACK, so a clipboard check cannot tell
-        a successful insertion from a failed one (`validation-discipline.md`
-        RULE: verify-the-feature-not-the-crash). The editor's own text can.
-
-        **Identity travels with the text so the comparison is about ONE editor.** Taking "the first
-        EditText" before and after lets a different field answer the second time — a screen that gains
-        an editor, or two whose order changes — and any difference then reads as words having arrived.
-        Prefers the FOCUSED editor, which is the one a dictation aims at.
-        """
-        fields = [n for n in tree(refresh=True) if n["kind"] == "EditText"
-                  and (target_package is None or n["package"] == target_package)]
-        if not fields:
-            return None
-        focused = [n for n in fields if n["focused"]]
-        chosen = focused or fields
-        if len(chosen) > 1:
-            raise Blocked(
-                f"{len(chosen)} editors are on screen and none is uniquely focused, so which one the "
-                "words were meant for is a guess"
-            )
-        node = chosen[0]
-        return (node["package"], node["id"] or node["bounds"], node["text"])
-
-    before = field_now()
-    _, will_say = stage_phone_speech(sentence, volume=volume, use_fixture=use_fixture)
-    # THE RECORDING IS AS LONG AS THE AUDIO, PLUS A MARGIN, AND NOT A ROUND NUMBER. A fixed wait leaves
-    # the recorder running after the sound has stopped, which the founder can see and which records
-    # whatever else is in the room. `record_seconds` stays as an override and as the answer when the
-    # length genuinely cannot be known in advance.
-    playing = will_say["seconds"]
-    listen_for = round(playing + TRAILING_MARGIN_S, 1) if playing else record_seconds
-    report.append(f"NOTE: the phone will play {will_say['what']}"
-                  + (f", {playing:.1f}s long, so the take runs {listen_for:.1f}s" if playing else ""))
-    try:
-        clear_log()
-        # The take's whole life is this block, and the context manager closes it however the block ends.
-        # `verify=False` because the subject here is the words, not the pill.
-        with open_recorder(verify=False):
-            time.sleep(LEAD_IN_S)
-            play_staged_speech()
-            time.sleep(listen_for)
-            stop_dictation()
-            ending = _wait_for_the_take_to_finish()
-    finally:
-        # THE MICROPHONE FIRST, the settings second, and that ordering is why the restore sits OUTSIDE
-        # the block rather than inside it: an earlier version put the volume back before trying to close
-        # the take, so a failure in the restore left the take running.
-        unstage_phone_speech()
-    if ending is None:
-        report.append("ISSUE: the dictation never reached an ending, so nothing can be said about it")
-        return report
-    take = last_take()
-    report.append(f"VERIFIED: a take ran, ended by {take['ended_by']}" if take["ended_by"]
-                  else "ISSUE: no take ending was logged")
-    if take["transcribed_chars"]:
-        report.append(f"VERIFIED: {take['transcribed_chars']} characters came back from the speech engine")
-    else:
-        report.append("ISSUE: nothing was transcribed. Either nothing reached the microphone, or the "
-                      "speech engine returned empty.")
-    handoff = take["handoff"]
-    if handoff == "SCHEDULED":
-        report.append("VERIFIED: the text was handed to the insertion path")
-    elif handoff:
-        report.append(f"ISSUE: the text did not reach the field ({handoff}); it is on the clipboard")
-    else:
-        report.append("ISSUE: no handoff was logged at all")
-    # THE OUTCOME, not the request. `handoff=SCHEDULED` says the text was handed over; only the
-    # editor's own content says it arrived. Measured 2026-09-06: a run logged SCHEDULED and then
-    # `Editor action could not be verified after 20 attempts; clipboard only`, and the words were in
-    # Chrome's address bar the whole time — so the log alone would have reported a working insertion
-    # as a failure, and a clipboard check would have reported the fallback as a success.
-    after = field_now()
-    if after is None or before is None:
-        report.append("ISSUE: no editor was on screen before or after, so where the words went is unknown")
-    elif after[:2] != before[:2]:
-        report.append("ISSUE: a DIFFERENT editor is on screen now, so nothing here says where the words "
-                      "went")
-    elif after[2] != before[2]:
-        report.append(f"VERIFIED: the same editor changed, and now holds {after[2]!r}")
-    else:
-        report.append(f"ISSUE: the editor is unchanged; it still holds {after[2]!r}")
-    return report
-
-
 # --------------------------------------------------------------------------------------------------
 # Command line
 # --------------------------------------------------------------------------------------------------
@@ -3542,7 +3866,9 @@ def _print_report(command, report, verbose):
     line: the last VERIFIED sentence. A finding prints every line, because then the NOTEs are the
     evidence. Founder 2026-09-20: "blazing fast and not crazy token heavy".
     """
-    red = any(line.startswith(("ISSUE", "BLOCKED")) for line in report)
+    # NOT RUN is not success either: a skipped row or a recording-off suite that exited 0 and printed OK
+    # was a green light over nothing (code review round 1).
+    red = any(line.startswith(("ISSUE", "BLOCKED", "NOT RUN")) for line in report)
     if red or verbose:
         print("\n".join(report))
     else:
@@ -3556,9 +3882,9 @@ def _main(argv):
     argv = [a for a in argv if a != "--verbose"]
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
-        print("commands: devices look tree find tap tab nav scan switches recorder dictate "
+        print("commands: devices look tree find tap tab nav scan switches recorder "
               "quiet logs take shot restore | emulator: launch unlock mic on|off inject <pcm> "
-              "dictate-emu [sentence] insert <text>")
+              "dictate-emu <sentence> <expected_final> | insert <text> <expected_final>")
         return 0
     command, rest = argv[0], argv[1:]
     try:
@@ -3580,7 +3906,7 @@ def _main(argv):
         elif command == "scan":
             report = scan(toggle="--toggle" in rest)
             print("\n".join(report))
-            return 1 if any(line.startswith(("ISSUE", "BLOCKED")) for line in report) else 0
+            return 1 if any(line.startswith(("ISSUE", "BLOCKED", "NOT RUN")) for line in report) else 0
         elif command == "switches":
             for label, on in sorted(switches().items()):
                 print(f"{label}: {'on' if on else 'off'}")
@@ -3588,8 +3914,8 @@ def _main(argv):
             answer = room_is_quiet()
             print(answer["verdict"])
             return 0 if answer["quiet"] else 1
-        elif command in ("recorder", "dictate"):
-            report = check_recorder() if command == "recorder" else test_dictation(*(rest or []))
+        elif command == "recorder":
+            report = check_recorder()
             # A findings report that exits 0 is a green light over a red result.
             return _print_report(command, report, verbose)
         elif command == "logs":
@@ -3613,7 +3939,11 @@ def _main(argv):
         elif command == "inject":
             print(inject_audio(rest[0]))
         elif command in ("dictate-emu", "insert"):
-            report = dictate_emulator(*(rest or [])) if command == "dictate-emu" else debug_insert(rest[0])
+            if len(rest) < 2:
+                print(f"usage: {command} <text> <expected_final>", file=sys.stderr)
+                return 2
+            report = (dictate_emulator(rest[0], expected_final=rest[1]) if command == "dictate-emu"
+                      else debug_insert(rest[0], expected_final=rest[1]))
             return _print_report(command, report, verbose)
         else:
             print(f"unknown command {command!r}", file=sys.stderr)

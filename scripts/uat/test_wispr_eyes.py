@@ -160,6 +160,10 @@ def restore_adb(original):
 
 
 def main():
+    # THE FAKE TRANSPORTS' HARDWARE IDENTITIES (#161 H7), as `getprop ro.serialno` would answer them; the
+    # book is keyed by these, and `_owed("emulator-5554")` reads the book under `EMU-5554`. A transport
+    # that is not attached keeps its own name as its key (see `test_book_is_keyed_by_identity` below).
+    eyes._STATE["identities"].update({"emulator-5554": "EMU-5554", "100.94.206.47:5555": "S26-HW"})
     # ---- the tree is parsed into something with a centre to press -------------------------------
     original = with_screen(TWO_REMOVES)
     nodes = eyes.tree()
@@ -615,19 +619,140 @@ def main():
     eyes._settled(("host-mic", "on"), "emulator-5556")
     eyes._STATE["serial"] = "emulator-5554"
 
-    # The take's verdict wants the sentence as a RUN of words, not a bag of them.
-    check("the sentence is found through case and punctuation",
-          eyes._sentence_landed("and I will send the deck tomorrow", "Hi. And I will send the deck tomorrow!\xa0"))
-    check("the same words in another order do not count",
-          not eyes._sentence_landed("alpha beta", "beta alpha"))
-    check("a missing word does not count", not eyes._sentence_landed("send the deck tomorrow", "send the deck to Ma."))
-    check("an empty expectation never counts", not eyes._sentence_landed("", "anything"))
-    check("a sentence in another script is found too",
-          eyes._sentence_landed("Привет мир", "Он сказал: Привет, мир!") and eyes._plain("Straße") == "strasse")
-    check("unspaced CJK is found inside a longer text", eyes._sentence_landed("你好", "他说你好世界"))
-    check("a combining mark is not dropped", not eyes._sentence_landed("कि", "क"))
-    check("a first letter the app capitalised is matched even where case folding is not a bijection",
-          eyes._sentence_landed("ışık geldi", "Işık geldi."))
+    # The take's verdict (#161): the app's own outcome line, field by field, and the editor's WHOLE text
+    # against the caller's literal. "Changed" is not "correct"; "contains" is not "equals".
+    live = ("09-22 03:21:54.255 I PasteService: vice: insertion api=36 route=COMMIT written=true returned=VOID "
+            "evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=54 overrun=false target=com.google.android.gm")
+    parsed = eyes._insertion_line(live)
+    check("the live outcome line parses field by field",
+          parsed == {"api": "36", "route": "COMMIT", "written": "true", "returned": "VOID", "evidence": "SURROUNDING",
+                     "outcome": "VERIFIED", "attempts": "1", "ms": "54", "overrun": "false",
+                     "target": "com.google.android.gm"}, parsed)
+    check("a line no producer writes parses to nothing", eyes._insertion_line("Insertion completed via COMMIT") is None)
+    good = {"insertion": parsed, "insertions": 1}
+    check("a verified, written, right-target line is VERIFIED and names the route",
+          any(l.startswith("VERIFIED: route=COMMIT") for l in eyes._judge_insertion(good, "com.google.android.gm")))
+    check("a wanted route that differs is an ISSUE",
+          any("route=COMMIT (wanted PASTE)" in l for l in eyes._judge_insertion(good, "com.google.android.gm", "PASTE")))
+    for field, value in (("outcome", "UNVERIFIED"), ("written", "false"), ("target", "com.other.app")):
+        bad = {"insertion": dict(parsed, **{field: value}), "insertions": 1}
+        check(f"{field}={value} is an ISSUE, never VERIFIED",
+              any(l.startswith("ISSUE:") and f"{field}=" in l for l in eyes._judge_insertion(bad, "com.google.android.gm"))
+              and not any(l.startswith("VERIFIED") for l in eyes._judge_insertion(bad, "com.google.android.gm")))
+    two = {"insertion": parsed, "insertions": 2}
+    check("two outcome lines in the window is an ISSUE, not a pick",
+          any("2 insertion outcome lines" in l for l in eyes._judge_insertion(two, "com.google.android.gm")))
+    check("no outcome line is an ISSUE",
+          any(l.startswith("ISSUE:") for l in eyes._judge_insertion({"insertion": None, "insertions": 0}, None)))
+
+    # The editor's whole text against the literal, read back by IDENTITY, focus a note only.
+    before = ("com.google.android.gm", "editor", "Hi. ")
+    original_by_identity, original_focused = eyes._field_by_identity, eyes._focused_field
+    eyes._focused_field = lambda package: None
+    for text, verdict in (("Hi. And I will send the deck tomorrow. ", "VERIFIED"),
+                          ("Hi. And I will send the deck tomorrow. And I will send the deck tomorrow. ", "ISSUE"),
+                          ("Hi. And I will send the deck tomorr", "ISSUE"),
+                          ("Hi. and I will send the deck tomorrow. ", "ISSUE"),
+                          ("Hi. ", "ISSUE")):
+        eyes._field_by_identity = lambda package, identity, _text=text: (package, identity, _text)
+        lines = eyes._judge_editor(before, "com.google.android.gm", "Hi. And I will send the deck tomorrow. ")
+        check(f"whole text {text!r} is {verdict}", lines and lines[0].startswith(verdict), lines)
+    check("focus elsewhere after the take is a note, not the verdict",
+          "not part of the verdict" in eyes._judge_editor(before, "com.google.android.gm", "Hi. And I will send the deck tomorrow. ")[0])
+    eyes._field_by_identity = lambda package, identity: None
+    check("an editor that vanished is an ISSUE naming it",
+          "no longer on screen" in eyes._judge_editor(before, "com.google.android.gm", "x")[0])
+    eyes._field_by_identity, eyes._focused_field = original_by_identity, original_focused
+    check("dictate_emulator without the literal is BLOCKED before acting",
+          eyes.dictate_emulator("hello", expected_final=None)[0].startswith("BLOCKED: expected_final is required")
+          if eyes.is_emulator("emulator-5554") else True)
+
+    # The instrumentation stream is read GROUP by group; READY is control, everything else a result (#161 T2).
+    stream = [
+        "INSTRUMENTATION_STATUS: class=com.envi.wispr.VoicePipelineDeviceTest\n",
+        "INSTRUMENTATION_STATUS: current=1\n", "INSTRUMENTATION_STATUS: id=AndroidJUnitRunner\n",
+        "INSTRUMENTATION_STATUS: numtests=1\n", "INSTRUMENTATION_STATUS: test=aSideButtonTakeLandsInTheFocusedEditorExactlyOnce\n",
+        "INSTRUMENTATION_STATUS_CODE: 1\n",
+        "INSTRUMENTATION_STATUS: driver_phase=READY\n", "INSTRUMENTATION_STATUS: driver_token=abc123\n",
+        "INSTRUMENTATION_STATUS_CODE: 161\n",
+        "INSTRUMENTATION_STATUS: class=com.envi.wispr.VoicePipelineDeviceTest\n",
+        "INSTRUMENTATION_STATUS: test=aSideButtonTakeLandsInTheFocusedEditorExactlyOnce\n",
+        "INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: the editor's whole text\n",
+        "\tat org.junit.Assert.fail(Assert.java:89)\n",
+        "INSTRUMENTATION_STATUS_CODE: -2\n",
+        "INSTRUMENTATION_RESULT: stream=\n", "Time: 12.3\n", "INSTRUMENTATION_CODE: -1\n",
+    ]
+    groups = list(eyes._instrumentation_groups(iter(stream)))
+    check("the stream yields one group per status code plus the final result", len(groups) == 4, [g.get("code") for g in groups])
+    check("the READY group is recognised by code and key",
+          groups[1]["code"] == eyes.DRIVER_READY_STATUS and groups[1]["driver_phase"] == "READY" and groups[1]["driver_token"] == "abc123")
+    check("a multi-line stack stays in its group",
+          groups[2]["code"] == -2 and "at org.junit.Assert.fail" in groups[2]["stack"] and groups[2]["test"].startswith("aSideButton"))
+    check("the final result carries the instrumentation code", groups[3].get("INSTRUMENTATION_CODE") == "-1")
+
+    # bound(): the whole block and the exact component (#161 finding 10).
+    dump_ours_second = ("     Bound services:{Service[label=TalkBack, feedbackType[FEEDBACK_SPOKEN]], "
+                        "Service[label=EnviousWispr, feedbackType[FEEDBACK_GENERIC], capabilities=1]}\n"
+                        "     Enabled services:{{com.google.talkback/.TalkBackService}, "
+                        "{com.envi.wispr/com.envi.wispr.paste.PasteAccessibilityService}}\n"
+                        "     Binding services:{}\n")
+    dump_label_only = ("     Bound services:{Service[label=EnviousWispr, feedbackType[FEEDBACK_GENERIC]]}\n"
+                       "     Enabled services:{{com.other/.Service}}\n")
+    dump_absent = "     Bound services:{}\n     Enabled services:{}\n"
+    original_bound_adb = eyes._adb
+    for dump, expected, name in ((dump_ours_second, True, "ours listed second is bound"),
+                                 (dump_label_only, False, "the label without our component is not bound"),
+                                 (dump_absent, False, "an empty block is not bound")):
+        eyes._adb = lambda command, timeout=60, check=True, serial=None, _d=dump: (0, _d)
+        check(name, eyes.bound() is expected)
+    eyes._adb = lambda command, timeout=60, check=True, serial=None: (0, "no such line\n")
+    try:
+        eyes.bound()
+        check("a dump with no bound-services line is a refusal", False)
+    except eyes.Blocked:
+        check("a dump with no bound-services line is a refusal", True)
+    eyes._adb = original_bound_adb
+
+    # The book is keyed by hardware identity, and a cable-keyed debt migrates (#161 finding 11).
+    migrate_book = Path(".test-migrate-journal.json")
+    if migrate_book.exists():
+        migrate_book.unlink()
+    original_journal_m, original_devices_m, original_run_m = eyes._JOURNAL, eyes.devices, eyes._run
+    eyes._JOURNAL = migrate_book
+    eyes.devices = lambda: [("usb-ABC", "SM_S948U1"), ("10.0.0.9:5555", "SM_S948U1")]
+    eyes._run = lambda args, timeout=60: (0, "HW-PHONE\n", "") if args[-1] == "getprop ro.serialno" else (1, "", "")
+    eyes._STATE["identities"].pop("usb-ABC", None)
+    eyes._STATE["identities"].pop("10.0.0.9:5555", None)
+    # Two cables, two DIFFERENT previous values for one setting: refused, nothing moved (review round 1).
+    migrate_book.write_text(json.dumps({"usb-ABC": [["screen-timeout", "600000"]],
+                                        "10.0.0.9:5555": [["media-volume", "8"], ["screen-timeout", "1800000"]]}))
+    eyes._STATE["serial"] = "10.0.0.9:5555"
+    try:
+        eyes._owed("10.0.0.9:5555")
+        check("conflicting previous values across cables are refused", False, "it migrated")
+    except eyes.Blocked as refusal:
+        check("conflicting previous values across cables are refused",
+              "two different previous values" in str(refusal) and "screen-timeout" in str(refusal), refusal)
+    book_now = json.loads(migrate_book.read_text())
+    check("and every original key is left untouched for a person to adjudicate",
+          set(book_now) == {"usb-ABC", "10.0.0.9:5555"}, book_now)
+    # The same setting with the SAME value on both cables, plus one only on one: moved, duplicates collapsed.
+    migrate_book.write_text(json.dumps({"usb-ABC": [["screen-timeout", "600000"]],
+                                        "10.0.0.9:5555": [["media-volume", "8"], ["screen-timeout", "600000"]]}))
+    owed = eyes._owed("10.0.0.9:5555")
+    book_now = json.loads(migrate_book.read_text())
+    check("both cable-keyed books moved under the hardware identity, identical duplicates collapsed",
+          sorted(owed) == [("media-volume", "8"), ("screen-timeout", "600000")], owed)
+    check("and the cable keys are gone from the book, nothing dropped",
+          set(book_now) == {"HW-PHONE"} and len(book_now["HW-PHONE"]) == 2, book_now)
+    check("a debt owed through the other cable reads the same book", eyes._owed("usb-ABC") == owed)
+    check("a transport that is not attached keeps its own key", eyes._scope_key("emulator-5556") == "emulator-5556")
+    eyes._JOURNAL, eyes.devices, eyes._run = original_journal_m, original_devices_m, original_run_m
+    eyes._STATE["serial"] = "emulator-5554"
+    migrate_book.unlink()
+    lock = Path(str(migrate_book).replace(".json", ".lock"))
+    if lock.exists():
+        lock.unlink()
 
     # Audio goes in only while a take is listening, as timestamped packets from the ONE builder.
     pcm = Path(_tempfile.mkdtemp()) / "utt.pcm"
@@ -1085,12 +1210,14 @@ def main():
     except eyes.Blocked as refusal:
         check("starting a recording is refused", "recording from this harness is off" in str(refusal),
               refusal)
+    # `dictate_emulator` carries the same NOT RUN branch, but it cannot be reached here: `_require_emulator`
+    # refuses a phone first, and on an emulator the gate is open, so the row covers the two suites a
+    # phone can reach.
     for name, call in (("check_recorder", eyes.check_recorder),
-                       ("test_dictation", eyes.test_dictation),
                        ("room_is_quiet", eyes.room_is_quiet)):
         answer = call()
-        check(f"{name} reports it as BLOCKED rather than raising",
-              isinstance(answer, list) and answer and answer[0].startswith("BLOCKED:"), answer)
+        check(f"{name} reports it as NOT RUN rather than raising (#161 finding 12)",
+              isinstance(answer, list) and answer and answer[0].startswith("NOT RUN:"), answer)
 
     # AND THE GUARD UNDERNEATH IS STILL THERE, so turning recording back on does not also turn off the
     # rule that a take may not begin on a phone whose state is unknown. Read directly, because the

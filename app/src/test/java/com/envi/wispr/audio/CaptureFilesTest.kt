@@ -36,7 +36,7 @@ class CaptureFilesTest {
 
     // REVERT R14 (isSweptAtTakeStart matches any recording-*.pcm) turns this red.
     @Test
-    fun theTakeStartSweepMatchesOnlyProductionFiles() {
+    fun theCleanupMatchersMatchOnlyTheirOwnCaptureFiles() {
         assertTrue(CaptureFiles.isSweptAtTakeStart("recording.pcm"))
         assertTrue(CaptureFiles.isSweptAtTakeStart("recording-take-3f2a9c1e-7b4d-4e8a-9c21-0d5e6f7a8b9c.pcm"))
         listOf(
@@ -48,7 +48,17 @@ class CaptureFilesTest {
             "recording-take-a/b.pcm",
         ).forEach { name -> assertFalse("<$name> is never swept", CaptureFiles.isSweptAtTakeStart(name)) }
         assertTrue("the device tests find their own files", CaptureFiles.isLegacyCapture("recording-legacy-42.pcm"))
-        assertFalse(CaptureFiles.isLegacyCapture("recording-take-3f2a9c1e-7b4d-4e8a-9c21-0d5e6f7a8b9c.pcm"))
-        assertFalse(CaptureFiles.isLegacyCapture("enviouswispr-uat.pcm"))
+        assertTrue(CaptureFiles.isLegacyCapture("recording-legacy-9223372036854775807.pcm"))
+        listOf(
+            "recording-legacy-.pcm",
+            "recording-legacy--1.pcm",
+            "recording-legacy-42.pcm.tmp",
+            "xrecording-legacy-42.pcm",
+            "recording-legacy-${"1".repeat(20)}.pcm",
+            "recording-take-3f2a9c1e-7b4d-4e8a-9c21-0d5e6f7a8b9c.pcm",
+            "enviouswispr-uat.pcm",
+        ).forEach { name ->
+            assertFalse("<$name> is not a legacy capture", CaptureFiles.isLegacyCapture(name))
+        }
     }
 }

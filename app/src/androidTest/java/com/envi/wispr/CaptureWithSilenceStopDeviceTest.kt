@@ -40,7 +40,15 @@ class CaptureWithSilenceStopDeviceTest {
      */
     @After
     fun deleteThisClassesCaptureFiles() {
-        context.cacheDir.listFiles()?.filter { CaptureFiles.isLegacyCapture(it.name) }?.forEach { it.delete() }
+        val files = context.cacheDir.listFiles()
+        assertTrue("the cache directory must be readable for cleanup", files != null)
+        val undeleted = files.orEmpty()
+            .filter { CaptureFiles.isLegacyCapture(it.name) }
+            .filter { !it.delete() && it.exists() }
+        assertTrue(
+            "legacy capture files were not deleted: ${undeleted.map { it.name }}",
+            undeleted.isEmpty(),
+        )
     }
 
     private fun bindCapture(): Pair<IAudioCaptureService, ServiceConnection> {

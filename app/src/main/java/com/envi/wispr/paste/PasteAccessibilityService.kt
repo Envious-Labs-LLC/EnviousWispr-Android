@@ -30,6 +30,7 @@ import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.InputDeviceResolver
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
 import com.envi.wispr.insertion.ClipboardOutcome
@@ -46,15 +47,12 @@ import com.envi.wispr.ui.DictationSessionService
 import com.envi.wispr.settings.AppPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import java.util.UUID
 
 class PasteAccessibilityService : AccessibilityService() {
@@ -608,8 +606,7 @@ class PasteAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        // Retract the publication FIRST. Teardown below blocks this thread draining Room, and a
-        // reader during that window would otherwise see a healthy binding on a dying service.
+        // Retract the publication FIRST, so no reader sees a healthy binding on a dying service.
         if (instance === this) publishBinding(null)
         lookScope.cancel()
         getSystemService(AudioManager::class.java)?.unregisterAudioDeviceCallback(audioDeviceCallback)
@@ -619,24 +616,26 @@ class PasteAccessibilityService : AccessibilityService() {
         mainHandler.removeCallbacks(retryRunnable)
         retryScheduled = false
         cancelDiscoveryRetries()
-        // Announced BEFORE the blocking Room drain below, for the reason spelled out on
-        // recordAndAnnounce: what survives this teardown is the durable notification, and it only
-        // survives if it is handed to the system while this process is still alive.
+        // Announced here, for the reason spelled out on recordAndAnnounce: what survives this teardown
+        // is the durable notification, and it only survives if it is handed to the system while this
+        // process is still alive. Its History write goes on the application's queue (#115).
         pendingInsertion?.let { pending ->
             pending.targetPackage = pinnedTarget?.packageName
             logOutcome(pending, InsertionOutcomeLine.Outcome.DESTROYED, pinnedTarget?.packageName)
             recordAndAnnounce(ServiceFallbackReason.SERVICE_DESTROYED, pending)
         }
         pendingInsertion = null
-        runBlocking(Dispatchers.IO) {
-            historyScope.coroutineContext[Job]?.children?.toList()?.joinAll()
-        }
+        // Nothing is drained here (#115): the take's History writes are the application queue's, in
+        // order, and the bubble-position saves on this scope are a preference whose next save wins, so a
+        // cancelled in-flight one costs nothing the next open does not restore.
         historyScope.cancel()
         clearPinnedTarget()
         clearTarget()
-        // LAST, after the blocking Room drain above. Marking clean before it would record a system
-        // kill that lands during the drain as an orderly stop, which is the case the marker exists
-        // to catch.
+        // LAST, and written HERE rather than queued behind the outcome write (#115 review, F4): the marker
+        // answers whether THIS service stopped in order, which it did once this method runs, and a
+        // queued mark could land after a replacement connected and either be declined by the instance
+        // guard (the orderly stop then reads as a crash) or overwrite the replacement's own arm. A kill
+        // after this point loses only the queued outcome write, which the start-up recovery closes.
         markStopWasClean()
         super.onDestroy()
     }
@@ -1403,10 +1402,12 @@ class PasteAccessibilityService : AccessibilityService() {
             emit()
             return
         }
-        historyScope.launch {
-            // The History update is first-wins; the row leaves only when THIS writer won it, so a
-            // recovery or a second finalizer that got there first is the one that reports (round 1, F5).
-            val changed = runCatching { transcriptRepository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
+        // On the application's History queue (#115), behind the owner's writes of the same row, so the
+        // outcome cannot land before the finalization it belongs to. The update is first-wins; the row
+        // leaves only when THIS writer won it, so a recovery or a second finalizer that got there first
+        // is the one that reports (round 1, F5).
+        ModelBootstrapApplication.historyWrites(applicationContext).enqueue("insertion outcome") { repository ->
+            val changed = runCatching { repository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
                 .onFailure { error -> Log.w(TAG, "Unable to update transcript insertion result: ${error.message}") }
                 .getOrNull()
             if (changed == 1) emit()

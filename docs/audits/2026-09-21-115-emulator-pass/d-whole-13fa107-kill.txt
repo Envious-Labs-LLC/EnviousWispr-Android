@@ -1,0 +1,14 @@
+scene d (whole-13fa107): kill -9 the capture process mid-take
+killed com.envi.wispr:audio pid 6928
+owner reached an ending 0.5 s after the kill
+recorder pill on screen at that point: False
+restored nothing was changed
+log 09-21 20:42:54.434 I/DictationSession( 6750): Audio capture connected
+log 09-21 20:42:54.477 I/AudioCapture( 6928): Recording started (PID: 6928, max: 600000ms, nativeFrames: 16000)
+log 09-21 20:42:54.622 I/DictationSession( 6750): Recording started (live after 3 ms, forced=false)
+log 09-21 20:43:00.031 I/ActivityManager(  824): Process com.envi.wispr:audio (pid 6928) has died: vis FGS 
+log 09-21 20:43:00.257 W/DictationSession( 6750): Audio capture disconnected
+log 09-21 20:43:00.263 W/DictationSession( 6750): Take ended: AUDIO_PROCESS_DIED
+log 09-21 20:43:02.347 I/fabn    ( 2614): (REDACTED) Ignoring irrelevant audio permission changes for package %s
+log 09-21 20:43:04.038 I/fabn    ( 2614): (REDACTED) Ignoring irrelevant audio permission changes for package %s
+last take: {'started': True, 'ended_by': None, 'bytes': None, 'seconds': None, 'warned_at_ms': None, 'hit_the_cap': False, 'transcribed_chars': None, 'handoff': None, 'insertion': None}

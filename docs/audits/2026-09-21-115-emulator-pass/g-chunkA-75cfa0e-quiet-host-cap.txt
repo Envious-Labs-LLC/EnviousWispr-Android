@@ -1,0 +1,11 @@
+scene g (chunkA-75cfa0e-quiet-host): auto-stop off, the take runs to the ten-minute cap
+False
+NOTE: host microphone already off
+NOTE: injected 30 packets, 3.0s of audio
+ending observed 601 s after the start
+restored nothing was changed
+log 09-21 19:34:02.881 I/AudioCapture(25823): Recording started (PID: 25823, max: 600000ms, nativeFrames: 16000)
+log 09-21 19:34:02.959 I/DictationSession(25527): Recording started (live after 6 ms, forced=false)
+log 09-21 19:44:02.937 I/DictationSession(25527): Take ended at the duration cap
+log 09-21 19:44:05.598 W/DictationSession(25527): Take ended: ASR_PROCESS_DIED
+last take: {'started': True, 'ended_by': None, 'bytes': None, 'seconds': 600.0, 'warned_at_ms': 540662, 'hit_the_cap': True, 'transcribed_chars': None, 'handoff': None, 'insertion': None}

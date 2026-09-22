@@ -146,27 +146,26 @@ class RecordingCapWiringTest {
     fun aTakeStoppedByTheCapSaysSoAndStillKeepsTheWords() {
         val ending = session.substringAfter("CaptureEnding.MaxDuration ->").substringBefore("CaptureEnding.Manual,")
         assertTrue("the cap ending must say what happened", ending.contains("DURATION_REACHED_NOTICE"))
-        assertTrue("the cap ending must still transcribe", ending.contains("stopAndTranscribe()"))
+        // Since #115 the ending arrives with the closed file: the transition and the continuation.
+        assertTrue("the cap ending must still transcribe", ending.contains("continueAfterEnding(ending)"))
         // Order matters and it is not cosmetic. The words are the thing that must survive, and the
         // sentence explaining the ending is a limb; ahead of the transition, a failure in it costs
         // the take it was describing.
         assertTrue(
             "the take must be secured before anything is announced about it",
-            ending.indexOf("stopAndTranscribe()") < ending.indexOf("sayAfterRecording("),
+            ending.indexOf("continueAfterEnding(ending)") < ending.indexOf("sayAfterRecording("),
         )
     }
 
     @Test
     fun neitherAnnouncementCanCarryTheLoopPastTheCheckThatEndsATake() {
-        val loop = session.substringAfter("private fun startPolling()").substringBefore("\n    /**")
-        val terminalCheck = loop.indexOf("service.terminalReason")
-        assertTrue("the loop must contain the terminal check", terminalCheck >= 0)
-        val warning = loop.indexOf("publishDurationWarningIfNeeded(")
-        assertTrue("the loop must publish the warning", warning >= 0)
-        assertTrue(
-            "the duration warning must come AFTER the check that ends a take",
-            warning > terminalCheck,
-        )
+        // Since #115 the ending and the warning arrive as separate pushed events: the warning rides the
+        // heartbeat handler and can never sit on the path that ends a take, and it is a limb there.
+        val tick = session.substringAfter("private fun onTakeTick(").substringBefore("\n    }\n")
+        assertTrue("the heartbeat publishes the warning", tick.contains("publishDurationWarningIfNeeded("))
+        assertTrue("as a limb", tick.contains("runCatching { publishDurationWarningIfNeeded(elapsedMs) }"))
+        val ending = session.substringAfter("private fun onTakeEnded(").substringBefore("\n    }\n")
+        assertFalse("the ending handler never publishes the warning", ending.contains("publishDurationWarningIfNeeded("))
     }
 
     @Test

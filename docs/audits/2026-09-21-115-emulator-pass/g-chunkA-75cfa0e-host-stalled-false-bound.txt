@@ -1,0 +1,12 @@
+scene g (chunkA-75cfa0e): auto-stop off, the take runs to the ten-minute cap
+False
+NOTE: host microphone already off
+NOTE: injected 30 packets, 3.0s of audio
+ending observed 277 s after the start
+restored nothing was changed
+log 09-21 18:18:09.770 I/AudioCapture(25823): Recording started (PID: 25823, max: 600000ms, nativeFrames: 16000)
+log 09-21 18:18:09.873 I/DictationSession(25527): Recording started (live after 23 ms, forced=false)
+log 09-21 18:22:45.446 E/DictationSession(25527): Capture process silent for 3000ms; ending the take
+log 09-21 18:22:45.447 W/DictationSession(25527): Take ended: AUDIO_PROCESS_UNRESPONSIVE
+log 09-21 18:22:45.576 I/AudioCapture(25823): Stopped by a stop request. 8469504 bytes (264.7s) -> /data/user/0/com.envi.wispr/cache/recording.pcm
+last take: {'started': True, 'ended_by': 'a stop request', 'bytes': 8469504, 'seconds': 264.7, 'warned_at_ms': None, 'hit_the_cap': False, 'transcribed_chars': None, 'handoff': None, 'insertion': None}

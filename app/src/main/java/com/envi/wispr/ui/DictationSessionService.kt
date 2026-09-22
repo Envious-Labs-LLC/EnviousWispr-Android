@@ -19,6 +19,7 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.paste.AccessibilityPermission
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.AutoPasteReadiness
@@ -134,6 +135,14 @@ class DictationSessionService : Service() {
             mainHandler.post(runnable)
         }
 
+        override fun postToMainDelayed(delayMs: Long, runnable: Runnable) {
+            mainHandler.postDelayed(runnable, delayMs)
+        }
+
+        override fun cancelMainDelayed(runnable: Runnable) {
+            mainHandler.removeCallbacks(runnable)
+        }
+
         override fun onMainThread(): Boolean = Looper.myLooper() == Looper.getMainLooper()
 
         override fun elapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()
@@ -216,6 +225,7 @@ class DictationSessionService : Service() {
             insertion = AccessibilityInsertionGateway,
             log = DebugSessionLog,
             preferences = preferences,
+            historyWrites = ModelBootstrapApplication.historyWrites(applicationContext),
             transcripts = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()),
             languageDetector = languageDetector,
             loadPolicy = { providerConfiguration.loadPolicy() },

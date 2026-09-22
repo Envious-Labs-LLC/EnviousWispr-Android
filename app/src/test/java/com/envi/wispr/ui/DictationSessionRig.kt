@@ -2,6 +2,7 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.cleanup.LanguageDetector
+import com.envi.wispr.history.HistoryWriteQueue
 import com.envi.wispr.history.TranscriptDao
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
@@ -87,6 +88,18 @@ internal class DictationSessionRig {
     val pipeline = FakePipeline(capture, speech, polish)
     val dao = FakeTranscriptDao()
     val transcripts = TranscriptRepository(dao, clock = { 1_000L })
+    /** The application-owned History queue (#115), here on its own scope like the real one; tests drain it through [awaitHistoryIdle]. */
+    val historyWrites = HistoryWriteQueue(transcripts, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO), warn = { line -> log.warn(line) })
+
+    /**
+     * Every History write queued so far has been applied: a marker write is queued and awaited, and the
+     * queue is one worker in enqueue order. The rows' assertions read the DAO after this.
+     */
+    fun awaitHistoryIdle() {
+        val landed = CountDownLatch(1)
+        check(historyWrites.enqueue("test marker") { landed.countDown() }) { "the History queue refused a write" }
+        check(landed.await(10, TimeUnit.SECONDS)) { "the History queue never drained; log: ${log.lines}" }
+    }
     val polishTimeout = FakePolishTimeout()
     val endings = Endings()
     val preferenceStates = MutableStateFlow(AppPreferencesState())
@@ -111,6 +124,7 @@ internal class DictationSessionRig {
         insertion = insertion,
         log = log,
         preferences = preferences,
+        historyWrites = historyWrites,
         transcripts = transcripts,
         languageDetector = LanguageDetector { null },
         loadPolicy = { PolishPolicy.Off },
@@ -141,6 +155,7 @@ internal class DictationSessionRig {
 
     fun close() {
         mainExecutor.shutdownNow()
+        capture.close()
         capture.audioFile?.delete()
     }
 
@@ -215,12 +230,38 @@ internal class DictationSessionRig {
             stopped.countDown()
         }
         override fun postToMain(runnable: Runnable) { mainExecutor.execute { run("post", runnable) } }
+
+        /** Delayed posts, in order, never fired by a clock: [fireDelayed] runs them on the fake main thread. */
+        val delayed = CopyOnWriteArrayList<Pair<Long, Runnable>>()
+        /** Every delayed post ever made, by delay; a re-arm is a cancel and a NEW post with the same delay. */
+        val delayedPostLog = CopyOnWriteArrayList<Long>()
+        fun postsWithDelay(delayMs: Long): Int = delayedPostLog.count { it == delayMs }
+        override fun postToMainDelayed(delayMs: Long, runnable: Runnable) { delayedPostLog += delayMs; delayed += delayMs to runnable }
+        override fun cancelMainDelayed(runnable: Runnable) { delayed.removeIf { it.second === runnable } }
+
+        /**
+         * Test time passes: every delayed post with [delayMs] due fires, on main, in the order it was
+         * posted. Selected and removed ON main, as a Handler would, so a re-arm racing the test thread
+         * cannot leave the fired entry behind or fire the re-posted one twice.
+         */
+        fun fireDelayed(delayMs: Long) {
+            onMain {
+                val due = delayed.filter { it.first == delayMs }
+                delayed.removeAll(due)
+                due.forEach { (_, runnable) -> runnable.run() }
+            }
+        }
         override fun onMainThread(): Boolean = Thread.currentThread() === mainThread
         override fun elapsedRealtimeMs(): Long = System.nanoTime() / 1_000_000L
 
-        /** The Service stopped itself, which every terminal path ends in. */
+        /**
+         * The Service stopped itself, which every terminal path ends in. Then the History queue is drained:
+         * since #115 the Service may stop while the take's last write is still landing on the application's
+         * worker, and a row read before that is a row read too early.
+         */
         fun awaitStopped() {
             check(stopped.await(10, TimeUnit.SECONDS)) { "the owner never stopped the Service; events so far: $events" }
+            awaitHistoryIdle()
         }
     }
 
@@ -276,23 +317,36 @@ internal class DictationSessionRig {
         override fun isBound(): Boolean = bound
     }
 
-    /** The capture process as the owner sees it. `startCaptureForTake` writes a small PCM file for the stop path to measure. */
+    /**
+     * The capture process as the owner sees it (#115): three commands in, the take's events out. Like the
+     * audio process it PUSHES: a successful start publishes live (unless [liveStateAfterStart] holds it
+     * WAITING), a stop or a cancel publishes the ending with the closed file, and a test can end the take on
+     * its own or go silent. Every push runs on ONE thread in the order pushed, as the audio process's one
+     * publisher worker delivers them (review round 1, F7). `startCaptureForTake` writes a small PCM file
+     * for the stop path to measure. Every event carries the id the start was given; [endOnItsOwn] can
+     * push another take's ending, which the owner must discard.
+     */
     inner class FakeCapture : CaptureLink {
+        private val binderThread = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "fake-audio-binder") }
+        /** The id the owner passed to the last start; the fake's events carry it. */
+        @Volatile var currentTakeId = ""
+        fun close() = binderThread.shutdownNow()
         @Volatile var startResult = true
         @Volatile var startFailure = AudioCaptureService.START_FAILURE_NONE
         @Volatile var liveStateAfterStart = AudioCaptureService.LIVE_READY
-        @Volatile var fileReady = true
-        /** When set, `waitForFileReady` blocks until the test opens it: holds a cancel in CANCELLING. */
-        @Volatile var fileReadyGate: CountDownLatch? = null
+        /** When set, the ending is held until the test opens it: holds a cancel or a stop waiting for the file. */
+        @Volatile var endingGate: CountDownLatch? = null
+        /** When true the process is WEDGED: no event leaves it after live, whatever the owner asks. */
+        @Volatile var silent = false
         @Volatile var ending = AudioCaptureService.TERMINAL_REASON_MANUAL
         @Volatile var peak: Float = 0.5f
-        @Volatile var throwOnPeak = false
         @Volatile var capturing = false
-        @Volatile var live = AudioCaptureService.LIVE_WAITING
         @Volatile var audioFile: File? = null
         val events = CopyOnWriteArrayList<String>()
         private val started = CountDownLatch(1)
         private val stopRequested = CountDownLatch(1)
+        @Volatile private var takeListener: TakeListener? = null
+        private val ended = java.util.concurrent.atomic.AtomicBoolean(false)
 
         /** The owner asked capture to start. */
         fun awaitStarted() {
@@ -306,39 +360,98 @@ internal class DictationSessionRig {
 
         /** The settings each start call carried, as one literal per call (#193). */
         val startArguments = CopyOnWriteArrayList<String>()
+        /** The thread each command arrived on; the owner's contract is one lane, never main (#115). */
+        val commandThreads = CopyOnWriteArrayList<String>()
+
+        /** Live, pushed by hand for a take that was held WAITING. */
+        fun pushLive(takeId: String) {
+            push { it.onLive(takeId, false, 0, 0, 120L); it.onTick(takeId, 0L) }
+        }
+
         override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean {
             events += "start"
+            commandThreads += Thread.currentThread().name
+            currentTakeId = takeId
             startArguments += "start(autoStop=$autoStopOnSilence, pause=$pauseSeconds)"
             if (!startResult) {
                 started.countDown()
+                // A refused start publishes its own ending with the failure code and no file (#115).
+                push { it.onEnded(TakeEnding(takeId, AudioCaptureService.TERMINAL_REASON_NONE, startFailure, null, AudioCaptureService.SILENCE_STATUS_DISABLED, 0f, "")) }
                 return false
             }
             audioFile = File.createTempFile("take", ".pcm").apply { writeBytes(ByteArray(32_000)) }
             capturing = true
-            live = liveStateAfterStart
             started.countDown()
+            when (liveStateAfterStart) {
+                AudioCaptureService.LIVE_READY -> push { it.onLive(takeId, false, 0, 0, 120L); it.onTick(takeId, 0L) }
+                AudioCaptureService.LIVE_FORCED -> push { it.onLive(takeId, true, 0, 0, 120L); it.onTick(takeId, 0L) }
+                else -> Unit
+            }
+            // A start whose RETURN is held: the live event is already on its way to main, as on a device
+            // where the route goes live within a millisecond of the call (the hosted-runner race).
+            startReturnGate?.await(10, TimeUnit.SECONDS)
             return true
         }
-        override fun lastStartFailure(): Int = startFailure
+
+        /** When set, `startCaptureForTake` returns only once the test opens it, AFTER it pushed live. */
+        @Volatile var startReturnGate: CountDownLatch? = null
+
         override fun stopCapture() {
             events += "stop"
+            commandThreads += Thread.currentThread().name
             timeline += "capture-stop"
             capturing = false
             stopRequested.countDown()
+            publishEnding(ending)
         }
-        override fun waitForFileReady(timeoutMs: Long): Boolean {
-            fileReadyGate?.await(10, TimeUnit.SECONDS)
-            return fileReady
+
+        override fun finishTake(): Boolean {
+            events += "finishTake"
+            commandThreads += Thread.currentThread().name
+            return false
         }
-        override fun liveState(): Int = live
-        override fun isCapturing(): Boolean = capturing
-        override fun audioFilePath(): String? = audioFile?.path
-        override fun elapsedMs(): Long = 1_000L
-        override fun silenceStopStatus(): Int = AudioCaptureService.SILENCE_STATUS_DISABLED
-        override fun inputRouteKind(): Int = 0
-        override fun inputRouteReason(): Int = 0
-        override fun liveAfterMs(): Long = 0L
-        override fun terminalReason(): Int = ending
+
+        /**
+         * The capture loop ended the take itself: silence, the cap, an error, or one before live. With
+         * [takeId] given, the ending belongs to ANOTHER take (the previous one, still queued in the
+         * service's publisher when this owner registered) and consumes none of this take's one ending.
+         */
+        fun endOnItsOwn(reason: Int, takeId: String = currentTakeId) {
+            if (takeId != currentTakeId) {
+                push { it.onEnded(TakeEnding(takeId, reason, startFailure, "/tmp/previous-take.pcm", AudioCaptureService.SILENCE_STATUS_READY, 0.9f, "Earbuds")) }
+                return
+            }
+            capturing = false
+            publishEnding(reason)
+        }
+
+        /** A heartbeat from the capture loop, as the audio process sends one each second. */
+        fun tick(elapsedMs: Long) {
+            val takeId = currentTakeId
+            push { it.onTick(takeId, elapsedMs) }
+        }
+
+        /** The silence detector's status changed. */
+        fun silenceStatus(status: Int) {
+            val takeId = currentTakeId
+            push { it.onSilenceStatus(takeId, status) }
+        }
+
+        private fun publishEnding(reason: Int) {
+            if (!ended.compareAndSet(false, true)) return
+            val takeId = currentTakeId
+            push {
+                endingGate?.await(10, TimeUnit.SECONDS)
+                it.onEnded(TakeEnding(takeId, reason, startFailure, audioFile?.path, AudioCaptureService.SILENCE_STATUS_DISABLED, peak, "Phone microphone"))
+            }
+        }
+
+        private fun push(event: (TakeListener) -> Unit) {
+            if (silent) return
+            val target = takeListener ?: return
+            binderThread.execute { event(target) }
+        }
+
         /** The listener the owner registered, so a test can push a picture through it as the audio process would. */
         @Volatile var spectrumListener: SpectrumListener? = null
         private val listening = CountDownLatch(1)
@@ -350,30 +463,34 @@ internal class DictationSessionRig {
         }
         override fun listenForSpectrum(listener: SpectrumListener) {
             spectrumListener = listener
+            commandThreads += Thread.currentThread().name
             events += "listen"
             timeline += "listen"
             listening.countDown()
         }
-        override fun stopListeningForSpectrum() {
-            if (spectrumListener == null) return
-            spectrumListener = null
-            events += "stopListening"
-            timeline += "stopListening"
-        }
-        override fun effectiveInputDevice(): String? = "Phone microphone"
-        override fun takePeakAmplitude(): Float {
-            if (throwOnPeak) throw IllegalStateException("peak unreadable")
-            return peak
-        }
-        override fun finishTake(): Boolean {
-            events += "finishTake"
-            return false
+        /** When set, the registration is held until the test opens it: a wedged process that returns late. */
+        @Volatile var registrationGate: CountDownLatch? = null
+        private val registering = CountDownLatch(1)
+
+        /** The owner reached the registration (it may still be held by [registrationGate]). */
+        fun awaitRegistering() {
+            check(registering.await(10, TimeUnit.SECONDS)) { "the owner never registered for the take's events; events: $events" }
         }
 
-        /** Capture ended on its own, as the polling thread will find. */
-        fun endOnItsOwn(reason: Int) {
-            ending = reason
-            capturing = false
+        private val registered = CountDownLatch(1)
+
+        /** The registration returned (after any gate). */
+        fun awaitRegistered() {
+            check(registered.await(10, TimeUnit.SECONDS)) { "the registration never returned; events: $events" }
+        }
+
+        override fun listenForTake(listener: TakeListener) {
+            registering.countDown()
+            registrationGate?.await(10, TimeUnit.SECONDS)
+            takeListener = listener
+            commandThreads += Thread.currentThread().name
+            events += "listenForTake"
+            registered.countDown()
         }
     }
 
@@ -446,7 +563,6 @@ internal class DictationSessionRig {
             events += "unbind"
             timeline += "unbind"
         }
-        override fun postUnbindToMain(beforeUnbind: () -> Unit) { mainExecutor.execute { run("post") { beforeUnbind(); unbind() } } }
         override fun stopAudioService() { events += "stopAudioService" }
 
         /** The platform reporting a helper's death, on main. */
@@ -477,6 +593,11 @@ internal class DictationSessionRig {
         val rows = java.util.concurrent.ConcurrentHashMap<Long, TranscriptEntity>()
         private val nextId = AtomicLong(1L)
         @Volatile var failInserts = false
+        /** When set, the FIRST `updateStatus` is held this long: on two threads the second lands first (the #115 P4 race). */
+        @Volatile var delayFirstStatusMs = 0L
+        private val statusWrites = AtomicLong(0L)
+        /** When set, every status write is held until the test completes it: a stalled disk (the #115 destroy row). */
+        @Volatile var holdStatusWrites: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(rows.values.toList())
         override suspend fun insert(transcript: TranscriptEntity): Long {
@@ -491,6 +612,8 @@ internal class DictationSessionRig {
         override suspend fun deleteById(id: Long): Int = if (rows.remove(id) != null) 1 else 0
         override suspend fun deleteWordlessRows(): Int = 0
         override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int {
+            if (statusWrites.getAndIncrement() == 0L && delayFirstStatusMs > 0L) kotlinx.coroutines.delay(delayFirstStatusMs)
+            holdStatusWrites?.await()
             return if (rows.computeIfPresent(id) { _, row -> row.copy(status = status, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted, insertionResult = insertionResult ?: row.insertionResult) } != null) 1 else 0
         }
         override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int {
@@ -509,7 +632,9 @@ internal class DictationSessionRig {
             }
             return updated
         }
-        override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int = 0
+        /** When set, the start-up recovery is held until the test completes it (the #115 review's F1 row). */
+        @Volatile var holdRecovery: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int { holdRecovery?.await(); return 0 }
         override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int = 0
         override suspend fun staleReadyRowIds(cutoffMs: Long): List<Long> = emptyList()
     }

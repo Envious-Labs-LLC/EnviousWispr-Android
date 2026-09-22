@@ -28,6 +28,7 @@ class TakeNoticesTest {
         TerminalReason.INTERRUPTED_PROCESSING to null,
         TerminalReason.INTERRUPTED_CANCELLING to null,
         TerminalReason.AUDIO_PROCESS_DIED to "Microphone service stopped unexpectedly",
+        TerminalReason.AUDIO_PROCESS_UNRESPONSIVE to "The microphone stopped answering. Try again.",
         TerminalReason.ASR_PROCESS_DIED to "Speech service stopped before transcription finished",
         TerminalReason.POLISH_PROCESS_DIED to "Polish service stopped before cleanup finished",
         TerminalReason.AUDIO_BIND_FAILED to "Microphone service could not be connected",

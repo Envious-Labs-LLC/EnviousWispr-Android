@@ -270,7 +270,12 @@ internal class DictationSessionCoordinator(
         scope.launch {
             runCatching { transcripts.recoverStaleOpenRows(System.currentTimeMillis()) }
                 .onSuccess { recovered -> Telemetry.insertionsRecovered(recovered.readyRowIds) }
-                .onFailure { error -> log.warn("Unable to recover stale history: ${error.message}") }
+                .onFailure { error ->
+                    // A command that finds the owner IDLE stops the Service within milliseconds of this
+                    // launch (`stopIfIdle`); that cancellation is the ordinary case, not a failure, and the
+                    // next instance runs the recovery again (measured on the emulator 2026-09-21).
+                    if (error !is kotlinx.coroutines.CancellationException) log.warn("Unable to recover stale history: ${error.message}")
+                }
         }
         preferences.start(scope)
     }

@@ -1477,7 +1477,7 @@ def main():
     eyes._STATE["serial"] = None
 
     # ---- freeze / thaw / kill act on ONE verified pid or refuse (#115) ----
-    originals = {name: getattr(eyes, name) for name in ("_adb", "_JOURNAL", "devices", "is_emulator", "_spawn_debugger", "_kill_debugger", "_process_answers", "_adb_host")}
+    originals = {name: getattr(eyes, name) for name in ("_adb", "_JOURNAL", "devices", "is_emulator", "_spawn_debugger", "_kill_debugger", "_process_answers", "_adb_host", "_replace_owed_locked", "_settled_locked")}
     proc_book = Path(__file__).parent / ".test-proc-journal.json"
     if proc_book.exists():
         proc_book.unlink()
@@ -1505,6 +1505,20 @@ def main():
         table["frozen"].discard(port)
         return f"debugger pid {host_pid} ended"
 
+    writes = {"replaced": 0, "settled_by_freeze": 0, "freezing": False}
+    real_replace, real_settle = eyes._replace_owed_locked, eyes._settled_locked
+
+    def counting_replace(old, new, serial):
+        writes["replaced"] += 1
+        return real_replace(old, new, serial)
+
+    def counting_settle(entry, serial):
+        if writes["freezing"]:
+            writes["settled_by_freeze"] += 1
+        return real_settle(entry, serial)
+
+    eyes._replace_owed_locked = counting_replace
+    eyes._settled_locked = counting_settle
     eyes._adb = proc_adb
     eyes._adb_host = lambda args: table["forwards"].append(tuple(args)) or ""
     eyes._spawn_debugger = fake_spawn
@@ -1525,7 +1539,11 @@ def main():
     except eyes.Blocked as refusal:
         check("freezing a name with TWO processes is refused", "2 processes" in str(refusal) and table["debuggers"] == [], str(refusal)[:80])
     del table["rows"][-1]
+    writes["freezing"] = True
     line = eyes.freeze_process("com.envi.wispr:audio")
+    writes["freezing"] = False
+    check("the completed debt replaces the first in ONE write, never settle-then-owe",
+          writes["replaced"] == 1 and writes["settled_by_freeze"] == 0, writes)
     check("one match is frozen through a debugger on its own forwarded port", table["debuggers"] == [18700 + 101] and "pid 101" in line, (table["debuggers"], line))
     owed = eyes._owed("emulator-5554")
     check("and the thaw is owed in the book with the debugger's pid", len(owed) == 1 and owed[0][0] == "frozen-process" and json.loads(owed[0][1])["host_pid"] == 4242, owed)
@@ -1639,11 +1657,44 @@ Group main:
                   "exactly one is required" in str(refusal) and world["killed"] and eyes._owed("emulator-5554") == [],
                   (str(refusal)[:80], world["killed"]))
 
-    # A debt written before its debugger's pid was (a crash mid-freeze): the one debugger on that port ends.
+    # A debt written before its debugger's pid was (a crash mid-freeze): the one debugger GROUP on that port.
+    ps_one = (" 6262  6262 /bin/sh -c tail -f /x | /opt/jdb -attach localhost:18999 > /y 2>&1\n"
+              " 6263  6262 tail -f /x\n"
+              " 6264  6262 /opt/jdb -attach localhost:18999\n"
+              " 7000  7000 /opt/jdb -attach localhost:18000\n")
+    check("a shell leader and its jdb child are ONE debugger, resolved to the leader", eyes._debugger_group(ps_one, 18999) == 6262,
+          eyes._debugger_group(ps_one, 18999))
+    ps_two = ps_one + " 8000  8000 /opt/jdb -attach localhost:18999\n"
+    try:
+        eyes._debugger_group(ps_two, 18999)
+        check("two debugger groups on one port refuse", False, "it picked one")
+    except eyes.Blocked as refusal:
+        check("two debugger groups on one port refuse", "2 debugger process groups" in str(refusal), str(refusal))
+    try:
+        eyes._debugger_group(" 6264  6262 /opt/jdb -attach localhost:18999\n", 18999)
+        check("a group whose leader is gone refuses", False, "it returned a pid")
+    except eyes.Blocked:
+        check("a group whose leader is gone refuses", True)
+    check("no debugger on the port is None", eyes._debugger_group(ps_one, 18111) is None)
+    real_run = eyes.subprocess.run
+
+    class FailedPs:
+        returncode = 1
+        stdout = ""
+        stderr = "ps: failed"
+
+    eyes.subprocess.run = lambda *args, **kwargs: FailedPs()
+    try:
+        eyes._debugger_on_port(18999)
+        check("a failed ps refuses rather than reading as no debugger", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("a failed ps refuses rather than reading as no debugger", "ps failed" in str(refusal), str(refusal))
+    finally:
+        eyes.subprocess.run = real_run
     world["killed"] = []
     eyes._debugger_on_port = lambda port: 6262
     lines = eyes._thaw({"pid": 999, "name": "com.envi.wispr:gone", "port": 18999, "host_pid": None, "thread": "T"})
-    check("a debt with no debugger pid is thawed through the one debugger on its port", world["killed"] == [(6262, 18999)], (lines, world["killed"]))
+    check("a debt with no debugger pid is thawed through the group leader on its port", world["killed"] == [(6262, 18999)], (lines, world["killed"]))
 
     for name, fn in originals.items():
         setattr(eyes, name, fn)

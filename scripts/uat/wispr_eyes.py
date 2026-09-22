@@ -2382,8 +2382,8 @@ def freeze_process(name=f"{PACKAGE}:audio"):
         _adb_host(["forward", f"tcp:{port}", f"jdwp:{pid}"])
         frozen["host_pid"] = _spawn_debugger(port, log_path)
         complete = ("frozen-process", json.dumps(frozen, sort_keys=True))
-        _settled_locked(entry, device())
-        _owe_locked(complete, device())
+        # ONE write: settle-then-owe left a whole frozen process with no debt if this died between (#213 review).
+        _replace_owed_locked(entry, complete, device())
     for _ in range(100):
         time.sleep(0.1)
         try:
@@ -2510,14 +2510,37 @@ def _adb_host(args):
     return done.stdout.strip()
 
 
+def _debugger_group(ps_text, port):
+    """From `ps -axo pid=,pgid=,command=` text: the LEADER pid of the one process group running a debugger
+    on `port`, or None. A launch is a `/bin/sh -c` leader plus its `jdb` child in one group, so rows are
+    grouped by PGID; two groups refuse, and a group whose leader is gone refuses."""
+    groups = {}
+    present = set()
+    for line in ps_text.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        pid, pgid, command = int(parts[0]), int(parts[1]), parts[2]
+        present.add(pid)
+        if "jdb" in command and f"localhost:{port}" in command:
+            groups.setdefault(pgid, []).append(pid)
+    if len(groups) > 1:
+        raise Blocked(f"{len(groups)} debugger process groups are attached to port {port} ({sorted(groups)}); none is ended")
+    if not groups:
+        return None
+    leader = next(iter(groups))
+    if leader not in present:
+        raise Blocked(f"the debugger group {leader} on port {port} has no leader left; none is ended")
+    return leader
+
+
 def _debugger_on_port(port):
-    """The pid of the ONE debugger on this Mac attached to `port`, or None; two or more refuse."""
-    done = subprocess.run(["/bin/ps", "-axo", "pid=,command="], capture_output=True, text=True)
-    rows = [line.strip().split(None, 1) for line in done.stdout.splitlines() if line.strip()]
-    mine = [int(pid) for pid, *rest in rows if rest and "jdb" in rest[0] and f"localhost:{port}" in rest[0]]
-    if len(mine) > 1:
-        raise Blocked(f"{len(mine)} debuggers are attached to port {port} ({mine}); none is ended")
-    return mine[0] if mine else None
+    """The leader pid of the ONE debugger group on this Mac attached to `port`, or None. A failed `ps` refuses:
+    for a thread-only freeze the process still answers, so "no debugger" would settle a debt still frozen."""
+    done = subprocess.run(["/bin/ps", "-axo", "pid=,pgid=,command="], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise Blocked(f"ps failed ({done.returncode}), so the debugger on port {port} cannot be found; the debt is kept")
+    return _debugger_group(done.stdout, port)
 
 
 def _thaw(frozen):

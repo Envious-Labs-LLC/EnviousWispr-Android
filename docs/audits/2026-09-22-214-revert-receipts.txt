@@ -1,0 +1,4 @@
+RED remove the blank-outcome branch: red=['aBlankPolishedAnswerPublishesTheExactCleanedVocabularyText']
+RED reject nonblank outcomes too: red=['aFailedSettingsReadStartsCaptureOnDefaults', 'aFailedVocabularyReadStartsCaptureWithoutUserTerms', 'aNonblankFillerRecoveryUnderOffStillInsertsWhatWasSaid', 'aSilentStoreStartsOnTheLastSnapshotAfterTheBound', 'aStalledRecoveryDoesNotHoldTheTakesWrites', 'aStoppingToggleNeverRepinsTheTarget', 'aTakeThatGoesLiveBeforeTheStartReturnsIsNotStopped', 'anotherTakesEndingIsDiscarded', 'completedTakeInsertsOnce', 'handoffNotScheduledCopiesAndAnnounces', 'historySaveFailureCopiesToClipboard', 'theNextTakeStartsAfterAWedge']
+RED duplicate the defect emission: red=['aBlankPolishedAnswerPublishesTheExactCleanedVocabularyText']
+RED delete the defect emission: red=['aBlankPolishedAnswerPublishesTheExactCleanedVocabularyText']

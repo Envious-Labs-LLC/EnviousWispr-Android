@@ -1,6 +1,6 @@
 # Issue #214 — A blank polish answer over real words publishes the owner's cleaned text, not the raw transcript — 2026-09-22
 
-GitHub issue: `#214`. Tier: SMALL (the owner's handling of one polish answer shape; no AIDL, no engine change). Status: DRAFT (revised after grounded round 2).
+GitHub issue: `#214`. Tier: SMALL (the owner's handling of one polish answer shape; no AIDL, no engine change). Status: APPROVED (grounded round 3 PROCEED-AS-PLANNED; code review round 1 ALL-CLEAR).
 
 ## Preface — Lane + Hardware UAT declaration
 

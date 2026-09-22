@@ -442,7 +442,6 @@ class AudioCaptureService : Service() {
                 if (file.exists() && !file.delete()) {
                     throw IOException("Unable to remove stale audio recording")
                 }
-                if (CaptureFiles.isProductionTake(takeId)) sweepEarlierTakeFiles(keep = file.name)
                 output = FileOutputStream(file)
                 record.startRecording()
                 // The route is the target from the first read when the preferred device was set first
@@ -546,6 +545,9 @@ class AudioCaptureService : Service() {
                 } else {
                     takeRoute.markLive()
                 }
+                // After capture started and lastAudioFile names this take: never on the trigger-to-capture
+                // path, and never while the legacy getter still points at a file about to go (#212).
+                if (CaptureFiles.isProductionTake(takeId)) sweepEarlierTakeFiles(keep = file.name)
                 return thread.isAlive && session === newSession && isRecording.get()
             } catch (e: SecurityException) {
                 DebugLogger.error(TAG, "RECORD_AUDIO permission not granted", e)

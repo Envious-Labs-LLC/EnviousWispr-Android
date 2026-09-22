@@ -45,11 +45,20 @@ class RecognizerOwnerTest {
         },
     )
 
+    /** A wait on the worker cannot throw into the test, so a deadline it reaches is recorded and asserted. */
+    private val workerWaitFailures: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
     private fun CountDownLatch.awaitOrFail(what: String) =
         assertTrue("$what never happened", await(5, TimeUnit.SECONDS))
 
-    private fun ExecutorService.awaitTerminatedOrFail() =
+    private fun CountDownLatch.awaitOnWorker(what: String) {
+        if (!await(5, TimeUnit.SECONDS)) workerWaitFailures += what
+    }
+
+    private fun ExecutorService.awaitTerminatedOrFail() {
         assertTrue("the worker never stopped", awaitTermination(5, TimeUnit.SECONDS))
+        assertEquals("a worker gate reached its deadline", emptyList<String>(), workerWaitFailures.toList())
+    }
 
     /** Parks the worker on a task submitted straight to it; returns the latch that releases it. */
     private fun ExecutorService.park(): CountDownLatch {
@@ -57,7 +66,7 @@ class RecognizerOwnerTest {
         val release = CountDownLatch(1)
         execute {
             parked.countDown()
-            release.await(5, TimeUnit.SECONDS)
+            release.awaitOnWorker("the gate's release")
         }
         parked.awaitOrFail("the gate")
         return release
@@ -66,8 +75,11 @@ class RecognizerOwnerTest {
     private fun loaded(worker: ExecutorService): RecognizerOwner<Recognizer> {
         val owner = owner(worker)
         val done = CountDownLatch(1)
-        owner.load { Recognizer("parakeet").also { done.countDown() } }
+        owner.load { Recognizer("parakeet") }
+        // A FIFO barrier after the load task: signalled once the owner has installed the recognizer.
+        worker.execute { done.countDown() }
         done.awaitOrFail("the load")
+        assertTrue("the owner is ready after loading", owner.isReady)
         return owner
     }
 
@@ -80,7 +92,7 @@ class RecognizerOwnerTest {
         val finish = CountDownLatch(1)
         owner.use(refused = { events += "refused" }) { _ ->
             inside.countDown()
-            finish.await(5, TimeUnit.SECONDS)
+            finish.awaitOnWorker("the decode's finish")
             events += "work-end"
             return@use { events += "delivered" }
         }
@@ -102,7 +114,7 @@ class RecognizerOwnerTest {
         val opened = Recognizer("parakeet")
         owner.load {
             inside.countDown()
-            finish.await(5, TimeUnit.SECONDS)
+            finish.awaitOnWorker("the load's finish")
             opened
         }
         inside.awaitOrFail("the load")

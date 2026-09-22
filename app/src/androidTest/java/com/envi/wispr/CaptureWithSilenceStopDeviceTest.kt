@@ -7,9 +7,11 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.test.platform.app.InstrumentationRegistry
 import com.envi.wispr.audio.AudioCaptureService
+import com.envi.wispr.audio.CaptureFiles
 import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.audio.IAudioSpectrumListener
 import com.envi.wispr.audio.SpectrumAnalyzer
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -31,6 +33,15 @@ import java.util.concurrent.atomic.AtomicInteger
 class CaptureWithSilenceStopDeviceTest {
 
     private val context: Context get() = InstrumentationRegistry.getInstrumentation().targetContext
+
+    /**
+     * Every legacy capture gets its own file since #212, and only this client knows when it is done with
+     * one, so the files this class's takes left are deleted here rather than piling up in the cache.
+     */
+    @After
+    fun deleteThisClassesCaptureFiles() {
+        context.cacheDir.listFiles()?.filter { CaptureFiles.isLegacyCapture(it.name) }?.forEach { it.delete() }
+    }
 
     private fun bindCapture(): Pair<IAudioCaptureService, ServiceConnection> {
         val latch = CountDownLatch(1)

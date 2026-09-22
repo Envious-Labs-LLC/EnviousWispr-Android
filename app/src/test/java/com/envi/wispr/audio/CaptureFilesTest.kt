@@ -7,9 +7,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Contract (#212, #221): the capture-file naming a late answer's safety rests on. Two takes never share a
- * file, a legacy capture is named by its own token, and a production take's start sweeps only earlier
- * production files and the pre-#212 name. Expected values are literals.
+ * Drift Guard (#212, #221), not product coverage: the capture-file naming a late answer's safety rests
+ * on. Two takes never share a file, a legacy capture is named by its own token, and a production take's
+ * start sweeps only earlier production files and the pre-#212 name. Expected values are literals.
  */
 class CaptureFilesTest {
 
@@ -47,5 +47,8 @@ class CaptureFilesTest {
             "xrecording-take-a.pcm",
             "recording-take-a/b.pcm",
         ).forEach { name -> assertFalse("<$name> is never swept", CaptureFiles.isSweptAtTakeStart(name)) }
+        assertTrue("the device tests find their own files", CaptureFiles.isLegacyCapture("recording-legacy-42.pcm"))
+        assertFalse(CaptureFiles.isLegacyCapture("recording-take-3f2a9c1e-7b4d-4e8a-9c21-0d5e6f7a8b9c.pcm"))
+        assertFalse(CaptureFiles.isLegacyCapture("enviouswispr-uat.pcm"))
     }
 }

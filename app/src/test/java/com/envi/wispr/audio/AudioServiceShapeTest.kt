@@ -56,7 +56,13 @@ class AudioServiceShapeTest {
             assertTrue("onUnbind clears $it", unbind.contains(it))
             assertTrue("onDestroy clears $it", destroy.contains(it))
         }
-        assertTrue("the publisher is closed on destroy, after the join", destroy.indexOf("takeEvents.close()") > destroy.indexOf("thread.join("))
+        // #212 code review: the old form compared against a join #115 removed, so indexOf was -1 and it
+        // could not fail. The order it meant: the publisher closes after route-thread shutdown begins.
+        assertFalse("onDestroy never joins the capture thread", destroy.contains("thread.join("))
+        assertTrue(
+            "the event publisher closes after route-thread shutdown begins",
+            destroy.indexOf("takeEvents.close()") > destroy.indexOf("routeThread.quitSafely()"),
+        )
         // F6: a refused start carries nothing of the previous take.
         assertTrue(member(service, "private fun publishStartRefused(takeId: String, failure: Int)").contains("takeEvents.publishEnded(takeId, TERMINAL_REASON_NONE, failure, null, SILENCE_STATUS_DISABLED, 0f, null)"))
     }

@@ -23,4 +23,9 @@ internal object CaptureFiles {
      * never another cache file.
      */
     fun isSweptAtTakeStart(name: String): Boolean = name == PRE_212_NAME || PRODUCTION.matches(name)
+
+    private val LEGACY = Regex("recording-legacy-[0-9]{1,19}\\.pcm")
+
+    /** A legacy capture's file. Only its client knows when it is done with it; the device tests delete theirs. */
+    fun isLegacyCapture(name: String): Boolean = LEGACY.matches(name)
 }

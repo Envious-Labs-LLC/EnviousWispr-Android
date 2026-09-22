@@ -10,8 +10,10 @@ import com.envi.wispr.asr.AsrService
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
+import com.envi.wispr.audio.CaptureFiles
 import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.debug.DebugLogger
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -32,6 +34,15 @@ import java.util.concurrent.TimeUnit
 class SilenceStoppedTakeTranscribesDeviceTest {
 
     private val context: Context get() = InstrumentationRegistry.getInstrumentation().targetContext
+
+    /**
+     * Every legacy capture gets its own file since #212, and only this client knows when it is done with
+     * one, so the files this class's takes left are deleted here rather than piling up in the cache.
+     */
+    @After
+    fun deleteThisClassesCaptureFiles() {
+        context.cacheDir.listFiles()?.filter { CaptureFiles.isLegacyCapture(it.name) }?.forEach { it.delete() }
+    }
 
     private fun <T> bind(intent: Intent, wrap: (IBinder?) -> T): Pair<T, ServiceConnection> {
         val latch = CountDownLatch(1)

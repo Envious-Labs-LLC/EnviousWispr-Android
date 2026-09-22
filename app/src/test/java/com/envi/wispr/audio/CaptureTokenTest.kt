@@ -4,6 +4,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
+/** Drift Guard, not product coverage: the capture token's ordering and its wiring into every take. */
 class CaptureTokenTest {
 
     private val source = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()

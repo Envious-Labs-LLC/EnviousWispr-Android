@@ -17,6 +17,7 @@ class CaptureTokenTest {
         assertTrue(body.contains("SystemClock.elapsedRealtimeNanos()"))
         assertTrue("and stays distinct if the clock has not ticked", body.contains("previous + 1L"))
         assertTrue("claimed atomically", body.contains("tokens.compareAndSet(previous, next)"))
-        assertTrue("the take takes the ordered token", source.contains("token = nextCaptureToken(),"))
+        // Since #212 the token is minted once before the file opens and names both the file and the take.
+        assertTrue("the take takes the ordered token", source.contains("val token = nextCaptureToken()") && source.contains("token = token,"))
     }
 }

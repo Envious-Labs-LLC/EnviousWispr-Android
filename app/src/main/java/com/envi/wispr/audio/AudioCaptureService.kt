@@ -654,12 +654,6 @@ class AudioCaptureService : Service() {
     }
 
     /**
-     * A start refused before any capture began: the owner registered for the take's events and would
-     * otherwise wait for an ending no session can produce (#115). Carries the REQUESTED take's id, the
-     * failure code, no path, and nothing of the previous take: a disabled silence status, a zero peak and
-     * no device label (review round 1, F6).
-     */
-    /**
      * A production take is admitted only after the earlier take has ended, so no live outcome still
      * depends on an earlier production file; this removes the files of takes whose ending never reached
      * the owner (an answer discarded at close, a process death). Legacy captures are never swept: a
@@ -675,6 +669,12 @@ class AudioCaptureService : Service() {
         if (removed + failed > 0) DebugLogger.log(TAG, "Removed $removed earlier capture files; $failed could not be removed")
     }
 
+    /**
+     * A start refused before any capture began: the owner registered for the take's events and would
+     * otherwise wait for an ending no session can produce (#115). Carries the REQUESTED take's id, the
+     * failure code, no path, and nothing of the previous take: a disabled silence status, a zero peak and
+     * no device label (review round 1, F6).
+     */
     private fun publishStartRefused(takeId: String, failure: Int) {
         takeEvents.publishEnded(takeId, TERMINAL_REASON_NONE, failure, null, SILENCE_STATUS_DISABLED, 0f, null)
     }

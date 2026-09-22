@@ -54,7 +54,7 @@ if not eyes.bound():
 eyes.open_app("com.google.android.gm")
 eyes.tap("Compose", package="com.google.android.gm")
 eyes.focus_field("Compose email", "com.google.android.gm")
-lines += eyes.dictate_emulator("and I will send the deck tomorrow")
+lines += eyes.dictate_emulator("and I will send the deck tomorrow", expected_final="And I will send the deck tomorrow.\u00a0")
 lines.append(f"rows after the next take: {rows()}")
 for line in [l for l in subprocess.run([ADB, "-s", SERIAL, "logcat", "-d", "-v", "time"], capture_output=True, text=True).stdout.splitlines() if re.search(r"(Recording started|Take ended|recover|Recovered|stale|insertion api=|Reconnected)", l)][:20]:
     lines.append("log " + line[-200:])

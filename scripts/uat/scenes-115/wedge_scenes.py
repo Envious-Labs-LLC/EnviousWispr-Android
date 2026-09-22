@@ -94,7 +94,7 @@ def scene_b(label):
     eyes.open_app("com.google.android.gm")
     eyes.tap("Compose", package="com.google.android.gm")
     eyes.focus_field("Compose email", "com.google.android.gm")
-    lines += eyes.dictate_emulator("and I will send the deck tomorrow")
+    lines += eyes.dictate_emulator("and I will send the deck tomorrow", expected_final="And I will send the deck tomorrow.\u00a0")
     ticks = logcat(r"take tick|onTick|heartbeat")
     lines.append(f"tick lines: {len(ticks)}")
     for line in ticks[:30]:

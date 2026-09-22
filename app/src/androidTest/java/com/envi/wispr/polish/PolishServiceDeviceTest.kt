@@ -7,6 +7,7 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.envi.wispr.debug.DebugLogger
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.After
@@ -17,7 +18,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import com.envi.wispr.debug.DebugLogger
 
 /** Product Outcome: the shipped local model on the real runtime polishes a dictation through the v2 binder surface. */
 @RunWith(AndroidJUnit4::class)

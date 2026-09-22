@@ -18,6 +18,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.envi.wispr.asr.AsrService
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
+import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
 import com.envi.wispr.polish.PolishOutcome
@@ -42,7 +43,6 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import com.envi.wispr.debug.DebugLogger
 
 /** Physical-phone UAT. Place a 16 kHz mono s16le fixture in the app cache before running. */
 @RunWith(AndroidJUnit4::class)

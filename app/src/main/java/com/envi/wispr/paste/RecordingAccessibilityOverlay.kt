@@ -21,12 +21,12 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.res.ResourcesCompat
 import com.envi.wispr.R
+import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.shortcuts.BubbleRequestToken
 import com.envi.wispr.shortcuts.BubbleRequests
 import com.envi.wispr.shortcuts.RecordingOverlayState
 import com.envi.wispr.ui.DictationSessionService
 import com.envi.wispr.ui.VoiceInputActivity
-import com.envi.wispr.debug.DebugLogger
 
 /**
  * The one floating window, in two shapes. Its window never takes editor or IME focus.

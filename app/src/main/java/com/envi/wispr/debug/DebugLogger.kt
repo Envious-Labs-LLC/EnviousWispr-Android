@@ -6,19 +6,22 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * The one door onto logcat for EnviousWispr (#194): every diagnostic line in the app goes through here,
- * and what goes through is structurally content-free.
+ * The one door onto logcat for the shipped `:app` module (#194): every diagnostic line in it goes through
+ * here, and what goes through is structurally content-free.
  *
  * - A [Throwable] is rendered by [render] as its class name and ONE code location, never its message
  *   and never its full stack trace: an exception message carries whatever the failing call was holding
  *   (a transcript, a prompt, a URL with a key on it), and Android's own three-argument `Log.e`
  *   prints the message and the whole trace. The cause chain contributes class names only.
- * - There is no file sink. The shared-storage log this object once wrote (`/sdcard/EnviousWispr/debug.log`)
- *   had no caller and would have been readable by any app with storage access.
+ * - There is no file sink. The log this object once wrote to shared external storage
+ *   (`/sdcard/EnviousWispr/debug.log`) had no caller and needed an all-files access the app never held;
+ *   app-private storage is where anything of ours belongs.
  * - Pipeline profiling: mark events, get a timing summary. Thread-safe (AtomicInteger, ConcurrentLinkedQueue).
  *
- * `DiagnosticsShapeTest` refuses any other `android.util.Log` caller in the app and any diagnostic line
- * that carries exception text; `DebugLoggerRenderTest` proves the rendering.
+ * `DiagnosticsShapeTest` covers `:app`'s main, debug and androidTest sources plus the llama.cpp JNI bridge:
+ * no other `android.util.Log` caller there, no diagnostic line carrying exception text. The standalone,
+ * non-shipping `:accelerator-benchmark` module is outside that contract. `DebugLoggerRenderTest` proves
+ * the rendering.
  */
 internal object DebugLogger {
 

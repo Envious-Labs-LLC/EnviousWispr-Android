@@ -27,6 +27,7 @@ import android.widget.Toast
 import com.envi.wispr.audio.InputDeviceCandidate
 import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.InputDeviceResolver
+import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.models.ModelBootstrapApplication
@@ -53,7 +54,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.UUID
-import com.envi.wispr.debug.DebugLogger
 
 class PasteAccessibilityService : AccessibilityService() {
 

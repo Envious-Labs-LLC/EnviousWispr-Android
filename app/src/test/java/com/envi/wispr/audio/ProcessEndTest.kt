@@ -5,6 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -52,20 +53,30 @@ class ProcessEndTest {
         }
     }
 
-    // Row 15.
+    // Row 15: two ends RACED, 200 times; a check-then-act would let both write and kill.
     @Test
-    fun twoEndsWriteOneNoteAndKillOnce() {
-        val notes = AtomicInteger(0)
-        val kills = AtomicInteger(0)
-        val end = ProcessEnd(
-            writeNote = { notes.incrementAndGet() },
-            kill = { kills.incrementAndGet() },
-            noteBoundMs = 5_000L,
-            park = { throw Parked() },
-        )
-        runCatching { end.end() }
-        runCatching { end.end() }
-        assertEquals(1, notes.get())
-        assertEquals(1, kills.get())
+    fun twoRacingEndsWriteOneNoteAndKillOnce() {
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            repeat(200) { round ->
+                val notes = AtomicInteger(0)
+                val kills = AtomicInteger(0)
+                val end = ProcessEnd(
+                    writeNote = { notes.incrementAndGet() },
+                    kill = { kills.incrementAndGet() },
+                    noteBoundMs = 5_000L,
+                    park = { throw Parked() },
+                )
+                val barrier = CyclicBarrier(2)
+                val first = pool.submit { barrier.await(5, TimeUnit.SECONDS); runCatching { end.end() } }
+                val second = pool.submit { barrier.await(5, TimeUnit.SECONDS); runCatching { end.end() } }
+                first.get(5, TimeUnit.SECONDS)
+                second.get(5, TimeUnit.SECONDS)
+                assertEquals("round $round: one note", 1, notes.get())
+                assertEquals("round $round: one kill", 1, kills.get())
+            }
+        } finally {
+            pool.shutdownNow()
+        }
     }
 }

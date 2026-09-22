@@ -1561,22 +1561,98 @@ Group main:
     check("zero matches is an empty list, which freeze_thread refuses", eyes._thread_ids(listing, "NoSuchThread") == [])
     doubled = listing + "  (java.lang.Thread)21399                                        AudioCaptureThread                 running\n"
     check("a duplicate name returns both, which freeze_thread refuses", len(eyes._thread_ids(doubled, "AudioCaptureThread")) == 2)
-    import inspect
-    body = inspect.getsource(eyes.freeze_thread)
-    check("freeze_thread books the debt before spawning the debugger",
-          body.index("_owe_locked(entry") < body.index("_spawn_commandable_debugger("))
-    check("and refuses unless exactly one thread matched", "if len(ids) != 1:" in body and "thaw_process(name)" in body)
-    check("and proves the process still answers", "_process_answers(pid)" in body)
-    check("its book entry is the kind restore() thaws", '("frozen-process", json.dumps(frozen' in body)
     thread_debt = ("frozen-process", json.dumps({"pid": 1, "name": "x", "port": 2, "host_pid": 3, "thread": "AudioCaptureThread"}))
     process_debt = ("frozen-process", json.dumps({"pid": 1, "name": "x", "port": 2, "host_pid": 3}))
     check("a thread freeze is recognised as one", eyes._frozen_thread_debt(thread_debt))
     check("a whole-process freeze is never kept by keep_frozen_threads", not eyes._frozen_thread_debt(process_debt))
     check("an unrelated debt is never kept", not eyes._frozen_thread_debt(("host-mic", "on")))
-    locked = inspect.getsource(eyes._restore_locked)
-    check("a kept thread freeze is skipped before it is restored, and never settled",
-          locked.index("if keep_frozen_threads and _frozen_thread_debt(entry):") < locked.index("_restore_one(entry")
-          and "continue" in locked[locked.index("if keep_frozen_threads"):locked.index("_restore_one(entry")])
+
+    # ---- #213: freeze_thread DRIVEN through fakes: the commands it sends, the book before the suspend,
+    # the refusals, and both restore modes. The debugger's log is written by the fake as jdb would answer.
+    names = ("_adb", "_JOURNAL", "devices", "is_emulator", "_spawn_commandable_debugger", "_kill_debugger",
+             "_process_answers", "_adb_host", "_replace_owed_locked", "_debugger_on_port")
+    originals = {name: getattr(eyes, name) for name in names}
+    book_path = Path(__file__).parent / ".test-thread-journal.json"
+    if book_path.exists():
+        book_path.unlink()
+    eyes._JOURNAL = book_path
+    world = {"rows": [(100, "S", "com.envi.wispr"), (101, "S", "com.envi.wispr:audio")], "spawned": [],
+             "killed": [], "listing": listing, "commands_at_replace": []}
+
+    def thread_adb(command, timeout=60, check=True, serial=None):
+        if command.startswith("ps -A"):
+            return 0, "  PID S NAME\n" + "".join(f"{pid} {state} {name}\n" for pid, state, name in world["rows"])
+        return 0, ""
+
+    def fake_spawn_commandable(port, log_path, commands_path):
+        world["spawned"].append(port)
+        world["commands_path"] = commands_path
+        open(commands_path, "w").close()
+        with open(log_path, "w") as f:
+            f.write("Initializing jdb ...\n> " + world["listing"] + "> [1] com.envi.wispr.audio.AudioCaptureService.captureLoop\n")
+        return 5151
+
+    real_replace = originals["_replace_owed_locked"]
+
+    def recording_replace(old, new, serial):
+        path = world.get("commands_path")
+        world["commands_at_replace"].append(open(path).read() if path and Path(path).exists() else "")
+        return real_replace(old, new, serial)
+
+    eyes._adb = thread_adb
+    eyes._adb_host = lambda args: ""
+    eyes._spawn_commandable_debugger = fake_spawn_commandable
+    eyes._kill_debugger = lambda host_pid, port: world["killed"].append((host_pid, port)) or f"debugger {host_pid} ended"
+    eyes._process_answers = lambda pid, within_s=3.0: True
+    eyes._replace_owed_locked = recording_replace
+    eyes.devices = lambda: [("emulator-5554", "sdk_gphone64_arm64")]
+    eyes.is_emulator = lambda serial=None: True
+    eyes._STATE["serial"] = "emulator-5554"
+
+    line = eyes.freeze_thread("com.envi.wispr:audio", "AudioCaptureThread")
+    sent = open(world["commands_path"]).read()
+    check("freeze_thread lists threads, suspends the one id, then reads its stack",
+          sent == "threads\nsuspend 21342\nwhere 21342\n", repr(sent))
+    check("the book names the thread id BEFORE the suspend is sent",
+          len(world["commands_at_replace"]) == 2 and "suspend" not in world["commands_at_replace"][1], world["commands_at_replace"])
+    owed = eyes._owed("emulator-5554")
+    recorded = json.loads(owed[0][1]) if owed else {}
+    check("and the debt carries the debugger pid and the thread id", len(owed) == 1 and recorded.get("host_pid") == 5151 and recorded.get("thread_id") == "21342", owed)
+    check("it reports the frozen thread", "21342" in line and "captureLoop" in line, line)
+
+    kept = eyes.restore(keep_frozen_threads=True)
+    check("restore(keep_frozen_threads=True) keeps the thread freeze owed and ends no debugger",
+          len(eyes._owed("emulator-5554")) == 1 and world["killed"] == [], (kept, world["killed"]))
+    thawed = eyes.restore()
+    check("a plain restore() ends that debugger and clears the debt",
+          world["killed"] == [(5151, 18700 + 101)] and eyes._owed("emulator-5554") == [], (thawed, world["killed"]))
+
+    for label, text in (("zero", listing.replace("AudioCaptureThread ", "SomeOtherThread    ")),
+                        ("two", listing + "  (java.lang.Thread)21399                                        AudioCaptureThread                 running\n")):
+        world["listing"] = text
+        world["killed"] = []
+        try:
+            eyes.freeze_thread("com.envi.wispr:audio", "AudioCaptureThread")
+            check(f"{label} matching threads is refused", False, "it froze")
+        except eyes.Blocked as refusal:
+            check(f"{label} matching threads is refused, thawed, and leaves no debt",
+                  "exactly one is required" in str(refusal) and world["killed"] and eyes._owed("emulator-5554") == [],
+                  (str(refusal)[:80], world["killed"]))
+
+    # A debt written before its debugger's pid was (a crash mid-freeze): the one debugger on that port ends.
+    world["killed"] = []
+    eyes._debugger_on_port = lambda port: 6262
+    lines = eyes._thaw({"pid": 999, "name": "com.envi.wispr:gone", "port": 18999, "host_pid": None, "thread": "T"})
+    check("a debt with no debugger pid is thawed through the one debugger on its port", world["killed"] == [(6262, 18999)], (lines, world["killed"]))
+
+    for name, fn in originals.items():
+        setattr(eyes, name, fn)
+    eyes._STATE["serial"] = None
+    eyes._STATE["restored_for"] = None
+    for leftover in (book_path, Path(str(book_path) + ".lock"), book_path.parent / ".test-thread-journal.lock",
+                     book_path.parent / "jdb-101-thread.log", book_path.parent / "jdb-101-commands.txt"):
+        if leftover.exists():
+            leftover.unlink()
 
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")

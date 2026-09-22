@@ -182,18 +182,33 @@ internal class DictationSessionRig {
     class FakeLog : SessionLog {
         val lines = CopyOnWriteArrayList<String>()
 
-        /** Waits for the subject to log a line containing [fragment]; the line is the subject's own signal. */
-        fun awaitLine(fragment: String) {
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-            while (lines.none { it.contains(fragment) }) {
-                check(System.nanoTime() < deadline) { "no log line containing '$fragment'; lines: $lines" }
-                Thread.sleep(5)
+        private val appended = Object()
+
+        private fun append(line: String) {
+            synchronized(appended) {
+                lines += line
+                appended.notifyAll()
             }
         }
-        override fun log(message: String) { lines += "I $message" }
-        override fun warn(message: String) { lines += "W $message" }
-        override fun error(message: String, throwable: Throwable?) { lines += "E $message" }
-        override fun mark(event: String) { lines += "M $event" }
+
+        /**
+         * Waits for the subject to log a line containing [fragment]; the line is the subject's own signal.
+         * Woken by every append, never by a clock; the deadline only makes a regression fail instead of hang.
+         */
+        fun awaitLine(fragment: String) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            synchronized(appended) {
+                while (lines.none { it.contains(fragment) }) {
+                    val left = deadline - System.nanoTime()
+                    check(left > 0) { "no log line containing '$fragment'; lines: $lines" }
+                    TimeUnit.NANOSECONDS.timedWait(appended, left)
+                }
+            }
+        }
+        override fun log(message: String) = append("I $message")
+        override fun warn(message: String) = append("W $message")
+        override fun error(message: String, throwable: Throwable?) = append("E $message")
+        override fun mark(event: String) = append("M $event")
         override fun pipelineSummary(): String = "Pipeline: summary"
     }
 

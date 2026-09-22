@@ -328,6 +328,20 @@ def _owe_locked(entry, serial):
         _journal_write(book)
 
 
+def _replace_owed_locked(old, new, serial):
+    """Replace the exact debt `old` with `new` in ONE journal write, so there is no moment with neither."""
+    book = _journal_read()
+    scope = serial or _STATE["serial"]
+    key = _scope_key(scope)
+    if scope != "host":
+        _migrate_locked(book, _attached_transports())
+    owed = [tuple(e) for e in book.get(key or "", [])]
+    if old not in owed:
+        raise Blocked(f"the debt {old!r} is not in the book, so it cannot be replaced")
+    book[key or ""] = [list(new if e == old else e) for e in owed]
+    _journal_write(book)
+
+
 def _settled(entry, serial=None):
     """Drop a change from the book, ONLY after its restore was read back."""
     serial = serial or _STATE["serial"]
@@ -2450,9 +2464,10 @@ def freeze_thread(name=f"{PACKAGE}:audio", thread_name="AudioCaptureThread"):
             raise Blocked("the freeze could not be written to the restore book, so it was not done")
         _adb_host(["forward", f"tcp:{port}", f"jdwp:{pid}"])
         frozen["host_pid"] = _spawn_commandable_debugger(port, log_path, commands_path)
+        # ONE write, never settle-then-owe: a crash between those two left a debugger with no debt (#213 review).
         complete = ("frozen-process", json.dumps(frozen, sort_keys=True))
-        _settled_locked(entry, device())
-        _owe_locked(complete, device())
+        _replace_owed_locked(entry, complete, device())
+        entry = complete
 
     def command(text):
         with open(commands_path, "a") as f:
@@ -2469,6 +2484,12 @@ def freeze_thread(name=f"{PACKAGE}:audio", thread_name="AudioCaptureThread"):
         raise Blocked(f"{len(ids)} live threads are named {thread_name!r} in pid {pid} ({name}); exactly one is "
                       f"required. Thawed.")
     tid = ids[0]
+    # The thread's id is in the book BEFORE the suspend it names.
+    frozen["thread_id"] = tid
+    with _journal_locked():
+        named = ("frozen-process", json.dumps(frozen, sort_keys=True))
+        _replace_owed_locked(entry, named, device())
+        entry = named
     command(f"suspend {tid}")
     command(f"where {tid}")
     stack = _debugger_says(log_path, lambda t: "captureLoop" in t or "isn't suspended" in t)
@@ -2489,11 +2510,25 @@ def _adb_host(args):
     return done.stdout.strip()
 
 
+def _debugger_on_port(port):
+    """The pid of the ONE debugger on this Mac attached to `port`, or None; two or more refuse."""
+    done = subprocess.run(["/bin/ps", "-axo", "pid=,command="], capture_output=True, text=True)
+    rows = [line.strip().split(None, 1) for line in done.stdout.splitlines() if line.strip()]
+    mine = [int(pid) for pid, *rest in rows if rest and "jdb" in rest[0] and f"localhost:{port}" in rest[0]]
+    if len(mine) > 1:
+        raise Blocked(f"{len(mine)} debuggers are attached to port {port} ({mine}); none is ended")
+    return mine[0] if mine else None
+
+
 def _thaw(frozen):
     """End the debugger the book recorded, drop the forward, and read back that the process answers."""
     lines = []
-    if frozen.get("host_pid") is not None:
-        lines.append(_kill_debugger(frozen["host_pid"], frozen["port"]))
+    host_pid = frozen.get("host_pid")
+    if host_pid is None and frozen.get("port") is not None:
+        # A debt written before its debugger's pid was: the one debugger on that port is the one it names.
+        host_pid = _debugger_on_port(frozen["port"])
+    if host_pid is not None:
+        lines.append(_kill_debugger(host_pid, frozen["port"]))
     if frozen.get("port") is not None:
         subprocess.run([ADB, "-s", device(), "forward", "--remove", f"tcp:{frozen['port']}"], capture_output=True, text=True)
     state = dict(_processes_named(frozen["name"])).get(frozen["pid"])

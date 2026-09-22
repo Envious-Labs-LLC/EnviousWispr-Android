@@ -33,7 +33,11 @@ ADB = w.ADB
 GM = "com.google.android.gm"
 SWITCH, SWITCH_TAB = "Spoken emoji", "Transcription"
 SENTENCE = "and I will send the deck tomorrow"
+# The literal WHOLE editor text the harness must find after each take, into an EMPTY field (#161 H2):
+# the speech engine's period plus the insertion's trailing space at field end.
+SENTENCE_FINAL = "And I will send the deck tomorrow. "
 INSERT = "The quarterly report is ready for review."
+INSERT_FINAL = "The quarterly report is ready for review. "
 RAW_SCRIPTS_COMMIT = "HEAD"  # the commit that still holds the deleted scripts, see main()
 EXTRA_COMMANDS = [0]  # adb / grpcurl processes launched inside a raw shell script, from its trace
 
@@ -345,7 +349,7 @@ def main():
         return after != before["text"] and any(plain(v) in got for v in (SENTENCE, SENTENCE[:1].upper() + SENTENCE[1:]))
 
     rows.append(run("spoken take", "raw", stage_take, lambda: raw_script("grpc-take.sh", SENTENCE, "bench"), take_landed))
-    rows.append(run("spoken take", "harness", stage_take, lambda: w.dictate_emulator(SENTENCE), take_landed))
+    rows.append(run("spoken take", "harness", stage_take, lambda: w.dictate_emulator(SENTENCE, expected_final=SENTENCE_FINAL), take_landed))
     # 5. audio-free insert
 
     def insert_landed(_):
@@ -353,7 +357,7 @@ def main():
         return after != before["text"] and INSERT in after
 
     rows.append(run("audio-free insert", "raw", stage_take, lambda: raw_script("debug-insert.sh", INSERT, "bench"), insert_landed))
-    rows.append(run("audio-free insert", "harness", stage_take, lambda: w.debug_insert(INSERT), insert_landed))
+    rows.append(run("audio-free insert", "harness", stage_take, lambda: w.debug_insert(INSERT, expected_final=INSERT_FINAL), insert_landed))
     # 6. leave-clean is the `dirty` column of every row above; summarised below.
     out = Path(os.environ.get("BENCH_OUT", "docs/benchmark-results/2026-09-20-issue-181-harness-fast-eye.md"))
     out.parent.mkdir(parents=True, exist_ok=True)

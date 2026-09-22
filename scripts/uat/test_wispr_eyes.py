@@ -667,6 +667,29 @@ def main():
           eyes.dictate_emulator("hello", expected_final=None)[0].startswith("BLOCKED: expected_final is required")
           if eyes.is_emulator("emulator-5554") else True)
 
+    # The instrumentation stream is read GROUP by group; READY is control, everything else a result (#161 T2).
+    stream = [
+        "INSTRUMENTATION_STATUS: class=com.envi.wispr.VoicePipelineDeviceTest\n",
+        "INSTRUMENTATION_STATUS: current=1\n", "INSTRUMENTATION_STATUS: id=AndroidJUnitRunner\n",
+        "INSTRUMENTATION_STATUS: numtests=1\n", "INSTRUMENTATION_STATUS: test=aSideButtonTakeLandsInTheFocusedEditorExactlyOnce\n",
+        "INSTRUMENTATION_STATUS_CODE: 1\n",
+        "INSTRUMENTATION_STATUS: driver_phase=READY\n", "INSTRUMENTATION_STATUS: driver_token=abc123\n",
+        "INSTRUMENTATION_STATUS_CODE: 161\n",
+        "INSTRUMENTATION_STATUS: class=com.envi.wispr.VoicePipelineDeviceTest\n",
+        "INSTRUMENTATION_STATUS: test=aSideButtonTakeLandsInTheFocusedEditorExactlyOnce\n",
+        "INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: the editor's whole text\n",
+        "\tat org.junit.Assert.fail(Assert.java:89)\n",
+        "INSTRUMENTATION_STATUS_CODE: -2\n",
+        "INSTRUMENTATION_RESULT: stream=\n", "Time: 12.3\n", "INSTRUMENTATION_CODE: -1\n",
+    ]
+    groups = list(eyes._instrumentation_groups(iter(stream)))
+    check("the stream yields one group per status code plus the final result", len(groups) == 4, [g.get("code") for g in groups])
+    check("the READY group is recognised by code and key",
+          groups[1]["code"] == eyes.DRIVER_READY_STATUS and groups[1]["driver_phase"] == "READY" and groups[1]["driver_token"] == "abc123")
+    check("a multi-line stack stays in its group",
+          groups[2]["code"] == -2 and "at org.junit.Assert.fail" in groups[2]["stack"] and groups[2]["test"].startswith("aSideButton"))
+    check("the final result carries the instrumentation code", groups[3].get("INSTRUMENTATION_CODE") == "-1")
+
     # bound(): the whole block and the exact component (#161 finding 10).
     dump_ours_second = ("     Bound services:{Service[label=TalkBack, feedbackType[FEEDBACK_SPOKEN]], "
                         "Service[label=EnviousWispr, feedbackType[FEEDBACK_GENERIC], capabilities=1]}\n"

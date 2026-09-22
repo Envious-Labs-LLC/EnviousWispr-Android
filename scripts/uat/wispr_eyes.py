@@ -44,12 +44,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import select
 import shlex
 import signal
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 import time
 from contextlib import contextmanager
@@ -1950,7 +1950,17 @@ def enable_auto_paste():
     before = _a11y_state()
     _owe(("a11y-state", json.dumps(before, sort_keys=True)))
     services = _a11y_services(before)
-    if ACCESSIBILITY_SERVICE not in services:
+    if ACCESSIBILITY_SERVICE in services:
+        # NAMED BUT NOT BOUND: an install over the app, or an instrumentation restart of its process
+        # (seen 2026-09-22), unbinds the service and re-putting the SAME string does not rebind it
+        # (`android-tooling.md` RULE: install-then-force-stop). Clear, settle, then set. The clear is
+        # written without `_put_a11y`'s exact read-back: the system normalises `accessibility_enabled`
+        # on its own right after the list empties (it read 1 with an empty list on this AVD), and the
+        # debt covering both keys is already in the book above.
+        _adb("settings delete secure enabled_accessibility_services", check=False)
+        _adb("settings put secure accessibility_enabled 0")
+        time.sleep(1.5)
+    else:
         services.append(ACCESSIBILITY_SERVICE)
     _put_a11y({"enabled_accessibility_services": ":".join(services),
                "accessibility_enabled": "1"})
@@ -2647,8 +2657,15 @@ def _judge_editor(before, target_package, expected_final):
     if text == expected_final:
         return [f"VERIFIED: the editor's whole text now equals the expectation ({len(text)} chars); "
                 f"{focus_note}"]
-    return [f"ISSUE: the editor's whole text differs from the expectation; it ends {_excerpt(text)}, "
-            f"expected {_excerpt(expected_final)}; {focus_note}"]
+    # RAW tails, not `_excerpt`: that helper folds a no-break space into a space and strips, which hid the
+    # only difference on the first live run (Gmail stores the inserted trailing space as U+00A0).
+    return [f"ISSUE: the editor's whole text differs from the expectation; it ends {_raw_tail(text)}, "
+            f"expected {_raw_tail(expected_final)}; {focus_note}"]
+
+
+def _raw_tail(text, keep=80):
+    """The exact tail of a text with its real length, every character shown as Python would write it."""
+    return (repr(text) if len(text) <= keep else "…" + repr(text[-keep:])) + f" ({len(text)} chars)"
 
 
 def debug_insert(text, target_package=None, expected_final=None):
@@ -2689,6 +2706,158 @@ def debug_insert(text, target_package=None, expected_final=None):
             "insertions": len(re.findall(r"insertion api=", text_in_window))}
     report.extend(_judge_insertion(take, target_package, None))
     report.extend(_judge_editor(before, target_package, expected_final))
+    return report
+
+
+TEST_RUNNER = f"{TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner"
+# The reserved status code and keys the device test publishes on the `am instrument -r` stream when it
+# is ready for the driver's audio (`VoicePipelineDeviceTest.DRIVER_READY_STATUS`). A bundle carrying this
+# code and `driver_phase=READY` is a driver-control event, never a test verdict (#161 T2).
+DRIVER_READY_STATUS = 161
+EXTERNAL_AUDIO_DONE = f"{PACKAGE}.debug.EXTERNAL_AUDIO_DONE"
+
+
+def _instrumentation_groups(stream):
+    """Yield each `INSTRUMENTATION_STATUS` bundle with its following `INSTRUMENTATION_STATUS_CODE`.
+
+    Raw `am instrument -r` prints every key of a bundle as `INSTRUMENTATION_STATUS: key=value` (a value
+    may run over several lines, a stack trace does) and then ONE `INSTRUMENTATION_STATUS_CODE: n`; the
+    final `INSTRUMENTATION_RESULT:`/`INSTRUMENTATION_CODE:` pair ends the run and is yielded as a group
+    with `code` None and the key `INSTRUMENTATION_CODE`.
+    """
+    bundle = {}
+    key = None
+    for raw in stream:
+        line = raw.rstrip("\n")
+        if line.startswith("INSTRUMENTATION_STATUS: "):
+            body = line[len("INSTRUMENTATION_STATUS: "):]
+            key, _, value = body.partition("=")
+            bundle[key] = value
+        elif line.startswith("INSTRUMENTATION_STATUS_CODE: "):
+            code = line[len("INSTRUMENTATION_STATUS_CODE: "):].strip()
+            yield {"code": int(code) if code.lstrip("-").isdigit() else None, **bundle}
+            bundle, key = {}, None
+        elif line.startswith("INSTRUMENTATION_RESULT: "):
+            body = line[len("INSTRUMENTATION_RESULT: "):]
+            key, _, value = body.partition("=")
+            bundle[key] = value
+        elif line.startswith("INSTRUMENTATION_CODE: "):
+            bundle["INSTRUMENTATION_CODE"] = line[len("INSTRUMENTATION_CODE: "):].strip()
+            yield {"code": None, **bundle}
+            return
+        elif key is not None:
+            bundle[key] = bundle[key] + "\n" + line
+    if bundle:
+        yield {"code": None, **bundle}
+
+
+def run_device_test(test, sentence, expected_final=None, timeout=240, starve=False):
+    """Run ONE instrumented row on the EMULATOR with this harness feeding its audio (#161 T2).
+
+    The row (`VoicePipelineDeviceTest`, `-e audio external`) starts the take itself, publishes
+    `driver_phase=READY` on the instrumentation stream once the owner reported LISTENING and its staging
+    is done, and waits for this driver's audio-done broadcast before it stops the take. Here: the test
+    APK must already be installed (`adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`;
+    never `connectedAndroidTest`, which uninstalls the app); the sentence is rendered to PCM; the stream
+    is read group by group; on the READY group carrying this run's token the audio is injected and the
+    done broadcast sent; every other group is a runner result and is reported as VERIFIED or ISSUE.
+
+    `expected_final` is passed through as `-e expected_final`; the row's own literal is used when None.
+    `starve=True` is the NEGATIVE CONTROL: the driver answers READY with the done broadcast and feeds no
+    audio at all, so a row that still passes is a row that proves nothing. On the phone this refuses:
+    the phone's driver is `scripts/uat/silent-audio/run.py`.
+    """
+    device()
+    if _recording_is_off():
+        return [f"NOT RUN: {RECORDING_IS_OFF}"]
+    _require_emulator("driving a device test's audio")
+    if not re.fullmatch(r"[A-Za-z_][\w.]*(#\w+)?", test):
+        return [f"BLOCKED: {test!r} is not a test class or class#method"]
+    _, path = _adb(f"pm path {TEST_PACKAGE}", check=False)
+    if "package:" not in path:
+        return [f"BLOCKED: the test APK {TEST_PACKAGE} is not installed; install it with "
+                "adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"]
+    if not bound():
+        return ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
+                "enable_auto_paste() turns it back on."]
+    token = uuid.uuid4().hex
+    scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wispr-eyes")
+    os.makedirs(scratch, exist_ok=True)
+    pcm = _pcm_from_sentence(sentence, os.path.join(scratch, f"utt-{uuid.uuid4().hex}.pcm"))
+    report = [f"NOTE: {sentence!r} was rendered to {pcm}"]
+    args = [ADB, "-s", device(), "shell", "am", "instrument", "-w", "-r",
+            "-e", "class", test, "-e", "audio", "external", "-e", "driver_token", token]
+    if expected_final is not None:
+        args += ["-e", "expected_final", expected_final]
+    args.append(TEST_RUNNER)
+    restore()
+    ready()
+    report.append(f"NOTE: {_rest_host_mic_off()}")
+    clear_log()
+    fed = False
+    rebound_checked = False
+    results = []
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    deadline = time.monotonic() + timeout
+    try:
+        for group in _instrumentation_groups(process.stdout):
+            if time.monotonic() > deadline:
+                report.append(f"ISSUE: the instrumentation ran past {timeout} s; UNKNOWN")
+                break
+            if group.get("code") == DRIVER_READY_STATUS and group.get("driver_phase") == "READY":
+                if group.get("driver_token") != token:
+                    report.append("NOTE: a READY from another run was ignored (token mismatch)")
+                    continue
+                if starve:
+                    report.append("NOTE: STARVED on purpose: no audio fed (the negative control)")
+                else:
+                    report.append(f"NOTE: {inject_audio(pcm)}")
+                _adb(f"am broadcast -a {EXTERNAL_AUDIO_DONE} --es driver_token {token} {PACKAGE}")
+                report.append("NOTE: audio done broadcast sent")
+                fed = True
+                continue
+            if "INSTRUMENTATION_CODE" in group:
+                results.append(group)
+                break
+            if group.get("code") == 1 and group.get("test") and not rebound_checked:
+                # THE TEST HAS STARTED, so the app's process is up again. Instrumentation restarts that
+                # process and the accessibility service dies with it; on this AVD the system does not
+                # rebind it on its own (seen 2026-09-22: handoff=SERVICE_NOT_RUNNING), so the driver does,
+                # journaled, and the row waits on the service's own liveness fact before its take.
+                rebound_checked = True
+                if not bound():
+                    report.append(f"NOTE: the accessibility service was unbound by the instrumentation "
+                                  f"restart; rebound: {enable_auto_paste()}")
+                continue
+            if group.get("code") in (0, -1, -2, -3, -4) and group.get("test"):
+                results.append(group)
+    finally:
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        for line in restore():
+            report.append(f"NOTE: restored {line}")
+    if not fed:
+        report.append("ISSUE: the row never said READY, so no audio was fed (staging, not the product)")
+    for group in results:
+        name = group.get("test", "")
+        cls = group.get("class", "").rsplit(".", 1)[-1]
+        code = group.get("code")
+        if code == 0:
+            report.append(f"VERIFIED: {cls}.{name} passed on the device")
+        elif code in (-1, -2):
+            stack = group.get("stack", "").strip().splitlines()
+            report.append(f"ISSUE: {cls}.{name} FAILED: {stack[0] if stack else 'no message'}")
+        elif code in (-3, -4):
+            report.append(f"NOTE: {cls}.{name} was skipped by its own precondition: "
+                          f"{group.get('stack', '').strip().splitlines()[:1]}")
+        elif "INSTRUMENTATION_CODE" in group:
+            if group["INSTRUMENTATION_CODE"] != "-1":
+                report.append(f"ISSUE: the instrumentation ended with code {group['INSTRUMENTATION_CODE']}: "
+                              f"{group.get('shortMsg') or group.get('stream', '').strip()[-200:]}")
+    if not any(g.get("test") for g in results):
+        report.append("ISSUE: the runner reported no test at all; UNKNOWN")
     return report
 
 
@@ -2882,6 +3051,9 @@ def screen_recording(path=None):
         return
     token = uuid.uuid4().hex
     remote = f"/sdcard/wispr-eyes/{token}.mp4"
+    # The host side is made ready BEFORE anything on the device changes: a pull that fails for a missing
+    # host folder would leave the debt and the file behind for a reason that was never the device's.
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     # UNDER THE LOCK from the check to the owned pid: the debt is in the book before the recorder exists,
     # and no other session can settle it in the gap.
     with _journal_locked():
@@ -3377,20 +3549,20 @@ def _stream_log_until(markers, seconds, tags):
     since = _STATE["log_since"]
     args = [ADB, "-s", device(), "logcat", "-v", "time"] + (["-T", since] if since else []) + filters
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    deadline = time.monotonic() + seconds
+    # A TIMER, NOT select(): a text pipe reads ahead into its own buffer, so select() on the descriptor
+    # can say "nothing new" while a whole line already sits unread in Python (the first run of this
+    # missed the owner's live line that way). Killing the reader from a timer makes the blocking line
+    # iterator return, and the bound stays a bound.
+    timer = threading.Timer(seconds, process.kill)
+    timer.start()
     try:
-        while time.monotonic() < deadline:
-            ready_streams, _, _ = select.select([process.stdout], [], [], 0.5)
-            if not ready_streams:
-                continue
-            line = process.stdout.readline()
-            if not line:
-                break
+        for line in process.stdout:
             for marker in markers:
                 if marker in line:
                     return marker
         return None
     finally:
+        timer.cancel()
         process.kill()
         process.wait(timeout=5)
 

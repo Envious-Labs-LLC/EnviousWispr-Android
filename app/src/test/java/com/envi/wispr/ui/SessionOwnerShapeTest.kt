@@ -184,7 +184,8 @@ class SessionOwnerShapeTest {
         assertTrue(coordinator.contains("Thread(runnable, \"CaptureCommands\")"))
         val paste = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText().substringAfter("override fun onDestroy()")
         listOf("runBlocking", "joinAll", ".join(").forEach { assertFalse("the paste service's onDestroy must not contain $it", paste.contains(it)) }
-        assertTrue("the clean-stop marker is queued last, behind the outcome write", paste.contains("enqueue(\"clean-stop marker\") { markStopWasClean() }"))
+        assertTrue("the clean-stop marker is written in onDestroy itself, last", paste.substringBefore("super.onDestroy()").trimEnd().endsWith("markStopWasClean()"))
+        assertFalse("and never queued behind a History write", paste.contains("enqueue(\"clean-stop marker\")"))
         val audio = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText().substringAfter("override fun onDestroy()")
         listOf("runBlocking", ".join(", "Thread.sleep").forEach { assertFalse("the audio service's onDestroy must not contain $it", audio.contains(it)) }
     }

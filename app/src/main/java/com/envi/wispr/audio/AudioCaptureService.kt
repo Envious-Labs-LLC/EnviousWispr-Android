@@ -394,6 +394,16 @@ class AudioCaptureService : Service() {
                 return false
             }
 
+            // The process's one recorder (#115 review, F3): a previous Service instance's capture thread may
+            // still hold it, parked in a read, and `session` cannot see across instances.
+            if (!RecorderLease.PROCESS.acquire()) {
+                DebugLogger.error(TAG, "A recorder is still held in this process; refusing to start")
+                lastStartFailure = START_FAILURE_OTHER
+                routeHold.release()
+                stopSelf()
+                publishStartRefused(takeId, lastStartFailure)
+                return false
+            }
             var record: AudioRecord? = null
             var threadStarted = false
             var output: FileOutputStream? = null
@@ -818,6 +828,9 @@ class AudioCaptureService : Service() {
             }
         runCatching { record?.release() }
             .onFailure { DebugLogger.warn(TAG, "Failed to release AudioRecord: ${it.message}") }
+        // Every caller acquired the lease before creating the recorder (or failing to); released AFTER
+        // the recorder is, so the next start in this process cannot open a second one first.
+        RecorderLease.PROCESS.release()
     }
 
     /** Wait for the capture thread to finish writing and close the file. */
@@ -844,9 +857,9 @@ class AudioCaptureService : Service() {
         // NOT joined (#115): the capture thread is the sole owner of AudioRecord and the file, and it
         // releases both in its own releaseSession whenever its read returns; a thread parked inside a
         // read is abandoned to process termination rather than held on the main thread for two seconds.
-        // A new take in this process cannot open a second recorder while the old one is held:
-        // startRecording refuses while `session` is set, and releaseSession clears it only after the
-        // recorder is released.
+        // A new take in this process cannot open a second recorder while the old one is held, in THIS
+        // instance (startRecording refuses while `session` is set) or in a replacement instance in the
+        // same process (`RecorderLease.PROCESS` is released only after the recorder is).
         if (captureThread?.isAlive != true) {
             captureThread = null
             synchronized(sessionLock) {

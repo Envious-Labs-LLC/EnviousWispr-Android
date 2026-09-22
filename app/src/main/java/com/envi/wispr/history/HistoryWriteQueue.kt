@@ -18,9 +18,10 @@ import kotlinx.coroutines.launch
  * content-free label while the drain continues. A write left in the channel at process death is lost, as a
  * launched coroutine was; the start-up recovery owns those rows.
  *
- * Per-take writers (insert, status, discard, finalize, the insertion outcome) go through here. The History
- * screen's and the start-up recovery's writers (`setKept`, `delete`, `deleteAll`, `pruneWordlessRows`,
- * `recoverStaleOpenRows`) stay on their own scopes: they never write a live take's row.
+ * Per-take writers (insert, status, discard, finalize, the insertion outcome, the teardown's interrupted
+ * mark) go through here and nothing else does: the History screen's writers (`setKept`, `delete`,
+ * `deleteAll`, `pruneWordlessRows`) and the start-up recovery (`recoverStaleOpenRows`) stay on their own
+ * scopes, so a write of theirs stalled on the disk never sits ahead of a live take's writes.
  */
 internal class HistoryWriteQueue(
     private val repository: TranscriptRepository,

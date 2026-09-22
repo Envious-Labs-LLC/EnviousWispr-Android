@@ -610,6 +610,27 @@ class DictationSessionCoordinatorTest {
         assertFalse(row.interrupted)
     }
 
+    /**
+     * Product Outcome (#115 review of chunks B and C, F1): the start-up recovery is a write of its own; a
+     * disk that stalls it must not hold a new take's draft, status and finalization behind it. Here the
+     * recovery is HELD for the whole take, which still completes and lands its row.
+     * REVERT: enqueue the recovery on the per-take queue.
+     */
+    @Test
+    fun aStalledRecoveryDoesNotHoldTheTakesWrites() {
+        val held = kotlinx.coroutines.CompletableDeferred<Unit>()
+        rig.dao.holdRecovery = held
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals("ready_for_insertion", theOnlyRow().status)
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+        held.complete(Unit)
+    }
+
     @Test
     fun destroyWhileStartingMarksInterrupted() {
         val coordinator = rig.coordinator()

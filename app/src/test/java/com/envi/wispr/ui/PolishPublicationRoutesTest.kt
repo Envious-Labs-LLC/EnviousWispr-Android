@@ -34,7 +34,7 @@ class PolishPublicationRoutesTest {
         assertEquals(1, Regex("""\bpublishResult\(""").findAll(fallback).count())
     }
 
-    @Test fun theFactsAreDerivedExactlyOnceAndTheNoticePrecedesPersistence() {
+    @Test fun theFactsAreDerivedOnceTheWriteIsEnqueuedWithTheReservationAndTheNoticePrecedesTheContinuation() {
         assertEquals(1, Regex("""PolishPublicationFacts\.from\(""").findAll(source).count())
         val publication = section("private fun publishResult(", "private suspend fun TranscriptRepository.insertReadyTranscript")
         val notice = publication.indexOf("host.showPolishNotice(notice)")

@@ -112,6 +112,8 @@ class AudioServiceShapeTest {
             "error: Failed to start capture thread",
             "error: Failed to start recording",
             "error: No input device at all; refusing to start",
+            // #115 review (chunks B and C, F3): the process-scoped recorder lease refuses a second recorder.
+            "error: A recorder is still held in this process; refusing to start",
             "error: RECORD_AUDIO permission not granted",
             "log: Buffer sizes: minimum=\${} coerced=\${} read=\${} block=\${}",
             "log: Byte ceiling reached (\${} bytes), auto-stopping",

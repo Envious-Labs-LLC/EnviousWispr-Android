@@ -125,6 +125,7 @@ internal class DictationSessionRig {
         log = log,
         preferences = preferences,
         historyWrites = historyWrites,
+        transcripts = transcripts,
         languageDetector = LanguageDetector { null },
         loadPolicy = { PolishPolicy.Off },
         pipeline = pipeline,
@@ -625,7 +626,9 @@ internal class DictationSessionRig {
             }
             return updated
         }
-        override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int = 0
+        /** When set, the start-up recovery is held until the test completes it (the #115 review's F1 row). */
+        @Volatile var holdRecovery: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int { holdRecovery?.await(); return 0 }
         override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int = 0
         override suspend fun staleReadyRowIds(cutoffMs: Long): List<Long> = emptyList()
     }

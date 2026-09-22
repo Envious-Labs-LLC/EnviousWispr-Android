@@ -631,9 +631,12 @@ class PasteAccessibilityService : AccessibilityService() {
         historyScope.cancel()
         clearPinnedTarget()
         clearTarget()
-        // LAST on the queue, behind the outcome write above: a system kill that lands while that write is
-        // still pending must not read as an orderly stop, which is the case the marker exists to catch.
-        ModelBootstrapApplication.historyWrites(applicationContext).enqueue("clean-stop marker") { markStopWasClean() }
+        // LAST, and written HERE rather than queued behind the outcome write (#115 review, F4): the marker
+        // answers whether THIS service stopped in order, which it did once this method runs, and a
+        // queued mark could land after a replacement connected and either be declined by the instance
+        // guard (the orderly stop then reads as a crash) or overwrite the replacement's own arm. A kill
+        // after this point loses only the queued outcome write, which the start-up recovery closes.
+        markStopWasClean()
         super.onDestroy()
     }
 

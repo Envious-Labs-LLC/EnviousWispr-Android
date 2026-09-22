@@ -77,10 +77,12 @@ internal class DictationSessionCoordinator(
     private val preferences: SessionPreferencesSource,
     /** Every per-take History write goes through here, in enqueue order, on the application's worker (#115). */
     private val historyWrites: HistoryWriteQueue,
+    /** For the start-up recovery ONLY, on the session scope: a stalled recovery must not sit ahead of a take's writes on the queue. */
+    private val transcripts: TranscriptRepository,
     private val languageDetector: LanguageDetector,
     private val loadPolicy: suspend () -> PolishPolicy,
     private val pipeline: PipelineController,
-    /** The one session scope; the Service's `SupervisorJob() + Dispatchers.IO`. Its job is joined on destroy. */
+    /** The one session scope; the Service's `SupervisorJob() + Dispatchers.IO`. Its job is cancelled on destroy, never joined (#115). */
     private val scope: CoroutineScope,
     /** `Dispatchers.Main.immediate` in production; a JVM test passes its single owner-thread dispatcher. */
     private val mainDispatcher: CoroutineDispatcher,
@@ -262,10 +264,11 @@ internal class DictationSessionCoordinator(
 
     /** The Service's `onCreate` work that is the session's: stale-row recovery and the preference collectors. */
     fun onCreated() {
-        // On the queue, AHEAD of anything this take will write (#115): the recovery closes rows an earlier
-        // process left open, and it must not race the new take's own draft insert on another thread.
-        historyWrites.enqueue("stale-row recovery") { repository ->
-            runCatching { repository.recoverStaleOpenRows(System.currentTimeMillis()) }
+        // On its own scope, never on the per-take queue (#115 review): a recovery stalled on the disk
+        // would otherwise sit ahead of every write of the take that follows. It closes rows an EARLIER
+        // process left open; the new take's rows are not among them.
+        scope.launch {
+            runCatching { transcripts.recoverStaleOpenRows(System.currentTimeMillis()) }
                 .onSuccess { recovered -> Telemetry.insertionsRecovered(recovered.readyRowIds) }
                 .onFailure { error -> log.warn("Unable to recover stale history: ${error.message}") }
         }
@@ -1210,8 +1213,9 @@ internal class DictationSessionCoordinator(
     /**
      * The one place a polish outcome becomes a History row and, when it did not do its job, a sentence
      * (#77). Two routes reach it, the outcome callback and `publishFallback`; the facts are derived once
-     * here, and the notice is posted BEFORE persistence and insertion begin so it precedes the delivery
-     * line when both fire.
+     * here. The History write is enqueued WITH the reservation (#115); the notice is posted before the
+     * owner's continuation (the commit, the handoff) starts, so it precedes the delivery line when both
+     * fire.
      */
     private fun publishResult(
         text: String,

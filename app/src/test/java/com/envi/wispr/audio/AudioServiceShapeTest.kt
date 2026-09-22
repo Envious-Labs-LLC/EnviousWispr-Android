@@ -56,7 +56,13 @@ class AudioServiceShapeTest {
             assertTrue("onUnbind clears $it", unbind.contains(it))
             assertTrue("onDestroy clears $it", destroy.contains(it))
         }
-        assertTrue("the publisher is closed on destroy, after the join", destroy.indexOf("takeEvents.close()") > destroy.indexOf("thread.join("))
+        // #212 code review: the old form compared against a join #115 removed, so indexOf was -1 and it
+        // could not fail. The order it meant: the publisher closes after route-thread shutdown begins.
+        assertFalse("onDestroy never joins the capture thread", destroy.contains("thread.join("))
+        assertTrue(
+            "the event publisher closes after route-thread shutdown begins",
+            destroy.indexOf("takeEvents.close()") > destroy.indexOf("routeThread.quitSafely()"),
+        )
         // F6: a refused start carries nothing of the previous take.
         assertTrue(member(service, "private fun publishStartRefused(takeId: String, failure: Int)").contains("takeEvents.publishEnded(takeId, TERMINAL_REASON_NONE, failure, null, SILENCE_STATUS_DISABLED, 0f, null)"))
     }
@@ -71,6 +77,8 @@ class AudioServiceShapeTest {
             "endTake", "endTakeLocked", "releaseSession", "closeResources", "waitForFileReady",
             // #115: the two publishers of a start refused before capture began.
             "publishStartRefused", "failSetup",
+            // #212: a production take's start removes earlier production takes' capture files.
+            "sweepEarlierTakeFiles",
         )
         val actualFunctions = Regex("^ {4}(?:(?:private|internal|public|protected|inline|suspend|operator|tailrec|infix)\\s+)*fun\\s+(\\w+)\\s*\\(", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
@@ -100,6 +108,25 @@ class AudioServiceShapeTest {
         assertTrue("the identity checks are still in the service", service.contains("session === newSession") && service.contains("session !== active"))
     }
 
+    // #212 row 17. REVERT R15 (a "recording.pcm" literal as the opened file) and R16 (the sweep without
+    // its production guard) turn this red.
+    @Test
+    fun everyTakeOpensOnlyItsOwnFile() {
+        val start = member(service, "private fun startRecording(")
+        assertEquals("one token per capture", 1, Regex("nextCaptureToken\\(\\)").findAll(start).count())
+        assertTrue(start.contains("val file = File(cacheDir, CaptureFiles.nameFor(takeId, token))"))
+        assertTrue("the session carries the file's own token", start.contains("token = token,"))
+        assertTrue("the exact-file stale check stays", start.contains("if (file.exists() && !file.delete())"))
+        assertTrue(
+            "only a production take sweeps",
+            start.contains("if (CaptureFiles.isProductionTake(takeId)) sweepEarlierTakeFiles(keep = file.name)"),
+        )
+        assertFalse("no capture filename literal", Regex("\"[^\"\\n]*\\.pcm\"").containsMatchIn(service))
+        val sweep = member(service, "private fun sweepEarlierTakeFiles(keep: String)")
+        assertTrue(sweep.contains("!CaptureFiles.isSweptAtTakeStart(entry.name)"))
+        assertEquals("the sweep is the only other delete of a capture file", 2, Regex("\\.delete\\(\\)").findAll(service).count())
+    }
+
     @Test
     fun everyLogTemplateAndThreadNameSurvivesTheMove() {
         // Captured from audio/AudioCaptureService.kt at 2ed2cdf, the commit before the split, with the
@@ -120,6 +147,8 @@ class AudioServiceShapeTest {
             "log: Live picture: pushed=\${} polled=\${}",
             "log: Max duration reached (\${}ms), auto-stopping",
             "log: Recording started (PID: \${}, ",
+            // #212: a production take's start removes earlier production takes' files, counts only.
+            "log: Removed \${} earlier capture files; \${} could not be removed",
             "log: Stopped by \${}. \${} bytes ",
             "log: route adopt=\${} from the warm hold",
             "log: route change=\${} at \${} bytes",

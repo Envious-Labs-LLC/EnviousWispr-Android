@@ -57,3 +57,11 @@ __pycache__/
 
 # POMs fetched by scripts/generate-notices.py for dependencies Gradle cached without one.
 scripts/.notices-pom-cache/
+
+# Local design reference — large screen captures and screen recordings kept on disk
+# for the founder to look at, never shipped and never committed (93 MB, 2026-09-22).
+# Named one directory at a time: the rest of docs/mockups/ IS tracked (214 files,
+# `git ls-files docs/mockups | wc -l`), so a pattern on the parent would be a lie
+# about what git is carrying.
+Visperflow Onboarding Screenshots/
+docs/mockups/android-onboarding-v1/

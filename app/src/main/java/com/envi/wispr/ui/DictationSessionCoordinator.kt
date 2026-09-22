@@ -542,8 +542,12 @@ internal class DictationSessionCoordinator(
                     // Every refused start publishes its own ending with the failure code (the #115 plan's
                     // table, one publisher per exit). Nothing is read here.
                     log.warn("Capture start refused; the ending event carries why")
-                } else if (state.get() != SessionState.STARTING || takeId != id) {
-                    // The take ended while the start was in flight: no owner is listening for it.
+                } else if (takeId != id || state.get().let { it == SessionState.IDLE || it == SessionState.FINISHING || it == SessionState.ERROR }) {
+                    // The take ENDED while the start was in flight: no owner is listening for it. Only the
+                    // ended states count: the pushed live event routinely lands on main before this call
+                    // returns (live after 1 ms on the emulator), so RECORDING here is the ordinary case,
+                    // and PROCESSING or CANCELLING already sent their own stop (found by the hosted runner,
+                    // which stopped a healthy take here and cancelled it as CANCELLED_PROCESSING).
                     log.warn("Capture started for a take that already ended; stopping it")
                     runCatching { capture.stopCapture() }
                     pipeline.stopAudioService()

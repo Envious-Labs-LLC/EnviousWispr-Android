@@ -182,18 +182,33 @@ internal class DictationSessionRig {
     class FakeLog : SessionLog {
         val lines = CopyOnWriteArrayList<String>()
 
-        /** Waits for the subject to log a line containing [fragment]; the line is the subject's own signal. */
-        fun awaitLine(fragment: String) {
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-            while (lines.none { it.contains(fragment) }) {
-                check(System.nanoTime() < deadline) { "no log line containing '$fragment'; lines: $lines" }
-                Thread.sleep(5)
+        private val appended = Object()
+
+        private fun append(line: String) {
+            synchronized(appended) {
+                lines += line
+                appended.notifyAll()
             }
         }
-        override fun log(message: String) { lines += "I $message" }
-        override fun warn(message: String) { lines += "W $message" }
-        override fun error(message: String, throwable: Throwable?) { lines += "E $message" }
-        override fun mark(event: String) { lines += "M $event" }
+
+        /**
+         * Waits for the subject to log a line containing [fragment]; the line is the subject's own signal.
+         * Woken by every append, never by a clock; the deadline only makes a regression fail instead of hang.
+         */
+        fun awaitLine(fragment: String) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            synchronized(appended) {
+                while (lines.none { it.contains(fragment) }) {
+                    val left = deadline - System.nanoTime()
+                    check(left > 0) { "no log line containing '$fragment'; lines: $lines" }
+                    TimeUnit.NANOSECONDS.timedWait(appended, left)
+                }
+            }
+        }
+        override fun log(message: String) = append("I $message")
+        override fun warn(message: String) = append("W $message")
+        override fun error(message: String, throwable: Throwable?) = append("E $message")
+        override fun mark(event: String) = append("M $event")
         override fun pipelineSummary(): String = "Pipeline: summary"
     }
 
@@ -373,6 +388,12 @@ internal class DictationSessionRig {
             commandThreads += Thread.currentThread().name
             currentTakeId = takeId
             startArguments += "start(autoStop=$autoStopOnSilence, pause=$pauseSeconds)"
+            startThrows?.let { thrown ->
+                started.countDown()
+                // Held, when asked, so a test can put the process's death notice ahead of this throw (#213).
+                startThrowGate?.let { check(it.await(10, TimeUnit.SECONDS)) { "the start throw was never released" } }
+                throw thrown
+            }
             if (!startResult) {
                 started.countDown()
                 // A refused start publishes its own ending with the failure code and no file (#115).
@@ -395,6 +416,12 @@ internal class DictationSessionRig {
 
         /** When set, `startCaptureForTake` returns only once the test opens it, AFTER it pushed live. */
         @Volatile var startReturnGate: CountDownLatch? = null
+
+        /** When set, `startCaptureForTake` throws it (a binder call into a process that died, #213). */
+        @Volatile var startThrows: Throwable? = null
+
+        /** When set with [startThrows], the throw waits until the test opens it. */
+        @Volatile var startThrowGate: CountDownLatch? = null
 
         override fun stopCapture() {
             events += "stop"

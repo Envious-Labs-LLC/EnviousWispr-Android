@@ -530,6 +530,53 @@ class DictationSessionCoordinatorTest {
         assertTrue(rig.host.events.contains("toast:Earbuds could not be used."))
     }
 
+    // #213 row 17: a capture process that ends itself during the start (to recover a recorder that was never
+    // released) is ONE ending, AUDIO_PROCESS_DIED, whichever of the throw and the death notice arrives first.
+    // REVERT: map DeadObjectException to START_EXCEPTION, and the first row turns red.
+    @Test
+    fun aCaptureProcessDyingDuringTheStartIsOneProcessDeathWhenTheThrowComesFirst() {
+        rig.capture.startThrows = android.os.DeadObjectException()
+        val coordinator = rig.coordinator()
+        coordinator.onCreated()
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+
+        assertEquals(TerminalReason.AUDIO_PROCESS_DIED, rig.endings.awaitOne())
+        rig.pipeline.disconnect("capture")
+        rig.host.awaitStopped()
+        rig.onMain {}
+        assertEquals("one ending, whatever arrived second", listOf(TerminalReason.AUDIO_PROCESS_DIED), rig.endings.reasons.toList())
+        assertTrue(rig.host.events.contains("toast:Microphone service stopped unexpectedly"))
+    }
+
+    @Test
+    fun aCaptureProcessDyingDuringTheStartIsOneProcessDeathWhenTheNoticeComesFirst() {
+        val gate = CountDownLatch(1)
+        rig.capture.startThrows = android.os.DeadObjectException()
+        rig.capture.startThrowGate = gate
+        val coordinator = rig.coordinator()
+        coordinator.onCreated()
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        rig.capture.awaitStarted()
+        rig.pipeline.disconnect("capture")
+
+        assertEquals(TerminalReason.AUDIO_PROCESS_DIED, rig.endings.awaitOne())
+        gate.countDown()
+        // The throw's own ending arrives second and is refused by the arbiter: that refusal is the signal.
+        rig.log.awaitLine("Ignoring AUDIO_PROCESS_DIED")
+        rig.host.awaitStopped()
+        assertEquals("one ending, whatever arrived second", listOf(TerminalReason.AUDIO_PROCESS_DIED), rig.endings.reasons.toList())
+    }
+
+    @Test
+    fun anyOtherThrowDuringTheStartStaysAStartException() {
+        rig.capture.startThrows = android.os.RemoteException()
+        val coordinator = rig.coordinator()
+        coordinator.onCreated()
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+
+        assertEquals(TerminalReason.START_EXCEPTION, rig.endings.awaitOne())
+    }
+
     @Test
     fun captureStartFailureEndsStarting() {
         rig.capture.startResult = false

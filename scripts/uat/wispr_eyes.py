@@ -328,6 +328,20 @@ def _owe_locked(entry, serial):
         _journal_write(book)
 
 
+def _replace_owed_locked(old, new, serial):
+    """Replace the exact debt `old` with `new` in ONE journal write, so there is no moment with neither."""
+    book = _journal_read()
+    scope = serial or _STATE["serial"]
+    key = _scope_key(scope)
+    if scope != "host":
+        _migrate_locked(book, _attached_transports())
+    owed = [tuple(e) for e in book.get(key or "", [])]
+    if old not in owed:
+        raise Blocked(f"the debt {old!r} is not in the book, so it cannot be replaced")
+    book[key or ""] = [list(new if e == old else e) for e in owed]
+    _journal_write(book)
+
+
 def _settled(entry, serial=None):
     """Drop a change from the book, ONLY after its restore was read back."""
     serial = serial or _STATE["serial"]
@@ -2368,8 +2382,8 @@ def freeze_process(name=f"{PACKAGE}:audio"):
         _adb_host(["forward", f"tcp:{port}", f"jdwp:{pid}"])
         frozen["host_pid"] = _spawn_debugger(port, log_path)
         complete = ("frozen-process", json.dumps(frozen, sort_keys=True))
-        _settled_locked(entry, device())
-        _owe_locked(complete, device())
+        # ONE write: settle-then-owe left a whole frozen process with no debt if this died between (#213 review).
+        _replace_owed_locked(entry, complete, device())
     for _ in range(100):
         time.sleep(0.1)
         try:
@@ -2387,6 +2401,107 @@ def freeze_process(name=f"{PACKAGE}:audio"):
     return f"froze {name} pid {pid} (debugger pid {frozen['host_pid']} on port {port})"
 
 
+
+# One row of jdb's `threads` listing, as the Play AVD's ART prints it (measured 2026-09-22):
+#   `  (java.lang.Thread)21342        AudioCaptureThread                 running`
+# The class varies (HandlerThread, coroutine workers), the id is decimal, and a name may contain single
+# spaces ("Signal Catcher"); the name ends at the run of two or more spaces before the status.
+JDB_THREAD_LINE = re.compile(r"^\s*\(([^)]+)\)(\S+)\s+(.+?)\s{2,}\S", re.MULTILINE)
+
+
+def _thread_ids(threads_output, thread_name):
+    """The JDWP ids of every thread named exactly `thread_name` in a jdb `threads` listing."""
+    return [tid for _cls, tid, name in JDB_THREAD_LINE.findall(threads_output) if name == thread_name]
+
+
+def _spawn_commandable_debugger(port, log_path, commands_path):
+    """A debugger attached to the forwarded JDWP port that reads its commands from `commands_path` as they are
+    appended, and outlives the Python that spawned it; its own session, so the thaw ends the whole group by
+    the pid the book carries. The VM resumes every thread the moment the debugger disconnects."""
+    open(commands_path, "w").close()
+    script = (f"tail -f {shlex.quote(commands_path)} | {shlex.quote(_jdb())} -attach localhost:{port} "
+              f"> {shlex.quote(log_path)} 2>&1")
+    child = subprocess.Popen(["/bin/sh", "-c", script], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    return child.pid
+
+
+def _debugger_says(log_path, predicate, seconds=10.0):
+    """Wait for the debugger's log to satisfy `predicate`; the log text, or None at the deadline."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            with open(log_path) as f:
+                text = f.read()
+        except FileNotFoundError:
+            text = ""
+        if predicate(text):
+            return text
+        time.sleep(0.1)
+    return None
+
+
+def freeze_thread(name=f"{PACKAGE}:audio", thread_name="AudioCaptureThread"):
+    """Suspend ONE named thread of one of OUR processes on the EMULATOR, journaled like `freeze_process` (#213).
+
+    `freeze_process` suspends every thread, which also freezes whatever in that process would recover from
+    the wedge. This suspends only `thread_name` (exactly one live thread must carry it) and leaves the
+    process answering binder calls: for #213 the capture thread, the sole owner of the recorder's release,
+    then never reaches its cleanup while the service stays alive. It stages the invariant, not a vendor
+    `AudioRecord.read()` that ignored `stop()`. `restore()` and `thaw_process(name)` end the debugger, which
+    resumes the thread; the book entry is the same `frozen-process` kind, with the thread named.
+    """
+    _require_emulator("freezing a thread")
+    pid = _the_one_process(name, "freezing a thread of")
+    port = 18700 + pid % 1000
+    log_path = os.path.join(os.path.dirname(_JOURNAL), f"jdb-{pid}-thread.log")
+    commands_path = os.path.join(os.path.dirname(_JOURNAL), f"jdb-{pid}-commands.txt")
+    frozen = {"pid": pid, "name": name, "port": port, "host_pid": None, "thread": thread_name}
+    entry = ("frozen-process", json.dumps(frozen, sort_keys=True))
+    with _journal_locked():
+        _owe_locked(entry, device())
+        if entry not in _owed():
+            raise Blocked("the freeze could not be written to the restore book, so it was not done")
+        _adb_host(["forward", f"tcp:{port}", f"jdwp:{pid}"])
+        frozen["host_pid"] = _spawn_commandable_debugger(port, log_path, commands_path)
+        # ONE write, never settle-then-owe: a crash between those two left a debugger with no debt (#213 review).
+        complete = ("frozen-process", json.dumps(frozen, sort_keys=True))
+        _replace_owed_locked(entry, complete, device())
+        entry = complete
+
+    def command(text):
+        with open(commands_path, "a") as f:
+            f.write(text + "\n")
+
+    if _debugger_says(log_path, lambda t: "Initializing jdb" in t or "> " in t) is None:
+        thaw_process(name)
+        raise Blocked(f"the debugger never attached to pid {pid} ({name}); see {log_path}. Thawed.")
+    command("threads")
+    listing = _debugger_says(log_path, lambda t: JDB_THREAD_LINE.search(t) is not None and thread_name in t)
+    ids = _thread_ids(listing or "", thread_name)
+    if len(ids) != 1:
+        thaw_process(name)
+        raise Blocked(f"{len(ids)} live threads are named {thread_name!r} in pid {pid} ({name}); exactly one is "
+                      f"required. Thawed.")
+    tid = ids[0]
+    # The thread's id is in the book BEFORE the suspend it names.
+    frozen["thread_id"] = tid
+    with _journal_locked():
+        named = ("frozen-process", json.dumps(frozen, sort_keys=True))
+        _replace_owed_locked(entry, named, device())
+        entry = named
+    command(f"suspend {tid}")
+    command(f"where {tid}")
+    stack = _debugger_says(log_path, lambda t: "captureLoop" in t or "isn't suspended" in t)
+    if stack is None or "isn't suspended" in stack:
+        thaw_process(name)
+        raise Blocked(f"{thread_name} ({tid}) in pid {pid} did not report a suspended stack; see {log_path}. Thawed.")
+    if not _process_answers(pid):
+        thaw_process(name)
+        raise Blocked(f"pid {pid} ({name}) stopped answering with only {thread_name} suspended. Thawed.")
+    return f"froze thread {thread_name} ({tid}) of {name} pid {pid}, inside captureLoop; the process still answers"
+
+
 def _adb_host(args):
     """An adb command that is not `shell` (forward, forward --remove) against the selected device."""
     done = subprocess.run([ADB, "-s", device(), *args], capture_output=True, text=True)
@@ -2395,11 +2510,48 @@ def _adb_host(args):
     return done.stdout.strip()
 
 
+def _debugger_group(ps_text, port):
+    """From `ps -axo pid=,pgid=,command=` text: the LEADER pid of the one process group running a debugger
+    on `port`, or None. A launch is a `/bin/sh -c` leader plus its `jdb` child in one group, so rows are
+    grouped by PGID; two groups refuse, and a group whose leader is gone refuses."""
+    groups = {}
+    present = set()
+    for line in ps_text.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        pid, pgid, command = int(parts[0]), int(parts[1]), parts[2]
+        present.add(pid)
+        if "jdb" in command and f"localhost:{port}" in command:
+            groups.setdefault(pgid, []).append(pid)
+    if len(groups) > 1:
+        raise Blocked(f"{len(groups)} debugger process groups are attached to port {port} ({sorted(groups)}); none is ended")
+    if not groups:
+        return None
+    leader = next(iter(groups))
+    if leader not in present:
+        raise Blocked(f"the debugger group {leader} on port {port} has no leader left; none is ended")
+    return leader
+
+
+def _debugger_on_port(port):
+    """The leader pid of the ONE debugger group on this Mac attached to `port`, or None. A failed `ps` refuses:
+    for a thread-only freeze the process still answers, so "no debugger" would settle a debt still frozen."""
+    done = subprocess.run(["/bin/ps", "-axo", "pid=,pgid=,command="], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise Blocked(f"ps failed ({done.returncode}), so the debugger on port {port} cannot be found; the debt is kept")
+    return _debugger_group(done.stdout, port)
+
+
 def _thaw(frozen):
     """End the debugger the book recorded, drop the forward, and read back that the process answers."""
     lines = []
-    if frozen.get("host_pid") is not None:
-        lines.append(_kill_debugger(frozen["host_pid"], frozen["port"]))
+    host_pid = frozen.get("host_pid")
+    if host_pid is None and frozen.get("port") is not None:
+        # A debt written before its debugger's pid was: the one debugger on that port is the one it names.
+        host_pid = _debugger_on_port(frozen["port"])
+    if host_pid is not None:
+        lines.append(_kill_debugger(host_pid, frozen["port"]))
     if frozen.get("port") is not None:
         subprocess.run([ADB, "-s", device(), "forward", "--remove", f"tcp:{frozen['port']}"], capture_output=True, text=True)
     state = dict(_processes_named(frozen["name"])).get(frozen["pid"])
@@ -3490,8 +3642,13 @@ def _restore_one_here(entry):
         raise Blocked(f"there is no verified way to put {what!r} back, so it must not have been journaled")
 
 
-def restore():
+def restore(keep_frozen_threads=False):
     """Put back everything this session changed, and say what.
+
+    `keep_frozen_threads=True` is for the one scene that needs a take WHILE a thread stays suspended
+    (#213: the next start after a capture thread that never released its recorder). It restores and
+    settles everything else and leaves every `freeze_thread` debt OWED in the book, so the next plain
+    `restore()`, from this or any later session, still thaws it. It never keeps a whole-process freeze.
 
     **THE WHOLE RUN IS UNDER THE BOOK'S LOCK, and that is the fix for the last race.** Reading the book,
     acting on it, and settling were three separate steps with gaps between them, so another session could
@@ -3500,10 +3657,20 @@ def restore():
     meantime. Deciding and settling have to be one indivisible act.
     """
     with _journal_locked():
-        return _restore_locked()
+        return _restore_locked(keep_frozen_threads)
 
 
-def _restore_locked():
+def _frozen_thread_debt(entry):
+    """True for a `freeze_thread` debt: a frozen-process entry that names a thread."""
+    if entry[0] != "frozen-process":
+        return False
+    try:
+        return bool(json.loads(entry[1]).get("thread"))
+    except (ValueError, AttributeError):
+        return False
+
+
+def _restore_locked(keep_frozen_threads=False):
     """Put back everything this session changed, and say what.
 
     An entry is removed ONLY after its restore was read back. A failure leaves it in the journal and
@@ -3541,6 +3708,9 @@ def _restore_locked():
         scope = "host" if key == "host" else transport_for.get(key, selected)
         where = "" if key in ("host", selected_key) else f" on {scope} [{key}]"
         for entry in list(_owed(scope)):
+            if keep_frozen_threads and _frozen_thread_debt(entry):
+                done.append(f"{entry[0]} kept frozen, still owed: {entry[1]}{where}")
+                continue
             _restore_one(entry, serial=None if key in ("host", selected_key) else scope)
             _settled_locked(entry, scope)
             done.append(f"{entry[0]} back to {entry[1]}{where}")

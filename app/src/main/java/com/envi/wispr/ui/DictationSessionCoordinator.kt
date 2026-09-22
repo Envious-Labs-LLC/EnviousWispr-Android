@@ -96,6 +96,8 @@ internal class DictationSessionCoordinator(
     private val polishLedger: PolishRequestLedger = PolishRequestLedger(),
     /** The arbiter's sink: where a committed ending goes. Production records it to telemetry. */
     private val endingSink: (TakeFacts, TerminalReason) -> Unit = ::recordTakeEnding,
+    /** Where the owner's defects go. Production sends them to telemetry; a test counts them (#214). */
+    private val defectSink: (AppDefect, Map<String, Any?>) -> Unit = Telemetry::defect,
 ) : PipelineController.Listener {
     companion object {
         /**
@@ -1124,7 +1126,7 @@ internal class DictationSessionCoordinator(
                             if (outcome == null || outcome.requestId != requestId) {
                                 if (polishLedger.claim(requestId)) {
                                     log.warn("Invalid polish outcome for request $requestId")
-                                    Telemetry.defect(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to if (outcome == null) "null" else "mismatched"))
+                                    defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to if (outcome == null) "null" else "mismatched"))
                                     publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
                                 }
                                 return
@@ -1136,6 +1138,15 @@ internal class DictationSessionCoordinator(
                                 return
                             }
                             log.log("Polish outcome ${outcome.requestId}: reason=${outcome.reason} status=${outcome.statusCode}")
+                            // No correct engine answer is blank for a nonblank request: deterministic cleanup recovers
+                            // the original rather than erase it, and every fallback keeps that text (#214). A blank
+                            // answer is a broken engine: the owner's floor, never the raw transcript.
+                            if (outcome.text.isBlank() && rawText.isNotBlank()) {
+                                log.warn("Blank polish outcome for request ${outcome.requestId} (reason=${outcome.reason}); publishing the owner's fallback")
+                                defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "blank"))
+                                publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
+                                return
+                            }
                             publishResult(
                                 restoreTakeVocabulary(outcome.text, takePreferences),
                                 outcome.engine,
@@ -1150,14 +1161,14 @@ internal class DictationSessionCoordinator(
                         // engine defect, and the session still fails open to the deterministic text.
                         override fun onResult(text: String?, engine: String?, latencyMs: Long) {
                             if (polishLedger.claim(requestId)) {
-                                Telemetry.defect(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_result"))
+                                defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_result"))
                                 publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
                             }
                         }
 
                         override fun onError(message: String?) {
                             if (polishLedger.claim(requestId)) {
-                                Telemetry.defect(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_error"))
+                                defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_error"))
                                 publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
                             }
                         }
@@ -1251,7 +1262,7 @@ internal class DictationSessionCoordinator(
         takeFacts.polishMs = latencyMs
         takeFacts.polishStatus = statusCode
         Telemetry.breadcrumb("take", "polish_done", mapOf("take_id" to takeId, "polish_reason" to reason.name, "polish_ms" to latencyMs, "polish_provider" to takeFacts.polishProvider))
-        TelemetryChannels.defectOf(reason)?.let { Telemetry.defect(it, mapOf("take_id" to takeId, "polish_status" to statusCode)) }
+        TelemetryChannels.defectOf(reason)?.let { defectSink(it, mapOf("take_id" to takeId, "polish_status" to statusCode)) }
         // The immutable payload FIRST, so the reservation and its write can be one operation below.
         val finalText = text.ifBlank { rawTranscript }
         val finalEngine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine
@@ -1326,7 +1337,7 @@ internal class DictationSessionCoordinator(
                 // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal
                 // statement is our schema contract (a defect). The message never leaves either way.
                 Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName))
-                TelemetryChannels.historySaveDefect(error)?.let { Telemetry.defect(it, mapOf("take_id" to takeId)) }
+                TelemetryChannels.historySaveDefect(error)?.let { defectSink(it, mapOf("take_id" to takeId)) }
             }
             // COMMIT now that the save result is known and BEFORE the insertion handoff: completed means
             // the text finalised, never that insertion succeeded. A revoked reservation (the owner was

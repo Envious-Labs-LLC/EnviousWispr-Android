@@ -136,7 +136,11 @@ internal class DictationSessionRig {
         tipGate = BluetoothTipGate(),
         polishLedger = PolishRequestLedger(PolishRequestIdSource { System.nanoTime() }),
         endingSink = endings::record,
+        defectSink = { defect, data -> defects += defect.fingerprint to data },
     )
+
+    /** Every defect the owner raised, by fingerprint, with its data (#214). */
+    val defects = CopyOnWriteArrayList<Pair<String, Map<String, Any?>>>()
 
     /** Runs [block] on the fake main thread and waits for it, as `onStartCommand` arrives on main. */
     fun onMain(block: () -> Unit) {

@@ -40,12 +40,19 @@ class AsrService : Service() {
             "This recording is longer than the ${RecordingLimits.MAX_DURATION_MINUTES} minute limit."
     }
 
-    private var recognizer: OfflineRecognizer? = null
-    @Volatile
-    private var modelReady = false
     private val transcriptionExecutor: ExecutorService = Executors.newSingleThreadExecutor {
         Thread(it, "AsrTranscriptionThread").apply { isDaemon = true }
     }
+
+    /** Load, every decode and the release run on [transcriptionExecutor], in that order (#212). */
+    private val owner = RecognizerOwner<OfflineRecognizer>(
+        transcriptionExecutor,
+        free = { recognizer ->
+            recognizer.release()
+            DebugLogger.log(TAG, "Recognizer released")
+        },
+        discarded = { DebugLogger.log(TAG, "ASR answer discarded: the service closed during the decode") },
+    )
 
     /**
      * How a request wants to hear about a failure. The legacy transactions answer `onError` with the
@@ -98,10 +105,13 @@ class AsrService : Service() {
         override fun transcribe(audioData: ByteArray, callback: IAsrCallback?) {
             DebugLogger.warn(TAG, "Legacy transcribe(ByteArray) called — prefer transcribeFile()")
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
-            transcriptionExecutor.execute { doTranscribe(audioData, durationSec, callback, legacyReporter(callback)) }
+            val failure = legacyReporter(callback)
+            owner.use(refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
+                doTranscribe(rec, audioData, durationSec, callback, failure)
+            }
         }
 
-        override fun isReady(): Boolean = modelReady
+        override fun isReady(): Boolean = owner.isReady
     }
 
     private fun transcribeFromFile(audioFilePath: String, takeId: String, callback: IAsrCallback?, failure: FailureReporter) {
@@ -124,30 +134,38 @@ class AsrService : Service() {
             return
         }
 
-        transcriptionExecutor.execute {
+        owner.use(refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
             // The read is its own boundary (G1 D4): a failure here is the FILE, never the decoder.
             val audioData = try {
                 file.readBytes()
             } catch (e: Exception) {
                 DebugLogger.error(TAG, "Failed to read audio file", e)
-                failure.report(AsrFailureReason.AUDIO_UNREADABLE, e.javaClass.simpleName)
-                return@execute
+                val detail = e.javaClass.simpleName
+                return@use { failure.report(AsrFailureReason.AUDIO_UNREADABLE, detail) }
             }
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
             DebugLogger.log(TAG, "Read ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) for take $takeId")
             DebugLogger.mark(TAG, "asr_file_read")
-            doTranscribe(audioData, durationSec, callback, failure)
+            doTranscribe(rec, audioData, durationSec, callback, failure)
         }
     }
 
-    private fun doTranscribe(audioData: ByteArray, durationSec: Float, callback: IAsrCallback?, failure: FailureReporter) {
+    /**
+     * Decodes on the worker and RETURNS the answer's delivery rather than making it, so the owner can
+     * discard an answer that finished after the service closed (#212). Every path returns exactly one.
+     */
+    private fun doTranscribe(
+        rec: OfflineRecognizer?,
+        audioData: ByteArray,
+        durationSec: Float,
+        callback: IAsrCallback?,
+        failure: FailureReporter,
+    ): () -> Unit {
         DebugLogger.log(TAG, "Transcribing ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) (PID: ${android.os.Process.myPid()})")
 
-        val rec = recognizer
         if (rec == null) {
             DebugLogger.error(TAG, "Recognizer not initialized")
-            failure.report(AsrFailureReason.MODEL_NOT_LOADED, "")
-            return
+            return { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }
         }
 
         // The decode is its own boundary (G1 D4): only the recogniser's own work is inside this try, so
@@ -178,13 +196,15 @@ class AsrService : Service() {
             text
         } catch (e: Exception) {
             DebugLogger.error(TAG, "Transcription failed", e)
-            failure.report(AsrFailureReason.DECODE_FAILED, e.javaClass.simpleName)
-            return
+            val detail = e.javaClass.simpleName
+            return { failure.report(AsrFailureReason.DECODE_FAILED, detail) }
         }
 
         DebugLogger.log(TAG, DebugLogger.pipelineSummary())
-        runCatching { callback?.onResult(rawText) }
-            .onFailure { DebugLogger.warn(TAG, "Result delivery threw: ${it.javaClass.simpleName}; not reported as a decode failure") }
+        return {
+            runCatching { callback?.onResult(rawText) }
+                .onFailure { DebugLogger.warn(TAG, "Result delivery threw: ${it.javaClass.simpleName}; not reported as a decode failure") }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -193,26 +213,24 @@ class AsrService : Service() {
         super.onCreate()
         DebugLogger.log(TAG, "AsrService created (PID: ${android.os.Process.myPid()})")
         // Receipt verification and native model loading are deliberately off the service main thread.
-        transcriptionExecutor.execute { initRecognizer() }
+        owner.load { initRecognizer() }
     }
 
     override fun onDestroy() {
-        transcriptionExecutor.shutdownNow()
+        // Never waits and never frees here: the release is queued behind the decode in flight (#212).
+        owner.close()
         super.onDestroy()
-        recognizer?.release()
-        recognizer = null
-        modelReady = false
-        DebugLogger.log(TAG, "AsrService destroyed, recognizer released")
+        DebugLogger.log(TAG, "AsrService destroyed; recognizer release queued")
     }
 
-    private fun initRecognizer() {
-        try {
+    /** Returns the loaded recognizer, or null when the model is not verified or fails to load. */
+    private fun initRecognizer(): OfflineRecognizer? {
+        return try {
             val t0 = SystemClock.elapsedRealtime()
             val modelDir = ModelStorage.directory(this, ModelManifest.parakeet)
             if (!ModelStorage.isReady(this, ModelManifest.parakeet)) {
                 DebugLogger.warn(TAG, "Parakeet model is not verified in app-private storage")
-                modelReady = false
-                return
+                return null
             }
 
             val transducerConfig = OfflineTransducerModelConfig(
@@ -236,14 +254,14 @@ class AsrService : Service() {
             // upgrade that changed the default would otherwise reach this model silently.
             config.decodingMethod = "greedy_search"
 
-            recognizer = OfflineRecognizer(null, config)
-            modelReady = true
+            val recognizer = OfflineRecognizer(null, config)
 
             val elapsed = SystemClock.elapsedRealtime() - t0
             DebugLogger.log(TAG, "Recognizer initialized in ${elapsed}ms")
+            recognizer
         } catch (e: Exception) {
             DebugLogger.error(TAG, "Failed to initialize recognizer", e)
-            modelReady = false
+            null
         }
     }
 

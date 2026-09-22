@@ -29,7 +29,6 @@ class AudioCaptureService : Service() {
         private const val SAMPLE_RATE = PcmAudio.SAMPLE_RATE
         private const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
-        private const val AUDIO_FILENAME = "recording.pcm"
 
         const val SILENCE_STATUS_DISABLED = 0
         const val SILENCE_STATUS_PREPARING = 1
@@ -434,12 +433,16 @@ class AudioCaptureService : Service() {
 
                 // cacheDir is app-internal and shared by this package's processes. It is
                 // excluded from user backups and is less exposed than shared storage.
-                val file = File(cacheDir, AUDIO_FILENAME)
+                // One file per capture (#212, #221): a late answer for an ended take can only delete its
+                // own recording. The token is minted once and names both the file and the session.
+                val token = nextCaptureToken()
+                val file = File(cacheDir, CaptureFiles.nameFor(takeId, token))
                 // There is no active session under sessionLock, so no writer can own this
                 // path. Remove a partial take left by process death before opening a new one.
                 if (file.exists() && !file.delete()) {
                     throw IOException("Unable to remove stale audio recording")
                 }
+                if (CaptureFiles.isProductionTake(takeId)) sweepEarlierTakeFiles(keep = file.name)
                 output = FileOutputStream(file)
                 record.startRecording()
                 // The route is the target from the first read when the preferred device was set first
@@ -454,7 +457,7 @@ class AudioCaptureService : Service() {
                     // Allocated HERE, before the thread starts, and never inside the capture loop. The
                     // capture thread may not allocate: it must do nothing that can make it late.
                     readBuffer = ByteArray(PcmAudio.READ_CHUNK_BYTES),
-                    token = nextCaptureToken(),
+                    token = token,
                     detector = DetectorFeed(
                         tag = TAG,
                         autoStop = detectorEnabled,
@@ -656,6 +659,22 @@ class AudioCaptureService : Service() {
      * failure code, no path, and nothing of the previous take: a disabled silence status, a zero peak and
      * no device label (review round 1, F6).
      */
+    /**
+     * A production take is admitted only after the earlier take has ended, so no live outcome still
+     * depends on an earlier production file; this removes the files of takes whose ending never reached
+     * the owner (an answer discarded at close, a process death). Legacy captures are never swept: a
+     * separately installed client may still hold that path across an unbind (#212).
+     */
+    private fun sweepEarlierTakeFiles(keep: String) {
+        var removed = 0
+        var failed = 0
+        cacheDir.listFiles()?.forEach { entry ->
+            if (entry.name == keep || !CaptureFiles.isSweptAtTakeStart(entry.name)) return@forEach
+            if (entry.delete()) removed++ else failed++
+        }
+        if (removed + failed > 0) DebugLogger.log(TAG, "Removed $removed earlier capture files; $failed could not be removed")
+    }
+
     private fun publishStartRefused(takeId: String, failure: Int) {
         takeEvents.publishEnded(takeId, TERMINAL_REASON_NONE, failure, null, SILENCE_STATUS_DISABLED, 0f, null)
     }

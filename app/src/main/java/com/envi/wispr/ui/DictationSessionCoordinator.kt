@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import android.os.DeadObjectException
 import com.envi.wispr.asr.AsrFailureReason
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.CaptureEnding
@@ -533,9 +534,16 @@ internal class DictationSessionCoordinator(
                     )
                 } catch (error: Exception) {
                     // A binder that threw: the process is gone or broken. Its ServiceConnection or the
-                    // silence bound would end the take too; this is the same ending, sooner.
+                    // silence bound would end the take too; this is the same ending, sooner. A capture process
+                    // that DIED during the start (it ends itself to recover a recorder that was never
+                    // released, #213) is the same ending onCaptureDisconnected proposes, whichever arrives
+                    // first; any other throw stays a start exception.
                     log.error("Failed to start recording", error)
-                    host.postToMain { showError(TerminalReason.START_EXCEPTION) }
+                    if (error is DeadObjectException) {
+                        host.postToMain { handleServiceFailure(TerminalReason.AUDIO_PROCESS_DIED) }
+                    } else {
+                        host.postToMain { showError(TerminalReason.START_EXCEPTION) }
+                    }
                     return@commandCapture
                 }
                 if (!started) {

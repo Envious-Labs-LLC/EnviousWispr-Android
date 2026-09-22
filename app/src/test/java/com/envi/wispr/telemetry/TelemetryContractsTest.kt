@@ -85,6 +85,7 @@ class TelemetryContractsTest {
             "local_polish_deadline" to "polish.local_deadline",
             "polish_protocol_violation" to "polish.protocol_violation",
             "capture_still_running_after_stop" to "capture.still_running_after_stop",
+            "capture_release_wedged" to "capture.release_wedged",
             "asr_decode_failed" to "asr.decode_failed",
             "asr_over_limit" to "asr.over_limit",
             "cleanup_recovered" to "polish.cleanup_recovered",

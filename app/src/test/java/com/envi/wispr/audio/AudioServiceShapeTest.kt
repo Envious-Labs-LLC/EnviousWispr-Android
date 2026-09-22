@@ -79,6 +79,8 @@ class AudioServiceShapeTest {
             "publishStartRefused", "failSetup",
             // #212: a production take's start removes earlier production takes' capture files.
             "sweepEarlierTakeFiles",
+            // #213: a production start that finds a recorder never released ends the process.
+            "endCaptureProcess",
         )
         val actualFunctions = Regex("^ {4}(?:(?:private|internal|public|protected|inline|suspend|operator|tailrec|infix)\\s+)*fun\\s+(\\w+)\\s*\\(", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
@@ -90,6 +92,8 @@ class AudioServiceShapeTest {
             "tokens", "binder",
             // #115: the take-event listener slot and its publisher.
             "takeListener", "takeEvents",
+            // #213: the note-then-kill that endCaptureProcess runs.
+            "processEnd",
         )
         val actualFields = Regex("^ {4}(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:(?:private|internal|public|protected|lateinit|const)\\s+)*(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
@@ -141,6 +145,8 @@ class AudioServiceShapeTest {
             "error: No input device at all; refusing to start",
             // #115 review (chunks B and C, F3): the process-scoped recorder lease refuses a second recorder.
             "error: A recorder is still held in this process; refusing to start",
+            // #213: a production start recovers a recorder that was never released.
+            "error: A recorder was never released; ending the capture process",
             "error: RECORD_AUDIO permission not granted",
             "log: Buffer sizes: minimum=\${} coerced=\${} read=\${} block=\${}",
             "log: Byte ceiling reached (\${} bytes), auto-stopping",

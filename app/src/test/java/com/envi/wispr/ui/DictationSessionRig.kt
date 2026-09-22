@@ -373,6 +373,12 @@ internal class DictationSessionRig {
             commandThreads += Thread.currentThread().name
             currentTakeId = takeId
             startArguments += "start(autoStop=$autoStopOnSilence, pause=$pauseSeconds)"
+            startThrows?.let { thrown ->
+                started.countDown()
+                // Held, when asked, so a test can put the process's death notice ahead of this throw (#213).
+                startThrowGate?.let { check(it.await(10, TimeUnit.SECONDS)) { "the start throw was never released" } }
+                throw thrown
+            }
             if (!startResult) {
                 started.countDown()
                 // A refused start publishes its own ending with the failure code and no file (#115).
@@ -395,6 +401,12 @@ internal class DictationSessionRig {
 
         /** When set, `startCaptureForTake` returns only once the test opens it, AFTER it pushed live. */
         @Volatile var startReturnGate: CountDownLatch? = null
+
+        /** When set, `startCaptureForTake` throws it (a binder call into a process that died, #213). */
+        @Volatile var startThrows: Throwable? = null
+
+        /** When set with [startThrows], the throw waits until the test opens it. */
+        @Volatile var startThrowGate: CountDownLatch? = null
 
         override fun stopCapture() {
             events += "stop"

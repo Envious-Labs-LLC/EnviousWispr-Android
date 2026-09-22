@@ -1544,6 +1544,40 @@ def main():
         if leftover.exists():
             leftover.unlink()
 
+    # ---- #213: freeze_thread picks exactly one thread by its whole name -------------------------------
+    # The shape the Play AVD's jdb printed on 2026-09-22 (#213): decimal ids, varied classes, padded names.
+    listing = """Group system:
+  (java.lang.Thread)21318                                        Signal Catcher                     cond. waiting
+Group main:
+  (java.lang.Thread)21317                                        main                               running
+  (kotlinx.coroutines.scheduling.CoroutineScheduler$Worker)21328 DefaultDispatcher-worker-1         cond. waiting
+  (android.os.HandlerThread)21338                                AudioRouteThread                   running
+  (java.lang.Thread)21342                                        AudioCaptureThread                 running
+  (java.lang.Thread)21343                                        AudioCaptureThreadX                running
+"""
+    check("one thread matches by its whole name, never a prefix", eyes._thread_ids(listing, "AudioCaptureThread") == ["21342"],
+          eyes._thread_ids(listing, "AudioCaptureThread"))
+    check("a name with a single space is read whole", eyes._thread_ids(listing, "Signal Catcher") == ["21318"])
+    check("zero matches is an empty list, which freeze_thread refuses", eyes._thread_ids(listing, "NoSuchThread") == [])
+    doubled = listing + "  (java.lang.Thread)21399                                        AudioCaptureThread                 running\n"
+    check("a duplicate name returns both, which freeze_thread refuses", len(eyes._thread_ids(doubled, "AudioCaptureThread")) == 2)
+    import inspect
+    body = inspect.getsource(eyes.freeze_thread)
+    check("freeze_thread books the debt before spawning the debugger",
+          body.index("_owe_locked(entry") < body.index("_spawn_commandable_debugger("))
+    check("and refuses unless exactly one thread matched", "if len(ids) != 1:" in body and "thaw_process(name)" in body)
+    check("and proves the process still answers", "_process_answers(pid)" in body)
+    check("its book entry is the kind restore() thaws", '("frozen-process", json.dumps(frozen' in body)
+    thread_debt = ("frozen-process", json.dumps({"pid": 1, "name": "x", "port": 2, "host_pid": 3, "thread": "AudioCaptureThread"}))
+    process_debt = ("frozen-process", json.dumps({"pid": 1, "name": "x", "port": 2, "host_pid": 3}))
+    check("a thread freeze is recognised as one", eyes._frozen_thread_debt(thread_debt))
+    check("a whole-process freeze is never kept by keep_frozen_threads", not eyes._frozen_thread_debt(process_debt))
+    check("an unrelated debt is never kept", not eyes._frozen_thread_debt(("host-mic", "on")))
+    locked = inspect.getsource(eyes._restore_locked)
+    check("a kept thread freeze is skipped before it is restored, and never settled",
+          locked.index("if keep_frozen_threads and _frozen_thread_debt(entry):") < locked.index("_restore_one(entry")
+          and "continue" in locked[locked.index("if keep_frozen_threads"):locked.index("_restore_one(entry")])
+
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")
     if FAILED:

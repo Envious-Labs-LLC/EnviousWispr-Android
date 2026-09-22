@@ -1989,30 +1989,45 @@ def enable_auto_paste():
 
 
 def rebind_auto_paste_if_unbound():
-    """Rebind our accessibility service when the settings already NAME it but it is not running.
+    """REBIND our accessibility service when the settings already NAME it but it is not running; never enable it.
 
     An install over the app, an instrumentation restart of its process, or a force-stop leaves the service
-    named in the settings and unbound (#161, seen 2026-09-22 after every `am instrument`). The rebind
-    rewrites the same two values the settings already hold, so once the service is back and the settings
-    read exactly what they read before, there is nothing to restore and the debt `enable_auto_paste`
-    journaled is settled here. When the settings did NOT already name the service, the debt stays: that
-    is a real change to the phone and `restore()` owns it. Returns what happened, for the report.
+    named in the settings and unbound (#161, seen 2026-09-22 after every `am instrument`). This helper is a
+    rebind only (code review round 2): when the list does NOT name our service it changes nothing and
+    returns, and the caller's `bound()` check reports BLOCKED, because switching a service ON is a real
+    change to the phone that `enable_auto_paste()` journals and `restore()` owns.
+
+    Two named states, two rules:
+    - named and `accessibility_enabled` reads 1: rebind, require the settings to read exactly what they
+      read before, and settle the debt the rebind journaled; nothing durable changed.
+    - named and the flag reads 0: rebind, and settle too, with the reason written here rather than hidden.
+      The flag is the SYSTEM's derived value while a service is listed: after a `put 0` with our service
+      named, the AVD read 1 back on its own (a restore of that state failed its read-back at 01:37 on
+      2026-09-22 and succeeded at 02:21, the same command), so a "named but 0" state is not one the phone
+      can reliably be put back INTO, and a debt naming it is a restore that fails at random. The review
+      names a phone or OEM that keeps that state deliberately; if one is ever met, this branch is where
+      the rule changes, and the settle is logged in the return value so the run's report shows it.
+    Returns what happened, for the report.
     """
     if bound():
         return "auto-paste already bound"
     before = _a11y_state()
+    if ACCESSIBILITY_SERVICE not in _a11y_services(before):
+        return "auto-paste is not enabled in the settings; nothing rebound"
     with _journal_locked():
         enable_auto_paste()
-        # THE LIST IS THE DURABLE FACT; the flag is the system's. With our service in the list, Android
-        # holds `accessibility_enabled` at 1 on its own (it read 1 after a `put 0`, 2026-09-22), so a
-        # "named but 0" previous state is one the phone cannot be put back INTO, and a debt naming it is a
-        # restore that can only fail. When the list already named us, the rebind changed nothing durable.
-        if ACCESSIBILITY_SERVICE in _a11y_services(before):
-            for entry in _owed():
-                if entry[0] == "a11y-state" and entry[1] == json.dumps(before, sort_keys=True):
-                    _settled(entry)
-            return "auto-paste rebound (the settings already named it; nothing to restore)"
-    return "auto-paste switched on (journaled; restore() puts the previous state back)"
+        after = _a11y_state()
+        expected = dict(before, accessibility_enabled="1")
+        if after != expected:
+            return (f"auto-paste rebound but the settings read {after}, not {expected}; the debt is kept for "
+                    "restore()")
+        for entry in _owed():
+            if entry[0] == "a11y-state" and entry[1] == json.dumps(before, sort_keys=True):
+                _settled(entry)
+        if before["accessibility_enabled"] == "1":
+            return "auto-paste rebound (the settings already named and enabled it; nothing to restore)"
+        return ("auto-paste rebound; the settings named it with the flag at 0, a state the system does not "
+                "keep, so the flag's debt is settled (see rebind_auto_paste_if_unbound)")
 
 
 @_atomic_change

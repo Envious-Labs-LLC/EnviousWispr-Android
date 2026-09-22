@@ -378,22 +378,56 @@ class VoicePipelineDeviceTest {
                 // A TAKE THIS TEST STARTED IS THIS TEST'S TO END. A failure between the start and the stop
                 // (LISTENING never came, the staging refused, the audio never arrived) would otherwise leave
                 // the microphone open on the device with nothing recording that it was: this take did not
-                // go through the harness's journal (code review round 1). Cancel, wait for IDLE, rethrow.
+                // go through the harness's journal (code review round 1). Cancel, then require BOTH the
+                // owner's IDLE and the capture process's own close line, because the owner publishes IDLE
+                // before it asks the capture process to stop (code review round 2): IDLE alone does not
+                // prove the microphone closed. A cleanup that could not prove it is attached to the
+                // original failure, never swallowed.
                 if (takeStarted && !stopSent) {
                     stopRequested.set(true)
+                    val cancelledAtMs = System.currentTimeMillis()
                     context.startActivity(
                         Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
                             .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_CANCEL, true)
                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
                     )
-                    idle.await(30, TimeUnit.SECONDS)
+                    val idleSeen = idle.await(30, TimeUnit.SECONDS)
+                    val closed = captureClosedAfter(cancelledAtMs, 15_000)
+                    if (!idleSeen || !closed) {
+                        failure.addSuppressed(
+                            AssertionError(
+                                "cleanup after the failure could not prove the take ended: idle=$idleSeen " +
+                                    "captureClosed=$closed; the microphone may still be open on the device",
+                            ),
+                        )
+                    }
                 }
-                surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
                 throw failure
             } finally {
                 audio.close()
+                if (!stopSent) surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
                 // On success the listener stays registered until awaitIdle/awaitFinalRow release it.
             }
+        }
+
+        /**
+         * Whether the capture process wrote its own close line (`recording_stop`, logged when the
+         * microphone closes) since [sinceMs]. A bounded read of the CAPTURE process's log on the failure
+         * path only, never part of a verdict: the capture process is `:audio`, another process, and its
+         * close is not observable from here through any binder this test holds.
+         */
+        private fun captureClosedAfter(sinceMs: Long, boundMs: Long): Boolean {
+            // `executeShellCommand` splits on spaces with no shell, so a `-T "MM-dd HH:mm:ss.SSS"` bound cannot be
+            // passed; the last lines are read and the `-v time` prefix compared to the stamp instead.
+            val stamp = java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date(sinceMs))
+            val deadline = System.currentTimeMillis() + boundMs
+            while (System.currentTimeMillis() < deadline) {
+                val closed = shell("logcat -d -v time -t 300 AudioCapture:I *:S").lineSequence()
+                    .any { it.length > 18 && it.contains("recording_stop") && it.substring(0, 18) >= stamp }
+                if (closed) return true
+                Thread.sleep(250)
+            }
+            return false
         }
 
         fun awaitIdle(): Boolean = try {

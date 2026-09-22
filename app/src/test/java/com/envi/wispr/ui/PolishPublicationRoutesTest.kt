@@ -9,7 +9,7 @@ import org.junit.Test
  * Drift Guard (#77), read off the session owner's source because the service has no JVM harness: the
  * outcome callback and `publishFallback` are the only two routes into `publishResult`; the polish facts
  * are derived exactly once, there; the notice is posted before the persistence coroutine starts; the
- * eight fallback producers carry the reasons the plan enumerated; and the ready-row insert stores all
+ * nine fallback producers carry the reasons the plans enumerated (#77's eight, plus #214's blank answer); and the ready-row insert stores all
  * three facts. When this fails, a new direct publisher, a second derivation, or a dropped fact has
  * appeared and the History row and the completion surface can disagree about one dictation.
  */
@@ -49,11 +49,12 @@ class PolishPublicationRoutesTest {
         assertTrue("the notice is posted before the continuation coroutine starts", notice >= 0 && notice < continuation)
     }
 
-    @Test fun theEightFallbackProducersCarryTheirReasonsAndTheReadyInsertStoresAllThreeFacts() {
+    @Test fun theNineFallbackProducersCarryTheirReasonsAndTheReadyInsertStoresAllThreeFacts() {
         assertEquals(2, Regex("""publishFallback\([^\n]*PolishReason\.SERVICE_DIED\)""").findAll(source).count())
         assertEquals(1, Regex("""publishFallback\([^\n]*PolishReason\.SERVICE_UNAVAILABLE\)""").findAll(source).count())
         assertEquals(1, Regex("""publishFallback\([^\n]*PolishReason\.WATCHDOG_TIMEOUT\)""").findAll(source).count())
-        assertEquals(4, Regex("""publishFallback\([^\n]*PolishReason\.CALL_FAILED\)""").findAll(source).count())
+        // Five since #214: the four protocol violations and the call that threw, plus a blank answer over real words.
+        assertEquals(5, Regex("""publishFallback\([^\n]*PolishReason\.CALL_FAILED\)""").findAll(source).count())
         val ready = section("private suspend fun TranscriptRepository.insertReadyTranscript", "/** @return whether")
         assertTrue(ready.contains("polishReason = polishFacts.reasonToken"))
         assertTrue(ready.contains("polishStatus = polishFacts.statusCode"))

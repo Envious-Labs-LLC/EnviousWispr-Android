@@ -121,7 +121,7 @@ internal class PipelineBindings(
 
     override fun stopAudioService() {
         runCatching { appContext.stopService(Intent(appContext, AudioCaptureService::class.java)) }
-            .onFailure { error -> log.warn("Unable to stop audio capture service: ${error.message}") }
+            .onFailure { error -> log.warn("Unable to stop audio capture service: ${error.javaClass.simpleName}") }
     }
 
     /** Pass-through; a binder exception escapes to the caller's `runCatching`, exactly as the proxy's did. */

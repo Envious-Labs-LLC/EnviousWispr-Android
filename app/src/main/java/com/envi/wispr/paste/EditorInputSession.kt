@@ -2,8 +2,8 @@ package com.envi.wispr.paste
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.InputMethod
-import android.util.Log
 import android.view.inputmethod.EditorInfo
+import com.envi.wispr.debug.DebugLogger
 
 /**
  * The accessibility input method (API 33): the pipe through which a dictation is committed straight
@@ -35,13 +35,13 @@ internal class EditorInputSession(service: AccessibilityService) : InputMethod(s
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
         generation += 1
-        Log.d(TAG, "Input started on the pipe: package=${attribute.packageName} restarting=$restarting generation=$generation")
+        DebugLogger.debug(TAG, "Input started on the pipe: package=${attribute.packageName} restarting=$restarting generation=$generation")
     }
 
     override fun onFinishInput() {
         super.onFinishInput()
         generation += 1
-        Log.d(TAG, "Input finished on the pipe: generation=$generation")
+        DebugLogger.debug(TAG, "Input finished on the pipe: generation=$generation")
     }
 
     /** The current session, or null when no editor has input started on this pipe right now. */

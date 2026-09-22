@@ -247,7 +247,7 @@ internal class DetectorFeed(
                     }
                         .getOrElse {
                             abandon()
-                            DebugLogger.warn(tag, "Auto-stop unavailable: start failed, ${it.message}")
+                            DebugLogger.warn(tag, "Auto-stop unavailable: start failed, ${it.javaClass.simpleName}")
                             return
                         }
                     if (shouldStop()) return
@@ -300,7 +300,7 @@ internal class DetectorFeed(
             Thread.currentThread().interrupt()
         } catch (e: Exception) {
             abandon()
-            DebugLogger.warn(tag, "Auto-stop unavailable: the feeder failed, ${e.message}")
+            DebugLogger.warn(tag, "Auto-stop unavailable: the feeder failed, ${e.javaClass.simpleName}")
         } finally {
             if (started) runCatching { vadService?.finish(token) }
             unbindVad()
@@ -341,7 +341,7 @@ internal class DetectorFeed(
         vadConnection = null
         vadService = null
         runCatching { unbind(connection) }
-            .onFailure { DebugLogger.warn(tag, "Detector unbind failed: ${it.message}") }
+            .onFailure { DebugLogger.warn(tag, "Detector unbind failed: ${it.javaClass.simpleName}") }
     }
 
     /**

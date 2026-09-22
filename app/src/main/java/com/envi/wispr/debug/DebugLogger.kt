@@ -1,95 +1,43 @@
 package com.envi.wispr.debug
 
-import android.os.Environment
 import android.os.SystemClock
 import android.util.Log
-import java.io.BufferedWriter
-import java.io.File
-import java.io.FileWriter
-import java.time.LocalTime
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Structured debug logging for EnviousWispr.
+ * The one door onto logcat for the shipped `:app` module (#194): every diagnostic line in it goes through
+ * here, and what goes through is structurally content-free.
  *
- * Features:
- * - All logs go to logcat via standard Android tags
- * - Optional file logging to /sdcard/EnviousWispr/debug.log
- * - Pipeline profiling: mark events, get timing summary
- * - Thread-safe: DateTimeFormatter (immutable), AtomicInteger, ConcurrentLinkedQueue
+ * - A [Throwable] is rendered by [render] as its class name and ONE code location, never its message
+ *   and never its full stack trace: an exception message carries whatever the failing call was holding
+ *   (a transcript, a prompt, a URL with a key on it), and Android's own three-argument `Log.e`
+ *   prints the message and the whole trace. The cause chain contributes class names only.
+ * - There is no file sink. The log this object once wrote to shared external storage
+ *   (`/sdcard/EnviousWispr/debug.log`) had no caller and needed an all-files access the app never held;
+ *   app-private storage is where anything of ours belongs.
+ * - Pipeline profiling: mark events, get a timing summary. Thread-safe (AtomicInteger, ConcurrentLinkedQueue).
  *
- * File logging must be explicitly enabled — off by default to avoid
- * unnecessary I/O during normal use.
+ * `DiagnosticsShapeTest` covers `:app`'s main, debug and androidTest sources plus the llama.cpp JNI bridge:
+ * no other `android.util.Log` caller there, no diagnostic line carrying exception text. The standalone,
+ * non-shipping `:accelerator-benchmark` module is outside that contract. `DebugLoggerRenderTest` proves
+ * the rendering.
  */
 internal object DebugLogger {
 
-    private const val LOG_PATH = "/sdcard/EnviousWispr/debug.log"
-    private const val MAX_LOG_SIZE_BYTES = 1_000_000L
     private const val MAX_MARKERS = 500
-    private const val META_TAG = "DebugLogger"
 
-    // DateTimeFormatter is thread-safe (immutable), unlike SimpleDateFormat
-    private val dateFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.US)
+    /** Frames whose class starts with this are OUR code: the location where our code met the failure. */
+    private const val APP_PACKAGE_PREFIX = "com.envi.wispr."
 
-    @Volatile
-    private var fileLoggingEnabled = false
+    /** Cause class names rendered before the chain is cut with `…`; a repeat cuts it earlier. */
+    internal const val MAX_CAUSE_CLASSES = 4
 
     @Volatile
     private var pipelineStartTime = 0L
 
     private val markers = ConcurrentLinkedQueue<Pair<String, Long>>()
     private val markerCount = AtomicInteger(0)
-
-    // Persistent writer — opened once per session, avoids open/close per log line
-    private var logWriter: BufferedWriter? = null
-    private val writerLock = Any()
-
-    /**
-     * Enable writing logs to /sdcard/EnviousWispr/debug.log.
-     * Call once at app startup if file-based debugging is needed.
-     */
-    fun enableFileLogging() {
-        if (!Environment.isExternalStorageManager()) {
-            Log.w(META_TAG, "MANAGE_EXTERNAL_STORAGE not granted — file logging disabled")
-            return
-        }
-
-        val file = File(LOG_PATH)
-        file.parentFile?.mkdirs()
-
-        // Truncate and open writer inside the lock to avoid race condition
-        // between truncation and writer opening.
-        synchronized(writerLock) {
-            try {
-                if (file.exists() && file.length() > MAX_LOG_SIZE_BYTES) {
-                    truncateLog(file)
-                }
-                logWriter = BufferedWriter(FileWriter(file, true))
-                fileLoggingEnabled = true
-                logWriter?.write("=== Session ${now()} ===\n")
-                logWriter?.flush()
-            } catch (e: Exception) {
-                Log.w(META_TAG, "Failed to open log file", e)
-            }
-        }
-    }
-
-    /**
-     * Close the file writer. Call on app exit for clean shutdown.
-     */
-    fun close() {
-        synchronized(writerLock) {
-            try {
-                logWriter?.flush()
-                logWriter?.close()
-            } catch (_: Exception) {}
-            logWriter = null
-            fileLoggingEnabled = false
-        }
-    }
 
     /**
      * Start a new pipeline timing session. Clears all previous markers.
@@ -125,56 +73,68 @@ internal object DebugLogger {
         return sb.toString()
     }
 
+    fun debug(tag: String, message: String) {
+        Log.d(tag, message)
+    }
+
     fun log(tag: String, message: String) {
         Log.i(tag, message)
-        if (fileLoggingEnabled) {
-            writeToFile("${now()} [$tag] $message")
-        }
     }
 
     fun warn(tag: String, message: String) {
         Log.w(tag, message)
-        if (fileLoggingEnabled) {
-            writeToFile("${now()} [WARN:$tag] $message")
-        }
     }
 
+    /**
+     * The throwable is rendered by [render]; it is never handed to `Log.e` itself, which would print its
+     * message and full trace.
+     */
     fun error(tag: String, message: String, throwable: Throwable? = null) {
-        Log.e(tag, message, throwable)
-        if (fileLoggingEnabled) {
-            writeToFile("${now()} [ERROR:$tag] $message")
-            throwable?.stackTraceToString()?.take(500)?.let { trace ->
-                if (trace.isNotEmpty()) writeToFile(trace)
-            }
-        }
+        Log.e(tag, render(message, throwable))
     }
 
-    private fun now(): String = LocalTime.now().format(dateFormat)
-
-    private fun writeToFile(line: String) {
-        synchronized(writerLock) {
-            try {
-                logWriter?.write("$line\n")
-                logWriter?.flush()
-            } catch (_: Exception) {
-                // Never let file logging failures affect the app
+    /**
+     * `message` alone when there is no throwable; otherwise `"$message (Class at Frame.method:line)"`,
+     * followed by ` caused by X, Y` for the cause chain's class names.
+     *
+     * The frame is the first whose class is ours ([APP_PACKAGE_PREFIX]): for a failure thrown by our code
+     * that is the throw site; for one thrown by a library and caught by us it is the call our code made.
+     * With no such frame the top frame is used; with no frames at all (a throwable built with
+     * `writableStackTrace = false`, or a vendor override of `fillInStackTrace`) the location is `no frame`.
+     *
+     * The cause walk is iterative with identity tracking and stops at [MAX_CAUSE_CLASSES] names or at the
+     * first cause already seen, appending `…` when it was cut, so a cycle or a deep chain is bounded.
+     * The frames are read once, here, on an error path only.
+     */
+    internal fun render(message: String, throwable: Throwable?): String {
+        if (throwable == null) return message
+        val sb = StringBuilder(message)
+        sb.append(" (").append(className(throwable)).append(" at ").append(location(throwable)).append(')')
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+        seen.add(throwable)
+        var cause = throwable.cause
+        var rendered = 0
+        var first = true
+        while (cause != null) {
+            if (!seen.add(cause) || rendered == MAX_CAUSE_CLASSES) {
+                sb.append(if (first) " caused by …" else ", …")
+                break
             }
+            sb.append(if (first) " caused by " else ", ").append(className(cause))
+            first = false
+            rendered++
+            cause = cause.cause
         }
+        return sb.toString()
     }
 
-    private fun truncateLog(file: File) {
-        try {
-            val raf = java.io.RandomAccessFile(file, "r")
-            val midpoint = raf.length() / 2
-            raf.seek(midpoint)
-            raf.readLine()
-            val tail = ByteArray((raf.length() - raf.filePointer).toInt())
-            raf.readFully(tail)
-            raf.close()
-            file.writeBytes(tail)
-            Log.i(META_TAG, "Truncated log from ${midpoint * 2} to ${tail.size} bytes")
-        } catch (e: Exception) {
-            Log.w(META_TAG, "Log truncation failed", e)
-        }
+    private fun className(throwable: Throwable): String =
+        throwable.javaClass.simpleName.ifEmpty { throwable.javaClass.name.substringAfterLast('.') }
+
+    private fun location(throwable: Throwable): String {
+        val frames = throwable.stackTrace
+        if (frames.isEmpty()) return "no frame"
+        val frame = frames.firstOrNull { it.className.startsWith(APP_PACKAGE_PREFIX) } ?: frames[0]
+        return "${frame.className.substringAfterLast('.')}.${frame.methodName}:${frame.lineNumber}"
     }
 }

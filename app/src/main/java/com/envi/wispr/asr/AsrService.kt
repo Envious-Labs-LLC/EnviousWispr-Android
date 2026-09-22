@@ -130,7 +130,7 @@ class AsrService : Service() {
                 file.readBytes()
             } catch (e: Exception) {
                 DebugLogger.error(TAG, "Failed to read audio file", e)
-                failure.report(AsrFailureReason.AUDIO_UNREADABLE, e.message.orEmpty())
+                failure.report(AsrFailureReason.AUDIO_UNREADABLE, e.javaClass.simpleName)
                 return@execute
             }
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
@@ -178,7 +178,7 @@ class AsrService : Service() {
             text
         } catch (e: Exception) {
             DebugLogger.error(TAG, "Transcription failed", e)
-            failure.report(AsrFailureReason.DECODE_FAILED, e.message.orEmpty())
+            failure.report(AsrFailureReason.DECODE_FAILED, e.javaClass.simpleName)
             return
         }
 

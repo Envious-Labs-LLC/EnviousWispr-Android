@@ -274,7 +274,7 @@ internal class DictationSessionCoordinator(
                     // A command that finds the owner IDLE stops the Service within milliseconds of this
                     // launch (`stopIfIdle`); that cancellation is the ordinary case, not a failure, and the
                     // next instance runs the recovery again (measured on the emulator 2026-09-21).
-                    if (error !is kotlinx.coroutines.CancellationException) log.warn("Unable to recover stale history: ${error.message}")
+                    if (error !is kotlinx.coroutines.CancellationException) log.warn("Unable to recover stale history: ${error.javaClass.simpleName}")
                 }
         }
         preferences.start(scope)
@@ -1211,7 +1211,7 @@ internal class DictationSessionCoordinator(
     private fun cancelOpenPolishRequest() {
         val requestId = polishLedger.close() ?: return
         runCatching { pipeline.polish?.cancel(requestId) }
-            .onFailure { error -> log.warn("Unable to cancel polish request $requestId: ${error.message}") }
+            .onFailure { error -> log.warn("Unable to cancel polish request $requestId: ${error.javaClass.simpleName}") }
     }
 
     private fun restoreTakeVocabulary(text: String, preferences: SessionPreferences): String {
@@ -1314,7 +1314,7 @@ internal class DictationSessionCoordinator(
             val persistedId = saveResult.getOrNull() ?: 0L
             takeFacts.historySave = if (saveResult.isSuccess) "ok" else "failed"
             saveResult.exceptionOrNull()?.let { error ->
-                log.warn("Unable to save transcript history: ${error.message}")
+                log.warn("Unable to save transcript history: ${error.javaClass.simpleName}")
                 // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal
                 // statement is our schema contract (a defect). The message never leaves either way.
                 Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName))
@@ -1682,7 +1682,7 @@ internal class DictationSessionCoordinator(
             if (file.exists() && !file.delete()) {
                 log.warn("Unable to delete captured audio after terminal processing")
             }
-        }.onFailure { error -> log.warn("Unable to delete captured audio: ${error.message}") }
+        }.onFailure { error -> log.warn("Unable to delete captured audio: ${error.javaClass.simpleName}") }
     }
 
     private fun updateDraftStatus(status: String, interrupted: Boolean = false, insertionResult: String? = null) {

@@ -110,7 +110,7 @@ internal class TakeRoute(
                         audioManager.setCommunicationDevice(sinkInfo!!).also { if (it) hold.markCommunicationSet() }
                     }
                 }.getOrElse { e ->
-                    DebugLogger.warn(tag, "setCommunicationDevice threw: ${e.message}")
+                    DebugLogger.warn(tag, "setCommunicationDevice threw: ${e.javaClass.simpleName}")
                     false
                 }
                 if (!opened) {
@@ -201,7 +201,7 @@ internal class TakeRoute(
         }.onSuccess {
             hold.markListenerSet()
             listenerSlot.set(record to listener)
-        }.onFailure { DebugLogger.warn(tag, "Routing listener not registered: ${it.message}") }
+        }.onFailure { DebugLogger.warn(tag, "Routing listener not registered: ${it.javaClass.simpleName}") }
     }
 
     /** Read the final route while the recorder is still active. Null preserves the history as it stands. */
@@ -242,7 +242,7 @@ internal class TakeRoute(
         }
         sinkWatch = callback
         runCatching { audioManager.registerAudioDeviceCallback(callback, handler) }
-            .onFailure { DebugLogger.warn(tag, "sink watch not registered: ${it.message}") }
+            .onFailure { DebugLogger.warn(tag, "sink watch not registered: ${it.javaClass.simpleName}") }
         // Reconcile once: a removal between route resolution and this registration is not replayed by
         // the callback (Codex review 5). The list is read AFTER registering, so nothing can fall between.
         val stillOffered = runCatching {
@@ -326,7 +326,7 @@ internal class TakeRoute(
             audioManager.clearCommunicationDevice()
             audioManager.setCommunicationDevice(sink).also { if (it) hold.markCommunicationSet() }
         }.getOrElse { e ->
-            DebugLogger.warn(tag, "communication device reset threw: ${e.message}")
+            DebugLogger.warn(tag, "communication device reset threw: ${e.javaClass.simpleName}")
             false
         }
     }

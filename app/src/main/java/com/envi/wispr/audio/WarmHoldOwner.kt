@@ -102,9 +102,9 @@ internal class WarmHoldOwner(
         holdCommListener = commListener
         holdDeviceCallback = deviceCallback
         runCatching { addCommListener(commListener) }
-            .onFailure { DebugLogger.warn(tag, "hold listener not registered: ${it.message}") }
+            .onFailure { DebugLogger.warn(tag, "hold listener not registered: ${it.javaClass.simpleName}") }
         runCatching { registerDeviceCallback(deviceCallback) }
-            .onFailure { DebugLogger.warn(tag, "hold device callback not registered: ${it.message}") }
+            .onFailure { DebugLogger.warn(tag, "hold device callback not registered: ${it.javaClass.simpleName}") }
         DebugLogger.log(tag, "route hold start=$label ms=${WarmHold.HOLD_MS}")
         return true
     }
@@ -142,7 +142,7 @@ internal class WarmHoldOwner(
             keepAlive()
             true
         }.getOrElse { e ->
-            DebugLogger.warn(tag, "hold could not keep the service: ${e.message}")
+            DebugLogger.warn(tag, "hold could not keep the service: ${e.javaClass.simpleName}")
             hold.end(WarmHold.END_TRACK_FAILED)
             false
         }

@@ -1,6 +1,7 @@
 package com.envi.wispr.models
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import java.io.IOException
 
@@ -39,6 +40,18 @@ class DeliveryFailureReasonTest {
         assertEquals(ModelSourceHost.UNKNOWN, ModelSourceHost.of("evil-huggingface.co"))
         assertEquals(ModelSourceHost.UNKNOWN, ModelSourceHost.of(null))
         assertEquals(listOf("mirror", "huggingface", "unknown"), ModelSourceHost.entries.map { it.wire })
+    }
+
+    /**
+     * Drift Guard (#194): the delivery log names the host by this token, so an unrecognised host must
+     * render as the literal `unknown`, never as itself. REVERT: change an unknown host's classification
+     * or the `unknown` wire token; logging the raw host is `DiagnosticsShapeTest`'s row.
+     */
+    @Test
+    fun anUnknownHostRendersAsTheUnknownTokenNeverItself() {
+        val host = "cdn.example-with-a-user-token.invalid"
+        assertEquals("unknown", ModelSourceHost.of(host).wire)
+        assertFalse(ModelSourceHost.of(host).wire.contains("example"))
     }
 
     @Test

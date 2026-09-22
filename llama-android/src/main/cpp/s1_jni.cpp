@@ -29,11 +29,10 @@ void log_info(const std::string & message) {
     __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", message.c_str());
 }
 
-void llama_log_callback(ggml_log_level level, const char * text, void *) {
-    int priority = ANDROID_LOG_DEBUG;
-    if (level == GGML_LOG_LEVEL_ERROR) priority = ANDROID_LOG_ERROR;
-    if (level == GGML_LOG_LEVEL_WARN) priority = ANDROID_LOG_WARN;
-    __android_log_print(priority, "llama.cpp", "%s", text);
+// llama.cpp's log text is vendor text this app does not control (model paths and tensor names today,
+// whatever a later version adds); none of it reaches logcat (#194, the same silence the GenieX runtime keeps). A failed load still reports
+// through the fixed JNI error strings below and a healthy one through log_info's summary line.
+void llama_log_callback(ggml_log_level, const char *, void *) {
 }
 
 std::string from_jstring(JNIEnv * env, jstring value) {

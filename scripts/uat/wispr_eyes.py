@@ -238,18 +238,32 @@ def _migrate_locked(book, transports):
     same rule `_owe_locked` applies. Returns whether the book changed.
     """
     changed = False
+    # Group first, decide second, write last: two cables of one phone can carry DIFFERENT previous values
+    # for the same setting, and which one adb lists first is not a reason to prefer it (code review round
+    # 1). Identical duplicates collapse; a conflict is refused with every original key left untouched.
+    plan = {}
     for transport in transports:
         if transport == "host" or transport not in book:
             continue
         identity = _scope_key(transport)
         if identity == transport:
             continue
-        moved = [tuple(e) for e in book.pop(transport)]
-        kept = [tuple(e) for e in book.get(identity, [])]
-        merged = list(moved)
-        for entry in kept:
-            if not any(_debt_key(old) == _debt_key(entry) for old in merged):
-                merged.append(entry)
+        plan.setdefault(identity, []).append(transport)
+    for identity, sources in plan.items():
+        merged = [tuple(e) for e in book.get(identity, [])]
+        for transport in sources:
+            for entry in (tuple(e) for e in book[transport]):
+                clash = [old for old in merged if _debt_key(old) == _debt_key(entry)]
+                if clash and clash[0] != entry:
+                    raise Blocked(
+                        f"the restore book holds two different previous values for {entry[0]!r} on "
+                        f"{identity} ({clash[0][1]!r} and {entry[1]!r}, one under {transport}); nothing was "
+                        f"migrated. Read {_JOURNAL} and keep the value the phone really had."
+                    )
+                if not clash:
+                    merged.append(entry)
+        for transport in sources:
+            book.pop(transport)
         book[identity] = [list(e) for e in merged]
         changed = True
     return changed
@@ -1974,6 +1988,33 @@ def enable_auto_paste():
     )
 
 
+def rebind_auto_paste_if_unbound():
+    """Rebind our accessibility service when the settings already NAME it but it is not running.
+
+    An install over the app, an instrumentation restart of its process, or a force-stop leaves the service
+    named in the settings and unbound (#161, seen 2026-09-22 after every `am instrument`). The rebind
+    rewrites the same two values the settings already hold, so once the service is back and the settings
+    read exactly what they read before, there is nothing to restore and the debt `enable_auto_paste`
+    journaled is settled here. When the settings did NOT already name the service, the debt stays: that
+    is a real change to the phone and `restore()` owns it. Returns what happened, for the report.
+    """
+    if bound():
+        return "auto-paste already bound"
+    before = _a11y_state()
+    with _journal_locked():
+        enable_auto_paste()
+        # THE LIST IS THE DURABLE FACT; the flag is the system's. With our service in the list, Android
+        # holds `accessibility_enabled` at 1 on its own (it read 1 after a `put 0`, 2026-09-22), so a
+        # "named but 0" previous state is one the phone cannot be put back INTO, and a debt naming it is a
+        # restore that can only fail. When the list already named us, the rebind changed nothing durable.
+        if ACCESSIBILITY_SERVICE in _a11y_services(before):
+            for entry in _owed():
+                if entry[0] == "a11y-state" and entry[1] == json.dumps(before, sort_keys=True):
+                    _settled(entry)
+            return "auto-paste rebound (the settings already named it; nothing to restore)"
+    return "auto-paste switched on (journaled; restore() puts the previous state back)"
+
+
 @_atomic_change
 def stop_app():
     """Force-stop the app, and put auto-paste back, because force-stopping silently switches it off.
@@ -2564,12 +2605,13 @@ def dictate_emulator(sentence, target_package="com.google.android.gm", expected_
     report = []
     restore()
     ready()
+    report.append(f"NOTE: {rebind_auto_paste_if_unbound()}")
     if not bound():
-        return ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
-                "enable_auto_paste() turns it back on."]
+        return report + ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
+                         "enable_auto_paste() turns it back on."]
     before = _focused_field(target_package)
     if before is None:
-        return [f"BLOCKED: no focused editor in {target_package} is on screen; tap into one first"]
+        return report + [f"BLOCKED: no focused editor in {target_package} is on screen; tap into one first"]
     scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wispr-eyes")
     os.makedirs(scratch, exist_ok=True)
     pcm = _pcm_from_sentence(sentence, os.path.join(scratch, f"utt-{uuid.uuid4().hex}.pcm"))
@@ -2680,8 +2722,9 @@ def debug_insert(text, target_package=None, expected_final=None):
         return ["BLOCKED: expected_final is required: the literal whole text the editor must hold after "
                 "the insert (the insertion's own capitalisation and spacing included)"]
     ready()
+    report = [f"NOTE: {rebind_auto_paste_if_unbound()}"]
     if not bound():
-        return ["BLOCKED: auto-paste is switched off, so nothing can be inserted"]
+        return report + ["BLOCKED: auto-paste is switched off, so nothing can be inserted"]
     # THE PACKAGE's flag line is the bracketed one; the first bare `flags=0x0` belongs to a component
     # and read as "not debuggable" on the first live run (2026-09-20).
     _, dump = _adb(f"dumpsys package {PACKAGE} | grep -m1 DEBUGGABLE", check=False)
@@ -2693,7 +2736,6 @@ def debug_insert(text, target_package=None, expected_final=None):
     clear_log()
     _adb(f"am broadcast -a {PACKAGE}.debug.INSERT --es text {shlex.quote(text)} {PACKAGE}")
     ending = _wait_for_the_take_to_finish(seconds=20)
-    report = []
     if ending is None:
         report.append("ISSUE: no insertion outcome was logged within 20 s, so where the text went is unknown")
         return report
@@ -2777,14 +2819,15 @@ def run_device_test(test, sentence, expected_final=None, timeout=240, starve=Fal
     if "package:" not in path:
         return [f"BLOCKED: the test APK {TEST_PACKAGE} is not installed; install it with "
                 "adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"]
+    report = [f"NOTE: {rebind_auto_paste_if_unbound()}"]
     if not bound():
-        return ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
-                "enable_auto_paste() turns it back on."]
+        return report + ["BLOCKED: auto-paste is switched off, so nothing can be inserted. "
+                         "enable_auto_paste() turns it back on."]
     token = uuid.uuid4().hex
     scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wispr-eyes")
     os.makedirs(scratch, exist_ok=True)
     pcm = _pcm_from_sentence(sentence, os.path.join(scratch, f"utt-{uuid.uuid4().hex}.pcm"))
-    report = [f"NOTE: {sentence!r} was rendered to {pcm}"]
+    report.append(f"NOTE: {sentence!r} was rendered to {pcm}")
     args = [ADB, "-s", device(), "shell", "am", "instrument", "-w", "-r",
             "-e", "class", test, "-e", "audio", "external", "-e", "driver_token", token]
     if expected_final is not None:
@@ -2797,13 +2840,14 @@ def run_device_test(test, sentence, expected_final=None, timeout=240, starve=Fal
     fed = False
     rebound_checked = False
     results = []
+    timed_out = []
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    deadline = time.monotonic() + timeout
+    # A TIMER, not a check between groups: the group reader blocks while the runner is silent, so a check
+    # that runs only when a group arrives never runs on a hung run (code review round 1).
+    timer = threading.Timer(timeout, lambda: (timed_out.append(True), process.kill()))
+    timer.start()
     try:
         for group in _instrumentation_groups(process.stdout):
-            if time.monotonic() > deadline:
-                report.append(f"ISSUE: the instrumentation ran past {timeout} s; UNKNOWN")
-                break
             if group.get("code") == DRIVER_READY_STATUS and group.get("driver_phase") == "READY":
                 if group.get("driver_token") != token:
                     report.append("NOTE: a READY from another run was ignored (token mismatch)")
@@ -2827,17 +2871,20 @@ def run_device_test(test, sentence, expected_final=None, timeout=240, starve=Fal
                 rebound_checked = True
                 if not bound():
                     report.append(f"NOTE: the accessibility service was unbound by the instrumentation "
-                                  f"restart; rebound: {enable_auto_paste()}")
+                                  f"restart; {rebind_auto_paste_if_unbound()}")
                 continue
             if group.get("code") in (0, -1, -2, -3, -4) and group.get("test"):
                 results.append(group)
     finally:
+        timer.cancel()
         try:
             process.wait(timeout=30)
         except subprocess.TimeoutExpired:
             process.kill()
         for line in restore():
             report.append(f"NOTE: restored {line}")
+    if timed_out:
+        report.append(f"ISSUE: the instrumentation ran past {timeout} s and was killed; UNKNOWN")
     if not fed:
         report.append("ISSUE: the row never said READY, so no audio was fed (staging, not the product)")
     for group in results:
@@ -2850,8 +2897,9 @@ def run_device_test(test, sentence, expected_final=None, timeout=240, starve=Fal
             stack = group.get("stack", "").strip().splitlines()
             report.append(f"ISSUE: {cls}.{name} FAILED: {stack[0] if stack else 'no message'}")
         elif code in (-3, -4):
-            report.append(f"NOTE: {cls}.{name} was skipped by its own precondition: "
-                          f"{group.get('stack', '').strip().splitlines()[:1]}")
+            first = group.get("stack", "").strip().splitlines()
+            report.append(f"NOT RUN: {cls}.{name} was skipped by its own precondition: "
+                          f"{first[0] if first else 'no reason given'}")
         elif "INSTRUMENTATION_CODE" in group:
             if group["INSTRUMENTATION_CODE"] != "-1":
                 report.append(f"ISSUE: the instrumentation ended with code {group['INSTRUMENTATION_CODE']}: "
@@ -3091,10 +3139,18 @@ def screen_recording(path=None):
         if any(pid == owned[0] for pid, _ in _screenrecord_processes()):
             raise Blocked(f"the screen recorder pid {owned[0]} still exists after its handle closed; the "
                           f"debt {token} is kept")
-        _, size = _adb(f"stat -c %s {remote}", check=False)
+        stat_code, size = _adb(f"stat -c %s {remote}", check=False)
+        if stat_code != 0 or not size.strip().isdigit() or int(size) <= 0:
+            raise Blocked(f"the screen recording at {remote} is missing or empty ({size.strip()!r}); the "
+                          f"device file and the debt {token} are kept")
         code, _, err = _run([ADB, "-s", device(), "pull", remote, path], timeout=120)
         if code != 0:
-            raise Blocked(f"the screen recording could not be pulled: {err.strip()}")
+            raise Blocked(f"the screen recording could not be pulled: {err.strip()}; the device file and the "
+                          f"debt {token} are kept")
+        pulled = os.path.getsize(path) if os.path.isfile(path) else -1
+        if pulled != int(size):
+            raise Blocked(f"the pulled recording is {pulled} bytes, the device file {size.strip()}; the "
+                          f"device file and the debt {token} are kept")
         _adb(f"rm {remote}")
         with _journal_locked():
             _settled(("screenrecord", token))
@@ -3538,8 +3594,11 @@ _TERMINAL_LINES = (
 )
 
 
-def _stream_log_until(markers, seconds, tags):
+def _stream_log_until(markers, seconds, tags, reject=()):
     """ONE blocking `logcat` reader over this process's window; the first line carrying a marker wins.
+
+    A line that carries a marker AND any `reject` substring is skipped: `Take terminal: COMPLETED` is
+    written BEFORE the accessibility service answers, so it must not end the wait (code review round 1).
 
     Not a loop over `logcat -d` snapshots (#161, grounded rounds 3 and 4): a snapshot loop is a poll
     with a budget, and a budget that runs out reads exactly like the subject never answering. The
@@ -3557,6 +3616,8 @@ def _stream_log_until(markers, seconds, tags):
     timer.start()
     try:
         for line in process.stdout:
+            if any(bad in line for bad in reject):
+                continue
             for marker in markers:
                 if marker in line:
                     return marker
@@ -3567,10 +3628,21 @@ def _stream_log_until(markers, seconds, tags):
         process.wait(timeout=5)
 
 
+# WHAT ENDS A TAKE, for the wait: the accessibility service's own outcome line, the clipboard fallback the
+# owner logs when no service answered, an ASR failure, or a non-COMPLETED terminal. `Auto-insert handed`
+# and `Take terminal: COMPLETED` are written BEFORE the service answers and are not endings here (code
+# review round 1: returning on them recreated the early-completion gap).
+_TAKE_ENDINGS = (
+    "insertion api=", "kept on clipboard", "Transcription failed", "Speech recognition failed",
+    "No audio captured", "showError", "Take ended:", "Take terminal:",
+)
+_NOT_ENDINGS = ("Take terminal: COMPLETED", "Auto-insert handed")
+
+
 def _wait_for_the_take_to_finish(seconds=90):
-    """Block until the dictation reaches an ending, and say which one. None on the bound."""
-    return _stream_log_until(_TERMINAL_LINES + ("insertion api=",), seconds,
-                             ("DictationSession", "PasteService", "AsrService"))
+    """Block until the dictation reaches an ending the insertion has answered, and say which. None on the bound."""
+    return _stream_log_until(_TAKE_ENDINGS, seconds, ("DictationSession", "PasteService", "AsrService"),
+                             reject=_NOT_ENDINGS)
 
 
 def _wait_for_owner_listening(seconds=20):
@@ -3779,7 +3851,9 @@ def _print_report(command, report, verbose):
     line: the last VERIFIED sentence. A finding prints every line, because then the NOTEs are the
     evidence. Founder 2026-09-20: "blazing fast and not crazy token heavy".
     """
-    red = any(line.startswith(("ISSUE", "BLOCKED")) for line in report)
+    # NOT RUN is not success either: a skipped row or a recording-off suite that exited 0 and printed OK
+    # was a green light over nothing (code review round 1).
+    red = any(line.startswith(("ISSUE", "BLOCKED", "NOT RUN")) for line in report)
     if red or verbose:
         print("\n".join(report))
     else:
@@ -3817,7 +3891,7 @@ def _main(argv):
         elif command == "scan":
             report = scan(toggle="--toggle" in rest)
             print("\n".join(report))
-            return 1 if any(line.startswith(("ISSUE", "BLOCKED")) for line in report) else 0
+            return 1 if any(line.startswith(("ISSUE", "BLOCKED", "NOT RUN")) for line in report) else 0
         elif command == "switches":
             for label, on in sorted(switches().items()):
                 print(f"{label}: {'on' if on else 'off'}")

@@ -723,14 +723,26 @@ def main():
     eyes._run = lambda args, timeout=60: (0, "HW-PHONE\n", "") if args[-1] == "getprop ro.serialno" else (1, "", "")
     eyes._STATE["identities"].pop("usb-ABC", None)
     eyes._STATE["identities"].pop("10.0.0.9:5555", None)
+    # Two cables, two DIFFERENT previous values for one setting: refused, nothing moved (review round 1).
     migrate_book.write_text(json.dumps({"usb-ABC": [["screen-timeout", "600000"]],
                                         "10.0.0.9:5555": [["media-volume", "8"], ["screen-timeout", "1800000"]]}))
     eyes._STATE["serial"] = "10.0.0.9:5555"
+    try:
+        eyes._owed("10.0.0.9:5555")
+        check("conflicting previous values across cables are refused", False, "it migrated")
+    except eyes.Blocked as refusal:
+        check("conflicting previous values across cables are refused",
+              "two different previous values" in str(refusal) and "screen-timeout" in str(refusal), refusal)
+    book_now = json.loads(migrate_book.read_text())
+    check("and every original key is left untouched for a person to adjudicate",
+          set(book_now) == {"usb-ABC", "10.0.0.9:5555"}, book_now)
+    # The same setting with the SAME value on both cables, plus one only on one: moved, duplicates collapsed.
+    migrate_book.write_text(json.dumps({"usb-ABC": [["screen-timeout", "600000"]],
+                                        "10.0.0.9:5555": [["media-volume", "8"], ["screen-timeout", "600000"]]}))
     owed = eyes._owed("10.0.0.9:5555")
     book_now = json.loads(migrate_book.read_text())
-    check("both cable-keyed books moved under the hardware identity, first value per setting kept",
-          owed == [("media-volume", "8"), ("screen-timeout", "1800000")] or owed == [("screen-timeout", "600000"), ("media-volume", "8")],
-          owed)
+    check("both cable-keyed books moved under the hardware identity, identical duplicates collapsed",
+          sorted(owed) == [("media-volume", "8"), ("screen-timeout", "600000")], owed)
     check("and the cable keys are gone from the book, nothing dropped",
           set(book_now) == {"HW-PHONE"} and len(book_now["HW-PHONE"]) == 2, book_now)
     check("a debt owed through the other cable reads the same book", eyes._owed("usb-ABC") == owed)

@@ -32,10 +32,13 @@ import java.nio.charset.StandardCharsets;
  * an app class this process does not have; the two lines it can write carry a class name, never content.
  *
  * One editor (A) by default; with {@link #EXTRA_TWO_FIELDS} a second editor (B) below it, for the
- * two-editor side-button case (#161 T3, REF-01): a take started with A focused must land in A even after
- * focus moved to B. Each editor writes its WHOLE text to its own receipt file on every change, and both
- * receipts are written EMPTY at creation, before the watchers are installed, so "untouched" is an existing
- * empty file and "the editor never received anything" is not the same as "the file is missing".
+ * two-editor side-button case (#161 T3, REF-01): a take started with A focused, with focus moved to B
+ * before insertion, must land in NEITHER (the product's fail-safe keeps the words on the clipboard).
+ * Each editor writes its WHOLE text to its own receipt file on every change, and both receipts are
+ * written EMPTY at creation, before the watchers are installed, so "untouched" is an existing empty file
+ * and "the editor never received anything" is not the same as "the file is missing". The READY receipt
+ * ({@link #READY_NAME}) carries the run's {@link #EXTRA_RIG_TOKEN} and is written only once A holds
+ * focus, so a stale receipt from an earlier run cannot stand in for this one (code review round 1).
  */
 public final class PasteTargetActivity extends Activity {
 
@@ -52,6 +55,12 @@ public final class PasteTargetActivity extends Activity {
     public static final String RECEIPT_B_NAME = "paste-target-b-received.txt";
 
     public static final String EXTRA_TWO_FIELDS = "two_fields";
+
+    /** A random token the test mints per run; the rig echoes it into {@link #READY_NAME} once A has focus. */
+    public static final String EXTRA_RIG_TOKEN = "rig_token";
+
+    /** Holds the run's token, written after {@code A.requestFocus()} succeeded and {@code A.hasFocus()} reads true. */
+    public static final String READY_NAME = "paste-target-ready.txt";
 
     /**
      * An ORDERED broadcast that moves focus to editor B and answers with result code 1 only once
@@ -78,6 +87,7 @@ public final class PasteTargetActivity extends Activity {
         super.onCreate(savedInstanceState);
         Intent intent = getIntent();
         boolean twoFields = intent != null && intent.getBooleanExtra(EXTRA_TWO_FIELDS, false);
+        final String rigToken = intent == null ? null : intent.getStringExtra(EXTRA_RIG_TOKEN);
         final EditText a = editor("Silent auto-paste target");
         final EditText b = twoFields ? editor("Second editor, never the target") : null;
         LinearLayout column = new LinearLayout(this);
@@ -96,6 +106,10 @@ public final class PasteTargetActivity extends Activity {
         // exist and are EMPTY before either watcher is installed.
         final File receiptA = new File(getFilesDir(), RECEIPT_NAME);
         final File receiptB = new File(getFilesDir(), RECEIPT_B_NAME);
+        final File ready = new File(getFilesDir(), READY_NAME);
+        if (ready.exists() && !ready.delete()) {
+            android.util.Log.w("PasteTarget", "stale ready receipt could not be deleted");
+        }
         write(receiptA, "");
         if (b != null) {
             write(receiptB, "");
@@ -120,7 +134,12 @@ public final class PasteTargetActivity extends Activity {
             focusReceiver = receiver;
         }
 
-        a.requestFocus();
+        boolean focused = a.requestFocus() && a.hasFocus();
+        if (focused && rigToken != null) {
+            write(ready, rigToken);
+        } else if (rigToken != null) {
+            android.util.Log.w("PasteTarget", "editor A did not take focus; no ready receipt written");
+        }
         a.postDelayed(() -> getSystemService(InputMethodManager.class)
                 .showSoftInput(a, InputMethodManager.SHOW_IMPLICIT), 250);
     }

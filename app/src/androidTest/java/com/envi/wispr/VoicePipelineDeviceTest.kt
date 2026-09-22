@@ -291,16 +291,20 @@ class VoicePipelineDeviceTest {
         // is asserted instead is the property that outlives it: after an ordinary dictation with no
         // field, this app has left NOTHING in the user's shade. That goes red if any durable
         // announcement comes back, whatever id it chooses.
-        // Two entries are NOT delivery announcements and are set aside by name: the polish notice
+        // Two entries are NOT delivery announcements and are set aside BY EXACT NAME: the polish notice
         // (`POLISH_NOTIFICATION_ID`, "AI cleanup skipped" on a device whose local model is not ready,
         // which is about the polish limb and is exactly what the emulator shows), and the SYSTEM's own
         // silent-section group summary (id 1, tag `g:Aggregate_SilentSection`, `FLAG_GROUP_SUMMARY`),
-        // which the OS creates around any silent notification of ours. Everything else of ours is the
-        // property under test.
+        // which the OS creates around any silent notification of ours. Any OTHER group summary of ours
+        // stays in the verdict (code review round 1: a future fallback shaped as a summary must fail this).
         val ourNotifications = notificationManager.activeNotifications
             .filter { it.packageName == context.packageName }
             .filter { it.id != DictationNotificationController.POLISH_NOTIFICATION_ID }
-            .filter { (it.notification.flags and android.app.Notification.FLAG_GROUP_SUMMARY) == 0 }
+            .filterNot {
+                // The OS's tag reads `0|com.envi.wispr|g:Aggregate_SilentSection` (dumpsys, 2026-09-22).
+                it.id == 1 && (it.tag ?: "").endsWith("g:Aggregate_SilentSection") &&
+                    (it.notification.flags and android.app.Notification.FLAG_GROUP_SUMMARY) != 0
+            }
         val titles = ourNotifications.joinToString {
             it.notification.extras?.getCharSequence(android.app.Notification.EXTRA_TITLE)
                 ?.toString()
@@ -342,6 +346,8 @@ class VoicePipelineDeviceTest {
         fun recordOneTake(stage: () -> Unit) {
             surfaceState.registerOnSharedPreferenceChangeListener(phaseListener)
             val audio = audioForThisRun()
+            var takeStarted = false
+            var stopSent = false
             try {
                 audio.prepare()
                 // Instrumentation restarts the app's process, which kills the accessibility service; the
@@ -357,6 +363,7 @@ class VoicePipelineDeviceTest {
                     Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
+                takeStarted = true
                 assertTrue("The recorder never reported LISTENING; phase was ${phaseNow()}", listening.await(20, TimeUnit.SECONDS))
                 stage()
                 audio.deliver()
@@ -366,9 +373,26 @@ class VoicePipelineDeviceTest {
                         .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_STOP, true)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 )
+                stopSent = true
+            } catch (failure: Throwable) {
+                // A TAKE THIS TEST STARTED IS THIS TEST'S TO END. A failure between the start and the stop
+                // (LISTENING never came, the staging refused, the audio never arrived) would otherwise leave
+                // the microphone open on the device with nothing recording that it was: this take did not
+                // go through the harness's journal (code review round 1). Cancel, wait for IDLE, rethrow.
+                if (takeStarted && !stopSent) {
+                    stopRequested.set(true)
+                    context.startActivity(
+                        Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
+                            .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_CANCEL, true)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                    )
+                    idle.await(30, TimeUnit.SECONDS)
+                }
+                surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
+                throw failure
             } finally {
                 audio.close()
-                // The listener stays registered until awaitIdle/awaitFinalRow release it.
+                // On success the listener stays registered until awaitIdle/awaitFinalRow release it.
             }
         }
 
@@ -507,21 +531,33 @@ class VoicePipelineDeviceTest {
     // ---- the rig ------------------------------------------------------------------------------------------
 
     private fun startRig(twoFields: Boolean) {
+        // Stale receipts from an earlier run are removed BEFORE the launch, so nothing already on disk can
+        // answer for this run (code review round 1).
+        for (name in listOf(PasteTargetActivity.RECEIPT_NAME, PasteTargetActivity.RECEIPT_B_NAME, PasteTargetActivity.READY_NAME)) {
+            shell("run-as $TEST_PACKAGE rm -f files/$name")
+        }
+        val rigToken = java.util.UUID.randomUUID().toString().replace("-", "")
         context.startActivity(
             Intent()
                 .setClassName(TEST_PACKAGE, "com.envi.wispr.PasteTargetActivity")
                 .putExtra(PasteTargetActivity.EXTRA_TWO_FIELDS, twoFields)
+                .putExtra(PasteTargetActivity.EXTRA_RIG_TOKEN, rigToken)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
         )
         // THE RIG'S readiness, not the subject's: the rig lives in another UID and can signal this process
-        // only through a file it writes in onCreate (the empty receipt), read through the shell. This is a
-        // bounded existence check on harness scaffolding, named in the plan's wait table as such.
+        // only through a file, read through the shell. The file it writes is this run's TOKEN, written only
+        // once editor A holds focus, so existence alone answers nothing. A bounded existence check on
+        // harness scaffolding, named in the plan's wait table as such.
         val deadline = System.currentTimeMillis() + 15_000
         while (System.currentTimeMillis() < deadline) {
-            if (receiptExists(PasteTargetActivity.RECEIPT_NAME)) return
+            if (receiptExists(PasteTargetActivity.READY_NAME) &&
+                shell("run-as $TEST_PACKAGE cat files/${PasteTargetActivity.READY_NAME}").trim() == rigToken
+            ) {
+                return
+            }
             Thread.sleep(100)
         }
-        throw AssertionError("the paste-target rig did not come up (no receipt file after 15 s)")
+        throw AssertionError("the paste-target rig did not come up with editor A focused (no ready receipt carrying this run's token after 15 s)")
     }
 
     /** The rig answers 1 only once editor B holds focus; anything else is a staging failure. */

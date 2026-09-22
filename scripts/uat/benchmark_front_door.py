@@ -33,11 +33,12 @@ ADB = w.ADB
 GM = "com.google.android.gm"
 SWITCH, SWITCH_TAB = "Spoken emoji", "Transcription"
 SENTENCE = "and I will send the deck tomorrow"
-# The literal WHOLE editor text the harness must find after each take, into an EMPTY field (#161 H2):
-# the speech engine's period plus the insertion's trailing space at field end.
-SENTENCE_FINAL = "And I will send the deck tomorrow. "
+# The literal WHOLE editor text the harness must find after each take, into an EMPTY Gmail compose
+# (#161 H2): the speech engine's period plus the insertion's trailing space at field end, which GMAIL'S
+# editor stores as U+00A0 (read live 2026-09-22; a plain EditText keeps a plain space).
+SENTENCE_FINAL = "And I will send the deck tomorrow.\u00a0"
 INSERT = "The quarterly report is ready for review."
-INSERT_FINAL = "The quarterly report is ready for review. "
+INSERT_FINAL = "The quarterly report is ready for review.\u00a0"
 RAW_SCRIPTS_COMMIT = "HEAD"  # the commit that still holds the deleted scripts, see main()
 EXTRA_COMMANDS = [0]  # adb / grpcurl processes launched inside a raw shell script, from its trace
 

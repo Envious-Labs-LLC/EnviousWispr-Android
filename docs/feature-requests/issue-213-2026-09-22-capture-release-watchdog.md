@@ -1,6 +1,6 @@
 # Issue #213 — A recorder that was never released ends its process at the next start instead of refusing every later take — 2026-09-22
 
-GitHub issue: `#213`. Tier: MEDIUM (audio capture, one service). Status: DRAFT (revised after grounded round 2).
+GitHub issue: `#213`. Tier: MEDIUM (audio capture, one service). Status: APPROVED (grounded round 3 PROCEED-AS-PLANNED; code review round 3 ALL-CLEAR).
 
 ## Preface — Lane + Hardware UAT declaration
 

@@ -1,0 +1,18 @@
+scene e (final-9f5b7fa): force-stop during a take, then the next take
+rows before: [(19, 'asr_error', 0, 'asr_error', 0), (18, 'completed', 0, 'committed', 34), (17, 'interrupted', 1, 'not_attempted', 0)]
+force-stop while recording: None
+restored nothing was changed
+rows right after the kill: [(22, 'draft', 0, 'pending', 0), (19, 'asr_error', 0, 'asr_error', 0), (18, 'completed', 0, 'committed', 34)]
+NOTE: 'and I will send the deck tomorrow' was rendered to /var/folders/t0/1pnvt1n158gfwl6vbb4fb0v40000gn/T/wispr-eyes/utt-36c2a6d3e12c41b0940fbd3239141b47.pcm
+NOTE: host microphone already off
+NOTE: injected 24 packets, 2.3s of audio
+NOTE: restored nothing was changed
+VERIFIED: a take ran, ended by a stop request
+VERIFIED: 34 characters came back from the speech engine
+NOTE: vice: insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=94 overrun=false target=com.google.android.gm
+VERIFIED: the same editor now holds the sentence; it ends 'And I will send the deck tomorrow.' (34 chars)
+rows after the next take: [(23, 'completed', 0, 'committed', 34), (22, 'interrupted', 1, 'not_attempted', 0), (19, 'asr_error', 0, 'asr_error', 0)]
+log 09-21 21:19:22.035 I/AudioCapture(13479): Recording started (PID: 13479, max: 600000ms, nativeFrames: 16000)
+log 09-21 21:19:22.048 I/DictationSession(13199): Recording started (live after 47 ms, forced=false)
+log 09-21 21:19:35.618 I/PasteService(13199): insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=94 overrun=false target=com.google.android.gm
+log 09-21 21:19:38.289 I/adbd    (  670): adbd service requested 'shell,v2,raw:sh -c 'logcat -d | grep '"'"'insertion api='"'"' | grep -v adbd | tail -1'; echo __RC=$?'

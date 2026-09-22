@@ -387,8 +387,14 @@ internal class DictationSessionRig {
                 AudioCaptureService.LIVE_FORCED -> push { it.onLive(takeId, true, 0, 0, 120L); it.onTick(takeId, 0L) }
                 else -> Unit
             }
+            // A start whose RETURN is held: the live event is already on its way to main, as on a device
+            // where the route goes live within a millisecond of the call (the hosted-runner race).
+            startReturnGate?.await(10, TimeUnit.SECONDS)
             return true
         }
+
+        /** When set, `startCaptureForTake` returns only once the test opens it, AFTER it pushed live. */
+        @Volatile var startReturnGate: CountDownLatch? = null
 
         override fun stopCapture() {
             events += "stop"

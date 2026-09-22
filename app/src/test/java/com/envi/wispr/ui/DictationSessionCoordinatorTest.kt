@@ -408,6 +408,29 @@ class DictationSessionCoordinatorTest {
         assertEquals("the late registration landed but no start followed it", listOf("listenForTake"), rig.capture.events.toList())
     }
 
+    /**
+     * Product Outcome (#115, found by the hosted runner): the route goes live and the owner publishes
+     * RECORDING on main BEFORE the start call has returned on the lane. That is an ordinary take, not one
+     * that ended while the start was in flight, and the lane must not stop it. Here the fake's start
+     * returns only after the pill is up; the take then stops and completes as usual, with exactly one
+     * stop. REVERT: treat any state other than STARTING after the start as an ended take.
+     */
+    @Test
+    fun aTakeThatGoesLiveBeforeTheStartReturnsIsNotStopped() {
+        val returnGate = CountDownLatch(1)
+        rig.capture.startReturnGate = returnGate
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        returnGate.countDown()
+        rig.capture.awaitListener()
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals("one stop, the user's", 1, rig.capture.events.count { it == "stop" })
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+    }
+
     @Test
     fun cancelWhileRecordingLeavesNoRow() {
         val coordinator = rig.coordinator()

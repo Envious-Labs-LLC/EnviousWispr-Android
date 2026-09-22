@@ -33,10 +33,13 @@ Facts that shape the grading, do NOT re-derive them:
 - Heart path: trigger, capture, ASR, finalization, insertion. Must never fail. Limbs (cleanup,
   vocabulary, local polish, cloud polish, live preview, history) enhance with a deadline and a fallback to
   the LAST SUCCESSFUL TEXT.
-- Five processes: main, `:audio`, `:asr`, `:vad`, `:polish`. Six AIDL interfaces, two parcelables in
-  `app/src/main/aidl/`. AIDL is append-only.
-- One session owner: `app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt`. Six entry
-  surfaces send it commands. It and `ui/AppShell.kt` are the declared extraction targets.
+- Five processes: main, `:audio`, `:asr`, `:vad`, `:polish`. Eight AIDL interfaces and two parcelables in
+  `app/src/main/aidl/` (`ls app/src/main/aidl/com/envi/wispr/*/`). AIDL is append-only.
+- One session owner. Six entry surfaces send it commands. Since the 2026-09-20 audit both of that
+  audit's declared extraction targets were split: `ui/DictationSessionService.kt` is the Android
+  Service shell and `ui/DictationSessionCoordinator.kt` holds the session logic (#186), and
+  `ui/AppShell.kt` is navigation only (#190). Measure all three yourself from the inventory; the
+  audit's job is to say where the mass sits NOW, not to re-check a target already moved.
 - Privacy boundary is the network: audio never leaves the phone; Envious Labs receives metadata only;
   cloud polish sends selected text to the user's chosen provider under their own key. Enforcers:
   `privacy/PrivacyDisclosure.kt`, `cpp/geniex_log_silencer.cpp`, `telemetry/PayloadSanitizer.kt`.
@@ -78,9 +81,10 @@ For each dimension give ONE `best_example` (what senior work looks like in this 
 1. **Architecture integrity.** Heart and limbs honoured in control flow, not in comments. One session owner;
    surfaces render its state and never run their own pipeline. Process boundaries hold (no heavy model in
    main, no UI type reaching a service, no upward dependency). Sources of truth have one home each
-   (`architecture.md` FACT: sources-of-truth). Central types are thin: measure `DictationSessionService.kt`
-   and `AppShell.kt`, name what does not belong in them and where it should live. Identity literals versus
-   capability gates (architecture-rules.md RULE: gate-on-capability-not-identity-literal).
+   (`architecture.md` FACT: sources-of-truth). Central types are thin: find the largest files in the
+   inventory yourself, measure them, and name what does not belong in them and where it should live.
+   Do not assume the 2026-09-20 pair is still the mass. Identity literals versus capability gates
+   (architecture-rules.md RULE: gate-on-capability-not-identity-literal).
 2. **Concurrency discipline.** Coroutine scopes are real and cancelled with their owner. No blocking on a
    binder thread or the main thread. Nothing runs on the audio callback thread (no allocation, logging,
    binder, contended lock). Binder callbacks cross into the right dispatcher. Cross-process state is not

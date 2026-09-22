@@ -57,6 +57,9 @@ ISSUE: VoicePipelineDeviceTest.aSideButtonTakeLandsInTheFocusedEditorExactlyOnce
 Process A: `with screen_recording('/tmp/wispr-eyes/leak.mp4'): os._exit(3)` → `pidof screenrecord` = 3526, `/sdcard/wispr-eyes/8a47….mp4` present, book: `[('screenrecord', '8a4749c6…')]`.
 Process B: `restore()` → `['screenrecord back to 8a4749c6…']`; `pidof screenrecord` empty (rc 1); the device folder empty; book empty.
 
+## After code review round 1 (harness at `097ef4a`)
+T1, T3, T4 rerun through the driver: all three VERIFIED; the starved control red; the book empty at the end. One earlier batch of three consecutive rows (T1, T3, T4 in one process, right after the round-1 harness edit and a test-APK reinstall) failed with `No History row for this take reached a final status within 90 s; rows since the start: ` (no rows, so no words reached the take); seven later runs of the same rows in the same and in fresh processes passed and the batch was not reproduced. The failure mode is loud, never a false pass; the cause is not established.
+
 ## Also seen
 - `install -r` of the TEST APK, and every `am instrument` start, leave the paste service unbound with `accessibility_enabled` reading 0 while the service is still named; `enable_auto_paste()` now clears then sets in that state (the same string re-put does not rebind), and the clear is written without the strict read-back because the system normalises the flag on its own right after the list empties.
 - The unit suite (`scripts/measure-tests.sh`): 1051 tests, 0 failures; the harness's own rows: 175 passed.

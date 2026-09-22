@@ -1705,6 +1705,163 @@ Group main:
         if leftover.exists():
             leftover.unlink()
 
+    # ---- #215: the real-boundary door, its preflight, its result policy, and fixture staging ----------
+    ready_probes = {
+        "target": (0, "package:/data/app/base.apk\n"),
+        "test": (0, "package:/data/app/test.apk\n"),
+        "runner": (0, f"instrumentation:{eyes.TEST_RUNNER} (target={eyes.PACKAGE})\n"),
+        "runas": (0, ""),
+        "fixture": (0, "32000\n"),
+    }
+    check("every prerequisite present answers ready", eyes._real_boundary_preflight(dict(ready_probes)) == [],
+          eyes._real_boundary_preflight(dict(ready_probes)))
+    for label, key, value, needle in (
+        ("no target APK", "target", (1, ""), f"{eyes.PACKAGE} is not installed"),
+        ("no test APK", "test", (0, ""), "test APK"),
+        ("no runner registration", "runner", (0, "instrumentation:other/Runner (target=other)\n"), "not registered"),
+        ("no fixture", "fixture", (1, ""), "no usable fixture"),
+        ("an empty fixture", "fixture", (0, "0\n"), "no usable fixture"),
+        ("an odd-length fixture", "fixture", (0, "32001\n"), "no usable fixture"),
+        ("a non-regular path at the fixture name", "fixture", (1, ""), "no usable fixture"),
+    ):
+        probes = dict(ready_probes)
+        probes[key] = value
+        answer = eyes._real_boundary_preflight(probes)
+        check(f"preflight: {label} answers its own NOT RUN", any(line.startswith("NOT RUN:") and needle in line for line in answer), answer)
+    probes = dict(ready_probes)
+    probes["runas"] = (1, "run-as: package not debuggable")
+    answer = eyes._real_boundary_preflight(probes)
+    check("a failed run-as answers not-debuggable, never missing fixture",
+          any("not debuggable" in line for line in answer) and not any("fixture" in line for line in answer), answer)
+
+    def group(code, stack=""):
+        return {"class": "com.envi.wispr.VoicePipelineDeviceTest", "test": "transcribesThenPolishesWithSavedCustomWords",
+                "code": code, "stack": stack}
+
+    prereq = "java.lang.AssertionError: Prerequisite: the saved custom name 'Saurabh' is not in this device's dictionary\n\tat x"
+    cases = [
+        ("0 is VERIFIED", [group(0)], "regression", "VERIFIED:"),
+        ("a Prerequisite first line is NOT RUN", [group(-2, prereq)], "regression", "NOT RUN:"),
+        ("another -2 is ISSUE", [group(-2, "java.lang.AssertionError: S1-mini did not become ready\n\tat x")], "regression", "ISSUE:"),
+        ("Prerequisite in a later frame is ISSUE", [group(-2, "java.lang.AssertionError: boom\n\tat Prerequisite: x")], "regression", "ISSUE:"),
+        ("a bare Prerequisite first line is ISSUE", [group(-2, "Prerequisite: something")], "regression", "ISSUE:"),
+        ("-4 is ISSUE for the real-boundary door", [group(-4, "org.junit.AssumptionViolatedException: x")], "regression", "ISSUE:"),
+        ("-4 is NOT RUN for an ordinary row", [group(-4, "org.junit.AssumptionViolatedException: x")], "not_run", "NOT RUN:"),
+        ("-3 is ISSUE for the real-boundary door", [group(-3)], "regression", "ISSUE:"),
+        ("-3 is NOT RUN for an ordinary row", [group(-3)], "not_run", "NOT RUN:"),
+        ("-1 is ISSUE for the real-boundary door", [group(-1, "java.lang.RuntimeException: crash")], "regression", "ISSUE:"),
+        ("-1 is ISSUE for an ordinary row", [group(-1, "java.lang.RuntimeException: crash")], "not_run", "ISSUE:"),
+    ]
+    for label, results, policy, expected in cases:
+        lines = eyes._report_runner_results(results, policy)
+        check(f"result policy: {label}", len(lines) == 1 and lines[0].startswith(expected), lines)
+    lines = eyes._report_runner_results([group(0), {"INSTRUMENTATION_CODE": "0", "shortMsg": "Process crashed."}], "regression")
+    check("an abnormal final instrumentation code is ISSUE", any(l.startswith("ISSUE: the instrumentation ended with code 0") for l in lines), lines)
+    lines = eyes._report_runner_results([{"INSTRUMENTATION_CODE": "-1"}], "regression")
+    check("a runner that reported no test is ISSUE", lines == ["ISSUE: the runner reported no test at all; UNKNOWN"], lines)
+
+    # Staging, through a fake device filesystem.
+    stage_names = ("_adb", "_exec_in", "_pcm16_from_sentence", "device")
+    stage_originals = {name: getattr(eyes, name) for name in stage_names}
+    rendered = {}
+
+    def fake_render(sentence, path):
+        data = bytes(range(256)) * 125
+        with open(path, "wb") as f:
+            f.write(data)
+        rendered["bytes"] = data
+        return path
+
+    def make_fs(final=None, arrive_short=False, race=False):
+        fs = {"files": {} if final is None else {"cache/enviouswispr-uat.pcm": final}, "ops": []}
+
+        def fake_adb(command, timeout=60, check=True, serial=None):
+            import shlex as _shlex
+            if "test -f " in command:
+                path = command.split("test -f ", 1)[1].split(" ")[0]
+                fs["ops"].append(("readback", path))
+                data = fs["files"].get(path)
+                return (0, f"{len(data)}\n") if isinstance(data, bytes) else (1, "")
+            if " ln " in command:
+                parts = command.split(" ln ", 1)[1].split()
+                src, dst = parts[0], parts[1]
+                fs["ops"].append(("ln", src, dst))
+                if race:
+                    fs["files"][dst] = b"theirs"
+                if dst in fs["files"]:
+                    return 1, "ln: File exists"
+                fs["files"][dst] = fs["files"][src]
+                return 0, ""
+            if " rm -f " in command:
+                path = command.split(" rm -f ", 1)[1].strip()
+                fs["ops"].append(("rm", path))
+                fs["files"].pop(path, None)
+                return 0, ""
+            return 0, ""
+
+        def fake_exec_in(remote, local_path):
+            target = remote[-1].split("> ", 1)[1]
+            data = open(local_path, "rb").read()
+            fs["ops"].append(("exec-in", target))
+            fs["sent"] = data
+            fs["files"][target] = data[: len(data) // 2] if arrive_short else data
+            return 0
+
+        return fs, fake_adb, fake_exec_in
+
+    eyes._pcm16_from_sentence = fake_render
+    eyes.device = lambda: "emulator-5554"
+    fs, eyes._adb, eyes._exec_in = make_fs()
+    line = eyes.stage_uat_fixture("EnviousWispr is ready for Saurabh")
+    kinds = [op[0] for op in fs["ops"]]
+    temp = next(op[1] for op in fs["ops"] if op[0] == "exec-in")
+    check("staging streams the exact rendered bytes", fs.get("sent") == rendered["bytes"])
+    check("a successful stage: temp write, temp read-back, ln to the final name, final read-back, temp removal, in order",
+          kinds == ["readback", "exec-in", "readback", "ln", "readback", "rm"] and fs["ops"][3] == ("ln", temp, "cache/enviouswispr-uat.pcm")
+          and fs["ops"][4] == ("readback", "cache/enviouswispr-uat.pcm") and fs["ops"][5] == ("rm", temp)
+          and fs["files"].get("cache/enviouswispr-uat.pcm") == rendered["bytes"] and temp not in fs["files"] and line.startswith("staged"),
+          (fs["ops"], line))
+    theirs = b"founder"
+    fs, eyes._adb, eyes._exec_in = make_fs(final=theirs)
+    line = eyes.stage_uat_fixture("x")
+    check("an existing fixture is never touched and nothing is sent", fs["files"]["cache/enviouswispr-uat.pcm"] == theirs
+          and not any(op[0] in ("exec-in", "ln") for op in fs["ops"]) and "left untouched" in line, (fs["ops"], line))
+    fs, eyes._adb, eyes._exec_in = make_fs(race=True)
+    line = eyes.stage_uat_fixture("x")
+    check("a fixture that appears mid-stage is left untouched and the temporary name is removed",
+          fs["files"]["cache/enviouswispr-uat.pcm"] == b"theirs" and not any(k.startswith("cache/.") for k in fs["files"])
+          and "left untouched" in line, (fs["ops"], line))
+    fs, eyes._adb, eyes._exec_in = make_fs(arrive_short=True)
+    try:
+        eyes.stage_uat_fixture("x")
+        check("a short transfer refuses", False, "it staged")
+    except eyes.Blocked:
+        check("a short transfer refuses, publishes nothing and removes the temporary name",
+              "cache/enviouswispr-uat.pcm" not in fs["files"] and not any(k.startswith("cache/.") for k in fs["files"])
+              and not any(op[0] == "ln" for op in fs["ops"]), fs["ops"])
+    for name, fn in stage_originals.items():
+        setattr(eyes, name, fn)
+
+    captured = []
+    render_originals = {name: getattr(eyes, name) for name in ("_has_tool", "_checked")}
+    eyes._has_tool = lambda name: True
+
+    def fake_checked(args, timeout=60):
+        captured.append(args)
+        if args[0] == "ffmpeg":
+            open(args[-1], "wb").close()
+
+    eyes._checked = fake_checked
+    import tempfile
+    out = eyes._pcm16_from_sentence("x", tempfile.mktemp(suffix=".pcm"))
+    ffmpeg = next(a for a in captured if a[0] == "ffmpeg")
+    check("the fixture renders s16le, 16 kHz, mono", ffmpeg[ffmpeg.index("-f") + 1] == "s16le" and ffmpeg[ffmpeg.index("-ar") + 1] == "16000"
+          and ffmpeg[ffmpeg.index("-ac") + 1] == "1", ffmpeg)
+    check("with a half-second 16 kHz tail", Path(out).stat().st_size == 16000, Path(out).stat().st_size)
+    Path(out).unlink()
+    for name, fn in render_originals.items():
+        setattr(eyes, name, fn)
+
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")
     if FAILED:

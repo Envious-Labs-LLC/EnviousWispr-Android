@@ -3054,26 +3054,191 @@ def run_device_test(test, sentence, expected_final=None, timeout=240, starve=Fal
         report.append(f"ISSUE: the instrumentation ran past {timeout} s and was killed; UNKNOWN")
     if not fed:
         report.append("ISSUE: the row never said READY, so no audio was fed (staging, not the product)")
+    report.extend(_report_runner_results(results, "not_run"))
+    return report
+
+
+REAL_BOUNDARY_TEST = "com.envi.wispr.VoicePipelineDeviceTest#transcribesThenPolishesWithSavedCustomWords"
+PREREQUISITE_FIRST_LINE = "java.lang.AssertionError: Prerequisite:"
+
+
+def _report_runner_results(results, assumption_policy):
+    """The runner's groups as report lines, one per test and one for an abnormal end (#161, #215).
+
+    `assumption_policy="not_run"`: a runner assumption (-3/-4) is NOT RUN, which is how `run_device_test`
+    has always reported it. `"regression"` (the real-boundary door): an assumption means an `assumeTrue`
+    came back into a row that must assert, so it is an ISSUE; and a failure whose FIRST stack line begins
+    exactly `java.lang.AssertionError: Prerequisite:` is NOT RUN (the row's named prerequisite), never a
+    later frame or a bare word.
+    """
+    lines = []
     for group in results:
         name = group.get("test", "")
         cls = group.get("class", "").rsplit(".", 1)[-1]
         code = group.get("code")
+        stack = group.get("stack", "").strip().splitlines()
+        first = stack[0] if stack else ""
         if code == 0:
-            report.append(f"VERIFIED: {cls}.{name} passed on the device")
+            lines.append(f"VERIFIED: {cls}.{name} passed on the device")
+        elif code == -2 and assumption_policy == "regression" and first.startswith(PREREQUISITE_FIRST_LINE):
+            lines.append(f"NOT RUN: {cls}.{name}: {first[len('java.lang.AssertionError: '):]}")
         elif code in (-1, -2):
-            stack = group.get("stack", "").strip().splitlines()
-            report.append(f"ISSUE: {cls}.{name} FAILED: {stack[0] if stack else 'no message'}")
+            lines.append(f"ISSUE: {cls}.{name} FAILED: {first or 'no message'}")
         elif code in (-3, -4):
-            first = group.get("stack", "").strip().splitlines()
-            report.append(f"NOT RUN: {cls}.{name} was skipped by its own precondition: "
-                          f"{first[0] if first else 'no reason given'}")
+            if assumption_policy == "regression":
+                lines.append(f"ISSUE: {cls}.{name} was SKIPPED by an assumption, which this row must never "
+                             f"make (an assumeTrue came back): {first or 'no reason given'}")
+            else:
+                lines.append(f"NOT RUN: {cls}.{name} was skipped by its own precondition: "
+                             f"{first or 'no reason given'}")
         elif "INSTRUMENTATION_CODE" in group:
             if group["INSTRUMENTATION_CODE"] != "-1":
-                report.append(f"ISSUE: the instrumentation ended with code {group['INSTRUMENTATION_CODE']}: "
-                              f"{group.get('shortMsg') or group.get('stream', '').strip()[-200:]}")
+                lines.append(f"ISSUE: the instrumentation ended with code {group['INSTRUMENTATION_CODE']}: "
+                             f"{group.get('shortMsg') or group.get('stream', '').strip()[-200:]}")
     if not any(g.get("test") for g in results):
-        report.append("ISSUE: the runner reported no test at all; UNKNOWN")
-    return report
+        lines.append("ISSUE: the runner reported no test at all; UNKNOWN")
+    return lines
+
+
+def _real_boundary_preflight(probes):
+    """The real-boundary row's prerequisites, from read-only probes; a list of NOT RUN lines, empty when ready.
+
+    `probes` maps a probe name to `(exit status, output)`, the status kept apart from the output:
+    `target` (`pm path com.envi.wispr`), `test` (`pm path com.envi.wispr.test`), `runner`
+    (`pm list instrumentation`), `fixture` (`run-as com.envi.wispr sh -c 'test -f ... && stat -c %s ...'`)
+    and `runas` (`run-as com.envi.wispr true`). Models and the saved name are judged by the row itself.
+    """
+    missing = []
+    code, out = probes["target"]
+    if code != 0 or "package:" not in out:
+        missing.append(f"NOT RUN: {PACKAGE} is not installed")
+    code, out = probes["test"]
+    if code != 0 or "package:" not in out:
+        missing.append(f"NOT RUN: the test APK {TEST_PACKAGE} is not installed; install it with adb install -r -t "
+                       "app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk")
+    code, out = probes["runner"]
+    if code != 0 or not any(TEST_RUNNER in line and f"(target={PACKAGE})" in line for line in out.splitlines()):
+        missing.append(f"NOT RUN: the runner {TEST_RUNNER} is not registered against {PACKAGE}")
+    code, _ = probes["runas"]
+    if code != 0:
+        missing.append(f"NOT RUN: {PACKAGE} is absent or not debuggable, so its cache cannot be read")
+        return missing
+    code, out = probes["fixture"]
+    size = out.strip()
+    if code != 0 or not size.isdigit() or int(size) <= 0 or int(size) % 2 != 0:
+        missing.append(f"NOT RUN: no usable fixture at {PACKAGE}/cache/{UAT_FIXTURE} (a regular, non-empty, "
+                       "even-length 16 kHz s16le file); stage it with stage_uat_fixture(sentence)")
+    return missing
+
+
+def _real_boundary_probes():
+    """Run the read-only probes `_real_boundary_preflight` judges. Nothing here writes."""
+    return {
+        "target": _adb(f"pm path {PACKAGE}", check=False),
+        "test": _adb(f"pm path {TEST_PACKAGE}", check=False),
+        "runner": _adb("pm list instrumentation", check=False),
+        "runas": _adb(f"run-as {PACKAGE} true", check=False),
+        "fixture": _adb(f"run-as {PACKAGE} sh -c {shlex.quote(f'test -f cache/{UAT_FIXTURE} && stat -c %s cache/{UAT_FIXTURE}')}",
+                        check=False),
+    }
+
+
+def run_real_boundary(timeout=240):
+    """Run the heart's one real ASR-and-local-polish row, honestly (#215).
+
+    Preflight first, read-only: both APKs, the runner's registration, a debuggable target, the fixture. A
+    missing member answers NOT RUN and the row is not started. Then the row alone, through `am instrument`
+    (never Gradle, which uninstalls the app). Its results use the `regression` policy: a named
+    `Prerequisite:` failure is NOT RUN, an assumption is an ISSUE.
+    """
+    device()
+    missing = _real_boundary_preflight(_real_boundary_probes())
+    if missing:
+        return missing
+    args = [ADB, "-s", device(), "shell", "am", "instrument", "-w", "-r", "-e", "class", REAL_BOUNDARY_TEST, TEST_RUNNER]
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    timed_out = []
+    timer = threading.Timer(timeout, lambda: (timed_out.append(True), process.kill()))
+    timer.start()
+    results = []
+    try:
+        for group in _instrumentation_groups(process.stdout):
+            if "INSTRUMENTATION_CODE" in group:
+                results.append(group)
+                break
+            if group.get("code") in (0, -1, -2, -3, -4) and group.get("test"):
+                results.append(group)
+    finally:
+        timer.cancel()
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    report = []
+    if timed_out:
+        report.append(f"ISSUE: the instrumentation ran past {timeout} s and was killed; UNKNOWN")
+    return report + _report_runner_results(results, "regression")
+
+
+def _pcm16_from_sentence(sentence, path):
+    """Say a sentence into the real-boundary fixture's format: s16le, mono, 16 kHz, plus half a second of
+    silence. Separate from `_pcm_from_sentence`, whose 48 kHz is the emulator microphone's contract."""
+    for tool in ("say", "ffmpeg"):
+        if not _has_tool(tool):
+            raise Blocked(f"{tool} is not available, so no fixture can be made")
+    aiff = path + ".aiff"
+    _checked(["say", "-v", "Samantha", "-r", "160", "-o", aiff, "--", sentence], timeout=180)
+    _checked(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", aiff,
+              "-f", "s16le", "-ar", str(FIXTURE_SAMPLE_RATE), "-ac", "1", path], timeout=180)
+    with open(path, "ab") as tail:
+        tail.write(bytes(FIXTURE_SAMPLE_RATE * FIXTURE_BYTES_PER_SAMPLE // 2))
+    return path
+
+
+def _exec_in(remote_command, local_path):
+    """Stream a local file's bytes to a remote command's stdin. adb's own exit status is transport-only."""
+    with open(local_path, "rb") as source:
+        done = subprocess.run([ADB, "-s", device(), "exec-in", *remote_command], stdin=source,
+                              capture_output=True, timeout=120)
+    return done.returncode
+
+
+def _remote_size(path):
+    """The size of a REGULAR file in the target's private storage, or None (absent, not regular, unreadable)."""
+    code, out = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(f'test -f {path} && stat -c %s {path}')}", check=False)
+    size = out.strip()
+    return int(size) if code == 0 and size.isdigit() else None
+
+
+def stage_uat_fixture(sentence):
+    """Write the real-boundary fixture into the target's cache ONLY where none exists (#215).
+
+    Rendered locally at 16 kHz; streamed with `adb exec-in` into a unique temporary name; admitted only
+    after a regular-file, exact-size read-back; published with `ln`, which fails if the final name exists,
+    so a fixture already there, or one that appears meanwhile, is never touched; read back again at the
+    final name; the temporary name is removed on every path.
+    """
+    device()
+    if _remote_size(f"cache/{UAT_FIXTURE}") is not None:
+        return f"a fixture is already at {PACKAGE}/cache/{UAT_FIXTURE}; it was left untouched and nothing was staged"
+    scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wispr-eyes")
+    os.makedirs(scratch, exist_ok=True)
+    local = _pcm16_from_sentence(sentence, os.path.join(scratch, f"fixture-{uuid.uuid4().hex}.pcm"))
+    size = os.path.getsize(local)
+    temporary = f"cache/.{UAT_FIXTURE}.{uuid.uuid4().hex}.tmp"
+    try:
+        _exec_in(["run-as", PACKAGE, "sh", "-c", f"cat > {temporary}"], local)
+        if _remote_size(temporary) != size:
+            raise Blocked(f"the fixture did not arrive whole ({_remote_size(temporary)} of {size} bytes); nothing was staged")
+        linked, why = _adb(f"run-as {PACKAGE} ln {temporary} cache/{UAT_FIXTURE}", check=False)
+        if linked != 0:
+            return (f"a fixture appeared at {PACKAGE}/cache/{UAT_FIXTURE} while staging; it was left untouched and "
+                    f"nothing was staged ({why.strip()[-120:]})")
+        if _remote_size(f"cache/{UAT_FIXTURE}") != size:
+            raise Blocked(f"the published fixture at {PACKAGE}/cache/{UAT_FIXTURE} does not read back at {size} bytes")
+        return f"staged {size} bytes ({size // (FIXTURE_SAMPLE_RATE * FIXTURE_BYTES_PER_SAMPLE):.0f} s) at {PACKAGE}/cache/{UAT_FIXTURE}"
+    finally:
+        _adb(f"run-as {PACKAGE} rm -f {temporary}", check=False)
 
 
 def open_page(url, package="com.android.chrome"):

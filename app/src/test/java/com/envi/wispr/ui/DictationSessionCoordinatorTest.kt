@@ -933,6 +933,56 @@ class DictationSessionCoordinatorTest {
         assertTrue(fallbackWarnings().isEmpty())
     }
 
+    /**
+     * #214 row 1 (Harness Contract): a blank answer over real words is a broken engine; the owner publishes its
+     * own floor (custom words restored), never the raw transcript. REVERT: remove the blank-outcome branch.
+     */
+    @Test
+    fun aBlankPolishedAnswerPublishesTheExactCleanedVocabularyText() {
+        val term = CustomTerm(spelling = "Envious", aliases = listOf("envious"))
+        val withTerm = SessionPreferencesSource(
+            preferenceStates = flow { emit(AppPreferencesState()) },
+            terms = flow { emit(listOf(term)) },
+            migrateLegacyTerms = {},
+            log = rig.log,
+        )
+        val coordinator = rig.coordinator(preferences = withTerm)
+        startAndGoLive(coordinator)
+        val polish = stopAndTranscribe(coordinator, "hello envious")
+        polish.listener!!.onOutcome(polish.outcome(""))
+
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals(listOf(1L to "hello Envious"), rig.insertion.pastes.toList())
+        val row = theOnlyRow()
+        assertEquals("hello Envious", row.finalText)
+        assertEquals("Deterministic fallback", row.polishEngine)
+        assertEquals("CALL_FAILED", row.polishReason)
+        assertEquals(
+            "exactly one blank protocol violation",
+            listOf("polish_protocol_violation" to "blank"),
+            rig.defects.filter { it.first == "polish_protocol_violation" }.map { it.first to it.second["shape"] },
+        )
+    }
+
+    /**
+     * #214 row 2 (Harness Contract): a nonblank answer for a filler-only take (cleanup recovered what it would
+     * otherwise have erased) is inserted as today. REVERT: make the branch reject nonblank outcomes.
+     */
+    @Test
+    fun aNonblankFillerRecoveryUnderOffStillInsertsWhatWasSaid() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        val polish = stopAndTranscribe(coordinator, "um uh")
+        polish.listener!!.onOutcome(polish.outcome("um uh", com.envi.wispr.polish.PolishReason.OFF))
+
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals(listOf(1L to "um uh"), rig.insertion.pastes.toList())
+        assertEquals("OFF", theOnlyRow().polishReason)
+        assertTrue("no protocol violation", rig.defects.none { it.first == "polish_protocol_violation" })
+    }
+
     @Test
     fun watchdogFallsBackAndCancelsOnEngine() {
         val coordinator = rig.coordinator()

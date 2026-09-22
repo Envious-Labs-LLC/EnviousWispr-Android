@@ -1812,7 +1812,10 @@ Group main:
     eyes._pcm16_from_sentence = fake_render
     eyes.device = lambda: "emulator-5554"
     fs, eyes._adb, eyes._exec_in = make_fs()
-    line = eyes.stage_uat_fixture("EnviousWispr is ready for Saurabh")
+    try:
+        line = eyes.stage_uat_fixture("EnviousWispr is ready for Saurabh")
+    except eyes.Blocked as refusal:
+        line = f"refused: {refusal}"
     kinds = [op[0] for op in fs["ops"]]
     temp = next(op[1] for op in fs["ops"] if op[0] == "exec-in")
     check("staging streams the exact rendered bytes", fs.get("sent") == rendered["bytes"])

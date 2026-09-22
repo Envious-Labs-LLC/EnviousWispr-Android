@@ -6,7 +6,6 @@ import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
-import android.util.Log
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
@@ -22,6 +21,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.res.ResourcesCompat
 import com.envi.wispr.R
+import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.shortcuts.BubbleRequestToken
 import com.envi.wispr.shortcuts.BubbleRequests
 import com.envi.wispr.shortcuts.RecordingOverlayState
@@ -279,7 +279,7 @@ internal class RecordingAccessibilityOverlay(
                 // A failure HERE returns rather than carrying on. The window starts at one pixel wide,
                 // so attaching after a failed sizing puts a sliver on screen with the controls inside
                 // it unreachable. The next event or tick tries again.
-                Log.w(TAG, "Unable to read window bounds", error)
+                DebugLogger.error(TAG, "Unable to read window bounds", error)
                 return
             }
         lastBounds = bounds
@@ -338,12 +338,12 @@ internal class RecordingAccessibilityOverlay(
                 windowManager.addView(root, layoutParams)
                 attached = true
                 root.requestApplyInsets()
-            }.onFailure { error -> Log.w(TAG, "Unable to show the floating window", error) }
+            }.onFailure { error -> DebugLogger.error(TAG, "Unable to show the floating window", error) }
         } else if (!unchanged) {
             // Never update a window whose bounds did not change: the update itself is a windows
             // change, and the service must not hear about a move it did not make.
             runCatching { windowManager.updateViewLayout(root, layoutParams) }
-                .onFailure { error -> Log.w(TAG, "Unable to move the floating window", error) }
+                .onFailure { error -> DebugLogger.error(TAG, "Unable to move the floating window", error) }
         }
     }
 
@@ -514,7 +514,7 @@ internal class RecordingAccessibilityOverlay(
                 .putExtra(VoiceInputActivity.EXTRA_REQUEST, request.encode())
             runCatching { service.startActivity(intent) }
                 .onFailure { error ->
-                    Log.w(TAG, "Unable to start dictation from the bubble", error)
+                    DebugLogger.error(TAG, "Unable to start dictation from the bubble", error)
                     Toast.makeText(service, "Dictation could not start", Toast.LENGTH_SHORT).show()
                 }
         }
@@ -719,7 +719,7 @@ internal class RecordingAccessibilityOverlay(
         runCatching {
             windowManager.addView(hideTarget, hideTargetParams)
             hideTargetAttached = true
-        }.onFailure { error -> Log.w(TAG, "Unable to show the hide target", error) }
+        }.onFailure { error -> DebugLogger.error(TAG, "Unable to show the hide target", error) }
     }
 
     private fun removeHideTarget() {

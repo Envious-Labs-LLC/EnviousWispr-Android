@@ -743,7 +743,7 @@ class AudioCaptureService : Service() {
         } catch (e: Exception) {
             // The reader's finally block still owns and releases the resources if stop
             // itself fails, so a vendor-specific AudioRecord error cannot leak a session.
-            DebugLogger.warn(TAG, "AudioRecord stop failed: ${e.message}")
+            DebugLogger.warn(TAG, "AudioRecord stop failed: ${e.javaClass.simpleName}")
         }
         DebugLogger.mark(TAG, "recording_stop")
         // The ending is read back from the CLAIM rather than from this function's parameter, because the
@@ -819,15 +819,15 @@ class AudioCaptureService : Service() {
 
     private fun closeResources(record: AudioRecord?, output: FileOutputStream?) {
         runCatching { output?.flush() }
-            .onFailure { DebugLogger.warn(TAG, "Failed to flush audio file: ${it.message}") }
+            .onFailure { DebugLogger.warn(TAG, "Failed to flush audio file: ${it.javaClass.simpleName}") }
         runCatching { output?.close() }
-            .onFailure { DebugLogger.warn(TAG, "Failed to close audio file: ${it.message}") }
+            .onFailure { DebugLogger.warn(TAG, "Failed to close audio file: ${it.javaClass.simpleName}") }
         runCatching { record?.stop() }
             .onFailure {
-                if (it !is IllegalStateException) DebugLogger.warn(TAG, "Failed to stop AudioRecord: ${it.message}")
+                if (it !is IllegalStateException) DebugLogger.warn(TAG, "Failed to stop AudioRecord: ${it.javaClass.simpleName}")
             }
         val released = record == null || runCatching { record.release() }
-            .onFailure { DebugLogger.warn(TAG, "Failed to release AudioRecord: ${it.message}") }
+            .onFailure { DebugLogger.warn(TAG, "Failed to release AudioRecord: ${it.javaClass.simpleName}") }
             .isSuccess
         // Every caller acquired the lease before creating the recorder (or failing to); released only
         // AFTER the recorder was, so the next start in this process cannot open a second one first. A

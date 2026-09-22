@@ -100,6 +100,16 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
+// `DiagnosticsShapeTest` (#194) reads sources that are not otherwise inputs of every JVM test task: the
+// debug sources (not an input of the release unit tests), the instrumentation sources and the llama.cpp
+// bridge. Declared here so an edit to any of them ALONE re-runs the unit tests instead of replaying a
+// cached green (revert receipt R12 found the cache, 2026-09-22; code review round 1 added the debug set).
+tasks.withType<Test>().configureEach {
+    inputs.dir("src/debug/java").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/androidTest/java").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file("../llama-android/src/main/cpp/s1_jni.cpp").withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
 dependencies {
     implementation("com.qualcomm.qti:geniex-android:0.4.0")
     implementation(files("libs/sherpa-onnx.aar"))

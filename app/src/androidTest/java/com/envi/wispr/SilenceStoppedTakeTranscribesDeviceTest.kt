@@ -11,6 +11,7 @@ import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.IAudioCaptureService
+import com.envi.wispr.debug.DebugLogger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -110,7 +111,7 @@ class SilenceStoppedTakeTranscribesDeviceTest {
                 "a take that ended on silence must still contain words. error was '$error', text was '$text'",
                 text.isNotBlank(),
             )
-            android.util.Log.i("SilenceUat", "Transcript of a silence-stopped take: '$text'")
+            DebugLogger.log("SilenceUat", "Silence-stopped take chars=${text.length}")
         } finally {
             runCatching { context.unbindService(asrConnection) }
         }

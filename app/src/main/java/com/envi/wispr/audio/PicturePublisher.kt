@@ -79,7 +79,7 @@ internal class PicturePublisher(
             thread.start()
         }.onFailure {
             analyserThread = null
-            DebugLogger.warn(tag, "Live picture unavailable for this take: ${it.message}")
+            DebugLogger.warn(tag, "Live picture unavailable for this take: ${it.javaClass.simpleName}")
         }
     }
 
@@ -126,7 +126,7 @@ internal class PicturePublisher(
             bands.fill(0f)
             synchronized(bandsLock) { publishedBands.fill(0f) }
             pushSpectrum(bands)
-            DebugLogger.warn(tag, "Live picture stopped for this take: ${e.message}")
+            DebugLogger.warn(tag, "Live picture stopped for this take: ${e.javaClass.simpleName}")
         } finally {
             if (analyserThread === Thread.currentThread()) analyserThread = null
         }

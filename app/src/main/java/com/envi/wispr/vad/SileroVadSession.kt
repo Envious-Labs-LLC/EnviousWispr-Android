@@ -57,7 +57,7 @@ internal class SileroVadSession private constructor(
 
     fun release() {
         runCatching { vad.release() }
-            .onFailure { DebugLogger.warn(TAG, "Detector release failed: ${it.message}") }
+            .onFailure { DebugLogger.warn(TAG, "Detector release failed: ${it.javaClass.simpleName}") }
     }
 
     companion object {

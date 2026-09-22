@@ -1,0 +1,10 @@
+scene b (chunkA-75cfa0e): one ordinary take with the tick gaps
+NOTE: 'and I will send the deck tomorrow' was rendered to /var/folders/t0/1pnvt1n158gfwl6vbb4fb0v40000gn/T/wispr-eyes/utt-a27dc47dc0fa4dc0ab5a9ad0ba0bf867.pcm
+NOTE: host microphone already off
+NOTE: injected 24 packets, 2.3s of audio
+NOTE: restored nothing was changed
+VERIFIED: a take ran, ended by a stop request
+VERIFIED: 34 characters came back from the speech engine
+NOTE: vice: insertion api=36 route=COMMIT written=true returned=VOID evidence=SURROUNDING outcome=VERIFIED attempts=1 ms=30 overrun=false target=com.google.android.gm
+VERIFIED: the same editor now holds the sentence; it ends 'And I will send the deck tomorrow.' (34 chars)
+tick lines: 0

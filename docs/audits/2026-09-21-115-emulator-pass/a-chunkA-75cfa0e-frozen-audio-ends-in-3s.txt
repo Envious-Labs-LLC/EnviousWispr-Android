@@ -1,0 +1,15 @@
+scene a (chunkA-75cfa0e): freeze the capture process, press stop
+recorder on screen before freeze: True
+froze com.envi.wispr:audio pid 24827 (debugger pid 89421 on port 19527)
+stop pressed
+owner REACHED NO ENDING 20 s after the stop (stuck)
+recorder pill on screen at that point: False
+debugger pid 89421 ended; thawed com.envi.wispr:audio pid 24827
+restored nothing was changed
+log 09-21 18:13:46.416 I/DictationSession(24543): Audio capture connected
+log 09-21 18:13:46.472 I/AudioCapture(24827): Recording started (PID: 24827, max: 600000ms, nativeFrames: 16000)
+log 09-21 18:13:46.552 I/DictationSession(24543): Recording started (live after 4 ms, forced=false)
+log 09-21 18:13:54.672 E/DictationSession(24543): Capture process silent for 3000ms; ending the take
+log 09-21 18:13:54.674 W/DictationSession(24543): Take ended: AUDIO_PROCESS_UNRESPONSIVE
+log 09-21 18:14:20.551 I/AudioCapture(24827): Stopped by a stop request. 216320 bytes (6.8s) -> /data/user/0/com.envi.wispr/cache/recording.pcm
+last take: {'started': True, 'ended_by': 'a stop request', 'bytes': 216320, 'seconds': 6.8, 'warned_at_ms': None, 'hit_the_cap': False, 'transcribed_chars': None, 'handoff': None, 'insertion': None}

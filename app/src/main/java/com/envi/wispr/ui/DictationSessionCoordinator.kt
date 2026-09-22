@@ -188,7 +188,7 @@ internal class DictationSessionCoordinator(
     private val polishSubmissionLock = Any()
     private val teardownStarted = AtomicBoolean(false)
     private val draftId = AtomicLong(0L)
-    /** The injected scope's job, read once; `destroy` cancels and joins exactly this. */
+    /** The injected scope's job, read once; `destroy` cancels exactly this and never joins it (#115). */
     private val serviceJob: Job = requireNotNull(scope.coroutineContext[Job]) { "the session scope needs a Job" }
 
     private var rawTranscript = ""

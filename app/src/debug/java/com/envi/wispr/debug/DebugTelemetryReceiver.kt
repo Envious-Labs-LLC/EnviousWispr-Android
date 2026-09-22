@@ -3,7 +3,6 @@ package com.envi.wispr.debug
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
 import com.envi.wispr.telemetry.AppDefect
 import com.envi.wispr.telemetry.Telemetry
 
@@ -24,6 +23,6 @@ class DebugTelemetryReceiver : BroadcastReceiver() {
         val status = Telemetry.status()
         Telemetry.breadcrumb("debug", "probe", mapOf("source" to "broadcast"))
         Telemetry.defect(AppDefect.DebugProbe, mapOf("source" to "broadcast"))
-        Log.i("DebugTelemetry", "probe raised: sentry=${status.sentry} posthog=${status.postHog} environment=${status.environment} identity=${status.installId != null}")
+        DebugLogger.log("DebugTelemetry", "probe raised: sentry=${status.sentry} posthog=${status.postHog} environment=${status.environment} identity=${status.installId != null}")
     }
 }

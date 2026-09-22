@@ -113,7 +113,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             if (status.state == DownloadState.VERIFYING) completedBytes += status.bytes
         }, onSource = { file, host ->
             // Which roof served the bytes (#168). The log, never the screen: a user does not choose hosts.
-            DebugLogger.log(TAG, "Model source: ${model.id}/$file from $host")
+            DebugLogger.log(TAG, "Model source: ${model.id}/$file from ${ModelSourceHost.of(host).wire}")
             lastHost = host
         })
         reportDelivery(model, result.state, result.reason, ModelSourceHost.of(lastHost), completedBytes + result.bytes, startedAtMs, firstRun)

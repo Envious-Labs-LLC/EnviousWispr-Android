@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
-import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.util.concurrent.CountDownLatch
@@ -18,6 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import com.envi.wispr.debug.DebugLogger
 
 /** Product Outcome: the shipped local model on the real runtime polishes a dictation through the v2 binder surface. */
 @RunWith(AndroidJUnit4::class)
@@ -93,6 +93,6 @@ class PolishServiceDeviceTest {
         assertTrue("Unexpected engine: ${result.engine}", result.engine.startsWith("S1-mini by Superwhisper"))
         assertFalse("Filler was not removed: ${result.text}", result.text.lowercase().startsWith("uh "))
         assertTrue("Expected the proven NPU backend, got: ${result.engine}", result.engine.endsWith("(NPU)"))
-        Log.i("S1DeviceTest", "engine=${result.engine} latencyMs=${result.latencyMs} chars=${result.text.length}")
+        DebugLogger.log("S1DeviceTest", "engine=${result.engine} latencyMs=${result.latencyMs} chars=${result.text.length}")
     }
 }

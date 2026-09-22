@@ -7,7 +7,6 @@ import android.content.Context
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import com.envi.wispr.paste.InsertionHandoff
 import com.envi.wispr.paste.PasteAccessibilityService
 
@@ -22,7 +21,7 @@ class PasteProbeActivity : Activity() {
                     ?.getItemAt(0)
                     ?.coerceToText(this)
                     ?.toString()
-                Log.i("PasteProbe", "clipboard_matches_expected=${actual == expected}")
+                DebugLogger.log("PasteProbe", "clipboard_matches_expected=${actual == expected}")
                 finish()
             }, 250L)
             return
@@ -38,7 +37,7 @@ class PasteProbeActivity : Activity() {
         if (handoff != InsertionHandoff.SCHEDULED) {
             clipboard.setPrimaryClip(ClipData.newPlainText("EnviousWispr", text))
         }
-        Log.i(
+        DebugLogger.log(
             "PasteProbe",
             "handoff=$handoff",
         )

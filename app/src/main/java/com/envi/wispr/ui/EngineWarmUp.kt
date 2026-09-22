@@ -48,7 +48,7 @@ internal class EngineWarmUp(private val context: Context, private val scope: Cor
             scope.launch {
                 val policy = withContext(Dispatchers.IO) { ProviderConfigurationRepository(context).loadPolicy() }
                 runCatching { service.warmUpWithPolicy(policy) }
-                    .onFailure { error -> DebugLogger.warn(TAG, "Polish warm-up refused: ${error.message}") }
+                    .onFailure { error -> DebugLogger.warn(TAG, "Polish warm-up refused: ${error.javaClass.simpleName}") }
                 DebugLogger.log(TAG, "Polish engine warming for setup")
             }
         }

@@ -3,7 +3,6 @@ package com.envi.wispr.debug
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
 import com.envi.wispr.paste.PasteAccessibilityService
 
 /**
@@ -25,6 +24,6 @@ class DebugInsertReceiver : BroadcastReceiver() {
         val text = intent.getStringExtra("text") ?: "EnviousWispr debug insert"
         val pin = PasteAccessibilityService.pinTargetForDictation()
         val handoff = PasteAccessibilityService.pasteWhenTargetReturns(0L, text)
-        Log.i("DebugInsert", "pin=$pin handoff=$handoff text=\"$text\"")
+        DebugLogger.log("DebugInsert", "pin=$pin handoff=$handoff textChars=${text.length}")
     }
 }

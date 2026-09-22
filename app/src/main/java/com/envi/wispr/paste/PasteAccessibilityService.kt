@@ -19,7 +19,6 @@ import android.os.VibrationEffect
 import android.os.VibratorManager
 import android.provider.Settings
 import android.text.InputType
-import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -54,6 +53,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.UUID
+import com.envi.wispr.debug.DebugLogger
 
 class PasteAccessibilityService : AccessibilityService() {
 
@@ -162,7 +162,7 @@ class PasteAccessibilityService : AccessibilityService() {
             takeId: String? = null,
         ): InsertionHandoff {
             val service = instance ?: run {
-                Log.w(TAG, "Accessibility service is not running; clipboard only")
+                DebugLogger.warn(TAG, "Accessibility service is not running; clipboard only")
                 return InsertionHandoff.SERVICE_NOT_RUNNING
             }
             return service.callOnMain(InsertionHandoff.SERVICE_DID_NOT_ANSWER) {
@@ -267,7 +267,7 @@ class PasteAccessibilityService : AccessibilityService() {
         val pick = inputDevicePick ?: return
         val earbuds = InputDeviceResolver.earbudsAreTheMicrophone(pick, connectedInputs)
         // Shape only: a count and a boolean, so the phone pass can read the colour's input off logcat.
-        Log.i(TAG, "Bubble colour: inputs=${connectedInputs.size} earbuds=$earbuds")
+        DebugLogger.log(TAG, "Bubble colour: inputs=${connectedInputs.size} earbuds=$earbuds")
         recordingOverlay?.setEarbuds(earbuds)
     }
 
@@ -318,7 +318,7 @@ class PasteAccessibilityService : AccessibilityService() {
             getSystemService(AudioManager::class.java)?.registerAudioDeviceCallback(audioDeviceCallback, mainHandler)
             readInputsAndApply()
         }
-        Log.i(TAG, "Accessibility insertion service connected")
+        DebugLogger.log(TAG, "Accessibility insertion service connected")
         // A text box may already hold focus when this service (re)connects: discover it rather than
         // waiting for the user to tap it again. The window list is not populated at the instant of connect
         // (measured 2026-09-12: an immediate discovery found nothing while the editor was focused), so this
@@ -446,7 +446,7 @@ class PasteAccessibilityService : AccessibilityService() {
             return false
         }
         return runCatching { DictationSessionService.sendCommand(this, DictationSessionService.ACTION_START, request) }
-            .onFailure { error -> Log.w(TAG, "Direct start from the bubble refused: ${error.javaClass.simpleName}") }
+            .onFailure { error -> DebugLogger.warn(TAG, "Direct start from the bubble refused: ${error.javaClass.simpleName}") }
             .isSuccess
     }
 
@@ -466,7 +466,7 @@ class PasteAccessibilityService : AccessibilityService() {
         if (!stillFocused && discover) {
             val found = runCatching { findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) } }.getOrNull()
             // Content-free: counts and booleans only (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
-            Log.d(
+            DebugLogger.debug(
                 TAG,
                 "Bubble discovery found=${found != null} windows=${runCatching { windows.size }.getOrDefault(-1)}",
             )
@@ -575,7 +575,7 @@ class PasteAccessibilityService : AccessibilityService() {
     }.getOrNull()
 
     override fun onInterrupt() {
-        Log.w(TAG, "Accessibility insertion service interrupted")
+        DebugLogger.warn(TAG, "Accessibility insertion service interrupted")
         // The surface goes; the session owner's phase does NOT. It alone publishes to the bus, so a
         // reconnect renders whatever it retained and a hidden pill never reads as IDLE (#135, R1).
         // The words were accepted against a pinned field and are not going to reach it. This used
@@ -657,14 +657,14 @@ class PasteAccessibilityService : AccessibilityService() {
             if (!previousStopReported) {
                 previousStopReported = true
                 if (!lifecyclePreferences().getBoolean(KEY_STOP_WAS_CLEAN, true)) {
-                    Log.i(TAG, "Reconnected after an unclean stop")
+                    DebugLogger.log(TAG, "Reconnected after an unclean stop")
                 }
             }
             // ARM on EVERY connect. Turning the service off and on again is the recovery the Home
             // card asks for, and it writes a clean stop; leaving the marker disarmed after that
             // would silence the crash most likely to follow, which is the one this exists to name.
             writeStopMarker(clean = false)
-        }.onFailure { error -> Log.w(TAG, "Unable to read the previous stop marker: ${error.message}") }
+        }.onFailure { error -> DebugLogger.warn(TAG, "Unable to read the previous stop marker: ${error.javaClass.simpleName}") }
     }
 
     private fun markStopWasClean() = writeStopMarker(clean = true)
@@ -685,7 +685,7 @@ class PasteAccessibilityService : AccessibilityService() {
             if (clean && instance != null) return
             runCatching {
                 lifecyclePreferences().edit().putBoolean(KEY_STOP_WAS_CLEAN, clean).apply()
-            }.onFailure { error -> Log.w(TAG, "Unable to record the stop marker: ${error.message}") }
+            }.onFailure { error -> DebugLogger.warn(TAG, "Unable to record the stop marker: ${error.javaClass.simpleName}") }
         }
     }
 
@@ -713,7 +713,7 @@ class PasteAccessibilityService : AccessibilityService() {
             )
             clearTarget()
             lastTarget = snapshot
-            Log.d(
+            DebugLogger.debug(
                 TAG,
                 "Remembered editable target package=${snapshot.packageName} " +
                     "window=${snapshot.windowId} class=${source.className}",
@@ -734,15 +734,15 @@ class PasteAccessibilityService : AccessibilityService() {
         // Three separate refusals. Merging them into one answer is what made a crashed service and
         // a back-to-back dictation indistinguishable from the log and from the History row.
         if (text.isBlank()) {
-            Log.w(TAG, "Nothing to insert; clipboard only")
+            DebugLogger.warn(TAG, "Nothing to insert; clipboard only")
             return InsertionHandoff.EMPTY_TEXT
         }
         if (pendingInsertion != null) {
-            Log.w(TAG, "An insertion is already pending; refusing replacement")
+            DebugLogger.warn(TAG, "An insertion is already pending; refusing replacement")
             return InsertionHandoff.INSERTION_ALREADY_PENDING
         }
         if (pinnedTarget == null) {
-            Log.w(TAG, "No editor was pinned for this dictation; clipboard only")
+            DebugLogger.warn(TAG, "No editor was pinned for this dictation; clipboard only")
             return InsertionHandoff.NO_PINNED_TARGET
         }
         mainHandler.removeCallbacks(retryRunnable)
@@ -770,7 +770,7 @@ class PasteAccessibilityService : AccessibilityService() {
         )
         pendingInsertion = pending
         configureEventMode(includeContentChanges = true)
-        Log.i(TAG, "Insertion requested; waiting for the original editor")
+        DebugLogger.log(TAG, "Insertion requested; waiting for the original editor")
         tryPendingInsertion()
         return InsertionHandoff.SCHEDULED
     }
@@ -812,7 +812,7 @@ class PasteAccessibilityService : AccessibilityService() {
             className = target.className,
             viewId = target.viewId,
         )
-        Log.i(TAG, "Pinned original editor package=${target.packageName} window=${target.windowId}")
+        DebugLogger.log(TAG, "Pinned original editor package=${target.packageName} window=${target.windowId}")
         return DictationTargetPin.PINNED
     }
 
@@ -897,7 +897,7 @@ class PasteAccessibilityService : AccessibilityService() {
         when (val tick = attempt.tick()) {
             InsertionAttempt.Tick.Waiting -> scheduleRetry(RETRY_INTERVAL_MS)
             is InsertionAttempt.Tick.Verified -> {
-                Log.i(TAG, "Insertion completed via ${tick.route} after ${attempt.attempts} attempt(s)")
+                DebugLogger.log(TAG, "Insertion completed via ${tick.route} after ${attempt.attempts} attempt(s)")
                 finish(pending, InsertionOutcomeLine.Outcome.VERIFIED)
                 if (pending.policy.restoreClipboardAfterPaste) {
                     restorePreviousClipboardIfSafe(pending)
@@ -913,22 +913,22 @@ class PasteAccessibilityService : AccessibilityService() {
                 performResultHaptic(success = true)
             }
             InsertionAttempt.Tick.Sensitive -> {
-                Log.w(TAG, "Insertion refused for a password or sensitive field; clipboard only")
+                DebugLogger.warn(TAG, "Insertion refused for a password or sensitive field; clipboard only")
                 finish(pending, InsertionOutcomeLine.Outcome.SENSITIVE)
                 recordAndAnnounce(ServiceFallbackReason.SENSITIVE_FIELD, pending)
             }
             InsertionAttempt.Tick.Rejected -> {
-                Log.w(TAG, "The editor refused the paste; clipboard only")
+                DebugLogger.warn(TAG, "The editor refused the paste; clipboard only")
                 finish(pending, InsertionOutcomeLine.Outcome.REJECTED)
                 recordAndAnnounce(ServiceFallbackReason.NO_INSERTION_ACTION, pending)
             }
             InsertionAttempt.Tick.StagingFailed -> {
-                Log.w(TAG, "The clipboard could not be staged; nothing written")
+                DebugLogger.warn(TAG, "The clipboard could not be staged; nothing written")
                 finish(pending, InsertionOutcomeLine.Outcome.STAGING_FAILED)
                 recordAndAnnounce(ServiceFallbackReason.NO_INSERTION_ACTION, pending)
             }
             is InsertionAttempt.Tick.Expired -> {
-                Log.w(
+                DebugLogger.warn(
                     TAG,
                     if (tick.written) {
                         "Editor action could not be verified after ${attempt.attempts} attempts; " +
@@ -969,7 +969,7 @@ class PasteAccessibilityService : AccessibilityService() {
 
     private fun logOutcome(pending: PendingInsertion, outcome: InsertionOutcomeLine.Outcome, target: String?) {
         val attempt = pending.attempt
-        Log.i(
+        DebugLogger.log(
             TAG,
             InsertionOutcomeLine.format(
                 api = Build.VERSION.SDK_INT,
@@ -1022,7 +1022,7 @@ class PasteAccessibilityService : AccessibilityService() {
             pending.commitSession = null
             val reason = commitIneligibleReason()
             if (reason != null) {
-                Log.d(TAG, "Commit route not eligible: $reason")
+                DebugLogger.debug(TAG, "Commit route not eligible: $reason")
                 return false
             }
             return true
@@ -1050,7 +1050,7 @@ class PasteAccessibilityService : AccessibilityService() {
             val captured = liveCommitSession() ?: return null
             val surrounding = captured.connection.getSurroundingText(beforeChars, afterChars, 0)
             if (surrounding == null) {
-                Log.d(TAG, "The pipe read no surrounding text")
+                DebugLogger.debug(TAG, "The pipe read no surrounding text")
                 return null
             }
             val window = AccessibilityInsertionRules.window(
@@ -1059,7 +1059,7 @@ class PasteAccessibilityService : AccessibilityService() {
                 surrounding.selectionEnd,
                 surrounding.offset,
             )
-            Log.d(
+            DebugLogger.debug(
                 TAG,
                 "The pipe read surrounding text: before=${window?.before?.length ?: -1} " +
                     "after=${window?.after?.length ?: -1} offset=${surrounding.offset}",
@@ -1090,11 +1090,11 @@ class PasteAccessibilityService : AccessibilityService() {
                 // whatever is there now, so both the write and the paste that would follow are refused.
                 return when (clipboardOwner(clipboard.primaryClip, pending)) {
                     ClipboardOwner.OTHER -> {
-                        Log.w(TAG, "Clipboard changed during retry; refusing to overwrite newer content")
+                        DebugLogger.warn(TAG, "Clipboard changed during retry; refusing to overwrite newer content")
                         false
                     }
                     ClipboardOwner.UNREADABLE -> {
-                        Log.w(TAG, "Clipboard unreadable on retry; refusing to paste an unconfirmed clip")
+                        DebugLogger.warn(TAG, "Clipboard unreadable on retry; refusing to paste an unconfirmed clip")
                         false
                     }
                     ClipboardOwner.OURS -> {
@@ -1203,7 +1203,7 @@ class PasteAccessibilityService : AccessibilityService() {
                 (node === expected.node || node == expected.node)
             ) {
                 if (node !== expected.node) {
-                    Log.d(TAG, "Reacquired the pinned editor after its node became stale")
+                    DebugLogger.debug(TAG, "Reacquired the pinned editor after its node became stale")
                 }
                 return block(node)
             }
@@ -1277,11 +1277,11 @@ class PasteAccessibilityService : AccessibilityService() {
         when (clipboardOwner(clipboard.primaryClip, pending)) {
             ClipboardOwner.OURS -> Unit
             ClipboardOwner.OTHER -> {
-                Log.i(TAG, "Clipboard changed during insertion; preserving the newer clipboard")
+                DebugLogger.log(TAG, "Clipboard changed during insertion; preserving the newer clipboard")
                 return
             }
             ClipboardOwner.UNREADABLE -> {
-                Log.i(TAG, "Clipboard unreadable after insertion; leaving the words on it")
+                DebugLogger.log(TAG, "Clipboard unreadable after insertion; leaving the words on it")
                 return
             }
         }
@@ -1293,15 +1293,15 @@ class PasteAccessibilityService : AccessibilityService() {
         // A snapshot that could not be read (or was empty) is not restored and NEVER cleared: the
         // words stay on the clipboard, which is the same place the keep path leaves them.
         val previous = pending.previousClipboard ?: run {
-            Log.i(TAG, "No readable clipboard snapshot; leaving the clipboard as it is")
+            DebugLogger.log(TAG, "No readable clipboard snapshot; leaving the clipboard as it is")
             return
         }
         runCatching {
             clipboard.setPrimaryClip(previous)
         }.fold(
-            onSuccess = { Log.i(TAG, "Previous clipboard restored after successful insertion") },
+            onSuccess = { DebugLogger.log(TAG, "Previous clipboard restored after successful insertion") },
             onFailure = { error ->
-                Log.w(TAG, "Previous clipboard could not be restored: ${error.message}")
+                DebugLogger.warn(TAG, "Previous clipboard could not be restored: ${error.javaClass.simpleName}")
             },
         )
     }
@@ -1311,14 +1311,14 @@ class PasteAccessibilityService : AccessibilityService() {
         if (pending.clipboardOverwritten) {
             when (clipboardOwner(clipboard.primaryClip, pending)) {
                 ClipboardOwner.OTHER -> {
-                    Log.w(TAG, "Newer clipboard content detected; leaving it unchanged")
+                    DebugLogger.warn(TAG, "Newer clipboard content detected; leaving it unchanged")
                     return false
                 }
                 // Our staging is the last write this service knows of, so the words ARE on the
                 // clipboard as far as anything can tell, and that is what the user is told. It is
                 // not permission to write again: a refused read never authorises a mutation.
                 ClipboardOwner.UNREADABLE -> {
-                    Log.i(TAG, "Clipboard unreadable; the staged words are counted as still there")
+                    DebugLogger.log(TAG, "Clipboard unreadable; the staged words are counted as still there")
                     return true
                 }
                 ClipboardOwner.OURS -> if (pending.clipboardPayload != pending.text) {
@@ -1408,7 +1408,7 @@ class PasteAccessibilityService : AccessibilityService() {
         // is the one that reports (round 1, F5).
         ModelBootstrapApplication.historyWrites(applicationContext).enqueue("insertion outcome") { repository ->
             val changed = runCatching { repository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
-                .onFailure { error -> Log.w(TAG, "Unable to update transcript insertion result: ${error.message}") }
+                .onFailure { error -> DebugLogger.warn(TAG, "Unable to update transcript insertion result: ${error.javaClass.simpleName}") }
                 .getOrNull()
             if (changed == 1) emit()
         }
@@ -1485,6 +1485,6 @@ class PasteAccessibilityService : AccessibilityService() {
                 VibrationEffect.EFFECT_DOUBLE_CLICK
             }
             vibrator.vibrate(VibrationEffect.createPredefined(effect))
-        }.onFailure { error -> Log.w(TAG, "Result haptic unavailable: ${error.message}") }
+        }.onFailure { error -> DebugLogger.warn(TAG, "Result haptic unavailable: ${error.javaClass.simpleName}") }
     }
 }

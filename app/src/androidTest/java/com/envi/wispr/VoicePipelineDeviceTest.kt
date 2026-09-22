@@ -11,7 +11,6 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.IBinder
-import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -43,6 +42,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import com.envi.wispr.debug.DebugLogger
 
 /** Physical-phone UAT. Place a 16 kHz mono s16le fixture in the app cache before running. */
 @RunWith(AndroidJUnit4::class)
@@ -159,7 +159,7 @@ class VoicePipelineDeviceTest {
         assertTrue("Unexpected engine: $engine", engine.startsWith("S1-mini by Superwhisper"))
         assertTrue("Saved product spelling was not applied: $polishedText", polishedText.contains("EnviousWispr"))
         assertTrue("Saved name spelling was not applied: $polishedText", polishedText.contains("Saurabh"))
-        Log.i(
+        DebugLogger.log(
             "VoicePipelineDeviceTest",
             "rawChars=${rawText.length} engine=$engine latencyMs=$latencyMs polishedChars=${polishedText.length}"
         )
@@ -195,7 +195,7 @@ class VoicePipelineDeviceTest {
             "Launcher path did not reach the clipboard/paste step: $logs",
             logs.contains("Auto-insert handed") || logs.contains("transcript kept on clipboard"),
         )
-        Log.i("VoiceLauncherDeviceTest", logs.lines().filter { it.contains("DictationSession") }.joinToString(" | "))
+        DebugLogger.log("VoiceLauncherDeviceTest", logs.lines().filter { it.contains("DictationSession") }.joinToString(" | "))
     }
 
     /**
@@ -315,7 +315,7 @@ class VoicePipelineDeviceTest {
             emptyList<String>(),
             ourNotifications.map { "id=${'$'}{it.id}" },
         )
-        Log.i("VoiceFallbackDeviceTest", "handoff=$handoff shadeAfterDictation=empty")
+        DebugLogger.log("VoiceFallbackDeviceTest", "handoff=$handoff shadeAfterDictation=empty")
     }
 
     /** The handoff the session owner logged for the run that just finished, or `"none"`. */

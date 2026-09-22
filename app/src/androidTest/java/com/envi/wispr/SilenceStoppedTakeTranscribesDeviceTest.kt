@@ -17,6 +17,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import com.envi.wispr.debug.DebugLogger
 
 /**
  * The words survive a take that ended itself.
@@ -110,7 +111,7 @@ class SilenceStoppedTakeTranscribesDeviceTest {
                 "a take that ended on silence must still contain words. error was '$error', text was '$text'",
                 text.isNotBlank(),
             )
-            android.util.Log.i("SilenceUat", "Transcript of a silence-stopped take: '$text'")
+            DebugLogger.log("SilenceUat", "Silence-stopped take chars=${text.length}")
         } finally {
             runCatching { context.unbindService(asrConnection) }
         }

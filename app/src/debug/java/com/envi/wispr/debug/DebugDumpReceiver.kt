@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Base64
-import android.util.Log
 import com.envi.wispr.paste.PasteAccessibilityService
 
 /**
@@ -29,7 +28,7 @@ class DebugDumpReceiver : BroadcastReceiver() {
         val xml = try {
             PasteAccessibilityService.windowTreeXml()
         } catch (failure: RuntimeException) {
-            Log.w(TAG, "window tree read failed", failure)
+            DebugLogger.error(TAG, "window tree read failed", failure)
             resultCode = RESULT_UNBOUND
             return
         }
@@ -39,7 +38,7 @@ class DebugDumpReceiver : BroadcastReceiver() {
         }
         val encoded = Base64.encodeToString(xml.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         if (encoded.length > MAX_ENCODED_BYTES) {
-            Log.w(TAG, "window tree is ${encoded.length} bytes encoded; over the ${MAX_ENCODED_BYTES} cap")
+            DebugLogger.warn(TAG, "window tree is ${encoded.length} bytes encoded; over the ${MAX_ENCODED_BYTES} cap")
             resultCode = RESULT_TOO_BIG
             return
         }

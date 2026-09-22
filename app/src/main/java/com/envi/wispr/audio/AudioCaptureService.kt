@@ -826,11 +826,18 @@ class AudioCaptureService : Service() {
             .onFailure {
                 if (it !is IllegalStateException) DebugLogger.warn(TAG, "Failed to stop AudioRecord: ${it.message}")
             }
-        runCatching { record?.release() }
+        val released = record == null || runCatching { record.release() }
             .onFailure { DebugLogger.warn(TAG, "Failed to release AudioRecord: ${it.message}") }
-        // Every caller acquired the lease before creating the recorder (or failing to); released AFTER
-        // the recorder is, so the next start in this process cannot open a second one first.
-        RecorderLease.PROCESS.release()
+            .isSuccess
+        // Every caller acquired the lease before creating the recorder (or failing to); released only
+        // AFTER the recorder was, so the next start in this process cannot open a second one first. A
+        // recorder whose release failed is still held by the native layer for all this code knows, so the
+        // lease stays held until the process dies (#115 review round 2).
+        if (released) {
+            RecorderLease.PROCESS.release()
+        } else {
+            DebugLogger.warn(TAG, "Recorder release failed; the process's recorder lease stays held")
+        }
     }
 
     /** Wait for the capture thread to finish writing and close the file. */

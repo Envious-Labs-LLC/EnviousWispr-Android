@@ -9,7 +9,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the recorder: a thread parked inside a read keeps the recorder until process termination. `session` is
  * instance-local, so a NEW Service instance Android creates in the same cached `:audio` process could
  * otherwise open a second recorder while the old thread still holds the first. The lease is acquired before
- * the recorder is created and released only after the owning thread has released it, on every path.
+ * the recorder is created and released only after the owning thread has released it SUCCESSFULLY, on every
+ * path; a recorder whose release threw keeps the lease until the process dies.
  */
 internal class RecorderLease {
     private val held = AtomicBoolean(false)

@@ -34,7 +34,8 @@ class RecorderLeaseTest {
         val refusal = start.substring(acquire, create)
         assertTrue("a refused lease ends the take with the start-failure ending", refusal.contains("publishStartRefused(takeId, lastStartFailure)") && refusal.contains("return false"))
         val close = service.substringAfter("private fun closeResources(record: AudioRecord?, output: FileOutputStream?)").substringBefore("\n    }\n")
-        assertTrue("the lease is released after the recorder is", close.indexOf("RecorderLease.PROCESS.release()") > close.indexOf("record?.release()"))
+        assertTrue("the lease is released after the recorder is", close.indexOf("RecorderLease.PROCESS.release()") > close.indexOf("record.release()"))
+        assertTrue("and only when that release succeeded (or there was no recorder)", close.contains("val released = record == null || runCatching { record.release() }") && close.contains("if (released) {\n            RecorderLease.PROCESS.release()"))
         assertTrue("and only there", Regex("RecorderLease\\.PROCESS\\.release\\(\\)").findAll(service).count() == 1)
     }
 }

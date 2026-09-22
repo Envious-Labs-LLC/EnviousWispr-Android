@@ -143,6 +143,8 @@ class AudioServiceShapeTest {
             "warn: Auto-stop unavailable: start failed, \${}",
             "warn: Auto-stop unavailable: the detector call failed",
             "warn: Auto-stop unavailable: the detector gave up mid-take",
+            // #115 review round 2: a failed recorder release keeps the process lease held.
+            "warn: Recorder release failed; the process's recorder lease stays held",
             "warn: Auto-stop unavailable: the detector reported so",
             "warn: Auto-stop unavailable: the feeder failed, \${}",
             "warn: Bluetooth link refused for \${}; staying on the earbuds",

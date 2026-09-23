@@ -17,6 +17,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Harness Contract, not product coverage (`testing-philosophy.md` RULE:
@@ -504,6 +505,28 @@ class DictationSessionCoordinatorTest {
         assertTrue("nothing left in History", rig.dao.rows.isEmpty())
         assertTrue("the pinned editor is released", rig.insertion.releases.get() >= 1)
         assertTrue("no sentence: hearing nothing is not reported twice", rig.host.events.none { it.startsWith("toast") })
+    }
+
+    /**
+     * #253: a blank take ends and the Service is destroyed before the audio delete has run; the delete, queued
+     * on the process-owned worker, still runs after the teardown. MUTATION: delete on the session scope.
+     */
+    @Test
+    fun aTeardownRightAfterABlankTakeStillDeletesItsAudio() {
+        rig.capture.peak = 0.001f
+        val queued = java.util.concurrent.LinkedBlockingQueue<Runnable>()
+        val coordinator = rig.coordinator(audioCleanup = { queued += it })
+        startAndGoLive(coordinator)
+        rig.command(coordinator, DictationSessionService.ACTION_STOP)
+        val listener = rig.speech.awaitRequest()
+        val audio = checkNotNull(rig.capture.audioFile)
+        rig.onMain { listener.onResult("") }
+        assertEquals(TerminalReason.NO_SPEECH, rig.endings.awaitOne())
+        rig.onMain { coordinator.destroy() }
+        assertTrue("the audio is still on disk until its delete runs", audio.exists())
+        val delete = checkNotNull(queued.poll(10, TimeUnit.SECONDS)) { "the delete was never queued on the process worker" }
+        delete.run()
+        assertFalse("the take's audio was deleted after the teardown", audio.exists())
     }
 
     @Test

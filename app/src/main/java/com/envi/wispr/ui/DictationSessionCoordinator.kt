@@ -91,6 +91,11 @@ internal class DictationSessionCoordinator(
     private val endingSink: (TakeFacts, TerminalReason) -> Unit = ::recordTakeEnding,
     /** Where the owner's defects go. Production sends them to telemetry; a test counts them (#214). */
     private val defectSink: (AppDefect, Map<String, Any?>) -> Unit = Telemetry::defect,
+    /**
+     * Where a take's captured-audio delete runs (#253): a process-owned worker, never the session scope, so a
+     * Service teardown right after a take's ending cannot cancel the delete. A test holds it.
+     */
+    private val audioCleanup: (Runnable) -> Unit = CapturedAudioCleanup::execute,
 ) : PipelineController.Listener {
     companion object {
         /** The words' longest wait for their History save (#235). */
@@ -385,6 +390,8 @@ internal class DictationSessionCoordinator(
             isProcessing = { state.get() == SessionState.PROCESSING && take.arbiter.isOpen },
             isLive = ::polishStillWanted,
             onPrepared = ::publishPrepared,
+            mainDispatcher = mainDispatcher,
+            stillPublishable = { !destroyed.get() && take.arbiter.isOpen },
         )
         capture.begin(takeId, phaseView)
         teardownStarted.set(false)
@@ -884,6 +891,7 @@ internal class DictationSessionCoordinator(
                 val asrRequestedAtMs = host.elapsedRealtimeMs()
                 speechService.transcribeFileForTake(audioFilePath, takeId, object : SpeechListener {
                     override fun onResult(text: String?) {
+                        // Posted to main by the speech proxy (#253); the file delete runs on its own worker.
                         deleteCapturedAudio(audioFilePath)
                         takeFacts.asrMs = host.elapsedRealtimeMs() - asrRequestedAtMs
                         takeFacts.asrChars = text?.length ?: 0
@@ -1242,14 +1250,17 @@ internal class DictationSessionCoordinator(
         if (state.get() == SessionState.IDLE) host.stopSelfNow()
     }
 
+    /** Queues the delete on [audioCleanup] and returns: never on main's time, never cancelled by teardown (#253). */
     private fun deleteCapturedAudio(path: String?) {
         if (path.isNullOrBlank()) return
-        runCatching {
-            val file = File(path)
-            if (file.exists() && !file.delete()) {
-                log.warn("Unable to delete captured audio after terminal processing")
-            }
-        }.onFailure { error -> log.warn("Unable to delete captured audio: ${error.javaClass.simpleName}") }
+        audioCleanup(Runnable {
+            runCatching {
+                val file = File(path)
+                if (file.exists() && !file.delete()) {
+                    log.warn("Unable to delete captured audio after terminal processing")
+                }
+            }.onFailure { error -> log.warn("Unable to delete captured audio: ${error.javaClass.simpleName}") }
+        })
     }
 
     /**

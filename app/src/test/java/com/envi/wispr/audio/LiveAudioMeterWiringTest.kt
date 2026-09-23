@@ -106,7 +106,7 @@ class LiveAudioMeterWiringTest {
         // Drift Guard (#115, coverage G1): a token inventory of every binder call the owner's capture
         // proxy makes. Three commands and two listener registrations; no getter, no wait. A polled read
         // reintroduced here is the fifth poll (#44) coming back under a new name.
-        val proxy = bindings.substringAfter("private class CaptureProxy(").substringBefore("private class SpeechProxy(")
+        val proxy = bindings.substringAfter("private class CaptureProxy(").substringBefore("internal class SpeechProxy(")
         val calls = Regex("service\\.([A-Za-z]+)\\(").findAll(proxy).map { it.groupValues[1] }.toSortedSet()
         assertEquals(
             sortedSetOf("finishTake", "registerSpectrumListener", "registerTakeListener", "startCaptureForTake", "stopCapture"),

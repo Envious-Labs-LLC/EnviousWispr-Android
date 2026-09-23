@@ -65,7 +65,7 @@ internal class PipelineBindings(
 
     private val asrConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            speech = SpeechProxy(IAsrService.Stub.asInterface(binder))
+            speech = speechProxy(IAsrService.Stub.asInterface(binder), mainHandler::post)
             listener?.onSpeechConnected()
         }
 
@@ -77,7 +77,7 @@ internal class PipelineBindings(
 
     private val polishConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            polish = PolishProxy(IPolishService.Stub.asInterface(binder))
+            polish = PolishProxy(IPolishService.Stub.asInterface(binder), mainHandler::post)
             listener?.onPolishConnected()
         }
 
@@ -156,21 +156,28 @@ internal class PipelineBindings(
 
     /**
      * One fresh anonymous Stub per request, built synchronously inside this call after every argument is
-     * evaluated and immediately before the proxy call; never cached, the listener never stored. Every
-     * callback invokes the listener directly on the binder thread it arrived on, with no post.
+     * evaluated and immediately before the proxy call; never cached, the listener never stored. The Stub is
+     * transport only (#253): every callback posts its values to main through [PostingSpeechListener] and
+     * returns, so the owner's decision runs on main and the `:asr` caller is never held.
      */
-    private class SpeechProxy(private val service: IAsrService) : SpeechLink {
+    internal class SpeechProxy(private val service: IAsrService, private val post: (Runnable) -> Unit) : SpeechLink {
         override fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener) {
+            val posting = PostingSpeechListener(post, listener)
             service.transcribeFileForTake(audioFilePath, takeId, object : IAsrCallback.Stub() {
-                override fun onResult(text: String?) = listener.onResult(text)
-                override fun onError(message: String?) = listener.onError(message)
-                override fun onFailure(reason: Int, detail: String?) = listener.onFailure(reason, detail)
+                override fun onResult(text: String?) = posting.onResult(text)
+                override fun onError(message: String?) = posting.onError(message)
+                override fun onFailure(reason: Int, detail: String?) = posting.onFailure(reason, detail)
             })
         }
     }
 
-    /** Same Stub contract as [SpeechProxy]. */
-    private class PolishProxy(private val service: IPolishService) : PolishLink {
+    internal companion object {
+        /** The production speech proxy; `androidTest` binds the real `:asr` through it (#253). */
+        fun speechProxy(service: IAsrService, post: (Runnable) -> Unit): SpeechLink = SpeechProxy(service, post)
+    }
+
+    /** Same Stub contract as [SpeechProxy], through [PostingPolishListener]. */
+    private class PolishProxy(private val service: IPolishService, private val post: (Runnable) -> Unit) : PolishLink {
         override fun warmUpWithPolicy(policy: PolishPolicy) = service.warmUpWithPolicy(policy)
 
         override fun polishRequestForTake(
@@ -183,6 +190,7 @@ internal class PipelineBindings(
             takeId: String,
             listener: PolishListener,
         ) {
+            val posting = PostingPolishListener(post, listener)
             service.polishRequestForTake(
                 requestId,
                 rawText,
@@ -192,13 +200,31 @@ internal class PipelineBindings(
                 policy,
                 takeId,
                 object : IPolishCallback.Stub() {
-                    override fun onOutcome(outcome: PolishOutcome?) = listener.onOutcome(outcome)
-                    override fun onResult(text: String?, engine: String?, latencyMs: Long) = listener.onResult(text, engine, latencyMs)
-                    override fun onError(message: String?) = listener.onError(message)
+                    override fun onOutcome(outcome: PolishOutcome?) = posting.onOutcome(outcome)
+                    override fun onResult(text: String?, engine: String?, latencyMs: Long) = posting.onResult(text, engine, latencyMs)
+                    override fun onError(message: String?) = posting.onError(message)
                 },
             )
         }
 
         override fun cancel(requestId: Long) = service.cancel(requestId)
     }
+}
+
+/**
+ * A speech callback's values, posted to main before the owner's listener sees them (#253): the binder thread
+ * only enqueues and returns, the way the capture listener's events already reach the owner (#115). Always a
+ * post, never an inline call, even when already on main.
+ */
+internal class PostingSpeechListener(private val post: (Runnable) -> Unit, private val listener: SpeechListener) : SpeechListener {
+    override fun onResult(text: String?) = post(Runnable { listener.onResult(text) })
+    override fun onError(message: String?) = post(Runnable { listener.onError(message) })
+    override fun onFailure(reason: Int, detail: String?) = post(Runnable { listener.onFailure(reason, detail) })
+}
+
+/** A polish callback's values, posted to main before the owner's listener sees them (#253). */
+internal class PostingPolishListener(private val post: (Runnable) -> Unit, private val listener: PolishListener) : PolishListener {
+    override fun onOutcome(outcome: PolishOutcome?) = post(Runnable { listener.onOutcome(outcome) })
+    override fun onResult(text: String?, engine: String?, latencyMs: Long) = post(Runnable { listener.onResult(text, engine, latencyMs) })
+    override fun onError(message: String?) = post(Runnable { listener.onError(message) })
 }

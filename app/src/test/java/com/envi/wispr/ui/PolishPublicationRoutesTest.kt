@@ -35,12 +35,14 @@ class PolishPublicationRoutesTest {
         assertEquals(3, calls)
         val prepared = section("private fun publishPrepared(", "\n\n")
         assertEquals(2, Regex("""\bpublishResult\(""").findAll(prepared).count())
-        // The controller hands text back from exactly the outcome callback and its fallback.
-        assertEquals(2, Regex("""(^|[^A-Za-z0-9_.])onPrepared\(""").findAll(polish).count())
+        // The controller hands text back through ONE main-thread door, `handBack` (#253), reached from exactly
+        // the outcome callback and its fallback.
+        assertEquals(1, Regex("""(^|[^A-Za-z0-9_.])onPrepared\(""").findAll(polish).count())
+        assertEquals(1, Regex("""\bonPrepared\(""").findAll(section("private fun handBack(", "\n    }\n", polish)).count())
         val outcome = section("override fun onOutcome", "override fun onResult", polish)
-        val fallback = section("private fun fallBack", "private fun deterministic(", polish)
-        assertEquals(1, Regex("""\bonPrepared\(""").findAll(outcome).count())
-        assertEquals(1, Regex("""\bonPrepared\(""").findAll(fallback).count())
+        val fallback = section("private fun fallBack", "private fun handBack(", polish)
+        assertEquals(1, Regex("""\bhandBack \{""").findAll(outcome).count())
+        assertEquals(1, Regex("""\bhandBack \{""").findAll(fallback).count())
     }
 
     @Test fun theFactsAreDerivedOnceTheWriteIsEnqueuedWithTheReservationAndTheNoticePrecedesTheContinuation() {

@@ -12,7 +12,9 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
@@ -50,6 +52,9 @@ class SettingsActivity : ComponentActivity() {
     private val readinessViewModel: ReadinessViewModel by viewModels {
         ReadinessViewModel.Factory(appContext = applicationContext)
     }
+    private val modelWorkViewModel: ModelWorkViewModel by viewModels {
+        ModelWorkViewModel.Factory(appContext = applicationContext, readiness = readinessViewModel.state)
+    }
 
     private val microphonePermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -69,6 +74,10 @@ class SettingsActivity : ComponentActivity() {
         val thirdPartyNotices = runCatching {
             assets.open("THIRD_PARTY_NOTICES.txt").bufferedReader().use { it.readText() }
         }.getOrElse { "Third-party notices are unavailable in this build." }
+        // A finished model work refreshes readiness while the activity is started (#255).
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) { collectModelRefresh(modelWorkViewModel.finished, ::refreshReadiness) }
+        }
 
         setContent {
             val shell by shellViewModel.state.collectAsStateWithLifecycle()
@@ -77,15 +86,17 @@ class SettingsActivity : ComponentActivity() {
             val dictionary by dictionaryViewModel.state.collectAsStateWithLifecycle()
             val polish by polishViewModel.settings.collectAsStateWithLifecycle()
             val discovery by polishViewModel.providerDiscovery.collectAsStateWithLifecycle()
+            val models by modelWorkViewModel.models.collectAsStateWithLifecycle()
 
             EnviousWisprTheme(dynamicColor = shell.preferences.dynamicColorEnabled) {
-                val actions = remember(shellViewModel, historyViewModel, dictionaryViewModel, polishViewModel, readinessViewModel) {
+                val actions = remember(shellViewModel, historyViewModel, dictionaryViewModel, polishViewModel, readinessViewModel, modelWorkViewModel) {
                     AppActions(
                         shell = ShellActions(
                             onStartDictation = {
                                 startActivity(Intent(this, VoiceInputActivity::class.java).putExtra(VoiceInputActivity.EXTRA_TRIGGER_SOURCE, TriggerSource.APP.wire))
                             },
                             onRefreshReadiness = ::refreshReadiness,
+                            onShowModels = modelWorkViewModel::show,
                         ),
                         permissions = PermissionActions(
                             onRequestMicrophone = {
@@ -158,6 +169,7 @@ class SettingsActivity : ComponentActivity() {
                         dictionary = dictionary,
                         polish = polish,
                         discovery = discovery,
+                        models = models,
                     ),
                     licenseNotices = thirdPartyNotices,
                     actions = actions,

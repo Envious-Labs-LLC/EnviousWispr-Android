@@ -47,11 +47,11 @@ class AppShellShapeTest {
 
     @Test fun theActivityBuildsTheActionsOnce() {
         assertTrue(
-            "SettingsActivity no longer builds AppActions inside one remember keyed on all five view models, so a " +
+            "SettingsActivity no longer builds AppActions inside one remember keyed on all six view models, so a " +
                 "recomposition hands the screens a new holder or a recreated view model keeps a stale one",
             Regex(
                 """(?s)val\s+actions\s*=\s*remember\s*\(\s*shellViewModel,\s*historyViewModel,\s*dictionaryViewModel,\s*""" +
-                    """polishViewModel,\s*readinessViewModel\s*\)\s*\{\s*AppActions\s*\(""",
+                    """polishViewModel,\s*readinessViewModel,\s*modelWorkViewModel\s*\)\s*\{\s*AppActions\s*\(""",
             ).containsMatchIn(activity),
         )
     }

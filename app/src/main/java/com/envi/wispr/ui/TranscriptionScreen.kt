@@ -15,11 +15,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.work.WorkManager
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
+import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.settings.AppPreferencesState
 
 /**
@@ -38,7 +37,8 @@ internal const val FILLER_TOGGLE_SUBTITLE = "Remove pauses such as uh and hmm."
  */
 @Composable
 internal fun TranscriptionScreen(
-    readiness: AppReadiness,
+    /** Parakeet's card, projected off main by `ModelWorkViewModel` (#255). */
+    speechModel: ModelUiState,
     preferences: AppPreferencesState,
     onRefreshReadiness: () -> Unit,
     onFillerRemovalChanged: (Boolean) -> Unit,
@@ -49,9 +49,7 @@ internal fun TranscriptionScreen(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
-    val parakeetWork by WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.downloadWorkName(ModelManifest.parakeet)).collectAsStateWithLifecycle(emptyList())
-    val parakeetAdoption by WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.adoptionWorkName(ModelManifest.parakeet)).collectAsStateWithLifecycle(emptyList())
-    val parakeetState = workUiState(preferredModelWork(parakeetWork, parakeetAdoption), readiness.speechModelReady, ModelManifest.parakeet, context)
+    val parakeetState = speechModel
     fun updateWithHaptic(value: Boolean, update: (Boolean) -> Unit) {
         view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         update(value)

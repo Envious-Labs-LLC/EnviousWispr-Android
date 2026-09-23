@@ -1808,7 +1808,7 @@ Group main:
         return path
 
     def make_fs(final=None, arrive_short=False, race=False, copy_fails=False, copy_short=False,
-                create_denied=False, rm_fails=()):
+                create_denied=False, rm_fails=(), presence_unknown=False, interrupt=False):
         fs = {"files": {} if final is None else {"cache/enviouswispr-uat.pcm": final}, "ops": []}
 
         def fake_adb(command, timeout=60, check=True, serial=None):
@@ -1842,6 +1842,8 @@ Group main:
                 fs["files"].pop(path, None)
                 return 0, ""
             if "then echo present" in command:
+                if presence_unknown:
+                    return 1, ""
                 path = command.split("[ -e ", 1)[1].split(" ]", 1)[0]
                 return 0, "present\n" if path in fs["files"] else "absent\n"
             return 0, ""
@@ -1852,6 +1854,8 @@ Group main:
             fs["ops"].append(("exec-in", target))
             fs["sent"] = data
             fs["files"][target] = data[: len(data) // 2] if arrive_short else data
+            if interrupt:
+                raise Interrupted()
             return 0
 
         return fs, fake_adb, fake_exec_in
@@ -1889,6 +1893,23 @@ Group main:
         check("a short transfer refuses, publishes nothing and removes the temporary name",
               "cache/enviouswispr-uat.pcm" not in fs["files"] and not any(k.startswith("cache/.") for k in fs["files"])
               and not any(op[0] == "publish" for op in fs["ops"]), fs["ops"])
+    class Interrupted(BaseException):
+        pass
+
+    fs, eyes._adb, eyes._exec_in = make_fs(interrupt=True)
+    try:
+        eyes.stage_uat_fixture("x")
+        check("an interrupt after the temporary write propagates", False, "it returned")
+    except Interrupted:
+        check("an interrupt after the temporary write removes the temporary before propagating",
+              not fs["files"] and fs["ops"][-1][0] == "rm", fs["ops"])
+    fs, eyes._adb, eyes._exec_in = make_fs(create_denied=True, presence_unknown=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a refused creation the device cannot see behind is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a refused creation the device cannot see behind is BLOCKED as unknown, never as absent",
+              "could not tell" in str(refusal) and "no fixture is there" not in str(refusal), str(refusal))
     fs, eyes._adb, eyes._exec_in = make_fs(create_denied=True)
     try:
         line = eyes.stage_uat_fixture("x")

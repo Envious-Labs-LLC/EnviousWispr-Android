@@ -3276,10 +3276,14 @@ def stage_uat_fixture(sentence):
         published, why = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(script)}", check=False)
         detail = why.strip()[-120:] or "no message"
         if published == 3:
-            if _remote_presence(final) == "present":
+            presence = _remote_presence(final)
+            if presence == "present":
                 return (f"a fixture appeared at {PACKAGE}/{final} while staging; it was left untouched and "
                         f"nothing was staged ({detail})")
-            raise Blocked(f"{PACKAGE}/{final} could not be created and no fixture is there ({detail}); nothing was staged")
+            if presence == "absent":
+                raise Blocked(f"{PACKAGE}/{final} could not be created and no fixture is there ({detail}); nothing was staged")
+            raise Blocked(f"{PACKAGE}/{final} could not be created and the device could not tell whether a fixture is "
+                          f"there ({detail}); nothing was staged")
         if published == 4:
             left = _remove_owned(final)
             raise Blocked(f"the fixture could not be copied into {PACKAGE}/{final} ({detail}); "
@@ -3294,7 +3298,7 @@ def stage_uat_fixture(sentence):
 
     try:
         outcome = publish()
-    except Exception as failure:
+    except BaseException as failure:
         left = _remove_owned(temporary)
         if left and isinstance(failure, Blocked):
             raise Blocked(f"{failure}; the temporary {left}") from failure

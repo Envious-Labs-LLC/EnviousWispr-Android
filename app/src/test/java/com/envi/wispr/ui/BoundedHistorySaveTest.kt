@@ -107,7 +107,11 @@ class BoundedHistorySaveTest {
         assertTrue(toasts().isEmpty())
     }
 
-    /** Row 6. MUTATION: deliver after a revoked commit. */
+    /**
+     * Row 6. Two independent guards hold this row, the scope destroy cancels and the revoked commit, so no single
+     * mutation turns it red. MUTATION (both): run the continuation on a scope destroy does not cancel, and
+     * deliver after a revoked commit.
+     */
     @Test fun aDestroyWhileTheSaveIsHeldDeliversNothing() {
         rig.dao.holdFinalize = CompletableDeferred()
         val coordinator = rig.coordinator(historySaveBoundMs = 5_000L)
@@ -167,7 +171,29 @@ class BoundedHistorySaveTest {
         assertEquals("a failed fallback outcome leaves the row neutral, never ready", TranscriptEntity.STATUS_SAVED_UNROUTED, theOnlyRow().status)
     }
 
-    // Recovery (row 9): the rig's DAO mirrors the Room queries; the SQL itself is TranscriptDaoRouteTest's.
+    /** Row 5b. MUTATION: `mustPreventDataLoss = false` (the copy then follows the user's auto-copy setting). */
+    @Test fun aTimedOutTakeCopiesEvenWithAutoCopyOff() {
+        rig.preferenceStates.value = rig.preferenceStates.value.copy(autoCopyToClipboard = false)
+        rig.dao.holdFinalize = CompletableDeferred()
+        val coordinator = rig.coordinator(historySaveBoundMs = 50L)
+        takeWithPolishedWords(coordinator)
+        rig.endings.awaitOne()
+        rig.host.awaitServiceStopped()
+        assertTrue("the words reach the clipboard whatever the setting", rig.host.events.contains("clipboard:Keep these words."))
+    }
+
+    /** Row 9c. MUTATION: write the no-draft saved row as `ready_for_insertion`. */
+    @Test fun aTakeWithNoDraftAlsoSavesANeutralRow() {
+        rig.dao.failDraftInsert = true
+        rig.dao.holdPromotion = CompletableDeferred()
+        val coordinator = rig.coordinator(historySaveBoundMs = 5_000L)
+        takeWithPolishedWords(coordinator)
+        rig.endings.awaitOne()
+        rig.host.awaitServiceStopped()
+        assertEquals(TranscriptEntity.STATUS_SAVED_UNROUTED, rig.dao.rows.values.single().status)
+    }
+
+    // Recovery (row 9): the rig's DAO mirrors the Room queries; the SQL itself is TranscriptRouteDaoTest's.
 
     private fun row(id: Long, status: String, result: String, changedAtMs: Long) = TranscriptEntity(
         id = id, originalText = "words", finalText = "Words.", createdAtMs = changedAtMs, durationMs = 1L,

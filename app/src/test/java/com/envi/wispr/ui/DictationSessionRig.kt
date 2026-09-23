@@ -681,8 +681,11 @@ internal class DictationSessionRig {
         @Volatile var holdStatusWrites: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(rows.values.toList())
+        /** When set, only the take's draft insert fails, so the publication inserts its own row (#235 row 9c). */
+        @Volatile var failDraftInsert = false
         override suspend fun insert(transcript: TranscriptEntity): Long {
             if (failInserts) throw IllegalStateException("disk full")
+            if (failDraftInsert && transcript.status == TranscriptEntity.STATUS_DRAFT) throw IllegalStateException("draft insert failed")
             val id = nextId.getAndIncrement()
             rows[id] = transcript.copy(id = id)
             return id

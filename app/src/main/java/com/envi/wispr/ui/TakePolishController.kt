@@ -11,9 +11,11 @@ import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.PolishReason
 import com.envi.wispr.telemetry.AppDefect
 import com.envi.wispr.vocabulary.StructuredTermRestorer
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -76,6 +78,10 @@ internal class TakePolishController(
     /** Not destroyed and a live state; the warm-up's pre-send check. */
     private val isLive: () -> Boolean,
     private val onPrepared: (PreparedText) -> Unit,
+    /** The owner's main dispatcher (#253): every claim and every hand-back runs there. */
+    private val mainDispatcher: CoroutineDispatcher,
+    /** Not destroyed, not cancelled, nothing committed: read on main before a prepared text is handed back (#253). */
+    private val stillPublishable: () -> Boolean,
     /** The vocabulary restorer (#252: a JVM row makes it throw). */
     private val restore: (String, StructuredTermRestorer.Matcher) -> String = { text, matcher -> matcher.restore(text) },
     /** The deterministic cleanup with its language detection (#252: a JVM row makes it throw). */
@@ -221,7 +227,9 @@ internal class TakePolishController(
                 // The ledger is the only first-wins gate: an outcome that arrives first closes it.
                 scope.launch {
                     timeout.await(takePreferences.policy)
-                    if (!claim(opened)) return@launch
+                    // The claim on main (#253), so an answer already queued there before the timeout wins.
+                    val won = withContext(mainDispatcher) { claim(opened) }
+                    if (!won) return@launch
                     log.warn("Polish watchdog fired for request $opened; cancelling on the engine")
                     cancelClaimed(opened)
                     fallBack(rawText, takePreferences, PolishReason.WATCHDOG_TIMEOUT)
@@ -255,8 +263,10 @@ internal class TakePolishController(
             } catch (error: Exception) {
                 log.error("Unable to call polish service", error)
                 // The service can throw while alive, so the call itself is reported; a disconnect that
-                // follows shares the once gate and raises nothing more (#234).
-                if (claim(requestId)) {
+                // follows shares the once gate and raises nothing more (#234). Claimed on main (#253): an
+                // answer the engine sent before it threw is queued there first and wins.
+                val won = withContext(mainDispatcher) { claim(requestId) }
+                if (won) {
                     reportFailure(AppDefect.PolishCallFailed)
                     fallBack(rawText, takePreferences, PolishReason.CALL_FAILED)
                 }
@@ -325,8 +335,8 @@ internal class TakePolishController(
                 return
             }
             // If only the vocabulary restore fails, the engine's own answer lands with its original reason and
-            // status (#252); the notice follows that reason, none for POLISHED.
-            onPrepared(
+            // status (#252); the notice follows that reason, none for POLISHED. Restored off main (#253).
+            handBack {
                 PreparedText.Polished(
                     restoreVocabulary(outcome.text, takePreferences, STEP_RESTORE_ANSWER) ?: outcome.text,
                     outcome.engine,
@@ -334,8 +344,8 @@ internal class TakePolishController(
                     outcome.reason,
                     outcome.statusCode,
                     PolishContext.from(takePreferences.policy),
-                ),
-            )
+                )
+            }
         }
 
         // v1 answers are never produced for a v2 request. If one ever arrives it is an engine defect, and the
@@ -395,7 +405,21 @@ internal class TakePolishController(
     private fun fallBack(rawText: String, takePreferences: SessionPreferences, reason: PolishReason) {
         cancelOpen()
         log.warn("Polish fell back on the session owner: reason=$reason")
-        onPrepared(preparedFallback(rawText, takePreferences, reason))
+        handBack { preparedFallback(rawText, takePreferences, reason) }
+    }
+
+    /**
+     * Prepares a claimed take's text off main (vocabulary restore, ML Kit detection, cleanup) and hands it back
+     * on main, once, only while the take can still publish (#253): a callback or a disconnect never runs the
+     * preparation on a binder thread or on main, and a take cancelled or destroyed meanwhile publishes nothing.
+     */
+    private fun handBack(prepare: () -> PreparedText) {
+        scope.launch(Dispatchers.IO) {
+            val text = prepare()
+            withContext(mainDispatcher) {
+                if (stillPublishable()) onPrepared(text) else log.log("Prepared polish text dropped: the take can no longer publish")
+            }
+        }
     }
 
     /**

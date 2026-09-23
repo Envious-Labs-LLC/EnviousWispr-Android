@@ -8,6 +8,7 @@ import com.envi.wispr.telemetry.AppDefect
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
@@ -31,6 +32,40 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class TakePolishControllerTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** The owner's main thread (#253): one named thread, so a row can say what ran on it. */
+    private val mainExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "test-main") }
+    /** Every task queued on main, counted and signalled, so an ordering row waits for a contender's queueing, never a clock. */
+    private val mainQueued = java.util.concurrent.atomic.AtomicInteger()
+    private val mainQueue = Object()
+    private val countingMain = java.util.concurrent.Executor { task ->
+        synchronized(mainQueue) { mainQueued.incrementAndGet(); mainQueue.notifyAll() }
+        mainExecutor.execute(task)
+    }
+    private val mainDispatcher = countingMain.asCoroutineDispatcher()
+
+    /** The running thread's name without the coroutine debug agent's ` @coroutine#N` suffix. */
+    private fun threadName() = Thread.currentThread().name.substringBefore(" @")
+
+    /** Waits, bounded, until [n] tasks have been queued on main since the test began. */
+    private fun awaitMainQueued(n: Int) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        synchronized(mainQueue) {
+            while (mainQueued.get() < n) {
+                val left = deadline - System.nanoTime()
+                check(left > 0) { "main never had $n tasks queued (had ${mainQueued.get()})" }
+                TimeUnit.NANOSECONDS.timedWait(mainQueue, left)
+            }
+        }
+    }
+
+    /** Holds main until the returned latch is released; the hold itself is task 1 on main's count. */
+    private fun holdMain(): CountDownLatch {
+        val release = CountDownLatch(1)
+        countingMain.execute { release.await(10, TimeUnit.SECONDS) }
+        return release
+    }
+    private val publishable = AtomicBoolean(true)
+    private val preparedOn = CopyOnWriteArrayList<String>()
     private val lock = Any()
     private val log = DictationSessionRig.FakeLog()
     private val timeout = DictationSessionRig.FakePolishTimeout()
@@ -64,17 +99,21 @@ class TakePolishControllerTest {
         isProcessing = { processing.get() },
         isLive = { true },
         onPrepared = { text ->
+            preparedOn += threadName()
             preparedUnderLock += Thread.holdsLock(lock)
             prepared += text
             handedBack.countDown()
         },
         restore = restore,
         cleanup = cleanup,
+        mainDispatcher = mainDispatcher,
+        stillPublishable = { publishable.get() },
     )
 
     @After fun tearDown() {
         link.hold?.countDown()
         scope.cancel()
+        mainExecutor.shutdownNow()
     }
 
     /** The polish process as the controller sees it; a request can be held inside the call. */
@@ -453,5 +492,101 @@ class TakePolishControllerTest {
         link.awaitRequest()
         c.disconnected()
         assertEquals(PolishReason.SERVICE_DIED, (awaitHandedBack() as PreparedText.Fallback).reason)
+    }
+
+    // ---- #253: claims and hand-backs on main, preparation off it ---------------------------------------------------
+
+    /**
+     * Row 2: a fallback is prepared off main and handed back on main, and a held preparation leaves main free.
+     * MUTATIONS: prepare inside the main hop; hand back without the main hop.
+     */
+    @Test fun aFallbackIsPreparedOffMainAndHandedBackOnMain() {
+        val preparing = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val preparedIn = CopyOnWriteArrayList<String>()
+        val c = newController(cleanup = { text, _, _ ->
+            preparedIn += threadName()
+            preparing.countDown()
+            release.await(10, TimeUnit.SECONDS)
+            text
+        })
+        try {
+            c.claimSpeechLossFallback("hello world")
+            assertTrue("the preparation started", preparing.await(10, TimeUnit.SECONDS))
+            val mainFree = CountDownLatch(1)
+            countingMain.execute { mainFree.countDown() }
+            assertTrue("main stays free while the fallback is prepared", mainFree.await(10, TimeUnit.SECONDS))
+        } finally {
+            release.countDown()
+        }
+        awaitHandedBack()
+        assertTrue("prepared off main: $preparedIn", preparedIn.none { it == "test-main" })
+        assertEquals("handed back on main", listOf("test-main"), preparedOn.toList())
+    }
+
+    /**
+     * Row 3: an answer already queued on main before the watchdog fires wins; the watchdog's claim, queued after
+     * it, finds nothing. MUTATION: claim the watchdog off main.
+     */
+    @Test fun anAnswerQueuedOnMainBeforeTheWatchdogWins() {
+        controller.prepare("hello world", preferences)
+        val listener = link.awaitRequest()
+        val release = holdMain()
+        countingMain.execute { listener.onOutcome(link.outcome("Hello world.")) }
+        timeout.fire()
+        // Task 3 is the watchdog's claim (or, if it claimed off main, its hand-back): either way it has acted.
+        awaitMainQueued(3)
+        release.countDown()
+        assertEquals("Hello world.", awaitHandedBack().text)
+        awaitControllerIdle()
+        assertEquals("one text for the take", 1, prepared.size)
+        assertTrue(prepared.single() is PreparedText.Polished)
+    }
+
+    /**
+     * Row 4b: the engine posts an answer and then its request call throws; the answer, queued on main first,
+     * wins. MUTATION: claim the thrown request off main.
+     */
+    @Test fun anAnswerSentBeforeTheRequestThrewWins() {
+        val release = holdMain()
+        val throwing = object : PolishLink by link {
+            override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
+                val answer = PolishOutcome(requestId = requestId, text = "Hello world.", engine = "Fake engine", reason = PolishReason.POLISHED, statusCode = 0, latencyMs = 1L)
+                countingMain.execute { listener.onOutcome(answer) }
+                throw IllegalStateException("engine threw after answering")
+            }
+        }
+        val c = TakePolishController(
+            lock = lock, ledger = PolishRequestLedger(), timeout = timeout, scope = scope, link = { throwing },
+            languageDetector = { null }, log = log, takeId = "take-1", defectSink = { defect, facts -> defects += defect to facts },
+            preferences = { preferences }, transcript = { "hello world" }, isProcessing = { processing.get() }, isLive = { true },
+            onPrepared = { text -> prepared += text; handedBack.countDown() },
+            mainDispatcher = mainDispatcher, stillPublishable = { publishable.get() },
+        )
+        c.prepare("hello world", preferences)
+        // Task 3: the thrown request's claim on main, or (off main) its fallback's hand-back.
+        awaitMainQueued(3)
+        release.countDown()
+        awaitHandedBack()
+        // The watchdog, still armed, now finds the request answered and stands down.
+        timeout.fire()
+        awaitControllerIdle()
+        assertTrue("the answer won: $prepared", prepared.single() is PreparedText.Polished)
+        assertTrue("no call failure was reported", defects.none { it.first == AppDefect.PolishCallFailed })
+    }
+
+    /**
+     * Row 4: a text prepared after the take can no longer publish is dropped, fallback and answer alike.
+     * MUTATION: drop the `stillPublishable` check.
+     */
+    @Test fun aTakeThatCanNoLongerPublishGetsNoText() {
+        publishable.set(false)
+        controller.claimSpeechLossFallback("hello world")
+        log.awaitLine("Prepared polish text dropped")
+        val c2 = newController()
+        c2.prepare("hello world", preferences)
+        link.awaitRequest().onOutcome(link.outcome("Hello world."))
+        log.awaitLine("Prepared polish text dropped", 2)
+        assertTrue("nothing handed back: $prepared", prepared.isEmpty())
     }
 }

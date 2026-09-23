@@ -385,6 +385,8 @@ internal class DictationSessionCoordinator(
             isProcessing = { state.get() == SessionState.PROCESSING && take.arbiter.isOpen },
             isLive = ::polishStillWanted,
             onPrepared = ::publishPrepared,
+            mainDispatcher = mainDispatcher,
+            stillPublishable = { !destroyed.get() && take.arbiter.isOpen },
         )
         capture.begin(takeId, phaseView)
         teardownStarted.set(false)
@@ -884,7 +886,8 @@ internal class DictationSessionCoordinator(
                 val asrRequestedAtMs = host.elapsedRealtimeMs()
                 speechService.transcribeFileForTake(audioFilePath, takeId, object : SpeechListener {
                     override fun onResult(text: String?) {
-                        deleteCapturedAudio(audioFilePath)
+                        // Posted to main by the speech proxy (#253); the file delete is IO.
+                        scope.launch(Dispatchers.IO) { deleteCapturedAudio(audioFilePath) }
                         takeFacts.asrMs = host.elapsedRealtimeMs() - asrRequestedAtMs
                         takeFacts.asrChars = text?.length ?: 0
                         log.log("Transcription result received (chars=${text?.length ?: 0})")
@@ -895,7 +898,7 @@ internal class DictationSessionCoordinator(
 
                     /** The versioned request never answers this; a legacy sentence here is a service defect. */
                     override fun onError(message: String?) {
-                        deleteCapturedAudio(audioFilePath)
+                        scope.launch(Dispatchers.IO) { deleteCapturedAudio(audioFilePath) }
                         log.error("Legacy onError on a versioned request")
                         // The fact is written before the claim so the ending's row carries it; a claim
                         // that loses leaves an unread fact, never a rewritten row (G1 D2).
@@ -907,7 +910,7 @@ internal class DictationSessionCoordinator(
                     }
 
                     override fun onFailure(reason: Int, detail: String?) {
-                        deleteCapturedAudio(audioFilePath)
+                        scope.launch(Dispatchers.IO) { deleteCapturedAudio(audioFilePath) }
                         val failure = AsrFailureReason.fromCode(reason)
                         takeFacts.asrFailure = failure
                         takeFacts.asrMs = host.elapsedRealtimeMs() - asrRequestedAtMs

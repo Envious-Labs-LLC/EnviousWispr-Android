@@ -37,8 +37,9 @@ import com.envi.wispr.ui.VoiceInputActivity
  * FLAG_NOT_TOUCH_MODAL the WINDOW rectangle is the touch area and anything transparent inside it eats
  * taps meant for the app underneath.
  *
- * Everything that decides WHETHER the bubble shows comes from [PasteAccessibilityService], which owns
- * the accessibility events; this class never reads the node tree. Everything that decides what a touch
+ * [AccessibilityBubbleHost] decides when the bubble shows and supplies its position, look, earbuds and
+ * keyboard bounds; [EditorTargetTracker] answers which editor is focused (#217). This overlay does not read
+ * the node tree; the direct start still goes through the [PasteAccessibilityService] it is built with. Everything that decides what a touch
  * MEANT is [BubbleGestureClassifier]; everything that decides WHERE a shape goes is [BubblePlacement].
  * This class wires them to Android.
  */
@@ -106,7 +107,7 @@ internal class RecordingAccessibilityOverlay(
     private var lastElapsedSeconds = -1
     private var lastNotice: String? = null
 
-    /** The service's word on whether another app's editable field is focused, and which one. */
+    /** The bubble host's word on whether another app's editable field is focused, and which one. */
     private var fieldActive = false
     private var fieldKey: Any? = null
     /** Set when the user drops the bubble on the hide target; cleared by a DIFFERENT field key. */
@@ -131,7 +132,7 @@ internal class RecordingAccessibilityOverlay(
         remove()
     }
 
-    // ---- what the service tells the overlay ----
+    // ---- what the bubble host tells the overlay ----
 
     /** Another app's editable field is focused. [key] identifies the editor node, never the window alone. */
     fun fieldActivated(key: Any) {
@@ -156,17 +157,17 @@ internal class RecordingAccessibilityOverlay(
         render()
     }
 
-    /** The persisted position, loaded by the service off the main thread. */
+    /** The persisted position, loaded by the bubble host off the main thread. */
     fun setPosition(loaded: BubblePosition) {
         if (position == loaded) return
         position = loaded
         render()
     }
 
-    /** What the service persists after a drag. Set by the service so the store stays out of this class. */
+    /** What the bubble host persists after a drag. Set by the host so the store stays out of this class. */
     var onPositionChanged: ((BubblePosition) -> Unit)? = null
 
-    /** The look the user chose in Settings > Appearance, delivered by the service on the main thread. */
+    /** The look the user chose in Settings > Appearance, delivered by the bubble host on the main thread. */
     fun setLook(look: BubbleLook) {
         if (this.look == look) return
         this.look = look
@@ -174,7 +175,7 @@ internal class RecordingAccessibilityOverlay(
     }
 
     /**
-     * Whether the earbuds are the chosen microphone right now, delivered by the service on the main
+     * Whether the earbuds are the chosen microphone right now, delivered by the bubble host on the main
      * thread whenever the pick or the connected inputs change (#171). The lips and the rail take the
      * earbud rainbow, and the bubble's spoken label says so; anything else (the phone, a wired or USB
      * headset, nothing known) is the brand rainbow and the plain label. Idempotent.
@@ -356,8 +357,8 @@ internal class RecordingAccessibilityOverlay(
 
     /**
      * The usable rectangle: the screen minus the bars it must not sit under. The keyboard is not an
-     * inset here; it is the service's answer, delivered through [keyboardBounds], because only the
-     * accessibility windows list says where a docked keyboard ends.
+     * inset here; the bubble host supplies its top through [keyboardBounds], using the accessibility
+     * windows list to find a docked keyboard.
      */
     private fun readBounds(): BubbleBounds {
         val metrics = windowManager.currentWindowMetrics
@@ -497,10 +498,10 @@ internal class RecordingAccessibilityOverlay(
         dragBox ?: BubblePlacement.bubbleBox(position, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
 
     /**
-     * Start the take. The service owns the two routes: straight to the session owner, which leaves the
-     * keyboard exactly where it is, or through the transparent launcher when Android refuses a
-     * foreground start from here. Measured 2026-09-12 on the emulator: launching the activity makes
-     * Chrome hide its keyboard, so the direct route is tried first.
+     * Start the take by asking the service to start the session owner directly, which leaves the
+     * keyboard in place. If that fails, this overlay launches the transparent activity using the service
+     * as its context. On the emulator, launching the activity makes Chrome hide its keyboard, so the
+     * direct route is tried first (measured 2026-09-12).
      */
     /** Returns the request this gesture created, or null when the owner was not IDLE and nothing was sent. */
     private fun startDictation(held: Boolean): BubbleRequestToken? {

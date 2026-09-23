@@ -46,13 +46,18 @@ class OwnFieldAdmissionTest {
     @Test fun theServiceAsksTheAdmissionEverywhereItJudgesAPackage() {
         // DRIFT GUARD: a bare own-package comparison on a node or event would reopen one route around
         // the admission (Codex mechanism note: "scope the same field predicate through the whole path").
-        val service = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText()
-        val bareComparisons = service.lines().filter { Regex("""(==|!=) packageName\b""").containsMatchIn(it) }
+        // Since #217 the path is four files (the service and its tracker, runner and bubble host), and the
+        // collaborators name the service's package as `service.packageName`; both spellings count.
+        val bareComparisons = PasteSources.all.lines().filter { Regex("""(==|!=) (service\.)?packageName\b""").containsMatchIn(it) }
         // The one allowed line: insertion retries on an event from the pinned target's own package.
         assertEquals(bareComparisons.toString(), 1, bareComparisons.size)
-        assertTrue(bareComparisons.single().contains("pinnedTarget?.packageName == packageName"))
-        listOf("rememberEditableTarget", "findFocusedEditableTarget(root", "isSafeFocusedEditor").forEach { site ->
-            val body = service.substringAfter("private fun $site").substringBefore("\n    private fun ")
+        assertTrue(bareComparisons.single().contains("tracker.pinnedPackage == service.packageName"))
+        listOf(
+            "fun rememberEditableTarget(" to "\n    }\n",
+            "private fun findFocusedEditableTarget(root" to "\n    }\n",
+            "private fun isSafeFocusedEditor(" to "\n\n",
+        ).forEach { (site, end) ->
+            val body = PasteSources.slice(PasteSources.tracker, site, end)
             assertTrue(site, body.contains("OwnFieldAdmission."))
         }
         val screen = File("src/main/java/com/envi/wispr/ui/OnboardingScreen.kt").readText()

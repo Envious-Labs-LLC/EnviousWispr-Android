@@ -1705,6 +1705,298 @@ Group main:
         if leftover.exists():
             leftover.unlink()
 
+    # ---- #215: the real-boundary door, its preflight, its result policy, and fixture staging ----------
+    ready_probes = {
+        "target": (0, "package:/data/app/base.apk\n"),
+        "test": (0, "package:/data/app/test.apk\n"),
+        "runner": (0, f"instrumentation:{eyes.TEST_RUNNER} (target={eyes.PACKAGE})\n"),
+        "runas": (0, ""),
+        "fixture": (0, "32000\n"),
+    }
+    check("every prerequisite present answers ready", eyes._real_boundary_preflight(dict(ready_probes)) == [],
+          eyes._real_boundary_preflight(dict(ready_probes)))
+    for label, key, value, needle in (
+        ("no target APK", "target", (1, ""), f"{eyes.PACKAGE} is not installed"),
+        ("no test APK", "test", (0, ""), "test APK"),
+        ("no runner registration", "runner", (0, "instrumentation:other/Runner (target=other)\n"), "not registered"),
+        ("no fixture", "fixture", (1, ""), "no usable fixture"),
+        ("an empty fixture", "fixture", (0, "0\n"), "no usable fixture"),
+        ("an odd-length fixture", "fixture", (0, "32001\n"), "no usable fixture"),
+        ("a non-regular path at the fixture name", "fixture", (1, ""), "no usable fixture"),
+    ):
+        probes = dict(ready_probes)
+        probes[key] = value
+        answer = eyes._real_boundary_preflight(probes)
+        check(f"preflight: {label} answers its own NOT RUN", any(line.startswith("NOT RUN:") and needle in line for line in answer), answer)
+    probes = dict(ready_probes)
+    probes["runas"] = (1, "run-as: package not debuggable")
+    answer = eyes._real_boundary_preflight(probes)
+    check("a failed run-as answers not-debuggable, never missing fixture",
+          any("not debuggable" in line for line in answer) and not any("fixture" in line for line in answer), answer)
+
+    def group(code, stack=""):
+        return {"class": "com.envi.wispr.VoicePipelineDeviceTest", "test": "transcribesThenPolishesWithSavedCustomWords",
+                "code": code, "stack": stack}
+
+    prereq = "java.lang.AssertionError: Prerequisite: the saved custom name 'Saurabh' is not in this device's dictionary\n\tat x"
+    cases = [
+        ("0 is VERIFIED", [group(0)], "regression", "VERIFIED:"),
+        ("a Prerequisite first line is NOT RUN", [group(-2, prereq)], "regression", "NOT RUN:"),
+        ("another -2 is ISSUE", [group(-2, "java.lang.AssertionError: S1-mini did not become ready\n\tat x")], "regression", "ISSUE:"),
+        ("Prerequisite in a later frame is ISSUE", [group(-2, "java.lang.AssertionError: boom\n\tat Prerequisite: x")], "regression", "ISSUE:"),
+        ("a bare Prerequisite first line is ISSUE", [group(-2, "Prerequisite: something")], "regression", "ISSUE:"),
+        ("-4 is ISSUE for the real-boundary door", [group(-4, "org.junit.AssumptionViolatedException: x")], "regression", "ISSUE:"),
+        ("-4 is NOT RUN for an ordinary row", [group(-4, "org.junit.AssumptionViolatedException: x")], "not_run", "NOT RUN:"),
+        ("-3 is ISSUE for the real-boundary door", [group(-3)], "regression", "ISSUE:"),
+        ("-3 is NOT RUN for an ordinary row", [group(-3)], "not_run", "NOT RUN:"),
+        ("-1 is ISSUE for the real-boundary door", [group(-1, "java.lang.RuntimeException: crash")], "regression", "ISSUE:"),
+        ("-1 is ISSUE for an ordinary row", [group(-1, "java.lang.RuntimeException: crash")], "not_run", "ISSUE:"),
+    ]
+    for label, results, policy, expected in cases:
+        lines = eyes._report_runner_results(results, policy)
+        check(f"result policy: {label}", len(lines) == 1 and lines[0].startswith(expected), lines)
+    lines = eyes._report_runner_results([group(0), {"INSTRUMENTATION_CODE": "0", "shortMsg": "Process crashed."}], "regression")
+    check("an abnormal final instrumentation code is ISSUE", any(l.startswith("ISSUE: the instrumentation ended with code 0") for l in lines), lines)
+    lines = eyes._report_runner_results([{"INSTRUMENTATION_CODE": "-1"}], "regression")
+    check("a runner that reported no test is ISSUE", lines == ["ISSUE: the runner reported no test at all; UNKNOWN"], lines)
+    collected, saw_final = eyes._collect_runner_groups(iter([group(1), group(0)]))
+    verdict = eyes._real_boundary_report(collected, saw_final, False, 240)
+    check("a passing group followed by EOF without a final code is ISSUE, never VERIFIED",
+          not saw_final and verdict[0].startswith("ISSUE: the instrumentation ended without a final") and not any(l.startswith("VERIFIED") for l in verdict),
+          verdict)
+    collected, saw_final = eyes._collect_runner_groups(iter([group(0), {"INSTRUMENTATION_CODE": "-1"}]))
+    verdict = eyes._real_boundary_report(collected, saw_final, False, 240)
+    check("a passing group with its final code is VERIFIED", saw_final and verdict == ["VERIFIED: VoicePipelineDeviceTest.transcribesThenPolishesWithSavedCustomWords passed on the device"], verdict)
+    verdict = eyes._real_boundary_report([group(0)], True, True, 240)
+    check("a timed-out run is never VERIFIED", verdict[0].startswith("ISSUE: the instrumentation ran past") and not any(l.startswith("VERIFIED") for l in verdict), verdict)
+
+    # The probes themselves: a DIRECTORY at the fixture name exists and stats, but `test -f` fails it.
+    probe_calls = []
+    real_adb = eyes._adb
+
+    def directory_adb(command, timeout=60, check=True, serial=None):
+        probe_calls.append((command, check))
+        if command.startswith("pm path "):
+            return 0, "package:/data/app/x.apk\n"
+        if command == "pm list instrumentation":
+            return 0, f"instrumentation:{eyes.TEST_RUNNER} (target={eyes.PACKAGE})\n"
+        if "test -f cache/enviouswispr-uat.pcm" in command:
+            return 1, ""
+        if "stat -c %s cache/enviouswispr-uat.pcm" in command:
+            return 0, "4096\n"
+        return 0, ""
+
+    eyes._adb = directory_adb
+    try:
+        probes = eyes._real_boundary_probes()
+    finally:
+        eyes._adb = real_adb
+    answer = eyes._real_boundary_preflight(probes)
+    check("a directory at the fixture name fails test -f and answers NOT RUN", any("no usable fixture" in line for line in answer), (answer, probes["fixture"]))
+    check("every probe is read-only and keeps its status (check=False)", probe_calls and all(not chk for _, chk in probe_calls), probe_calls)
+
+    # Staging, through a fake device filesystem.
+    stage_names = ("_adb", "_exec_in", "_pcm16_from_sentence", "device")
+    stage_originals = {name: getattr(eyes, name) for name in stage_names}
+    rendered = {}
+
+    def fake_render(sentence, path):
+        data = bytes(range(256)) * 125
+        with open(path, "wb") as f:
+            f.write(data)
+        rendered["bytes"] = data
+        return path
+
+    def make_fs(final=None, arrive_short=False, race=False, copy_fails=False, copy_short=False,
+                create_denied=False, rm_fails=(), presence_unknown=False, interrupt=False,
+                presence_raises=False, rm_raises=False, publish_raises=False, final_readback_raises=False):
+        fs = {"files": {} if final is None else {"cache/enviouswispr-uat.pcm": final}, "ops": []}
+
+        def fake_adb(command, timeout=60, check=True, serial=None):
+            import shlex as _shlex
+            if "test -f " in command:
+                path = command.split("test -f ", 1)[1].split(" ")[0]
+                if final_readback_raises and path == "cache/enviouswispr-uat.pcm" and any(op[0] == "publish" for op in fs["ops"]):
+                    raise eyes.Blocked("the phone returned no status")
+                fs["ops"].append(("readback", path))
+                data = fs["files"].get(path)
+                return (0, f"{len(data)}\n") if isinstance(data, bytes) else (1, "")
+            if "set -C" in command:
+                script = _shlex.split(command.split(" sh -c ", 1)[1])[0]
+                dst = script.split("true > ", 1)[1].split(" ")[0]
+                src = script.split("cat ", 1)[1].split(" ")[0]
+                fs["ops"].append(("publish", src, dst))
+                if publish_raises:
+                    fs["files"][dst] = fs["files"][src][:10]
+                    raise eyes.Blocked("adb could not reach emulator-5554: connection reset")
+                if race:
+                    fs["files"][dst] = b"theirs"
+                if dst in fs["files"]:
+                    return 3, "sh: can't create: File exists"
+                if create_denied:
+                    return 3, "sh: can't create: Permission denied"
+                fs["files"][dst] = b""
+                if copy_fails:
+                    return 4, "cat: write error"
+                fs["files"][dst] = fs["files"][src][:-2] if copy_short else fs["files"][src]
+                return 0, ""
+            if " rm -f " in command:
+                path = command.split(" rm -f ", 1)[1].strip()
+                fs["ops"].append(("rm", path))
+                if rm_raises:
+                    raise eyes.Blocked("adb could not reach emulator-5554: offline")
+                if any(path.startswith(stuck) for stuck in rm_fails):
+                    return 1, "rm: Permission denied"
+                fs["files"].pop(path, None)
+                return 0, ""
+            if "then echo present" in command:
+                if presence_unknown:
+                    return 1, ""
+                if presence_raises:
+                    raise eyes.Blocked("the phone returned no status")
+                path = command.split("[ -e ", 1)[1].split(" ]", 1)[0]
+                return 0, "present\n" if path in fs["files"] else "absent\n"
+            return 0, ""
+
+        def fake_exec_in(remote, local_path):
+            target = remote[-1].split("> ", 1)[1]
+            data = open(local_path, "rb").read()
+            fs["ops"].append(("exec-in", target))
+            fs["sent"] = data
+            fs["files"][target] = data[: len(data) // 2] if arrive_short else data
+            if interrupt:
+                raise Interrupted()
+            return 0
+
+        return fs, fake_adb, fake_exec_in
+
+    eyes._pcm16_from_sentence = fake_render
+    eyes.device = lambda: "emulator-5554"
+    fs, eyes._adb, eyes._exec_in = make_fs()
+    try:
+        line = eyes.stage_uat_fixture("EnviousWispr is ready for Saurabh")
+    except eyes.Blocked as refusal:
+        line = f"refused: {refusal}"
+    kinds = [op[0] for op in fs["ops"]]
+    temp = next(op[1] for op in fs["ops"] if op[0] == "exec-in")
+    check("staging streams the exact rendered bytes", fs.get("sent") == rendered["bytes"])
+    check("a successful stage: temp write, temp read-back, no-overwrite publish, final read-back, temp removal, in order",
+          kinds == ["readback", "exec-in", "readback", "publish", "readback", "rm"] and fs["ops"][3] == ("publish", temp, "cache/enviouswispr-uat.pcm")
+          and fs["ops"][4] == ("readback", "cache/enviouswispr-uat.pcm") and fs["ops"][5] == ("rm", temp)
+          and fs["files"].get("cache/enviouswispr-uat.pcm") == rendered["bytes"] and temp not in fs["files"] and line.startswith("staged"),
+          (fs["ops"], line))
+    theirs = b"founder"
+    fs, eyes._adb, eyes._exec_in = make_fs(final=theirs)
+    line = eyes.stage_uat_fixture("x")
+    check("an existing fixture is never touched and nothing is sent", fs["files"]["cache/enviouswispr-uat.pcm"] == theirs
+          and not any(op[0] in ("exec-in", "publish") for op in fs["ops"]) and "left untouched" in line, (fs["ops"], line))
+    fs, eyes._adb, eyes._exec_in = make_fs(race=True)
+    line = eyes.stage_uat_fixture("x")
+    check("a fixture that appears mid-stage is left untouched and the temporary name is removed",
+          fs["files"]["cache/enviouswispr-uat.pcm"] == b"theirs" and not any(k.startswith("cache/.") for k in fs["files"])
+          and "left untouched" in line, (fs["ops"], line))
+    fs, eyes._adb, eyes._exec_in = make_fs(arrive_short=True)
+    try:
+        eyes.stage_uat_fixture("x")
+        check("a short transfer refuses", False, "it staged")
+    except eyes.Blocked:
+        check("a short transfer refuses, publishes nothing and removes the temporary name",
+              "cache/enviouswispr-uat.pcm" not in fs["files"] and not any(k.startswith("cache/.") for k in fs["files"])
+              and not any(op[0] == "publish" for op in fs["ops"]), fs["ops"])
+    class Interrupted(BaseException):
+        pass
+
+    fs, eyes._adb, eyes._exec_in = make_fs(interrupt=True)
+    try:
+        eyes.stage_uat_fixture("x")
+        check("an interrupt after the temporary write propagates", False, "it returned")
+    except Interrupted:
+        check("an interrupt after the temporary write removes the temporary before propagating",
+              not fs["files"] and fs["ops"][-1][0] == "rm", fs["ops"])
+    fs, eyes._adb, eyes._exec_in = make_fs(create_denied=True, presence_raises=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a presence probe that raises is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a presence probe that raises reads as could-not-tell, never as absent",
+              "could not tell" in str(refusal) and "no fixture is there" not in str(refusal), str(refusal))
+    fs, eyes._adb, eyes._exec_in = make_fs(copy_fails=True, rm_raises=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a removal that raises is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a removal that raises names the final name and the temporary as possibly remaining",
+              "cache/enviouswispr-uat.pcm may remain (rm raised" in str(refusal) and "temporary" in str(refusal), str(refusal))
+    fs, eyes._adb, eyes._exec_in = make_fs(publish_raises=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a publish that loses its answer is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a publish that loses its answer names the final name, leaves it, and removes the temporary",
+              "indeterminate publish (presence: present)" in str(refusal)
+              and list(fs["files"]) == ["cache/enviouswispr-uat.pcm"], (str(refusal), fs["ops"]))
+    fs, eyes._adb, eyes._exec_in = make_fs(final_readback_raises=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a final read-back that raises is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a final read-back that raises removes the final name this call created and the temporary",
+              "could not be read back" in str(refusal) and not fs["files"], (str(refusal), fs["ops"]))
+    fs, eyes._adb, eyes._exec_in = make_fs(create_denied=True, presence_unknown=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a refused creation the device cannot see behind is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a refused creation the device cannot see behind is BLOCKED as unknown, never as absent",
+              "could not tell" in str(refusal) and "no fixture is there" not in str(refusal), str(refusal))
+    fs, eyes._adb, eyes._exec_in = make_fs(create_denied=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a creation refused with nothing there is BLOCKED, never a race", False, line)
+    except eyes.Blocked as refusal:
+        check("a creation refused with nothing there is BLOCKED, never a race, and leaves no temporary",
+              "appeared" not in str(refusal) and "Permission denied" in str(refusal) and not fs["files"], (str(refusal), fs["ops"]))
+    for label, kwargs, stuck in (
+        ("a temporary that cannot be removed after a successful stage", {"rm_fails": ("cache/.",)}, "temporary"),
+        ("a final name that cannot be removed after a failed copy", {"copy_fails": True, "rm_fails": ("cache/enviouswispr",)}, "cache/enviouswispr-uat.pcm may remain"),
+    ):
+        fs, eyes._adb, eyes._exec_in = make_fs(**kwargs)
+        try:
+            line = eyes.stage_uat_fixture("x")
+            check(f"{label} is BLOCKED", False, line)
+        except eyes.Blocked as refusal:
+            check(f"{label} is BLOCKED and says what may remain", "may remain" in str(refusal) and stuck in str(refusal), str(refusal))
+    for label, kwargs in (("a failed copy", {"copy_fails": True}), ("a short copy", {"copy_short": True})):
+        fs, eyes._adb, eyes._exec_in = make_fs(**kwargs)
+        try:
+            eyes.stage_uat_fixture("x")
+            check(f"{label} refuses", False, "it staged")
+        except eyes.Blocked:
+            check(f"{label} refuses and removes both the final name it created and the temporary name",
+                  not fs["files"], fs["ops"])
+    for name, fn in stage_originals.items():
+        setattr(eyes, name, fn)
+
+    captured = []
+    render_originals = {name: getattr(eyes, name) for name in ("_has_tool", "_checked")}
+    eyes._has_tool = lambda name: True
+
+    def fake_checked(args, timeout=60):
+        captured.append(args)
+        if args[0] == "ffmpeg":
+            open(args[-1], "wb").close()
+
+    eyes._checked = fake_checked
+    import tempfile
+    out = eyes._pcm16_from_sentence("x", tempfile.mktemp(suffix=".pcm"))
+    ffmpeg = next(a for a in captured if a[0] == "ffmpeg")
+    check("the fixture renders s16le, 16 kHz, mono", ffmpeg[ffmpeg.index("-f") + 1] == "s16le" and ffmpeg[ffmpeg.index("-ar") + 1] == "16000"
+          and ffmpeg[ffmpeg.index("-ac") + 1] == "1", ffmpeg)
+    check("with a half-second 16 kHz tail", Path(out).stat().st_size == 16000, Path(out).stat().st_size)
+    Path(out).unlink()
+    for name, fn in render_originals.items():
+        setattr(eyes, name, fn)
+
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")
     if FAILED:

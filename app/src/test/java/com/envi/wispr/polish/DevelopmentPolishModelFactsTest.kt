@@ -19,7 +19,8 @@ class DevelopmentPolishModelFactsTest {
 
     private val owner = File("src/main/java/com/envi/wispr/polish/DevelopmentPolishModel.kt").readText()
     private val selector = File("src/main/java/com/envi/wispr/polish/S1ModelSelection.kt").readText()
-    private val screen = File("src/main/java/com/envi/wispr/ui/PolishScreen.kt").readText()
+    /** The development card's file since #259. */
+    private val screen = File("src/main/java/com/envi/wispr/ui/PolishLocalControls.kt").readText()
 
     @Test
     fun thePathHasOneOwnerAndThePolishSideNoLongerBuildsItsOwn() {
@@ -120,7 +121,7 @@ class DevelopmentPolishModelFactsTest {
             "the owner must say what it costs",
             owner.contains("never call it on the main thread"),
         )
-        val card = screen.substringAfter("private fun DevelopmentModelCard()").substringBefore("private data class DevelopmentModelFacts")
+        val card = screen.substringAfter("internal fun DevelopmentModelCard()").substringBefore("\n}\n")
         assertTrue("the measurement must run on IO", card.contains("withContext(Dispatchers.IO)"))
         assertTrue(
             "and so must the removal",

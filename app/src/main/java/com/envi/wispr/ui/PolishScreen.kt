@@ -5,89 +5,40 @@ import com.envi.wispr.providers.ui.ProviderDiscoveryUiState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.rememberCoroutineScope
-import com.envi.wispr.polish.DevelopmentPolishModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.LinkAnnotation
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLinkStyles
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
-import com.envi.wispr.models.ModelDeliveryWorker
-import com.envi.wispr.models.ModelManifest
-import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
-import com.envi.wispr.polish.S1Config
-import com.envi.wispr.polish.S1Context
 import com.envi.wispr.polish.S1ControlSettings
-import com.envi.wispr.polish.S1Structure
-import com.envi.wispr.polish.S1Styling
-import com.envi.wispr.providers.ModelAccess
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
-import com.envi.wispr.providers.capabilities
-import com.envi.wispr.providers.disclosure
 
 /** Which write the tab is waiting on, so its failure lands under the rung that started it. */
-private enum class WriteKind { MODE, KEY, MODEL, REMOVE, S1_CONTROL }
+internal enum class WriteKind { MODE, KEY, MODEL, REMOVE, S1_CONTROL }
 
 /**
  * The AI Polish tab as the founder's Ladder (#81): four numbered rungs on one page, each unlocking the
@@ -232,542 +183,8 @@ internal fun PolishScreen(
     }
 }
 
-/** Rungs 2 to 4. Split out so every piece of rung-3 state is keyed on the displayed tile. */
 @Composable
-private fun CloudRungs(
-    settings: ProviderSettingsUiState,
-    discovery: ProviderDiscoveryUiState,
-    displayed: Provider?,
-    saving: Boolean,
-    savingKind: WriteKind?,
-    keyWriteCompleted: Int,
-    writeError: String?,
-    errorKind: WriteKind?,
-    onPickTile: (Provider) -> Unit,
-    onClearKeyError: () -> Unit,
-    onStart: (WriteKind, () -> Int) -> Unit,
-    onSave: (Provider, String, String?, Int?) -> Int,
-    onClearProvider: (Provider) -> Int,
-    onCheckKey: (Provider, String?) -> Int,
-    onKeyDraftChanged: (Provider) -> Unit,
-    onLoadCachedModels: (Provider) -> Unit,
-) {
-    RungHeader("2 · PROVIDER")
-    Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-        CloudProviders.forEach { option ->
-            ProviderTileButton(
-                option,
-                selected = option == displayed,
-                // The tile says whether this provider has a key, so all four answers are visible without
-                // tapping each one (#103). Before this the only way to find a stored key was to open its
-                // tile, and after a remove that made three surviving keys look deleted.
-                hasKey = option in settings.storedProviders,
-                enabled = !saving,
-                onClick = { onPickTile(option) },
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
-    if (settings.configured && settings.provider == Provider.SELF_HOSTED_POLISH) {
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f))) {
-            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Self-hosted · ${hostOf(settings.endpoint)}", style = MaterialTheme.typography.titleSmall)
-                Text("Text is sent to your server.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedButton(
-                    // The self-hosted card is only drawn when self-hosted is the SELECTED provider, so it
-                    // names itself rather than reading `settings.provider` a second time.
-                    onClick = { onStart(WriteKind.REMOVE) { onClearProvider(Provider.SELF_HOSTED_POLISH) } },
-                    enabled = !saving,
-                ) { Text("Remove") }
-                if (writeError != null && errorKind == WriteKind.REMOVE) ErrorLine(writeError)
-            }
-        }
-    }
-    if (displayed == null) return
-    val name = displayed.capabilities().displayName
-
-    // Everything below is keyed on the displayed tile, so switching tiles starts a fresh rung 3: the
-    // previous tile's draft, a check cannot leak into another provider's field.
-    // The draft and everything derived from it (the Check it ran, the save that Check produced) share ONE
-    // survival policy: none of it outlives a recreation, so nothing can describe a key that is gone.
-    var apiKey by remember(displayed) { mutableStateOf("") }
-    var checkSequence by remember(displayed) { mutableStateOf<Int?>(null) }
-    var savedForSequence by remember(displayed) { mutableStateOf<Int?>(null) }
-    LaunchedEffect(displayed) { onLoadCachedModels(displayed) }
-
-    val forTile = discovery.takeIf { it.provider == displayed }
-    val draftListing = forTile?.takeIf { checkSequence != null && it.sequence == checkSequence }
-    val checking = draftListing?.phase == ProviderDiscoveryUiState.Phase.CHECKING || (saving && savingKind == WriteKind.KEY)
-    val failed = draftListing?.phase == ProviderDiscoveryUiState.Phase.FAILED || (writeError != null && errorKind == WriteKind.KEY)
-
-    // An accepted Check saves at once with the suggested model, so "Key connected" is always a stored fact.
-    LaunchedEffect(forTile?.phase, forTile?.sequence, checkSequence, apiKey.isBlank(), savedForSequence, saving) {
-        if (forTile != null && PolishLadder.saveAtAccept(forTile, displayed, checkSequence, apiKey.isBlank(), savedForSequence, writePending = saving)) {
-            val model = PolishLadder.defaultModel(displayed, forTile.models) ?: return@LaunchedEffect
-            val sequence = checkSequence
-            savedForSequence = sequence
-            onStart(WriteKind.KEY) { onSave(displayed, model, apiKey, sequence) }
-        }
-    }
-    // A completed KEY write means the draft has done its work, so drop it.
-    LaunchedEffect(keyWriteCompleted) {
-        if (keyWriteCompleted > 0) apiKey = ""
-    }
-
-    when (PolishLadder.keyRung(displayed, settings)) {
-        KeyRung.FIELD -> {
-            RungHeader("3 · YOUR ${name.uppercase()} KEY", error = failed)
-            val pill = PolishLadder.keyPill(draftBlank = apiKey.isBlank(), checking = checking, failed = failed)
-            val emptyListing = draftListing?.phase == ProviderDiscoveryUiState.Phase.LISTED && draftListing.models.isEmpty()
-            val hint = when {
-                checking -> "Asking $name which models this key can reach."
-                failed -> (if (errorKind == WriteKind.KEY) writeError else null) ?: draftListing?.line ?: "$name did not accept this key."
-                emptyListing -> draftListing?.line ?: "No models this key can use for polish."
-                else -> "Encrypted in the Android Keystore. Never written to logs."
-            }
-            OutlinedTextField(
-                value = apiKey,
-                onValueChange = { apiKey = it; checkSequence = null; onClearKeyError(); onKeyDraftChanged(displayed) },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text(keyPlaceholder(displayed)) },
-                isError = failed,
-                supportingText = { Text(hint, color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) },
-                trailingIcon = {
-                    TextButton(
-                        onClick = { checkSequence = onCheckKey(displayed, apiKey) },
-                        enabled = pill.enabled && !saving,
-                    ) { Text(pill.label) }
-                },
-                singleLine = true,
-                enabled = !saving,
-                visualTransformation = PasswordVisualTransformation(),
-            )
-            GetKeyLink(displayed)
-            // The key listed nothing this app can use: nothing is stored until a model id is typed, and the
-            // key and the id are then saved together, so a key never exists in storage without a model.
-            if (draftListing != null && PolishLadder.needsTypedModel(draftListing, displayed, checkSequence, apiKey.isBlank())) {
-                var typedModel by remember(displayed, checkSequence) { mutableStateOf("") }
-                OutlinedTextField(
-                    value = typedModel,
-                    onValueChange = { typedModel = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Model id") },
-                    supportingText = { Text("$name listed no chat model for this key. Type the model id you want to use.") },
-                    singleLine = true,
-                    enabled = !saving,
-                    trailingIcon = {
-                        TextButton(
-                            onClick = {
-                                val sequence = checkSequence
-                                savedForSequence = sequence
-                                onStart(WriteKind.KEY) { onSave(displayed, typedModel.trim(), apiKey, sequence) }
-                            },
-                            enabled = !saving && PolishLadder.typedModelValid(typedModel),
-                        ) { Text("Use this model") }
-                    },
-                )
-            }
-        }
-        KeyRung.CONNECTED -> {
-            // ONE LINE, no card (founder 2026-09-02). The card was 92 dp tall to say one thing: its title
-            // wrapped to two lines, a Keystore line sat under it, and card padding wrapped the lot. The
-            // model count it carried is repeated verbatim by rung 4's header one line below, and the
-            // Keystore sentence still shows under the field while a key is being entered, which is when
-            // it answers a question anyone is asking.
-            //
-            // Remove is the only action. Replace was a safe in-place swap that kept the old key live until
-            // a new one was accepted, and the founder chose remove-then-enter over carrying a second
-            // control for it; #94 already leaves the tab on Cloud with an empty field, so adding another
-            // key is the very next thing on screen.
-            //
-            // TextButton rather than a clickable Text, so the target is Material's minimum interactive
-            // size rather than the height of the word.
-            //
-            // The 48 dp floor in docs/enviouswispr-android-architecture.md is MET, and no explicit
-            // heightIn is needed to meet it. Do not add one on the strength of a view-tree reading: the
-            // dump UNDER-REPORTS this node by about 3 dp, proven by asking for 72 dp and reading 67.7 dp,
-            // and asking for 48 dp reads 45.0 dp exactly as asking for nothing does. An earlier round of
-            // this work took that 45.0 for a shortfall and added a modifier that changed nothing.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                CheckGlyph()
-                RungHeader("3 · KEY CONNECTED")
-                Spacer(Modifier.weight(1f))
-                // Removes the key of the tile this row is about, which after #103 need not be the active
-                // provider: a connected row is drawn for every stored key.
-                TextButton(onClick = { onStart(WriteKind.REMOVE) { onClearProvider(displayed) } }, enabled = !saving) { Text("Remove") }
-            }
-            if (writeError != null && errorKind == WriteKind.REMOVE) ErrorLine(writeError)
-
-            ModelRung(
-                provider = displayed,
-                settings = settings,
-                discovery = forTile,
-                saving = saving,
-                writeError = writeError?.takeIf { errorKind == WriteKind.MODEL },
-                onPick = { id -> onStart(WriteKind.MODEL) { onSave(displayed, id, null, null) } },
-                onRefresh = { onCheckKey(displayed, null) },
-            )
-        }
-    }
-}
-
-/** Rung 4: the live list (#84) for the connected provider; a row tap saves that model. */
-@Composable
-private fun ModelRung(
-    provider: Provider,
-    settings: ProviderSettingsUiState,
-    discovery: ProviderDiscoveryUiState?,
-    saving: Boolean,
-    writeError: String?,
-    onPick: (String) -> Unit,
-    onRefresh: () -> Unit,
-) {
-    var query by remember(provider) { mutableStateOf("") }
-    val savedModel = savedModelFor(provider, settings)
-    // Only a listing that describes the STORED key shows under a connected row; a draft's list never does.
-    val models = discovery?.takeIf { it.usedStoredKey }?.models ?: emptyList()
-    val refreshing = discovery?.phase == ProviderDiscoveryUiState.Phase.CHECKING
-    val rows = ModelListPresentation.present(provider, models, query, savedModel)
-    val allRows = ModelListPresentation.present(provider, models, "", savedModel)
-    val countLine = if (models.isEmpty()) null else ModelListPresentation.countLine(allRows, rows.count { !it.typed }, query) +
-        (if (discovery?.fromCache == true && discovery.fetchedAt != null) " · from ${relativeAge(discovery.fetchedAt)}" else "")
-
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
-        RungHeader("4 · MODEL")
-        Text(
-            countLine ?: if (refreshing) "Loading the models this key can use" else "Tap Refresh to load the models this key can use.",
-            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-    OutlinedTextField(
-        value = query,
-        onValueChange = { query = it },
-        modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text("Search models") },
-        singleLine = true,
-        trailingIcon = if (query.isNotEmpty()) {
-            { Text("Clear", color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 12.dp).clickable { query = "" }) }
-        } else null,
-    )
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("Newest first", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(end = 4.dp)) {
-            listOf("C", "S", "A").forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        }
-    }
-    // About four and a half rows, then the region scrolls on its own; the bounded height is what makes a
-    // vertical scroll legal inside the tab's own list.
-    Column(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 270.dp).verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        rows.forEach { row ->
-            val selected = row.id == settings.model && row.id == savedModel
-            val locked = row.access == ModelAccess.UNAVAILABLE
-            Card(
-                onClick = { onPick(row.id) },
-                enabled = !saving && row.selectable && !selected,
-                colors = CardDefaults.cardColors(
-                    containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                    disabledContainerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    disabledContentColor = MaterialTheme.colorScheme.onSurface,
-                ),
-                border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
-            ) {
-                Row(modifier = Modifier.padding(12.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column(Modifier.weight(1f)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                row.id,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = if (locked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            )
-                            if (row.tag != null) {
-                                Text(row.tag, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                        if (row.note != null) {
-                            Text(row.note, style = MaterialTheme.typography.bodySmall, color = if (locked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    if (row.cost != null && row.speed != null && row.accuracy != null) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { ScoreDots("Cost", row.cost); ScoreDots("Speed", row.speed); ScoreDots("Accuracy", row.accuracy) }
-                    }
-                }
-            }
-        }
-    }
-    if (writeError != null) ErrorLine(writeError)
-    // A stored-key Refresh that failed keeps the previous listing (the view model keeps it) and says why here.
-    if (discovery?.usedStoredKey == true && discovery.phase == ProviderDiscoveryUiState.Phase.FAILED && discovery.line != null) ErrorLine(discovery.line)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            "C cost · S speed · A accuracy. ${provider.disclosure().summary}",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),
-        )
-        TextButton(onClick = onRefresh, enabled = !saving && !refreshing) { Text(if (refreshing) "Refreshing" else "Refresh") }
-    }
-}
-
-/** The S1-mini card inside This phone, exactly what the old local-model page did (#67), now inline. */
-@Composable
-private fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
-    val context = LocalContext.current
-    ModelCard(
-        eyebrow = "ON THIS PHONE",
-        title = S1Config.MODEL_NAME,
-        description = PolishLadder.s1Line(s1State),
-        state = s1State,
-        facts = PolishLadder.s1Facts(),
-        scores = PolishLadder.S1_SCORES,
-        model = ModelManifest.s1,
-        onAction = {
-            // Exhaustive with no `else`, for the reason given at the same `when` in `TranscriptionScreen`.
-            when (s1State.action) {
-                ModelUiAction.REMOVE -> ModelDeliveryWorker.enqueueRemove(context, ModelManifest.s1)
-                ModelUiAction.REPAIR -> ModelDeliveryWorker.enqueueRepair(context, ModelManifest.s1)
-                ModelUiAction.UPDATE -> ModelDeliveryWorker.enqueueUpdate(context, ModelManifest.s1)
-                ModelUiAction.DOWNLOAD, ModelUiAction.RETRY -> ModelDeliveryWorker.enqueue(context, ModelManifest.s1)
-                ModelUiAction.PAUSE, ModelUiAction.RESUME, ModelUiAction.CANCEL, ModelUiAction.NONE -> Unit
-            }
-            onRefreshReadiness()
-        },
-        onPause = { ModelDeliveryWorker.pause(context, ModelManifest.s1) },
-        onResume = { ModelDeliveryWorker.resume(context, ModelManifest.s1) },
-    )
-}
-
-/**
- * The Writing style card (#152): S1-mini's three trained control-line axes as chips, rendered from the
- * PERSISTED picks only. A tap writes the whole triple through the tab's one-write-at-a-time tracking, so
- * the chips are disabled while a write is in flight and a failure lands under this card. `FlowRow` so
- * the four Tone chips wrap at phone width rather than clipping.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun S1ControlCard(
-    control: S1ControlSettings,
-    enabled: Boolean,
-    error: String?,
-    onPick: (S1ControlSettings) -> Unit,
-) {
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(S1ControlCopy.EYEBROW, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            Text(S1ControlCopy.INTRO, style = MaterialTheme.typography.bodyMedium)
-            ControlAxis(S1ControlCopy.STYLING_LABEL, S1ControlCopy.STYLING_HINT) {
-                S1Styling.entries.forEach { option ->
-                    FilterChip(
-                        selected = control.styling == option,
-                        enabled = enabled,
-                        onClick = { if (control.styling != option) onPick(control.copy(styling = option)) },
-                        label = { Text(S1ControlCopy.label(option)) },
-                    )
-                }
-            }
-            ControlAxis(S1ControlCopy.STRUCTURE_LABEL, S1ControlCopy.STRUCTURE_HINT) {
-                S1Structure.entries.forEach { option ->
-                    FilterChip(
-                        selected = control.structure == option,
-                        enabled = enabled,
-                        onClick = { if (control.structure != option) onPick(control.copy(structure = option)) },
-                        label = { Text(S1ControlCopy.label(option)) },
-                    )
-                }
-            }
-            ControlAxis(S1ControlCopy.CONTEXT_LABEL, S1ControlCopy.CONTEXT_HINT) {
-                S1Context.entries.forEach { option ->
-                    FilterChip(
-                        selected = control.context == option,
-                        enabled = enabled,
-                        onClick = { if (control.context != option) onPick(control.copy(context = option)) },
-                        label = { Text(S1ControlCopy.label(option)) },
-                    )
-                }
-            }
-            if (error != null) ErrorLine(error)
-        }
-    }
-}
-
-/** One axis: its label, a wrapping row of chips, and the one-sentence hint under them. */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ControlAxis(label: String, hint: String, chips: @Composable () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(label, style = MaterialTheme.typography.titleSmall)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { chips() }
-        Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-/**
- * The development-models folder: what it costs, and a way to be rid of it.
- *
- * **Debuggable builds only, and absent rather than disabled otherwise.** A release build never reads
- * this folder, so offering to manage it would name a capability that build does not have.
- * `DevelopmentPolishModel.isSupported` owns that test.
- *
- * **It describes a FOLDER, and says nothing about what is in it.** Three sentences were tried here and
- * all three claimed more than the code establishes: that polish was running from the file, that a
- * measured speed came from it, and that a named model was present and invalid. The last is the one that
- * settled it, because a folder holding some other file entirely produced a confident sentence about a
- * model that was not there. What is actually known is the SIZE and the SCOPE, so that is all it says
- * (issue #21, review 2026-09-06, against a consequence declared before the verdict was read).
- *
- * The thing the removed sentences were reaching for, which model produced a given latency number, is
- * real and belongs where a benchmark is reported rather than asserted by a card about a folder.
- */
-@Composable
-private fun DevelopmentModelCard() {
-    val context = LocalContext.current
-    if (!DevelopmentPolishModel.isSupported(context)) return
-    val scope = rememberCoroutineScope()
-
-    // Bumped after a removal, so the card measures again rather than showing what was just deleted.
-    var generation by rememberSaveable { mutableIntStateOf(0) }
-    // Plain `remember`, NOT rememberSaveable. It describes the last attempt in this sitting. Surviving
-    // a recreation would let it describe contents that were replaced while the screen was away.
-    var lastRemovalFailed by remember { mutableStateOf(false) }
-
-    // THREE states, not two. `null` is PENDING; a `Result` is an answer, successful or not. Collapsing
-    // pending into failure made the card say "Could not measure what is in it" for the moment before
-    // the first measurement returned, and again after every removal, which is a failure reported before
-    // one has happened.
-    val measured by key(generation) {
-        produceState<Result<Long>?>(initialValue = null) {
-            value = withContext(Dispatchers.IO) {
-                runCatching { DevelopmentPolishModel.bytesOnDisk(context) }
-            }
-        }
-    }
-
-    val measurement = measured
-    val bytes = measurement?.getOrNull()
-    // Nothing to show while still measuring, and nothing to show when the folder is measurably empty. A
-    // FAILED measurement still shows the card, because a removal that failed must be able to say so even
-    // when the next measurement of that same broken folder also fails.
-    if (measurement == null && !lastRemovalFailed) return
-    if (bytes == 0L && !lastRemovalFailed) return
-
-    ElevatedCard {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                "DEVELOPMENT ONLY",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Text("Development models folder", style = MaterialTheme.typography.headlineMedium)
-            Text(
-                // Says only what is checkable. An earlier version said the files were put here BY
-                // HAND, which is a claim about who created them that nothing here establishes: another
-                // development tool could write into this folder just as easily.
-                "Storage for development files. A released build never selects a model from here.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            // Silent while the measurement is still in flight. A size line that appears only once
-            // there is an answer cannot report a failure that has not happened.
-            if (measurement != null) {
-                Text(
-                    if (bytes != null) {
-                        "${formatModelBytes(bytes)} on this phone"
-                    } else {
-                        "Could not measure what is in it"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (lastRemovalFailed) {
-                Text(
-                    "The last attempt to remove it did not finish.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            OutlinedButton(
-                onClick = {
-                    // Whether it worked is read from the world afterwards, never assumed, and a failure
-                    // is SAID. It is recorded separately from the measurement so a folder that cannot
-                    // be measured either can still explain itself.
-                    scope.launch {
-                        val removed = withContext(Dispatchers.IO) {
-                            runCatching { DevelopmentPolishModel.delete(context) }.getOrDefault(false)
-                        }
-                        lastRemovalFailed = !removed
-                        generation += 1
-                    }
-                },
-            ) { Text("Remove") }
-        }
-    }
-}
-
-/**
- * The way out of a key field for someone who has no key (#97).
- *
- * A real link, not a styled button: `LinkAnnotation.Url` gives it link semantics, so TalkBack announces it
- * as a link rather than as text, and the whole string is one focus target.
- *
- * The intent is fired here rather than left to the default handler, so a device that cannot open a browser
- * declines quietly instead of throwing `ActivityNotFoundException` out of a click. The user is not left
- * with nothing: the domain is IN the visible text, so it can be read and typed. That is the accepted
- * limit rather than a closed window, and it is why the domain is shown at all.
- */
-@Composable
-private fun GetKeyLink(provider: Provider) {
-    val portal = keyPortal(provider) ?: return
-    val context = LocalContext.current
-    val style = SpanStyle(
-        color = MaterialTheme.colorScheme.primary,
-        textDecoration = TextDecoration.Underline,
-    )
-    val text = buildAnnotatedString {
-        val link = LinkAnnotation.Url(
-            url = portal.url,
-            styles = TextLinkStyles(style = style),
-        ) {
-            val uri = android.net.Uri.parse((it as LinkAnnotation.Url).url)
-            runCatching {
-                context.startActivity(
-                    android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
-                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            }
-        }
-        withLink(link) { append("Get your key at ${portal.domain}") }
-    }
-    // A link's touch target is its LINE BOX, not the composable's bounds, so padding the Text would not
-    // have helped: measured 16 dp tall before this, against the 48 dp floor in
-    // docs/enviouswispr-android-architecture.md. Growing the line height grows the box the link is hit in.
-    // Converted from dp rather than written as sp, so a user on a small font scale still gets 48 dp.
-    val minTarget = with(LocalDensity.current) { 48.dp.toSp() }
-    val body = MaterialTheme.typography.bodySmall
-    // Never SHRINK the line: bodySmall is far below the floor today, but comparing rather than assuming
-    // means a later typography change cannot silently make the target smaller through this line.
-    val lineHeight = if (body.lineHeight.isSp && body.lineHeight.value > minTarget.value) body.lineHeight else minTarget
-    Text(
-        text,
-        style = body.copy(lineHeight = lineHeight),
-        modifier = Modifier.padding(top = 2.dp),
-    )
-}
-
-private fun keyPlaceholder(provider: Provider): String = when (provider) {
-    Provider.OPENAI -> "sk-proj-…"
-    Provider.GEMINI -> "AIza…"
-    Provider.CLAUDE -> "sk-ant-…"
-    Provider.SELF_HOSTED_POLISH -> ""
-}
-
-@Composable
-private fun RungHeader(text: String, error: Boolean = false) {
+internal fun RungHeader(text: String, error: Boolean = false) {
     Text(
         text,
         style = MaterialTheme.typography.labelSmall,
@@ -776,7 +193,7 @@ private fun RungHeader(text: String, error: Boolean = false) {
 }
 
 @Composable
-private fun ErrorLine(text: String) {
+internal fun ErrorLine(text: String) {
     Text(text, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
 }
 
@@ -812,48 +229,6 @@ private fun RungOneButton(
 }
 
 @Composable
-private fun ProviderTileButton(
-    provider: Provider,
-    selected: Boolean,
-    hasKey: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-    val name = provider.capabilities().displayName
-    Surface(
-        modifier = modifier
-            .height(76.dp)
-            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
-            // The dot is decoration to a screen reader; the tile says the same thing in words instead, so
-            // the state is announced once rather than as an unlabelled mark beside a name.
-            .semantics(mergeDescendants = true) { contentDescription = if (hasKey) "$name, key connected" else name },
-        shape = RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-        border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Box(Modifier.fillMaxSize()) {
-            Column(
-                Modifier.fillMaxSize().padding(8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                ProviderTile(provider, tint = fg, size = 26.dp)
-                Spacer(Modifier.height(6.dp))
-                Text(name, style = MaterialTheme.typography.labelLarge, color = fg, maxLines = 1)
-            }
-            if (hasKey) {
-                Box(
-                    Modifier.align(Alignment.TopEnd).padding(6.dp).size(7.dp)
-                        .background(if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary, CircleShape),
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun OffGlyph(colour: Color) {
     Canvas(Modifier.size(20.dp)) {
         val w = size.width; val h = size.height
@@ -878,15 +253,5 @@ private fun CloudGlyph(colour: Color) {
         drawCircle(colour, radius = w * 0.22f, center = androidx.compose.ui.geometry.Offset(w * 0.35f, h * 0.58f))
         drawCircle(colour, radius = w * 0.28f, center = androidx.compose.ui.geometry.Offset(w * 0.58f, h * 0.48f))
         drawRoundRect(colour, topLeft = androidx.compose.ui.geometry.Offset(w * 0.15f, h * 0.55f), size = androidx.compose.ui.geometry.Size(w * 0.72f, h * 0.32f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.16f))
-    }
-}
-
-@Composable
-private fun CheckGlyph() {
-    val colour = MaterialTheme.colorScheme.primary
-    Canvas(Modifier.size(18.dp)) {
-        val w = size.width; val h = size.height
-        val path = androidx.compose.ui.graphics.Path().apply { moveTo(w * 0.15f, h * 0.55f); lineTo(w * 0.42f, h * 0.8f); lineTo(w * 0.88f, h * 0.22f) }
-        drawPath(path, colour, style = androidx.compose.ui.graphics.drawscope.Stroke(width = w * 0.14f))
     }
 }

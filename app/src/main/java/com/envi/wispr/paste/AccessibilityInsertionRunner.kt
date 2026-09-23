@@ -635,16 +635,12 @@ internal class AccessibilityInsertionRunner(
      * `insertion/FallbackAnnouncement` is the only type either user-facing surface can be built
      * from.
      *
-     * A toast is gone in seconds and this route is taken when the user has switched apps or put
-     * the phone down, so the durable notification is not optional here either.
-     *
      * **What the two teardown reasons can honestly deliver, and the limit that comes with one calm
-     * line.** An interrupt runs on a live service and the toast is delivered normally. A destroy
-     * runs while the service is being torn down and the toast is queued into a window this process
-     * still has to draw, so a destroy followed immediately by a process kill can drop it. The durable
-     * notification that used to cover that case is gone deliberately: macOS posts nothing durable for
-     * a clipboard fallback, and the words are on the clipboard and in History either way, so what is
-     * lost is the sentence rather than the transcript. A low-memory kill that never calls `onDestroy`
+     * line.** The runner copies the words, enqueues the History outcome and requests a Toast while the
+     * service is alive. An interrupt runs on a live service and the Toast is delivered normally; an
+     * immediate process kill after a destroy may lose it. Nothing durable is posted, deliberately:
+     * macOS posts nothing durable for a clipboard fallback, and the words are on the clipboard and in
+     * History either way, so what can be lost is the sentence rather than the transcript. A low-memory kill that never calls `onDestroy`
      * at all delivers nothing, and nothing here can change that: the row is recovered as
      * `INSERTION_INTERRUPTED` by `TranscriptDao.recoverStaleReadyRows` on the next start, which is the
      * sentence that claims no destination it cannot know.

@@ -87,6 +87,11 @@ class PasteServiceShapeTest {
         assertTrue(count(tracker, """\bfindFocus\(""") > 0)
         assertEquals("only the tracker searches for focus", count(tracker, """\bfindFocus\("""), total("""\bfindFocus\("""))
         assertEquals("only the tracker assigns the pin", total("""\bpinnedTarget = """), count(tracker, """\bpinnedTarget = """))
+        assertEquals("one pin creation", 1, count(tracker, """\bpinnedTarget\s*=\s*TargetToken\("""))
+        // The result haptic is the success cue only: its declaration and one call, inside the Verified branch.
+        assertEquals("the result haptic: its declaration and one call", 2, total("""\bperformResultHaptic\("""))
+        val verified = runner.substring(runner.indexOf("is InsertionAttempt.Tick.Verified ->"), runner.indexOf("InsertionAttempt.Tick.Sensitive ->"))
+        assertTrue("the one call is the Verified branch's", verified.contains("performResultHaptic(success = true)"))
         // The bubble host owns the overlay and the audio-device watch.
         assertEquals("one overlay, built by the bubble host", 1, count(bubble, """\bRecordingAccessibilityOverlay\("""))
         assertEquals("no other file builds one", 1, total("""\bRecordingAccessibilityOverlay\("""))

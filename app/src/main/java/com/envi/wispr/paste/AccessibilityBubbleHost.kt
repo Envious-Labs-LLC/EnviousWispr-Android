@@ -23,9 +23,9 @@ import kotlinx.coroutines.launch
 /**
  * The floating lips bubble as the paste service hosts it (#217): the overlay, its look and colour, its
  * remembered dock, and the field discovery that decides when it shows. It asks [tracker] which editor is
- * focused and never pins one. Every call runs on the service's main thread except the position load and
- * saves, which stay on the service's [historyScope] so they are cancelled with it, after the insertion's
- * teardown.
+ * focused and never pins one. Event and overlay operations run on main; the look collection and the
+ * position reads and writes run on IO, with UI updates posted to main. The position work stays on the
+ * service's [historyScope], so it is cancelled with it, after the insertion's teardown.
  */
 internal class AccessibilityBubbleHost(
     private val service: PasteAccessibilityService,

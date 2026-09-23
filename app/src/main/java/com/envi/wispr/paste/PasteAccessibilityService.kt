@@ -253,9 +253,9 @@ class PasteAccessibilityService : AccessibilityService() {
         // Retract the publication FIRST, so no reader sees a healthy binding on a dying service.
         if (instance === this) publishBinding(null)
         bubble.close()
-        // Announced here, for the reason spelled out on the runner's recordAndAnnounce: what survives this
-        // teardown is the durable notification, and it only survives if it is handed to the system while
-        // this process is still alive. Its History write goes on the application's queue (#115).
+        // The runner copies the words, enqueues the History outcome and requests a Toast while the service
+        // is alive. An immediate process kill may lose the Toast. The History write goes on the
+        // application's queue (#115).
         runner.close()
         // Nothing is drained here (#115): the take's History writes are the application queue's, in
         // order, and the bubble-position saves on this scope are a preference whose next save wins, so a

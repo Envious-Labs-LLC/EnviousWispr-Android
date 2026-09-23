@@ -31,9 +31,9 @@ class AutoPasteWiringTest {
     /** REVERT: `AutoPasteReadiness.evaluate(currentReadiness.accessibilityPermitted, true)`. */
     @Test
     fun theViewModelDerivesAutoPasteFromLivenessAndNotFromAConstant() {
-        val source = read("ui/AppViewModel.kt")
+        val source = read("ui/ReadinessViewModel.kt")
         assertTrue(
-            "AppViewModel no longer reads PasteAccessibilityService.isBound, so every readiness " +
+            "ReadinessViewModel no longer reads PasteAccessibilityService.isBound, so every readiness " +
                 "surface is back to reporting the Android setting alone, which still names a " +
                 "crashed service. That is issue #16.",
             source.contains("PasteAccessibilityService.isBound"),
@@ -44,7 +44,7 @@ class AutoPasteWiringTest {
         // recomputed the state from the permission would restore issue #16 with the join green.
         val arguments = callArguments(source, "AutoPasteReadiness.observe(")
         assertEquals(
-            "AppViewModel does not derive auto-paste through AutoPasteReadiness.observe, so the " +
+            "ReadinessViewModel does not derive auto-paste through AutoPasteReadiness.observe, so the " +
                 "join is hand-written again and nothing executes it",
             1,
             arguments.size,
@@ -84,14 +84,14 @@ class AutoPasteWiringTest {
         val decisions = Regex("AutoPasteAvailability\\.(NOT_PERMITTED|PERMITTED_NOT_RUNNING|LIVE)")
             .findAll(source).map { it.value }.toList()
         assertEquals(
-            "AppViewModel names an auto-paste answer directly (${decisions.joinToString()}). It is " +
+            "ReadinessViewModel names an auto-paste answer directly (${decisions.joinToString()}). It is " +
                 "wiring, not the decision: the moment it can produce an availability of its own, " +
                 "it can hand the UI one the permission chose. Only AutoPasteReadiness decides.",
             emptyList<String>(),
             decisions,
         )
         assertFalse(
-            "AppViewModel calls AutoPasteReadiness.evaluate directly, so it can answer with the " +
+            "ReadinessViewModel calls AutoPasteReadiness.evaluate directly, so it can answer with the " +
                 "permission fact in both arguments and never consult the pushed liveness at all",
             source.contains("AutoPasteReadiness.evaluate("),
         )

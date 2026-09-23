@@ -16,37 +16,51 @@ import androidx.lifecycle.lifecycleScope
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.history.ui.HistoryViewModel
 import com.envi.wispr.ui.theme.EnviousWisprTheme
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelManifest
+import com.envi.wispr.providers.ModelListCache
 import com.envi.wispr.providers.ProviderConfigurationRepository
+import com.envi.wispr.providers.ui.PolishSettingsViewModel
 import com.envi.wispr.vocabulary.CustomTermRepository
+import com.envi.wispr.vocabulary.ui.DictionaryViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class SettingsActivity : ComponentActivity() {
     private var modelReadinessGeneration = 0L
-    private val viewModel: EnviousWisprViewModel by viewModels {
-        EnviousWisprViewModel.Factory(
-            appPreferences = AppPreferences(applicationContext),
-            repository = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()),
-            customTermRepository = CustomTermRepository(applicationContext),
+    // One view model per feature (#218), each built from its own dependencies only.
+    private val shellViewModel: EnviousWisprViewModel by viewModels {
+        EnviousWisprViewModel.Factory(appPreferences = AppPreferences(applicationContext))
+    }
+    private val historyViewModel: HistoryViewModel by viewModels {
+        HistoryViewModel.Factory(repository = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()))
+    }
+    private val dictionaryViewModel: DictionaryViewModel by viewModels {
+        DictionaryViewModel.Factory(customTermRepository = CustomTermRepository(applicationContext), appContext = applicationContext)
+    }
+    private val polishViewModel: PolishSettingsViewModel by viewModels {
+        PolishSettingsViewModel.Factory(
             providerRepository = ProviderConfigurationRepository(applicationContext),
-            appContext = applicationContext,
+            modelCache = ModelListCache(applicationContext),
         )
+    }
+    private val readinessViewModel: ReadinessViewModel by viewModels {
+        ReadinessViewModel.Factory(appContext = applicationContext)
     }
 
     private val microphonePermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
-        viewModel.refreshPermissions()
+        readinessViewModel.refreshPermissions()
     }
 
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
-        viewModel.refreshPermissions()
+        readinessViewModel.refreshPermissions()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,11 +71,15 @@ class SettingsActivity : ComponentActivity() {
         }.getOrElse { "Third-party notices are unavailable in this build." }
 
         setContent {
-            val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-            val providerDiscovery by viewModel.providerDiscovery.collectAsStateWithLifecycle()
+            val shell by shellViewModel.state.collectAsStateWithLifecycle()
+            val readiness by readinessViewModel.state.collectAsStateWithLifecycle()
+            val history by historyViewModel.state.collectAsStateWithLifecycle()
+            val dictionary by dictionaryViewModel.state.collectAsStateWithLifecycle()
+            val polish by polishViewModel.settings.collectAsStateWithLifecycle()
+            val discovery by polishViewModel.providerDiscovery.collectAsStateWithLifecycle()
 
-            EnviousWisprTheme(dynamicColor = uiState.preferences.dynamicColorEnabled) {
-                val actions = remember(viewModel) {
+            EnviousWisprTheme(dynamicColor = shell.preferences.dynamicColorEnabled) {
+                val actions = remember(shellViewModel, historyViewModel, dictionaryViewModel, polishViewModel, readinessViewModel) {
                     AppActions(
                         shell = ShellActions(
                             onStartDictation = {
@@ -81,60 +99,66 @@ class SettingsActivity : ComponentActivity() {
                             },
                         ),
                         onboarding = OnboardingActions(
-                            onStep = viewModel::setOnboardingStep,
-                            onDismiss = viewModel::dismissOnboarding,
-                            onResume = viewModel::resumeOnboarding,
-                            onComplete = viewModel::completeOnboarding,
+                            onStep = shellViewModel::setOnboardingStep,
+                            onDismiss = shellViewModel::dismissOnboarding,
+                            onResume = shellViewModel::resumeOnboarding,
+                            onComplete = shellViewModel::completeOnboarding,
                         ),
                         history = HistoryActions(
-                            onSearchChange = viewModel::updateHistorySearch,
-                            onKeep = viewModel::setHistoryKept,
-                            onDelete = viewModel::deleteHistory,
-                            onDeleteAll = viewModel::deleteAllHistory,
+                            onSearchChange = historyViewModel::updateHistorySearch,
+                            onKeep = historyViewModel::setHistoryKept,
+                            onDelete = historyViewModel::deleteHistory,
+                            onDeleteAll = historyViewModel::deleteAllHistory,
                         ),
                         dictionary = DictionaryActions(
-                            onSearchChange = viewModel::updateCustomTermSearch,
-                            onAdd = viewModel::addCustomTerm,
-                            onEdit = viewModel::editCustomTerm,
-                            onDelete = viewModel::deleteCustomTerm,
-                            onBulkDelete = viewModel::bulkDeleteCustomTerms,
-                            onImport = viewModel::importCustomTerms,
+                            onSearchChange = dictionaryViewModel::updateCustomTermSearch,
+                            onAdd = dictionaryViewModel::addCustomTerm,
+                            onEdit = dictionaryViewModel::editCustomTerm,
+                            onDelete = dictionaryViewModel::deleteCustomTerm,
+                            onBulkDelete = dictionaryViewModel::bulkDeleteCustomTerms,
+                            onImport = dictionaryViewModel::importCustomTerms,
                         ),
                         transcription = TranscriptionActions(
-                            onFillerRemovalChanged = viewModel::setFillerRemovalEnabled,
-                            onEmojiFormatterChanged = viewModel::setEmojiFormatterEnabled,
-                            onSpokenPunctuationChanged = viewModel::setSpokenPunctuationEnabled,
-                            onAutoStopOnSilenceChanged = viewModel::setAutoStopOnSilenceEnabled,
-                            onSilencePauseSecondsChanged = viewModel::setSilencePauseSeconds,
+                            onFillerRemovalChanged = shellViewModel::setFillerRemovalEnabled,
+                            onEmojiFormatterChanged = shellViewModel::setEmojiFormatterEnabled,
+                            onSpokenPunctuationChanged = shellViewModel::setSpokenPunctuationEnabled,
+                            onAutoStopOnSilenceChanged = shellViewModel::setAutoStopOnSilenceEnabled,
+                            onSilencePauseSecondsChanged = shellViewModel::setSilencePauseSeconds,
                         ),
                         polish = PolishActions(
-                            onSetMode = viewModel::setPolishMode,
-                            onSetS1Control = viewModel::setS1Control,
-                            onSaveProviderSettings = viewModel::saveProviderSettings,
-                            onClearProvider = viewModel::removeProviderKey,
-                            onCheckKey = viewModel::discoverModels,
-                            onKeyDraftChanged = viewModel::keyDraftChanged,
-                            onLoadCachedModels = viewModel::loadCachedModels,
+                            onSetMode = polishViewModel::setPolishMode,
+                            onSetS1Control = polishViewModel::setS1Control,
+                            onSaveProviderSettings = polishViewModel::saveProviderSettings,
+                            onClearProvider = polishViewModel::removeProviderKey,
+                            onCheckKey = polishViewModel::discoverModels,
+                            onKeyDraftChanged = polishViewModel::keyDraftChanged,
+                            onLoadCachedModels = polishViewModel::loadCachedModels,
                         ),
                         microphone = MicrophoneActions(
-                            onInputDevicePickChanged = viewModel::setInputDevicePick,
-                            onShowBluetoothTipsChanged = viewModel::setShowBluetoothTips,
-                            onKeepEarbudsReadyChanged = viewModel::setKeepEarbudsReady,
+                            onInputDevicePickChanged = shellViewModel::setInputDevicePick,
+                            onShowBluetoothTipsChanged = shellViewModel::setShowBluetoothTips,
+                            onKeepEarbudsReadyChanged = shellViewModel::setKeepEarbudsReady,
                         ),
                         clipboard = ClipboardActions(
-                            onAutoCopyChanged = viewModel::setAutoCopyToClipboard,
-                            onRestoreClipboardChanged = viewModel::setRestoreClipboardAfterPaste,
-                            onSmartInsertionChanged = viewModel::setSmartInsertionEnabled,
+                            onAutoCopyChanged = shellViewModel::setAutoCopyToClipboard,
+                            onRestoreClipboardChanged = shellViewModel::setRestoreClipboardAfterPaste,
+                            onSmartInsertionChanged = shellViewModel::setSmartInsertionEnabled,
                         ),
                         appearance = AppearanceActions(
-                            onDynamicColorChanged = viewModel::setDynamicColorEnabled,
-                            onBubbleLookChanged = viewModel::setBubbleLook,
+                            onDynamicColorChanged = shellViewModel::setDynamicColorEnabled,
+                            onBubbleLookChanged = shellViewModel::setBubbleLook,
                         ),
                     )
                 }
                 EnviousWisprApp(
-                    uiState = uiState,
-                    providerDiscovery = providerDiscovery,
+                    state = AppUiState(
+                        shell = shell,
+                        readiness = readiness,
+                        history = history,
+                        dictionary = dictionary,
+                        polish = polish,
+                        discovery = discovery,
+                    ),
                     licenseNotices = thirdPartyNotices,
                     actions = actions,
                 )
@@ -159,11 +183,11 @@ class SettingsActivity : ComponentActivity() {
     }
 
     private fun refreshReadiness() {
-        viewModel.refreshPermissions()
+        readinessViewModel.refreshPermissions()
         val generation = ++modelReadinessGeneration
         lifecycleScope.launch {
             val snapshot = withContext(Dispatchers.IO) { readAppReadiness(this@SettingsActivity) }
-            if (generation == modelReadinessGeneration) viewModel.updateVerifiedModels(snapshot)
+            if (generation == modelReadinessGeneration) readinessViewModel.updateVerifiedModels(snapshot)
         }
     }
 }

@@ -143,6 +143,11 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("junit:junit:4.13.2")
+    // The view-model rows (#218): `Dispatchers.setMain` on a test dispatcher, at the coroutines version the
+    // app already resolves; and a real JVM `org.json`, because the android.jar stub under
+    // `isReturnDefaultValues` answers every JSON call with null and `ModelListCache` reads and writes JSON.
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.room:room-testing:2.8.4")

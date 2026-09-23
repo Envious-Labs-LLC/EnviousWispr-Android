@@ -1,5 +1,7 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.providers.ui.ProviderDiscoveryUiState
+import com.envi.wispr.providers.ui.ProviderSettingsUiState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box

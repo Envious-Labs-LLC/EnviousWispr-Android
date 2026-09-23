@@ -243,7 +243,9 @@ class VoicePipelineDeviceTest {
             run.recordOneTake(stage = {}, stopByUser = false)
             run.ownTheVerdict {
                 val row = run.awaitFinalRow("silence did not end this take")
-                assertTrue("the take ended, but the capture process never logged a silence ending", run.stoppedBySilence())
+                val endings = run.captureEndings()
+                assertEquals("one capture ending for this take: $endings", 1, endings.size)
+                assertTrue("the take ended, but the capture process never logged a silence ending: $endings", endings.single().contains("Stopped by silence."))
                 val text = receipt(PasteTargetActivity.RECEIPT_NAME)
                 assertEquals("the editor's whole text is the literal expectation", expected, text)
                 assertEquals("the words appear exactly once", 1, occurrences(text, expected.trim()))
@@ -497,20 +499,22 @@ class VoicePipelineDeviceTest {
          * harness's journal (code review round 1). Cancel, then require BOTH the owner's IDLE and the capture
          * process's own close line, because the owner publishes IDLE before it asks the capture process to stop
          * (code review round 2): IDLE alone does not prove the microphone closed. A cleanup that could not prove
-         * it is attached to the original failure, never swallowed. The close line counts from this take's start:
-         * a take that ended itself before the failure closed the microphone then.
+         * it is attached to the original failure, never swallowed. The close line counts from the cancel, unless
+         * this run's IDLE came before it: a take that ended itself closed the microphone then, so from its start.
          */
         private fun endTheTake(failure: Throwable) {
             if (!takeStarted) return
             takeStarted = false
             stopRequested.set(true)
+            val endedBeforeCancel = idle.count == 0L
+            val cancelledAtMs = System.currentTimeMillis()
             context.startActivity(
                 Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
                     .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_CANCEL, true)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             )
             val idleSeen = idle.await(30, TimeUnit.SECONDS)
-            val closed = captureClosedAfter(startedAtMs, 15_000)
+            val closed = captureClosedAfter(if (endedBeforeCancel) startedAtMs else cancelledAtMs, 15_000)
             if (!idleSeen || !closed) {
                 failure.addSuppressed(
                     AssertionError(
@@ -522,14 +526,15 @@ class VoicePipelineDeviceTest {
         }
 
         /**
-         * The capture process's own ending line for this take names silence (`Stopped by silence.`, logged
-         * before the ending is published). Read once, after the owner's final row, as the cause; never a
-         * completion signal.
+         * The capture process's own ending lines (`Stopped by <cause>.`, logged before the ending is published)
+         * since this take began. Read once, after the owner's final row, as the cause; never a completion
+         * signal. The row requires exactly one, so another take's ending cannot answer for this one.
          */
-        fun stoppedBySilence(): Boolean {
+        fun captureEndings(): List<String> {
             val stamp = java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date(startedAtMs))
             return shell("logcat -d -v time -t 2000 AudioCapture:I *:S").lineSequence()
-                .any { it.length > 18 && it.contains("Stopped by silence.") && it.substring(0, 18) >= stamp }
+                .filter { it.length > 18 && it.contains("Stopped by ") && it.substring(0, 18) >= stamp }
+                .toList()
         }
 
         /**

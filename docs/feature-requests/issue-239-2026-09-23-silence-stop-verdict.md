@@ -18,7 +18,7 @@ User Rubric: when "stop recording on silence" is on, a take the user simply stop
 
 ## 0. TL;DR
 
-`SilenceStopEndToEndDeviceTest.driveOneSilenceStoppedDictationIntoTheEditor` sleeps 2.5 s, 2.5 s and 45 s and asserts nothing; it passes when silence never ends the take (REF-06, `testing-philosophy.md` RULE: never-guess-when-the-subject-is-finished). `VoicePipelineDeviceTest` already owns a take driven on subject signals with an in-process receipt read (`run-as` through `UiAutomation`). Add the silence-stop take there as a row with its own verdict, and delete the sleeping driver (GR-MIGRATION-COMPLETE).
+`SilenceStopEndToEndDeviceTest.driveOneSilenceStoppedDictationIntoTheEditor` (removed) sleeps 2.5 s, 2.5 s and 45 s and asserts nothing; it passes when silence never ends the take (REF-06, `testing-philosophy.md` RULE: never-guess-when-the-subject-is-finished). `VoicePipelineDeviceTest` already owns a take driven on subject signals with an in-process receipt read (`run-as` through `UiAutomation`). Add the silence-stop take there as a row with its own verdict, and delete the sleeping driver (GR-MIGRATION-COMPLETE).
 
 ## 1. Problem
 
@@ -90,6 +90,6 @@ None.
 
 ## 16. As built
 
-- `VoicePipelineDeviceTest.aSilenceStoppedTakeLandsInTheFocusedEditorExactlyOnce`; `SideButtonRun` gains `recordOneTake(stopByUser)`, `ownTheVerdict`, `endTheTake` (the one cleanup both paths call; the close line counts from the take's start), `stoppedBySilence`, and `awaitFinalRow(whenMissing)`; `awaitNoSessionService` checks the platform's service list before the setting is written. `SilenceStopEndToEndDeviceTest.kt` deleted.
+- `VoicePipelineDeviceTest.aSilenceStoppedTakeLandsInTheFocusedEditorExactlyOnce`; `SideButtonRun` gains `recordOneTake(stopByUser)`, `ownTheVerdict`, `endTheTake` (the one cleanup both paths call; the close line counts from the take's start), `captureEndings` (exactly one ending since the take began, and it names silence), and `awaitFinalRow(whenMissing)`; `awaitNoSessionService` checks the platform's service list before the setting is written. `SilenceStopEndToEndDeviceTest.kt` deleted.
 - Emulator, through `run_device_test` (external audio): the new row passed; `aSideButtonTakeLandsInTheFocusedEditorExactlyOnce` and `aTakeStartedInAAndFocusMovedToBInsertsNowhereAndKeepsTheWordsOnTheClipboard` passed; `aDictationWithNoFieldToInsertIntoIsNotReportedToTheUserAsAFailure` was NOT RUN, skipped by its own precondition (a Gmail field was focused behind the launcher), and its code is unchanged here.
 - Receipts on the emulator: R1 (capture starts with auto-stop off) failed "silence did not end this take", and its cleanup proved the take ended; R2 (a manual stop) failed "the take ended, but the capture process never logged a silence ending".

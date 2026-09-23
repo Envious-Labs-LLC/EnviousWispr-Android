@@ -1,0 +1,3 @@
+# TakeJournalWriterTest wait receipt (a 50 ms sleep injected before capture in TakeJournalWriter.terminal, as a slow CI runner; both files restored after)
+RED: old wait (call count, 2 s clock), slow capture -> writesForOneTakeLandInTheOrderTheyWereQueuedAndTheRowLeavesOnlyAfterItsCommit
+GREEN: new wait (a probe write through the ordered writer), slow capture

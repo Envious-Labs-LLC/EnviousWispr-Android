@@ -122,6 +122,8 @@ internal class DictationSessionRig {
         historySaveBoundMs: Long = 5_000L,
         /** Abstains by default; the #252 row passes one that throws. */
         languageDetector: LanguageDetector = LanguageDetector { null },
+        /** Runs each captured-audio delete at once by default; the #253 row holds it past a teardown. */
+        audioCleanup: (Runnable) -> Unit = { it.run() },
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
@@ -142,6 +144,7 @@ internal class DictationSessionRig {
         polishLedger = PolishRequestLedger(PolishRequestIdSource { System.nanoTime() }),
         endingSink = endings::record,
         defectSink = { defect, data -> if (throwOnDefect) throw IllegalStateException("sink broke"); defects += defect.fingerprint to data },
+        audioCleanup = audioCleanup,
     )
 
     /** When set, the owner's defect sink throws (#252: a broken report must never stop the words). */

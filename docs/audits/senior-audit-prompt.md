@@ -33,7 +33,7 @@ Facts that shape the grading, do NOT re-derive them:
 - Heart path: trigger, capture, ASR, finalization, insertion. Must never fail. Limbs (cleanup,
   vocabulary, local polish, cloud polish, live preview, history) enhance with a deadline and a fallback to
   the LAST SUCCESSFUL TEXT.
-- Five processes: main, `:audio`, `:asr`, `:vad`, `:polish`. Eight AIDL interfaces and two parcelables in
+- Five processes: main, `:audio`, `:asr`, `:vad`, `:polish`. Nine AIDL interfaces and two parcelables in
   `app/src/main/aidl/` (`ls app/src/main/aidl/com/envi/wispr/*/`). AIDL is append-only.
 - One session owner. Six entry surfaces send it commands. Since the 2026-09-20 audit both of that
   audit's declared extraction targets were split: `ui/DictationSessionService.kt` is the Android
@@ -48,6 +48,12 @@ Facts that shape the grading, do NOT re-derive them:
 - Founder decision 2026-08-28: there is no sensitive-field guard by design (architecture-rules.md FACT:
   there-is-no-sensitive-field-guard-and-that-is-decided). Its leftover code is issue #11, already filed.
   Do not report it as a new finding.
+- Founder decision 2026-09-18 (catalog `decision` row; issue #219 closed as not planned on 2026-09-22):
+  after a Bluetooth take the app keeps the earbud route open for 30 seconds by playing silence (no
+  recording, no microphone indicator), behind the Microphone-page switch "Keep earbuds ready after
+  dictating", on by default; without it the next take waits for the earbuds to reconnect. The hold's
+  EXISTENCE is decided and is not a `no-idle-cost` finding. Grade its implementation: that it is bounded,
+  releasable, content-free and closed on every path.
 - `:accelerator-benchmark` is an experiment that does not fully build. It never gates the app. Do not
   read it and do not grade it.
 

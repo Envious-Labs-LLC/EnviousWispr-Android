@@ -498,10 +498,10 @@ internal class RecordingAccessibilityOverlay(
         dragBox ?: BubblePlacement.bubbleBox(position, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
 
     /**
-     * Start the take. The service owns the two routes: straight to the session owner, which leaves the
-     * keyboard exactly where it is, or through the transparent launcher when Android refuses a
-     * foreground start from here. Measured 2026-09-12 on the emulator: launching the activity makes
-     * Chrome hide its keyboard, so the direct route is tried first.
+     * Start the take by asking the service to start the session owner directly, which leaves the
+     * keyboard in place. If that fails, this overlay launches the transparent activity using the service
+     * as its context. On the emulator, launching the activity makes Chrome hide its keyboard, so the
+     * direct route is tried first (measured 2026-09-12).
      */
     /** Returns the request this gesture created, or null when the owner was not IDLE and nothing was sent. */
     private fun startDictation(held: Boolean): BubbleRequestToken? {

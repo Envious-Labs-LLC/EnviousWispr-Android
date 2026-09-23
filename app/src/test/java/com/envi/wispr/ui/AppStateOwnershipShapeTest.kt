@@ -68,6 +68,26 @@ class AppStateOwnershipShapeTest {
         assertTrue("the Polish tab reads something other than the settings the writes publish", Regex("""val\s+settings\s*:[^=]*=\s*providerSettings\.asStateFlow\(\)""").containsMatchIn(polishText))
     }
 
+    /**
+     * The half of tap order the JVM row cannot see: the rapid-tap row proves the second tap waits, and this
+     * row pins that the lock is taken in the launched coroutine on Main, before any IO. REVERT: launch the
+     * write on `Dispatchers.IO` (`viewModelScope.launch(Dispatchers.IO) {`), where the pool picks who locks.
+     */
+    @Test fun providerWritesTakeTheLockOnMainBeforeAnyIo() {
+        val polish = code.getValue(owners.keys.first { it.name == "PolishSettingsViewModel.kt" })
+        val start = polish.indexOf("private fun updateProviderSettings(")
+        assertTrue("updateProviderSettings moved", start >= 0)
+        val write = polish.substring(start)
+        assertTrue(
+            "a provider write no longer takes the settings lock first thing in a coroutine launched on Main",
+            Regex("""viewModelScope\.launch\s*\{\s*providerSettingsMutex\.withLock\s*\{""").containsMatchIn(write),
+        )
+        assertTrue(
+            "the provider write reaches IO before it holds the settings lock",
+            write.indexOf("providerSettingsMutex.withLock {") < write.indexOf("withContext(Dispatchers.IO) { operation() }"),
+        )
+    }
+
     @Test fun anEmptyDictionaryStillCountsAsLoaded() {
         val dictionary = owners.keys.first { it.name == "DictionaryViewModel.kt" }
         assertTrue(

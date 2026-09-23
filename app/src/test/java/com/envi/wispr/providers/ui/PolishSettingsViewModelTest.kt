@@ -68,18 +68,26 @@ class PolishSettingsViewModelTest {
     }
 
     @After fun tearDown() {
-        discoverer.releaseAll()
-        settingsPrefs.releaseAll()
-        cachePrefs.releaseAll()
-        if (::viewModel.isInitialized) {
-            val scope = viewModel.viewModelScope.coroutineContext.job
-            scope.cancel()
-            // Every coroutine still resuming through Main finishes before Main is reset under it.
-            runBlocking { withTimeout(DEADLINE_MS) { scope.join() } }
+        // Main is reset whatever fails first, so one stuck row never hands its dispatcher to the next row.
+        try {
+            discoverer.releaseAll()
+            settingsPrefs.releaseAll()
+            cachePrefs.releaseAll()
+            if (::viewModel.isInitialized) {
+                val scope = viewModel.viewModelScope.coroutineContext.job
+                scope.cancel()
+                // Every coroutine still resuming through Main finishes before Main is reset under it.
+                runBlocking { withTimeout(DEADLINE_MS) { scope.join() } }
+            }
+        } finally {
+            mainThread.shutdownNow()
+            try {
+                check(mainThread.awaitTermination(DEADLINE_MS, TimeUnit.MILLISECONDS)) { "Main never went idle" }
+            } finally {
+                Dispatchers.resetMain()
+                main.close()
+            }
         }
-        mainThread.shutdown()
-        check(mainThread.awaitTermination(DEADLINE_MS, TimeUnit.MILLISECONDS)) { "Main never went idle" }
-        Dispatchers.resetMain()
     }
 
     /** Builds the view model and returns the job of its initial load, the one coroutine `init` launches. */

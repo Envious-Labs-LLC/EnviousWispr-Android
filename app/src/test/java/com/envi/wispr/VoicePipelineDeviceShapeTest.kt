@@ -10,14 +10,15 @@ import java.io.File
  * Drift Guard (#215), not product coverage: the heart's one real ASR-and-local-polish row, and the speaker
  * source that plays the same fixture, ASSERT their stageable fixture instead of assuming it (a bare
  * instrumentation run reports an assumption as a pass), and the row checks the founder's saved term from
- * the repository alone, before built-ins are merged, with the exact `Prerequisite:` message the harness
- * door classifies. Read off the source because the row runs on a device, never in the JVM suite.
+ * the repository alone, before built-ins are merged. Read off the source because the row runs on a device,
+ * never in the JVM suite.
  *
- * The class code review kept finding (rounds 1 to 3) is "text that is not code standing for code". It is
- * closed by a lexer: every character is CODE, COMMENT or STRING ([classify]); a call is found only in code;
- * a required message only counts as string content of the call's first argument, and a required predicate
- * only counts when the second argument, comments removed, IS that predicate. [onlyCodeCanSatisfyARow]
- * holds one control per way non-code text can appear, outside and inside a real call.
+ * Code review kept finding "text that is not code standing for code" (rounds 1 to 4). A lexer ([classify])
+ * closes it for calls and predicates: a call is a CODE identifier followed by `(`, and a predicate counts
+ * only when the second argument, comments removed, IS that predicate. Assertion MESSAGES are not checked
+ * here: a message is a runtime value (templates, branches), so no reading of the source can pin it. The
+ * exact `Prerequisite:` prefix the harness classifies is pinned by the harness rows in
+ * `scripts/uat/test_wispr_eyes.py`.
  */
 class VoicePipelineDeviceShapeTest {
 
@@ -89,13 +90,32 @@ class VoicePipelineDeviceShapeTest {
         error("unbalanced $signature")
     }
 
-    /** Every CODE `assertTrue(` call in [text]: its start and its argument texts, split at top-level code commas. */
-    private fun assertCalls(text: String): List<Pair<Int, List<String>>> {
+    /**
+     * The start of every CODE call of [name] in [text]: the identifier, whole (no identifier character on
+     * either side), followed by optional whitespace or comments and then `(`.
+     */
+    private fun callStarts(text: String, name: String): List<Pair<Int, Int>> {
         val code = codeMask(text)
-        val calls = mutableListOf<Pair<Int, List<String>>>()
-        var from = code.indexOf("assertTrue(")
-        while (from >= 0) {
-            val open = from + "assertTrue".length
+        fun identifier(c: Char) = c.isLetterOrDigit() || c == '_'
+        val starts = mutableListOf<Pair<Int, Int>>()
+        var at = code.indexOf(name)
+        while (at >= 0) {
+            val end = at + name.length
+            val before = at == 0 || !identifier(code[at - 1])
+            var open = end
+            while (open < code.length && code[open].isWhitespace()) open++
+            if (before && (end == code.length || !identifier(code[end])) && open < code.length && code[open] == '(') {
+                starts += at to open
+            }
+            at = code.indexOf(name, at + 1)
+        }
+        return starts
+    }
+
+    /** Every CODE call of [name] in [text]: its start and its argument texts, split at top-level code commas. */
+    private fun calls(text: String, name: String): List<Pair<Int, List<String>>> {
+        val code = codeMask(text)
+        return callStarts(text, name).map { (from, open) ->
             var depth = 0
             var argStart = open + 1
             val args = mutableListOf<String>()
@@ -104,31 +124,26 @@ class VoicePipelineDeviceShapeTest {
                     '(', '{', '[' -> depth++
                     ')', '}', ']' -> {
                         depth--
-                        if (depth == 0) { args += text.substring(argStart, i); calls += from to args; break }
+                        if (depth == 0) { args += text.substring(argStart, i); break }
                     }
                     ',' -> if (depth == 1) { args += text.substring(argStart, i); argStart = i + 1 }
                 }
             }
-            from = code.indexOf("assertTrue(", from + 1)
+            from to args
         }
-        return calls
     }
 
     /**
-     * The start of the CODE `assertTrue(` whose first argument is string literals only (joined by `+`)
-     * containing [message], and whose second argument, comments removed, IS [predicate]; -1 when none.
+     * The start of the CODE `assertTrue` call with exactly two arguments whose second argument, comments
+     * removed, IS [predicate]; -1 when none.
      */
-    private fun oneAssertionCarries(text: String, message: String, predicate: String): Int =
-        assertCalls(text).firstOrNull { (_, rawArgs) ->
-            val args = rawArgs.filter { normalized(view(it, Kind.CODE, Kind.STRING)).isNotEmpty() }
-            if (args.size != 2) return@firstOrNull false
-            val (first, second) = args
-            val firstIsLiteralsOnly = normalized(codeMask(first)).replace("+", "").isBlank()
-            firstIsLiteralsOnly && view(first, Kind.STRING).contains(message) &&
-                normalized(view(second, Kind.CODE, Kind.STRING)) == normalized(predicate)
+    private fun assertsPredicate(text: String, predicate: String): Int =
+        calls(text, "assertTrue").firstOrNull { (_, rawArgs) ->
+            val args = rawArgs.map { normalized(view(it, Kind.CODE, Kind.STRING)) }.filter { it.isNotEmpty() }
+            args.size == 2 && args[1] == normalized(predicate)
         }?.first ?: -1
 
-    private fun hasCodeCall(text: String, name: String): Boolean = codeMask(text).contains("$name(")
+    private fun hasCodeCall(text: String, name: String): Boolean = callStarts(text, name).isNotEmpty()
 
     // REVERT: put back `assumeTrue(... File(fixturePath).isFile)` in the row.
     @Test
@@ -136,8 +151,8 @@ class VoicePipelineDeviceShapeTest {
         val row = body(source, "fun transcribesThenPolishesWithSavedCustomWords()")
         assertFalse("no assumption in the real-boundary row", hasCodeCall(row, "assumeTrue"))
         assertTrue(
-            "ONE assertion carries the fixture message and the fixture predicate",
-            oneAssertionCarries(row, "The real-model fixture is missing", "File(fixturePath).isFile") >= 0,
+            "ONE assertion asserts the fixture predicate",
+            assertsPredicate(row, "File(fixturePath).isFile") >= 0,
         )
     }
 
@@ -147,10 +162,10 @@ class VoicePipelineDeviceShapeTest {
         val row = body(source, "fun transcribesThenPolishesWithSavedCustomWords()")
         val code = codeMask(row)
         val read = code.indexOf("val userTerms = runBlocking { CustomTermRepository(context).list() }.map(CustomTermRecord::term)")
-        val check = oneAssertionCarries(row, "\"Prerequisite: the saved custom name 'Saurabh'", "userTerms.any { it.spelling == \"Saurabh\" }")
+        val check = assertsPredicate(row, "userTerms.any { it.spelling == \"Saurabh\" }")
         val merge = code.indexOf("BuiltinVocabulary.withUserTerms(userTerms)")
         assertTrue("the user terms are read on their own, in code", read >= 0)
-        assertTrue("ONE assertion carries the exact prefix and the user-term predicate, after the read and before the merge", check in (read + 1) until merge)
+        assertTrue("ONE assertion asserts the user-term predicate, after the read and before the merge", check in (read + 1) until merge)
     }
 
     // REVERT: put back the assumption in `SpeakerAudio.prepare`.
@@ -160,40 +175,50 @@ class VoicePipelineDeviceShapeTest {
         val prepare = body(speaker, "override fun prepare()")
         assertFalse(hasCodeCall(prepare, "assumeTrue"))
         assertTrue(
-            "ONE assertion carries the fixture message and predicate",
-            oneAssertionCarries(prepare, "The fixture is missing", "File(fixturePath).isFile") >= 0,
+            "ONE assertion asserts the fixture predicate",
+            assertsPredicate(prepare, "File(fixturePath).isFile") >= 0,
         )
     }
 
-    // One control per way non-code text could stand for code, outside a call and inside a real one.
+    // One control per way non-code text could stand for code, outside a call and inside a real one, and one
+    // per legal spelling of a call.
     @Test
     fun onlyCodeCanSatisfyARow() {
-        val message = "The fixture is missing"
         val predicate = "File(fixturePath).isFile"
         val real = "fun f() {\n    assertTrue(\"The fixture is missing\", File(fixturePath).isFile)\n}\n"
-        assertTrue("a real assertion is found", oneAssertionCarries(real, message, predicate) >= 0)
-        assertTrue(
-            "a real message joined with + and a real predicate still match",
-            oneAssertionCarries("assertTrue(\n    \"The fixture \" +\n        \"is missing\",\n    File(fixturePath).isFile,\n)", "is missing", predicate) >= 0,
+        assertTrue("a real assertion is found", assertsPredicate(real, predicate) >= 0)
+        val spellings = listOf(
+            "a space before the parenthesis" to "assertTrue (\"m\", File(fixturePath).isFile)",
+            "a comment before the parenthesis" to "assertTrue/* c */(\"m\", File(fixturePath).isFile)",
+            "a templated message" to "assertTrue(\"\"\"${'$'}{if (false) \"a\" else \"b\"}\"\"\", File(fixturePath).isFile)",
+            "a trailing comma" to "assertTrue(\n    \"m\",\n    File(fixturePath).isFile,\n)",
         )
+        for ((label, text) in spellings) {
+            assertTrue("$label is a match", assertsPredicate(text, predicate) >= 0)
+        }
         val hidden = listOf(
-            "the whole call in a line comment" to "// assertTrue(\"The fixture is missing\", File(fixturePath).isFile)\n",
-            "the whole call in a block comment" to "/* assertTrue(\"The fixture is missing\", File(fixturePath).isFile) */",
-            "the whole call in a nested block comment" to "/* a /* b */ assertTrue(\"The fixture is missing\", File(fixturePath).isFile) */",
-            "the whole call in a string" to "val s = \"assertTrue(The fixture is missing, File(fixturePath).isFile)\"",
-            "the whole call in a raw string" to "val s = \"\"\"assertTrue(\"The fixture is missing\", File(fixturePath).isFile)\"\"\"",
-            "the predicate only in a line comment" to "assertTrue(\"The fixture is missing\", true // File(fixturePath).isFile\n)",
-            "the predicate only in a block comment" to "assertTrue(\"The fixture is missing\", true /* File(fixturePath).isFile */)",
-            "the predicate only in the message" to "assertTrue(\"The fixture is missing File(fixturePath).isFile\", true)",
-            "the message only in a comment" to "assertTrue(/* The fixture is missing */ \"x\", File(fixturePath).isFile)",
-            "the message joined to code" to "assertTrue(prefix + \"The fixture is missing\", File(fixturePath).isFile)",
-            "a predicate that merely contains the expected one" to "assertTrue(\"The fixture is missing\", File(fixturePath).isFile || true)",
+            "the whole call in a line comment" to "// assertTrue(\"m\", File(fixturePath).isFile)\n",
+            "the whole call in a block comment" to "/* assertTrue(\"m\", File(fixturePath).isFile) */",
+            "the whole call in a nested block comment" to "/* a /* b */ assertTrue(\"m\", File(fixturePath).isFile) */",
+            "the whole call in a string" to "val s = \"assertTrue(m, File(fixturePath).isFile)\"",
+            "the whole call in a raw string" to "val s = \"\"\"assertTrue(\"m\", File(fixturePath).isFile)\"\"\"",
+            "the predicate only in a line comment" to "assertTrue(\"m\", true // File(fixturePath).isFile\n)",
+            "the predicate only in a block comment" to "assertTrue(\"m\", true /* File(fixturePath).isFile */)",
+            "the predicate only in the message" to "assertTrue(\"m File(fixturePath).isFile\", true)",
+            "a predicate that merely contains the expected one" to "assertTrue(\"m\", File(fixturePath).isFile || true)",
+            "a longer name ending in assertTrue" to "myassertTrue(\"m\", File(fixturePath).isFile)",
+            "a longer name starting with assertTrue" to "assertTrueX(\"m\", File(fixturePath).isFile)",
+            "the predicate as the only argument" to "assertTrue(File(fixturePath).isFile)",
         )
         for ((label, text) in hidden) {
-            assertEquals("$label is not a match", -1, oneAssertionCarries(text, message, predicate))
+            assertEquals("$label is not a match", -1, assertsPredicate(text, predicate))
         }
-        assertFalse("an assumeTrue inside a comment is not a call", hasCodeCall("// assumeTrue(x)\n", "assumeTrue"))
-        assertTrue("a real assumeTrue is a call", hasCodeCall("assumeTrue(x)\n", "assumeTrue"))
+        for (call in listOf("assumeTrue(x)\n", "assumeTrue (x)\n", "assumeTrue/* c */(x)\n", "assumeTrue\n    (x)\n")) {
+            assertTrue("a real assumeTrue is a call: $call", hasCodeCall(call, "assumeTrue"))
+        }
+        for (text in listOf("// assumeTrue(x)\n", "/* assumeTrue(x) */", "\"assumeTrue(x)\"", "notassumeTrue(x)", "assumeTrueNot(x)")) {
+            assertFalse("not a call: $text", hasCodeCall(text, "assumeTrue"))
+        }
         assertEquals("the views keep every index", real.length, codeMask(real).length)
     }
 }

@@ -44,20 +44,27 @@ class MinSdkBranchesTest {
         assertTrue("!= 31 is always true", decided("!=", 31, floor))
     }
 
+    /** Every comparison in [source], wherever it sits on a line or across lines, that [floor] decides. */
+    private fun deadIn(source: String, fileName: String, floor: Int): List<String> =
+        comparison.findAll(source).mapNotNull { match ->
+            val (op, value, name) = match.destructured
+            val line = source.take(match.range.first).count { it == '\n' } + 1
+            val n = if (name.isEmpty()) value.toInt() else codes[name] ?: error("unmapped VERSION_CODES.$name at $fileName:$line")
+            if (decided(op, n, floor)) "$fileName:$line SDK_INT $op $n" else null
+        }.toList()
+
+    /** A live check first must not hide a dead one after it, on the line or on the next (code review round 1). */
+    @Test fun aDeadCheckAfterALiveOneIsStillFound() {
+        val source = "val a = SDK_INT >= 34 && SDK_INT >= Build.VERSION_CODES.S\nval b = SDK_INT >=\n    30\n"
+        assertEquals(listOf("F.kt:1 SDK_INT >= 31", "F.kt:2 SDK_INT >= 30"), deadIn(source, "F.kt", 33))
+    }
+
     /** MUTATION: put `SDK_INT >= Build.VERSION_CODES.S` back in `EnviousWisprTheme`. */
     @Test fun noComparisonInTheAppIsOneMinSdkDecides() {
         assertEquals("the shipping floor", 33, minSdk)
-        val sources = File("src/main/java").walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        val sources = File("src/main/java").walkTopDown().filter { it.isFile && it.extension in setOf("kt", "java") }.toList()
         assertTrue("the production tree must be readable", sources.size > 100)
-        val dead = sources.flatMap { file ->
-            file.readLines().mapIndexedNotNull { index, line ->
-                comparison.find(line)?.let { match ->
-                    val (op, value, name) = match.destructured
-                    val n = if (name.isEmpty()) value.toInt() else codes[name] ?: error("unmapped VERSION_CODES.$name at ${file.name}:${index + 1}")
-                    if (decided(op, n, minSdk)) "${file.name}:${index + 1} SDK_INT $op $n" else null
-                }
-            }
-        }
+        val dead = sources.flatMap { deadIn(it.readText(), it.name, minSdk) }
         assertEquals("comparisons minSdk $minSdk already decides", emptyList<String>(), dead)
     }
 }

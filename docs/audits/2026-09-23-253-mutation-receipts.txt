@@ -1,0 +1,10 @@
+# #253 mutation receipts (each applied alone, its named row run, the source restored)
+RED: m1 speech listener called directly -> speechCallbacksReachTheListenerOnlyThroughThePost
+RED: m2 polish listener called directly -> polishCallbacksReachTheListenerOnlyThroughThePost
+RED: m3 prepared on main -> aFallbackIsPreparedOffMainAndHandedBackOnMain
+RED: m4 handed back off main -> aFallbackIsPreparedOffMainAndHandedBackOnMain
+RED: m5 watchdog claims off main -> anAnswerQueuedOnMainBeforeTheWatchdogWins
+RED: m6 thrown request claims off main -> anAnswerSentBeforeTheRequestThrewWins
+RED: m7 publishability not read -> aTakeThatCanNoLongerPublishGetsNoText
+RED: m8 audio deleted on the session scope -> aTeardownRightAfterABlankTakeStillDeletesItsAudio
+RED: device, speech listener called directly in PostingSpeechListener -> SpeechCallbackDeviceTest (the listener ran while main was held); restored: PASS

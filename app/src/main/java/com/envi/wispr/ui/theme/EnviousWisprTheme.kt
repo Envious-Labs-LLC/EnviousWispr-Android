@@ -1,6 +1,5 @@
 package com.envi.wispr.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
@@ -270,7 +269,7 @@ internal fun EnviousWisprTheme(
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
-    val usingDynamic = dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val usingDynamic = dynamicColor
     val colorScheme = when {
         usingDynamic && darkTheme -> dynamicDarkColorScheme(context)
         usingDynamic -> dynamicLightColorScheme(context)

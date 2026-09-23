@@ -24,12 +24,10 @@ class DictationTileService : TileService() {
                 DictationSurfaceState.Phase.LISTENING -> "Listening"
                 DictationSurfaceState.Phase.PROCESSING -> "Processing"
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                subtitle = when (phase) {
-                    DictationSurfaceState.Phase.IDLE -> "Tap to dictate"
-                    DictationSurfaceState.Phase.LISTENING -> "Tap to stop"
-                    DictationSurfaceState.Phase.PROCESSING -> "Working locally"
-                }
+            subtitle = when (phase) {
+                DictationSurfaceState.Phase.IDLE -> "Tap to dictate"
+                DictationSurfaceState.Phase.LISTENING -> "Tap to stop"
+                DictationSurfaceState.Phase.PROCESSING -> "Working locally"
             }
             updateTile()
         }

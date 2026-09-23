@@ -389,6 +389,37 @@ def test_pick_one_groups():
         eyes._adb = chip_phone(state, presses, hidden=("Semi-casual", "Semi-formal", "Formal"))
         check("a lone unchosen chip in view is refused too",
               str(way("Casual")).startswith("raised") and "whole group" in str(way("Casual")), way("Casual"))
+        # Codex r2: the chosen chip off screen with two unchosen chips in view. A pick from here would
+        # record no member to choose back.
+        eyes._adb = chip_phone(state, presses, hidden=("Semi-formal", "Formal"))
+        if callable(getattr(eyes, "choose", None)):
+            try:
+                eyes.choose("Casual", where="AI Polish")
+                check("choose() refuses a group whose chosen member is off screen", False, "it pressed Casual")
+            except eyes.Blocked as refusal:
+                check("choose() refuses a group whose chosen member is off screen", "whole group" in str(refusal), refusal)
+            check("and presses and owes nothing", presses == [] and eyes._owed() == [], (presses, eyes._owed()))
+
+            # A pick made with part of the group in view is put back from a view showing all of it,
+            # and a second pick in the same group does not replace the first record.
+            eyes._adb = chip_phone(state, presses, hidden=("Formal",))
+            eyes.choose("Casual", where="AI Polish")
+            eyes._adb = chip_phone(state, presses)
+            eyes.choose("Formal", where="AI Polish")
+            owed = eyes._owed()
+            check("two picks in one group keep only the first record",
+                  len(owed) == 1 and json.loads(owed[0][1])["group"].get("Semi-formal") is True, owed)
+            with eyes._journal_locked():
+                for entry in list(eyes._owed()):
+                    eyes._restore_one(entry)
+                    eyes._settled_locked(entry, eyes._STATE["serial"])
+            check("restore chooses the recorded member back by name from a fuller view",
+                  state["Semi-formal"] and not state["Casual"] and not state["Formal"], state)
+            # And a choice back to the original from a narrower view settles a record made from a wider one.
+            eyes.choose("Casual", where="AI Polish")
+            eyes._adb = chip_phone(state, presses, hidden=("Formal", "Semi-casual"))
+            eyes.choose("Semi-formal", where="AI Polish")
+            check("choosing the original back settles the record whatever part is in view", eyes._owed() == [], eyes._owed())
         eyes._adb = chip_phone(state, presses)
 
         # ---- scan's flip-and-put-back pass on this screen -------------------------------------------

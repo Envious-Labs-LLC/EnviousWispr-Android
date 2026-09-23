@@ -1282,6 +1282,12 @@ def _group_state(label, package=PACKAGE):
         if name in state:
             raise Blocked(f"two choices in the group holding {label!r} are both named {name!r}")
         state[name] = bool(member["on"])
+    # A GROUP WITH NO CHOSEN MEMBER IN VIEW IS NOT A READING OF THE GROUP (Codex r1 and r2). The
+    # chosen one may be scrolled off: a pick made from here records no member to choose back, and
+    # nothing downstream can repair a debt without its target. Every caller reads groups through here.
+    if not any(state.values()):
+        raise Blocked(f"the group holding {label!r} shows no chosen member, so it cannot be judged or "
+                      "put back. Bring the whole group into view first.")
     return mark, state
 
 
@@ -1290,7 +1296,15 @@ def _group_settled(label, before, package=PACKAGE, max_wait=1.2, gap=0.1):
     deadline = time.monotonic() + max_wait
     last = None
     while True:
-        _, now = _group_state(label, package=package)
+        try:
+            _, now = _group_state(label, package=package)
+        except Blocked as why:
+            # Mid-press the old pick can be off before the new one is on. That is a moment, not an
+            # answer, until the deadline says otherwise.
+            if "shows no chosen member" not in str(why) or time.monotonic() >= deadline:
+                raise
+            time.sleep(gap)
+            continue
         if now != before and now == last:
             return now
         last = now
@@ -1299,13 +1313,26 @@ def _group_settled(label, before, package=PACKAGE, max_wait=1.2, gap=0.1):
         time.sleep(gap)
 
 
-def _settle_choices_locked(where, state):
-    """Settle every choice debt on `where` whose recorded group is the state now showing. Caller holds the book."""
+def _choice_debts(where, state):
+    """Every owed choice debt on `where` for the group now showing: one sharing a member name with it.
+
+    By overlap rather than an exact set, because how much of a group is in view changes with scroll.
+    """
+    found = []
     for owed in _owed():
         if owed[0] != "choice":
             continue
         named = json.loads(owed[1])
-        if named["where"] == where and named["group"] == state:
+        if named["where"] == where and set(named["group"]) & set(state):
+            found.append((owed, named))
+    return found
+
+
+def _settle_choices_locked(where, state):
+    """Settle each choice debt for this group whose recorded choice is chosen now. Caller holds the book."""
+    for owed, named in _choice_debts(where, state):
+        wanted = [n for n, on in named["group"].items() if on]
+        if len(wanted) == 1 and state.get(wanted[0]):
             _settled_locked(owed, _STATE["serial"])
 
 
@@ -1337,8 +1364,10 @@ def choose(label, where, package=PACKAGE):
                       "pick-one. Nothing was pressed.")
     if before[label]:
         return before
-    debt = ("choice", json.dumps({"where": where, "group": before}, sort_keys=True))
-    _owe(debt)
+    # THE FIRST RECORD FOR A GROUP IS THE ONE TO GO BACK TO. `_owe` dedupes on the exact names, and
+    # the names in view change with scroll, so an overlapping debt is looked for here.
+    if not _choice_debts(where, before):
+        _owe(("choice", json.dumps({"where": where, "group": before}, sort_keys=True)))
     tap(label, package=package)
     after = _group_settled(label, before, package=package)
     if not after[label]:
@@ -4062,38 +4091,26 @@ def _restore_one_here(entry):
             raise Blocked(f"{wanted['label']!r} would not go back to "
                           f"{'on' if wanted['was'] else 'off'}")
     elif what == "choice":
-        # A pick-one group goes back by CHOOSING BY NAME, never by pressing a member "off". The debt
-        # holds the whole group, so the check at the end is the whole group, not one member.
+        # A pick-one group goes back by CHOOSING THE RECORDED MEMBER BY NAME, never by pressing a
+        # member "off" and never by matching the exact names in view, which change with scroll.
         wanted = json.loads(previous)
-        where, group = wanted["where"], wanted["group"]
-        names = sorted(group)
-        chosen = ", ".join(n for n in names if group[n]) or "nothing chosen"
-        if not (on_screen(where) and present(names[0], exact=True)):
+        where = wanted["where"]
+        chosen = [n for n, on in wanted["group"].items() if on]
+        if len(chosen) != 1:
+            raise Blocked(f"the choice debt on {where} records {len(chosen)} chosen members, so there is "
+                          "no one member to choose back")
+        target = chosen[0]
+        if not (on_screen(where) and present(target, exact=True)):
             _reach(where)
-        if not reveal(names[0]):
-            raise Blocked(f"{names[0]!r} could not be found on {where}, so its group cannot be put back")
-        _, now = _group_state(names[0])
-        if sorted(now) != names:
-            # The rest of the group may be just below the fold. A page that does not scroll is showing
-            # all of itself, and the mismatch is then reported below as it stands.
-            try:
-                scroll("down", 1)
-            except Blocked as why:
-                if "nothing on this screen scrolls" not in str(why):
-                    raise
-            _, now = _group_state(names[0])
-        for _ in range(len(names) + 1):
-            if sorted(now) != names:
-                raise Blocked(f"the group holding {names[0]!r} on {where} reads {sorted(now)}, not the "
-                              f"{names} that was changed, so it is not put back")
-            if now == group:
-                break
-            target = next((n for n in names if group[n] and not now[n]), None) or next(
-                n for n in names if now[n] and not group[n])
+        if not reveal(target):
+            raise Blocked(f"{target!r} could not be found on {where}, so its group cannot be put back")
+        _, now = _group_state(target)
+        if not now[target]:
             tap(target)
             now = _group_settled(target, now)
-        if now != group:
-            raise Blocked(f"the group holding {names[0]!r} on {where} would not go back to {chosen}")
+        if not now[target] or sum(now.values()) != 1:
+            raise Blocked(f"the group holding {target!r} on {where} would not go back to {target}; it "
+                          f"reads {now}")
     elif what == "host-mic":
         wanted = previous == "on"
         _grpc("setMicrophoneState", {"realAudioEnabled": wanted})

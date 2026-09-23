@@ -1,8 +1,9 @@
 package com.envi.wispr.telemetry
 
 /**
- * The one redactor for everything that leaves the phone, both vendors (issue #176, plan §3.7). The
- * third privacy enforcer beside `privacy/PrivacyDisclosure.kt` and `cpp/geniex_log_silencer.cpp`.
+ * The PostHog allowlist and the pattern pass both vendors share (issue #176, plan §3.7); Sentry's key and
+ * shape schema is `SentrySchema` (#240), which calls [redactPatterns] under its shapes. The third privacy
+ * enforcer beside `privacy/PrivacyDisclosure.kt` and `cpp/geniex_log_silencer.cpp`.
  *
  * Allowlist first, patterns second. A property leaves only if its NAME is one the schema declares
  * ([allowedKeys]) and its VALUE has an allowed kind: a number, a boolean, a closed token, or one of
@@ -114,26 +115,10 @@ internal object PayloadSanitizer {
     }
 
     /**
-     * Sentry surfaces carry free text the SDK wrote (a breadcrumb message, a tag, an extra). This is the
-     * rule for such a string: scrubbed, or [REDACTED] when a pattern matched, or [REDACTED] when it is
-     * over [MAX_STRING]. Never null: Sentry fields are rewritten, not removed.
+     * The pattern pass, defence in depth under a shape: a PostHog bounded string, a Sentry frame path, a
+     * context label. Whole-value [REDACTED] when any rule matches; a path rule rewrites in place. Never an
+     * acceptance rule on its own: Sentry text passes only as a shape `SentrySchema` declares (#240).
      */
-    fun sanitizeFreeText(value: String): String {
-        if (value.length > MAX_STRING) return REDACTED
-        return redactPatterns(value)
-    }
-
-    /** Recursively sanitizes a Sentry map (extras, contexts, breadcrumb data). */
-    fun sanitizeFreeMap(map: Map<String, Any?>): Map<String, Any?> = map.mapValues { (_, v) -> sanitizeFreeAny(v) }
-
-    private fun sanitizeFreeAny(value: Any?): Any? = when (value) {
-        is String -> sanitizeFreeText(value)
-        is Map<*, *> -> value.entries.associate { (k, v) -> k.toString() to sanitizeFreeAny(v) }
-        is List<*> -> value.map { sanitizeFreeAny(it) }
-        else -> value
-    }
-
-    /** The pattern pass. Whole-value [REDACTED] when any rule matches; a path rule rewrites in place. */
     fun redactPatterns(raw: String): String {
         var s = raw
         for (rule in PATH_RULES) s = rule.replace(s, "[PATH]")

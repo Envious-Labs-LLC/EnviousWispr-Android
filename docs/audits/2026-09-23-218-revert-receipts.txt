@@ -1,0 +1,32 @@
+('RED', 'mutex removed from updateProviderSettings', 'twoRapidModeTapsPersistTheLastOneTapped', 'org.junit.ComparisonFailure: the mode tapped last is not the one the phone kept expected:&lt;OFF[LINE_S1]&gt; but was:&lt;OFF[]&gt;')
+('RED', 'write launched on IO', 'providerWritesTakeTheLockOnMainBeforeAnyIo', 'java.lang.AssertionError: a provider write no longer takes the settings lock first thing in a coroutine launched on Main')
+('RED', 'empty-list guard dropped', 'anEmptyListFromAnOlderCheckLeavesTheNewerCheckShowing', 'java.lang.AssertionError: expected:&lt;CHECKING&gt; but was:&lt;LISTED&gt;')
+('RED', 'refused guard dropped', 'aRefusalForAPageThatClosedNeverReachesTheOpenPage', 'java.lang.AssertionError: expected:&lt;CHECKING&gt; but was:&lt;FAILED&gt;')
+('RED', 'final publication guard dropped', 'aListForAPageThatClosedNeverReachesTheOpenPage', "java.lang.AssertionError: another provider's list landed on the open page expected:&lt;CLAUDE&gt; but was:&lt;OPENAI&gt;")
+('RED', 'stored-key cache write needs the active page', 'aStoredKeyListRefreshesItsCacheAfterItsPageCloses', "java.lang.AssertionError: the saved key's list never reached its cache")
+('RED', 'stored-key cache write ignores latest', 'anOlderStoredKeyListNeverOverwritesTheCache', 'java.lang.AssertionError: an older Check wrote the cache under a newer one expected null, but was:&lt;Entry(fetchedAt=1, models=[DiscoveredModel(id=gpt-old, dis')
+('RED', 'Dictionary loaded only when not empty', 'anEmptyDictionaryStillCountsAsLoaded', 'java.lang.AssertionError: the Dictionary state built from a term emission does not set loaded = true on every emission, so an empty word list keeps the app on P')
+('RED', 'History source replaced by flowOf(emptyList())', 'eachFeatureViewModelWiresItsStoreToItsState', "java.lang.AssertionError: History's state is not built from repository.transcripts")
+('RED', 'History source replaced, behaviour row', 'aPopulatedStoreShowsItsRowsFilteredByTheSearch', 'java.lang.AssertionError: expected:&lt;2&gt; but was:&lt;0&gt;')
+('RED', 'shell names the transcript store again', 'theShellViewModelNamesNoFeatureStore', "java.lang.AssertionError: EnviousWisprViewModel owns a feature's store again expected:&lt;[]&gt; but was:&lt;[TranscriptRepository]&gt;")
+('RED', 'shell state holds a history field', 'theShellStateHoldsOnlyLoadedAndPreferences', "java.lang.AssertionError: EnviousWisprUiState holds a feature's field again expected:&lt;[loaded, preferences]&gt; but was:&lt;[loaded, preferences, history]&gt")
+('RED', 'root gate reads polish loading', 'aPolishTabStillLoadingOrAnIdleModelListNeverHoldsTheApp', 'java.lang.AssertionError')
+('RED', 'root gate reads list emptiness', 'anEmptyButRealHistoryAndDictionaryOpenTheApp', 'java.lang.AssertionError: an empty History or Dictionary kept the app on Preparing')
+('RED', 'readiness joins no liveness', 'theViewModelDerivesAutoPasteFromLivenessAndNotFromAConstant', 'java.lang.AssertionError: AutoPasteReadiness.observe is not passed the pushed liveness (&#10;        permittedInSettings = readiness.map { it.accessibilityPermi')
+
+RED: mutex removed from updateProviderSettings -> twoRapidModeTapsPersistTheLastOneTapped
+RED: write launched on IO -> providerWritesTakeTheLockOnMainBeforeAnyIo
+RED: empty-list guard dropped -> anEmptyListFromAnOlderCheckLeavesTheNewerCheckShowing
+RED: refused guard dropped -> aRefusalForAPageThatClosedNeverReachesTheOpenPage
+RED: final publication guard dropped -> aListForAPageThatClosedNeverReachesTheOpenPage
+RED: stored-key cache write needs the active page -> aStoredKeyListRefreshesItsCacheAfterItsPageCloses
+RED: stored-key cache write ignores latest -> anOlderStoredKeyListNeverOverwritesTheCache
+RED: Dictionary loaded only when not empty -> anEmptyDictionaryStillCountsAsLoaded
+RED: History source replaced by flowOf(emptyList()) -> eachFeatureViewModelWiresItsStoreToItsState
+RED: History source replaced, behaviour row -> aPopulatedStoreShowsItsRowsFilteredByTheSearch
+RED: shell names the transcript store again -> theShellViewModelNamesNoFeatureStore
+RED: shell state holds a history field -> theShellStateHoldsOnlyLoadedAndPreferences
+RED: root gate reads polish loading -> aPolishTabStillLoadingOrAnIdleModelListNeverHoldsTheApp
+RED: root gate reads list emptiness -> anEmptyButRealHistoryAndDictionaryOpenTheApp
+RED: readiness joins no liveness -> theViewModelDerivesAutoPasteFromLivenessAndNotFromAConstant
+ALL RED

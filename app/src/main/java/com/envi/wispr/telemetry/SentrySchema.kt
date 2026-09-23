@@ -182,7 +182,8 @@ internal object SentrySchema {
     // producer is compiled code, the OS loader or a build property, never user input: a frame, a thread, an
     // exception type, a typed context. The one exception is [buildLabel]: a device's model, maker and brand may
     // carry spaces only when they EQUAL this phone's own build properties. A demangled C++ signature with spaces
-    // is redacted; the frame keeps its instruction address and library, which Sentry symbolicates on its server.
+    // is redacted and the frame keeps its instruction address and library; native server symbolication is NOT
+    // VERIFIED until a pinned native crash payload confirms the surviving address and module information.
     // `SentrySchemaTest.noValidatorAdmitsProse` runs prose through every validator here.
 
     /** A JVM class name, simple or qualified, with `$` nesting and synthetic lambda classes. */

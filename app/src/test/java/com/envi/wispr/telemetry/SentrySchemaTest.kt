@@ -185,7 +185,7 @@ class SentrySchemaTest {
         assertEquals("/data/app/~~abc==/com.envi.wispr-xyz==/lib/arm64/libgeniex.so", c.`package`)
         assertEquals("_ZN6geniex4loadEv", c.symbol)
         assertEquals("a demangled signature with spaces is redacted", "[REDACTED]", c.function)
-        assertEquals("the address stays, so the server symbolicates it", "0x7a1b2c", c.instructionAddr)
+        assertEquals("the address stays on the frame", "0x7a1b2c", c.instructionAddr)
         assertEquals("0x7a1b2c", c.instructionAddr)
     }
 
@@ -395,7 +395,8 @@ class SentrySchemaTest {
     /**
      * Row 9 (review rounds 1 to 3): a native function passes only with no whitespace (mangled, a bare C name, or
      * a symbol and offset); every demangled signature with spaces is redacted, since C++ type syntax cannot be
-     * told from prose by shape, and the frame's address and library let Sentry symbolicate it on its server.
+     * told from prose by shape. The frame keeps its address and library; server symbolication of native frames
+     * is NOT VERIFIED until a pinned native crash payload confirms them.
      * MUTATION: accept a demangled `::` signature again.
      */
     @Test fun nativeFunctionsPassOnlyWithoutWhitespace() {

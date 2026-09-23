@@ -55,10 +55,11 @@ import java.util.concurrent.atomic.AtomicReference
  * only through seams ([SessionHost], [RecorderSurface], [InsertionGateway], [SessionLog],
  * [PipelineController]) so a JVM test runs it without a `Service`.
  *
- * Every statement here ran in `DictationSessionService` before #186, in this order; the Service is now the
- * Android adapter that builds this object in `onCreate`, forwards each command, implements the host, and
- * tears it down in `onDestroy`. The Service still stops itself after every take, so a fresh coordinator
- * begins IDLE with the next command; nothing here survives a take on purpose.
+ * The Service is the Android adapter: it builds this owner in `onCreate`, forwards commands, implements the
+ * host and calls `destroy` in `onDestroy`. Existing take behaviour keeps its call order across the owner and
+ * its collaborators; #216 adds the event handler and the read-only phase view. The Service still stops
+ * itself after every take, so a fresh owner begins IDLE with the next command; nothing here survives a take
+ * on purpose.
  */
 internal class DictationSessionCoordinator(
     private val host: SessionHost,

@@ -120,6 +120,8 @@ internal class DictationSessionRig {
         answerBoundMs: Long = 5_000L,
         /** Generous by default so no healthy row races it; the #235 rows set a short one against a held save. */
         historySaveBoundMs: Long = 5_000L,
+        /** Abstains by default; the #252 row passes one that throws. */
+        languageDetector: LanguageDetector = LanguageDetector { null },
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
@@ -128,7 +130,7 @@ internal class DictationSessionRig {
         preferences = preferences,
         historyWrites = historyWrites,
         transcripts = transcripts,
-        languageDetector = LanguageDetector { null },
+        languageDetector = languageDetector,
         loadPolicy = { polishPolicy },
         pipeline = pipeline,
         scope = scope,

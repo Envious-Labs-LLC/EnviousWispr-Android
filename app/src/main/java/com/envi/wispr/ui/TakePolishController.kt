@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.TextSafety
 import com.envi.wispr.polish.PolishContext
@@ -9,6 +10,7 @@ import com.envi.wispr.polish.PolishOutcome
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.PolishReason
 import com.envi.wispr.telemetry.AppDefect
+import com.envi.wispr.vocabulary.StructuredTermRestorer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -74,6 +76,10 @@ internal class TakePolishController(
     /** Not destroyed and a live state; the warm-up's pre-send check. */
     private val isLive: () -> Boolean,
     private val onPrepared: (PreparedText) -> Unit,
+    /** The vocabulary restorer (#252: a JVM row makes it throw). */
+    private val restore: (String, StructuredTermRestorer.Matcher) -> String = { text, matcher -> matcher.restore(text) },
+    /** The deterministic cleanup with its language detection (#252: a JVM row makes it throw). */
+    private val cleanup: (String, CleanupOptions, LanguageDetector) -> String = PolishFallback::deterministic,
 ) {
     /**
      * Who answers this take's polish (#234), decided once under [lock]: nobody yet, a request that is open, or
@@ -98,6 +104,9 @@ internal class TakePolishController(
 
     /** One polish-failure defect per take, whichever failure is observed first (#234). */
     private val failureReported = AtomicBoolean(false)
+
+    /** One preparation defect per take (#252): a different defect from a polish failure, so its own gate. */
+    private val preparationFailureReported = AtomicBoolean(false)
 
     /** A request is open on the ledger; for the owner's cancel log line. */
     val openRequest: Boolean get() = ledger.openId != null
@@ -173,7 +182,8 @@ internal class TakePolishController(
      */
     fun prepare(rawText: String, takePreferences: SessionPreferences) {
         scope.launch {
-            val preparedRaw = restoreVocabulary(rawText, takePreferences)
+            // Fails open to the raw words (#252): the request is sent either way.
+            val preparedRaw = restoreVocabulary(rawText, takePreferences, STEP_RESTORE_RAW) ?: rawText
             val service = link()
             var fallback: PolishReason? = null
             var unansweredLink = false
@@ -302,9 +312,11 @@ internal class TakePolishController(
                 fallBack(rawText, takePreferences, PolishReason.CALL_FAILED)
                 return
             }
+            // If only the vocabulary restore fails, the engine's own answer lands with its original reason and
+            // status (#252); the notice follows that reason, none for POLISHED.
             onPrepared(
                 PreparedText.Polished(
-                    restoreVocabulary(outcome.text, takePreferences),
+                    restoreVocabulary(outcome.text, takePreferences, STEP_RESTORE_ANSWER) ?: outcome.text,
                     outcome.engine,
                     outcome.latencyMs,
                     outcome.reason,
@@ -371,31 +383,66 @@ internal class TakePolishController(
     private fun fallBack(rawText: String, takePreferences: SessionPreferences, reason: PolishReason) {
         cancelOpen()
         log.warn("Polish fell back on the session owner: reason=$reason")
-        onPrepared(PreparedText.Fallback(deterministic(rawText, takePreferences), reason, PolishContext.from(takePreferences.policy)))
+        onPrepared(preparedFallback(rawText, takePreferences, reason))
     }
 
     /**
      * The same deterministic pipeline the engine runs with polish off, so the text a user gets cannot depend
      * on which side failed (issue #69; the regex polisher that used to run here capitalised sentences and
-     * appended a period the engine never did).
+     * appended a period the engine never did). It never throws (#252): on the first step that fails it stops
+     * and returns the text completed before that step (`kotlin-patterns.md` RULE:
+     * fail-open-to-the-last-good-text), so the fallback always hands its words back.
      */
+    private fun preparedFallback(rawText: String, takePreferences: SessionPreferences, reason: PolishReason): PreparedText.Fallback =
+        PreparedText.Fallback(deterministic(rawText, takePreferences), reason, PolishContext.from(takePreferences.policy))
+
     private fun deterministic(rawText: String, takePreferences: SessionPreferences): String {
-        val prepared = restoreVocabulary(rawText, takePreferences)
+        val prepared = restoreVocabulary(rawText, takePreferences, STEP_RESTORE_RAW) ?: return rawText
         // The engine resolves the same answer on its own side. Detecting here too is what keeps this terminal
         // from being the one that still applies English rules to foreign words when the engine is the side
         // that failed (#107); the alternative was a new AIDL transaction to carry it across, which
         // `workflow-process.md` RULE: tier-routing classifies as REFACTOR for a limb feature.
-        val cleaned = PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)
-        return restoreVocabulary(cleaned, takePreferences)
+        val cleaned = guarded(STEP_CLEANUP) { cleanup(prepared, takePreferences.cleanup, languageDetector) } ?: return prepared
+        return restoreVocabulary(cleaned, takePreferences, STEP_RESTORE_CLEANED) ?: cleaned
     }
 
-    private fun restoreVocabulary(text: String, takePreferences: SessionPreferences): String {
-        val restored = takePreferences.matcher.restore(text)
-        return if (TextSafety.isSafe(text, restored)) restored else text
+    /** The vocabulary restore, or null when it threw ([step] names it in the one preparation defect). */
+    private fun restoreVocabulary(text: String, takePreferences: SessionPreferences, step: String): String? = guarded(step) {
+        val restored = restore(text, takePreferences.matcher)
+        if (TextSafety.isSafe(text, restored)) restored else text
     }
 
-    private companion object {
+    /**
+     * Runs one preparation step; a thrown `Exception` becomes null and one preparation defect per take. An
+     * `Error` is never caught. Runs outside [lock].
+     */
+    private fun <T> guarded(step: String, block: () -> T): T? = try {
+        block()
+    } catch (error: Exception) {
+        log.warn("Polish preparation failed at $step: ${error.javaClass.simpleName}")
+        reportPreparationFailure(step)
+        null
+    }
+
+    /** One preparation defect per take; a sink that throws is logged and never blocks the hand-back (#252). */
+    private fun reportPreparationFailure(step: String) {
+        if (!preparationFailureReported.compareAndSet(false, true)) return
+        try {
+            defectSink(AppDefect.PolishPreparationFailed, mapOf("take_id" to takeId, "step" to step))
+        } catch (error: Exception) {
+            log.warn("Polish preparation defect not reported: ${error.javaClass.simpleName}")
+        }
+    }
+
+    companion object {
         /** [claimFallback]'s answer when no request was open; ledger ids are never 0. */
-        const val NO_REQUEST = 0L
+        private const val NO_REQUEST = 0L
+
+        /** The preparation steps a defect names (#252); `SentrySchema` declares exactly these. */
+        const val STEP_RESTORE_RAW = "restore_raw"
+        const val STEP_CLEANUP = "cleanup"
+        const val STEP_RESTORE_CLEANED = "restore_cleaned"
+        const val STEP_RESTORE_ANSWER = "restore_answer"
+        val PREPARATION_STEPS = setOf(STEP_RESTORE_RAW, STEP_CLEANUP, STEP_RESTORE_CLEANED, STEP_RESTORE_ANSWER)
     }
 }

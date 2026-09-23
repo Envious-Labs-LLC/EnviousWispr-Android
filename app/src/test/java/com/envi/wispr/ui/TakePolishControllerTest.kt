@@ -42,7 +42,14 @@ class TakePolishControllerTest {
     private val handedBack = CountDownLatch(1)
     private val preferences = SessionPreferences(policy = PolishPolicy.LocalS1(S1ControlSettings.DEFAULT))
 
-    private val controller = TakePolishController(
+    private val controller = newController()
+
+    /** The controller under test; #252's rows pass a restorer, a cleanup or a defect sink that throws. */
+    private fun newController(
+        restore: (String, com.envi.wispr.vocabulary.StructuredTermRestorer.Matcher) -> String = { text, matcher -> matcher.restore(text) },
+        cleanup: (String, com.envi.wispr.cleanup.CleanupOptions, com.envi.wispr.cleanup.LanguageDetector) -> String = com.envi.wispr.polish.PolishFallback::deterministic,
+        defectSink: (AppDefect, Map<String, Any?>) -> Unit = { defect, facts -> defects += defect to facts },
+    ) = TakePolishController(
         lock = lock,
         ledger = PolishRequestLedger(),
         timeout = timeout,
@@ -51,7 +58,7 @@ class TakePolishControllerTest {
         languageDetector = { null },
         log = log,
         takeId = "take-1",
-        defectSink = { defect, facts -> defects += defect to facts },
+        defectSink = defectSink,
         preferences = { preferences },
         transcript = { "hello world" },
         isProcessing = { processing.get() },
@@ -61,6 +68,8 @@ class TakePolishControllerTest {
             prepared += text
             handedBack.countDown()
         },
+        restore = restore,
+        cleanup = cleanup,
     )
 
     @After fun tearDown() {
@@ -73,6 +82,8 @@ class TakePolishControllerTest {
         @Volatile var listener: PolishListener? = null
         @Volatile var requestId = 0L
         @Volatile var hold: CountDownLatch? = null
+        /** The raw text the controller sent (#252). */
+        @Volatile var lastRaw: String? = null
         val requested = CountDownLatch(1)
         val cancels = CopyOnWriteArrayList<Long>()
         val cancelUnderLock = CopyOnWriteArrayList<Boolean>()
@@ -82,6 +93,7 @@ class TakePolishControllerTest {
         override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
             this.requestId = requestId
             this.listener = listener
+            lastRaw = rawText
             requested.countDown()
             hold?.await(10, TimeUnit.SECONDS)
         }
@@ -362,5 +374,72 @@ class TakePolishControllerTest {
         } finally {
             rig.close()
         }
+    }
+
+    // ---- #252: the fallback and the vocabulary restore never throw ----------------------------------------------
+
+    /** A restorer that throws on its [n]th call only (one seam serves four restores), else leaves the text alone. */
+    private fun restoreThrowingOn(n: Int): (String, com.envi.wispr.vocabulary.StructuredTermRestorer.Matcher) -> String {
+        var calls = 0
+        return { text, _ -> if (++calls == n) throw IllegalStateException("restorer broke") else text }
+    }
+
+    private val markedCleanup: (String, com.envi.wispr.cleanup.CleanupOptions, com.envi.wispr.cleanup.LanguageDetector) -> String =
+        { text, _, _ -> "cleaned $text" }
+
+    private fun preparationSteps() = defects.filter { it.first == AppDefect.PolishPreparationFailed }.map { it.second["step"] }
+
+    /** Row 1a: the fallback's first restore throws; the raw words land. MUTATION: remove the restore step's catch. */
+    @Test fun aFailedFirstRestoreHandsBackTheRawWords() {
+        val c = newController(restore = restoreThrowingOn(1), cleanup = markedCleanup)
+        c.claimSpeechLossFallback("hello world")
+        val text = awaitHandedBack() as PreparedText.Fallback
+        assertEquals("hello world", text.text)
+        assertEquals(PolishReason.SERVICE_DIED, text.reason)
+        assertEquals(listOf(TakePolishController.STEP_RESTORE_RAW), preparationSteps())
+    }
+
+    /** Row 1b: the cleanup throws; the restored words land. MUTATION: remove the cleanup step's catch. */
+    @Test fun aFailedCleanupHandsBackTheRestoredWords() {
+        val c = newController(restore = restoreThrowingOn(0), cleanup = { _, _, _ -> throw IllegalStateException("detector broke") })
+        c.claimSpeechLossFallback("hello world")
+        assertEquals("hello world", awaitHandedBack().text)
+        assertEquals(listOf(TakePolishController.STEP_CLEANUP), preparationSteps())
+    }
+
+    /** Row 1c: the final restore throws; the cleaned words land. MUTATION: remove the final restore's catch. */
+    @Test fun aFailedFinalRestoreHandsBackTheCleanedWords() {
+        val c = newController(restore = restoreThrowingOn(2), cleanup = markedCleanup)
+        c.claimSpeechLossFallback("hello world")
+        assertEquals("cleaned hello world", awaitHandedBack().text)
+        assertEquals(listOf(TakePolishController.STEP_RESTORE_CLEANED), preparationSteps())
+    }
+
+    /** Row 1d: the answer's restore throws; the engine's answer lands as polished. MUTATION: remove the answer restore's catch. */
+    @Test fun aFailedAnswerRestoreHandsBackTheEnginesAnswer() {
+        val c = newController(restore = restoreThrowingOn(2))
+        c.prepare("hello world", preferences)
+        link.awaitRequest().onOutcome(link.outcome("Hello world."))
+        val text = awaitHandedBack() as PreparedText.Polished
+        assertEquals("Hello world.", text.text)
+        assertEquals(PolishReason.POLISHED, text.reason)
+        assertEquals(listOf(TakePolishController.STEP_RESTORE_ANSWER), preparationSteps())
+    }
+
+    /** Row 1e: the pre-request restore throws; the request carries the raw words. MUTATION: remove the pre-request catch. */
+    @Test fun aFailedPreRequestRestoreSendsTheRawWords() {
+        val c = newController(restore = restoreThrowingOn(1))
+        c.prepare("hello world", preferences)
+        link.awaitRequest()
+        assertEquals("hello world", link.lastRaw)
+        assertEquals(listOf(TakePolishController.STEP_RESTORE_RAW), preparationSteps())
+    }
+
+    /** Row 4: a defect sink that throws never stops the words. MUTATION: call the sink without its catch. */
+    @Test fun aThrowingDefectSinkNeverStopsTheWords() {
+        val c = newController(restore = restoreThrowingOn(1), defectSink = { _, _ -> throw IllegalStateException("sink broke") })
+        c.claimSpeechLossFallback("hello world")
+        assertEquals("hello world", awaitHandedBack().text)
+        assertEquals(1, prepared.size)
     }
 }

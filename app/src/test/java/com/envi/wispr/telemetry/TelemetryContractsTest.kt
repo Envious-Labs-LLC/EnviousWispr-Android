@@ -99,6 +99,7 @@ class TelemetryContractsTest {
             // #235: the History save did not answer within the owner's bound.
             "history_save_timed_out" to "history.save_timed_out",
             "history_contract_violation" to "history.contract_violation",
+            "polish_preparation_failed" to "polish.preparation_failed",
             "debug_probe" to "debug.probe",
         )
         val all = AppDefect.all()

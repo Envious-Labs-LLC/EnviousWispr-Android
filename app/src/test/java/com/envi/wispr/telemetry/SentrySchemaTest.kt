@@ -454,4 +454,13 @@ class SentrySchemaTest {
             Telemetry.takeEnded("not-a-take")
         }
     }
+
+    /** #252: the preparation step key keeps exactly its four tokens. MUTATION: widen `step` to any token. */
+    @Test fun thePreparationStepKeyKeepsExactlyItsFourSteps() {
+        for (step in listOf("restore_raw", "cleanup", "restore_cleaned", "restore_answer")) {
+            assertEquals(SentrySchema.Verdict.Keep(step), SentrySchema.judge("step", step))
+        }
+        assertEquals(SentrySchema.Verdict.Redact, SentrySchema.judge("step", "restore_everything"))
+        assertEquals(4, (SentrySchema.keys.getValue("step") as SentrySchema.Shape.OneOf).values.size)
+    }
 }

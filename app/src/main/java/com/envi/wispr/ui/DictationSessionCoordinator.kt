@@ -81,6 +81,11 @@ internal class DictationSessionCoordinator(
     private val polishTimeout: PolishTimeout = DelayPolishTimeout,
     /** How long a take waits for the settings readers to answer before starting on the last values; a test shortens it (#193). */
     private val answerBoundMs: Long = SETTINGS_ANSWER_BOUND_MS,
+    /**
+     * How long the words may wait for their History save (#235). A healthy save is milliseconds; past this
+     * the words go to the clipboard and the save only reconciles its row. A product ceiling, not a Room time.
+     */
+    private val historySaveBoundMs: Long = HISTORY_SAVE_BOUND_MS,
     /** Process-scoped on purpose: the tip's once-per-process allowance outlives the Service instance. */
     private val tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS,
     /** The one first-wins gate on the polish answer; production mints ids off the device clock, a test off the JVM's. */
@@ -93,6 +98,9 @@ internal class DictationSessionCoordinator(
     companion object {
         /** [claimFallback]'s answer when no request was open; ledger ids are never 0. */
         private const val NO_REQUEST = 0L
+
+        /** The words' longest wait for their History save (#235). */
+        const val HISTORY_SAVE_BOUND_MS = 1_000L
 
         /**
          * macOS's own sentence for this state, reused rather than reinvented. Android writing its own
@@ -1214,10 +1222,19 @@ internal class DictationSessionCoordinator(
         // publishLock, and the write is ENQUEUED in the same operation (#115): destroy takes the same lock
         // before enqueueing `interrupted`, so a reserved finalization is always queued ahead of it and
         // `interrupted` is the last word on the row.
-        val saved = CompletableDeferred<Result<Long>>()
+        val saved = CompletableDeferred<SaveOutcome>()
+        val saveGate = HistorySaveGate()
         val publication = synchronized(publishLock) {
             val reserved = current.arbiter.reserve(Claimants.PUBLICATION) ?: return@synchronized null
-            if (finalText.isNotBlank()) finalizer.enqueueSave(current.history, payload, saved)
+            if (finalText.isNotBlank()) {
+                finalizer.enqueueSave(current.history, payload, saveGate, saved) { error ->
+                    // The delivery already happened on the clipboard; the late failure is diagnosed, never
+                    // rerouted, and the take's facts stay as committed (#235).
+                    log.warn("History save failed after its bound: ${error.javaClass.simpleName}")
+                    Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName, "late" to true))
+                    TelemetryChannels.historySaveDefect(error)?.let { defectSink(it, mapOf("take_id" to takeId)) }
+                }
+            }
             reserved
         }
         if (publication == null) {
@@ -1238,15 +1255,30 @@ internal class DictationSessionCoordinator(
         }
 
         scope.launch {
-            // The save's result, from the queue's worker; the owner's coroutine waits on it, main never.
-            val saveResult = saved.await()
-            takeFacts.historySave = if (saveResult.isSuccess) "ok" else "failed"
-            saveResult.exceptionOrNull()?.let { error ->
-                log.warn("Unable to save transcript history: ${error.javaClass.simpleName}")
-                // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal
-                // statement is our schema contract (a defect). The message never leaves either way.
-                Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName))
-                TelemetryChannels.historySaveDefect(error)?.let { defectSink(it, mapOf("take_id" to takeId)) }
+            // The save's answer, from the queue's worker, within the bound (#235); the owner's coroutine waits,
+            // main never. On the bound the timeout and the save compete once on the gate: if the save won an
+            // instant earlier, its outcome is already there and nothing is waited for.
+            val saveOutcome = withTimeoutOrNull(historySaveBoundMs) { saved.await() }
+                ?: if (saveGate.claimTimeout()) SaveOutcome.TimedOut else checkNotNull(saveGate.answered())
+            takeFacts.historySave = when (saveOutcome) {
+                is SaveOutcome.Saved -> "ok"
+                is SaveOutcome.Failed -> "failed"
+                SaveOutcome.TimedOut -> "timed_out"
+            }
+            when (saveOutcome) {
+                is SaveOutcome.Failed -> {
+                    val error = saveOutcome.cause
+                    log.warn("Unable to save transcript history: ${error.javaClass.simpleName}")
+                    // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal
+                    // statement is our schema contract (a defect). The message never leaves either way.
+                    Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName))
+                    TelemetryChannels.historySaveDefect(error)?.let { defectSink(it, mapOf("take_id" to takeId)) }
+                }
+                SaveOutcome.TimedOut -> {
+                    log.warn("History save did not answer in $historySaveBoundMs ms; the words go to the clipboard")
+                    defectSink(AppDefect.HistorySaveTimedOut, mapOf("take_id" to takeId))
+                }
+                is SaveOutcome.Saved -> Unit
             }
             // COMMIT now that the save result is known and BEFORE the insertion handoff: completed means
             // the text finalised, never that insertion succeeded. A revoked reservation (the owner was
@@ -1256,7 +1288,7 @@ internal class DictationSessionCoordinator(
                 log.warn("Publication revoked before the handoff; not inserting")
                 return@launch
             }
-            finalizer.deliver(takeId, current.targetPin, payload, saveResult, sessionPreferences.clipboard)
+            finalizer.deliver(takeId, current.targetPin, payload, saveOutcome, sessionPreferences.clipboard, saveGate)
             log.log(log.pipelineSummary())
             finishSession()
         }

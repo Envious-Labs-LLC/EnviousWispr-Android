@@ -41,6 +41,7 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
         polishStatus: Int,
         polishContext: String,
         captureDevice: String,
+        status: String,
         stateChangedAtMs: Long = clock(),
     ) = dao.finalize(
         id = id,
@@ -56,7 +57,11 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
         polishStatus = polishStatus,
         polishContext = polishContext,
         captureDevice = captureDevice,
+        status = status,
     )
+
+    /** After a scheduled handoff, never awaited by the owner (#235). */
+    suspend fun promoteUnroutedToReady(id: Long) = dao.promoteUnroutedToReady(id, clock())
 
     suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, interrupted: Boolean = false) =
         dao.finalizeInsertionOutcome(id, status, result, clock(), interrupted)
@@ -64,8 +69,14 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     /** What one recovery pass closed: the ready rows by id, because each is an insertion outcome to report. */
     data class RecoveredRows(val readyRowIds: List<Long>)
 
+    /**
+     * One cutoff, three scans in this order (#235): drafts, then neutral rows, then ready rows, each update
+     * conditional on its source status, so a row promoted from neutral to ready between the scans is read
+     * once, as ready.
+     */
     suspend fun recoverStaleOpenRows(nowMs: Long, cutoffMs: Long = nowMs - STALE_OPEN_ROW_AGE_MS): RecoveredRows {
         dao.recoverStaleDrafts(cutoffMs, nowMs)
+        dao.recoverStaleUnroutedRows(cutoffMs, nowMs)
         return RecoveredRows(dao.recoverStaleReadyRowsReturningIds(cutoffMs, nowMs))
     }
 }

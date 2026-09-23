@@ -19,6 +19,7 @@ import com.envi.wispr.telemetry.InsertionRouteKind
 import com.envi.wispr.telemetry.Telemetry
 import kotlinx.coroutines.CompletableDeferred
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * One take's History row, from the draft inserted at live to the last status (#216). Every write goes
@@ -164,8 +165,62 @@ internal class Publication(
     val polishFacts: PolishPublicationFacts,
 )
 
-/** Where a delivered take's words went, as the owner logs it. */
-internal class Delivery(val route: HistoryPublicationPolicy.Route, val handoff: InsertionHandoff)
+/** Where a delivered take's words went, as the owner logs it; [clipboard] is the measured copy, when one was made. */
+internal class Delivery(val route: HistoryPublicationPolicy.Route, val handoff: InsertionHandoff, val clipboard: ClipboardOutcome?)
+
+/** What the owner got from the History save within its bound (#235). */
+internal sealed interface SaveOutcome {
+    data class Saved(val id: Long) : SaveOutcome
+    data class Failed(val cause: Throwable) : SaveOutcome
+    data object TimedOut : SaveOutcome
+}
+
+/**
+ * One take's History save decision (#235): the save's answer and the owner's bound compete ONCE, and the
+ * winner decides the route. The save writes a neutral `saved_unrouted` row first, so whoever wins, no row
+ * can claim a paste that was never handed off. After a timeout the late row and the owner's measured copy
+ * meet here, and whichever arrives second reconciles the row; neither ever inserts or announces.
+ */
+internal class HistorySaveGate {
+    private sealed interface State {
+        data object Pending : State
+        data class Answered(val outcome: SaveOutcome) : State
+        data class TimedOut(val clipboard: ClipboardOutcome?, val lateRowId: Long?) : State
+    }
+
+    private val state = AtomicReference<State>(State.Pending)
+
+    /** The History worker: the save answered. True when it won; false when the owner's bound already had. */
+    fun saveAnswered(outcome: SaveOutcome): Boolean = state.compareAndSet(State.Pending, State.Answered(outcome))
+
+    /** The owner, when its bound expired: true when the timeout won; else [answered] holds the save's outcome. */
+    fun claimTimeout(): Boolean = state.compareAndSet(State.Pending, State.TimedOut(clipboard = null, lateRowId = null))
+
+    /** The save's outcome when the save won; null while pending or after a timeout. */
+    fun answered(): SaveOutcome? = (state.get() as? State.Answered)?.outcome
+
+    /**
+     * The History worker, after a timeout: the late row's id. Returns the owner's measured copy when it is
+     * already recorded, so the worker reconciles the row now; null means the owner will.
+     */
+    fun lateRow(id: Long): ClipboardOutcome? {
+        while (true) {
+            val current = state.get() as? State.TimedOut ?: return null
+            if (state.compareAndSet(current, current.copy(lateRowId = id))) return current.clipboard
+        }
+    }
+
+    /**
+     * The owner, after its copy on a timeout: the measured outcome. Returns the late row's id when the
+     * worker already wrote it, so the owner enqueues the reconciliation; null means the worker will.
+     */
+    fun copied(outcome: ClipboardOutcome): Long? {
+        while (true) {
+            val current = state.get() as? State.TimedOut ?: return null
+            if (state.compareAndSet(current, current.copy(clipboard = outcome))) return current.lateRowId
+        }
+    }
+}
 
 /**
  * The History and insertion half of a publication (#216). The session owner decides: it reserves the
@@ -183,10 +238,16 @@ internal class SessionFinalizer(
      * lock before enqueueing `interrupted`, so a reserved finalization is always queued ahead of it and
      * `interrupted` is the last word on the row. [saved] completes with the row id or the failure.
      */
-    fun enqueueSave(history: TakeHistory, publication: Publication, saved: CompletableDeferred<Result<Long>>) {
+    fun enqueueSave(
+        history: TakeHistory,
+        publication: Publication,
+        gate: HistorySaveGate,
+        saved: CompletableDeferred<SaveOutcome>,
+        /** A save that fails after the owner's bound already won: diagnostics only, never the delivery (#235). */
+        onLateFailure: (Throwable) -> Unit,
+    ) {
         historyWrites.enqueue("finalize") { repository ->
-            saved.complete(
-                runCatching {
+            val answer = runCatching {
                     val existingId = history.resolvedId()
                     val persistedId = if (existingId > 0L) {
                         val updated = repository.finalize(
@@ -202,16 +263,39 @@ internal class SessionFinalizer(
                             polishStatus = publication.polishFacts.statusCode,
                             polishContext = publication.polishFacts.contextToken,
                             captureDevice = publication.captureDevice,
+                            // Neutral until the route is recorded (#235): never ready before a handoff.
+                            status = TranscriptEntity.STATUS_SAVED_UNROUTED,
                         )
-                        if (updated > 0) existingId else repository.insertReadyTranscript(publication)
+                        if (updated > 0) existingId else repository.insertSavedTranscript(publication)
                     } else {
-                        repository.insertReadyTranscript(publication)
+                        repository.insertSavedTranscript(publication)
                     }
                     history.remember(persistedId)
                     persistedId
-                },
-            )
+                }.fold({ SaveOutcome.Saved(it) }, { SaveOutcome.Failed(it) })
+            if (gate.saveAnswered(answer)) {
+                saved.complete(answer)
+                return@enqueue
+            }
+            // The owner's bound already won and the words went to the clipboard: this save only reconciles
+            // its row, and never inserts or announces (#235).
+            when (answer) {
+                is SaveOutcome.Saved -> gate.lateRow(answer.id)?.let { copy -> reconcileCopy(repository, answer.id, copy) }
+                is SaveOutcome.Failed -> onLateFailure(answer.cause)
+                SaveOutcome.TimedOut -> Unit
+            }
+            saved.complete(answer)
         }
+    }
+
+    /** A timed-out take's late row, reconciled to the copy the user actually got (#235); conditional on neutral/pending. */
+    private suspend fun reconcileCopy(repository: TranscriptRepository, id: Long, copy: ClipboardOutcome) {
+        repository.finalizeInsertionOutcome(
+            id,
+            TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+            if (copy == ClipboardOutcome.COPIED) InsertionResults.CLIPBOARD else InsertionResults.INSERTION_FAILED,
+            interrupted = true,
+        )
     }
 
     /**
@@ -222,14 +306,15 @@ internal class SessionFinalizer(
         takeId: String,
         targetPin: DictationTargetPin,
         publication: Publication,
-        saveResult: Result<Long>,
+        saveOutcome: SaveOutcome,
         clipboardPolicy: ClipboardInsertionPolicy,
+        gate: HistorySaveGate,
     ): Delivery {
         val finalText = publication.finalText
-        val persistedId = saveResult.getOrNull() ?: 0L
+        val persistedId = (saveOutcome as? SaveOutcome.Saved)?.id ?: 0L
         val route = HistoryPublicationPolicy.route(
             persistedId = persistedId,
-            persistenceSucceeded = saveResult.isSuccess,
+            persistenceSucceeded = saveOutcome is SaveOutcome.Saved,
         )
         // Corrected once, here, so the announcement, the History row and the log all read the
         // same handoff. Deriving it twice is how the two surfaces started disagreeing.
@@ -246,6 +331,7 @@ internal class SessionFinalizer(
                 InsertionHandoff.HISTORY_NOT_DURABLE
             },
         )
+        var measuredCopy: ClipboardOutcome? = null
         if (handoff != InsertionHandoff.SCHEDULED) {
             insertion.releasePinnedTarget()
             val mustPreventDataLoss = persistedId <= 0L
@@ -263,6 +349,14 @@ internal class SessionFinalizer(
                     keepInHistoryOnly(persistedId)
                     ClipboardOutcome.NOT_ATTEMPTED
                 }
+            measuredCopy = clipboard
+            // A timed-out take's row lands later (#235): the measured copy is recorded for it, and if the row
+            // is already written, its reconciliation is queued now, never awaited.
+            if (saveOutcome == SaveOutcome.TimedOut) {
+                gate.copied(clipboard)?.let { lateId ->
+                    historyWrites.enqueue("timed-out copy outcome") { repository -> reconcileCopy(repository, lateId, clipboard) }
+                }
+            }
             // Nothing was handed to the accessibility service on this branch, so it will never
             // speak: the announcement has to originate here so insertion fails safe, never
             // silently (enviouswispr-android-parity-spec.md PAR-081). The routes
@@ -288,6 +382,9 @@ internal class SessionFinalizer(
             )
         } else {
             Telemetry.breadcrumb("take", "insertion_handed_off", mapOf("take_id" to takeId))
+            // Promoted from neutral to ready AFTER the handoff and never awaited (#235): a stalled write cannot
+            // hold the words, and an outcome that lands first wins the conditional update.
+            historyWrites.enqueue("promote to ready") { repository -> repository.promoteUnroutedToReady(persistedId) }
         }
         log.log(
             when {
@@ -300,11 +397,11 @@ internal class SessionFinalizer(
                 else -> "Accessibility unavailable; transcript retained in History"
             } + " (handoff=$handoff)",
         )
-        return Delivery(route, handoff)
+        return Delivery(route, handoff, measuredCopy)
     }
 
-    /** The ready row when there is no draft to finalize; every value is the payload's, read before the reservation. */
-    private suspend fun TranscriptRepository.insertReadyTranscript(publication: Publication): Long {
+    /** The neutral saved row when there is no draft to finalize; every value is the payload's, read before the reservation. */
+    private suspend fun TranscriptRepository.insertSavedTranscript(publication: Publication): Long {
         val polishFacts = publication.polishFacts
         return insert(
             TranscriptEntity(
@@ -316,7 +413,7 @@ internal class SessionFinalizer(
                 polishEngine = publication.engine,
                 polishLatencyMs = publication.latencyMs,
                 insertionResult = "pending",
-                status = TranscriptEntity.STATUS_READY_FOR_INSERTION,
+                status = TranscriptEntity.STATUS_SAVED_UNROUTED,
                 polishReason = polishFacts.reasonToken,
                 polishStatus = polishFacts.statusCode,
                 polishContext = polishFacts.contextToken,

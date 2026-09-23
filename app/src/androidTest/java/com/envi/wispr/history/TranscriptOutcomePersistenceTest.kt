@@ -63,6 +63,7 @@ class TranscriptOutcomePersistenceTest {
             polishStatus = 401,
             polishContext = "cloud:GEMINI",
             captureDevice = "Phone",
+            status = TranscriptEntity.STATUS_SAVED_UNROUTED,
         )
         val finalized = repository.transcripts.first().single { it.id == id }
         assertEquals("HTTP_ERROR", finalized.polishReason)

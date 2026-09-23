@@ -34,6 +34,8 @@ internal enum class InsertionResultKind(val stored: String) {
     HISTORY_ONLY(InsertionResults.HISTORY_ONLY),
     INSERTION_FAILED(InsertionResults.INSERTION_FAILED),
     INSERTION_INTERRUPTED(InsertionResults.INSERTION_INTERRUPTED),
+    /** A saved row whose route was never recorded, recovered at the next start (#235); never an interrupted insertion. */
+    DELIVERY_UNKNOWN(InsertionResults.DELIVERY_UNKNOWN),
     UNKNOWN("unknown"),
     ;
 
@@ -60,7 +62,8 @@ internal enum class InsertionRouteKind(val wire: String) {
         fun of(kind: InsertionResultKind): InsertionRouteKind = when (kind) {
             InsertionResultKind.COMMITTED -> COMMIT
             InsertionResultKind.PASTED -> PASTE
-            InsertionResultKind.HISTORY_ONLY -> NONE
+            // No route was recorded for a delivery-unknown row (#235), so none is claimed.
+            InsertionResultKind.HISTORY_ONLY, InsertionResultKind.DELIVERY_UNKNOWN -> NONE
             InsertionResultKind.CLIPBOARD, InsertionResultKind.COPY_ONLY, InsertionResultKind.COPY_ONLY_INTERRUPTED,
             InsertionResultKind.COPY_ONLY_SERVICE_DESTROYED, InsertionResultKind.COPY_ONLY_SENSITIVE,
             InsertionResultKind.COPY_ONLY_UNVERIFIED, InsertionResultKind.UNVERIFIED_NOT_COPIED,
@@ -112,7 +115,7 @@ internal object TelemetryChannels {
         InsertionResultKind.COPY_ONLY_SERVICE_DESTROYED, InsertionResultKind.COPY_ONLY_SENSITIVE,
         InsertionResultKind.COPY_ONLY_UNVERIFIED, InsertionResultKind.UNVERIFIED_NOT_COPIED,
         InsertionResultKind.HISTORY_ONLY, InsertionResultKind.INSERTION_FAILED,
-        InsertionResultKind.INSERTION_INTERRUPTED, InsertionResultKind.UNKNOWN,
+        InsertionResultKind.INSERTION_INTERRUPTED, InsertionResultKind.DELIVERY_UNKNOWN, InsertionResultKind.UNKNOWN,
         -> Channel.BREADCRUMB
     }
 

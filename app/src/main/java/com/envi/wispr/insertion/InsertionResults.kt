@@ -63,6 +63,13 @@ internal object InsertionResults {
     const val INSERTION_INTERRUPTED = TranscriptEntity.STATUS_INSERTION_INTERRUPTED
 
     /**
+     * Written by `TranscriptDao.recoverStaleUnroutedRows` for a saved row whose route was never recorded
+     * (#235): the words are kept, and whether they were pasted, copied or neither is not known. Never an
+     * interrupted paste, because no paste was recorded as requested.
+     */
+    const val DELIVERY_UNKNOWN = "delivery_unknown"
+
+    /**
      * The durable record for a service-side fallback, from the SAME two facts the toast and the
      * notification are built from.
      *

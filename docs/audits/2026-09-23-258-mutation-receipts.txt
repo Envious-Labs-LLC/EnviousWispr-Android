@@ -1,0 +1,7 @@
+# #258 mutation receipts (each applied alone, its named row run, the source restored)
+RED: m1a absolute time, not the offset -> theStartChainIsTimedFromTheAcceptedCommandInStepOrder
+RED: m1b admission when the wait returns -> theStartChainIsTimedFromTheAcceptedCommandInStepOrder
+RED: m1c live not recorded -> theStartChainIsTimedFromTheAcceptedCommandInStepOrder
+RED: m2 a zero default -> aTakeEndedBeforeItsSettingsAnswerKeepsOnlyWhatItReached
+RED: m3 a key dropped from the row -> everyMeasuredFactLandsUnderItsOwnKey
+RED: m4 a key dropped from the allowlist -> aCompletedTerminalRowLeavesExactlyAsTheSchemaSays

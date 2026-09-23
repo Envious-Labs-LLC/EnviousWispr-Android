@@ -155,6 +155,8 @@ class TelemetryContractsTest {
             asrMs = 830L, asrChars = 57, peakAmplitude = 0.31f, polishProvider = "offline",
             polishReason = PolishReason.POLISHED, polishMs = 410L, polishStatus = 0, historySave = "ok",
             settingsFallback = "settings:exception:IOException",
+            settingsAnswerMs = 12L, matcherReadyMs = 30L, policyLoadedMs = 41L, admissionObservedMs = 9L, bindRequestedMs = 44L,
+            liveReceivedMs = 180L,
         )
         val payload = PostHogBootstrap.processProperties(event.name, event.properties() + mapOf("\$user_agent" to "x", "\$os_name" to "Android"), config)
         val expected = mapOf(
@@ -179,6 +181,13 @@ class TelemetryContractsTest {
             "history_save" to "ok",
             // #193: which settings readers fell back and why, a content-free token.
             "settings_fallback" to "settings:exception:IOException",
+            // #258: the pre-capture chain, ms since the owner accepted the start command; numbers, so they pass.
+            "settings_answer_ms" to 12L,
+            "matcher_ready_ms" to 30L,
+            "policy_loaded_ms" to 41L,
+            "admission_observed_ms" to 9L,
+            "bind_requested_ms" to 44L,
+            "live_received_ms" to 180L,
             "\$os_name" to "Android",
             "app" to "enviouswispr-android",
             "environment" to "production",
@@ -199,6 +208,7 @@ class TelemetryContractsTest {
             routeReason = null, liveAfterMs = null, liveState = null, silenceStopStatus = null, captureTerminal = null, recordingSeconds = null,
             inputDevice = null, asrMs = null, asrChars = null, peakAmplitude = null, polishProvider = null,
             polishReason = null, polishMs = null, polishStatus = null, historySave = null, settingsFallback = null,
+            settingsAnswerMs = null, matcherReadyMs = null, policyLoadedMs = null, admissionObservedMs = null, bindRequestedMs = null, liveReceivedMs = null,
         )
         val payload = PostHogBootstrap.processProperties(event.name, event.properties(), config)!!
         assertEquals("failed", payload["result"])
@@ -217,7 +227,7 @@ class TelemetryContractsTest {
         )
         val built = listOf(
             AnalyticsEvent.AppLaunched("m", "16", false, true, true, true, true, 0, emptyMap()).name,
-            AnalyticsEvent.DictationTerminal("t", TerminalReason.COMPLETED, null, TriggerSource.APP, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null).name,
+            AnalyticsEvent.DictationTerminal("t", TerminalReason.COMPLETED, null, TriggerSource.APP, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null).name,
             AnalyticsEvent.InsertionTerminal("t", null, InsertionResultKind.PASTED, InsertionRouteKind.PASTE, null, null, null, false).name,
             AnalyticsEvent.DictationInterrupted("t", TakeStage.RECORDING, "tile").name,
             AnalyticsEvent.DictationRefused("busy", TriggerSource.TILE).name,

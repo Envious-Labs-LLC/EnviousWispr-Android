@@ -46,6 +46,7 @@ class TakeFactsTest {
             silenceStopStatus = "lost_after_ready"; captureTerminal = "silence"; recordingSeconds = 6.4; inputDevice = "picked"
             asrMs = 910L; asrChars = 43; peakAmplitude = 0.22f; polishProvider = "cloud:GEMINI"; polishReason = PolishReason.HTTP_KEY_REJECTED
             polishMs = 1200L; polishStatus = 400; historySave = "ok"
+            settingsAnswerMs = 15L; matcherReadyMs = 22L; policyLoadedMs = 31L; admissionObservedMs = 8L; bindRequestedMs = 33L; liveReceivedMs = 260L
         }
         val row = facts.terminal(TerminalReason.COMPLETED).properties().filterValues { it != null }
         assertEquals(
@@ -55,6 +56,9 @@ class TakeFactsTest {
                 "silence_stop_status" to "lost_after_ready", "capture_terminal" to "silence", "recording_s" to 6.4, "input_device" to "picked",
                 "asr_ms" to 910L, "asr_chars" to 43, "peak_amplitude" to 0.22f, "polish_provider" to "cloud:GEMINI",
                 "polish_reason" to "HTTP_KEY_REJECTED", "polish_ms" to 1200L, "polish_status" to 400, "history_save" to "ok",
+                // #258: the pre-capture chain, each under its own key.
+                "settings_answer_ms" to 15L, "matcher_ready_ms" to 22L, "policy_loaded_ms" to 31L, "admission_observed_ms" to 8L,
+                "bind_requested_ms" to 33L, "live_received_ms" to 260L,
             ),
             row,
         )

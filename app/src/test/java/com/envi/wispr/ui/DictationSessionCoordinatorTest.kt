@@ -1038,6 +1038,64 @@ class DictationSessionCoordinatorTest {
         assertTrue(rig.log.lines.contains("I History persistence unavailable; transcript kept on clipboard only (handoff=HISTORY_NOT_DURABLE)"))
     }
 
+    // ---- #258: the pre-capture chain, timed from the accepted start command ------------------------------------
+
+    /** Every clock read answers 1000, 1010, 1020, ...: one read per step, so each step's offset is literal. */
+    private fun scriptTheClock() {
+        val reads = java.util.concurrent.atomic.AtomicLong(0L)
+        rig.host.clock = { 1_000L + 10L * reads.getAndIncrement() }
+    }
+
+    /**
+     * Row 1: with the admission already landed, every read in the start chain happens in one order: the origin,
+     * the admission's observed completion, then settings, matcher, policy, bind and live. MUTATIONS: record a
+     * step's absolute time instead of its offset; record admission when the wait returns.
+     */
+    @Test
+    fun theStartChainIsTimedFromTheAcceptedCommandInStepOrder() {
+        scriptTheClock()
+        val coordinator = rig.coordinator(admit = { _, _ -> CompletableDeferred(true) })
+        startAndGoLive(coordinator)
+        rig.capture.settle()
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        rig.endings.awaitOne()
+        val facts = rig.endings.facts.single()
+        assertEquals(
+            listOf(10L, 20L, 30L, 40L, 50L, 60L),
+            listOf(facts.admissionObservedMs, facts.settingsAnswerMs, facts.matcherReadyMs, facts.policyLoadedMs, facts.bindRequestedMs, facts.liveReceivedMs),
+        )
+    }
+
+    /**
+     * Row 2: a take ended while its settings are still unanswered keeps the admission it observed; every later
+     * milestone stays absent, never zero. The rig's capture is bound from the start, so a cancel here would wait
+     * for a capture ending that never comes; the Service's destroy ends the take at once, as INTERRUPTED_STARTING.
+     * MUTATION: default the durations to 0.
+     */
+    @Test
+    fun aTakeEndedBeforeItsSettingsAnswerKeepsOnlyWhatItReached() {
+        scriptTheClock()
+        val silent = SessionPreferencesSource(
+            preferenceStates = flow { awaitCancellation() },
+            terms = flow<List<CustomTerm>> { awaitCancellation() },
+            migrateLegacyTerms = {},
+            log = rig.log,
+        )
+        // A long bound, and the ending right after the starting signal, well before it expires.
+        val coordinator = rig.coordinator(preferences = silent, answerBoundMs = 60_000L, admit = { _, _ -> CompletableDeferred(true) })
+        coordinator.onCreated()
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        assertTrue("the take is starting", rig.surface.events.contains("starting"))
+        rig.onMain { coordinator.destroy() }
+        assertEquals(TerminalReason.INTERRUPTED_STARTING, rig.endings.awaitOne())
+        val facts = rig.endings.facts.single()
+        assertEquals(10L, facts.admissionObservedMs)
+        assertEquals(
+            listOf<Long?>(null, null, null, null, null),
+            listOf(facts.settingsAnswerMs, facts.matcherReadyMs, facts.policyLoadedMs, facts.bindRequestedMs, facts.liveReceivedMs),
+        )
+    }
+
     // ---- #256: each recorder notice, driven through the owner, on the surface it belongs on ----------------
 
     private fun pills() = rig.surface.events.filter { it.startsWith("notice:") }

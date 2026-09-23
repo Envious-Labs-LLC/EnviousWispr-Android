@@ -41,6 +41,7 @@ class TakeJournalWriterTest {
 
     private fun terminal(takeId: String, reason: TerminalReason) = AnalyticsEvent.DictationTerminal(
         takeId, reason, null, TriggerSource.TILE, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+        null, null, null, null, null, null,
     )
 
     private fun settle(dao: FakeDao, expectedCalls: Int) {

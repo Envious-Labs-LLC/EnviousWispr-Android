@@ -48,5 +48,12 @@ Seven branches no supported phone can take. Rollback: revert the squash commit.
 - [ ] Emulator: dictation haptics, the Appearance row, the tile subtitle and the notification row as before.
 - [ ] `.claude/rules/code-gotchas.md` RULE `vibratormanager-is-api-31-and-minsdk-is-30` (anchor kept verbatim): its body names the guard test instead of the two now-removed branches. It lives in the primary checkout outside git and is updated there after the merge.
 
-## 5. Related
+## 5. As built (2026-09-23)
+
+- All seven branches removed as listed in section 1; the live `UPSIDE_DOWN_CAKE` tile check stays. Unused `Build` and `Vibrator` imports dropped.
+- `MinSdkBranchesTest` as planned, with one widening from mutation m1: the level may be spelled with any qualifier (`android.os.Build.VERSION_CODES.S`), because the first regex missed a fully qualified name.
+- Mutation receipts: `docs/audits/2026-09-23-260-mutation-receipts.txt`, 2 of 2 RED. Full unit suite: 1266 tests, 0 failures.
+- Emulator: the Appearance row shows the one wallpaper sentence and its switch; Permissions shows the notification row. Every spoken take on the emulator ends `NO_SPEECH` on this branch and on main's build alike, with the emulator's audio HAL logging `pcm_readi failed` read errors, so the dictation haptics check is NOT RUN here (#273). The haptic path changed only in how it reaches `VibratorManager`, which every supported phone has.
+
+## 6. Related
 #141 (`minSdk` 33), REF-09 of the second 2026-09-23 audit.

@@ -254,8 +254,7 @@ class DictationSessionCoordinatorTest {
 
         rig.capture.silent = false
         rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_MANUAL)
-        rig.onMain {}
-        rig.onMain {}
+        rig.capture.settle()
         assertEquals(listOf(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE), rig.endings.reasons.toList())
         assertTrue("no transcription was asked for", rig.speech.listener == null)
     }
@@ -272,7 +271,7 @@ class DictationSessionCoordinatorTest {
         rig.host.fireDelayed(CaptureSessionController.TAKE_SILENT_BOUND_MS)
         assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
-        rig.onMain {}
+        rig.capture.settle()
         assertTrue("no bound is left armed once the binding is released: ${rig.host.delayed.map { it.first }} events=${rig.host.events}", rig.host.delayed.isEmpty())
 
         val next = DictationSessionRig()
@@ -287,6 +286,9 @@ class DictationSessionCoordinatorTest {
             polish.awaitRequest { "log: ${next.log.lines}" }
             polish.listener!!.onOutcome(polish.outcome("Hello again."))
             assertEquals(TerminalReason.COMPLETED, next.endings.awaitOne())
+            // The ending is committed BEFORE the delivery that records the paste (#210): wait for the take's
+            // last step, as every other completed-take row here does.
+            next.host.awaitStopped()
             assertEquals(listOf(1L to "Hello again."), next.insertion.pastes.toList())
         } finally {
             next.close()
@@ -302,14 +304,13 @@ class DictationSessionCoordinatorTest {
     fun aHeartbeatRearmsTheBound() {
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
-        rig.onMain {}
+        rig.capture.settle()
         val armed = rig.host.delayed.filter { it.first == CaptureSessionController.TAKE_SILENT_BOUND_MS }
         assertEquals("one bound armed", 1, armed.size)
         val before = armed.single().second
         val postsBefore = rig.host.postsWithDelay(CaptureSessionController.TAKE_SILENT_BOUND_MS)
         rig.capture.tick(5_000L)
-        rig.onMain {}
-        rig.onMain {}
+        rig.capture.settle()
         val after = rig.host.delayed.filter { it.first == CaptureSessionController.TAKE_SILENT_BOUND_MS }
         assertEquals("still exactly one bound", 1, after.size)
         // Counted by the bound's own delay, so the live deadline's post cannot stand in for a re-arm.
@@ -351,11 +352,10 @@ class DictationSessionCoordinatorTest {
         val coordinator = rig.coordinator()
         startAndStayStarting(coordinator)
         rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_MANUAL, takeId = "the-previous-take")
-        rig.onMain {}
-        rig.onMain {}
+        rig.capture.settle()
         assertTrue("no ending was committed for another take's event", rig.endings.reasons.isEmpty())
         rig.capture.tick(0L)
-        rig.onMain {}
+        rig.capture.settle()
         // Now this take goes live and completes as an ordinary take.
         val own = rig.capture.currentTakeId
         rig.capture.pushLive(own)
@@ -402,9 +402,10 @@ class DictationSessionCoordinatorTest {
         assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
         gate.countDown()
-        // The lane runs the rest of the start command after the gate opens; wait for it to have done so.
+        // The lane runs the rest of the start command after the gate opens; wait for its own decision, the
+        // one line it writes when it declines to start (#210), not for a drain that may finish first.
         rig.capture.awaitRegistered()
-        rig.onMain {}
+        rig.log.awaitLine("Capture start skipped: the take is no longer starting")
         assertEquals("the late registration landed but no start followed it", listOf("listenForTake"), rig.capture.events.toList())
     }
 
@@ -543,7 +544,7 @@ class DictationSessionCoordinatorTest {
         assertEquals(TerminalReason.AUDIO_PROCESS_DIED, rig.endings.awaitOne())
         rig.pipeline.disconnect("capture")
         rig.host.awaitStopped()
-        rig.onMain {}
+        rig.capture.settle()
         assertEquals("one ending, whatever arrived second", listOf(TerminalReason.AUDIO_PROCESS_DIED), rig.endings.reasons.toList())
         assertTrue(rig.host.events.contains("toast:Microphone service stopped unexpectedly"))
     }
@@ -746,10 +747,9 @@ class DictationSessionCoordinatorTest {
         rig.postMain { coordinator.destroy() }
         assertEquals(TerminalReason.INTERRUPTED_CANCELLING, rig.endings.awaitOne())
         gate.countDown()
-        // The ending is posted to main and its commit loses there; this runs after it on the one main
-        // thread.
-        rig.onMain {}
-        rig.onMain {}
+        // The ending leaves the fake's binder thread once the gate opens and is posted to main, where its
+        // commit loses: settle() waits for both hops (#210), where two main drains could finish first.
+        rig.capture.settle()
         assertEquals(listOf(TerminalReason.INTERRUPTED_CANCELLING), rig.endings.reasons.toList())
     }
 

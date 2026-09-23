@@ -350,6 +350,19 @@ internal class DictationSessionRig {
         /** The id the owner passed to the last start; the fake's events carry it. */
         @Volatile var currentTakeId = ""
         fun close() = binderThread.shutdownNow()
+
+        /**
+         * Wait until every event pushed so far has reached the fake main thread AND run there (#210). An
+         * event travels this fake's binder thread, then the owner's `postToMain`; draining main alone can
+         * finish before the binder thread has handed the event over, which failed `aHeartbeatRearmsTheBound`
+         * on the hosted runner and lets a "nothing happened" row pass before the event exists. It is the
+         * ONE drain the session rows use: no row drains main alone, and every signal of this fake fires
+         * after the push it causes, so a wait followed by this cannot read early.
+         */
+        fun settle() {
+            binderThread.submit {}.get(5, TimeUnit.SECONDS)
+            onMain {}
+        }
         @Volatile var startResult = true
         @Volatile var startFailure = AudioCaptureService.START_FAILURE_NONE
         @Volatile var liveStateAfterStart = AudioCaptureService.LIVE_READY
@@ -399,19 +412,22 @@ internal class DictationSessionRig {
                 throw thrown
             }
             if (!startResult) {
-                started.countDown()
-                // A refused start publishes its own ending with the failure code and no file (#115).
+                // A refused start publishes its own ending with the failure code and no file (#115), queued
+                // BEFORE the start is reported, so nothing a test waits on can run ahead of it (#210).
                 push { it.onEnded(TakeEnding(takeId, AudioCaptureService.TERMINAL_REASON_NONE, startFailure, null, AudioCaptureService.SILENCE_STATUS_DISABLED, 0f, "")) }
+                started.countDown()
                 return false
             }
             audioFile = File.createTempFile("take", ".pcm").apply { writeBytes(ByteArray(32_000)) }
             capturing = true
-            started.countDown()
             when (liveStateAfterStart) {
                 AudioCaptureService.LIVE_READY -> push { it.onLive(takeId, false, 0, 0, 120L); it.onTick(takeId, 0L) }
                 AudioCaptureService.LIVE_FORCED -> push { it.onLive(takeId, true, 0, 0, 120L); it.onTick(takeId, 0L) }
                 else -> Unit
             }
+            // Reported AFTER the push, like every signal of this fake: an event is queued before anything a
+            // test waits on says it happened (#210).
+            started.countDown()
             // A start whose RETURN is held: the live event is already on its way to main, as on a device
             // where the route goes live within a millisecond of the call (the hosted-runner race).
             startReturnGate?.await(10, TimeUnit.SECONDS)
@@ -432,8 +448,10 @@ internal class DictationSessionRig {
             commandThreads += Thread.currentThread().name
             timeline += "capture-stop"
             capturing = false
-            stopRequested.countDown()
+            // The ending is queued BEFORE the stop is reported (#210), so settle() after awaitStopRequested()
+            // always finds it on the binder thread.
             publishEnding(ending)
+            stopRequested.countDown()
         }
 
         override fun finishTake(): Boolean {

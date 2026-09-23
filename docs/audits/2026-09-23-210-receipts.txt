@@ -1,0 +1,6 @@
+# #210 receipts: each race forced with a delay in the fake, the wait shown to hold it, and the wait removed to turn the row red; each edit restored from the last commit.
+OK slow paste, the row waits for the stop: theNextTakeStartsAfterAWedge GREEN (wanted GREEN); all red=[]
+OK slow paste, the stop wait removed: theNextTakeStartsAfterAWedge RED (wanted RED); all red=['theNextTakeStartsAfterAWedge']
+OK slow binder thread, settle() drains it: aHeartbeatRearmsTheBound GREEN (wanted GREEN); all red=[]
+OK slow binder thread, settle() drains main only: aHeartbeatRearmsTheBound RED (wanted RED); all red=['aHeartbeatRearmsTheBound']
+OK the lane's STARTING check removed: aRegistrationThatReturnsAfterTheBoundNeverStartsAnOrphanTake RED (wanted RED); all red=['aRegistrationThatReturnsAfterTheBoundNeverStartsAnOrphanTake']

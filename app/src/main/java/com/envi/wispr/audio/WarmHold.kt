@@ -19,10 +19,18 @@ internal class WarmHold(
     private val route: RouteHold,
     private val track: SilentTrack,
     private val onEnded: (reason: String) -> Unit,
+    /**
+     * The track's playback failed after it started (#241). Called on the track's own thread; the owner posts
+     * it to the route thread and ends this exact hold as `track-failed` under the session lock.
+     */
+    private val onPlaybackFailed: () -> Unit,
 ) {
-    /** The platform side of the hold, injectable. `play` may throw; the hold then ends as `track-failed`. */
+    /**
+     * The platform side of the hold, injectable. `play` may throw; the hold then ends as `track-failed`. A
+     * failure after it started is reported once through [play]'s `onFailed` (#241).
+     */
     interface SilentTrack {
-        fun play()
+        fun play(onFailed: () -> Unit)
         fun stop()
     }
 
@@ -32,7 +40,7 @@ internal class WarmHold(
 
     /** Start playing. Returns false, ended, when the track cannot play. */
     fun start(): Boolean {
-        val played = runCatching { track.play() }.isSuccess
+        val played = runCatching { track.play { onPlaybackFailed() } }.isSuccess
         if (!played) {
             end(END_TRACK_FAILED)
             return false

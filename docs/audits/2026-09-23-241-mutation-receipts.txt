@@ -1,0 +1,12 @@
+# #241 mutation receipts (each mutation applied alone, its named row run, the source restored)
+RED: r1 no posted end -> aPlaybackFailureEndsTheHoldAndLetsTheEarbudsGo
+RED: r2a negative write silent -> aNegativeWriteFailsOnceAfterZeroAndFullWrites
+RED: r2b no exception handler -> aThrownWriteFailsOnce
+RED: r3 ends the current hold -> aLateFailureNeverEndsANewerHold
+RED: r4a reports from STOPPED -> aStopThatWinsSilencesItsOwnWriteError
+RED: r4b writes on after a failure -> aFailureIsReportedOnce
+RED: r4c a private write loop -> theSilentTrackRunsTheWriter
+RED: r4d writer stopped after the track -> theSilentTrackRunsTheWriter
+RED: r5 no live-take guard -> theServiceStopsForAHoldOnlyWhenNoTakeIsOpen
+ALL RED
+# After review round 1 (the script helper throws an Error), rerun: r2a, r2b, r4a, r4b RED

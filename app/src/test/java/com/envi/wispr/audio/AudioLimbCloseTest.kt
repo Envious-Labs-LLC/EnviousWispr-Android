@@ -33,7 +33,8 @@ class AudioLimbCloseTest {
     private class CountingTrack : WarmHold.SilentTrack {
         var plays = 0
         var stops = 0
-        override fun play() { plays++ }
+        var onFailed: (() -> Unit)? = null
+        override fun play(onFailed: () -> Unit) { plays++; this.onFailed = onFailed }
         override fun stop() { stops++ }
     }
 
@@ -155,5 +156,81 @@ class AudioLimbCloseTest {
         assertEquals("the route the hold carried is released once", 1, cleared)
         assertEquals("and the service is told it may stop, once", 1, idle)
         assertEquals("a destroyed hold never asked the service to stay", 0, kept)
+    }
+
+    /** One owner with a fresh counting track per hold, counting everything a hold's end removes (#241). */
+    private inner class HoldRig {
+        var cleared = 0
+        var commRemoved = 0
+        var unregistered = 0
+        var idle = 0
+        val scheduler = CountingScheduler()
+        val tracks = ArrayList<CountingTrack>()
+        val owner = WarmHoldOwner(
+            tag = "test",
+            scheduler = scheduler,
+            locked = { it() },
+            addCommListener = {},
+            removeCommListener = { commRemoved++ },
+            registerDeviceCallback = {},
+            unregisterDeviceCallback = { unregistered++ },
+            newTrack = { CountingTrack().also { tracks += it } },
+            keepAlive = {},
+            onIdle = { idle++ },
+        )
+
+        fun startHold(): CountingTrack {
+            val hold = RouteHold({ cleared++ }, {}).also { it.markCommunicationSet() }
+            assertTrue("the hold starts", owner.start(bluetoothRoute(hold, scheduler) { }))
+            return tracks.last()
+        }
+
+        /** Runs what the failure posted to the route thread, as the route thread would. */
+        fun runPosted() = scheduler.posted.toList().also { scheduler.posted.clear() }.forEach { it.run() }
+    }
+
+    /**
+     * Row 1 (#241): silent playback that fails after the hold started ends that hold as `track-failed` through the
+     * normal end: the track stops, the route is released, the expiry and both listeners go, the service may stop.
+     * MUTATION: drop the posted end in `WarmHoldOwner.start`'s `onPlaybackFailed`.
+     */
+    @Test
+    fun aPlaybackFailureEndsTheHoldAndLetsTheEarbudsGo() {
+        val rig = HoldRig()
+        val track = rig.startHold()
+        rig.scheduler.posted.clear()
+        track.onFailed!!()
+        assertTrue("nothing ends on the track's own thread", rig.owner.isActive)
+        rig.runPosted()
+        assertTrue("the hold ended", !rig.owner.isActive)
+        assertEquals("the silent track stops once", 1, track.stops)
+        assertEquals("the route is released once", 1, rig.cleared)
+        assertEquals("the expiry is removed once", 1, rig.scheduler.removed)
+        assertEquals("the communication listener is removed once", 1, rig.commRemoved)
+        assertEquals("the device callback is unregistered once", 1, rig.unregistered)
+        assertEquals("the service is told it may stop, once", 1, rig.idle)
+    }
+
+    /**
+     * Row 3 (#241): a failure from a hold that already expired, or was handed to a take, never touches the newer
+     * hold that replaced it. MUTATION: end the owner's current hold instead of the captured one.
+     */
+    @Test
+    fun aLateFailureNeverEndsANewerHold() {
+        for (endFirst in listOf<(WarmHoldOwner) -> Unit>({ it.close(WarmHold.END_EXPIRED) }, { it.handOver() })) {
+            val rig = HoldRig()
+            val old = rig.startHold()
+            endFirst(rig.owner)
+            val idleBefore = rig.idle
+            val clearedBefore = rig.cleared
+            val newer = rig.startHold()
+            rig.scheduler.posted.clear()
+            old.onFailed!!()
+            rig.runPosted()
+            assertTrue("the newer hold is still active", rig.owner.isActive)
+            assertEquals("the newer hold's track still plays", 0, newer.stops)
+            assertEquals("no route is released again", clearedBefore, rig.cleared)
+            assertEquals("the service is not told to stop", idleBefore, rig.idle)
+        }
     }
 }

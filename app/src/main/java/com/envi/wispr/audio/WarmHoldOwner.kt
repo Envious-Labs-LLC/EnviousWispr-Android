@@ -74,11 +74,20 @@ internal class WarmHoldOwner(
     fun start(route: TakeRoute): Boolean {
         val sink = route.sink ?: return false
         val label = route.effective.label()
+        // Assigned before the hold starts, so a failure can only ever name this hold (#241).
+        var started: WarmHold? = null
         val hold = WarmHold(
             route = route.hold,
             track = newTrack(),
             onEnded = { reason -> onHoldEnded(reason, label) },
+            // Silent playback failed after it started (#241): off the track's thread onto the route thread,
+            // then under the session lock, which waits for this start to finish registering, end THIS hold.
+            // A late failure from a hold that already ended, was handed to a take, or was replaced does nothing.
+            onPlaybackFailed = {
+                scheduler.post(Runnable { locked { val failed = started; if (failed != null && warmHold === failed) failed.end(WarmHold.END_TRACK_FAILED) } })
+            },
         )
+        started = hold
         heldSinkType = sink.type
         heldSinkName = sink.productName?.toString().orEmpty()
         warmHold = hold
@@ -159,15 +168,15 @@ internal class WarmHoldOwner(
 
     /**
      * The platform half of the hold: a silent `VOICE_COMMUNICATION` stream, which is what Android keys
-     * the communication route on (any active playback for the uid). Its own thread paces on the blocking
-     * write; `stop()` unblocks it.
+     * the communication route on (any active playback for the uid). Its own thread runs [SilenceWriter],
+     * paced by the blocking write; `stop()` stops the writer first, then the track, which unblocks it.
      */
     private class AudioTrackSilence : WarmHold.SilentTrack {
         private var track: AudioTrack? = null
         private var thread: Thread? = null
-        @Volatile private var stopped = false
+        @Volatile private var writer: SilenceWriter? = null
 
-        override fun play() {
+        override fun play(onFailed: () -> Unit) {
             val rate = PcmAudio.SAMPLE_RATE
             val minimum = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val built = AudioTrack.Builder()
@@ -194,16 +203,14 @@ internal class WarmHoldOwner(
             track = built
             built.play()
             val zeros = ByteArray(rate / 10 * PcmAudio.BYTES_PER_SAMPLE)
-            thread = Thread({
-                while (!stopped) {
-                    val n = built.write(zeros, 0, zeros.size)
-                    if (n < 0) break
-                }
-            }, "WarmHoldSilence").apply { start() }
+            val silence = SilenceWriter(write = { built.write(zeros, 0, zeros.size) }, onFailed = onFailed)
+            writer = silence
+            thread = Thread({ silence.run() }, "WarmHoldSilence").apply { start() }
         }
 
         override fun stop() {
-            stopped = true
+            // The writer first (#241): the platform stop below can fail the blocked write, which is not a failure.
+            writer?.stop()
             track?.let { t ->
                 runCatching { t.stop() }
                 runCatching { t.release() }

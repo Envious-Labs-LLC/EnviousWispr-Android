@@ -8,5 +8,6 @@ RED: m5b no cancellation -> aLateProjectionNeverLandsAfterTheTabChanged
 RED: m6 no distinct -> oneRefreshPerNewFinishedSnapshot
 RED: m6b no catch -> aFailedObservationShowsCheckingAndTheNextActivationRetries
 RED: m6c no refresh on failure -> aFailedRefreshWatcherRefreshesOnceAndTheNextStartWatchesAgain
+RED: m6d first item only -> aFinishLaterInAChainSignals
 RED: m7a observation back in AppShell -> onlyTheOwnersObserveModelWork
 RED: m7b Transcription loses the owner's card -> theOwnersCardsReachTheScreensThroughAppUiState

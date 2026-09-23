@@ -105,12 +105,14 @@ internal class ModelWorkViewModel(
     }
 
     /**
-     * One signal per new set of finished works (each watched work's newest info, when finished), so a later
-     * finish is not lost behind an older finished work and a repeated snapshot signals nothing. Cold: the
-     * activity collects it while started ([collectModelRefresh]).
+     * One signal per new set of finished works, across every item of each watched chain (WorkManager does not
+     * promise the newly finished item is first), so a later finish is not lost behind an older finished work
+     * and a repeated snapshot signals nothing. Cold: the activity collects it while started ([collectModelRefresh]).
      */
     val finished: Flow<Unit> = combine(WATCHED.map(work)) { lists ->
-        lists.mapNotNull { infos -> infos.firstOrNull()?.takeIf { it.state.isFinished }?.let { it.id to it.state } }.toSet()
+        lists.flatMap { infos -> infos.filter { it.state.isFinished } }
+            .map { it.id to it.state }
+            .toSet()
     }.distinctUntilChanged().filter { it.isNotEmpty() }.map { }
 
     class Factory(

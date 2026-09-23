@@ -218,6 +218,26 @@ class ModelWorkViewModelTest {
         assertEquals("a second finish signals again", 2, signals)
     }
 
+    /** Row 6d: a finish later in a work chain signals, not only its first item. MUTATION: read only the first item. */
+    @Test fun aFinishLaterInAChainSignals() = runTest {
+        listOf(s1Download, s1Adoption, parakeetDownload, parakeetAdoption).forEach { check(stream(it).tryEmit(emptyList())) }
+        val vm = viewModel()
+        var signals = 0
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.finished.collect { signals++ } }
+        runCurrent()
+        val running = info(WorkInfo.State.RUNNING)
+        stream(s1Download).emit(listOf(running))
+        runCurrent()
+        assertEquals("a running chain signals nothing", 0, signals)
+        val chain = listOf(running, info(WorkInfo.State.SUCCEEDED))
+        stream(s1Download).emit(chain)
+        runCurrent()
+        assertEquals("the second item's finish signals", 1, signals)
+        stream(s1Download).emit(chain)
+        runCurrent()
+        assertEquals("the same chain again signals nothing", 1, signals)
+    }
+
     /** Row 6b: a failed observation shows Checking; the next activation projects again. MUTATION: drop the `catch`. */
     @Test fun aFailedObservationShowsCheckingAndTheNextActivationRetries() {
         seed(s1Adoption)

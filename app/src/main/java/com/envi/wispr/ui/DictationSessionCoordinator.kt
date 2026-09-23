@@ -9,15 +9,12 @@ import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.audio.SpeechEvidence
 import com.envi.wispr.cleanup.LanguageDetector
-import com.envi.wispr.cleanup.TextSafety
 import com.envi.wispr.history.HistoryWriteQueue
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.paste.DictationTargetPin
 import com.envi.wispr.polish.PolishContext
 import com.envi.wispr.polish.PolishEngineLabels
-import com.envi.wispr.polish.PolishFallback
-import com.envi.wispr.polish.PolishOutcome
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.PolishPublicationFacts
 import com.envi.wispr.polish.PolishReason
@@ -96,9 +93,6 @@ internal class DictationSessionCoordinator(
     private val defectSink: (AppDefect, Map<String, Any?>) -> Unit = Telemetry::defect,
 ) : PipelineController.Listener {
     companion object {
-        /** [claimFallback]'s answer when no request was open; ledger ids are never 0. */
-        private const val NO_REQUEST = 0L
-
         /** The words' longest wait for their History save (#235). */
         const val HISTORY_SAVE_BOUND_MS = 1_000L
 
@@ -158,40 +152,24 @@ internal class DictationSessionCoordinator(
     }
 
     /**
-     * Serialises the final state check, the ledger open, the watchdog launch and the binder call against
-     * `cancelProcessing` (#75): without it the transcription thread can read PROCESSING, lose the CPU to a
-     * cancel that closes an empty ledger, and then send a request nothing will ever cancel.
+     * Serialises the final state check, the ledger open and the watchdog launch against `cancelProcessing`
+     * (#75): without it the transcription thread can read PROCESSING, lose the CPU to a cancel that closes an
+     * empty ledger, and then send a request nothing will ever cancel. Shared with [polish] (#237); no binder
+     * call is ever made under it.
      */
     private val polishSubmissionLock = Any()
     private val teardownStarted = AtomicBoolean(false)
     /** The injected scope's job, read once; `destroy` cancels exactly this and never joins it (#115). */
     private val serviceJob: Job = requireNotNull(scope.coroutineContext[Job]) { "the session scope needs a Job" }
 
+    /** The take's raw words, written under [polishSubmissionLock] as soon as speech answers. */
     private var rawTranscript = ""
 
     /**
-     * Who answers this take's polish (#234), decided once under [polishSubmissionLock]: nobody yet, a request
-     * that is open, or an answer or fallback that has claimed it. Every ledger claim updates it in the same
-     * operation, so a polish disconnect and the speech answer can never both publish.
+     * This take's polish (#237): built at admission beside [take], published after it, null before. An owner
+     * admits one take, so it is never replaced.
      */
-    private sealed interface PolishDecision {
-        data object Undecided : PolishDecision
-        data class Open(val requestId: Long) : PolishDecision
-        data object Claimed : PolishDecision
-    }
-
-    /** Guarded by [polishSubmissionLock]; reset at admission. */
-    private var polishDecision: PolishDecision = PolishDecision.Undecided
-
-    /**
-     * Polish was lost for this take (#234): refused at bind, never connected, or its process died while the
-     * take was live. Written under [polishSubmissionLock]; the take publishes the deterministic text with this
-     * reason and a reconnect does not un-lose it. Reset at admission.
-     */
-    @Volatile private var polishLost: PolishReason? = null
-
-    /** One polish-failure defect per take, whichever failure is observed first (#234). Reset at admission. */
-    private val polishFailureReported = AtomicBoolean(false)
+    @Volatile private var polish: TakePolishController? = null
 
     /** The bubble request this take was admitted for, or null for a take started elsewhere. */
     @Volatile private var admittedRequest: BubbleRequestToken? = null
@@ -391,14 +369,25 @@ internal class DictationSessionCoordinator(
         // The take, published once (#216). `beginSession` is one uninterrupted main-thread call, and nothing
         // is bound and no coroutine launched before this line, so nothing reads half of one take.
         take = TakeContext(takeId, trigger, takeFacts, arbiter, targetPin, TakeHistory(historyWrites))
+        // After the take, in the same main-thread call, and before anything is bound (#237).
+        polish = TakePolishController(
+            lock = polishSubmissionLock,
+            ledger = polishLedger,
+            timeout = polishTimeout,
+            scope = scope,
+            link = { pipeline.polish },
+            languageDetector = languageDetector,
+            log = log,
+            takeId = takeId,
+            defectSink = defectSink,
+            preferences = { sessionPreferences },
+            transcript = { rawTranscript },
+            isProcessing = { state.get() == SessionState.PROCESSING && take.arbiter.isOpen },
+            isLive = ::polishStillWanted,
+            onPrepared = ::publishPrepared,
+        )
         capture.begin(takeId, phaseView)
         teardownStarted.set(false)
-        synchronized(polishSubmissionLock) {
-            rawTranscript = ""
-            polishDecision = PolishDecision.Undecided
-            polishLost = null
-        }
-        polishFailureReported.set(false)
         recordingDurationMs = 0L
         lastElapsedSecond = -1
         pendingCancel = null
@@ -438,7 +427,7 @@ internal class DictationSessionCoordinator(
                 // Polish is a limb (#234): the take records and transcribes, and publishes the deterministic
                 // text with the polish notice. The refusal is a defect, so it gets fixed rather than counted.
                 log.warn("Polish service did not bind; this take publishes the deterministic text")
-                recordPolishLoss(PolishReason.SERVICE_UNAVAILABLE, AppDefect.PolishServiceUnavailable)
+                polish?.bindRefused()
             }
             PipelineController.BindResult.AUDIO_BIND_FAILED -> {
                 pipeline.stopAudioService()
@@ -448,43 +437,11 @@ internal class DictationSessionCoordinator(
         }
     }
 
-    /** The same take, still live, not destroyed, and polish not lost: the warm-up is still worth sending (#236). */
-    private fun warmUpStillWanted(takeId: String): Boolean {
+    /** Not destroyed and still live: the polish warm-up is still worth sending (#236). */
+    private fun polishStillWanted(): Boolean {
         val seen = state.get()
-        return take.takeId == takeId && !destroyed.get() && polishLost == null &&
+        return !destroyed.get() &&
             (seen == SessionState.STARTING || seen == SessionState.RECORDING || seen == SessionState.PROCESSING)
-    }
-
-    /** Latches this take's polish loss (the first reason wins) and reports it once (#234). */
-    private fun recordPolishLoss(reason: PolishReason, defect: AppDefect) {
-        synchronized(polishSubmissionLock) { if (polishLost == null) polishLost = reason }
-        reportPolishFailure(defect)
-    }
-
-    /** One polish-failure defect per take, raised when the failure is observed, never again at publication. */
-    private fun reportPolishFailure(defect: AppDefect) {
-        if (polishFailureReported.compareAndSet(false, true)) defectSink(defect, mapOf("take_id" to take.takeId))
-    }
-
-    /**
-     * Claims [requestId] on the ledger and marks the decision in ONE operation under [polishSubmissionLock]
-     * (#234): every answer, watchdog and error exit goes through here, so a polish disconnect sees who won.
-     */
-    private fun claimPolish(requestId: Long): Boolean = synchronized(polishSubmissionLock) {
-        polishLedger.claim(requestId).also { claimed -> if (claimed) polishDecision = PolishDecision.Claimed }
-    }
-
-    /**
-     * A fallback that is not an answer to the open request (a disconnect) wins only from an undecided take or by
-     * claiming the open request, in ONE operation under [polishSubmissionLock] (#234). Returns null when another
-     * path already decided, else the request id it claimed (to cancel on the engine), or [NO_REQUEST].
-     */
-    private fun claimFallback(): Long? = synchronized(polishSubmissionLock) {
-        when (val decision = polishDecision) {
-            PolishDecision.Undecided -> NO_REQUEST
-            is PolishDecision.Open -> decision.requestId.takeIf { polishLedger.claim(it) }
-            PolishDecision.Claimed -> null
-        }?.also { polishDecision = PolishDecision.Claimed }
     }
 
     override fun onCaptureConnected() {
@@ -514,12 +471,7 @@ internal class DictationSessionCoordinator(
             val text = synchronized(polishSubmissionLock) { rawTranscript }
             if (text.isNotBlank()) {
                 // The text is here; polish may still answer it. One decision picks the winner (#234).
-                claimFallback()?.let { claimed ->
-                    // A claimed request is still running on a live engine: stop it, as publishFallback's own
-                    // close would have, outside the lock.
-                    if (claimed != NO_REQUEST) runCatching { pipeline.polish?.cancel(claimed) }
-                    publishFallback(text, sessionPreferences, PolishReason.SERVICE_DIED)
-                }
+                polish?.claimSpeechLossFallback(text)
             } else if (take.arbiter.commitNow(TerminalReason.ASR_PROCESS_DIED)) {
                 take.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                 endAsFailure(TerminalReason.ASR_PROCESS_DIED)
@@ -528,38 +480,13 @@ internal class DictationSessionCoordinator(
     }
 
     override fun onPolishConnected() {
-        // A take that lost polish keeps its deterministic text (#234): a reconnect is for the next take.
-        if (polishLost != null) {
-            log.log("Polish service reconnected; this take already lost it and keeps the deterministic text")
-            return
-        }
-        // Warm at connect, measured and decided (#72): every later moment ends with the same two
-        // models resident, because the speech model stays loaded after it transcribes, and costs the
-        // user 0.9 to 3.1 s of wait. `architecture-rules.md` RULE: isolate-limbs carries the numbers.
-        // On IO, never on main (#236): the call is a synchronous transaction into `:polish`, and a stalled
-        // polish process must not hold a stop, a cancel or a publication. The link, the take and the policy
-        // are read here on main; the pre-send check is best effort, and nothing ever waits for the call.
-        val link = pipeline.polish
-        val takeId = take.takeId
-        val policy = sessionPreferences.policy
-        if (link != null) {
-            scope.launch(Dispatchers.IO) {
-                if (!warmUpStillWanted(takeId)) {
-                    log.log("Polish warm-up not sent: take $takeId is no longer live")
-                    return@launch
-                }
-                runCatching { link.warmUpWithPolicy(policy) }
-                    .onFailure { error -> log.warn("Polish warm-up failed for take $takeId: ${error.javaClass.simpleName}") }
-            }
-        }
-        log.log("Polish service connected")
+        polish?.connected(sessionPreferences.policy)
     }
 
     /**
-     * Polish died (#234). It is a limb, so the take never ends for it: the loss is latched and reported once,
-     * and the deterministic text is published, now if a request was open (this path claims it first), else
-     * when speech answers. A first report after the take is already ending (a teardown's own callback) is
-     * ignored; a loss observed earlier stays recorded.
+     * Polish died (#234). It is a limb, so the take never ends for it; [TakePolishController.disconnected]
+     * latches and reports the loss. A first report after the take is already ending (a teardown's own
+     * callback) is ignored; a loss observed earlier stays recorded.
      */
     override fun onPolishDisconnected() {
         log.warn("Polish service disconnected")
@@ -567,19 +494,7 @@ internal class DictationSessionCoordinator(
         if (seen != SessionState.STARTING && seen != SessionState.RECORDING && seen != SessionState.PROCESSING) return
         // A take already destroyed or committed is past failing: a teardown's own callback reports nothing.
         if (destroyed.get() || take.arbiter.committed != null) return
-        var text = ""
-        val claimedOpen = synchronized(polishSubmissionLock) {
-            if (polishLost == null) polishLost = PolishReason.SERVICE_DIED
-            text = rawTranscript
-            when (val decision = polishDecision) {
-                is PolishDecision.Open -> polishLedger.claim(decision.requestId).also { claimed ->
-                    if (claimed) polishDecision = PolishDecision.Claimed
-                }
-                PolishDecision.Undecided, PolishDecision.Claimed -> false
-            }
-        }
-        reportPolishFailure(AppDefect.PolishServiceDied)
-        if (claimedOpen) publishFallback(text, sessionPreferences, PolishReason.SERVICE_DIED)
+        polish?.disconnected()
     }
 
     private fun tryStartRecording() {
@@ -1014,197 +929,20 @@ internal class DictationSessionCoordinator(
             finishSession()
             return
         }
-        scope.launch {
-            val takePreferences = sessionPreferences
-            val preparedRaw = restoreTakeVocabulary(rawText, takePreferences)
-            val service = pipeline.polish
-            // The state check, the loss check and the ledger open are one step under the submission lock
-            // (#75, #234), so a cancel either precedes them (no request is sent) or finds the open id and
-            // closes it, and a polish disconnect either latched its loss before this (the fallback is chosen
-            // here) or finds the open request and claims it. The binder call itself runs outside the lock:
-            // the lock is also taken on the main thread by Cancel, and a synchronous transaction to a stalled
-            // engine must not be able to hold the main thread.
-            var fallback: PolishReason? = null
-            var unansweredLink = false
-            var ended = false
-            val requestId = synchronized(polishSubmissionLock) {
-                if (state.get() != SessionState.PROCESSING || !take.arbiter.isOpen) {
-                    ended = true
-                    return@synchronized null
-                }
-                if (polishDecision != PolishDecision.Undecided) return@launch
-                val lost = polishLost
-                if (service == null || lost != null) {
-                    // Refused at bind, never connected, or died: this take publishes the deterministic text.
-                    polishDecision = PolishDecision.Claimed
-                    unansweredLink = lost == null
-                    if (lost == null) polishLost = PolishReason.SERVICE_UNAVAILABLE
-                    fallback = lost ?: PolishReason.SERVICE_UNAVAILABLE
-                    return@synchronized null
-                }
-                val opened = polishLedger.open()
-                polishDecision = PolishDecision.Open(opened)
-                // The watchdog is armed BEFORE the binder call so the call itself is inside the budget.
-                // The ledger is the only first-wins gate: an outcome that arrives first closes it.
-                scope.launch {
-                    polishTimeout.await(takePreferences.policy)
-                    if (!claimPolish(opened)) return@launch
-                    log.warn("Polish watchdog fired for request $opened; cancelling on the engine")
-                    runCatching { pipeline.polish?.cancel(opened) }
-                    publishFallback(rawText, takePreferences, PolishReason.WATCHDOG_TIMEOUT)
-                }
-                opened
-            }
-            if (ended) {
-                log.log("Transcript arrived after the session ended; not polishing")
-                return@launch
-            }
-            if (requestId == null) {
-                // A bound polish that never connected before speech answered is a failure too (#234).
-                if (unansweredLink) {
-                    log.warn("Polish service never connected; this take publishes the deterministic text")
-                    reportPolishFailure(AppDefect.PolishServiceUnavailable)
-                }
-                publishFallback(rawText, takePreferences, checkNotNull(fallback))
-                return@launch
-            }
-            try {
-                checkNotNull(service).polishRequestForTake(
-                    requestId,
-                    preparedRaw,
-                    takePreferences.cleanup.removeFillers,
-                    takePreferences.cleanup.spokenEmoji,
-                    takePreferences.cleanup.spokenPunctuation,
-                    takePreferences.policy,
-                    take.takeId,
-                    object : PolishListener {
-                        override fun onOutcome(outcome: PolishOutcome?) {
-                            // This callback belongs to ONE request and the engine answers it once, so an
-                            // empty or misnamed outcome is the only answer this request will get: fail
-                            // open now rather than leave the session in Processing forever.
-                            if (outcome == null || outcome.requestId != requestId) {
-                                if (claimPolish(requestId)) {
-                                    log.warn("Invalid polish outcome for request $requestId")
-                                    defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to take.takeId, "shape" to if (outcome == null) "null" else "mismatched"))
-                                    publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
-                                }
-                                return
-                            }
-                            if (!claimPolish(outcome.requestId)) {
-                                log.warn(
-                                    "Ignoring polish outcome for request ${outcome.requestId}: not the open request (reason=${outcome.reason})",
-                                )
-                                return
-                            }
-                            log.log("Polish outcome ${outcome.requestId}: reason=${outcome.reason} status=${outcome.statusCode}")
-                            // No correct engine answer is blank for a nonblank request: deterministic cleanup recovers
-                            // the original rather than erase it, and every fallback keeps that text (#214). A blank
-                            // answer is a broken engine: the owner's floor, never the raw transcript.
-                            if (outcome.text.isBlank() && rawText.isNotBlank()) {
-                                log.warn("Blank polish outcome for request ${outcome.requestId} (reason=${outcome.reason}); publishing the owner's fallback")
-                                defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to take.takeId, "shape" to "blank"))
-                                publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
-                                return
-                            }
-                            publishResult(
-                                restoreTakeVocabulary(outcome.text, takePreferences),
-                                outcome.engine,
-                                outcome.latencyMs,
-                                outcome.reason,
-                                outcome.statusCode,
-                                PolishContext.from(takePreferences.policy),
-                            )
-                        }
-
-                        // v1 answers are never produced for a v2 request. If one ever arrives it is an
-                        // engine defect, and the session still fails open to the deterministic text.
-                        override fun onResult(text: String?, engine: String?, latencyMs: Long) {
-                            if (claimPolish(requestId)) {
-                                defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to take.takeId, "shape" to "v1_result"))
-                                publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
-                            }
-                        }
-
-                        override fun onError(message: String?) {
-                            if (claimPolish(requestId)) {
-                                defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to take.takeId, "shape" to "v1_error"))
-                                publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
-                            }
-                        }
-                    },
-                )
-            } catch (error: Exception) {
-                log.error("Unable to call polish service", error)
-                // The service can throw while alive, so the call itself is reported; a disconnect that
-                // follows shares the once gate and raises nothing more (#234).
-                if (claimPolish(requestId)) {
-                    reportPolishFailure(AppDefect.PolishCallFailed)
-                    publishFallback(rawText, takePreferences, PolishReason.CALL_FAILED)
-                }
-            }
-            // A cancel that landed between the ledger open and the engine's registration found nothing to
-            // cancel on the engine. Now the request is registered, so send it again; on a delivered or
-            // never-registered id the engine treats it as a no-op. A read, never a claim: on a normal day
-            // the ledger is still open here and must stay open for the outcome.
-            if (polishLedger.openId != requestId) runCatching { service?.cancel(requestId) }
-        }
+        checkNotNull(polish).prepare(rawText, sessionPreferences)
     }
 
-    /**
-     * The session owner's own fallback, published under the deterministic label with the reason
-     * logged by name. Closes the ledger and cancels the open request first, so a late engine outcome
-     * cannot be accepted after it and an abandoned cloud call does not run on.
-     */
-    private fun publishFallback(rawText: String, takePreferences: SessionPreferences, reason: PolishReason) {
-        cancelOpenPolishRequest()
-        log.warn("Polish fell back on the session owner: reason=$reason")
-        publishResult(
-            deterministicFallback(rawText, takePreferences),
-            PolishEngineLabels.DETERMINISTIC,
-            0,
-            reason,
-            0,
-            PolishContext.from(takePreferences.policy),
-        )
-    }
-
-    /**
-     * The same deterministic pipeline the engine runs with polish off, so the text a user gets
-     * cannot depend on which side failed (issue #69; the regex polisher that used to run here
-     * capitalised sentences and appended a period the engine never did).
-     */
-    private fun deterministicFallback(
-        rawText: String,
-        takePreferences: SessionPreferences,
-    ): String {
-        val prepared = restoreTakeVocabulary(rawText, takePreferences)
-        // The engine resolves the same answer on its own side. Detecting here too is what keeps this
-        // terminal from being the one that still applies English rules to foreign words when the engine
-        // is the side that failed (#107); the alternative was a new AIDL transaction to carry it across,
-        // which `workflow-process.md` RULE: tier-routing classifies as REFACTOR for a limb feature.
-        val cleaned = PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)
-        return restoreTakeVocabulary(cleaned, takePreferences)
-    }
-
-    /**
-     * Closes the ledger and cancels exactly the request that was open, if any. Called as every
-     * terminal transition BEGINS, before the wait for pending History work, and again from
-     * the unbind as an idempotent backstop.
-     */
-    private fun cancelOpenPolishRequest() {
-        val requestId = polishLedger.close() ?: return
-        runCatching { pipeline.polish?.cancel(requestId) }
-            .onFailure { error -> log.warn("Unable to cancel polish request $requestId: ${error.javaClass.simpleName}") }
-    }
-
-    private fun restoreTakeVocabulary(text: String, preferences: SessionPreferences): String {
-        val restored = preferences.matcher.restore(text)
-        return if (TextSafety.isSafe(text, restored)) restored else text
+    /** The controller's text, published: the engine's answer, or the deterministic fallback under its label. */
+    private fun publishPrepared(prepared: PreparedText) = when (prepared) {
+        is PreparedText.Polished ->
+            publishResult(prepared.text, prepared.engine, prepared.latencyMs, prepared.reason, prepared.statusCode, prepared.context)
+        is PreparedText.Fallback ->
+            publishResult(prepared.text, PolishEngineLabels.DETERMINISTIC, 0, prepared.reason, 0, prepared.context)
     }
 
     /**
      * The one place a polish outcome becomes a History row and, when it did not do its job, a sentence
-     * (#77). Two routes reach it, the outcome callback and `publishFallback`; the facts are derived once
+     * (#77). Two routes reach it through [publishPrepared], an answer and a fallback; the facts are derived once
      * here. The History write is enqueued WITH the reservation (#115); the notice is posted before the
      * owner's continuation (the commit, the handoff) starts, so it precedes the delivery line when both
      * fire. The row and the delivery are [SessionFinalizer]'s; the reservation and the commits are this
@@ -1372,6 +1110,7 @@ internal class DictationSessionCoordinator(
      * and cancelled on the engine, and the submitter re-sends that cancel once the engine has registered).
      */
     private fun cancelProcessing() {
+        var closed: Long? = null
         val cancel = synchronized(polishSubmissionLock) {
             // The reservation IS the publication check: a publication already holding the ending makes
             // this cancel too late, exactly as the old flag did, and a cancel that wins keeps a later
@@ -1379,10 +1118,12 @@ internal class DictationSessionCoordinator(
             if (state.get() != SessionState.PROCESSING) return
             val reserved = take.arbiter.reserve(Claimants.CANCEL) ?: return
             state.set(SessionState.CANCELLING)
-            log.log("Cancelled while processing; open polish request: ${polishLedger.openId != null}")
-            cancelOpenPolishRequest()
+            log.log("Cancelled while processing; open polish request: ${polish?.openRequest == true}")
+            closed = polish?.closeOpen()
             reserved
         }
+        // The engine hears the cancel after the lock is released (#237).
+        closed?.let { requestId -> polish?.sendCancel(requestId) }
         surface.showProcessing()
         insertion.releasePinnedTarget()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
@@ -1445,7 +1186,7 @@ internal class DictationSessionCoordinator(
 
     /** Tears the take down as a failure; says [line] when there is one. Teardown never depends on copy. */
     private fun announceError(line: String?) {
-        cancelOpenPolishRequest()
+        polish?.cancelOpen()
         surface.showProcessing()
         insertion.releasePinnedTarget()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
@@ -1462,14 +1203,14 @@ internal class DictationSessionCoordinator(
 
     private fun finishSession() {
         if (state.getAndSet(SessionState.FINISHING) == SessionState.FINISHING) return
-        cancelOpenPolishRequest()
+        polish?.cancelOpen()
         surface.showProcessing()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
         // The take's History writes are on the application's queue, in order; nothing here waits for
         // them (#115). The Service may stop while the last of them is still landing.
         scope.launch {
             host.postToMain {
-                cancelOpenPolishRequest()
+                polish?.cancelOpen()
                 // Both subscriptions go with the binding; nothing is called on the capture process here,
                 // which may be the unresponsive process this take just ended over (#115).
                 capture.disarm()
@@ -1536,7 +1277,7 @@ internal class DictationSessionCoordinator(
         // Both delayed callbacks go now, on main, before any blocking cleanup: a bound firing into a
         // destroyed owner would act on a Service that is gone (#115 review round 1, F4).
         capture.disarm()
-        cancelOpenPolishRequest()
+        polish?.cancelOpen()
         val sessionWasOpen = destroyedState == SessionState.STARTING ||
             destroyedState == SessionState.RECORDING ||
             destroyedState == SessionState.PROCESSING ||
@@ -1557,7 +1298,7 @@ internal class DictationSessionCoordinator(
         // gets neither, and the OS or the user ends it); the bindings go now, on main, with nothing waited
         // for.
         if (sessionWasOpen) pipeline.stopAudioService()
-        cancelOpenPolishRequest()
+        polish?.cancelOpen()
         pipeline.unbind()
         // No further command is accepted; the stop above, if queued, still runs on the lane's own thread.
         capture.shutdown()

@@ -38,13 +38,12 @@ import kotlinx.coroutines.launch
 
 @Composable
 internal fun EnviousWisprApp(
-    uiState: EnviousWisprUiState,
-    providerDiscovery: ProviderDiscoveryUiState,
+    state: AppUiState,
     licenseNotices: String,
     actions: AppActions,
 ) {
     val context = LocalContext.current
-    if (uiState.loading) {
+    if (state.loading) {
         Surface(Modifier.fillMaxSize()) {
             Box(contentAlignment = Alignment.Center) {
                 Text("Preparing EnviousWispr", style = MaterialTheme.typography.titleMedium)
@@ -55,18 +54,23 @@ internal fun EnviousWisprApp(
 
     ModelWorkReadinessObserver(actions.shell.onRefreshReadiness)
 
-    if (uiState.shouldShowOnboarding) {
+    val preferences = state.shell.preferences
+    val readiness = state.readiness.readiness
+    val autoPaste = state.readiness.autoPaste
+    val providerSettings = state.polish
+
+    if (state.shouldShowOnboarding) {
         OnboardingScreen(
-            step = uiState.preferences.onboardingStep,
-            readiness = uiState.readiness,
-            autoPaste = uiState.autoPaste,
+            step = preferences.onboardingStep,
+            readiness = readiness,
+            autoPaste = autoPaste,
             onStepChange = actions.onboarding.onStep,
             onDismiss = actions.onboarding.onDismiss,
             onRequestMicrophone = actions.permissions.onRequestMicrophone,
             onRequestNotifications = actions.permissions.onRequestNotifications,
             onOpenAccessibility = actions.permissions.onOpenAccessibility,
             onComplete = actions.onboarding.onComplete,
-            look = uiState.preferences.bubbleLook,
+            look = preferences.bubbleLook,
         )
         return
     }
@@ -93,11 +97,11 @@ internal fun EnviousWisprApp(
     val closePages = { settingsPageName = null }
     BackHandler(enabled = settingsPage != null, onBack = closePages)
 
-    LaunchedEffect(uiState.providerSettings.writeSequence, uiState.providerSettings.message, destination) {
-        val decision = PolishSnackbarPolicy.decide(lastShownWriteSequence, uiState.providerSettings.writeSequence, uiState.providerSettings.message)
+    LaunchedEffect(providerSettings.writeSequence, providerSettings.message, destination) {
+        val decision = PolishSnackbarPolicy.decide(lastShownWriteSequence, providerSettings.writeSequence, providerSettings.message)
         if (decision.show && destination == AppDestination.Polish) {
             lastShownWriteSequence = decision.remember
-            snackbarHostState.showSnackbar(uiState.providerSettings.message)
+            snackbarHostState.showSnackbar(providerSettings.message)
         } else if (!decision.show) {
             lastShownWriteSequence = decision.remember
         }
@@ -113,7 +117,7 @@ internal fun EnviousWisprApp(
         val s1Adoption by WorkManager.getInstance(context)
             .getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.adoptionWorkName(ModelManifest.s1))
             .collectAsStateWithLifecycle(emptyList())
-        workUiState(preferredModelWork(s1Work, s1Adoption), uiState.readiness.polishModelReady, ModelManifest.s1, context)
+        workUiState(preferredModelWork(s1Work, s1Adoption), readiness.polishModelReady, ModelManifest.s1, context)
     } else {
         ModelUiState(label = "", health = ModelHealth.UNKNOWN)
     }
@@ -142,13 +146,13 @@ internal fun EnviousWisprApp(
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 actions.shell.onStartDictation()
             },
-            // `uiState.providerSettings` starts at its placeholder default (mode = OFFLINE_S1) and only
+            // `providerSettings` starts at its placeholder default (mode = OFFLINE_S1) and only
             // becomes real once the ViewModel's async initial load lands (`loading` flips to false) —
             // showing the badge before then would name a mode that may not be what is actually saved,
             // contradicting its own persisted-state contract (real bug caught in code review,
             // 2026-09-01, the badge-side twin of the same gate `PolishScreen` uses for its own body).
-            topBarBadge = if (destination == AppDestination.Polish && !uiState.providerSettings.loading) {
-                { PolishStatusBadge(polishStatusChip(uiState.providerSettings, polishS1State)) }
+            topBarBadge = if (destination == AppDestination.Polish && !providerSettings.loading) {
+                { PolishStatusBadge(polishStatusChip(providerSettings, polishS1State)) }
             } else null,
         ) { contentModifier ->
             AnimatedContent(
@@ -160,10 +164,10 @@ internal fun EnviousWisprApp(
                 when (current) {
                     is Screen.Tab -> when (current.destination) {
                         AppDestination.History -> HistoryScreen(
-                            transcripts = uiState.history,
-                            totalCount = uiState.historyTotalCount,
-                            search = uiState.historySearch,
-                            error = uiState.historyError,
+                            transcripts = state.history.transcripts,
+                            totalCount = state.history.totalCount,
+                            search = state.history.search,
+                            error = state.history.error,
                             expandedId = expandedTranscriptId,
                             onExpandedChange = { expandedTranscriptId = it },
                             onSearchChange = actions.history.onSearchChange,
@@ -172,11 +176,11 @@ internal fun EnviousWisprApp(
                             onDeleteAll = actions.history.onDeleteAll,
                         )
                         AppDestination.Dictionary -> DictionaryScreen(
-                            terms = uiState.customTerms,
-                            allTerms = uiState.allCustomTerms,
-                            search = uiState.customTermSearch,
-                            message = uiState.customTermMessage,
-                            error = uiState.customTermError,
+                            terms = state.dictionary.terms,
+                            allTerms = state.dictionary.allTerms,
+                            search = state.dictionary.search,
+                            message = state.dictionary.message,
+                            error = state.dictionary.error,
                             onSearchChange = actions.dictionary.onSearchChange,
                             onAdd = actions.dictionary.onAdd,
                             onEdit = actions.dictionary.onEdit,
@@ -185,8 +189,8 @@ internal fun EnviousWisprApp(
                             onImport = actions.dictionary.onImport,
                         )
                         AppDestination.Transcription -> TranscriptionScreen(
-                            readiness = uiState.readiness,
-                            preferences = uiState.preferences,
+                            readiness = readiness,
+                            preferences = preferences,
                             onRefreshReadiness = actions.shell.onRefreshReadiness,
                             onFillerRemovalChanged = actions.transcription.onFillerRemovalChanged,
                             onEmojiFormatterChanged = actions.transcription.onEmojiFormatterChanged,
@@ -195,9 +199,9 @@ internal fun EnviousWisprApp(
                             onSilencePauseSecondsChanged = actions.transcription.onSilencePauseSecondsChanged,
                         )
                         AppDestination.Polish -> PolishScreen(
-                            settings = uiState.providerSettings,
+                            settings = providerSettings,
                             s1State = polishS1State,
-                            discovery = providerDiscovery,
+                            discovery = state.discovery,
                             onSetMode = actions.polish.onSetMode,
                             onSetS1Control = actions.polish.onSetS1Control,
                             onSave = { provider, model, apiKey, discoverySequence ->
@@ -213,13 +217,13 @@ internal fun EnviousWisprApp(
                     is Screen.Page -> when (current.page) {
                         SettingsPage.WhatsNew -> WhatsNewPage()
                         SettingsPage.Appearance -> AppearancePage(
-                            preferences = uiState.preferences,
+                            preferences = preferences,
                             onDynamicColorChanged = actions.appearance.onDynamicColorChanged,
                             onBubbleLookChanged = actions.appearance.onBubbleLookChanged,
                         )
                         SettingsPage.Microphone -> MicrophonePage(
-                            readiness = uiState.readiness,
-                            preferences = uiState.preferences,
+                            readiness = readiness,
+                            preferences = preferences,
                             onRequestMicrophone = actions.permissions.onRequestMicrophone,
                             onInputDevicePickChanged = actions.microphone.onInputDevicePickChanged,
                             onShowBluetoothTipsChanged = actions.microphone.onShowBluetoothTipsChanged,
@@ -227,14 +231,14 @@ internal fun EnviousWisprApp(
                         )
                         SettingsPage.Sounds -> SoundsPage()
                         SettingsPage.Clipboard -> ClipboardPage(
-                            preferences = uiState.preferences,
+                            preferences = preferences,
                             onAutoCopyChanged = actions.clipboard.onAutoCopyChanged,
                             onRestoreClipboardChanged = actions.clipboard.onRestoreClipboardChanged,
                             onSmartInsertionChanged = actions.clipboard.onSmartInsertionChanged,
                         )
                         SettingsPage.Permissions -> PermissionsPage(
-                            readiness = uiState.readiness,
-                            autoPaste = uiState.autoPaste,
+                            readiness = readiness,
+                            autoPaste = autoPaste,
                             onContinueSetup = actions.onboarding.onResume,
                             onRequestMicrophone = actions.permissions.onRequestMicrophone,
                             onRequestNotifications = actions.permissions.onRequestNotifications,

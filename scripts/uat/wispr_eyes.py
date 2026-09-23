@@ -3231,9 +3231,12 @@ def stage_uat_fixture(sentence):
     """Write the real-boundary fixture into the target's cache ONLY where none exists (#215).
 
     Rendered locally at 16 kHz; streamed with `adb exec-in` into a unique temporary name; admitted only
-    after a regular-file, exact-size read-back; published with `ln`, which fails if the final name exists,
-    so a fixture already there, or one that appears meanwhile, is never touched; read back again at the
-    final name; the temporary name is removed on every path.
+    after a regular-file, exact-size read-back. Published in one device shell: `set -C` makes `true >
+    final` refuse a name that exists (exit 3), so a fixture already there, or one that appears meanwhile,
+    is never touched; only then is the temporary copied in with `>|` (exit 4 on failure). Hard links are
+    not an option: SELinux denies `link` to `runas_app` on app data (emulator API 36, 2026-09-22). The
+    final name is read back again; a final name THIS call created and could not fill whole is removed;
+    the temporary name is removed on every path.
     """
     device()
     if _remote_size(f"cache/{UAT_FIXTURE}") is not None:
@@ -3247,12 +3250,22 @@ def stage_uat_fixture(sentence):
         _exec_in(["run-as", PACKAGE, "sh", "-c", f"cat > {temporary}"], local)
         if _remote_size(temporary) != size:
             raise Blocked(f"the fixture did not arrive whole ({_remote_size(temporary)} of {size} bytes); nothing was staged")
-        linked, why = _adb(f"run-as {PACKAGE} ln {temporary} cache/{UAT_FIXTURE}", check=False)
-        if linked != 0:
-            return (f"a fixture appeared at {PACKAGE}/cache/{UAT_FIXTURE} while staging; it was left untouched and "
+        final = f"cache/{UAT_FIXTURE}"
+        publish = f"set -C; true > {final} || exit 3; cat {temporary} >| {final} || exit 4"
+        published, why = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(publish)}", check=False)
+        if published == 3:
+            return (f"a fixture appeared at {PACKAGE}/{final} while staging; it was left untouched and "
                     f"nothing was staged ({why.strip()[-120:]})")
-        if _remote_size(f"cache/{UAT_FIXTURE}") != size:
-            raise Blocked(f"the published fixture at {PACKAGE}/cache/{UAT_FIXTURE} does not read back at {size} bytes")
+        if published == 4:
+            _adb(f"run-as {PACKAGE} rm -f {final}", check=False)
+            raise Blocked(f"the fixture could not be copied into {PACKAGE}/{final}; the name this call created "
+                          f"was removed ({why.strip()[-120:]})")
+        if published != 0:
+            raise Blocked(f"the fixture could not be published at {PACKAGE}/{final} (exit {published}: {why.strip()[-120:]})")
+        if _remote_size(final) != size:
+            _adb(f"run-as {PACKAGE} rm -f {final}", check=False)
+            raise Blocked(f"the published fixture at {PACKAGE}/{final} did not read back at {size} bytes; "
+                          "the name this call created was removed")
         return f"staged {size} bytes ({size // (FIXTURE_SAMPLE_RATE * FIXTURE_BYTES_PER_SAMPLE):.0f} s) at {PACKAGE}/cache/{UAT_FIXTURE}"
     finally:
         _adb(f"run-as {PACKAGE} rm -f {temporary}", check=False)

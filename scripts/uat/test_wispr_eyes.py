@@ -1807,7 +1807,7 @@ Group main:
         rendered["bytes"] = data
         return path
 
-    def make_fs(final=None, arrive_short=False, race=False):
+    def make_fs(final=None, arrive_short=False, race=False, copy_fails=False, copy_short=False):
         fs = {"files": {} if final is None else {"cache/enviouswispr-uat.pcm": final}, "ops": []}
 
         def fake_adb(command, timeout=60, check=True, serial=None):
@@ -1817,15 +1817,19 @@ Group main:
                 fs["ops"].append(("readback", path))
                 data = fs["files"].get(path)
                 return (0, f"{len(data)}\n") if isinstance(data, bytes) else (1, "")
-            if " ln " in command:
-                parts = command.split(" ln ", 1)[1].split()
-                src, dst = parts[0], parts[1]
-                fs["ops"].append(("ln", src, dst))
+            if "set -C" in command:
+                script = _shlex.split(command.split(" sh -c ", 1)[1])[0]
+                dst = script.split("true > ", 1)[1].split(" ")[0]
+                src = script.split("cat ", 1)[1].split(" ")[0]
+                fs["ops"].append(("publish", src, dst))
                 if race:
                     fs["files"][dst] = b"theirs"
                 if dst in fs["files"]:
-                    return 1, "ln: File exists"
-                fs["files"][dst] = fs["files"][src]
+                    return 3, "sh: can't create: File exists"
+                fs["files"][dst] = b""
+                if copy_fails:
+                    return 4, "cat: write error"
+                fs["files"][dst] = fs["files"][src][:-2] if copy_short else fs["files"][src]
                 return 0, ""
             if " rm -f " in command:
                 path = command.split(" rm -f ", 1)[1].strip()
@@ -1854,8 +1858,8 @@ Group main:
     kinds = [op[0] for op in fs["ops"]]
     temp = next(op[1] for op in fs["ops"] if op[0] == "exec-in")
     check("staging streams the exact rendered bytes", fs.get("sent") == rendered["bytes"])
-    check("a successful stage: temp write, temp read-back, ln to the final name, final read-back, temp removal, in order",
-          kinds == ["readback", "exec-in", "readback", "ln", "readback", "rm"] and fs["ops"][3] == ("ln", temp, "cache/enviouswispr-uat.pcm")
+    check("a successful stage: temp write, temp read-back, no-overwrite publish, final read-back, temp removal, in order",
+          kinds == ["readback", "exec-in", "readback", "publish", "readback", "rm"] and fs["ops"][3] == ("publish", temp, "cache/enviouswispr-uat.pcm")
           and fs["ops"][4] == ("readback", "cache/enviouswispr-uat.pcm") and fs["ops"][5] == ("rm", temp)
           and fs["files"].get("cache/enviouswispr-uat.pcm") == rendered["bytes"] and temp not in fs["files"] and line.startswith("staged"),
           (fs["ops"], line))
@@ -1863,7 +1867,7 @@ Group main:
     fs, eyes._adb, eyes._exec_in = make_fs(final=theirs)
     line = eyes.stage_uat_fixture("x")
     check("an existing fixture is never touched and nothing is sent", fs["files"]["cache/enviouswispr-uat.pcm"] == theirs
-          and not any(op[0] in ("exec-in", "ln") for op in fs["ops"]) and "left untouched" in line, (fs["ops"], line))
+          and not any(op[0] in ("exec-in", "publish") for op in fs["ops"]) and "left untouched" in line, (fs["ops"], line))
     fs, eyes._adb, eyes._exec_in = make_fs(race=True)
     line = eyes.stage_uat_fixture("x")
     check("a fixture that appears mid-stage is left untouched and the temporary name is removed",
@@ -1876,7 +1880,15 @@ Group main:
     except eyes.Blocked:
         check("a short transfer refuses, publishes nothing and removes the temporary name",
               "cache/enviouswispr-uat.pcm" not in fs["files"] and not any(k.startswith("cache/.") for k in fs["files"])
-              and not any(op[0] == "ln" for op in fs["ops"]), fs["ops"])
+              and not any(op[0] == "publish" for op in fs["ops"]), fs["ops"])
+    for label, kwargs in (("a failed copy", {"copy_fails": True}), ("a short copy", {"copy_short": True})):
+        fs, eyes._adb, eyes._exec_in = make_fs(**kwargs)
+        try:
+            eyes.stage_uat_fixture("x")
+            check(f"{label} refuses", False, "it staged")
+        except eyes.Blocked:
+            check(f"{label} refuses and removes both the final name it created and the temporary name",
+                  not fs["files"], fs["ops"])
     for name, fn in stage_originals.items():
         setattr(eyes, name, fn)
 

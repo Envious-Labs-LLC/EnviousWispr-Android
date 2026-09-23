@@ -1808,13 +1808,16 @@ Group main:
         return path
 
     def make_fs(final=None, arrive_short=False, race=False, copy_fails=False, copy_short=False,
-                create_denied=False, rm_fails=(), presence_unknown=False, interrupt=False):
+                create_denied=False, rm_fails=(), presence_unknown=False, interrupt=False,
+                presence_raises=False, rm_raises=False, publish_raises=False, final_readback_raises=False):
         fs = {"files": {} if final is None else {"cache/enviouswispr-uat.pcm": final}, "ops": []}
 
         def fake_adb(command, timeout=60, check=True, serial=None):
             import shlex as _shlex
             if "test -f " in command:
                 path = command.split("test -f ", 1)[1].split(" ")[0]
+                if final_readback_raises and path == "cache/enviouswispr-uat.pcm" and any(op[0] == "publish" for op in fs["ops"]):
+                    raise eyes.Blocked("the phone returned no status")
                 fs["ops"].append(("readback", path))
                 data = fs["files"].get(path)
                 return (0, f"{len(data)}\n") if isinstance(data, bytes) else (1, "")
@@ -1823,6 +1826,9 @@ Group main:
                 dst = script.split("true > ", 1)[1].split(" ")[0]
                 src = script.split("cat ", 1)[1].split(" ")[0]
                 fs["ops"].append(("publish", src, dst))
+                if publish_raises:
+                    fs["files"][dst] = fs["files"][src][:10]
+                    raise eyes.Blocked("adb could not reach emulator-5554: connection reset")
                 if race:
                     fs["files"][dst] = b"theirs"
                 if dst in fs["files"]:
@@ -1837,6 +1843,8 @@ Group main:
             if " rm -f " in command:
                 path = command.split(" rm -f ", 1)[1].strip()
                 fs["ops"].append(("rm", path))
+                if rm_raises:
+                    raise eyes.Blocked("adb could not reach emulator-5554: offline")
                 if any(path.startswith(stuck) for stuck in rm_fails):
                     return 1, "rm: Permission denied"
                 fs["files"].pop(path, None)
@@ -1844,6 +1852,8 @@ Group main:
             if "then echo present" in command:
                 if presence_unknown:
                     return 1, ""
+                if presence_raises:
+                    raise eyes.Blocked("the phone returned no status")
                 path = command.split("[ -e ", 1)[1].split(" ]", 1)[0]
                 return 0, "present\n" if path in fs["files"] else "absent\n"
             return 0, ""
@@ -1903,6 +1913,35 @@ Group main:
     except Interrupted:
         check("an interrupt after the temporary write removes the temporary before propagating",
               not fs["files"] and fs["ops"][-1][0] == "rm", fs["ops"])
+    fs, eyes._adb, eyes._exec_in = make_fs(create_denied=True, presence_raises=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a presence probe that raises is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a presence probe that raises reads as could-not-tell, never as absent",
+              "could not tell" in str(refusal) and "no fixture is there" not in str(refusal), str(refusal))
+    fs, eyes._adb, eyes._exec_in = make_fs(copy_fails=True, rm_raises=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a removal that raises is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a removal that raises names the final name and the temporary as possibly remaining",
+              "cache/enviouswispr-uat.pcm may remain (rm raised" in str(refusal) and "temporary" in str(refusal), str(refusal))
+    fs, eyes._adb, eyes._exec_in = make_fs(publish_raises=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a publish that loses its answer is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a publish that loses its answer names the final name, leaves it, and removes the temporary",
+              "indeterminate publish (presence: present)" in str(refusal)
+              and list(fs["files"]) == ["cache/enviouswispr-uat.pcm"], (str(refusal), fs["ops"]))
+    fs, eyes._adb, eyes._exec_in = make_fs(final_readback_raises=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a final read-back that raises is BLOCKED", False, line)
+    except eyes.Blocked as refusal:
+        check("a final read-back that raises removes the final name this call created and the temporary",
+              "could not be read back" in str(refusal) and not fs["files"], (str(refusal), fs["ops"]))
     fs, eyes._adb, eyes._exec_in = make_fs(create_denied=True, presence_unknown=True)
     try:
         line = eyes.stage_uat_fixture("x")

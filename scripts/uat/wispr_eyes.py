@@ -3227,11 +3227,19 @@ def _remote_size(path):
     return int(size) if code == 0 and size.isdigit() else None
 
 
+# What a device call raises when the device, not the caller, failed: no transport, no status, a timeout.
+_DEVICE_ERRORS = (Blocked, OSError, subprocess.SubprocessError)
+
+
 def _remote_presence(path):
     """'present' or 'absent' for any name (file, directory or link) in the target's private storage; None
-    when the device could not tell, which callers never read as absent."""
+    when the device could not tell (including a device call that raised), which callers never read as
+    absent."""
     probe = f"if [ -e {path} ] || [ -L {path} ]; then echo present; else echo absent; fi"
-    code, out = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(probe)}", check=False)
+    try:
+        code, out = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(probe)}", check=False)
+    except _DEVICE_ERRORS:
+        return None
     answer = out.strip()
     return answer if code == 0 and answer in ("present", "absent") else None
 
@@ -3239,10 +3247,14 @@ def _remote_presence(path):
 def _remove_owned(path):
     """Remove a name THIS process created and prove it is gone: None when absent afterwards, otherwise a
     sentence saying it may remain."""
-    removed, why = _adb(f"run-as {PACKAGE} rm -f {path}", check=False)
+    try:
+        removed, why = _adb(f"run-as {PACKAGE} rm -f {path}", check=False)
+        detail = f"rm exit {removed}: {why.strip()[-120:] or 'no message'}"
+    except _DEVICE_ERRORS as error:
+        detail = f"rm raised: {error}"
     if _remote_presence(path) == "absent":
         return None
-    return f"{PACKAGE}/{path} may remain (rm exit {removed}: {why.strip()[-120:] or 'no message'})"
+    return f"{PACKAGE}/{path} may remain ({detail})"
 
 
 def stage_uat_fixture(sentence):
@@ -3273,7 +3285,15 @@ def stage_uat_fixture(sentence):
         if _remote_size(temporary) != size:
             raise Blocked(f"the fixture did not arrive whole ({_remote_size(temporary)} of {size} bytes); nothing was staged")
         script = f"set -C; true > {final} || exit 3; cat {temporary} >| {final} || exit 4"
-        published, why = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(script)}", check=False)
+        try:
+            published, why = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(script)}", check=False)
+        except _DEVICE_ERRORS as error:
+            # The shell may have created or part-filled the final name before the answer was lost. Who made
+            # it cannot be told, so it is named, never removed.
+            presence = _remote_presence(final) or "could not tell"
+            raise Blocked(f"the publish to {PACKAGE}/{final} gave no answer ({error}); a final name may remain "
+                          f"after an indeterminate publish (presence: {presence}) and was not removed, because "
+                          "this call cannot tell who made it; check it before trusting a run") from error
         detail = why.strip()[-120:] or "no message"
         if published == 3:
             presence = _remote_presence(final)
@@ -3290,7 +3310,13 @@ def stage_uat_fixture(sentence):
                           + (left or "the name this call created was removed"))
         if published != 0:
             raise Blocked(f"the fixture could not be published at {PACKAGE}/{final} (exit {published}: {detail})")
-        if _remote_size(final) != size:
+        try:
+            arrived = _remote_size(final)
+        except _DEVICE_ERRORS as error:
+            left = _remove_owned(final)
+            raise Blocked(f"the published fixture at {PACKAGE}/{final} could not be read back ({error}); "
+                          + (left or "the name this call created was removed")) from error
+        if arrived != size:
             left = _remove_owned(final)
             raise Blocked(f"the published fixture at {PACKAGE}/{final} did not read back at {size} bytes; "
                           + (left or "the name this call created was removed"))

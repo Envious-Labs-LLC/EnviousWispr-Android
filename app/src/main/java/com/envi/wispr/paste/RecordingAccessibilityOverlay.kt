@@ -357,8 +357,8 @@ internal class RecordingAccessibilityOverlay(
 
     /**
      * The usable rectangle: the screen minus the bars it must not sit under. The keyboard is not an
-     * inset here; it is the service's answer, delivered through [keyboardBounds], because only the
-     * accessibility windows list says where a docked keyboard ends.
+     * inset here; the bubble host supplies its top through [keyboardBounds], using the accessibility
+     * windows list to find a docked keyboard.
      */
     private fun readBounds(): BubbleBounds {
         val metrics = windowManager.currentWindowMetrics

@@ -638,10 +638,11 @@ internal class AccessibilityInsertionRunner(
      * **What the two teardown reasons can honestly deliver, and the limit that comes with one calm
      * line.** The runner copies the words, enqueues the History outcome and requests a Toast while the
      * service is alive. An interrupt runs on a live service and the Toast is delivered normally; an
-     * immediate process kill after a destroy may lose it. Nothing durable is posted, deliberately:
-     * macOS posts nothing durable for a clipboard fallback, and the words are on the clipboard and in
-     * History either way, so what can be lost is the sentence rather than the transcript. A low-memory kill that never calls `onDestroy`
-     * at all delivers nothing, and nothing here can change that: the row is recovered as
+     * immediate process kill after a destroy may lose it. No durable notification is posted, as macOS
+     * posts none for a clipboard fallback: the Toast may be lost; the clipboard result records whether
+     * copying succeeded, and History writes for a saved transcript use the application queue. A
+     * low-memory kill that never calls `onDestroy` at all delivers nothing, and nothing here can change
+     * that: the row is recovered as
      * `INSERTION_INTERRUPTED` by `TranscriptDao.recoverStaleReadyRows` on the next start, which is the
      * sentence that claims no destination it cannot know.
      */

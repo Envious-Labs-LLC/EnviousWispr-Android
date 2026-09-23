@@ -54,8 +54,9 @@ class WarmUpOffMainTest {
         rig.endings.awaitOne()
         rig.host.awaitStopped()
         val warmedBefore = polish.warmed.size
+        val skipsBefore = rig.log.count("Polish warm-up not sent: take")
         rig.pipeline.reconnectPolish()
-        rig.log.awaitLine("Polish warm-up not sent: take")
+        rig.log.awaitLine("Polish warm-up not sent: take", skipsBefore + 1)
         assertEquals("no warm-up for a take that already ended", warmedBefore, polish.warmed.size)
     }
 
@@ -87,9 +88,13 @@ class WarmUpOffMainTest {
     /** Row 3b (setup). MUTATION: send the setup warm-up outside the IO block, or never cancel it on stop. */
     @Test fun setupWarmsOnIoAndCancelsOnStop() {
         val warmUp = read("ui/EngineWarmUp.kt")
-        val io = warmUp.substringAfter("withContext(Dispatchers.IO) {").substringBefore("DebugLogger.log(TAG, \"Polish engine warming for setup\")")
+        // The IO block alone: from its opening to its own closing brace, indented as the block's opener.
+        val io = warmUp.substringAfter("withContext(Dispatchers.IO) {").substringBefore("\n                }\n", "")
         assertTrue("the call itself sits inside the IO block", io.contains("service.warmUpWithPolicy(policy)"))
         assertTrue("and checks the binding is still wanted", io.contains("if (!polishBound) return@withContext"))
-        assertTrue("stop cancels the warm-up job", body(warmUp, "fun stop()").contains("warming?.cancel()"))
+        val stop = body(warmUp, "fun stop()")
+        assertTrue("stop cancels the warm-up job", stop.contains("warming?.cancel()"))
+        assertTrue("stop clears the flag before it cancels", stop.indexOf("polishBound = false") in 0 until stop.indexOf("warming?.cancel()"))
+        assertTrue("the flag is volatile", warmUp.contains("@Volatile private var polishBound"))
     }
 }

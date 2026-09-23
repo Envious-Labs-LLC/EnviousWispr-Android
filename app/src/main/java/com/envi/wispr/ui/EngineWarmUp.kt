@@ -33,7 +33,8 @@ import kotlinx.coroutines.withContext
  */
 internal class EngineWarmUp(private val context: Context, private val scope: CoroutineScope) {
     private var speechBound = false
-    private var polishBound = false
+    /** Written on main, read by the warm-up on IO (#236). */
+    @Volatile private var polishBound = false
     /** Setup's warm-up job (#236): cancelled on [stop], so a warm-up is never sent for a binding setup released. */
     private var warming: Job? = null
 
@@ -48,6 +49,7 @@ internal class EngineWarmUp(private val context: Context, private val scope: Cor
     private val polish = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = IPolishService.Stub.asInterface(binder)
+            warming?.cancel()
             warming = scope.launch {
                 // The call itself on IO, never on the scope's main dispatcher (#236): it is a synchronous
                 // transaction into `:polish`, and setup must not freeze on a stalled polish process.
@@ -77,12 +79,14 @@ internal class EngineWarmUp(private val context: Context, private val scope: Cor
 
     fun stop() {
         // Never waits for a call already in flight: a binder transaction cannot be interrupted (#236).
+        // Clear the flag first, so a warm-up that already left the policy read sees the release.
+        val wasPolishBound = polishBound
+        polishBound = false
         warming?.cancel()
         warming = null
         if (speechBound) runCatching { context.unbindService(speech) }
-        if (polishBound) runCatching { context.unbindService(polish) }
+        if (wasPolishBound) runCatching { context.unbindService(polish) }
         speechBound = false
-        polishBound = false
     }
 
     private companion object {

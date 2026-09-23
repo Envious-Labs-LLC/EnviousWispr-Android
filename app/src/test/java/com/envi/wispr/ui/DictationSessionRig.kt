@@ -202,19 +202,20 @@ internal class DictationSessionRig {
         }
 
         /**
-         * Waits for the subject to log a line containing [fragment]; the line is the subject's own signal.
+         * Waits for the subject to log [count] lines containing [fragment]; the line is the subject's own signal.
          * Woken by every append, never by a clock; the deadline only makes a regression fail instead of hang.
          */
-        fun awaitLine(fragment: String) {
+        fun awaitLine(fragment: String, count: Int = 1) {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
             synchronized(appended) {
-                while (lines.none { it.contains(fragment) }) {
+                while (count(fragment) < count) {
                     val left = deadline - System.nanoTime()
                     check(left > 0) { "no log line containing '$fragment'; lines: $lines" }
                     TimeUnit.NANOSECONDS.timedWait(appended, left)
                 }
             }
         }
+        fun count(fragment: String) = lines.count { it.contains(fragment) }
         override fun log(message: String) = append("I $message")
         override fun warn(message: String) = append("W $message")
         override fun error(message: String, throwable: Throwable?) = append("E $message")

@@ -1,6 +1,6 @@
 # Issue #216 — The session owner delegates capture and finalization — 2026-09-22
 
-GitHub issue: `#216`. Tier: REFACTOR (session ownership and both engines' callers move across files; behaviour unchanged). Status: DRAFT.
+GitHub issue: `#216`. Tier: REFACTOR (session ownership and both engines' callers move across files; behaviour unchanged). Status: APPROVED (coverage adopted; grounded round 1 adopted; round 2 PROCEED-AS-PLANNED).
 
 ## Preface — Lane + Hardware UAT declaration
 

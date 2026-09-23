@@ -209,7 +209,7 @@ class DictationSessionCoordinatorTest {
         rig.capture.awaitListener()
         rig.capture.silent = true
         val callsBefore = rig.capture.events.toList()
-        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+        rig.host.fireDelayed(CaptureSessionController.TAKE_SILENT_BOUND_MS)
 
         assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
@@ -232,7 +232,7 @@ class DictationSessionCoordinatorTest {
         rig.capture.silent = true
         rig.command(coordinator, DictationSessionService.ACTION_STOP)
         rig.capture.awaitStopRequested()
-        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+        rig.host.fireDelayed(CaptureSessionController.TAKE_SILENT_BOUND_MS)
 
         assertEquals(TerminalReason.CAPTURE_CLOSE_UNSAFE, rig.endings.awaitOne())
         rig.host.awaitStopped()
@@ -248,7 +248,7 @@ class DictationSessionCoordinatorTest {
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
         rig.capture.silent = true
-        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+        rig.host.fireDelayed(CaptureSessionController.TAKE_SILENT_BOUND_MS)
         assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
 
@@ -269,7 +269,7 @@ class DictationSessionCoordinatorTest {
         val first = rig.coordinator()
         startAndGoLive(first)
         rig.capture.silent = true
-        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+        rig.host.fireDelayed(CaptureSessionController.TAKE_SILENT_BOUND_MS)
         assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
         rig.onMain {}
@@ -303,17 +303,17 @@ class DictationSessionCoordinatorTest {
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
         rig.onMain {}
-        val armed = rig.host.delayed.filter { it.first == DictationSessionCoordinator.TAKE_SILENT_BOUND_MS }
+        val armed = rig.host.delayed.filter { it.first == CaptureSessionController.TAKE_SILENT_BOUND_MS }
         assertEquals("one bound armed", 1, armed.size)
         val before = armed.single().second
-        val postsBefore = rig.host.postsWithDelay(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+        val postsBefore = rig.host.postsWithDelay(CaptureSessionController.TAKE_SILENT_BOUND_MS)
         rig.capture.tick(5_000L)
         rig.onMain {}
         rig.onMain {}
-        val after = rig.host.delayed.filter { it.first == DictationSessionCoordinator.TAKE_SILENT_BOUND_MS }
+        val after = rig.host.delayed.filter { it.first == CaptureSessionController.TAKE_SILENT_BOUND_MS }
         assertEquals("still exactly one bound", 1, after.size)
         // Counted by the bound's own delay, so the live deadline's post cannot stand in for a re-arm.
-        assertEquals("the heartbeat cancelled the bound and posted it again", postsBefore + 1, rig.host.postsWithDelay(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS))
+        assertEquals("the heartbeat cancelled the bound and posted it again", postsBefore + 1, rig.host.postsWithDelay(CaptureSessionController.TAKE_SILENT_BOUND_MS))
         assertTrue(before === after.single().second)
         rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
         assertEquals(TerminalReason.CANCELLED_RECORDING, rig.endings.awaitOne())
@@ -398,7 +398,7 @@ class DictationSessionCoordinatorTest {
         coordinator.onCreated()
         rig.command(coordinator, DictationSessionService.ACTION_START)
         rig.capture.awaitRegistering()
-        rig.host.fireDelayed(DictationSessionCoordinator.TAKE_SILENT_BOUND_MS)
+        rig.host.fireDelayed(CaptureSessionController.TAKE_SILENT_BOUND_MS)
         assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
         gate.countDown()

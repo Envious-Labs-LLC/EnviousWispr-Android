@@ -287,7 +287,7 @@ def test_pick_one_groups():
     """Rows for the two #218 emulator-pass gaps: pick-one chips read as switches, and a doubled page name."""
     import tempfile
     import types
-    originals = {name: getattr(eyes, name) for name in ("_adb", "_JOURNAL", "ready", "time")}
+    originals = {name: getattr(eyes, name) for name in ("_adb", "_JOURNAL", "ready", "time", "reveal")}
     eyes._JOURNAL = Path(tempfile.mkdtemp()) / "restore.json"
     eyes._STATE["serial"] = "fixture"
     eyes._STATE["tree"] = None
@@ -326,7 +326,36 @@ def test_pick_one_groups():
             for entry in list(eyes._owed()):
                 eyes._settled_locked(entry, eyes._STATE["serial"])
 
-        # ---- choose() picks by name, journals the whole group, and puts it back by name ------------
+        # ---- choose() picks by name, journals the group, and puts it back by name ------------------
+        def pay_book():
+            """Run restore() over every debt in the book; the refusal, or None when all were paid."""
+            try:
+                with eyes._journal_locked():
+                    for entry in list(eyes._owed()):
+                        eyes._restore_one(entry)
+                        eyes._settled_locked(entry, eyes._STATE["serial"])
+            except eyes.Blocked as why:
+                return why
+            return None
+
+        def clear_book():
+            with eyes._journal_locked():
+                for entry in list(eyes._owed()):
+                    eyes._settled_locked(entry, eyes._STATE["serial"])
+
+        # A view that SCROLLS: rows listed in `view` are out of sight until reveal() brings them in, as
+        # on the phone. The fixture has no scrollable node, so reveal() is modelled rather than driven.
+        view = []
+        real_reveal = eyes.reveal
+
+        def scrolling_reveal(label, *args, **kwargs):
+            if label in view:
+                view.remove(label)
+            return real_reveal(label, *args, **kwargs)
+
+        eyes.reveal = scrolling_reveal
+        eyes._adb = chip_phone(state, presses, hidden=view)
+
         choose = getattr(eyes, "choose", None)
         check("there is a call that picks a group member by name", callable(choose))
         if callable(choose):
@@ -335,9 +364,9 @@ def test_pick_one_groups():
                   before == {"Casual": False, "Semi-casual": False, "Semi-formal": True, "Formal": False}, before)
             check("the pick moved to Casual", state["Casual"] and not state["Semi-formal"], state)
             owed = eyes._owed()
-            check("the debt is a choice debt naming the whole group, not a switch debt",
+            check("the debt is a choice debt naming the group and the pressed chip, not a switch debt",
                   [w for w, _ in owed] == ["choice"]
-                  and json.loads(owed[0][1]) == {"where": "AI Polish", "group": before}, owed)
+                  and json.loads(owed[0][1]) == {"where": "AI Polish", "group": before, "pressed": "Casual"}, owed)
             choose("Semi-formal", where="AI Polish")
             check("choosing the original back by name restores it",
                   state["Semi-formal"] and not state["Casual"], state)
@@ -346,25 +375,54 @@ def test_pick_one_groups():
             # A debt left by an interrupted run is paid from the book alone, by name.
             choose("Prose", where="AI Polish")
             check("an interrupted pick is owed", [w for w, _ in eyes._owed()] == ["choice"], eyes._owed())
-            with eyes._journal_locked():
-                for entry in list(eyes._owed()):
-                    eyes._restore_one(entry)
-                    eyes._settled_locked(entry, eyes._STATE["serial"])
-            check("restore puts Structure back on Lists by name", state["Lists"] and not state["Prose"], state)
+            check("restore puts Structure back on Lists by name",
+                  pay_book() is None and state["Lists"] and not state["Prose"] and eyes._owed() == [],
+                  (state, eyes._owed()))
 
-            # Chips that let several be on are found out by the press and put back, never left changed.
+            # Chips that let several be on: ONE press, then a refusal; restore() turns the pressed chip off.
             presses.clear()
             try:
                 choose("Hashtags", where="AI Polish")
                 check("a group that allows several on is refused as pick-one", False, "it accepted Hashtags")
             except eyes.Blocked as refusal:
                 check("a group that allows several on is refused as pick-one", "several" in str(refusal), refusal)
-            check("and the press is undone",
-                  state["Emoji"] and not state["Hashtags"] and presses == ["Hashtags", "Hashtags"], (state, presses))
-            check("and nothing is left owed", eyes._owed() == [], eyes._owed())
+            check("with one press and no second press to undo it, and the debt kept",
+                  presses == ["Hashtags"] and state["Emoji"] and state["Hashtags"]
+                  and [w for w, _ in eyes._owed()] == ["choice"], (presses, state, eyes._owed()))
+            check("restore turns the pressed chip off, keeps the original, and pays the debt",
+                  pay_book() is None and state["Emoji"] and not state["Hashtags"] and eyes._owed() == [],
+                  (state, eyes._owed()))
 
-            # Codex r1 P2: two already on in a several-on group, and one of them asked for. Pressing it
-            # would turn it OFF; the call must refuse before pressing anything.
+            # Codex r6 P1: the same debt with the pressed chip scrolled out of view. restore() brings it
+            # into view by name and turns it off; it never settles on the original alone.
+            choose_refused = False
+            try:
+                choose("Hashtags", where="AI Polish")
+            except eyes.Blocked:
+                choose_refused = True
+            view.append("Hashtags")
+            reveals = []
+            eyes.reveal = lambda label, *a, **k: (reveals.append(label), scrolling_reveal(label, *a, **k))[1]
+            check("restore brings an off-screen pressed chip into view and turns it off",
+                  choose_refused and pay_book() is None and "Hashtags" in reveals
+                  and state["Emoji"] and not state["Hashtags"] and eyes._owed() == [], (state, eyes._owed(), reveals))
+            eyes.reveal = scrolling_reveal
+            # And when it cannot be brought into view at all, the debt is KEPT, never cleared.
+            try:
+                choose("Hashtags", where="AI Polish")
+            except eyes.Blocked:
+                pass
+            eyes.reveal = lambda label, *a, **k: False if label == "Hashtags" else scrolling_reveal(label, *a, **k)
+            refusal = pay_book()
+            check("a pressed chip that cannot be read keeps its debt",
+                  refusal is not None and [w for w, _ in eyes._owed()] == ["choice"] and state["Hashtags"],
+                  (refusal, eyes._owed(), state))
+            eyes.reveal = scrolling_reveal
+            check("and a later restore pays it", pay_book() is None and not state["Hashtags"] and eyes._owed() == [],
+                  (state, eyes._owed()))
+
+            # Codex r1 P2: two already on, and one of them asked for. Pressing it would turn it OFF; the
+            # call must refuse before pressing anything.
             state.update(CHIP_START, Hashtags=True)
             presses.clear()
             try:
@@ -375,140 +433,72 @@ def test_pick_one_groups():
             check("and nothing is pressed or owed, both stay on",
                   presses == [] and eyes._owed() == [] and state["Emoji"] and state["Hashtags"],
                   (presses, eyes._owed(), state))
-            check("a chip group with two on is a set of switches, not one-way", way("Emoji") is False, way("Emoji"))
+            check("a chip is never a switch, even with two on", way("Emoji") is True, way("Emoji"))
             state.update(CHIP_START)
 
-        # ---- Codex r1 P1: the chosen chip scrolled out of view ---------------------------------------
-        # Seeing only unchosen chips of a group is not seeing a switch: pressing one would move the pick,
-        # and pressing it again would not move it back.
-        eyes._adb = chip_phone(state, presses, hidden=("Semi-formal", "Formal"))
-        presses.clear()
-        check("a chip group with no chosen member in view is refused, not read as a switch",
-              str(way("Casual")).startswith("raised") and "whole group" in str(way("Casual")), way("Casual"))
-        try:
-            eyes.set_switch("Casual", True, where="AI Polish")
-            check("and set_switch refuses it", False, "it pressed Casual")
-        except eyes.Blocked as refusal:
-            check("and set_switch refuses it", "whole group" in str(refusal), refusal)
-        check("pressing nothing and owing nothing", presses == [] and eyes._owed() == [], (presses, eyes._owed()))
-        # One unchosen chip alone in view is the same case.
-        eyes._adb = chip_phone(state, presses, hidden=("Semi-casual", "Semi-formal", "Formal"))
-        check("a lone unchosen chip in view is refused too",
-              str(way("Casual")).startswith("raised") and "whole group" in str(way("Casual")), way("Casual"))
+        # ---- a chip with part of its group out of view is still never a switch (Codex r1, r6) -------
+        for hidden_now, label, wanted in ((["Semi-formal", "Formal"], "Casual", True),
+                                          (["Semi-casual", "Semi-formal", "Formal"], "Casual", True),
+                                          (["Casual", "Semi-casual", "Formal"], "Semi-formal", False)):
+            view[:] = hidden_now
+            presses.clear()
+            check(f"{label} with {', '.join(hidden_now)} out of view is one-way", way(label) is True, way(label))
+            try:
+                eyes.set_switch(label, wanted, where="AI Polish")
+                check(f"and set_switch refuses {label}", False, f"it pressed {label}")
+            except eyes.Blocked as refusal:
+                check(f"and set_switch refuses {label}", "cannot be undone" in str(refusal), refusal)
+            check(f"pressing and owing nothing for {label}", presses == [] and eyes._owed() == [],
+                  (presses, eyes._owed()))
         # Codex r2: the chosen chip off screen with two unchosen chips in view. A pick from here would
         # record no member to choose back.
-        eyes._adb = chip_phone(state, presses, hidden=("Semi-formal", "Formal"))
-        if callable(getattr(eyes, "choose", None)):
+        view[:] = ["Semi-formal", "Formal"]
+        if callable(choose):
+            eyes.reveal = real_reveal
             try:
-                eyes.choose("Casual", where="AI Polish")
+                choose("Casual", where="AI Polish")
                 check("choose() refuses a group whose chosen member is off screen", False, "it pressed Casual")
             except eyes.Blocked as refusal:
                 check("choose() refuses a group whose chosen member is off screen", "whole group" in str(refusal), refusal)
             check("and presses and owes nothing", presses == [] and eyes._owed() == [], (presses, eyes._owed()))
+            eyes.reveal = scrolling_reveal
 
             # A pick made with part of the group in view is put back from a view showing all of it,
             # and a second pick in the same group does not replace the first record.
-            eyes._adb = chip_phone(state, presses, hidden=("Formal",))
-            eyes.choose("Casual", where="AI Polish")
-            eyes._adb = chip_phone(state, presses)
-            eyes.choose("Formal", where="AI Polish")
+            view[:] = ["Formal"]
+            choose("Casual", where="AI Polish")
+            view[:] = []
+            choose("Formal", where="AI Polish")
             owed = eyes._owed()
             check("two picks in one group keep only the first record",
                   len(owed) == 1 and json.loads(owed[0][1])["group"].get("Semi-formal") is True, owed)
-            with eyes._journal_locked():
-                for entry in list(eyes._owed()):
-                    eyes._restore_one(entry)
-                    eyes._settled_locked(entry, eyes._STATE["serial"])
             check("restore chooses the recorded member back by name from a fuller view",
-                  state["Semi-formal"] and not state["Casual"] and not state["Formal"], state)
+                  pay_book() is None and state["Semi-formal"] and not state["Casual"] and not state["Formal"], state)
             # And a choice back to the original from a narrower view settles a record made from a wider one.
-            eyes.choose("Casual", where="AI Polish")
-            eyes._adb = chip_phone(state, presses, hidden=("Formal", "Semi-casual"))
-            eyes.choose("Semi-formal", where="AI Polish")
+            choose("Casual", where="AI Polish")
+            view[:] = ["Formal", "Semi-casual"]
+            choose("Semi-formal", where="AI Polish")
             check("choosing the original back settles the record whatever part is in view", eyes._owed() == [], eyes._owed())
 
-            # Codex r5: the recorded original in view, the CURRENT pick scrolled off. restore() must still
-            # choose the original back, reading only the original's own row before it presses.
-            eyes._adb = chip_phone(state, presses)
-            eyes.choose("Prose", where="AI Polish")
-            eyes._adb = chip_phone(state, presses, hidden=("Prose",))
-            try:
-                with eyes._journal_locked():
-                    for entry in list(eyes._owed()):
-                        eyes._restore_one(entry)
-                        eyes._settled_locked(entry, eyes._STATE["serial"])
-                check("restore chooses the original back while the current pick is off screen",
-                      state["Lists"] and not state["Prose"] and eyes._owed() == [], (state, eyes._owed()))
-            except eyes.Blocked as why:
-                check("restore chooses the original back while the current pick is off screen", False, why)
-            with eyes._journal_locked():
-                for entry in list(eyes._owed()):
-                    eyes._settled_locked(entry, eyes._STATE["serial"])
-            state.update(CHIP_START)
-        eyes._adb = chip_phone(state, presses)
-
-        # Codex r3 P1: a several-on group whose UNDO press is lost keeps both on; the record must stay.
-        if callable(choose):
-            state.update(CHIP_START)
-            presses.clear()
-            lost = []
-            eyes._adb = chip_phone(state, presses, ignore=lost)
-            original_tap = eyes.tap
-            taps = []
-
-            def tap_then_lose_the_next(label, *args, **kwargs):
-                taps.append(label)
-                result = original_tap(label, *args, **kwargs)
-                if label == "Hashtags" and len(taps) == 1:
-                    lost.append("Hashtags")  # armed after the first press: the undo press lands on nothing
-                return result
-
-            eyes.tap = tap_then_lose_the_next
-            try:
-                choose("Hashtags", where="AI Polish")
-                check("a lost undo press is refused", False, "it accepted Hashtags")
-            except eyes.Blocked as refusal:
-                check("a lost undo press is refused and says the record is kept",
-                      "did NOT go back" in str(refusal), refusal)
-            finally:
-                eyes.tap = original_tap
-            check("and the record is kept while both are on",
-                  state["Emoji"] and state["Hashtags"] and [w for w, _ in eyes._owed()] == ["choice"],
+            # Codex r5: the recorded original in view, the CURRENT pick scrolled off.
+            view[:] = []
+            choose("Prose", where="AI Polish")
+            view[:] = ["Prose"]
+            check("restore chooses the original back while the current pick is off screen",
+                  pay_book() is None and state["Lists"] and not state["Prose"] and eyes._owed() == [],
                   (state, eyes._owed()))
-            # Codex r4: restore() pays that record by itself, turning the extra chip off.
-            try:
-                with eyes._journal_locked():
-                    for entry in list(eyes._owed()):
-                        eyes._restore_one(entry)
-                        eyes._settled_locked(entry, eyes._STATE["serial"])
-            except eyes.Blocked as why:
-                check("restore turns the extra chip off and pays the record", False, why)
-            else:
-                check("restore turns the extra chip off and pays the record",
-                      state["Emoji"] and not state["Hashtags"] and eyes._owed() == [], (state, eyes._owed()))
-            with eyes._journal_locked():
-                for entry in list(eyes._owed()):
-                    eyes._settled_locked(entry, eyes._STATE["serial"])
+            clear_book()
             state.update(CHIP_START)
-            eyes._adb = chip_phone(state, presses)
+        view[:] = []
 
-            # Codex r4: the scan reports that lost undo as an ISSUE, never as a harmless NOTE.
-            lost = []
-            eyes._adb = chip_phone(state, presses, ignore=lost)
-            taps.clear()
-            eyes.tap = tap_then_lose_the_next
-            try:
-                report = eyes._exercise_group("AI Polish", {"Emoji": True, "Hashtags": False})
-            finally:
-                eyes.tap = original_tap
-            check("a several-on group whose undo did not land is an ISSUE in the scan",
+        # ---- scan's walker never leaves a several-on group changed as a harmless NOTE (Codex r4) -----
+        if callable(choose):
+            report = eyes._exercise_group("AI Polish", {"Emoji": True, "Hashtags": False})
+            check("a several-on group is an ISSUE in the scan, never a NOTE",
                   any(line.startswith("ISSUE") and "Hashtags" in line for line in report)
                   and not any(line.startswith("NOTE") for line in report), report)
-            with eyes._journal_locked():
-                for entry in list(eyes._owed()):
-                    eyes._settled_locked(entry, eyes._STATE["serial"])
-            state.update(CHIP_START)
-            eyes._adb = chip_phone(state, presses)
+            check("and its debt is left for restore(), which pays it",
+                  pay_book() is None and state == CHIP_START and eyes._owed() == [], (state, eyes._owed()))
 
         # Codex r3 P2: a failed read right after a pick must not leave the pick changed.
         exercise_group = getattr(eyes, "_exercise_group", None)
@@ -569,7 +559,8 @@ def test_pick_one_groups():
             state.update(CHIP_START)
             report = exercise("AI Polish", eyes.switches())
             text = "\n".join(report)
-            check("no pick-one chip is reported as a failed switch", "ISSUE" not in text, text)
+            check("the only ISSUEs are the several-on group, never a pick-one chip",
+                  all("Emoji" in line or "Hashtags" in line for line in report if line.startswith("ISSUE")), text)
             check("each other Tone chip is picked and Tone goes back to Semi-formal",
                   sum(line.startswith("VERIFIED: AI Polish / ") and "back to Semi-formal" in line
                       for line in report) == 3, text)
@@ -582,7 +573,8 @@ def test_pick_one_groups():
                   any("Hashtags" in line and "several" in line for line in report), text)
             check("the real switches still move and come back",
                   any(line.startswith("VERIFIED") and "Smart insertion" in line for line in report), text)
-            check("every control ends where it started", state == CHIP_START,
+            refusal = pay_book()
+            check("every control ends where it started once restore() has run", refusal is None and state == CHIP_START,
                   {k: v for k, v in state.items() if CHIP_START[k] != v})
             check("and the book is empty", eyes._owed() == [], eyes._owed())
 

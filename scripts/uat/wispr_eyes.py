@@ -1172,8 +1172,8 @@ def one_way(label, package=PACKAGE):
 
     **First the mark inside the row, then clickability.** A radio row holds a `RadioButton` and a chip
     row a `CheckBox`; a group is the unbroken run of sibling rows with the same mark (`_choice_group`).
-    A radio member is always one-way; a chip group is one-way when exactly one is chosen, and `choose()`
-    confirms it by pressing. Only a row with no mark falls back to clickability: a real switch is
+    Any marked row is one-way; a chip changes only through `choose()`. Only a row with no mark falls
+    back to clickability: a real switch is
     CLICKABLE while it is on, and the chosen member of a radio group is NOT. Read off the phone
     2026-09-06: the three Clipboard switches all report `checkable, checked, clickable` while on;
     `This phone` reports `checkable, checked` and no click. That rule alone misread the Writing style
@@ -1191,21 +1191,10 @@ def one_way(label, package=PACKAGE):
     nodes = tree(refresh=False)
     group = _choice_group(row, nodes, package=package)
     if group is not None:
-        mark, members = group
-        if mark == "RadioButton":
-            return True
-        chosen = sum(bool(m["on"]) for m in members)
-        # NO CHOSEN CHIP IN VIEW IS NOT A SWITCH (Codex r1). A pick-one group scrolled so its chosen
-        # chip is off screen shows only unchosen chips, alone or together; pressing one moves the pick
-        # and pressing it again does not move it back. It cannot be told from a several-at-once group
-        # with nothing on, so it is refused rather than guessed.
-        if chosen == 0:
-            raise Blocked(f"{label!r} is a chip whose group shows no chosen member, so whether it is "
-                          "pick-one cannot be told. Bring the whole group into view first.")
-        # Exactly one chosen is what a pick-one group looks like at rest; two or more on at once is a
-        # set of check boxes, each one a switch. A several-at-once group with one on is caught by
-        # `choose()`, which presses, reads, and undoes.
-        return chosen == 1 and len(members) >= 2
+        # A ROW WITH A MARK IS A CHOICE, NEVER A SWITCH (Codex r1 to r6). Each earlier rule that
+        # judged pick-one from the members IN VIEW misread some scrolled, partial view of a group and
+        # let a chip be flipped as a switch. A chip changes only through `choose()`.
+        return True
     top, bottom = row["bounds"][1], row["bounds"][3]
     band = [n for n in nodes
             if n["checkable"] and n["package"] == package
@@ -1328,13 +1317,21 @@ def _choice_debts(where, state):
     return found
 
 
+def _choice_ends(named):
+    """(the recorded member to choose back, the member that was pressed) for a choice debt."""
+    chosen = [n for n, on in named["group"].items() if on]
+    if len(chosen) != 1:
+        raise Blocked(f"the choice debt on {named['where']} records {len(chosen)} chosen members, so "
+                      "there is no one member to choose back")
+    return chosen[0], named.get("pressed", chosen[0])
+
+
 def _settle_choices_locked(where, state):
-    """Settle each choice debt for this group whose recorded choice is chosen now. Caller holds the book."""
+    """Settle each choice debt whose recorded member is chosen and whose pressed member is off, both
+    READ in `state`. Anything not in view stays owed for `restore()`. Caller holds the book."""
     for owed, named in _choice_debts(where, state):
-        wanted = [n for n, on in named["group"].items() if on]
-        # The recorded member chosen AND it alone on (Codex r3): a several-on probe whose undo press
-        # was lost has the original on beside the new pick, and that is not put back.
-        if len(wanted) == 1 and state.get(wanted[0]) and sum(state.values()) == 1:
+        target, pressed = _choice_ends(named)
+        if state.get(target) and (pressed == target or state.get(pressed) is False):
             _settled_locked(owed, _STATE["serial"])
 
 
@@ -1342,9 +1339,10 @@ def _settle_choices_locked(where, state):
 def choose(label, where, package=PACKAGE):
     """Pick one member of a pick-one group BY NAME, read the whole group back. Returns it as it was.
 
-    The debt records the WHOLE group, never one member as a switch: a pick-one choice is put back by
-    choosing the original by name, which `restore()` does from the book alone. A group that turns out
-    to let several be on at once is not pick-one: the press is undone and the call refuses.
+    The debt records the group in view and the member pressed, never one member as a switch: a
+    pick-one choice is put back by choosing the original by name, which `restore()` does from the book
+    alone. A group that turns out to let several be on at once is not pick-one: the call refuses after
+    its ONE press, and `restore()` turns the pressed member off by name.
     """
     if package != PACKAGE:
         raise Blocked(f"choices are only changed in {PACKAGE}, not in {package}")
@@ -1366,24 +1364,23 @@ def choose(label, where, package=PACKAGE):
                       "pick-one. Nothing was pressed.")
     if before[label]:
         return before
+    original = already_on[0]
     # THE FIRST RECORD FOR A GROUP IS THE ONE TO GO BACK TO. `_owe` dedupes on the exact names, and
-    # the names in view change with scroll, so an overlapping debt is looked for here.
+    # the names in view change with scroll, so an overlapping debt is looked for here. The debt names
+    # the member to choose back AND the member pressed, so `restore()` checks each by its own row.
     if not _choice_debts(where, before):
-        _owe(("choice", json.dumps({"where": where, "group": before}, sort_keys=True)))
+        _owe(("choice", json.dumps({"where": where, "group": before, "pressed": label}, sort_keys=True)))
     tap(label, package=package)
     after = _group_settled(label, before, package=package)
     if not after[label]:
         raise Blocked(f"{label!r} was pressed but is not chosen; the group is owed back to how it was")
-    still_on = sorted([name for name, on in after.items() if on and name != label])
-    if still_on:
-        tap(label, package=package)
-        undone = _group_settled(label, after, package=package)
-        _settle_choices_locked(where, undone)
-        raise Blocked(
-            f"the group holding {label!r} lets several be on at once: choosing it left "
-            f"{', '.join(still_on)} on, so it is not pick-one. {label!r} was pressed again to undo it"
-            + ("." if undone == before else f", and the group did NOT go back; it reads {undone}, and "
-               "the debt is kept for restore()."))
+    if after.get(original):
+        # ONE PRESS, NEVER A SECOND TO UNDO IT (Codex r3 to r6): an undo press that is lost leaves a
+        # state the next reader has to reconstruct from a partial view. The debt already says what to
+        # do, and `restore()` does it by name.
+        raise Blocked(f"the group holding {label!r} lets several be on at once: choosing it left "
+                      f"{original} on, so it is not pick-one. Nothing more was pressed; restore() turns "
+                      f"{label} off and keeps {original}.")
     _settle_choices_locked(where, after)
     return before
 
@@ -4097,34 +4094,31 @@ def _restore_one_here(entry):
         # member "off" and never by matching the exact names in view, which change with scroll.
         wanted = json.loads(previous)
         where = wanted["where"]
-        chosen = [n for n, on in wanted["group"].items() if on]
-        if len(chosen) != 1:
-            raise Blocked(f"the choice debt on {where} records {len(chosen)} chosen members, so there is "
-                          "no one member to choose back")
-        target = chosen[0]
+        target, pressed = _choice_ends(wanted)
         if not (on_screen(where) and present(target, exact=True)):
             _reach(where)
         if not reveal(target):
             raise Blocked(f"{target!r} could not be found on {where}, so its group cannot be put back")
-        # THE TARGET'S OWN ROW FIRST, THE GROUP SECOND (Codex r5). Before the press the current pick
-        # may be scrolled off, and a group read with no chosen member in view refuses; the target's
-        # own checked state needs no group. Once the target is chosen and in view, a group read always
-        # has a chosen member to see.
+        # EACH END BY ITS OWN ROW, NEVER BY A GROUP READ (Codex r5, r6). A group read sees only what
+        # is in view, and every rule built on one misjudged some scrolled view of the group. The
+        # recorded member is chosen back by name; the pressed member is then read by name and turned
+        # off if it is still on, which only a several-at-once group can show.
         if not switch(target):
             tap(target)
             _switch_settled(target, True)
         if not switch(target):
             raise Blocked(f"{target!r} on {where} was pressed but is not chosen, so its group is not put back")
-        _, now = _group_state(target)
-        # A member still on beside the target can only be a several-on group whose undo press was
-        # lost (Codex r4): each such member is a check box, so one press turns it off. Bounded by the
-        # members in view; a pick-one group never reaches here.
-        for extra in [n for n, on in now.items() if on and n != target]:
-            tap(extra)
-            now = _group_settled(extra, now)
-        if not now[target] or sum(now.values()) != 1:
-            raise Blocked(f"the group holding {target!r} on {where} would not go back to {target}; it "
-                          f"reads {now}")
+        if pressed != target:
+            if not reveal(pressed):
+                raise Blocked(f"{pressed!r} could not be found on {where}, so whether it went back off "
+                              "cannot be read; the debt is kept")
+            if switch(pressed):
+                tap(pressed)
+                _switch_settled(pressed, False)
+            if switch(pressed):
+                raise Blocked(f"{pressed!r} on {where} would not turn off")
+            if not (reveal(target) and switch(target)):
+                raise Blocked(f"{target!r} on {where} is not chosen after {pressed!r} was turned off")
     elif what == "host-mic":
         wanted = previous == "on"
         _grpc("setMicrophoneState", {"realAudioEnabled": wanted})
@@ -4547,12 +4541,6 @@ def _exercise_group(name, group):
             _, now = _group_state(original)
             back_again = now == group
         except Blocked as why:
-            # A several-on group whose undo LANDED is a harmless skip; one whose undo did not land left
-            # the group changed and is an ISSUE, so a green scan still means everything was put back.
-            if "lets several be on at once" in str(why) and "did NOT go back" not in str(why):
-                report.append(f"NOTE: {name} / {other}: several can be on at once in the group with "
-                              f"{original}, so it was not picked through; {why}")
-                return report
             report.append(f"ISSUE: {name} / {other}: {why}")
             # PUT THE ORIGINAL BACK BEFORE WALKING ON (Codex r3): a failure between the pick and the
             # pick back left the Writing style changed for the rest of the scan. If even that fails,

@@ -271,7 +271,7 @@ class DictationSessionCoordinatorTest {
         rig.host.fireDelayed(CaptureSessionController.TAKE_SILENT_BOUND_MS)
         assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
-        rig.onMain {}
+        rig.capture.settle()
         assertTrue("no bound is left armed once the binding is released: ${rig.host.delayed.map { it.first }} events=${rig.host.events}", rig.host.delayed.isEmpty())
 
         val next = DictationSessionRig()
@@ -304,7 +304,7 @@ class DictationSessionCoordinatorTest {
     fun aHeartbeatRearmsTheBound() {
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
-        rig.onMain {}
+        rig.capture.settle()
         val armed = rig.host.delayed.filter { it.first == CaptureSessionController.TAKE_SILENT_BOUND_MS }
         assertEquals("one bound armed", 1, armed.size)
         val before = armed.single().second
@@ -544,7 +544,7 @@ class DictationSessionCoordinatorTest {
         assertEquals(TerminalReason.AUDIO_PROCESS_DIED, rig.endings.awaitOne())
         rig.pipeline.disconnect("capture")
         rig.host.awaitStopped()
-        rig.onMain {}
+        rig.capture.settle()
         assertEquals("one ending, whatever arrived second", listOf(TerminalReason.AUDIO_PROCESS_DIED), rig.endings.reasons.toList())
         assertTrue(rig.host.events.contains("toast:Microphone service stopped unexpectedly"))
     }

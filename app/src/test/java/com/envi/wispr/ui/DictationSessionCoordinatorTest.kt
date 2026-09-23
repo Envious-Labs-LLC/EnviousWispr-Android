@@ -402,9 +402,10 @@ class DictationSessionCoordinatorTest {
         assertEquals(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
         gate.countDown()
-        // The lane runs the rest of the start command after the gate opens; wait for it to have done so.
+        // The lane runs the rest of the start command after the gate opens; wait for its own decision, the
+        // one line it writes when it declines to start (#210), not for a drain that may finish first.
         rig.capture.awaitRegistered()
-        rig.onMain {}
+        rig.log.awaitLine("Capture start skipped: the take is no longer starting")
         assertEquals("the late registration landed but no start followed it", listOf("listenForTake"), rig.capture.events.toList())
     }
 
@@ -746,10 +747,9 @@ class DictationSessionCoordinatorTest {
         rig.postMain { coordinator.destroy() }
         assertEquals(TerminalReason.INTERRUPTED_CANCELLING, rig.endings.awaitOne())
         gate.countDown()
-        // The ending is posted to main and its commit loses there; this runs after it on the one main
-        // thread.
-        rig.onMain {}
-        rig.onMain {}
+        // The ending leaves the fake's binder thread once the gate opens and is posted to main, where its
+        // commit loses: settle() waits for both hops (#210), where two main drains could finish first.
+        rig.capture.settle()
         assertEquals(listOf(TerminalReason.INTERRUPTED_CANCELLING), rig.endings.reasons.toList())
     }
 

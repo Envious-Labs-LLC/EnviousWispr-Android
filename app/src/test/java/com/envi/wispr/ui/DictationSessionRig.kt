@@ -202,19 +202,20 @@ internal class DictationSessionRig {
         }
 
         /**
-         * Waits for the subject to log a line containing [fragment]; the line is the subject's own signal.
+         * Waits for the subject to log [count] lines containing [fragment]; the line is the subject's own signal.
          * Woken by every append, never by a clock; the deadline only makes a regression fail instead of hang.
          */
-        fun awaitLine(fragment: String) {
+        fun awaitLine(fragment: String, count: Int = 1) {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
             synchronized(appended) {
-                while (lines.none { it.contains(fragment) }) {
+                while (count(fragment) < count) {
                     val left = deadline - System.nanoTime()
                     check(left > 0) { "no log line containing '$fragment'; lines: $lines" }
                     TimeUnit.NANOSECONDS.timedWait(appended, left)
                 }
             }
         }
+        fun count(fragment: String) = lines.count { it.contains(fragment) }
         override fun log(message: String) = append("I $message")
         override fun warn(message: String) = append("W $message")
         override fun error(message: String, throwable: Throwable?) = append("E $message")
@@ -574,11 +575,27 @@ internal class DictationSessionRig {
         @Volatile var requestId = 0L
         @Volatile var throwOnRequest = false
         val cancelled = CopyOnWriteArrayList<Long>()
+        /** The thread each cancel arrived on, in order with [cancelled]. */
+        val cancelThreads = CopyOnWriteArrayList<String>()
         val warmed = CopyOnWriteArrayList<PolishPolicy>()
         private val requested = CountDownLatch(1)
         /** The raw text the owner handed the engine, after vocabulary restoration (#193). */
         @Volatile var lastRawText: String? = null
-        override fun warmUpWithPolicy(policy: PolishPolicy) { warmed += policy }
+        /** When set, a warm-up blocks until released, as a stalled `:polish` binder call would (#236). */
+        @Volatile var holdWarmUp: CountDownLatch? = null
+        /** Counted down when a warm-up call has been entered. */
+        val warmUpEntered = CountDownLatch(1)
+        /** Counted down when a warm-up call has returned. */
+        val warmUpCompleted = CountDownLatch(1)
+        /** The thread each warm-up ran on (#236: never the rig's main thread). */
+        val warmUpThreads = CopyOnWriteArrayList<String>()
+        override fun warmUpWithPolicy(policy: PolishPolicy) {
+            warmUpThreads += Thread.currentThread().name
+            warmUpEntered.countDown()
+            holdWarmUp?.await(10, TimeUnit.SECONDS)
+            warmed += policy
+            warmUpCompleted.countDown()
+        }
         override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
             if (throwOnRequest) throw IllegalStateException("engine gone")
             lastRawText = rawText
@@ -586,7 +603,10 @@ internal class DictationSessionRig {
             this.listener = listener
             requested.countDown()
         }
-        override fun cancel(requestId: Long) { cancelled += requestId }
+        override fun cancel(requestId: Long) {
+            cancelThreads += Thread.currentThread().name
+            cancelled += requestId
+        }
         fun awaitRequest(diagnostics: () -> String = { "" }): PolishListener {
             check(requested.await(10, TimeUnit.SECONDS)) { "the owner never asked the polish process. ${diagnostics()}" }
             return checkNotNull(listener)

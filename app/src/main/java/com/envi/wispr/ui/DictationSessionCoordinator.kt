@@ -33,6 +33,7 @@ import com.envi.wispr.vocabulary.StructuredTermRestorer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -93,6 +94,8 @@ internal class DictationSessionCoordinator(
     private val endingSink: (TakeFacts, TerminalReason) -> Unit = ::recordTakeEnding,
     /** Where the owner's defects go. Production sends them to telemetry; a test counts them (#214). */
     private val defectSink: (AppDefect, Map<String, Any?>) -> Unit = Telemetry::defect,
+    /** Queues the take's journal admission (#176); a test controls its completion (#258). */
+    private val admitTake: (String, TriggerSource) -> Deferred<Boolean>? = { takeId, trigger -> Telemetry.journal?.admit(takeId, trigger) },
     /**
      * Where a take's captured-audio delete runs (#253): a process-owned worker, never the session scope, so a
      * Service teardown right after a take's ending cannot cancel the delete. A test holds it.
@@ -336,6 +339,9 @@ internal class DictationSessionCoordinator(
         val trigger = admittedRequest?.let(::bubbleTrigger) ?: pendingTrigger
         pendingTrigger = TriggerSource.UNKNOWN
         val takeFacts = TakeFacts(takeId, trigger)
+        // The pre-capture chain's origin (#258): the accepted start command, right after IDLE -> STARTING.
+        val acceptedAtMs = host.elapsedRealtimeMs()
+        fun sinceAccepted() = host.elapsedRealtimeMs() - acceptedAtMs
         // The referee for THIS take, in memory, before anything else (G2 D2). Its sink is a limb: it
         // hands the committed reason to telemetry and never waits on storage or the network.
         val arbiter = TakeArbiter { reason -> endingSink(takeFacts, reason) }
@@ -345,7 +351,11 @@ internal class DictationSessionCoordinator(
         // writes in arrival order, so a cancel that lands during the settings wait can never queue its
         // ending ahead of the admission and leave an open row (code review round 1, F2). The wait for
         // it happens below, before capture starts, under a deadline that never gates the take.
-        val admission = Telemetry.journal?.admit(takeId, trigger)
+        val admission = admitTake(takeId, trigger)
+        // Where the admission is observed to have landed, not where the wait below returns (#258).
+        admission?.invokeOnCompletion { cause ->
+            if (cause == null && runCatching { admission.getCompleted() }.getOrDefault(false)) takeFacts.admissionObservedMs = sinceAccepted()
+        }
         surface.showStarting(admittedRequest)
         host.promoteToForeground(processing = false)
         // Kept for the whole session. Android may rebind the accessibility service while the user
@@ -356,7 +366,7 @@ internal class DictationSessionCoordinator(
         surface.nameTarget(if (targetPin == DictationTargetPin.PINNED) insertion.pinnedFieldId() else null)
         // The take, published once (#216). `beginSession` is one uninterrupted main-thread call, and nothing
         // is bound and no coroutine launched before this line, so nothing reads half of one take.
-        take = TakeContext(takeId, trigger, takeFacts, arbiter, targetPin, TakeHistory(historyWrites))
+        take = TakeContext(takeId, trigger, takeFacts, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs)
         // After the take, in the same main-thread call, and before anything is bound (#237).
         polish = TakePolishController(
             lock = polishSubmissionLock,
@@ -386,6 +396,7 @@ internal class DictationSessionCoordinator(
             // both outcomes and the values that came with them, taken by one atomic read each, and the
             // take is built from it alone; nothing below rereads the live source after suspending.
             val start = preferences.awaitAnswers(answerBoundMs)
+            takeFacts.settingsAnswerMs = sinceAccepted()
             start.fallbackToken()?.let { token ->
                 takeFacts.settingsFallback = token
                 log.warn("Settings reader fell back; the take runs on the last values: $token")
@@ -396,7 +407,9 @@ internal class DictationSessionCoordinator(
             val matcher = withContext(Dispatchers.Default) {
                 StructuredTermRestorer.compile(termsSnapshot)
             }
+            takeFacts.matcherReadyMs = sinceAccepted()
             val policy = withContext(Dispatchers.IO) { loadPolicy() }
+            takeFacts.policyLoadedMs = sinceAccepted()
             // Admission is written before capture starts, under a deadline that never gates the take:
             // the queued write still lands in order if this stops waiting (issue #176, plan §3.3).
             if (admission != null && withTimeoutOrNull(JOURNAL_ADMISSION_DEADLINE_MS) { admission.await() } == null) {
@@ -405,6 +418,7 @@ internal class DictationSessionCoordinator(
             withContext(mainDispatcher) {
                 if (state.get() != SessionState.STARTING) return@withContext
                 sessionPreferences = preferences.freeze(start, matcher, policy)
+                takeFacts.bindRequestedMs = sinceAccepted()
                 bindPipelineServices()
             }
         }
@@ -687,6 +701,7 @@ internal class DictationSessionCoordinator(
             takeFacts.routeKind = runCatching { InputRouteKind.fromCode(routeKind) }.getOrNull()
             takeFacts.routeReason = runCatching { InputRouteReason.fromCode(routeReason) }.getOrNull()
             takeFacts.liveAfterMs = liveAfterMs
+            takeFacts.liveReceivedMs = host.elapsedRealtimeMs() - current.acceptedAtMs
             takeFacts.liveState = if (forced) "forced" else "ready"
             Telemetry.journal?.advance(takeId, TakeStage.RECORDING)
             Telemetry.breadcrumb(
@@ -1293,7 +1308,9 @@ internal class DictationSessionCoordinator(
  * the error scope. Every call is a limb that returns at once.
  */
 internal fun recordTakeEnding(takeFacts: TakeFacts, reason: TerminalReason) {
-    DebugSessionLog.log("Take terminal: ${reason.name} (${reason.result.wire})")
+    // The pre-capture chain (#258), in ms since the accepted start command, so a UAT reads it without PostHog.
+    val start = with(takeFacts) { "settings=$settingsAnswerMs matcher=$matcherReadyMs policy=$policyLoadedMs admission=$admissionObservedMs bind=$bindRequestedMs live=$liveReceivedMs" }
+    DebugSessionLog.log("Take terminal: ${reason.name} (${reason.result.wire}) start: $start")
     Telemetry.breadcrumb("take", "terminal", mapOf("take_id" to takeFacts.takeId, "reason" to reason.name, "result" to reason.result.wire))
     TelemetryChannels.defectOf(reason, takeFacts.asrFailure)?.let { defect ->
         Telemetry.defect(defect, mapOf("take_id" to takeFacts.takeId, "reason" to reason.name, "asr_failure_reason" to takeFacts.asrFailure?.name))

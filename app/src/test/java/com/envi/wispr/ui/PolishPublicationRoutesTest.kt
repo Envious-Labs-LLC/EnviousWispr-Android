@@ -46,9 +46,15 @@ class PolishPublicationRoutesTest {
         // publish lock, so it precedes the notice in the source; the notice still precedes the owner's
         // continuation coroutine, which is where the save's result is consumed. Since #216 the write is the
         // finalizer's, asked for inside the owner's lock, and it must still BE the finalize enqueue.
-        val lock = publication.indexOf("synchronized(publishLock)")
+        val head = "val publication = synchronized(publishLock) {"
+        assertTrue(publication.contains(head))
+        val locked = publication.substringAfter(head).substringBefore("\n        }\n")
+        assertTrue(
+            "the reservation and the save are one operation under the lock",
+            locked.contains("current.arbiter.reserve(Claimants.PUBLICATION)") &&
+                locked.contains("finalizer.enqueueSave(current.history, payload, saved)"),
+        )
         val reservation = publication.indexOf("finalizer.enqueueSave(current.history, payload, saved)")
-        assertTrue("the save is asked for inside the reservation's lock", lock >= 0 && reservation > lock)
         assertTrue(
             "the finalizer's save is the finalize write",
             section("fun enqueueSave(", "\n    }\n", finalizer).contains("historyWrites.enqueue(\"finalize\")"),

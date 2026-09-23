@@ -30,6 +30,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
@@ -134,10 +135,17 @@ class PolishSettingsViewModelTest {
         // before the second tap is made.
         firstCommit.awaitEntered()
         val (second, secondWrite) = tap { viewModel.setPolishMode(PolishMode.OFFLINE_S1) }
+        // The second tap's first Main slice has run once Main drains past it. Serialized writes park it on
+        // the lock inside that slice; a write path without the lock has already sent it to IO, so the row
+        // lets it finish first, the worst order the pool can pick, and never leaves the verdict to a race.
+        onMain { }
+        val parkedBehindFirst = hasWaiter(settingsMutex())
+        if (!parkedBehindFirst) awaitDone(secondWrite)
         firstCommit.release()
         awaitDone(firstWrite, secondWrite)
         assertEquals(listOf(1, 2), listOf(first, second))
         assertEquals("the mode tapped last is not the one the phone kept", PolishMode.OFFLINE_S1.name, settingsPrefs.values["mode"])
+        assertTrue("the second tap did not wait behind the first tap's write", parkedBehindFirst)
         assertEquals(PolishMode.OFFLINE_S1, viewModel.settings.value.mode)
         assertEquals("an older write's completion landed after the last tap's", second, viewModel.settings.value.writeSequence)
     }
@@ -255,6 +263,27 @@ class PolishSettingsViewModelTest {
     }
 
     private fun model(id: String) = DiscoveredModel(id, id, ModelAccess.AVAILABLE, recommended = false)
+
+    private fun settingsMutex(): Mutex = PolishSettingsViewModel::class.java.getDeclaredField("providerSettingsMutex")
+        .apply { isAccessible = true }
+        .get(viewModel) as Mutex
+
+    /**
+     * True when a coroutine is suspended waiting for [mutex]. kotlinx.coroutines counts a waiter as a
+     * negative permit; the row fails loudly, never silently, if that field is renamed in an upgrade.
+     */
+    private fun hasWaiter(mutex: Mutex): Boolean {
+        var type: Class<*>? = mutex.javaClass
+        while (type != null) {
+            val field = type.declaredFields.firstOrNull { it.name.startsWith("_availablePermits") }
+            if (field != null) {
+                field.isAccessible = true
+                return (field.get(mutex) as Number).toInt() < 0
+            }
+            type = type.superclass
+        }
+        error("kotlinx.coroutines' Mutex no longer counts permits in _availablePermits; re-read how it records a waiter")
+    }
 
     private companion object {
         const val DEADLINE_MS = 5_000L

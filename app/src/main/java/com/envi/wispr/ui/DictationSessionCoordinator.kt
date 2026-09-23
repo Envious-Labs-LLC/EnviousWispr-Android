@@ -334,13 +334,13 @@ internal class DictationSessionCoordinator(
 
     private fun beginSession() {
         if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return
+        // The pre-capture chain's origin (#258): the accepted start command, right after IDLE -> STARTING.
+        val acceptedAtMs = host.elapsedRealtimeMs()
         val takeId = UUID.randomUUID().toString().lowercase()
         takePeakAmplitude = null
         val trigger = admittedRequest?.let(::bubbleTrigger) ?: pendingTrigger
         pendingTrigger = TriggerSource.UNKNOWN
         val takeFacts = TakeFacts(takeId, trigger)
-        // The pre-capture chain's origin (#258): the accepted start command, right after IDLE -> STARTING.
-        val acceptedAtMs = host.elapsedRealtimeMs()
         fun sinceAccepted() = host.elapsedRealtimeMs() - acceptedAtMs
         // The referee for THIS take, in memory, before anything else (G2 D2). Its sink is a limb: it
         // hands the committed reason to telemetry and never waits on storage or the network.
@@ -353,8 +353,11 @@ internal class DictationSessionCoordinator(
         // it happens below, before capture starts, under a deadline that never gates the take.
         val admission = admitTake(takeId, trigger)
         // Where the admission is observed to have landed, not where the wait below returns (#258).
+        // An optional measurement: nothing in this handler may throw into the journal writer.
         admission?.invokeOnCompletion { cause ->
-            if (cause == null && runCatching { admission.getCompleted() }.getOrDefault(false)) takeFacts.admissionObservedMs = sinceAccepted()
+            if (cause == null) runCatching {
+                if (admission.getCompleted()) takeFacts.admissionObservedMs = sinceAccepted()
+            }
         }
         surface.showStarting(admittedRequest)
         host.promoteToForeground(processing = false)

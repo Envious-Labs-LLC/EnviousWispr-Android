@@ -83,13 +83,14 @@ None.
 - `DictationSessionCoordinator`: the origin is read right after `TakeFacts` is built in `beginSession`; the admission comes from an injected `admitTake` (default `Telemetry.journal?.admit`) whose completion is observed through `invokeOnCompletion`; settings, matcher, policy and bind are written after their steps; live after the winning transition in `publishLive`. `recordTakeEnding`'s `Take terminal:` line appends the six numbers.
 - The rig: `FakeHost.clock` scripts every clock read; `coordinator(admit = ...)`. Row 2 ends the take with the Service's destroy (INTERRUPTED_STARTING) rather than a cancel, because the rig's capture is bound from the start and a cancel there waits for a capture ending that never comes.
 - Guards and constructors updated: `AutoPasteWiringTest` (the `TakeContext` call), `SessionOwnerShapeTest` (seven properties), both positional and the named `DictationTerminal` calls in `TelemetryContractsTest` and `TakeJournalWriterTest`.
-- Receipts 6 of 6 RED (`docs/audits/2026-09-23-258-mutation-receipts.txt`); full suite 1263, 0 failures.
-- Emulator measurements (not the S26): debug build at this branch on emulator-5554, each take cold (the app's processes stopped before it), three Gmail dictations by COMMIT with the editor's text exact, in ms since the accepted command:
+- Code review round 1, both adopted: the origin is read right after the `IDLE -> STARTING` transition, before the take id and facts are built; the admission handler runs its whole body in `runCatching`, so an optional measurement can never throw into the journal writer.
+- Receipts 6 of 6 RED (`docs/audits/2026-09-23-258-mutation-receipts.txt`); full suite 1263, 0 failures; the owner test class 20 of 20 repeats.
+- Emulator measurements (not the S26): debug build at this branch on emulator-5554, each take cold (the app's processes stopped before it), three Gmail dictations by COMMIT (takes 2 and 3 exact; take 1 landed with the speech engine hearing "A quarterly" for "The quarterly" in the emulator's synthesized audio), measured after code review round 1 moved the origin, in ms since the accepted command:
 
 | take | settings | matcher | policy | admission | bind | live |
 |---|---|---|---|---|---|---|
-| 1 | 10 | 12 | 13 | 5 | 13 | 370 |
-| 2 | 23 | 24 | 24 | 3 | 25 | 454 |
-| 3 | 10 | 16 | 17 | 10 | 17 | 344 |
+| 1 | 9 | 14 | 14 | 4 | 15 | 511 |
+| 2 | 14 | 17 | 22 | 1 | 30 | 318 |
+| 3 | 15 | 16 | 16 | 2 | 20 | 326 |
 
-  On the emulator the chain before bind is about 13 to 25 ms and bind to live dominates. Two earlier runs of the same script each lost their first cold take to the known emulator empty-take flake (it also happens on main); the run above had none. The deferred decisions are #267.
+  On the emulator the chain before bind is about 15 to 30 ms and bind to live dominates. Two earlier runs of the same script each lost their first cold take to the known emulator empty-take flake (it also happens on main); the run above had none. The deferred decisions are #267.

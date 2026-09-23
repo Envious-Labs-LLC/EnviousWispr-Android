@@ -4106,10 +4106,16 @@ def _restore_one_here(entry):
             _reach(where)
         if not reveal(target):
             raise Blocked(f"{target!r} could not be found on {where}, so its group cannot be put back")
-        _, now = _group_state(target)
-        if not now[target]:
+        # THE TARGET'S OWN ROW FIRST, THE GROUP SECOND (Codex r5). Before the press the current pick
+        # may be scrolled off, and a group read with no chosen member in view refuses; the target's
+        # own checked state needs no group. Once the target is chosen and in view, a group read always
+        # has a chosen member to see.
+        if not switch(target):
             tap(target)
-            now = _group_settled(target, now)
+            _switch_settled(target, True)
+        if not switch(target):
+            raise Blocked(f"{target!r} on {where} was pressed but is not chosen, so its group is not put back")
+        _, now = _group_state(target)
         # A member still on beside the target can only be a several-on group whose undo press was
         # lost (Codex r4): each such member is a check box, so one press turns it off. Bounded by the
         # members in view; a pick-one group never reaches here.

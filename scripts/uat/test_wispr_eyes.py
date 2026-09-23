@@ -426,6 +426,25 @@ def test_pick_one_groups():
             eyes._adb = chip_phone(state, presses, hidden=("Formal", "Semi-casual"))
             eyes.choose("Semi-formal", where="AI Polish")
             check("choosing the original back settles the record whatever part is in view", eyes._owed() == [], eyes._owed())
+
+            # Codex r5: the recorded original in view, the CURRENT pick scrolled off. restore() must still
+            # choose the original back, reading only the original's own row before it presses.
+            eyes._adb = chip_phone(state, presses)
+            eyes.choose("Prose", where="AI Polish")
+            eyes._adb = chip_phone(state, presses, hidden=("Prose",))
+            try:
+                with eyes._journal_locked():
+                    for entry in list(eyes._owed()):
+                        eyes._restore_one(entry)
+                        eyes._settled_locked(entry, eyes._STATE["serial"])
+                check("restore chooses the original back while the current pick is off screen",
+                      state["Lists"] and not state["Prose"] and eyes._owed() == [], (state, eyes._owed()))
+            except eyes.Blocked as why:
+                check("restore chooses the original back while the current pick is off screen", False, why)
+            with eyes._journal_locked():
+                for entry in list(eyes._owed()):
+                    eyes._settled_locked(entry, eyes._STATE["serial"])
+            state.update(CHIP_START)
         eyes._adb = chip_phone(state, presses)
 
         # Codex r3 P1: a several-on group whose UNDO press is lost keeps both on; the record must stay.

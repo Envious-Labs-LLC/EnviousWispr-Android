@@ -254,8 +254,7 @@ class DictationSessionCoordinatorTest {
 
         rig.capture.silent = false
         rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_MANUAL)
-        rig.onMain {}
-        rig.onMain {}
+        rig.capture.settle()
         assertEquals(listOf(TerminalReason.AUDIO_PROCESS_UNRESPONSIVE), rig.endings.reasons.toList())
         assertTrue("no transcription was asked for", rig.speech.listener == null)
     }
@@ -287,6 +286,9 @@ class DictationSessionCoordinatorTest {
             polish.awaitRequest { "log: ${next.log.lines}" }
             polish.listener!!.onOutcome(polish.outcome("Hello again."))
             assertEquals(TerminalReason.COMPLETED, next.endings.awaitOne())
+            // The ending is committed BEFORE the delivery that records the paste (#210): wait for the take's
+            // last step, as every other completed-take row here does.
+            next.host.awaitStopped()
             assertEquals(listOf(1L to "Hello again."), next.insertion.pastes.toList())
         } finally {
             next.close()
@@ -308,8 +310,7 @@ class DictationSessionCoordinatorTest {
         val before = armed.single().second
         val postsBefore = rig.host.postsWithDelay(CaptureSessionController.TAKE_SILENT_BOUND_MS)
         rig.capture.tick(5_000L)
-        rig.onMain {}
-        rig.onMain {}
+        rig.capture.settle()
         val after = rig.host.delayed.filter { it.first == CaptureSessionController.TAKE_SILENT_BOUND_MS }
         assertEquals("still exactly one bound", 1, after.size)
         // Counted by the bound's own delay, so the live deadline's post cannot stand in for a re-arm.
@@ -351,11 +352,10 @@ class DictationSessionCoordinatorTest {
         val coordinator = rig.coordinator()
         startAndStayStarting(coordinator)
         rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_MANUAL, takeId = "the-previous-take")
-        rig.onMain {}
-        rig.onMain {}
+        rig.capture.settle()
         assertTrue("no ending was committed for another take's event", rig.endings.reasons.isEmpty())
         rig.capture.tick(0L)
-        rig.onMain {}
+        rig.capture.settle()
         // Now this take goes live and completes as an ordinary take.
         val own = rig.capture.currentTakeId
         rig.capture.pushLive(own)

@@ -350,6 +350,17 @@ internal class DictationSessionRig {
         /** The id the owner passed to the last start; the fake's events carry it. */
         @Volatile var currentTakeId = ""
         fun close() = binderThread.shutdownNow()
+
+        /**
+         * Wait until every event pushed so far has reached the fake main thread AND run there (#210). An
+         * event travels this fake's binder thread, then the owner's `postToMain`; draining main alone can
+         * finish before the binder thread has handed the event over, which failed `aHeartbeatRearmsTheBound`
+         * on the hosted runner and lets a "nothing happened" row pass before the event exists.
+         */
+        fun settle() {
+            binderThread.submit {}.get(5, TimeUnit.SECONDS)
+            onMain {}
+        }
         @Volatile var startResult = true
         @Volatile var startFailure = AudioCaptureService.START_FAILURE_NONE
         @Volatile var liveStateAfterStart = AudioCaptureService.LIVE_READY

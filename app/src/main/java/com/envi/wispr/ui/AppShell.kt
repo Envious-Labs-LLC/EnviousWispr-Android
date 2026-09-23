@@ -26,14 +26,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.work.WorkManager
-import com.envi.wispr.models.ModelDeliveryWorker
-import com.envi.wispr.models.ModelManifest
-import com.envi.wispr.models.ModelHealth
-import com.envi.wispr.models.ModelUiState
+import androidx.lifecycle.compose.LifecycleStartEffect
 import com.envi.wispr.providers.SelfHostedProtocol
-import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
 
 @Composable
@@ -42,7 +36,6 @@ internal fun EnviousWisprApp(
     licenseNotices: String,
     actions: AppActions,
 ) {
-    val context = LocalContext.current
     if (state.loading) {
         Surface(Modifier.fillMaxSize()) {
             Box(contentAlignment = Alignment.Center) {
@@ -51,8 +44,6 @@ internal fun EnviousWisprApp(
         }
         return
     }
-
-    ModelWorkReadinessObserver(actions.shell.onRefreshReadiness)
 
     val preferences = state.shell.preferences
     val readiness = state.readiness.readiness
@@ -107,20 +98,14 @@ internal fun EnviousWisprApp(
         }
     }
 
-    // Computed only while the Polish tab is showing, so every other tab pays no WorkManager query.
-    // Both the app-bar badge and PolishScreen's body read this one value, never a second computation
-    // of the same fact — see architecture-rules.md RULE: own-state-locally.
-    val polishS1State = if (destination == AppDestination.Polish) {
-        val s1Work by WorkManager.getInstance(context)
-            .getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.downloadWorkName(ModelManifest.s1))
-            .collectAsStateWithLifecycle(emptyList())
-        val s1Adoption by WorkManager.getInstance(context)
-            .getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.adoptionWorkName(ModelManifest.s1))
-            .collectAsStateWithLifecycle(emptyList())
-        workUiState(preferredModelWork(s1Work, s1Adoption), readiness.polishModelReady, ModelManifest.s1, context)
-    } else {
-        ModelUiState(label = "", health = ModelHealth.UNKNOWN)
+    // The model owner observes only the tab that shows while the activity is started (#255); a settings page,
+    // onboarding and a stopped activity show none. Both the app-bar badge and PolishScreen's body read the one
+    // published value, never a second computation of the same fact (architecture-rules.md RULE: own-state-locally).
+    LifecycleStartEffect(destination, settingsPage) {
+        actions.shell.onShowModels(if (settingsPage == null) destination else null)
+        onStopOrDispose { actions.shell.onShowModels(null) }
     }
+    val polishS1State = state.models.polish
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -189,7 +174,7 @@ internal fun EnviousWisprApp(
                             onImport = actions.dictionary.onImport,
                         )
                         AppDestination.Transcription -> TranscriptionScreen(
-                            readiness = readiness,
+                            speechModel = state.models.speech,
                             preferences = preferences,
                             onRefreshReadiness = actions.shell.onRefreshReadiness,
                             onFillerRemovalChanged = actions.transcription.onFillerRemovalChanged,

@@ -183,7 +183,9 @@ class PolishService : Service() {
         }
 
         override fun warmUpWithPolicy(policy: PolishPolicy?) {
-            if (policy is PolishPolicy.LocalS1) ensureModelLoaded()
+            // Logged here too (#236): the caller only learns that its send failed, never why the load did not start.
+            runCatching { if (policy is PolishPolicy.LocalS1) ensureModelLoaded() }
+                .onFailure { error -> DebugLogger.warn(TAG, "Polish warm-up failed: ${error.javaClass.simpleName}") }
         }
 
         override fun cancel(requestId: Long) {
@@ -441,35 +443,49 @@ class PolishService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * Queues the model load once. `modelReady`, `modelLoading` and `modelStatus` are `@Volatile`: written here
+     * under this method's lock or on the single worker, and read from binder threads (#236).
+     */
     @Synchronized
     private fun ensureModelLoaded() {
         if (modelReady || modelLoading) return
         modelLoading = true
-        executor.execute {
-            val selection = S1ModelSelector.resolve(this)
-            if (selection == null) {
-                modelStatus = "${S1Config.MODEL_NAME} is not verified in app-private storage"
-                DebugLogger.warn(TAG, modelStatus)
-                modelLoading = false
-                return@execute
-            }
+        // A queue that refuses the load (the executor is shut down in onDestroy) must not leave loading set,
+        // or no later warm-up could ever start one (#236).
+        try {
+            executor.execute { loadModel() }
+        } catch (refused: java.util.concurrent.RejectedExecutionException) {
+            modelLoading = false
+            DebugLogger.warn(TAG, "Polish model load refused: the worker is shut down")
+        }
+    }
 
-            modelStatus = "Loading ${S1Config.MODEL_NAME}"
-            val started = SystemClock.elapsedRealtime()
-            try {
-                val result = s1Runtime.load(selection.file.path, selection.computeUnits)
-                modelReady = true
-                val elapsed = SystemClock.elapsedRealtime() - started
-                val modelKind = if (selection.npuOptimized) "NPU model" else "compatibility model"
-                modelStatus = "Ready on ${s1Runtime.activeComputeUnit.uppercase()} in ${elapsed}ms ($modelKind)"
-                DebugLogger.log(TAG, "${S1Config.MODEL_NAME} loaded: $result; $modelStatus")
-            } catch (exception: Throwable) {
-                modelReady = false
-                modelStatus = "S1 unavailable; deterministic fallback active"
-                DebugLogger.error(TAG, modelStatus, exception)
-            } finally {
-                modelLoading = false
-            }
+    /** The single worker's model load, queued by [ensureModelLoaded]. */
+    private fun loadModel() {
+        val selection = S1ModelSelector.resolve(this)
+        if (selection == null) {
+            modelStatus = "${S1Config.MODEL_NAME} is not verified in app-private storage"
+            DebugLogger.warn(TAG, modelStatus)
+            modelLoading = false
+            return
+        }
+
+        modelStatus = "Loading ${S1Config.MODEL_NAME}"
+        val started = SystemClock.elapsedRealtime()
+        try {
+            val result = s1Runtime.load(selection.file.path, selection.computeUnits)
+            modelReady = true
+            val elapsed = SystemClock.elapsedRealtime() - started
+            val modelKind = if (selection.npuOptimized) "NPU model" else "compatibility model"
+            modelStatus = "Ready on ${s1Runtime.activeComputeUnit.uppercase()} in ${elapsed}ms ($modelKind)"
+            DebugLogger.log(TAG, "${S1Config.MODEL_NAME} loaded: $result; $modelStatus")
+        } catch (exception: Throwable) {
+            modelReady = false
+            modelStatus = "S1 unavailable; deterministic fallback active"
+            DebugLogger.error(TAG, modelStatus, exception)
+        } finally {
+            modelLoading = false
         }
     }
 

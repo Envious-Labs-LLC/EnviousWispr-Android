@@ -134,7 +134,11 @@ internal class CaptureSessionController(
             // A registration that wedged and then returned: the silence bound may already have
             // ended this take and released the binding, and a start now would record for nobody
             // (review round 2, F1). Checked on the lane, before the start and again after it.
-            if (!phase.isStarting(id)) return@command
+            if (!phase.isStarting(id)) {
+                // Named, so the one outcome of this check that leaves no other trace can be read (#210).
+                log.warn("Capture start skipped: the take is no longer starting")
+                return@command
+            }
             val started = try {
                 capture.startCaptureForTake(
                     preferences.autoStopOnSilence,

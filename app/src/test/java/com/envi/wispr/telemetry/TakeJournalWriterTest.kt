@@ -3,6 +3,7 @@ package com.envi.wispr.telemetry
 import com.envi.wispr.ui.TerminalReason
 import com.envi.wispr.ui.TriggerSource
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -90,7 +91,7 @@ class TakeJournalWriterTest {
         writer.advance("t1", TakeStage.RECORDING)
         writer.associate("t1", 42L)
         writer.terminal(terminal("t1", TerminalReason.COMPLETED))
-        assertTrue(landed.await())
+        assertTrue(withTimeout(10_000) { landed.await() })
         drain(writer, dao, 4)
         assertEquals(
             listOf("admit:t1:BUBBLE_HOLD:ADMITTED", "advance:t1:RECORDING:1", "associate:t1:42", "terminal:t1:completed:COMPLETED"),

@@ -91,6 +91,9 @@ internal class DictationSessionCoordinator(
     private val defectSink: (AppDefect, Map<String, Any?>) -> Unit = Telemetry::defect,
 ) : PipelineController.Listener {
     companion object {
+        /** [claimFallback]'s answer when no request was open; ledger ids are never 0. */
+        private const val NO_REQUEST = 0L
+
         /**
          * macOS's own sentence for this state, reused rather than reinvented. Android writing its own
          * words for a state macOS has already worded is how the two products drift apart.
@@ -453,6 +456,19 @@ internal class DictationSessionCoordinator(
         polishLedger.claim(requestId).also { claimed -> if (claimed) polishDecision = PolishDecision.Claimed }
     }
 
+    /**
+     * A fallback that is not an answer to the open request (a disconnect) wins only from an undecided take or by
+     * claiming the open request, in ONE operation under [polishSubmissionLock] (#234). Returns null when another
+     * path already decided, else the request id it claimed (to cancel on the engine), or [NO_REQUEST].
+     */
+    private fun claimFallback(): Long? = synchronized(polishSubmissionLock) {
+        when (val decision = polishDecision) {
+            PolishDecision.Undecided -> NO_REQUEST
+            is PolishDecision.Open -> decision.requestId.takeIf { polishLedger.claim(it) }
+            PolishDecision.Claimed -> null
+        }?.also { polishDecision = PolishDecision.Claimed }
+    }
+
     override fun onCaptureConnected() {
         log.log("Audio capture connected")
         tryStartRecording()
@@ -476,7 +492,13 @@ internal class DictationSessionCoordinator(
         log.warn("Speech service disconnected")
         if (state.get() == SessionState.PROCESSING) {
             if (rawTranscript.isNotBlank()) {
-                publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
+                // The text is here; polish may still answer it. One decision picks the winner (#234).
+                claimFallback()?.let { claimed ->
+                    // A claimed request is still running on a live engine: stop it, as publishFallback's own
+                    // close would have, outside the lock.
+                    if (claimed != NO_REQUEST) runCatching { pipeline.polish?.cancel(claimed) }
+                    publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
+                }
             } else if (take.arbiter.commitNow(TerminalReason.ASR_PROCESS_DIED)) {
                 take.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                 endAsFailure(TerminalReason.ASR_PROCESS_DIED)
@@ -494,6 +516,7 @@ internal class DictationSessionCoordinator(
         // models resident, because the speech model stays loaded after it transcribes, and costs the
         // user 0.9 to 3.1 s of wait. `architecture-rules.md` RULE: isolate-limbs carries the numbers.
         runCatching { pipeline.polish?.warmUpWithPolicy(sessionPreferences.policy) }
+            .onFailure { error -> log.warn("Polish warm-up failed: ${error.javaClass.simpleName}") }
         log.log("Polish service connected")
     }
 
@@ -507,6 +530,8 @@ internal class DictationSessionCoordinator(
         log.warn("Polish service disconnected")
         val seen = state.get()
         if (seen != SessionState.STARTING && seen != SessionState.RECORDING && seen != SessionState.PROCESSING) return
+        // A take already destroyed or committed is past failing: a teardown's own callback reports nothing.
+        if (destroyed.get() || take.arbiter.committed != null) return
         val claimedOpen = synchronized(polishSubmissionLock) {
             if (polishLost == null) polishLost = PolishReason.SERVICE_DIED
             when (val decision = polishDecision) {
@@ -964,10 +989,11 @@ internal class DictationSessionCoordinator(
             // engine must not be able to hold the main thread.
             var fallback: PolishReason? = null
             var unansweredLink = false
+            var ended = false
             val requestId = synchronized(polishSubmissionLock) {
                 if (state.get() != SessionState.PROCESSING || !take.arbiter.isOpen) {
-                    log.log("Transcript arrived after the session ended; not polishing")
-                    return@launch
+                    ended = true
+                    return@synchronized null
                 }
                 if (polishDecision != PolishDecision.Undecided) return@launch
                 val lost = polishLost
@@ -991,6 +1017,10 @@ internal class DictationSessionCoordinator(
                     publishFallback(rawText, takePreferences, PolishReason.WATCHDOG_TIMEOUT)
                 }
                 opened
+            }
+            if (ended) {
+                log.log("Transcript arrived after the session ended; not polishing")
+                return@launch
             }
             if (requestId == null) {
                 // A bound polish that never connected before speech answered is a failure too (#234).

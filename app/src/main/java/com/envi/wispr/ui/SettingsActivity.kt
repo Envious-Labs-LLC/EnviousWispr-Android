@@ -103,7 +103,7 @@ class SettingsActivity : ComponentActivity() {
                                 requestPermissionWithRecovery(Manifest.permission.RECORD_AUDIO) { microphonePermission.launch(it) }
                             },
                             onRequestNotifications = {
-                                if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissionWithRecovery(Manifest.permission.POST_NOTIFICATIONS) { notificationPermission.launch(it) } else refreshReadiness()
+                                requestPermissionWithRecovery(Manifest.permission.POST_NOTIFICATIONS) { notificationPermission.launch(it) }
                             },
                             onOpenAccessibility = {
                                 startActivity(Intent(this, AccessibilityGuideActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

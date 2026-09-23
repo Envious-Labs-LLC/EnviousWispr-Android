@@ -6,13 +6,11 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
-import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
 import android.widget.Toast
@@ -180,15 +178,9 @@ class DictationSessionService : Service() {
             return
         }
         runCatching {
-            // VibratorManager is API 31 against minSdk 33. Guarded here as well as in
-            // AccessibilityInsertionRunner.performResultHaptic: the runCatching only degrades to no
-            // haptics at all on the oldest supported phone, which is a silent loss of every cue.
-            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                getSystemService(VibratorManager::class.java)?.defaultVibrator
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Vibrator::class.java)
-            } ?: return
+            // VibratorManager (API 31) is always present at minSdk 33 (#260); the runCatching stays, so a
+            // vibrator failure costs the cue and nothing else.
+            val vibrator = getSystemService(VibratorManager::class.java)?.defaultVibrator ?: return
             if (vibrator.hasVibrator()) {
                 vibrator.vibrate(VibrationEffect.createOneShot(cue.durationMs, cue.amplitude))
             }

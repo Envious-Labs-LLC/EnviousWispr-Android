@@ -3,7 +3,6 @@ package com.envi.wispr.ui
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -78,7 +77,7 @@ internal class ReadinessViewModel(
     fun refreshPermissions() {
         readiness.value = readiness.value.copy(
             microphoneGranted = ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
-            notificationsGranted = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED,
+            notificationsGranted = ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED,
             accessibilityPermitted = AccessibilityPermission.isGranted(appContext),
         )
     }
@@ -110,7 +109,7 @@ internal fun readAppReadiness(context: Context): AppReadiness {
             context,
             Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED,
-        notificationsGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        notificationsGranted =
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.POST_NOTIFICATIONS,

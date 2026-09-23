@@ -1,0 +1,3 @@
+# #260 mutation receipts (each applied alone, its named row run, the source restored)
+RED: m1 a dead check back in the theme -> noComparisonInTheAppIsOneMinSdkDecides
+RED: m2 the floor rule loosened to < -> theRuleDecidesExactlyTheComparisonsTheFloorFixes

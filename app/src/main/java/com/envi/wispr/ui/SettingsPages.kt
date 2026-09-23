@@ -1,6 +1,5 @@
 package com.envi.wispr.ui
 
-import android.os.Build
 import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.InputDeviceResolver
 import com.envi.wispr.audio.InputDeviceCandidate
@@ -234,10 +233,6 @@ internal fun AppearancePage(
     onDynamicColorChanged: (Boolean) -> Unit,
     onBubbleLookChanged: (BubbleLook) -> Unit,
 ) {
-    // Wallpaper colours are an Android 12 feature and `minSdk` is 30, so on the oldest supported phone
-    // the switch would store a value the theme cannot read. `EnviousWisprTheme` already falls back to
-    // the brand palette there; the row has to say so rather than look like it worked.
-    val wallpaperColoursSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     ScreenContainer(subtitle = SettingsPage.Appearance.subtitle) {
         SettingsGroup("Floating button") {
             BubbleLookPicker(selected = preferences.bubbleLook, onSelect = onBubbleLookChanged)
@@ -251,25 +246,16 @@ internal fun AppearancePage(
         SettingsGroup("Colours") {
             SettingsToggleRow(
                 title = "Use Galaxy colours",
-                subtitle = if (wallpaperColoursSupported) {
-                    "Take the colours from this phone's wallpaper instead of EnviousWispr's own."
-                } else {
-                    "Needs Android 12. This phone keeps EnviousWispr's own colours."
-                },
-                checked = wallpaperColoursSupported && preferences.dynamicColorEnabled,
-                enabled = wallpaperColoursSupported,
+                // Wallpaper colours are Android 12; every supported phone has them at minSdk 33 (#260).
+                subtitle = "Take the colours from this phone's wallpaper instead of EnviousWispr's own.",
+                checked = preferences.dynamicColorEnabled,
                 onCheckedChange = onDynamicColorChanged,
             )
         }
         Text(
-            if (wallpaperColoursSupported) {
-                "EnviousWispr uses its own purple. Turn this on and the app takes your wallpaper's " +
-                    "colours instead. Either way it follows the light or dark setting you chose for " +
-                    "the phone; choosing light or dark just for this app is not available yet."
-            } else {
-                "EnviousWispr uses its own purple. It follows the light or dark setting you chose " +
-                    "for the phone; choosing light or dark just for this app is not available yet."
-            },
+            "EnviousWispr uses its own purple. Turn this on and the app takes your wallpaper's " +
+                "colours instead. Either way it follows the light or dark setting you chose for " +
+                "the phone; choosing light or dark just for this app is not available yet.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

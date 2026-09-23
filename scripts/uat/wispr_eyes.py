@@ -299,6 +299,13 @@ def _debt_key(entry):
             return (what, named["where"], named["label"])
         except (ValueError, KeyError, TypeError):
             return (what, previous)
+    if what == "choice":
+        # One debt per GROUP, named by its members: the first state recorded is the one to go back to.
+        try:
+            named = json.loads(previous)
+            return (what, named["where"], tuple(sorted(named["group"])))
+        except (ValueError, KeyError, TypeError):
+            return (what, previous)
     return (what,)
 
 
@@ -1127,8 +1134,31 @@ def on_screen(where):
         node = row[where]
         return bool(node["selected"]) or _holder(node, lambda n: n["selected"]) is not None
     if where in PAGES:
-        return present(where, exact=True) and present("Back", exact=True)
+        return _page_title_is(where)
     raise Blocked(f"{where!r} is not a screen this app has")
+
+
+def _page_title_is(where, package=PACKAGE):
+    """Is `where` the TITLE of the page showing: a label on the Back button's own line?
+
+    Not "is the word anywhere on screen" (#218 emulator pass, 2026-09-23): the Microphone page also
+    shows `Microphone` as the value of its Access row, so an exact-match lookup refused as ambiguous on
+    every switch there, and a page that merely MENTIONS another page's name read as that page.
+    """
+    try:
+        back_button = find("Back", exact=True, package=package)
+    except Blocked as refusal:
+        if "nothing on screen matches" in str(refusal):
+            return False
+        raise
+    top, bottom = back_button["bounds"][1], back_button["bounds"][3]
+    titles = [n for n in tree(refresh=False)
+              if n["package"] == package and where in (n["text"], n["desc"])
+              and top <= n["centre"][1] <= bottom]
+    if len(titles) > 1:
+        raise Blocked(f"{len(titles)} labels named {where!r} sit on the Back button's line, so which is "
+                      "the page title is a guess")
+    return bool(titles)
 
 
 def one_way(label, package=PACKAGE):
@@ -1140,24 +1170,175 @@ def one_way(label, package=PACKAGE):
     single-choice group can do. A caller that flips one "and puts it back" turns the founder's polish
     off and leaves it off.
 
-    **The discriminator is measured: a real switch is CLICKABLE while it is on, and the chosen member of
-    a group is NOT.** That is Compose saying there is nothing to press, and it is the same signal the
-    tab bar gives for the tab you are already on. Read off the phone 2026-09-06: the three Clipboard
-    switches all report `checkable, checked, clickable` while on; `This phone` reports
-    `checkable, checked` and no click.
+    **First the mark inside the row, then clickability.** A radio row holds a `RadioButton` and a chip
+    row a `CheckBox`; a group is the unbroken run of sibling rows with the same mark (`_choice_group`).
+    A radio member is always one-way; a chip group is one-way when exactly one is chosen, and `choose()`
+    confirms it by pressing. Only a row with no mark falls back to clickability: a real switch is
+    CLICKABLE while it is on, and the chosen member of a radio group is NOT. Read off the phone
+    2026-09-06: the three Clipboard switches all report `checkable, checked, clickable` while on;
+    `This phone` reports `checkable, checked` and no click. That rule alone misread the Writing style
+    chips, whose chosen chip stays clickable (#218 emulator pass, 2026-09-23).
     """
     node = find(label, exact=True, clickable=None, package=package)
     row = _holder(node, lambda n: n["checkable"], package=package, described="switches")
     if row is None:
         raise Blocked(f"{label!r} is on screen but nothing around it is a switch")
+    # THE MARK INSIDE THE ROW COMES FIRST (#218 emulator pass, 2026-09-23). The Writing style chips
+    # (Tone, Structure, Context) are pick-one, and their CHOSEN chip stays clickable, so the clickable
+    # rule below read them as switches: the flip-back press could not un-pick, and the journal filled
+    # with switch debts that `restore()` could never pay. A chip row holds a CheckBox, a radio row a
+    # RadioButton, and a switch row neither, on both eyes.
+    nodes = tree(refresh=False)
+    group = _choice_group(row, nodes, package=package)
+    if group is not None:
+        mark, members = group
+        if mark == "RadioButton":
+            return True
+        # Exactly one chosen is what a pick-one group looks like at rest. A chip group that is really
+        # several-at-once is caught by `choose()`, which presses, reads, and undoes.
+        return len(members) >= 2 and sum(bool(m["on"]) for m in members) == 1
     top, bottom = row["bounds"][1], row["bounds"][3]
-    band = [n for n in tree(refresh=False)
+    band = [n for n in nodes
             if n["checkable"] and n["package"] == package
             and n["bounds"][1] < bottom and n["bounds"][3] > top]
     if len(band) < 2:
         return False
     chosen = [n for n in band if n["on"]]
     return len(chosen) == 1 and not chosen[0]["clickable"]
+
+
+# The mark a member of a choice group carries inside its own row. A switch row carries neither.
+_CHOICE_MARKS = ("RadioButton", "CheckBox")
+
+
+def _choice_group(row, nodes, package=PACKAGE):
+    """(mark, member rows) for a row in a group of choices, or None for a row that is a switch.
+
+    A group is the unbroken run of SIBLING rows carrying the same mark. Siblings, not a horizontal
+    band: the Tone chips wrap, so `Formal` sits on the line below `Casual`. Unbroken: the Tone and
+    Structure chips share one parent, and the `Structure` heading between them is what ends a group.
+    """
+    index = next((i for i, n in enumerate(nodes) if n is row), None)
+    if index is None:
+        raise Blocked("the row being asked about is not on the screen that was read")
+
+    def mark(i):
+        if not (nodes[i]["checkable"] and nodes[i]["package"] == package):
+            return None
+        kinds = {n["kind"] for n in nodes if n.get("parent") == i and n["kind"] in _CHOICE_MARKS}
+        return kinds.pop() if len(kinds) == 1 else None
+
+    own = mark(index)
+    if own is None:
+        return None
+    siblings = [i for i, n in enumerate(nodes) if n.get("parent") == row.get("parent")]
+    at = siblings.index(index)
+    low = high = at
+    while low > 0 and mark(siblings[low - 1]) == own:
+        low -= 1
+    while high + 1 < len(siblings) and mark(siblings[high + 1]) == own:
+        high += 1
+    return own, [nodes[i] for i in siblings[low:high + 1]]
+
+
+def _row_title(row, nodes, package=PACKAGE):
+    """The words a row is known by: its topmost, leftmost label, as `switches()` names it."""
+    inside = []
+    for node in nodes:
+        if node["package"] != package or not _label(node):
+            continue
+        current = node
+        while current is not None and not (current["package"] == package and current["checkable"]):
+            current = nodes[current["parent"]] if current.get("parent") is not None else None
+        if current is row:
+            inside.append(node)
+    if not inside:
+        raise Blocked("a choice on screen carries no words, so it cannot be chosen or put back by name")
+    inside.sort(key=lambda n: (n["bounds"][1], n["bounds"][0]))
+    return _label(inside[0])
+
+
+def _group_state(label, package=PACKAGE):
+    """(mark, {member name: chosen}) for the choice group holding `label`, from a fresh read."""
+    node = find(label, exact=True, clickable=None, package=package)
+    row = _holder(node, lambda n: n["checkable"], package=package, described="switches")
+    nodes = tree(refresh=False)
+    group = _choice_group(row, nodes, package=package) if row is not None else None
+    if group is None:
+        raise Blocked(f"{label!r} is not one of a group of choices")
+    mark, members = group
+    state = {}
+    for member in members:
+        name = _row_title(member, nodes, package=package)
+        if name in state:
+            raise Blocked(f"two choices in the group holding {label!r} are both named {name!r}")
+        state[name] = bool(member["on"])
+    return mark, state
+
+
+def _group_settled(label, before, package=PACKAGE, max_wait=1.2, gap=0.1):
+    """The group holding `label` once it has moved off `before` and read the same twice, or the last read."""
+    deadline = time.monotonic() + max_wait
+    last = None
+    while True:
+        _, now = _group_state(label, package=package)
+        if now != before and now == last:
+            return now
+        last = now
+        if time.monotonic() >= deadline:
+            return now
+        time.sleep(gap)
+
+
+def _settle_choices_locked(where, state):
+    """Settle every choice debt on `where` whose recorded group is the state now showing. Caller holds the book."""
+    for owed in _owed():
+        if owed[0] != "choice":
+            continue
+        named = json.loads(owed[1])
+        if named["where"] == where and named["group"] == state:
+            _settled_locked(owed, _STATE["serial"])
+
+
+@_atomic_change
+def choose(label, where, package=PACKAGE):
+    """Pick one member of a pick-one group BY NAME, read the whole group back. Returns it as it was.
+
+    The debt records the WHOLE group, never one member as a switch: a pick-one choice is put back by
+    choosing the original by name, which `restore()` does from the book alone. A group that turns out
+    to let several be on at once is not pick-one: the press is undone and the call refuses.
+    """
+    if package != PACKAGE:
+        raise Blocked(f"choices are only changed in {PACKAGE}, not in {package}")
+    if where not in TABS and where not in PAGES:
+        raise Blocked(f"{where!r} is not a screen this app has, and a choice has to say where it was made "
+                      f"or it cannot be put back. One of: {', '.join(TABS + PAGES)}")
+    if not on_screen(where):
+        raise Blocked(f"the phone is not showing {where!r}, so a choice recorded against it could not be "
+                      f"put back. Open it first: open_tab({where!r}) or nav({where!r}).")
+    _, before = _group_state(label, package=package)
+    if len(before) < 2:
+        raise Blocked(f"{label!r} is alone, not one of a set of choices")
+    if before[label] and sum(before.values()) == 1:
+        return before
+    debt = ("choice", json.dumps({"where": where, "group": before}, sort_keys=True))
+    _owe(debt)
+    tap(label, package=package)
+    after = _group_settled(label, before, package=package)
+    if not after[label]:
+        raise Blocked(f"{label!r} was pressed but is not chosen; the group is owed back to how it was")
+    still_on = sorted([name for name, on in after.items() if on and name != label])
+    if still_on:
+        tap(label, package=package)
+        undone = _group_settled(label, after, package=package)
+        _settle_choices_locked(where, undone)
+        raise Blocked(
+            f"the group holding {label!r} lets several be on at once: choosing it left "
+            f"{', '.join(still_on)} on, so it is not pick-one. {label!r} was pressed again to undo it"
+            + ("." if undone == before else f", and the group did NOT go back; it reads {undone}, and "
+               "the debt is kept for restore()."))
+    _settle_choices_locked(where, after)
+    return before
 
 
 def _switch_settled(label, wanted, package=PACKAGE, max_wait=0.6, gap=0.1):
@@ -3854,12 +4035,7 @@ def _restore_one_here(entry):
         # IN PLACE WHEN THE SCREEN IS ALREADY UP (#181): both the screen identity and the exact label,
         # never the label alone, which can sit on another page. Otherwise navigate as before.
         if not (on_screen(wanted["where"]) and present(wanted["label"], exact=True)):
-            if wanted["where"] in TABS:
-                open_tab(wanted["where"])
-            else:
-                open_settings()
-                tap("Open settings menu")
-                tap(wanted["where"], exact=True)
+            _reach(wanted["where"])
         if not reveal(wanted["label"]):
             raise Blocked(f"{wanted['label']!r} could not be found on {wanted['where']}, so it cannot "
                           "be put back")
@@ -3869,6 +4045,39 @@ def _restore_one_here(entry):
         if switch(wanted["label"]) != wanted["was"]:
             raise Blocked(f"{wanted['label']!r} would not go back to "
                           f"{'on' if wanted['was'] else 'off'}")
+    elif what == "choice":
+        # A pick-one group goes back by CHOOSING BY NAME, never by pressing a member "off". The debt
+        # holds the whole group, so the check at the end is the whole group, not one member.
+        wanted = json.loads(previous)
+        where, group = wanted["where"], wanted["group"]
+        names = sorted(group)
+        chosen = ", ".join(n for n in names if group[n]) or "nothing chosen"
+        if not (on_screen(where) and present(names[0], exact=True)):
+            _reach(where)
+        if not reveal(names[0]):
+            raise Blocked(f"{names[0]!r} could not be found on {where}, so its group cannot be put back")
+        _, now = _group_state(names[0])
+        if sorted(now) != names:
+            # The rest of the group may be just below the fold. A page that does not scroll is showing
+            # all of itself, and the mismatch is then reported below as it stands.
+            try:
+                scroll("down", 1)
+            except Blocked as why:
+                if "nothing on this screen scrolls" not in str(why):
+                    raise
+            _, now = _group_state(names[0])
+        for _ in range(len(names) + 1):
+            if sorted(now) != names:
+                raise Blocked(f"the group holding {names[0]!r} on {where} reads {sorted(now)}, not the "
+                              f"{names} that was changed, so it is not put back")
+            if now == group:
+                break
+            target = next((n for n in names if group[n] and not now[n]), None) or next(
+                n for n in names if now[n] and not group[n])
+            tap(target)
+            now = _group_settled(target, now)
+        if now != group:
+            raise Blocked(f"the group holding {names[0]!r} on {where} would not go back to {chosen}")
     elif what == "host-mic":
         wanted = previous == "on"
         _grpc("setMicrophoneState", {"realAudioEnabled": wanted})
@@ -4182,9 +4391,7 @@ def scan(toggle=False):
         here, whole = _walk_this_screen()
         found.append(("tab", name, here, whole))
     for name in PAGES:
-        open_settings()
-        tap("Open settings menu")
-        tap(name, exact=True)
+        _reach(name)
         here, whole = _walk_this_screen()
         found.append(("page", name, here, whole))
         back()
@@ -4207,35 +4414,96 @@ def scan(toggle=False):
         for kind, name, controls, _whole in found:
             if not controls:
                 continue
-            if kind == "tab":
-                open_tab(name)
-            else:
-                open_settings(); tap("Open settings menu"); tap(name, exact=True)
-            for label, was in sorted(controls.items()):
-                if not reveal(label):
-                    report.append(f"ISSUE: {name} / {label} could not be brought back on screen")
-                    continue
-                try:
-                    if one_way(label):
-                        report.append(f"SKIPPED: {name} / {label} is one of a set where exactly one is "
-                                      "chosen, so flipping it could not be undone")
-                        continue
-                except Blocked as why:
-                    report.append(f"ISSUE: {name} / {label}: {why}")
-                    continue
-                try:
-                    set_switch(label, not was, where=name)
-                    moved = switch(label) != was
-                    set_switch(label, was, where=name)
-                    back_again = switch(label) == was
-                except Blocked as why:
-                    report.append(f"ISSUE: {name} / {label}: {why}")
-                    continue
-                report.append(
-                    f"{'VERIFIED' if moved and back_again else 'ISSUE'}: {name} / {label} "
-                    f"{'moves and comes back' if moved and back_again else 'did not behave'}")
+            _reach(name)
+            report.extend(_exercise_screen(name, controls))
             if kind == "page":
                 back()
+    return report
+
+
+def _reach(where):
+    """Open a tab or a drawer page by name, from wherever the app is."""
+    if where in TABS:
+        open_tab(where)
+    else:
+        open_settings()
+        tap("Open settings menu")
+        tap(where, exact=True)
+
+
+def _exercise_screen(name, controls):
+    """Flip every switch on the showing screen and put it back; pick through every pick-one chip group.
+
+    A switch is flipped and flipped back. A chip group (Tone, Structure, Context) is walked BY NAME:
+    each other member is chosen and the original chosen back, and its debt is the whole group, never a
+    switch debt on one chip. A radio group is skipped: it chooses the polish engine or the microphone,
+    and picking through those starts work (a model, a device) that a settings walk has no business
+    starting.
+    """
+    report = []
+    done_groups = set()
+    for label, was in sorted(controls.items()):
+        if not reveal(label):
+            report.append(f"ISSUE: {name} / {label} could not be brought back on screen")
+            continue
+        try:
+            if one_way(label):
+                try:
+                    mark, group = _group_state(label)
+                except Blocked as why:
+                    if "not one of a group of choices" not in str(why):
+                        raise
+                    mark, group = None, {}
+                if mark != "CheckBox":
+                    report.append(f"SKIPPED: {name} / {label} is one of a set where exactly one is "
+                                  "chosen, so flipping it could not be undone")
+                    continue
+                if tuple(sorted(group)) not in done_groups:
+                    done_groups.add(tuple(sorted(group)))
+                    report.extend(_exercise_group(name, group))
+                continue
+        except Blocked as why:
+            report.append(f"ISSUE: {name} / {label}: {why}")
+            continue
+        try:
+            set_switch(label, not was, where=name)
+            moved = switch(label) != was
+            set_switch(label, was, where=name)
+            back_again = switch(label) == was
+        except Blocked as why:
+            report.append(f"ISSUE: {name} / {label}: {why}")
+            continue
+        report.append(
+            f"{'VERIFIED' if moved and back_again else 'ISSUE'}: {name} / {label} "
+            f"{'moves and comes back' if moved and back_again else 'did not behave'}")
+    return report
+
+
+def _exercise_group(name, group):
+    """Choose each other member of a pick-one chip group by name, then the original back by name."""
+    original = next(member for member, on in group.items() if on)
+    report = []
+    for other in sorted(group):
+        if other == original:
+            continue
+        try:
+            choose(other, where=name)
+            _, picked = _group_state(other)
+            moved = picked[other] and not picked[original]
+            choose(original, where=name)
+            _, now = _group_state(original)
+            back_again = now == group
+        except Blocked as why:
+            if "lets several be on at once" in str(why):
+                report.append(f"NOTE: {name} / {other}: several can be on at once in the group with "
+                              f"{original}, so it was not picked through; {why}")
+                return report
+            report.append(f"ISSUE: {name} / {other}: {why}")
+            continue
+        report.append(
+            f"VERIFIED: {name} / {other}: picks {other} and goes back to {original}" if moved and back_again
+            else f"ISSUE: {name} / {other}: the pick {'did not move' if not moved else 'did not come back'} "
+                 f"(the group reads {now})")
     return report
 
 

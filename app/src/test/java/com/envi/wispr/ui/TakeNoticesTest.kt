@@ -85,7 +85,8 @@ class TakeNoticesTest {
     @Test
     fun theSessionOwnerNeverAuthorsAnEndingSentence() {
         // The identity is the member; a literal at a call site is the old shape coming back.
-        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        // Every file of the session owner (#216): the controller's events reach these calls too.
+        val source = SessionSources.all
         for (call in listOf("showError(\"", "failWhileStarting(\"", "handleServiceFailure(\"", "announceError(\"")) {
             assertTrue("found $call", !source.contains(call))
         }

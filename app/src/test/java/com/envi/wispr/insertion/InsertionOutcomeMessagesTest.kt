@@ -282,9 +282,9 @@ class InsertionOutcomeMessagesTest {
      */
     @Test
     fun noFallbackPathBuzzesThePhone() {
-        // Since #186 the announcement lives in the coordinator; the haptic would read `host.vibrate(`.
+        // Since #216 the announcement lives in the owner's `SessionFinalizer`; the haptic would read `host.vibrate(`.
         val session = slice(
-            read("ui/DictationSessionCoordinator.kt"),
+            read("ui/SessionFinalizer.kt"),
             "private fun announceInsertionFallback(",
             "\n    /**",
         )

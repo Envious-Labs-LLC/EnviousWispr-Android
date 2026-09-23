@@ -43,7 +43,7 @@ class CaptureNoticesTest {
         // and the Service does not pass one, so the process-scoped default is what production runs with.
         val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
         assertTrue(source.contains("private val tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS"))
-        assertFalse(source.contains("BluetoothTipGate()"))
+        assertFalse(SessionSources.all.contains("BluetoothTipGate()"))
         val service = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
         assertFalse("the Service must not hand the coordinator a per-instance gate", service.contains("tipGate ="))
         assertFalse(service.contains("BluetoothTipGate"))
@@ -69,9 +69,11 @@ class CaptureNoticesTest {
         // FORCED is published first, inside the live transition, so the once-per-process tip cannot
         // take the recorder's one slot from it (plan §3.2, 2026-09-18). Since #115 the tip is decided
         // once, at live, from the pushed route kind; there is no poll for it to precede.
-        val publish = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        val owner = SessionSources.coordinator
+        assertTrue(owner.contains("private fun publishLive(") && owner.contains("private fun publishSilenceNoticeIfNeeded("))
+        val publish = owner
             .substringAfter("private fun publishLive(")
-            .substringBefore("private fun listenForPicture(")
+            .substringBefore("private fun publishSilenceNoticeIfNeeded(")
         assertTrue(publish.indexOf("sayWhileRecording(CaptureNotices.EARBUDS_SILENT)") < publish.indexOf("publishMicrophoneNoticesIfNeeded(routeKind)"))
         assertTrue(publish.indexOf("forcedNoticeShown = true") < publish.indexOf("sayWhileRecording(CaptureNotices.EARBUDS_SILENT)"))
         assertEquals("Earbuds are not sending sound.", CaptureNotices.EARBUDS_SILENT)

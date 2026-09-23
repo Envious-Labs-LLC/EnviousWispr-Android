@@ -1,5 +1,6 @@
 package com.envi.wispr.paste
 
+import com.envi.wispr.ui.SessionSources
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -106,8 +107,10 @@ class LipsBubbleWiringTest {
         assertTrue(session.contains("BubbleRequests.resolveStart("))
         assertTrue(session.contains("BubbleRequests.resolveCommand("))
         // The early release is consumed at the RECORDING transition, nowhere else.
-        val start = session.substringAfter("private fun tryStartRecording()").substringBefore("private fun startPolling()")
-        assertTrue(start.contains("if (stopAfterRecording)"))
+        assertTrue(session.contains("private fun publishLive(") && session.contains("private fun publishSilenceNoticeIfNeeded("))
+        val live = session.substringAfter("private fun publishLive(").substringBefore("private fun publishSilenceNoticeIfNeeded(")
+        assertTrue(live.contains("if (stopAfterRecording)"))
+        assertEquals("and only there", 1, Regex("if \\(stopAfterRecording\\)").findAll(SessionSources.all).count())
     }
 
     @Test

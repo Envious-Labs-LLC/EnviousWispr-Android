@@ -1,5 +1,6 @@
 package com.envi.wispr.audio
 
+import com.envi.wispr.ui.SessionSources
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -26,7 +27,9 @@ class LiveAudioMeterWiringTest {
     /** The picture's owner since #188: ring, analyser thread, published bands and the push. */
     private val picture = File("src/main/java/com/envi/wispr/audio/PicturePublisher.kt").readText()
     /** The owner since #186: the meter moved from the Service to the coordinator with its seams (`surface` over the overlay state). */
-    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+    private val session = SessionSources.coordinator
+    /** The owner's line to the capture process since #216: the registration itself lives here. */
+    private val captureSide = SessionSources.capture
     private val recorder = File("src/main/java/com/envi/wispr/ui/RecorderSurface.kt").readText()
     private val overlayState = File("src/main/java/com/envi/wispr/shortcuts/RecordingOverlayState.kt").readText()
     private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
@@ -44,7 +47,7 @@ class LiveAudioMeterWiringTest {
 
     @Test
     fun theOwnerSubscribesToThePictureAndNeverPollsIt() {
-        val listen = body(session, "private fun listenForPicture()")
+        val listen = body(captureSide, "fun listenForPicture()")
         assertTrue("the serial is captured once, when the take starts", listen.contains("val takeSerial = surface.currentTakeSerial()"))
         assertTrue(
             "the owner registers a listener that stamps that serial on every picture",
@@ -52,15 +55,15 @@ class LiveAudioMeterWiringTest {
         )
         // Since #115 review round 1 the binder call runs on the capture command lane, never on main, and a
         // failure there is logged by the lane and costs nothing else.
-        assertTrue("and registering runs on the lane and cannot end the take", listen.contains("commandCapture(\"listen for the picture\")"))
+        assertTrue("and registering runs on the lane and cannot end the take", listen.contains("command(\"listen for the picture\")"))
         // The seam is only as good as its production delegate (Codex review C1, 2026-09-20).
         assertTrue(recorder.contains("override fun updateBands(takeSerial: Long, bands: FloatArray) = RecordingOverlayState.updateBands(takeSerial, bands)"))
         assertTrue(recorder.contains("override fun currentTakeSerial(): Long = RecordingOverlayState.snapshots.value.takeSerial"))
         // Since #115 there is no polling thread at all: the listener is registered at live, in
         // publishLive after show() stamped the take's serial.
         val publish = body(session, "private fun publishLive(")
-        assertTrue("live registers the picture listener after show()", publish.indexOf("surface.show()") in 0 until publish.indexOf("listenForPicture()"))
-        assertTrue("and no meter or polling thread remains", listOf("DictationMeterThread", "METER_INTERVAL_MS", "DictationPollingThread", "startPolling").none { session.contains(it) })
+        assertTrue("live registers the picture listener after show()", publish.indexOf("surface.show()") in 0 until publish.indexOf("capture.listenForPicture()"))
+        assertTrue("and no meter or polling thread remains", listOf("DictationMeterThread", "METER_INTERVAL_MS", "DictationPollingThread", "startPolling").none { SessionSources.all.contains(it) })
     }
 
     @Test
@@ -69,8 +72,8 @@ class LiveAudioMeterWiringTest {
         // capture process at teardown, because on the path that matters it is the process that stopped
         // answering. The Kotlin link has no unregister member to call.
         val finish = body(session, "private fun finishSession()")
-        assertTrue("finishSession disarms the bound and unbinds", finish.indexOf("disarmSilenceBound()") in 0 until finish.indexOf("pipeline.unbind()"))
-        assertFalse(session.contains("stopListeningForSpectrum") || session.contains("stopListeningForTake"))
+        assertTrue("finishSession disarms the bound and unbinds", finish.indexOf("capture.disarm()") in 0 until finish.indexOf("pipeline.unbind()"))
+        assertFalse(SessionSources.all.contains("stopListeningForSpectrum") || SessionSources.all.contains("stopListeningForTake"))
         assertFalse(links.contains("stopListeningForSpectrum") || links.contains("stopListeningForTake"))
     }
 

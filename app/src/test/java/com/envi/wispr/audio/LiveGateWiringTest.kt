@@ -1,5 +1,6 @@
 package com.envi.wispr.audio
 
+import com.envi.wispr.ui.SessionSources
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,7 +20,9 @@ class LiveGateWiringTest {
      * Since #186 the owner is the coordinator; the three connections live in `PipelineBindings` and the
      * preference writes in `SessionPreferencesSource`. Each pin below reads the file its statement moved to.
      */
-    private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+    private val session = SessionSources.coordinator
+    /** Since #216 the lane, the listener and both timers are the owner's `CaptureSessionController`. */
+    private val captureSide = SessionSources.capture
     private val preferences = File("src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt").readText()
     private val bindings = File("src/main/java/com/envi/wispr/ui/PipelineBindings.kt").readText()
 
@@ -140,11 +143,16 @@ class LiveGateWiringTest {
         assertTrue("every CAS out of STARTING/RECORDING ($casLines) sits under publishLock ($lockedCas)", casLines == lockedCas)
         // Since #115 the live event arrives on a binder thread and is posted to main, where commands
         // are dispatched, before it publishes.
-        val listener = session.substringAfter("private val takeListener = object : TakeListener {").substringBefore("\n    }\n")
-        assertTrue("publication is posted to the main thread, for this take's events only", listener.contains("host.postToMain { if (ours(takeId)) { rearmSilenceBound(); publishLive(forced, routeKind, routeReason, liveAfterMs) } }"))
+        assertTrue(captureSide.contains("private val takeListener = object : TakeListener {"))
+        val listener = captureSide.substringAfter("private val takeListener = object : TakeListener {").substringBefore("\n    }\n")
+        assertTrue("live is posted to the main thread, for this take's events only", listener.contains("host.postToMain { if (ours(takeId)) { rearmSilenceBound(); events(CaptureEvent.Live(forced, routeKind, routeReason, liveAfterMs)) } }"))
+        // Since #216 the controller reports and the owner publishes: the event must reach publishLive.
+        assertTrue("the owner publishes the reported live", body(session, "private fun onCaptureEvent(").contains("is CaptureEvent.Live -> publishLive(event.forced, event.routeKind, event.routeReason, event.liveAfterMs)"))
         assertTrue(body(session, "private fun publishLive(").contains("check(host.onMainThread())"))
         val deadline = body(session, "private fun onLiveDeadline()")
-        assertTrue("the deadline claims failure before any cleanup", deadline.indexOf("failWhileStarting(") < deadline.indexOf("stopCapture()"))
+        assertTrue("the deadline claims failure before any cleanup", deadline.indexOf("failWhileStarting(") in 0 until deadline.indexOf("capture.stop("))
+        assertTrue("the controller's deadline only reports", captureSide.contains("private val liveDeadline = Runnable { events(CaptureEvent.LiveDeadlinePassed) }"))
+        assertTrue("and the owner handles the report", body(session, "private fun onCaptureEvent(").contains("CaptureEvent.LiveDeadlinePassed -> onLiveDeadline()"))
         assertFalse("the deadline never overwrites another owner with showError", deadline.contains("showError("))
     }
 
@@ -165,9 +173,12 @@ class LiveGateWiringTest {
         // Since #193 the start call reads the take's FROZEN snapshot, never the live source; since #115
         // the snapshot is taken on main and the call runs on the capture command lane.
         val start = body(session, "private fun tryStartRecording()")
-        assertTrue("the snapshot is read on main before the command is issued", start.indexOf("val preferences = sessionPreferences") in 0 until start.indexOf("commandCapture(\"start\")"))
+        assertTrue("the snapshot is read on main and handed to the start", start.indexOf("val preferences = sessionPreferences") in 0 until start.indexOf("capture.start(preferences)"))
+        // Since #216 the lane body is the controller's: it must pass THAT snapshot's fields on.
+        val lane = owned(captureSide, "fun start(preferences: SessionPreferences): Boolean {")
+        assertTrue("the controller's start issues the command", lane.contains("command(\"start\")"))
         listOf("preferences.autoStopOnSilence", "preferences.silencePauseSeconds", "preferences.inputDevicePick", "preferences.keepEarbudsReady", "id,").forEach {
-            assertTrue("the start call carries $it", start.substringAfter("startCaptureForTake(").substringBefore(")").contains(it))
+            assertTrue("the start call carries $it", lane.substringAfter("startCaptureForTake(").substringBefore(")").contains(it))
         }
         val publish = body(session, "private fun publishLive(")
         assertTrue(publish.contains("synchronized(publishLock)"))
@@ -176,10 +187,11 @@ class LiveGateWiringTest {
         assertTrue("teardown invalidates under the same lock, before cleanup", destroy.indexOf("synchronized(publishLock)") < destroy.indexOf("serviceJob.cancel()"))
         // Since #115 there is no waiter thread: the STARTING bound is a main-thread deadline armed before
         // the start command and cancelled at live; the live event itself carries the transition.
-        assertTrue("the live deadline is armed before the start command", start.indexOf("host.postToMainDelayed(LIVE_WAIT_BOUND_MS, liveDeadline)") in 0 until start.indexOf("startCaptureForTake("))
+        assertTrue("the live deadline is armed before the start command", lane.indexOf("host.postToMainDelayed(LIVE_WAIT_BOUND_MS, liveDeadline)") in 0 until lane.indexOf("startCaptureForTake("))
         assertTrue("the deadline fails the take only while STARTING", body(session, "private fun onLiveDeadline()").contains("if (state.get() != SessionState.STARTING) return"))
-        assertTrue("live cancels the deadline", publish.contains("host.cancelMainDelayed(liveDeadline)"))
-        assertFalse("no waiter thread remains", session.contains("waitForLive") || session.contains("LiveWaiter"))
+        assertTrue("live cancels the deadline", publish.contains("capture.cancelLiveDeadline()"))
+        assertTrue("which cancels exactly that runnable", owned(captureSide, "fun cancelLiveDeadline() {").contains("host.cancelMainDelayed(liveDeadline)"))
+        assertFalse("no waiter thread remains", SessionSources.all.contains("waitForLive") || SessionSources.all.contains("LiveWaiter"))
     }
 
     @Test
@@ -199,7 +211,7 @@ class LiveGateWiringTest {
         assertTrue(cancel.contains("finishTakeOrStop()"))
         val error = body(session, "private fun announceError(")
         assertTrue(error.contains("pipeline.stopAudioService()"))
-        val finish = body(session, "private fun finishTakeOrStop()")
+        val finish = owned(captureSide, "fun finishTakeOrStop() {")
         assertTrue(finish.contains("if (!held) pipeline.stopAudioService()"))
     }
 }

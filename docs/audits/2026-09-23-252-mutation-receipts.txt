@@ -1,0 +1,14 @@
+# #252 mutation receipts (each applied alone, its named row run, the source restored)
+RED: m1a first restore unguarded -> aFailedFirstRestoreHandsBackTheRawWords
+RED: m1b cleanup unguarded -> aFailedCleanupHandsBackTheRestoredWords
+RED: m1b' cleanup unguarded, owner row -> aBrokenFallbackCleanupStillLandsTheWordsWithTheNotice
+RED: m1c final restore unguarded -> aFailedFinalRestoreHandsBackTheCleanedWords
+RED: m1d answer restore unguarded -> aFailedAnswerRestoreHandsBackTheEnginesAnswer
+RED: m1e pre-request restore unguarded -> aFailedPreRequestRestoreSendsTheRawWords
+RED: m4 controller report unguarded -> aThrowingDefectSinkNeverStopsTheWords
+RED: m4b controller report unguarded, polish death -> aThrowingSinkOnAPolishDeathNeverStopsTheWords
+RED: m6 owner report unguarded -> aThrowingOwnerDefectSinkNeverStopsTheWords
+RED: m5 step widened -> thePreparationStepKeyKeepsExactlyItsFourSteps
+ALL RED
+RED: m7 undeclared key via report -> everySentryKeyInTheSourceIsDeclared
+RED: m8 undeclared key via reportDefect -> everySentryKeyInTheSourceIsDeclared

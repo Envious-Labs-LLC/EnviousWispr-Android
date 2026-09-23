@@ -379,7 +379,7 @@ internal class DictationSessionCoordinator(
             languageDetector = languageDetector,
             log = log,
             takeId = takeId,
-            defectSink = defectSink,
+            defectSink = ::reportDefect,
             preferences = { sessionPreferences },
             transcript = { rawTranscript },
             isProcessing = { state.get() == SessionState.PROCESSING && take.arbiter.isOpen },
@@ -438,6 +438,18 @@ internal class DictationSessionCoordinator(
     }
 
     /** Not destroyed and still live: the polish warm-up is still worth sending (#236). */
+    /**
+     * Every defect the owner raises goes through here (#252): a sink that throws is logged and never stops the
+     * publication or delivery that follows the report.
+     */
+    private fun reportDefect(defect: AppDefect, data: Map<String, Any?>) {
+        try {
+            defectSink(defect, data)
+        } catch (error: Exception) {
+            log.warn("Defect ${defect.semanticId} not reported: ${error.javaClass.simpleName}")
+        }
+    }
+
     private fun polishStillWanted(): Boolean {
         val seen = state.get()
         return !destroyed.get() &&
@@ -967,7 +979,7 @@ internal class DictationSessionCoordinator(
         takeFacts.polishMs = latencyMs
         takeFacts.polishStatus = statusCode
         Telemetry.breadcrumb("take", "polish_done", mapOf("take_id" to takeId, "polish_reason" to reason.name, "polish_ms" to latencyMs, "polish_provider" to takeFacts.polishProvider))
-        TelemetryChannels.defectOf(reason)?.let { defectSink(it, mapOf("take_id" to takeId, "polish_status" to statusCode)) }
+        TelemetryChannels.defectOf(reason)?.let { reportDefect(it, mapOf("take_id" to takeId, "polish_status" to statusCode)) }
         // The immutable payload FIRST, so the reservation and its write can be one operation below.
         val payload = Publication(
             finalText = text.ifBlank { rawTranscript },
@@ -994,7 +1006,7 @@ internal class DictationSessionCoordinator(
                     // rerouted, and the take's facts stay as committed (#235).
                     log.warn("History save failed after its bound: ${error.javaClass.simpleName}")
                     Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName, "late" to true))
-                    TelemetryChannels.historySaveDefect(error)?.let { defectSink(it, mapOf("take_id" to takeId)) }
+                    TelemetryChannels.historySaveDefect(error)?.let { reportDefect(it, mapOf("take_id" to takeId)) }
                 }
             }
             reserved
@@ -1034,11 +1046,11 @@ internal class DictationSessionCoordinator(
                     // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal
                     // statement is our schema contract (a defect). The message never leaves either way.
                     Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName))
-                    TelemetryChannels.historySaveDefect(error)?.let { defectSink(it, mapOf("take_id" to takeId)) }
+                    TelemetryChannels.historySaveDefect(error)?.let { reportDefect(it, mapOf("take_id" to takeId)) }
                 }
                 SaveOutcome.TimedOut -> {
                     log.warn("History save did not answer in $historySaveBoundMs ms; the words go to the clipboard")
-                    defectSink(AppDefect.HistorySaveTimedOut, mapOf("take_id" to takeId))
+                    reportDefect(AppDefect.HistorySaveTimedOut, mapOf("take_id" to takeId))
                 }
                 is SaveOutcome.Saved -> Unit
             }

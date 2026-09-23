@@ -61,6 +61,12 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
     /** A Room write failed for an invalid statement or a schema contract, never for storage being full. */
     class HistoryContractViolation(cause: Throwable?) : AppDefect("history_contract_violation", "history.contract_violation", cause)
 
+    /**
+     * A step of the owner's polish preparation (vocabulary restore, cleanup, language detection) threw; the take
+     * published the last good text instead (#252).
+     */
+    object PolishPreparationFailed : AppDefect("polish_preparation_failed", "polish.preparation_failed")
+
     /** A debug-only defect to prove the pipe end to end; never raised on a release build. */
     object DebugProbe : AppDefect("debug_probe", "debug.probe")
 
@@ -70,7 +76,7 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
             VadCallWedged("test"), LocalPolishDeadline, PolishProtocolViolation, CaptureStillRunningAfterStop,
             CaptureReleaseWedged, AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
             PolishWatchdogTimeout, PolishServiceUnavailable, PolishServiceDied, PolishCallFailed,
-            HistorySaveTimedOut, HistoryContractViolation(null), DebugProbe,
+            HistorySaveTimedOut, HistoryContractViolation(null), PolishPreparationFailed, DebugProbe,
         )
     }
 }

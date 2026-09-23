@@ -4,6 +4,7 @@ import android.os.SystemClock
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.telemetry.AppDefect
 import com.envi.wispr.telemetry.Telemetry
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -13,15 +14,27 @@ import java.util.concurrent.TimeUnit
  */
 internal class SilenceWriterThread(write: () -> Int, onFailed: () -> Unit) {
     private val writer = SilenceWriter(write, onFailed)
+    private val exit = CountDownLatch(1)
     @Volatile private var thread: Thread? = null
 
     fun start() {
-        thread = Thread({ writer.run() }, "WarmHoldSilence").apply { start() }
+        thread = Thread({ runToExit() }, "WarmHoldSilence").apply { start() }
+    }
+
+    private fun runToExit() {
+        try {
+            writer.run()
+        } finally {
+            exit.countDown()
+        }
     }
 
     fun stop() = writer.stop()
 
-    fun exited(): Boolean = thread?.isAlive != true
+    fun exited(): Boolean = thread == null || exit.count == 0L
+
+    /** Waits, bounded, for the loop to leave; a JVM row's signal, never used on a production thread. */
+    fun awaitExit(timeoutMs: Long): Boolean = thread == null || exit.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
 }
 
 /**
@@ -50,8 +63,9 @@ internal class SilenceWriterWatch(
 
     /** A hold's track has been stopped: watch its writer, and check it once the bound has passed. */
     fun stopped(track: WarmHold.SilentTrack) {
-        synchronized(this) { pending += Stopped(track, clock()) }
-        schedule(Runnable { sweep() }, EXIT_BOUND_MS)
+        val entry = Stopped(track, clock())
+        synchronized(this) { pending += entry }
+        schedule(Runnable { sweep(entry) }, EXIT_BOUND_MS)
     }
 
     /** True only when every stopped writer has exited and no writer ever overran the bound in this process. */
@@ -65,19 +79,20 @@ internal class SilenceWriterWatch(
         return admitted
     }
 
-    /** On the worker: report an overdue writer once, or come back when the earliest pending one is due. */
-    fun sweep() {
+    /**
+     * On the worker, bound to the one stop that scheduled it: report an overdue writer once, or, when it fired
+     * early, come back for the same entry. A sweep whose entry has exited schedules nothing; each other entry has
+     * its own sweep.
+     */
+    private fun sweep(entry: Stopped) {
         var claimed = false
         var wait: Long? = null
         synchronized(this) {
             claimed = check()
-            if (!wedged) {
-                val now = clock()
-                wait = pending.minOfOrNull { EXIT_BOUND_MS - (now - it.atMs) }?.takeIf { it > 0L }
-            }
+            if (!wedged && entry in pending) wait = (EXIT_BOUND_MS - (clock() - entry.atMs)).takeIf { it > 0L }
         }
         if (claimed) send()
-        wait?.let { schedule(Runnable { sweep() }, it) }
+        wait?.let { schedule(Runnable { sweep(entry) }, it) }
     }
 
     /** Under the monitor. Drops exited writers; latches on an overdue one; true when this call claimed the report. */
@@ -100,7 +115,7 @@ internal class SilenceWriterWatch(
     companion object {
         private const val TAG = "SilenceWriterWatch"
 
-        /** A grace period, not a measured guarantee: the writer blocks for at most one 100 ms block after `stop()`. */
+        /** Grace before declaring a write stuck; a grace period, not a measured guarantee. */
         const val EXIT_BOUND_MS = 2_000L
 
         /** One lazily started daemon worker for the process; it parks with no timer between stops. */

@@ -50,12 +50,16 @@ class SilenceWriterWatchTest {
         now += SilenceWriterWatch.EXIT_BOUND_MS + 1
         scheduler.runAll()
         assertEquals("reported once", 1, reports)
-        watch.sweep()
+        val second = HeldTrack()
+        watch.stopped(second)
+        now += SilenceWriterWatch.EXIT_BOUND_MS
+        scheduler.runAll()
         assertFalse(watch.admit())
         scheduler.runAll()
         assertEquals("never again", 1, reports)
         track.exited = true
-        assertFalse("latched for the process, even after the writer exits", watch.admit())
+        second.exited = true
+        assertFalse("latched for the process, even after every writer exits", watch.admit())
     }
 
     /**
@@ -72,6 +76,24 @@ class SilenceWriterWatchTest {
         now += 500
         scheduler.runAll()
         assertEquals("exactly at the bound is overdue", 1, reports)
+    }
+
+    /**
+     * Row 3c (code review round 1): a sweep is bound to its own stop. A writer that exited leaves its sweep with
+     * nothing to reschedule, even while a newer writer is pending; the newer one has its own sweep.
+     * MUTATION: reschedule against the earliest pending writer instead of the sweep's own.
+     */
+    @Test fun anExitedWritersSweepNeverReschedulesForANewerOne() {
+        val a = HeldTrack()
+        watch.stopped(a)
+        now += 1_500
+        watch.stopped(HeldTrack())
+        a.exited = true
+        now += 500
+        val (aSweep, _) = scheduler.queued.removeAt(0)
+        aSweep.run()
+        assertEquals("only the newer writer's own sweep is queued", listOf(SilenceWriterWatch.EXIT_BOUND_MS), scheduler.queued.map { it.second })
+        assertEquals(0, reports)
     }
 
     /**
@@ -104,11 +126,7 @@ class SilenceWriterWatchTest {
         writer.stop()
         assertFalse("still blocked in its write", writer.exited())
         release.countDown()
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-        while (!writer.exited()) {
-            check(System.nanoTime() < deadline) { "the writer never left its loop" }
-            Thread.onSpinWait() // deadline-fallback: bounds a wait on the writer thread's own exit
-        }
+        assertTrue("the writer left its loop", writer.awaitExit(10_000))
         assertTrue(writer.exited())
     }
 
@@ -118,6 +136,14 @@ class SilenceWriterWatchTest {
         override fun post(runnable: Runnable) = Unit
         override fun postDelayed(runnable: Runnable, delayMs: Long) = Unit
         override fun removeCallbacks(runnable: Runnable) = Unit
+    }
+
+    /** Keeps the hold's expiry so a row fires it as the route thread would. */
+    private class ExpiryScheduler : RouteScheduler {
+        val delayed = ArrayList<Runnable>()
+        override fun post(runnable: Runnable) = Unit
+        override fun postDelayed(runnable: Runnable, delayMs: Long) { delayed += runnable }
+        override fun removeCallbacks(runnable: Runnable) { delayed.remove(runnable) }
     }
 
     private inline fun <reified T> stub(): T =
@@ -147,13 +173,19 @@ class SilenceWriterWatchTest {
         )
     }
 
-    private fun owner(watch: SilenceWriterWatch, track: () -> WarmHold.SilentTrack, keepAlive: () -> Unit = {}) = WarmHoldOwner(
+    private fun owner(
+        watch: SilenceWriterWatch,
+        track: () -> WarmHold.SilentTrack,
+        keepAlive: () -> Unit = {},
+        scheduler: RouteScheduler = NoScheduler(),
+        onDeviceCallback: (android.media.AudioDeviceCallback) -> Unit = {},
+    ) = WarmHoldOwner(
         tag = "test",
-        scheduler = NoScheduler(),
+        scheduler = scheduler,
         locked = { it() },
         addCommListener = {},
         removeCommListener = {},
-        registerDeviceCallback = {},
+        registerDeviceCallback = onDeviceCallback,
         unregisterDeviceCallback = {},
         newTrack = track,
         watch = watch,
@@ -169,17 +201,29 @@ class SilenceWriterWatchTest {
      * MUTATIONS: never record the stopped track; record only in `end`, not `handOver`; drop the liveness check.
      */
     @Test fun everyEndPathHoldsTheNextHoldUntilItsWriterExits() {
+        val expiry = ExpiryScheduler()
+        var deviceCallback: android.media.AudioDeviceCallback? = null
         val paths = listOf<Pair<String, (WarmHoldOwner) -> Unit>>(
-            "expiry" to { it.close(WarmHold.END_EXPIRED) },
+            // The hold's own expiry, as the route thread fires it.
+            "expiry" to { expiry.delayed.single().run() },
             "handover" to { it.handOver() },
-            "device removal" to { it.close(WarmHold.END_DEVICE_REMOVED) },
+            // The platform's removal of the held sink (the stub answers the same type and name the hold holds).
+            "device removal" to { checkNotNull(deviceCallback).onAudioDevicesRemoved(arrayOf(stub<AudioDeviceInfo>())) },
             "destroy" to { it.close(WarmHold.END_DESTROYED) },
             "keep-alive failure" to { it.finishTake() },
         )
         for ((name, end) in paths) {
+            expiry.delayed.clear()
+            deviceCallback = null
             val watch = SilenceWriterWatch(clock = { now }, schedule = QueueScheduler().schedule, report = { reports++ })
             val track = HeldTrack()
-            val owner = owner(watch, { track }, keepAlive = { if (name == "keep-alive failure") throw IllegalStateException("no start") })
+            val owner = owner(
+                watch,
+                { track },
+                keepAlive = { if (name == "keep-alive failure") throw IllegalStateException("no start") },
+                scheduler = expiry,
+                onDeviceCallback = { deviceCallback = it },
+            )
             assertTrue("$name: the hold starts", owner.start(bluetoothRoute()))
             end(owner)
             assertFalse("$name: the hold ended", owner.isActive)
@@ -187,14 +231,11 @@ class SilenceWriterWatchTest {
             track.exited = true
             assertTrue("$name: its exit admits the next hold", owner.admitsAHold())
         }
-        // A failed start stops a track whose writer never ran; the fake stands in for one still running.
+        // A failed start stops a track whose writer never ran, as production's is: it admits the next hold at once.
         val watch = SilenceWriterWatch(clock = { now }, schedule = QueueScheduler().schedule, report = { reports++ })
-        val failed = HeldTrack(failPlay = true)
-        val owner = owner(watch, { failed })
+        val owner = owner(watch, { HeldTrack(exited = true, failPlay = true) })
         assertFalse("the failed start", owner.start(bluetoothRoute()))
-        assertFalse("failed start: recorded", owner.admitsAHold())
-        failed.exited = true
-        assertTrue(owner.admitsAHold())
+        assertTrue("a writer that never ran holds nothing", owner.admitsAHold())
         assertEquals("nothing reported inside the bound", 0, reports)
     }
 

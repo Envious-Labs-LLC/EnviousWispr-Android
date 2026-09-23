@@ -5,6 +5,7 @@ RED: m2 no liveness check -> everyEndPathHoldsTheNextHoldUntilItsWriterExits
 RED: m3a report on every sweep -> anOverdueWriterIsReportedOnceAndLatchesTheProcess
 RED: m3b latch cleared on exit -> anOverdueWriterIsReportedOnceAndLatchesTheProcess
 RED: m3c exclusive bound -> theBoundIsInclusiveAndAnEarlySweepComesBack
+RED: m3d rescheduled for the earliest pending -> anExitedWritersSweepNeverReschedulesForANewerOne
 RED: m4 a new watch by default -> aNewOwnerInTheSameProcessSeesTheOldOwnersWriter
 RED: m5 exited always -> theWriterThreadIsExitedOnlyOnceItsBlockedWriteReturns
 RED: m6a missing from the schema list -> everyDefectTypeIsDeclared

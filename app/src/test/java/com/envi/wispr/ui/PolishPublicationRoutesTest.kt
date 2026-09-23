@@ -52,9 +52,9 @@ class PolishPublicationRoutesTest {
         assertTrue(
             "the reservation and the save are one operation under the lock",
             locked.contains("current.arbiter.reserve(Claimants.PUBLICATION)") &&
-                locked.contains("finalizer.enqueueSave(current.history, payload, saved)"),
+                locked.contains("finalizer.enqueueSave(current.history, payload, saveGate, saved)"),
         )
-        val reservation = publication.indexOf("finalizer.enqueueSave(current.history, payload, saved)")
+        val reservation = publication.indexOf("finalizer.enqueueSave(current.history, payload, saveGate, saved)")
         assertTrue(
             "the finalizer's save is the finalize write",
             section("fun enqueueSave(", "\n    }\n", finalizer).contains("historyWrites.enqueue(\"finalize\")"),
@@ -72,7 +72,7 @@ class PolishPublicationRoutesTest {
         assertEquals(1, Regex("""publishFallback\([^\n]*PolishReason\.WATCHDOG_TIMEOUT\)""").findAll(source).count())
         // Five since #214: the four protocol violations and the call that threw, plus a blank answer over real words.
         assertEquals(5, Regex("""publishFallback\([^\n]*PolishReason\.CALL_FAILED\)""").findAll(source).count())
-        val ready = section("private suspend fun TranscriptRepository.insertReadyTranscript", "/** @return whether", finalizer)
+        val ready = section("private suspend fun TranscriptRepository.insertSavedTranscript", "/** @return whether", finalizer)
         assertTrue(ready.contains("polishReason = polishFacts.reasonToken"))
         assertTrue(ready.contains("polishStatus = polishFacts.statusCode"))
         assertTrue(ready.contains("polishContext = polishFacts.contextToken"))

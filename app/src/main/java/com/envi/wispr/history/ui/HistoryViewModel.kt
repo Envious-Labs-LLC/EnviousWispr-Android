@@ -56,7 +56,9 @@ internal class HistoryViewModel(
     init {
         viewModelScope.launch {
             runCatching {
-                Telemetry.insertionsRecovered(repository.recoverStaleOpenRows(clock()).readyRowIds)
+                val recovered = repository.recoverStaleOpenRows(clock())
+                Telemetry.insertionsRecovered(recovered.readyRowIds)
+                Telemetry.deliveryUnknownRecovered(recovered.unknownCount)
                 // Rows an older build saved for a dictation with no words in them. Swept here rather
                 // than left for the user to delete, because they are the reason History could not be
                 // scanned. Nothing writes them any more, so on a phone that has run this once it

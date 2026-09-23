@@ -87,7 +87,8 @@ internal interface TakeJournalDao {
      */
     @Query(
         "SELECT take_id FROM take_journal WHERE transcript_id IN (SELECT id FROM transcripts WHERE " +
-            "(status = '${com.envi.wispr.history.TranscriptEntity.STATUS_READY_FOR_INSERTION}' AND insertionResult = 'pending') " +
+            "(status IN ('${com.envi.wispr.history.TranscriptEntity.STATUS_READY_FOR_INSERTION}', " +
+            "'${com.envi.wispr.history.TranscriptEntity.STATUS_SAVED_UNROUTED}') AND insertionResult = 'pending') " +
             "OR stateChangedAtMs >= :cutoffMs)",
     )
     suspend fun insertionTakeIdsToKeep(cutoffMs: Long): List<String>

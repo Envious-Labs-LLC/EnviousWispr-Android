@@ -55,6 +55,9 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
     /** The polish request call itself threw; the take published the deterministic text (#234). */
     object PolishCallFailed : AppDefect("polish_call_failed", "polish.call_failed")
 
+    /** The History save did not answer within the owner's bound; the words went to the clipboard (#235). */
+    object HistorySaveTimedOut : AppDefect("history_save_timed_out", "history.save_timed_out")
+
     /** A Room write failed for an invalid statement or a schema contract, never for storage being full. */
     class HistoryContractViolation(cause: Throwable?) : AppDefect("history_contract_violation", "history.contract_violation", cause)
 
@@ -67,7 +70,7 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
             VadCallWedged("test"), LocalPolishDeadline, PolishProtocolViolation, CaptureStillRunningAfterStop,
             CaptureReleaseWedged, AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
             PolishWatchdogTimeout, PolishServiceUnavailable, PolishServiceDied, PolishCallFailed,
-            HistoryContractViolation(null), DebugProbe,
+            HistorySaveTimedOut, HistoryContractViolation(null), DebugProbe,
         )
     }
 }

@@ -200,8 +200,9 @@ class SessionOwnerShapeTest {
         assertEquals("one start call", 1, count(controller, """\bstartCaptureForTake\("""))
         assertEquals("three timer posts: the bound's arm and re-arm, the live deadline", 3, count(controller, """\bpostToMainDelayed\("""))
         assertEquals(
-            "the seven History writes: draft insert, status, discard, interrupted, finalize, clipboard, history only",
-            7,
+            // #235 adds two: a timed-out take's copy outcome, and the promotion to ready after a scheduled handoff.
+            "the nine History writes: draft insert, status, discard, interrupted, finalize, clipboard, history only, timed-out copy outcome, promote to ready",
+            9,
             count(finalizer, """historyWrites\??\.enqueue\("""),
         )
         assertEquals("one handoff", 1, count(finalizer, """\bpasteWhenTargetReturns\("""))

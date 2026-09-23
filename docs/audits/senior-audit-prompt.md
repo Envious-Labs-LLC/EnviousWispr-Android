@@ -42,7 +42,8 @@ Facts that shape the grading, do NOT re-derive them:
   audit's job is to say where the mass sits NOW, not to re-check a target already moved.
 - Privacy boundary is the network: audio never leaves the phone; Envious Labs receives metadata only;
   cloud polish sends selected text to the user's chosen provider under their own key. Enforcers:
-  `privacy/PrivacyDisclosure.kt`, `cpp/geniex_log_silencer.cpp`, `telemetry/PayloadSanitizer.kt`.
+  `privacy/PrivacyDisclosure.kt`, `cpp/geniex_log_silencer.cpp`, `telemetry/PayloadSanitizer.kt` (PostHog),
+  `telemetry/SentrySchema.kt` (Sentry, since #240).
 - `docs/enviouswispr-android-architecture.md` is a TARGET design and names types that do not exist.
   Never cite it as the current state. Never grade against types that do not exist.
 - Founder decision 2026-08-28: there is no sensitive-field guard by design (architecture-rules.md FACT:
@@ -54,6 +55,13 @@ Facts that shape the grading, do NOT re-derive them:
   dictating", on by default; without it the next take waits for the earbuds to reconnect. The hold's
   EXISTENCE is decided and is not a `no-idle-cost` finding. Grade its implementation: that it is bounded,
   releasable, content-free and closed on every path.
+- Founder decision 2026-09-23 (issue #238 closed as not planned): polish is core. EnviousWispr without
+  polish is a half-complete product; polish is required at setup and on by default, and a "no polish"
+  option exists but is not the intended use. Its failure behaviour is also decided: the customer always
+  gets their words. A refused bind, a polish process that never connects or dies, a thrown request, a
+  watchdog timeout or an invalid answer publishes the deterministic text with the polish notice and
+  raises one defect so it is fixed. Polish being REQUIRED is decided and is not a finding; grade that it
+  fails open on every path and never holds the heart.
 - `:accelerator-benchmark` is an experiment that does not fully build. It never gates the app. Do not
   read it and do not grade it.
 

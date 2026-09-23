@@ -15,7 +15,7 @@ import org.junit.Test
  *
  * REVERTS: clear regardless of origin in `clearOwnedByLocked` (the cross-binding rows go red); drop the
  * `openEpochs` check in `register` (the late-registration rows go red); let the legacy unregister ignore
- * the origin (the unregister row goes red).
+ * the origin (the unregister row goes red); drop the `closed` check (the destroy row goes red).
  */
 class ListenerSlotsTest {
     /** A listener stand-in with its own identity, as a binder has. */
@@ -94,11 +94,17 @@ class ListenerSlotsTest {
         assertEquals(again, slot.listener.get())
     }
 
-    @Test fun destroyClearsEverySlot() {
+    /** REVERT: drop the `closed` check in `register`; a registration queued before the destroy then refills a slot. */
+    @Test fun destroyClearsEverySlotAndRefusesEveryLaterRegistration() {
         val other = slots.slot<Listener> { it }
+        val epoch = slots.openTakeEpoch("take-a")
         slot.register(SlotOrigin.Legacy, Listener("a"))
-        other.register(SlotOrigin.Take(slots.openTakeEpoch("take-a")), Listener("b"))
+        other.register(SlotOrigin.Take(epoch), Listener("b"))
         slots.clearAll()
+        assertNull(slot.listener.get())
+        assertNull(other.listener.get())
+        assertFalse("a legacy registration refilled a slot after destroy", slot.register(SlotOrigin.Legacy, Listener("late legacy")))
+        assertFalse("a take registration refilled a slot after destroy", other.register(SlotOrigin.Take(epoch), Listener("late take")))
         assertNull(slot.listener.get())
         assertNull(other.listener.get())
     }

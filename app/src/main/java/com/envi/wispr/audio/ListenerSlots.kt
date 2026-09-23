@@ -28,6 +28,8 @@ internal class ListenerSlots {
     private val openEpochs = HashSet<Long>()
     private val epochByIdentifier = HashMap<String, Long>()
     private var nextEpoch = 0L
+    /** Set by [clearAll]: a destroyed service accepts no registration from any binding again. */
+    private var closed = false
 
     /** A new slot; [key] is the listener's identity (its binder in production). */
     fun <T : Any> slot(key: (T) -> Any): Slot<T> = Slot(key).also { synchronized(lock) { slots.add(it) } }
@@ -53,8 +55,14 @@ internal class ListenerSlots {
         slots.forEach { it.clearOwnedByLocked(SlotOrigin.Legacy) }
     }
 
-    /** `onDestroy`: every slot and its origin, together. */
+    /**
+     * `onDestroy`: every slot and its origin, together, and no registration after it. A binder call already
+     * queued can still arrive after the destroy; it must not refill a slot the event publisher still drains.
+     */
     fun clearAll() = synchronized(lock) {
+        closed = true
+        openEpochs.clear()
+        epochByIdentifier.clear()
         slots.forEach { it.clearOwnedByLocked(null) }
     }
 
@@ -63,8 +71,9 @@ internal class ListenerSlots {
         val listener = AtomicReference<T?>(null)
         private var origin: SlotOrigin? = null
 
-        /** A binder thread. Replaces the slot; false when [from] is a take epoch that has already unbound. */
+        /** A binder thread. Replaces the slot; false after destroy, or when [from] is a take epoch that has already unbound. */
         fun register(from: SlotOrigin, value: T?): Boolean = synchronized(lock) {
+            if (closed) return@synchronized false
             if (from is SlotOrigin.Take && from.epoch !in openEpochs) return@synchronized false
             listener.set(value)
             origin = if (value == null) null else from

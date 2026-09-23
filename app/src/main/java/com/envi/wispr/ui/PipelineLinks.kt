@@ -121,10 +121,11 @@ internal interface PipelineController {
     val polish: PolishLink?
 
     /**
-     * Binds the three services in order; the owner's bind-failure handling lives at the call site. Returns
-     * which of the three bound so the owner can end the take with the right reason.
+     * Binds the three services in order; the owner's bind-failure handling lives at the call site. Audio and
+     * speech decide whether the take can run ([BindOutcome.result]); polish is a limb, so its refusal is a
+     * separate fact the owner records and the take goes on to the deterministic text (#234).
      */
-    fun bind(listener: Listener): BindResult
+    fun bind(listener: Listener): BindOutcome
 
     /** Unbinds whatever is bound and clears the links. Idempotent. */
     fun unbind()
@@ -132,5 +133,8 @@ internal interface PipelineController {
     /** `stopService` on the capture service, for the paths that stop it rather than let it hold the earbuds. */
     fun stopAudioService()
 
-    enum class BindResult { BOUND, AUDIO_BIND_FAILED, ASR_BIND_FAILED, POLISH_BIND_FAILED }
+    enum class BindResult { BOUND, AUDIO_BIND_FAILED, ASR_BIND_FAILED }
+
+    /** What [bind] reports: whether the heart's two services bound, and separately whether polish did. */
+    data class BindOutcome(val result: BindResult, val polishBound: Boolean)
 }

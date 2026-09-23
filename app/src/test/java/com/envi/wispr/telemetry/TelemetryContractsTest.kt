@@ -92,6 +92,10 @@ class TelemetryContractsTest {
             "local_polish_failed" to "polish.local_failed",
             "polish_unexpected" to "polish.unexpected",
             "polish_watchdog_timeout" to "polish.watchdog_timeout",
+            // #234: polish failures that fall back are raised once per take, when observed.
+            "polish_service_unavailable" to "polish.service_unavailable",
+            "polish_service_died" to "polish.service_died",
+            "polish_call_failed" to "polish.call_failed",
             "history_contract_violation" to "history.contract_violation",
             "debug_probe" to "debug.probe",
         )

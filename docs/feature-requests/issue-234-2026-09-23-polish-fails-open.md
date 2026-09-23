@@ -1,6 +1,6 @@
 # Issue #234 — A broken polish connection never costs the user their words — 2026-09-23
 
-GitHub issue: `#234`. Tier: LARGE (the heart path's handling of a limb failure). Status: DRAFT (coverage round adopted; grounded rounds 1 to 4 adopted).
+GitHub issue: `#234`. Tier: LARGE (the heart path's handling of a limb failure). Status: APPROVED (coverage adopted; grounded rounds 1 to 4 adopted; round 5 PROCEED-AS-PLANNED).
 
 ## Preface — Lane + Hardware UAT declaration
 

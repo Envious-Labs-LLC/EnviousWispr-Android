@@ -1759,6 +1759,41 @@ Group main:
     check("an abnormal final instrumentation code is ISSUE", any(l.startswith("ISSUE: the instrumentation ended with code 0") for l in lines), lines)
     lines = eyes._report_runner_results([{"INSTRUMENTATION_CODE": "-1"}], "regression")
     check("a runner that reported no test is ISSUE", lines == ["ISSUE: the runner reported no test at all; UNKNOWN"], lines)
+    collected, saw_final = eyes._collect_runner_groups(iter([group(1), group(0)]))
+    verdict = eyes._real_boundary_report(collected, saw_final, False, 240)
+    check("a passing group followed by EOF without a final code is ISSUE, never VERIFIED",
+          not saw_final and verdict[0].startswith("ISSUE: the instrumentation ended without a final") and not any(l.startswith("VERIFIED") for l in verdict),
+          verdict)
+    collected, saw_final = eyes._collect_runner_groups(iter([group(0), {"INSTRUMENTATION_CODE": "-1"}]))
+    verdict = eyes._real_boundary_report(collected, saw_final, False, 240)
+    check("a passing group with its final code is VERIFIED", saw_final and verdict == ["VERIFIED: VoicePipelineDeviceTest.transcribesThenPolishesWithSavedCustomWords passed on the device"], verdict)
+    verdict = eyes._real_boundary_report([group(0)], True, True, 240)
+    check("a timed-out run is never VERIFIED", verdict[0].startswith("ISSUE: the instrumentation ran past") and not any(l.startswith("VERIFIED") for l in verdict), verdict)
+
+    # The probes themselves: a DIRECTORY at the fixture name exists and stats, but `test -f` fails it.
+    probe_calls = []
+    real_adb = eyes._adb
+
+    def directory_adb(command, timeout=60, check=True, serial=None):
+        probe_calls.append((command, check))
+        if command.startswith("pm path "):
+            return 0, "package:/data/app/x.apk\n"
+        if command == "pm list instrumentation":
+            return 0, f"instrumentation:{eyes.TEST_RUNNER} (target={eyes.PACKAGE})\n"
+        if "test -f cache/enviouswispr-uat.pcm" in command:
+            return 1, ""
+        if "stat -c %s cache/enviouswispr-uat.pcm" in command:
+            return 0, "4096\n"
+        return 0, ""
+
+    eyes._adb = directory_adb
+    try:
+        probes = eyes._real_boundary_probes()
+    finally:
+        eyes._adb = real_adb
+    answer = eyes._real_boundary_preflight(probes)
+    check("a directory at the fixture name fails test -f and answers NOT RUN", any("no usable fixture" in line for line in answer), (answer, probes["fixture"]))
+    check("every probe is read-only and keeps its status (check=False)", probe_calls and all(not chk for _, chk in probe_calls), probe_calls)
 
     # Staging, through a fake device filesystem.
     stage_names = ("_adb", "_exec_in", "_pcm16_from_sentence", "device")

@@ -1,6 +1,6 @@
 # Issue #215 — The real-model boundary row fails, never skips, when its fixture is missing — 2026-09-22
 
-GitHub issue: `#215`. Tier: SMALL (one instrumented row, its speaker source, and one harness door; no product code). Status: DRAFT (revised after grounded round 2; three findings deferred to #225).
+GitHub issue: `#215`. Tier: SMALL (one instrumented row, its speaker source, and one harness door; no product code). Status: PROCEED-AS-PLANNED (grounded round 3; three findings deferred to #225).
 
 ## Preface — Lane + Hardware UAT declaration
 

@@ -3160,24 +3160,41 @@ def run_real_boundary(timeout=240):
     timed_out = []
     timer = threading.Timer(timeout, lambda: (timed_out.append(True), process.kill()))
     timer.start()
-    results = []
     try:
-        for group in _instrumentation_groups(process.stdout):
-            if "INSTRUMENTATION_CODE" in group:
-                results.append(group)
-                break
-            if group.get("code") in (0, -1, -2, -3, -4) and group.get("test"):
-                results.append(group)
+        results, saw_final = _collect_runner_groups(_instrumentation_groups(process.stdout))
     finally:
         timer.cancel()
         try:
             process.wait(timeout=30)
         except subprocess.TimeoutExpired:
             process.kill()
+    return _real_boundary_report(results, saw_final, bool(timed_out), timeout)
+
+
+def _collect_runner_groups(groups):
+    """The test groups and the final group from a runner stream, and whether the final one arrived."""
+    results = []
+    for group in groups:
+        if "INSTRUMENTATION_CODE" in group:
+            results.append(group)
+            return results, True
+        if group.get("code") in (0, -1, -2, -3, -4) and group.get("test"):
+            results.append(group)
+    return results, False
+
+
+def _real_boundary_report(results, saw_final, timed_out, timeout):
+    """The door's verdict. A stream that ended without its final INSTRUMENTATION_CODE (a runner crash, a cut
+    transport) is UNKNOWN whatever the test groups said: a passing group before a truncated end is not a pass."""
     report = []
     if timed_out:
         report.append(f"ISSUE: the instrumentation ran past {timeout} s and was killed; UNKNOWN")
-    return report + _report_runner_results(results, "regression")
+    elif not saw_final:
+        report.append("ISSUE: the instrumentation ended without a final INSTRUMENTATION_CODE; UNKNOWN")
+    lines = _report_runner_results(results, "regression")
+    if report:
+        lines = [line.replace("VERIFIED:", "UNKNOWN (not a pass):", 1) for line in lines]
+    return report + lines
 
 
 def _pcm16_from_sentence(sentence, path):

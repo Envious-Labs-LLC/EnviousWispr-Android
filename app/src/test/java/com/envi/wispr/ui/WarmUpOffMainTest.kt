@@ -34,7 +34,9 @@ class WarmUpOffMainTest {
             val polish = rig.polish
             polish.awaitRequest().onOutcome(polish.outcome("Hello world."))
             assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
-            assertEquals(1, rig.insertion.pastes.size)
+            // The paste follows the ending; the stopped session is its signal, as in `PolishFailsOpenTest`.
+            rig.host.awaitStopped()
+            assertEquals("the words landed once", 1, rig.insertion.pastes.size)
             assertTrue("the warm-up ran off the main thread: ${rig.polish.warmUpThreads}", rig.polish.warmUpThreads.none { it == rig.mainThread.name })
         } finally {
             held.countDown()

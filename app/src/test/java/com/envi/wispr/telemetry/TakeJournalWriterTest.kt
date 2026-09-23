@@ -3,10 +3,10 @@ package com.envi.wispr.telemetry
 import com.envi.wispr.ui.TerminalReason
 import com.envi.wispr.ui.TriggerSource
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
@@ -23,18 +23,40 @@ class TakeJournalWriterTest {
         private val open: List<TakeJournalEntry> = emptyList(),
         private val closeAnswers: Map<String, Boolean> = emptyMap(),
     ) : TakeJournalDao {
-        val calls = mutableListOf<String>()
-        override suspend fun admit(entry: TakeJournalEntry): Long { calls += "admit:${entry.takeId}:${entry.triggerSource}:${entry.stage}"; return 1 }
-        override suspend fun advance(takeId: String, stage: String, seq: Int): Int { calls += "advance:$takeId:$stage:$seq"; return 1 }
-        override suspend fun associateTranscript(takeId: String, transcriptId: Long): Int { calls += "associate:$takeId:$transcriptId"; return 1 }
-        override suspend fun commitTerminal(takeId: String, result: String, reason: String, atMs: Long): Int { calls += "terminal:$takeId:$result:$reason"; return commitRows }
-        override suspend fun openFromOtherRuns(currentRunId: String): List<TakeJournalEntry> { calls += "open:$currentRunId"; return open }
+        /** Every call in order; written on the writer's worker, read by the test, so synchronized and signalled. */
+        val calls: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+        private val landed = Object()
+
+        /** Waits, bounded, until [n] calls have landed; a named failure, never a silent return, when they do not. */
+        fun awaitCalls(n: Int) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            synchronized(landed) {
+                while (calls.size < n) {
+                    val left = deadline - System.nanoTime()
+                    check(left > 0) { "only ${calls.size} of $n journal calls landed: $calls" }
+                    TimeUnit.NANOSECONDS.timedWait(landed, left)
+                }
+            }
+        }
+
+        private fun record(call: String) {
+            synchronized(landed) {
+                calls += call
+                landed.notifyAll()
+            }
+        }
+
+        override suspend fun admit(entry: TakeJournalEntry): Long { record("admit:${entry.takeId}:${entry.triggerSource}:${entry.stage}"); return 1 }
+        override suspend fun advance(takeId: String, stage: String, seq: Int): Int { record("advance:$takeId:$stage:$seq"); return 1 }
+        override suspend fun associateTranscript(takeId: String, transcriptId: Long): Int { record("associate:$takeId:$transcriptId"); return 1 }
+        override suspend fun commitTerminal(takeId: String, result: String, reason: String, atMs: Long): Int { record("terminal:$takeId:$result:$reason"); return commitRows }
+        override suspend fun openFromOtherRuns(currentRunId: String): List<TakeJournalEntry> { record("open:$currentRunId"); return open }
         override suspend fun find(takeId: String): TakeJournalEntry? = null
         override suspend fun takeIdForTranscript(transcriptId: Long): String? = if (transcriptId == 42L) "take-42" else null
         override suspend fun insertionTakeIdsToKeep(cutoffMs: Long): List<String> = listOf("kept")
-        override suspend fun prune(cutoffMs: Long, keep: List<String>): Int { calls += "prune:" + keep.joinToString(","); return 0 }
+        override suspend fun prune(cutoffMs: Long, keep: List<String>): Int { record("prune:" + keep.joinToString(",")); return 0 }
         override suspend fun closeInterrupted(takeId: String, reason: String, atMs: Long): Boolean {
-            calls += "close:$takeId:$reason"
+            record("close:$takeId:$reason")
             return closeAnswers[takeId] ?: true
         }
     }
@@ -44,22 +66,33 @@ class TakeJournalWriterTest {
         null, null, null, null, null, null,
     )
 
-    private fun settle(dao: FakeDao, expectedCalls: Int) {
-        val deadline = System.currentTimeMillis() + 2_000
-        while (dao.calls.size < expectedCalls && System.currentTimeMillis() < deadline) Thread.sleep(5)
+    /**
+     * The writer is one ordered worker: a probe write queued after [writer]'s last write lands only once that
+     * write's whole task (its Room call AND the capture decision after it) has finished. Waiting on the probe
+     * is the signal; waiting on the call count alone raced the capture that follows the commit.
+     */
+    private fun drain(writer: TakeJournalWriter, dao: FakeDao, callsBefore: Int) {
+        writer.advance(PROBE, TakeStage.RECORDING)
+        dao.awaitCalls(callsBefore + 1)
+        check(dao.calls.last() == "advance:$PROBE:RECORDING:1") { "the probe did not land last: ${dao.calls}" }
+        dao.calls.removeAt(dao.calls.size - 1)
+    }
+
+    private companion object {
+        const val PROBE = "drain-probe"
     }
 
     @Test
     fun writesForOneTakeLandInTheOrderTheyWereQueuedAndTheRowLeavesOnlyAfterItsCommit() = runBlocking {
         val dao = FakeDao()
-        val captured = mutableListOf<String>()
+        val captured = java.util.concurrent.CopyOnWriteArrayList<String>()
         val writer = TakeJournalWriter(dao, "run-1", { captured += it.name + ":" + it.properties()["take_id"] }, nowMs = { 7L })
         val landed = writer.admit("t1", TriggerSource.BUBBLE_HOLD)
         writer.advance("t1", TakeStage.RECORDING)
         writer.associate("t1", 42L)
         writer.terminal(terminal("t1", TerminalReason.COMPLETED))
-        assertTrue(landed.await())
-        settle(dao, 4)
+        assertTrue(withTimeout(10_000) { landed.await() })
+        drain(writer, dao, 4)
         assertEquals(
             listOf("admit:t1:BUBBLE_HOLD:ADMITTED", "advance:t1:RECORDING:1", "associate:t1:42", "terminal:t1:completed:COMPLETED"),
             dao.calls,
@@ -70,10 +103,10 @@ class TakeJournalWriterTest {
     @Test
     fun anEndingWhoseCommitChangedNoRowSendsNothing() {
         val dao = FakeDao(commitRows = 0)
-        val captured = mutableListOf<String>()
+        val captured = java.util.concurrent.CopyOnWriteArrayList<String>()
         val writer = TakeJournalWriter(dao, "run-1", { captured += it.name })
         writer.terminal(terminal("never-admitted", TerminalReason.CANCELLED_RECORDING))
-        settle(dao, 1)
+        drain(writer, dao, 1)
         assertEquals(listOf("terminal:never-admitted:cancelled:CANCELLED_RECORDING"), dao.calls)
         assertEquals(emptyList<String>(), captured)
     }
@@ -84,7 +117,7 @@ class TakeJournalWriterTest {
         val writer = TakeJournalWriter(dao, "run-1", {})
         writer.associate("t1", 0L)
         writer.advance("t1", TakeStage.PROCESSING)
-        settle(dao, 1)
+        drain(writer, dao, 1)
         assertEquals(listOf("advance:t1:PROCESSING:2"), dao.calls)
     }
 
@@ -95,14 +128,10 @@ class TakeJournalWriterTest {
             open = listOf(open("a", TakeStage.ADMITTED, "TILE"), open("b", TakeStage.RECORDING, "BUBBLE_TAP"), open("c", TakeStage.PROCESSING, "garbage"), open("d", TakeStage.RECORDING, "ASSIST")),
             closeAnswers = mapOf("d" to false),
         )
-        val captured = mutableListOf<Map<String, Any?>>()
+        val captured = java.util.concurrent.CopyOnWriteArrayList<Map<String, Any?>>()
         val writer = TakeJournalWriter(dao, "run-now", { captured += it.properties() }, nowMs = { 99L })
-        val done = CountDownLatch(1)
         writer.recoverAndPrune()
-        val deadline = System.currentTimeMillis() + 2_000
-        while (dao.calls.none { it.startsWith("prune") } && System.currentTimeMillis() < deadline) Thread.sleep(5)
-        done.countDown()
-        assertTrue(done.await(1, TimeUnit.SECONDS))
+        drain(writer, dao, 6)
         assertEquals(
             listOf("open:run-now", "close:a:INTERRUPTED_STARTING", "close:b:INTERRUPTED_RECORDING", "close:c:INTERRUPTED_PROCESSING", "close:d:INTERRUPTED_RECORDING", "prune:kept"),
             dao.calls,

@@ -13,11 +13,16 @@ import java.io.File
  * the repository alone, before built-ins are merged. Read off the source because the row runs on a device,
  * never in the JVM suite.
  *
- * Code review kept finding "text that is not code standing for code" (rounds 1 to 4). A lexer ([classify])
- * closes it for calls and predicates: a call is a CODE identifier followed by `(`, and a predicate counts
- * only when the second argument, comments removed, IS that predicate. Assertion MESSAGES are not checked
- * here: a message is a runtime value (templates, branches), so no reading of the source can pin it. The
- * exact `Prerequisite:` prefix the harness classifies is pinned by the harness rows in
+ * ASSUMPTIONS are read off the RAW text, with no lexer: every assumption word anywhere in the file must be
+ * the one plain import line or sit inside the one row allowed to skip ([ASSUMING_ROW], deferred to #225).
+ * A comment or a string that merely mentions one fails too; erring that way is the safe side, and it also
+ * closes aliases, wrappers and template expressions, which no reading of a single row could.
+ *
+ * The ASSERTION needs code, so a lexer ([classify]) sorts every character into CODE, COMMENT or STRING,
+ * with `${...}` template bodies read as CODE. A call is a whole CODE identifier followed by `(`, and a
+ * predicate counts only when the second argument, comments removed, IS that predicate. Assertion MESSAGES
+ * are not checked: a message is a runtime value, so no reading of the source can pin it. The exact
+ * `Prerequisite:` prefix the harness classifies is pinned by the harness rows in
  * `scripts/uat/test_wispr_eyes.py`.
  */
 class VoicePipelineDeviceShapeTest {
@@ -28,39 +33,77 @@ class VoicePipelineDeviceShapeTest {
 
     /**
      * The class of every character of [text]: `//` line comments and nested `/* */` block comments are
-     * COMMENT; `"..."` strings (escapes and templates read as string content), `"""..."""` raw strings and
-     * `'.'` char literals, delimiters included, are STRING; everything else is CODE.
+     * COMMENT; `"..."` and `"""..."""` strings (delimiters, literal text, escapes, `$name` references), `'.'`
+     * char literals and backticked names are STRING; the body of every `${...}` template is lexed again as
+     * CODE, to any depth; everything else is CODE.
      */
     private fun classify(text: String): Array<Kind> {
         val kinds = Array(text.length) { Kind.CODE }
-        var i = 0
-        fun mark(until: Int, kind: Kind) {
-            while (i < until) { kinds[i] = kind; i++ }
+        fun mark(from: Int, until: Int, kind: Kind) {
+            for (k in from until minOf(until, text.length)) kinds[k] = kind
         }
-        while (i < text.length) {
-            when {
-                text.startsWith("//", i) -> mark(text.indexOf('\n', i).let { if (it < 0) text.length else it }, Kind.COMMENT)
-                text.startsWith("/*", i) -> {
-                    var depth = 0
-                    var j = i
-                    while (j < text.length) {
-                        if (text.startsWith("/*", j)) { depth++; j += 2 }
-                        else if (text.startsWith("*/", j)) { depth--; j += 2; if (depth == 0) break }
-                        else j++
-                    }
-                    mark(j, Kind.COMMENT)
-                }
-                text.startsWith("\"\"\"", i) ->
-                    mark(text.indexOf("\"\"\"", i + 3).let { if (it < 0) text.length else it + 3 }, Kind.STRING)
-                text[i] == '"' || text[i] == '\'' -> {
-                    val quote = text[i]
-                    var j = i + 1
-                    while (j < text.length && text[j] != quote) { if (text[j] == '\\') j++; j++ }
-                    mark(minOf(j + 1, text.length), Kind.STRING)
-                }
-                else -> i++
+        fun blockEnd(start: Int): Int {
+            var depth = 0
+            var j = start
+            while (j < text.length) {
+                if (text.startsWith("/*", j)) { depth++; j += 2 }
+                else if (text.startsWith("*/", j)) { depth--; j += 2; if (depth == 0) return j }
+                else j++
             }
+            return text.length
         }
+        lateinit var string: (Int, Boolean) -> Int
+        // CODE from [start]; inside a template it returns the index of the template's closing `}`.
+        fun code(start: Int, inTemplate: Boolean): Int {
+            var i = start
+            var depth = 0
+            while (i < text.length) {
+                when {
+                    text.startsWith("//", i) -> {
+                        val end = text.indexOf('\n', i).let { if (it < 0) text.length else it }
+                        mark(i, end, Kind.COMMENT); i = end
+                    }
+                    text.startsWith("/*", i) -> { val end = blockEnd(i); mark(i, end, Kind.COMMENT); i = end }
+                    text.startsWith("\"\"\"", i) -> i = string(i, true)
+                    text[i] == '"' -> i = string(i, false)
+                    text[i] == '\'' || text[i] == '`' -> {
+                        val quote = text[i]
+                        var j = i + 1
+                        while (j < text.length && text[j] != quote) { if (quote == '\'' && text[j] == '\\') j++; j++ }
+                        mark(i, j + 1, Kind.STRING); i = j + 1
+                    }
+                    text[i] == '{' -> { depth++; i++ }
+                    text[i] == '}' -> { if (inTemplate && depth == 0) return i; depth--; i++ }
+                    else -> i++
+                }
+            }
+            return text.length
+        }
+        string = { start, raw ->
+            val open = if (raw) 3 else 1
+            mark(start, start + open, Kind.STRING)
+            var i = start + open
+            var end = text.length
+            while (i < text.length) {
+                if (raw && text.startsWith("\"\"\"", i)) {
+                    var e = i + 3
+                    while (e < text.length && text[e] == '"') e++
+                    mark(i, e, Kind.STRING); end = e; break
+                } else if (!raw && text[i] == '"') {
+                    mark(i, i + 1, Kind.STRING); end = i + 1; break
+                } else if (!raw && text[i] == '\\') {
+                    mark(i, i + 2, Kind.STRING); i += 2
+                } else if (text.startsWith("\${", i)) {
+                    mark(i, i + 2, Kind.STRING)
+                    val close = code(i + 2, true)
+                    mark(close, close + 1, Kind.STRING); i = close + 1
+                } else {
+                    mark(i, i + 1, Kind.STRING); i++
+                }
+            }
+            end
+        }
+        code(0, false)
         return kinds
     }
 
@@ -145,11 +188,39 @@ class VoicePipelineDeviceShapeTest {
 
     private fun hasCodeCall(text: String, name: String): Boolean = callStarts(text, name).isNotEmpty()
 
+    /** Any assumption word in the RAW [text], comments and strings included. */
+    private val assumption = Regex("assume[A-Z]|Assume|Assumption")
+
+    private fun mentionsAssumption(text: String) = assumption.containsMatchIn(text)
+
+    /**
+     * Every assumption word in [text] that is neither the exact plain import line nor inside the body of
+     * [ASSUMING_ROW]: the ones that could skip some other row.
+     */
+    private fun strayAssumptions(text: String): List<String> {
+        val import = "import org.junit.Assume.assumeTrue"
+        val allowed = mutableListOf<IntRange>()
+        Regex("(?m)^" + Regex.escape(import) + "$").findAll(text).forEach { allowed += it.range }
+        if (codeMask(text).contains(ASSUMING_ROW)) {
+            val start = codeMask(text).indexOf(ASSUMING_ROW)
+            val open = codeMask(text).indexOf('{', start)
+            allowed += open..(open + body(text, ASSUMING_ROW).length + 1)
+        }
+        return assumption.findAll(text)
+            .filter { hit -> allowed.none { hit.range.first in it } }
+            .map { text.substring(text.lastIndexOf('\n', it.range.first) + 1, text.indexOf('\n', it.range.first).let { e -> if (e < 0) text.length else e }).trim() }
+            .toList()
+    }
+
+    private companion object {
+        const val ASSUMING_ROW = "fun aDictationWithNoFieldToInsertIntoIsNotReportedToTheUserAsAFailure()"
+    }
+
     // REVERT: put back `assumeTrue(... File(fixturePath).isFile)` in the row.
     @Test
     fun theRealBoundaryRowAssertsItsFixture() {
         val row = body(source, "fun transcribesThenPolishesWithSavedCustomWords()")
-        assertFalse("no assumption in the real-boundary row", hasCodeCall(row, "assumeTrue"))
+        assertFalse("no assumption word in the real-boundary row", mentionsAssumption(row))
         assertTrue(
             "ONE assertion asserts the fixture predicate",
             assertsPredicate(row, "File(fixturePath).isFile") >= 0,
@@ -173,11 +244,17 @@ class VoicePipelineDeviceShapeTest {
     fun theSpeakerSourceAssertsTheSameFixture() {
         val speaker = body(source, "private inner class SpeakerAudio")
         val prepare = body(speaker, "override fun prepare()")
-        assertFalse(hasCodeCall(prepare, "assumeTrue"))
+        assertFalse("no assumption word in the speaker source", mentionsAssumption(prepare))
         assertTrue(
             "ONE assertion asserts the fixture predicate",
             assertsPredicate(prepare, "File(fixturePath).isFile") >= 0,
         )
+    }
+
+    // REVERT: add an assumption anywhere outside the no-field row (a wrapper, an alias import, a template).
+    @Test
+    fun assumptionsLiveOnlyInTheNoFieldRow() {
+        assertEquals("assumption words outside the no-field row", emptyList<String>(), strayAssumptions(source))
     }
 
     // One control per way non-code text could stand for code, outside a call and inside a real one, and one
@@ -218,6 +295,30 @@ class VoicePipelineDeviceShapeTest {
         }
         for (text in listOf("// assumeTrue(x)\n", "/* assumeTrue(x) */", "\"assumeTrue(x)\"", "notassumeTrue(x)", "assumeTrueNot(x)")) {
             assertFalse("not a call: $text", hasCodeCall(text, "assumeTrue"))
+        }
+        val d = "$"
+        for (call in listOf(
+            "val s = \"${d}{assumeTrue (x)}\"",
+            "val s = \"a ${d}{f(\"}\")} ${d}{assumeTrue/* c */(x)} b\"",
+            "val s = \"\"\"${d}{assumeTrue(x)}\"\"\"",
+            "val s = \"${d}{\"${d}{assumeTrue(x)}\"}\"",
+        )) {
+            assertTrue("a call inside a template is a call: $call", hasCodeCall(call, "assumeTrue"))
+        }
+        assertFalse("a string after a template is still a string", hasCodeCall("val s = \"${d}{x} assumeTrue(x)\"", "assumeTrue"))
+        assertFalse("a raw string ending in extra quotes closes once", hasCodeCall("val s = \"\"\"a\"\"\"\"\n// assumeTrue(x)\n", "assumeTrue"))
+        val file = "import org.junit.Assume.assumeTrue\n" +
+            "fun aDictationWithNoFieldToInsertIntoIsNotReportedToTheUserAsAFailure() {\n    assumeTrue(x)\n}\n"
+        assertEquals("the allowed places are allowed", emptyList<String>(), strayAssumptions(file))
+        for (stray in listOf(
+            "fun need(x: Boolean) = assumeTrue(x)\n",
+            "import org.junit.Assume.assumeTrue as ok\n",
+            "import org.junit.Assume\n",
+            "val s = \"${d}{assumeTrue(x)}\"\n",
+            "// assumeTrue(x)\n",
+            "fun r() { org.junit.Assume.assumeFalse(x) }\n",
+        )) {
+            assertTrue("a stray assumption is found: $stray", strayAssumptions(file + stray).isNotEmpty())
         }
         assertEquals("the views keep every index", real.length, codeMask(real).length)
     }

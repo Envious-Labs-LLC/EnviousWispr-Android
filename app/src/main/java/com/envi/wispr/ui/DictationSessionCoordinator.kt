@@ -491,13 +491,16 @@ internal class DictationSessionCoordinator(
     override fun onSpeechDisconnected() {
         log.warn("Speech service disconnected")
         if (state.get() == SessionState.PROCESSING) {
-            if (rawTranscript.isNotBlank()) {
+            // Read under the lock the speech answer is written under (#234), so an answer already handed off
+            // is never seen as blank here.
+            val text = synchronized(polishSubmissionLock) { rawTranscript }
+            if (text.isNotBlank()) {
                 // The text is here; polish may still answer it. One decision picks the winner (#234).
                 claimFallback()?.let { claimed ->
                     // A claimed request is still running on a live engine: stop it, as publishFallback's own
                     // close would have, outside the lock.
                     if (claimed != NO_REQUEST) runCatching { pipeline.polish?.cancel(claimed) }
-                    publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
+                    publishFallback(text, sessionPreferences, PolishReason.SERVICE_DIED)
                 }
             } else if (take.arbiter.commitNow(TerminalReason.ASR_PROCESS_DIED)) {
                 take.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
@@ -532,8 +535,10 @@ internal class DictationSessionCoordinator(
         if (seen != SessionState.STARTING && seen != SessionState.RECORDING && seen != SessionState.PROCESSING) return
         // A take already destroyed or committed is past failing: a teardown's own callback reports nothing.
         if (destroyed.get() || take.arbiter.committed != null) return
+        var text = ""
         val claimedOpen = synchronized(polishSubmissionLock) {
             if (polishLost == null) polishLost = PolishReason.SERVICE_DIED
+            text = rawTranscript
             when (val decision = polishDecision) {
                 is PolishDecision.Open -> polishLedger.claim(decision.requestId).also { claimed ->
                     if (claimed) polishDecision = PolishDecision.Claimed
@@ -542,7 +547,7 @@ internal class DictationSessionCoordinator(
             }
         }
         reportPolishFailure(AppDefect.PolishServiceDied)
-        if (claimedOpen) publishFallback(rawTranscript, sessionPreferences, PolishReason.SERVICE_DIED)
+        if (claimedOpen) publishFallback(text, sessionPreferences, PolishReason.SERVICE_DIED)
     }
 
     private fun tryStartRecording() {

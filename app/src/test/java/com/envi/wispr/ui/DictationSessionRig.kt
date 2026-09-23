@@ -578,7 +578,18 @@ internal class DictationSessionRig {
         private val requested = CountDownLatch(1)
         /** The raw text the owner handed the engine, after vocabulary restoration (#193). */
         @Volatile var lastRawText: String? = null
-        override fun warmUpWithPolicy(policy: PolishPolicy) { warmed += policy }
+        /** When set, a warm-up blocks until released, as a stalled `:polish` binder call would (#236). */
+        @Volatile var holdWarmUp: CountDownLatch? = null
+        /** Counted down when a warm-up call has been entered. */
+        val warmUpEntered = CountDownLatch(1)
+        /** The thread each warm-up ran on (#236: never the rig's main thread). */
+        val warmUpThreads = CopyOnWriteArrayList<String>()
+        override fun warmUpWithPolicy(policy: PolishPolicy) {
+            warmUpThreads += Thread.currentThread().name
+            warmUpEntered.countDown()
+            holdWarmUp?.await(10, TimeUnit.SECONDS)
+            warmed += policy
+        }
         override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
             if (throwOnRequest) throw IllegalStateException("engine gone")
             lastRawText = rawText

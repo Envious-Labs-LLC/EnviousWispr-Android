@@ -448,6 +448,13 @@ internal class DictationSessionCoordinator(
         }
     }
 
+    /** The same take, still live, not destroyed, and polish not lost: the warm-up is still worth sending (#236). */
+    private fun warmUpStillWanted(takeId: String): Boolean {
+        val seen = state.get()
+        return take.takeId == takeId && !destroyed.get() && polishLost == null &&
+            (seen == SessionState.STARTING || seen == SessionState.RECORDING || seen == SessionState.PROCESSING)
+    }
+
     /** Latches this take's polish loss (the first reason wins) and reports it once (#234). */
     private fun recordPolishLoss(reason: PolishReason, defect: AppDefect) {
         synchronized(polishSubmissionLock) { if (polishLost == null) polishLost = reason }
@@ -529,8 +536,22 @@ internal class DictationSessionCoordinator(
         // Warm at connect, measured and decided (#72): every later moment ends with the same two
         // models resident, because the speech model stays loaded after it transcribes, and costs the
         // user 0.9 to 3.1 s of wait. `architecture-rules.md` RULE: isolate-limbs carries the numbers.
-        runCatching { pipeline.polish?.warmUpWithPolicy(sessionPreferences.policy) }
-            .onFailure { error -> log.warn("Polish warm-up failed: ${error.javaClass.simpleName}") }
+        // On IO, never on main (#236): the call is a synchronous transaction into `:polish`, and a stalled
+        // polish process must not hold a stop, a cancel or a publication. The link, the take and the policy
+        // are read here on main; the pre-send check is best effort, and nothing ever waits for the call.
+        val link = pipeline.polish
+        val takeId = take.takeId
+        val policy = sessionPreferences.policy
+        if (link != null) {
+            scope.launch(Dispatchers.IO) {
+                if (!warmUpStillWanted(takeId)) {
+                    log.log("Polish warm-up not sent: take $takeId is no longer live")
+                    return@launch
+                }
+                runCatching { link.warmUpWithPolicy(policy) }
+                    .onFailure { error -> log.warn("Polish warm-up failed for take $takeId: ${error.javaClass.simpleName}") }
+            }
+        }
         log.log("Polish service connected")
     }
 

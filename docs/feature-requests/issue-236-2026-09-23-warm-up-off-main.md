@@ -1,6 +1,6 @@
 # Issue #236 — The polish warm-up can never hold the main thread — 2026-09-23
 
-GitHub issue: `#236`. Tier: MEDIUM (one cross-process call on the heart's main thread, and its twin in setup). Status: DRAFT (coverage round adopted, one finding declined in §3; grounded round 1 adopted).
+GitHub issue: `#236`. Tier: MEDIUM (one cross-process call on the heart's main thread, and its twin in setup). Status: APPROVED (coverage adopted, one finding declined in §3; grounded round 1 adopted; round 2 PROCEED-AS-PLANNED).
 
 ## Preface — Lane + Hardware UAT declaration
 

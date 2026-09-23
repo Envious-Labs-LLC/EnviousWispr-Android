@@ -66,7 +66,9 @@ class PolishPublicationRoutesTest {
 
     @Test fun theNineFallbackProducersCarryTheirReasonsAndTheReadyInsertStoresAllThreeFacts() {
         assertEquals(2, Regex("""publishFallback\([^\n]*PolishReason\.SERVICE_DIED\)""").findAll(source).count())
-        assertEquals(1, Regex("""publishFallback\([^\n]*PolishReason\.SERVICE_UNAVAILABLE\)""").findAll(source).count())
+        // Since #234 the lost-polish producer publishes the take's latched reason: SERVICE_UNAVAILABLE (refused
+        // at bind, or never connected) or SERVICE_DIED (its process died before the request was sent).
+        assertEquals(1, Regex("""publishFallback\(rawText, takePreferences, checkNotNull\(fallback\)\)""").findAll(source).count())
         assertEquals(1, Regex("""publishFallback\([^\n]*PolishReason\.WATCHDOG_TIMEOUT\)""").findAll(source).count())
         // Five since #214: the four protocol violations and the call that threw, plus a blank answer over real words.
         assertEquals(5, Regex("""publishFallback\([^\n]*PolishReason\.CALL_FAILED\)""").findAll(source).count())

@@ -87,25 +87,26 @@ internal class PipelineBindings(
         }
     }
 
-    override fun bind(listener: PipelineController.Listener): PipelineController.BindResult {
+    override fun bind(listener: PipelineController.Listener): PipelineController.BindOutcome {
         this.listener = listener
         // The take-sized interface with a fresh identity per bind (#220), so this binding is its own epoch.
         val audioIntent = AudioCaptureService.takeBindIntent(appContext)
         audioBound = runCatching {
             appContext.bindService(audioIntent, audioConnection, Context.BIND_AUTO_CREATE)
         }.getOrDefault(false)
-        if (!audioBound) return PipelineController.BindResult.AUDIO_BIND_FAILED
+        if (!audioBound) return PipelineController.BindOutcome(PipelineController.BindResult.AUDIO_BIND_FAILED, polishBound = false)
 
         asrBound = runCatching {
             appContext.bindService(Intent(appContext, AsrService::class.java), asrConnection, Context.BIND_AUTO_CREATE)
         }.getOrDefault(false)
-        if (!asrBound) return PipelineController.BindResult.ASR_BIND_FAILED
+        if (!asrBound) return PipelineController.BindOutcome(PipelineController.BindResult.ASR_BIND_FAILED, polishBound = false)
 
         polishBound = runCatching {
             appContext.bindService(Intent(appContext, PolishService::class.java), polishConnection, Context.BIND_AUTO_CREATE)
         }.getOrDefault(false)
-        if (!polishBound) return PipelineController.BindResult.POLISH_BIND_FAILED
-        return PipelineController.BindResult.BOUND
+        // A refused polish bind does not stop the take (#234): the owner records it and publishes the
+        // deterministic text; unbind skips what never bound.
+        return PipelineController.BindOutcome(PipelineController.BindResult.BOUND, polishBound)
     }
 
     override fun unbind() {

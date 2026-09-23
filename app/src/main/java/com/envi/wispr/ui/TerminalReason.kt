@@ -57,18 +57,17 @@ internal enum class TerminalReason(val result: TerminalResult) {
     INTERRUPTED_PROCESSING(TerminalResult.INTERRUPTED),
     INTERRUPTED_CANCELLING(TerminalResult.INTERRUPTED),
 
-    // A pipeline process went away mid-take. Three members, never one shared "service died".
+    // A heart process went away mid-take, one member each, never one shared "service died". Polish is a
+    // limb: its death is a fallback with a defect, never an ending (#234).
     AUDIO_PROCESS_DIED(TerminalResult.AUDIO_INTERRUPTED),
     /** The audio process stopped publishing the take's events for the silence bound: frozen or wedged, not dead (#115). */
     AUDIO_PROCESS_UNRESPONSIVE(TerminalResult.AUDIO_INTERRUPTED),
     ASR_PROCESS_DIED(TerminalResult.ASR_INTERRUPTED),
-    POLISH_PROCESS_DIED(TerminalResult.FAILED),
 
     // Failures before capture. A settings or vocabulary read that fails is not one (#193): the take
-    // starts on the last values and the failure is a fact of the take.
+    // starts on the last values and the failure is a fact of the take; nor is a refused polish bind (#234).
     AUDIO_BIND_FAILED(TerminalResult.FAILED),
     ASR_BIND_FAILED(TerminalResult.FAILED),
-    POLISH_BIND_FAILED(TerminalResult.FAILED),
     CAPTURE_START_NO_MICROPHONE(TerminalResult.FAILED),
     CAPTURE_START_EARBUDS_REFUSED(TerminalResult.FAILED),
     CAPTURE_START_FAILED(TerminalResult.FAILED),

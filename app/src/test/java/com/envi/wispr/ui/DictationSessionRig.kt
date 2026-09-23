@@ -127,7 +127,7 @@ internal class DictationSessionRig {
         historyWrites = historyWrites,
         transcripts = transcripts,
         languageDetector = LanguageDetector { null },
-        loadPolicy = { PolishPolicy.Off },
+        loadPolicy = { polishPolicy },
         pipeline = pipeline,
         scope = scope,
         mainDispatcher = mainDispatcher,
@@ -138,6 +138,9 @@ internal class DictationSessionRig {
         endingSink = endings::record,
         defectSink = { defect, data -> defects += defect.fingerprint to data },
     )
+
+    /** The polish policy each take loads; Off unless a test sets another (#234 notice rows). */
+    @Volatile var polishPolicy: PolishPolicy = PolishPolicy.Off
 
     /** Every defect the owner raised, by fingerprint, with its data (#214). */
     val defects = CopyOnWriteArrayList<Pair<String, Map<String, Any?>>>()
@@ -584,30 +587,48 @@ internal class DictationSessionRig {
             PolishOutcome(requestId = requestId, text = text, engine = "Fake engine", reason = reason, statusCode = 0, latencyMs = 12L)
     }
 
-    /** The three connections: `bind` connects all three on the fake main thread, as the platform would. */
+    /**
+     * The three connections: `bind` connects all three on the fake main thread, as the platform would. The
+     * polish link is null until its connect callback, and null again after its disconnect, as
+     * `PipelineBindings` sets it (#234).
+     */
     inner class FakePipeline(
         override val capture: CaptureLink?,
         @Volatile override var speech: SpeechLink?,
-        override val polish: PolishLink?,
+        private val polishLink: PolishLink?,
     ) : PipelineController {
         @Volatile var bindResult = PipelineController.BindResult.BOUND
         @Volatile var connectSpeech = true
+        /** False: the polish bind is refused while audio and speech bind (#234). */
+        @Volatile var bindPolish = true
+        /** False: polish binds but never connects, so its link stays null (#234). */
+        @Volatile var connectPolish = true
+        @Volatile override var polish: PolishLink? = null
         @Volatile var listener: PipelineController.Listener? = null
         val events = CopyOnWriteArrayList<String>()
 
-        override fun bind(listener: PipelineController.Listener): PipelineController.BindResult {
+        override fun bind(listener: PipelineController.Listener): PipelineController.BindOutcome {
             this.listener = listener
             events += "bind"
-            if (bindResult != PipelineController.BindResult.BOUND) return bindResult
+            if (bindResult != PipelineController.BindResult.BOUND) return PipelineController.BindOutcome(bindResult, polishBound = false)
             mainExecutor.execute {
                 run("post") {
                     listener.onCaptureConnected()
                     if (connectSpeech) listener.onSpeechConnected()
-                    listener.onPolishConnected()
+                    if (bindPolish && connectPolish) connectPolishNow()
                 }
             }
-            return bindResult
+            return PipelineController.BindOutcome(bindResult, polishBound = bindPolish)
         }
+
+        /** Main thread: the link first, then the callback, as `PipelineBindings` does. */
+        private fun connectPolishNow() {
+            polish = polishLink
+            listener?.onPolishConnected()
+        }
+
+        /** The platform reconnecting polish after its process came back, on main. */
+        fun reconnectPolish() = onMain { connectPolishNow() }
         override fun unbind() {
             events += "unbind"
             timeline += "unbind"
@@ -619,7 +640,10 @@ internal class DictationSessionRig {
             when (which) {
                 "capture" -> listener?.onCaptureDisconnected()
                 "speech" -> listener?.onSpeechDisconnected()
-                "polish" -> listener?.onPolishDisconnected()
+                "polish" -> {
+                    polish = null
+                    listener?.onPolishDisconnected()
+                }
                 else -> error(which)
             }
         }
@@ -665,7 +689,12 @@ internal class DictationSessionRig {
             holdStatusWrites?.await()
             return if (rows.computeIfPresent(id) { _, row -> row.copy(status = status, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted, insertionResult = insertionResult ?: row.insertionResult) } != null) 1 else 0
         }
+        /** When set, the publication's History write is held until the test completes it (#234 row 6f). */
+        @Volatile var holdFinalize: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        /** Counted down when a held publication write has been entered. */
+        val finalizeEntered = CountDownLatch(1)
         override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int {
+            holdFinalize?.let { held -> finalizeEntered.countDown(); held.await() }
             if (failInserts) throw IllegalStateException("disk full")
             return if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted) } != null) 1 else 0
         }

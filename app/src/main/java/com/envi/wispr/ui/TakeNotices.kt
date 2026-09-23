@@ -47,11 +47,9 @@ internal object TakeNotices {
         TerminalReason.AUDIO_PROCESS_DIED -> "Microphone service stopped unexpectedly"
         TerminalReason.AUDIO_PROCESS_UNRESPONSIVE -> "The microphone stopped answering. Try again."
         TerminalReason.ASR_PROCESS_DIED -> "Speech service stopped before transcription finished"
-        TerminalReason.POLISH_PROCESS_DIED -> "Polish service stopped before cleanup finished"
 
         TerminalReason.AUDIO_BIND_FAILED -> "Microphone service could not be connected"
         TerminalReason.ASR_BIND_FAILED -> "Speech service could not be connected"
-        TerminalReason.POLISH_BIND_FAILED -> "Polish service could not be connected"
         TerminalReason.CAPTURE_START_NO_MICROPHONE -> CaptureNotices.NO_MICROPHONE
         TerminalReason.CAPTURE_START_EARBUDS_REFUSED -> CaptureNotices.EARBUDS_UNUSABLE
         TerminalReason.CAPTURE_START_FAILED -> CaptureNotices.START_FAILED

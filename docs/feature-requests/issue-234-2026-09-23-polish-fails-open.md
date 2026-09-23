@@ -1,6 +1,6 @@
 # Issue #234 — A broken polish connection never costs the user their words — 2026-09-23
 
-GitHub issue: `#234`. Tier: LARGE (the heart path's handling of a limb failure). Status: DRAFT (coverage round adopted; grounded rounds 1 to 3 adopted).
+GitHub issue: `#234`. Tier: LARGE (the heart path's handling of a limb failure). Status: DRAFT (coverage round adopted; grounded rounds 1 to 4 adopted).
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -97,8 +97,8 @@ Product Outcome rows on the session rig (real coordinator, fake pipeline). For e
 6b. Notice: Local and Cloud fallback publication show the existing notice; OFF shows none.
 6c. A disconnect racing the speech answer: use latches to force disconnect first and speech/outcome first; assert the winning text, stored facts, and one defect in each ordering.
 6d. A cancelled take that lost polish still raises the defect once.
-6e. Add a row where binding succeeds but the rig withholds only `onPolishConnected`: nonblank speech completes with `SERVICE_UNAVAILABLE` and one defect. Mutation: skip the once gate's defect on the null-link path.
-6f. Add a live-service `throwOnRequest` row: `CALL_FAILED` fallback, one `PolishCallFailed`, and no second defect after disconnect. Mutation: raise `PolishServiceDied` on the later disconnect regardless of the once gate.
+6e. Make the rig's polish link mutable and initially null. Set it immediately before `onPolishConnected`, as production does. Row 6e withholds both the link and callback while audio and speech connect: nonblank speech completes with `SERVICE_UNAVAILABLE` and one defect. Mutation: skip the once gate's defect on the null-link path.
+6f. Add a live-service `throwOnRequest` row: `CALL_FAILED` fallback, one `PolishCallFailed`, and no second defect after disconnect. In row 6f, hold fallback publication with a test latch, deliver the disconnect while the take remains PROCESSING, then release publication. Confirm the no-duplicate assertion turns red when the once gate is bypassed. Mutation: raise `PolishServiceDied` on the later disconnect regardless of the once gate.
 Give each row a compiling mutation and record it red.
 7. Telemetry: a refused bind raises `PolishServiceUnavailable` once and a disconnect raises `PolishServiceDied` once, each with the take id, and the publication raises no second defect. Mutation: emit the disconnect defect unconditionally (the disconnect-then-reconnect-then-disconnect row then raises two).
 Rig changes: `FakePipeline` gains a polish-refused bind that still connects capture and speech, and `disconnect("polish")` clears its polish link as `PipelineBindings` does.

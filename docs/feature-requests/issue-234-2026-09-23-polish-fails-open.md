@@ -1,6 +1,6 @@
 # Issue #234 — A broken polish connection never costs the user their words — 2026-09-23
 
-GitHub issue: `#234`. Tier: LARGE (the heart path's handling of a limb failure). Status: DRAFT.
+GitHub issue: `#234`. Tier: LARGE (the heart path's handling of a limb failure). Status: DRAFT (coverage round adopted).
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -32,9 +32,9 @@ Today a polish bind failure ends the take (`POLISH_BIND_FAILED`), and the polish
 1. A polish bind refusal does not stop the take: `bind` reports audio and speech only; polish availability is its own fact (`polishBound` false, polish link null). The take records, transcribes and publishes the deterministic fallback with `SERVICE_UNAVAILABLE`.
 2. A polish disconnect in any state before its request is sent latches `polishLost` for the take; the take continues; at `polishAndPublish` a lost or null polish publishes the fallback (`SERVICE_DIED` when it died, `SERVICE_UNAVAILABLE` when it never bound). A disconnect after the request is open keeps today's `publishFallback(... SERVICE_DIED)`.
 3. A reconnect during the same take does not un-latch it: the take uses the fallback; the next take binds fresh.
-4. The user sees the existing polish failure notice (`PolishFailure.UNEXPECTED`, through `PolishPublicationFacts.notice`), unchanged copy.
-5. Logged to be fixed: `SERVICE_UNAVAILABLE` and `SERVICE_DIED` move to the DEFECT channel with new `AppDefect.PolishServiceUnavailable` (proposed) and `AppDefect.PolishServiceDied` (proposed), and the bind refusal logs one warning naming it.
-6. `TerminalReason.POLISH_BIND_FAILED` and `TerminalReason.POLISH_PROCESS_DIED` are removed with their `TakeNotices` lines, `TelemetryChannels` arms and `PipelineController.BindResult.POLISH_BIND_FAILED` (no member is kept that nothing emits; the wire only ever carried them outward, nothing parses a stored reason: `TerminalReason.valueOf` has no caller).
+4. The user sees the existing polish failure notice (`PolishFailure.UNEXPECTED`, through `PolishPublicationFacts.notice`), unchanged copy. Assert the existing notice for Local and Cloud fallback publication, and no notice under OFF.
+5. Logged to be fixed: the bind refusal raises new `AppDefect.PolishServiceUnavailable` (proposed) and the disconnect raises new `AppDefect.PolishServiceDied` (proposed), each once per take at the moment it is observed, with the take id, and the bind refusal also writes one warning to the take log. The publication of a `SERVICE_UNAVAILABLE` or `SERVICE_DIED` fallback stays a breadcrumb, so a take raises one defect, not two.
+6. `TerminalReason.POLISH_BIND_FAILED` (removed) and `TerminalReason.POLISH_PROCESS_DIED` (removed) go with their `TakeNotices` lines, `TelemetryChannels` arms and `PipelineController.BindResult.POLISH_BIND_FAILED` (removed). Remove the emitters and enum members without rewriting historical journal strings (`TakeJournal.kt`, `TakeJournalWriter.kt` store the names; no parser reads them back in app code). Document the build/version boundary where terminal failures become completed takes with `polish_reason` (`service_unavailable`, `service_died`) in the PR and `telemetry.md`; downstream PostHog queries are UNCHECKED and the PR says so rather than claiming wire compatibility.
 
 ### 2.2 Non-goals
 - No change to readiness, setup, the polish default or the Off option (#238 decision).
@@ -47,9 +47,12 @@ Grounded by Codex (`234-g0`) and re-read by Claude: the null-service fallback at
 
 ## 3. Design
 
-- `PipelineController.BindResult`: `BOUND`, `AUDIO_BIND_FAILED`, `ASR_BIND_FAILED`. `PipelineBindings.bind` keeps binding polish; on refusal it logs `Polish service did not bind; this take publishes the deterministic text` (through the owner's log via a returned flag or the listener; exact seam chosen in the build and named in review) and returns `BOUND`.
+- `PipelineController.BindResult`: `BOUND`, `AUDIO_BIND_FAILED`, `ASR_BIND_FAILED`. Return the audio/ASR bind result and a separate polish bind outcome (`PipelineController.bind` returns a small `BindOutcome(result, polishBound)` (proposed)). On refusal, the coordinator sets `SERVICE_UNAVAILABLE` and writes one warning through its `SessionLog`.
 - Coordinator: a per-take `polishLost: PolishReason?` (proposed), reset in `beginSession` with `rawTranscript`; set to `SERVICE_UNAVAILABLE` when the bind reports polish refused, to `SERVICE_DIED` in `onPolishDisconnected` whatever the state. `onPolishDisconnected` keeps its PROCESSING-with-text branch (`publishFallback(rawTranscript, ..., SERVICE_DIED)`) and drops the ending branch. `polishAndPublish`: `val service = pipeline.polish; val lost = polishLost; if (service == null || lost != null) publishFallback(rawText, takePreferences, lost ?: PolishReason.SERVICE_UNAVAILABLE)`.
-- Telemetry: `TelemetryChannels.of(PolishReason)` sends `SERVICE_UNAVAILABLE` and `SERVICE_DIED` to DEFECT; `defectOf` maps them to the two new `AppDefect` members; `AppDefect.all()` lists them.
+- One first-wins decision: guard the loss check, request opening, and fallback choice with one first-wins decision. Close or claim the ledger before fallback; only the winning path writes polish facts and raises its publication defect. Concretely: `onPolishDisconnected` and `polishAndPublish` both take `polishSubmissionLock`; the disconnect latches `polishLost` when no request is open, and when one is open it claims the ledger (`polishLedger.claim(openId)`) before `publishFallback`; `polishAndPublish` reads the latch and the link under the same lock before opening the ledger.
+- Reconnect: after this take loses polish, `onPolishConnected` must skip warm-up and requests for that take. A new take may use the new connection.
+- Defects when observed: record bind refusal and disconnect when observed, once per take even if no words follow (a cancelled or wordless take still raises it); prevent a second defect at publication. Decisions on the other exits (enumerated in §5): `CALL_FAILED` stays a breadcrumb because a thrown request call to a dead process is followed by the disconnect, which raises `PolishServiceDied`, and every protocol-shaped `CALL_FAILED` already raises `PolishProtocolViolation`; a swallowed warm-up failure logs one warning (the warm-up itself is #236); watchdog expiry, blank or malformed answers and the service-side fallback keep their existing defects; expected provider and readiness failures (no key, network, local not ready) stay breadcrumbs and distinct.
+- Telemetry: the owner raises the two new defects through its `defectSink` when it observes the bind refusal or the disconnect, guarded by a per-take once flag; `TelemetryChannels.of(PolishReason)` keeps `SERVICE_UNAVAILABLE` and `SERVICE_DIED` on BREADCRUMB for the publication; `AppDefect.all()` lists the two new members.
 - Removal: the two `TerminalReason` members and every arm that names them, in one change.
 
 Alternatives rejected: (a) keep ending the take and only improve the message: loses the words, against the founder decision; (b) retry the polish bind inside the take: adds a wait to the heart for a limb; the next take binds fresh anyway.
@@ -62,7 +65,7 @@ Alternatives rejected: (a) keep ending the take and only improve the message: lo
 
 | Population | Enumeration |
 |---|---|
-| Polish failure points in a take | bind refused (STARTING); disconnect in STARTING, RECORDING, PROCESSING before speech answers, PROCESSING after the request opened; reconnect after a disconnect. Each has a row in §11. |
+| Polish failure points in a take | bind refused (STARTING); a connection that never answers (bound, no `onPolishConnected` before speech answers: `pipeline.polish` null, the existing `SERVICE_UNAVAILABLE` path); disconnect in STARTING, RECORDING, PROCESSING before speech answers, PROCESSING after the request opened; reconnect after a disconnect; swallowed warm-up failure; a thrown request (`CALL_FAILED`); malformed or blank answers; watchdog expiry; the service's own fallback. The first six have rows in §11; the rest keep their existing handling and defects (§3 decisions). |
 | Consumers of the removed members | `PipelineBindings.kt`, `DictationSessionCoordinator.kt`, `PipelineLinks.kt`, `TakeNotices.kt`, `TerminalReason.kt`, `TelemetryChannels.kt` (two lists), `TakeNoticesTest.kt`; entries-loop tests (`TakeNoticesTest`, `TelemetryContractsTest`) follow automatically. |
 
 ## 6. Consumers
@@ -71,7 +74,8 @@ Alternatives rejected: (a) keep ending the take and only improve the message: lo
 |---|---|---|---|
 | BindResult | coordinator, rig | polish refusal no longer a result | compile; §11 rows |
 | TerminalReason members removed | TakeNotices, TelemetryChannels, tests | arms removed | compile; `TakeNoticesTest`, `TelemetryContractsTest` |
-| Defect channel | Sentry | two new defects | `TelemetryContractsTest` snapshot, new rows |
+| Defect channel | Sentry | two new defects | Update the fallback-producer count guard (`PolishPublicationRoutesTest`), frozen notice table (`TakeNoticesTest`), polish channel expectations, and literal defect fingerprint snapshot (`TelemetryContractsTest`). |
+| Removed symbols in docs | plans, knowledge | none | Treat old audit and feature plans as historical; mark removed backticked symbols in newly added plan lines as `(removed)` for `check-cited-symbols.py`. |
 
 ## 7-9. Failure modes, signals, fallbacks
 
@@ -83,14 +87,17 @@ New signals: the two defects, each with the take id; the bind refusal warning in
 
 ## 11. Testing
 
-Product Outcome rows on the session rig (real coordinator, fake pipeline), each with a named revert:
+Product Outcome rows on the session rig (real coordinator, fake pipeline). For each row, name a compiling one-line behavior mutation and assert that its row fails. Reconnect the fake in row 2; add mutations for rows 4 and 6. The mutations: row 1, `handleServiceFailure(...)` on a refused polish bind outcome; row 2, drop the latch check in `polishAndPublish`; row 3, `endAsFailure(TerminalReason.ASR_PROCESS_DIED)` in place of the latch in `onPolishDisconnected`; row 4, publish without claiming the ledger (a double publication is asserted absent); row 5, clear the latch in `onPolishConnected`; row 6, force the fallback on a healthy outcome; row 7, remove the per-take once flag. The rows:
 1. Polish bind refused: the take records, speech answers, the deterministic text is published and delivered, the notice is shown, the terminal is COMPLETED, `PolishServiceUnavailable` is raised. Revert: restore the `POLISH_BIND_FAILED` ending.
 2. Polish dies in RECORDING, then speech answers: fallback text delivered with `SERVICE_DIED`, `PolishServiceDied` raised. Revert: drop the latch (the test's fake then reconnects and polishes; the row pins fallback).
 3. Polish dies in PROCESSING before speech answers: the take does NOT end; speech answers; fallback delivered; History row completed, never `asr_error`. Revert: restore the `POLISH_PROCESS_DIED` ending.
 4. Polish dies after the request opened: unchanged `SERVICE_DIED` fallback (regression row).
 5. Polish dies and reconnects before speech answers: the take still uses the fallback, and the reconnected service gets no request. Revert: clear the latch on reconnect.
 6. Healthy polish: polished text published exactly as today (regression row).
-7. Telemetry: `TelemetryChannels.of(SERVICE_UNAVAILABLE)` and `of(SERVICE_DIED)` are DEFECT with the new defects. Revert: put them back on BREADCRUMB.
+6b. Notice: Local and Cloud fallback publication show the existing notice; OFF shows none.
+6c. A disconnect racing the speech answer (latched threads): one publication, one set of polish facts, one defect.
+6d. A cancelled take that lost polish still raises the defect once.
+7. Telemetry: a refused bind raises `PolishServiceUnavailable` once and a disconnect raises `PolishServiceDied` once, each with the take id, and the publication raises no second defect. Revert: remove the once flag (the disconnect-then-reconnect-then-disconnect row then raises two).
 Rig changes: `FakePipeline` gains a polish-refused bind that still connects capture and speech, and `disconnect("polish")` clears its polish link as `PipelineBindings` does.
 
 ### 11.1 UAT

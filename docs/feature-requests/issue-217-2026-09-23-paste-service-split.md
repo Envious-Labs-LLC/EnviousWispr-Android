@@ -22,7 +22,7 @@ User Rubric: N/A — a statement-for-statement move of the paste service's code 
 
 ## 1. Problem
 
-Audit REF-02 (Code hygiene, confidence High) cites `PasteAccessibilityService.kt:L31-L58`, `L240-L342` and `L693-L1414` against `architecture-rules.md` RULE: keep-central-types-thin. One class holds three domains' state: the remembered and pinned editors (`lastTarget`, `pinnedTarget`), the pending insertion and its retry (`pendingInsertion`, `retryScheduled`, `retryRunnable`), and the bubble (`recordingOverlay`, `lookScope`, `connectedInputs`, `inputDevicePick`, `audioDeviceCallback`, five discovery-retry fields). `wc -l` gives 1490. The field `transcriptRepository` is never read (`grep -n "transcriptRepository"` finds only its declaration), and three imports are unused (`DictationNotificationController`, `RecordingOverlayState`, `TranscriptRepository`).
+Audit REF-02 (Code hygiene, confidence High) cites `PasteAccessibilityService.kt:L31-L58`, `L240-L342` and `L693-L1414` against `architecture-rules.md` RULE: keep-central-types-thin. One class holds three domains' state: the remembered and pinned editors (`lastTarget`, `pinnedTarget`), the pending insertion and its retry (`pendingInsertion`, `retryScheduled`, `retryRunnable`), and the bubble (`recordingOverlay`, `lookScope`, `connectedInputs`, `inputDevicePick`, `audioDeviceCallback`, five discovery-retry fields). `wc -l` gives 1490. The field `transcriptRepository` (removed) is never read (`grep -n "transcriptRepository"` finds only its declaration), and three imports are unused (`DictationNotificationController`, `RecordingOverlayState`, `TranscriptRepository`).
 
 ## 2. Goals & non-goals
 

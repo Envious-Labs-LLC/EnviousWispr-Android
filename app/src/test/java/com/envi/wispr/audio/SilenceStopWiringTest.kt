@@ -1,5 +1,6 @@
 package com.envi.wispr.audio
 
+import com.envi.wispr.ui.SessionSources
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -172,7 +173,7 @@ class SilenceStopWiringTest {
         // app, then the absence of any reader inside the path that runs afterwards.
         val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
 
-        val readers = Regex("CaptureEnding\\.fromAidl\\(").findAll(session).count()
+        val readers = Regex("CaptureEnding\\.fromAidl\\(").findAll(SessionSources.all).count()
         assertEquals("the ending is classified in exactly one place", 1, readers)
 
         val afterTheEnding = session.substringAfter("private fun stopAndTranscribe(")
@@ -230,7 +231,8 @@ class SilenceStopWiringTest {
         // so. Grouping it with the successes sends partial audio on as though it were finished.
         assertFalse(CaptureEnding.StillRunning.transcribes)
         val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
-        val terminal = session.substringAfter("when (CaptureEnding.fromAidl").substringBefore("break")
+        assertTrue(session.contains("when (CaptureEnding.fromAidl") && session.contains("CaptureEnding.MaxDuration ->"))
+        val terminal = session.substringAfter("when (CaptureEnding.fromAidl").substringBefore("CaptureEnding.MaxDuration ->")
         val failureArm = terminal.substringBefore("CaptureEnding.Manual")
         assertTrue("StillRunning belongs in the failure arm", failureArm.contains("CaptureEnding.StillRunning"))
     }

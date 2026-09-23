@@ -3,6 +3,7 @@ package com.envi.wispr.paste
 import com.envi.wispr.insertion.FallbackAnnouncement
 import com.envi.wispr.insertion.ServiceFallbackReason
 import com.envi.wispr.shortcuts.DictationNotificationController
+import com.envi.wispr.ui.SessionSources
 import java.io.File
 import java.lang.reflect.Modifier
 import org.junit.Assert.assertEquals
@@ -200,8 +201,8 @@ class AutoPasteWiringTest {
                 teardown.contains("recordAndAnnounce(ServiceFallbackReason.$reason, pending)"),
             )
         }
-        // Since #186 publication lives in the coordinator, which logs through its `log` seam.
-        val source = read("ui/DictationSessionCoordinator.kt")
+        // Since #216 the delivery lives in the owner's `SessionFinalizer`, which logs through its `log` seam.
+        val source = read("ui/SessionFinalizer.kt")
         // `substringAfter` and `substringBefore` return the WHOLE receiver when their delimiter is
         // absent, so a reformat of either line would silently widen this to the entire file and
         // the check below would then match the DECLARATION of announceInsertionFallback rather
@@ -210,7 +211,7 @@ class AutoPasteWiringTest {
         val branch = slice(
             source,
             "if (handoff != InsertionHandoff.SCHEDULED) {",
-            "\n            log.log(",
+            "\n        log.log(",
         )
         assertTrue(
             "A dictation that did not reach the field no longer announces where its words went, " +
@@ -245,23 +246,26 @@ class AutoPasteWiringTest {
         assertTrue(gateway.contains("override fun isBound(): Boolean = PasteAccessibilityService.isBound.value"))
         assertTrue(gateway.contains("PasteAccessibilityService.pasteWhenTargetReturns("))
         val source = read("ui/DictationSessionCoordinator.kt")
+        val finalizer = read("ui/SessionFinalizer.kt")
         val begin = slice(source, "private fun beginSession() {", "\n    private fun ")
         assertTrue(
             "beginSession discards the pin result again, so nothing can tell a dead service at " +
                 "the start from the four entry points that never had a target: $begin",
-            begin.contains("targetPinAtStart = insertion.pinTargetForDictation()"),
+            begin.contains("val targetPin = insertion.pinTargetForDictation()") &&
+                begin.contains("take = TakeContext(takeId, trigger, takeFacts, arbiter, targetPin, TakeHistory(historyWrites))"),
         )
         assertEquals(
             "The handoff must pass through InsertionJudgement.handoffToJudge exactly once, at the " +
                 "point it is produced. Zero sites is the shipped silence; two is two owners of one " +
                 "decision, which is the defect issue #16 itself was",
             1,
-            Regex("InsertionJudgement\\.handoffToJudge\\(").findAll(source).count(),
+            Regex("InsertionJudgement\\.handoffToJudge\\(").findAll(SessionSources.all).count(),
         )
         assertTrue(
             "handoffToJudge is no longer reading the value the START recorded, so it can only " +
                 "repeat what insertion already said",
-            source.contains("startPin = targetPinAtStart"),
+            finalizer.contains("startPin = targetPin,") &&
+                source.contains("finalizer.deliver(takeId, current.targetPin, payload, saveResult, sessionPreferences.clipboard)"),
         )
     }
 
@@ -406,7 +410,6 @@ class AutoPasteWiringTest {
         // coordinator asks for it; each pin reads the file its statement moved to.
         val source = read("ui/DictationSessionService.kt")
         val cues = read("ui/HapticCue.kt")
-        val owner = read("ui/DictationSessionCoordinator.kt")
         assertEquals(
             "The session service reads the touch-feedback setting in more than one place, so " +
                 "the cue is no longer the only thing that decides which buzzes it silences",
@@ -430,7 +433,7 @@ class AutoPasteWiringTest {
         assertEquals(
             "Recording started and recording stopped are the two cues that must always fire",
             2,
-            Regex("host\\.vibrate\\(HapticCue\\.SESSION_TRANSITION\\)").findAll(owner).count(),
+            Regex("host\\.vibrate\\(HapticCue\\.SESSION_TRANSITION\\)").findAll(SessionSources.all).count(),
         )
     }
 

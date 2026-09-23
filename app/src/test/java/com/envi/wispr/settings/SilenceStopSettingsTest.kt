@@ -47,7 +47,12 @@ class SilenceStopSettingsTest {
         val source = read("ui/DictationSessionCoordinator.kt")
         val body = source.substringAfter("private fun tryStartRecording()").substringBefore("\n    private fun ")
         assertTrue("the frozen snapshot is read once, on main", body.contains("val preferences = sessionPreferences"))
-        val start = body.substringAfter("capture.startCaptureForTake(").substringBefore(")")
+        assertTrue("and handed to the start", body.indexOf("val preferences = sessionPreferences") in 0 until body.indexOf("capture.start(preferences)"))
+        // Since #216 the start's lane body is the owner's `CaptureSessionController`; it passes THAT snapshot on.
+        val controller = read("ui/CaptureSessionController.kt")
+        assertTrue(controller.contains("fun start(preferences: SessionPreferences): Boolean {"))
+        val lane = controller.substringAfter("fun start(preferences: SessionPreferences): Boolean {").substringBefore("\n    /**")
+        val start = lane.substringAfter("capture.startCaptureForTake(").substringBefore(")")
         listOf("preferences.autoStopOnSilence", "preferences.silencePauseSeconds", "preferences.inputDevicePick", "preferences.keepEarbudsReady", "id,").forEach {
             assertTrue("the start call carries $it", start.contains(it))
         }

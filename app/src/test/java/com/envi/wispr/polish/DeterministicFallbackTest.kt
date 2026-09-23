@@ -30,11 +30,12 @@ class DeterministicFallbackTest {
      * Drift Guard, not product coverage, and a SOURCE-SHAPE check rather than a proof: the two rows above
      * exercise the shared helper's text, and this one checks by current source spelling that the session
      * owner still calls it. A matching call left in dead code would satisfy it. Restoring the regex
-     * polisher only inside `DictationSessionCoordinator.deterministicFallback` would leave the rows above
-     * green, which is the drift it is here for. (The owner moved from the Service to the coordinator in #186.)
+     * polisher only inside `TakePolishController.deterministic` would leave the rows above green, which is the
+     * drift it is here for. (The owner moved from the Service to the coordinator in #186, and its fallback to
+     * the take's polish controller in #237.)
      */
     @Test fun sessionOwnerUsesTheSharedDeterministicFallback() {
-        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        val source = java.io.File("src/main/java/com/envi/wispr/ui/TakePolishController.kt").readText()
         assertTrue(source.contains("PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)"))
         // Every file of the session owner (#216): a regex polisher in a collaborator is the same drift.
         assertFalse(SessionSources.all.contains("RegexPolisher"))
@@ -78,11 +79,11 @@ class DeterministicFallbackTest {
      * deliberately substituting a dead detector is not something a source match can stop.
      */
     @Test fun bothTerminalsPassTheirConfiguredDetectorByCurrentSourceShape() {
-        // Since #186 the session side is two files: the coordinator makes the call with the detector it
-        // was handed, and the Service builds the real one and hands it over in `onCreate`.
+        // Since #186 the session side is two files, three since #237: the take's polish controller makes the
+        // call with the detector the coordinator handed it, and the Service builds the real one in `onCreate`.
         val terminals = listOf(
             Triple(
-                "src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt",
+                "src/main/java/com/envi/wispr/ui/TakePolishController.kt",
                 "PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)",
                 "src/main/java/com/envi/wispr/ui/DictationSessionService.kt",
             ),
@@ -103,6 +104,10 @@ class DeterministicFallbackTest {
         assertTrue(
             "the Service no longer hands its detector to the coordinator",
             java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText().contains("languageDetector = languageDetector,"),
+        )
+        assertTrue(
+            "the coordinator no longer hands its detector to the take's polish controller",
+            java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText().contains("languageDetector = languageDetector,"),
         )
     }
 

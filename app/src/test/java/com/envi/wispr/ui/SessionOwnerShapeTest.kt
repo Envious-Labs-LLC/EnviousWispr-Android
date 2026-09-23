@@ -228,9 +228,46 @@ class SessionOwnerShapeTest {
         assertEquals("no var in TakeContext", 0, count(context, """\bvar\b"""))
     }
 
+    /**
+     * Drift Guard (#237): the take's polish lives in `TakePolishController`, and the owner keeps admission,
+     * the arbiter, publication, History and insertion. The request, its listener, the ledger's first-wins
+     * decision and the deterministic fallback are absent from the owner; the controller holds none of the
+     * owner's terminal machinery. REVERT: copy `deterministic` back into the coordinator as a private helper.
+     */
+    @Test
+    fun theOwnerHandsPolishToTheTakesController() {
+        val owner = SessionSources.coordinator
+        listOf("polishRequestForTake", "PolishListener", "PolishFallback.deterministic", "PolishDecision", ".claim(", "ledger.open(", "warmUpWithPolicy").forEach { token ->
+            assertFalse("the owner carries '$token', which is the take's polish controller's", owner.contains(token))
+        }
+        val polish = SessionSources.polish
+        listOf("TakeArbiter", ".arbiter", "publishResult", ".history", "insertion.", "finalizer.", "SessionState.").forEach { token ->
+            assertFalse("the polish controller carries '$token', which is the owner's", polish.contains(token))
+        }
+    }
+
+    /**
+     * Drift Guard (#237): an owner admits exactly one take, so the take's polish controller and the owner's
+     * injected ledger live exactly as long as that take, and no stale controller can answer a later take.
+     * Both halves: admission is only from IDLE, and nothing writes IDLE again. If either changes, a per-take
+     * ledger and a take-id check on the controller's answer come back with it. REVERT: return to IDLE in
+     * `finishSession`, or also admit from FINISHING.
+     */
+    @Test
+    fun anOwnerAdmitsExactlyOneTake() {
+        val owner = SessionSources.coordinator
+        val begin = owner.substringAfter("private fun beginSession() {\n").substringBefore("\n")
+        assertEquals("admission is only from IDLE", "        if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return", begin)
+        assertEquals("one admission", 1, Regex("""SessionState\.STARTING\)""").findAll(owner).count { it.range.first > 0 && owner.substring(0, it.range.first).endsWith(", ") })
+        assertFalse("nothing writes IDLE again", Regex("""(set|compareAndSet\([^,]+,|getAndSet)\s*\(?\s*SessionState\.IDLE\)""").containsMatchIn(owner))
+        assertEquals("the initial IDLE is the only other one", 1, Regex("""AtomicReference\(SessionState\.IDLE\)""").findAll(owner).count())
+    }
+
     @Test
     fun serviceLineCountIsReported() {
         // A metric for the reader of the test output, not a threshold: 1,937 lines before #186.
         println("DictationSessionService.kt: ${service.lines().size} lines")
+        // 1,581 lines before #237 moved the take's polish out.
+        println("DictationSessionCoordinator.kt: ${SessionSources.coordinator.lines().size} lines")
     }
 }

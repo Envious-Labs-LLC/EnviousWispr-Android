@@ -19,7 +19,9 @@ internal object SessionSources {
     val capture: String get() = read("CaptureSessionController.kt")
     val finalizer: String get() = read("SessionFinalizer.kt")
     val context: String get() = read("TakeContext.kt")
+    /** The take's polish since #237. */
+    val polish: String get() = read("TakePolishController.kt")
 
     /** Every file of the session owner, for a scan that says something is absent. */
-    val all: String get() = listOf(coordinator, capture, finalizer, context).joinToString("\n")
+    val all: String get() = listOf(coordinator, capture, finalizer, context, polish).joinToString("\n")
 }

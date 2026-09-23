@@ -4110,6 +4110,12 @@ def _restore_one_here(entry):
         if not now[target]:
             tap(target)
             now = _group_settled(target, now)
+        # A member still on beside the target can only be a several-on group whose undo press was
+        # lost (Codex r4): each such member is a check box, so one press turns it off. Bounded by the
+        # members in view; a pick-one group never reaches here.
+        for extra in [n for n, on in now.items() if on and n != target]:
+            tap(extra)
+            now = _group_settled(extra, now)
         if not now[target] or sum(now.values()) != 1:
             raise Blocked(f"the group holding {target!r} on {where} would not go back to {target}; it "
                           f"reads {now}")
@@ -4535,7 +4541,9 @@ def _exercise_group(name, group):
             _, now = _group_state(original)
             back_again = now == group
         except Blocked as why:
-            if "lets several be on at once" in str(why):
+            # A several-on group whose undo LANDED is a harmless skip; one whose undo did not land left
+            # the group changed and is an ISSUE, so a green scan still means everything was put back.
+            if "lets several be on at once" in str(why) and "did NOT go back" not in str(why):
                 report.append(f"NOTE: {name} / {other}: several can be on at once in the group with "
                               f"{original}, so it was not picked through; {why}")
                 return report

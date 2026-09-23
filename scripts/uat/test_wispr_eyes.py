@@ -456,6 +456,35 @@ def test_pick_one_groups():
             check("and the record is kept while both are on",
                   state["Emoji"] and state["Hashtags"] and [w for w, _ in eyes._owed()] == ["choice"],
                   (state, eyes._owed()))
+            # Codex r4: restore() pays that record by itself, turning the extra chip off.
+            try:
+                with eyes._journal_locked():
+                    for entry in list(eyes._owed()):
+                        eyes._restore_one(entry)
+                        eyes._settled_locked(entry, eyes._STATE["serial"])
+            except eyes.Blocked as why:
+                check("restore turns the extra chip off and pays the record", False, why)
+            else:
+                check("restore turns the extra chip off and pays the record",
+                      state["Emoji"] and not state["Hashtags"] and eyes._owed() == [], (state, eyes._owed()))
+            with eyes._journal_locked():
+                for entry in list(eyes._owed()):
+                    eyes._settled_locked(entry, eyes._STATE["serial"])
+            state.update(CHIP_START)
+            eyes._adb = chip_phone(state, presses)
+
+            # Codex r4: the scan reports that lost undo as an ISSUE, never as a harmless NOTE.
+            lost = []
+            eyes._adb = chip_phone(state, presses, ignore=lost)
+            taps.clear()
+            eyes.tap = tap_then_lose_the_next
+            try:
+                report = eyes._exercise_group("AI Polish", {"Emoji": True, "Hashtags": False})
+            finally:
+                eyes.tap = original_tap
+            check("a several-on group whose undo did not land is an ISSUE in the scan",
+                  any(line.startswith("ISSUE") and "Hashtags" in line for line in report)
+                  and not any(line.startswith("NOTE") for line in report), report)
             with eyes._journal_locked():
                 for entry in list(eyes._owed()):
                     eyes._settled_locked(entry, eyes._STATE["serial"])

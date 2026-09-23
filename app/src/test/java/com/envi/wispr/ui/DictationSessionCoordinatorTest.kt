@@ -1038,6 +1038,56 @@ class DictationSessionCoordinatorTest {
         assertTrue(rig.log.lines.contains("I History persistence unavailable; transcript kept on clipboard only (handoff=HISTORY_NOT_DURABLE)"))
     }
 
+    // ---- #256: each recorder notice, driven through the owner, on the surface it belongs on ----------------
+
+    private fun pills() = rig.surface.events.filter { it.startsWith("notice:") }
+
+    /** The silence detector never became available for a take that had auto-stop on. MUTATION: the wrong notice at a call site. */
+    @Test
+    fun theSilenceNoticeIsThePillWhenAutoStopNeverBecameAvailable() {
+        rig.preferenceStates.value = AppPreferencesState(autoStopOnSilenceEnabled = true)
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.capture.silenceStatus(AudioCaptureService.SILENCE_STATUS_UNAVAILABLE)
+        rig.capture.settle()
+        assertEquals(listOf("notice:Auto-stop on silence is unavailable right now"), pills())
+    }
+
+    /** A take that goes live on Bluetooth with tips on hears the tip once. */
+    @Test
+    fun theBluetoothTipIsThePillForATakeLiveOnBluetooth() {
+        rig.capture.liveRouteKind = com.envi.wispr.audio.InputRouteKind.BLUETOOTH.code
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.capture.settle()
+        assertEquals(listOf("notice:Recording through your earbuds"), pills())
+    }
+
+    /** The last minute of a take is announced on the pill. */
+    @Test
+    fun theDurationWarningIsThePillInTheLastMinute() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.capture.tick(com.envi.wispr.audio.RecordingLimits.WARNING_AT_MS)
+        rig.capture.settle()
+        assertEquals(listOf("notice:Recording stops in under a minute (10 minute limit)"), pills())
+    }
+
+    /** The cap ends a take, which keeps its words, and the reason arrives as a toast after the recorder has gone. */
+    @Test
+    fun theCapIsSaidAsAToastAfterTheTakeContinues() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_MAX_DURATION)
+        rig.speech.awaitRequest()
+        rig.host.awaitApplicationToast()
+        assertTrue(
+            "the cap's sentence: ${rig.host.events}",
+            rig.host.events.any { it.startsWith("toast-app:Reached the 10 minute limit. Working on what you said.@") },
+        )
+        assertTrue("no pill for the cap: ${pills()}", pills().isEmpty())
+    }
+
     @Test
     fun mainImmediateRunsInlineOnTheOwnerThread() {
         // An unbound insertion surface routes the forced notice through launch(mainDispatcher) from

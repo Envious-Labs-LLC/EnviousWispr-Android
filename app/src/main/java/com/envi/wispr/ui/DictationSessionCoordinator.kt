@@ -61,6 +61,8 @@ import java.util.concurrent.atomic.AtomicReference
 internal class DictationSessionCoordinator(
     private val host: SessionHost,
     private val surface: RecorderSurface,
+    /** Where a recorder notice is said: the pill or a toast (#256). The owner only picks which notice. */
+    private val notices: SessionNoticePresenter,
     private val insertion: InsertionGateway,
     private val log: SessionLog,
     private val preferences: SessionPreferencesSource,
@@ -100,25 +102,6 @@ internal class DictationSessionCoordinator(
     companion object {
         /** The words' longest wait for their History save (#235). */
         const val HISTORY_SAVE_BOUND_MS = 1_000L
-
-        /**
-         * macOS's own sentence for this state, reused rather than reinvented. Android writing its own
-         * words for a state macOS has already worded is how the two products drift apart.
-         */
-        private const val SILENCE_UNAVAILABLE_NOTICE = "Auto-stop on silence is unavailable right now"
-
-        /**
-         * Shown on the recorder in the last minute of a take, so the user can finish the sentence
-         * they are in rather than discover the cap by losing the end of it.
-         */
-        private val DURATION_WARNING_NOTICE =
-            "Recording stops in under a minute " +
-                "(${RecordingLimits.MAX_DURATION_MINUTES} minute limit)"
-
-        /** Shown after the cap has stopped a take. The recorder is already gone by then. */
-        private val DURATION_REACHED_NOTICE =
-            "Reached the ${RecordingLimits.MAX_DURATION_MINUTES} minute limit. " +
-                "Working on what you said."
 
         /** How long a take waits for its journal admission before starting anyway (a limb, never a gate). */
         const val JOURNAL_ADMISSION_DEADLINE_MS = 300L
@@ -665,7 +648,7 @@ internal class DictationSessionCoordinator(
                         if (enterProcessing()) {
                             continueAfterEnding(ending)
                             log.log("Take ended at the duration cap")
-                            sayAfterRecording(DURATION_REACHED_NOTICE)
+                            notices.say(SessionNotice.DURATION_REACHED)
                         }
                     }
 
@@ -728,7 +711,7 @@ internal class DictationSessionCoordinator(
             if (forced) {
                 // Said first, so neither the tip nor a pick-missing line can take the slot from it.
                 forcedNoticeShown = true
-                sayWhileRecording(CaptureNotices.EARBUDS_SILENT)
+                notices.say(SessionNotice.EARBUDS_SILENT)
             }
             // Once, at live, from the pushed route kind (#115): the tip needs nothing more.
             publishMicrophoneNoticesIfNeeded(routeKind)
@@ -756,7 +739,7 @@ internal class DictationSessionCoordinator(
         if (state.get() != SessionState.RECORDING) return
         if (status != AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return
         silenceNoticeShown = true
-        sayWhileRecording(SILENCE_UNAVAILABLE_NOTICE)
+        notices.say(SessionNotice.SILENCE_UNAVAILABLE)
     }
 
     /**
@@ -775,7 +758,7 @@ internal class DictationSessionCoordinator(
         if (silenceNoticeShown || forcedNoticeShown) return
         if (tipGate.shouldShow(kind, sessionPreferences.showBluetoothTips)) {
             log.log("Bluetooth tip shown")
-            sayWhileRecording(CaptureNotices.BLUETOOTH_TIP)
+            notices.say(SessionNotice.BLUETOOTH_TIP)
         }
     }
 
@@ -792,32 +775,7 @@ internal class DictationSessionCoordinator(
         if (durationWarningShown || elapsedMs < RecordingLimits.WARNING_AT_MS) return
         durationWarningShown = true
         log.log("Duration warning shown at ${elapsedMs}ms")
-        sayWhileRecording(DURATION_WARNING_NOTICE)
-    }
-
-    /**
-     * Say one line to a user who is mid-dictation, wherever they can actually see it.
-     *
-     * The floating recorder exists only while the accessibility service is bound. In clipboard-only
-     * mode there is no recorder at all, so the same sentence has to arrive as a toast instead. Both
-     * callers want that decision made identically, and making it in one place is what stops the next
-     * message being announced on a surface that is not there.
-     */
-    private fun sayWhileRecording(line: String) {
-        if (insertion.isBound()) {
-            surface.showNotice(line)
-        } else {
-            sayAfterRecording(line)
-        }
-    }
-
-    /** Say one line when the recorder has already gone. A toast is the only surface left. */
-    private fun sayAfterRecording(line: String) {
-        scope.launch(mainDispatcher) {
-            runCatching {
-                host.toastFromApplication(line)
-            }
-        }
+        notices.say(SessionNotice.DURATION_WARNING)
     }
 
     /**

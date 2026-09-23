@@ -21,7 +21,9 @@ internal object SessionSources {
     val context: String get() = read("TakeContext.kt")
     /** The take's polish since #237. */
     val polish: String get() = read("TakePolishController.kt")
+    /** The recorder notices and where they are said, since #256. */
+    val notices: String get() = read("SessionNotice.kt")
 
     /** Every file of the session owner, for a scan that says something is absent. */
-    val all: String get() = listOf(coordinator, capture, finalizer, context, polish).joinToString("\n")
+    val all: String get() = listOf(coordinator, capture, finalizer, context, polish, notices).joinToString("\n")
 }

@@ -219,9 +219,12 @@ class DictationSessionService : Service() {
         )
         bindings = PipelineBindings(applicationContext, mainHandler, DebugSessionLog)
         val host = createHost()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val mainDispatcher = Dispatchers.Main.immediate
         coordinator = DictationSessionCoordinator(
             host = host,
             surface = OverlayRecorderSurface,
+            notices = SessionNoticePresenter(OverlayRecorderSurface, AccessibilityInsertionGateway, host, scope, mainDispatcher),
             insertion = AccessibilityInsertionGateway,
             log = DebugSessionLog,
             preferences = preferences,
@@ -230,8 +233,8 @@ class DictationSessionService : Service() {
             languageDetector = languageDetector,
             loadPolicy = { providerConfiguration.loadPolicy() },
             pipeline = bindings,
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-            mainDispatcher = Dispatchers.Main.immediate,
+            scope = scope,
+            mainDispatcher = mainDispatcher,
         )
         coordinator.onCreated()
     }

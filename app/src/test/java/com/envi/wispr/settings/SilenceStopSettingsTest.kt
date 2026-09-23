@@ -73,25 +73,18 @@ class SilenceStopSettingsTest {
         // The floating recorder only exists while PasteAccessibilityService runs. Clipboard-only mode is
         // supported and would otherwise show nothing at all.
         //
-        // That decision now belongs to `sayWhileRecording`, which every mid-dictation message goes
+        // That decision belongs to `SessionNoticePresenter.say` (#256), which every recorder notice goes
         // through. Asserting it there is what stops the NEXT message picking a surface that is not on
         // screen, which asserting it inside this one caller could never do.
         // Since #186 the chooser reads the paste service's liveness and the overlay through the owner's seams.
         val source = read("ui/DictationSessionCoordinator.kt")
-        val chooser = source
-            .substringAfter("private fun sayWhileRecording(line: String) {")
-            .substringBefore("private fun sayAfterRecording(")
-        assertTrue(chooser.contains("if (insertion.isBound())"))
-        assertTrue(chooser.contains("surface.showNotice(line)"))
+        val chooser = read("ui/SessionNotice.kt").substringAfter("fun say(notice: SessionNotice) {")
+        assertTrue(chooser.contains("if (notice.timing == NoticeTiming.WHILE_RECORDING && insertion.isBound())"))
+        assertTrue(chooser.contains("surface.showNotice(notice.line)"))
         // Both seams reach their real owners (Codex review C1, 2026-09-20).
         assertTrue(read("ui/InsertionGateway.kt").contains("override fun isBound(): Boolean = PasteAccessibilityService.isBound.value"))
         assertTrue(read("ui/RecorderSurface.kt").contains("RecordingOverlayState.showNotice("))
-        assertTrue(chooser.contains("sayAfterRecording(line)"))
-
-        val toast = source
-            .substringAfter("private fun sayAfterRecording(line: String) {")
-            .substringBefore("private fun stopAndTranscribe(")
-        assertTrue("the after-recorder line is the application-context toast", toast.contains("host.toastFromApplication(line)"))
+        assertTrue("the other surface is the application-context toast", chooser.contains("host.toastFromApplication(notice.line)"))
         assertTrue(
             read("ui/DictationSessionService.kt").substringAfter("override fun toastFromApplication(").contains("Toast.makeText(applicationContext, line"),
         )
@@ -101,7 +94,7 @@ class SilenceStopSettingsTest {
             .substringBefore("private fun publishDurationWarningIfNeeded(")
         assertTrue(
             "the silence notice must go through the shared chooser, not pick a surface itself",
-            notice.contains("sayWhileRecording(SILENCE_UNAVAILABLE_NOTICE)"),
+            notice.contains("notices.say(SessionNotice.SILENCE_UNAVAILABLE)"),
         )
     }
 
@@ -109,8 +102,8 @@ class SilenceStopSettingsTest {
     fun theNoticeUsesMacOSsOwnSentence() {
         // Android inventing its own words for a state macOS has already worded is how they drift.
         assertTrue(
-            read("ui/DictationSessionCoordinator.kt")
-                .contains("\"Auto-stop on silence is unavailable right now\""),
+            read("ui/SessionNotice.kt")
+                .contains("SILENCE_UNAVAILABLE(\"Auto-stop on silence is unavailable right now\""),
         )
     }
 

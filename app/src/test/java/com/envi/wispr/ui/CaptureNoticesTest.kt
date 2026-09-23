@@ -74,8 +74,9 @@ class CaptureNoticesTest {
         val publish = owner
             .substringAfter("private fun publishLive(")
             .substringBefore("private fun publishSilenceNoticeIfNeeded(")
-        assertTrue(publish.indexOf("sayWhileRecording(CaptureNotices.EARBUDS_SILENT)") < publish.indexOf("publishMicrophoneNoticesIfNeeded(routeKind)"))
-        assertTrue(publish.indexOf("forcedNoticeShown = true") < publish.indexOf("sayWhileRecording(CaptureNotices.EARBUDS_SILENT)"))
+        val forced = publish.indexOf("notices.say(SessionNotice.EARBUDS_SILENT)")
+        assertTrue(forced >= 0 && forced < publish.indexOf("publishMicrophoneNoticesIfNeeded(routeKind)"))
+        assertTrue(publish.indexOf("forcedNoticeShown = true") < forced)
         assertEquals("Earbuds are not sending sound.", CaptureNotices.EARBUDS_SILENT)
         // The Android tip no longer asks the user to wait: the recorder waits for the earbuds itself.
         assertFalse(CaptureNotices.BLUETOOTH_TIP.contains("moment"))

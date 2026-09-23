@@ -1,0 +1,12 @@
+# #256 mutation receipts (each applied alone, its named row run, the source restored)
+RED: m1 always toast -> aWhileRecordingNoticeWithTheRecorderUpIsThePill
+RED: m2 pill regardless of binding -> aWhileRecordingNoticeWithNoRecorderIsAToastOnMain
+RED: m3 timing ignored -> anAfterRecorderNoticeIsAToastEvenWhenBound
+RED: m4 no runCatching -> aThrowingToastEscapesNothing
+RED: m5a a sentence changed -> everyNoticeSaysTodaysSentenceAtTodaysTime
+RED: m5b a timing changed -> everyNoticeSaysTodaysSentenceAtTodaysTime
+RED: m6 the owner picks a surface -> theOwnerPicksTheNoticeAndThePresenterPicksTheSurface
+RED: m7a silence site says the warning -> theSilenceNoticeIsThePillWhenAutoStopNeverBecameAvailable
+RED: m7b tip site says earbuds silent -> theBluetoothTipIsThePillForATakeLiveOnBluetooth
+RED: m7c warning site says silence -> theDurationWarningIsThePillInTheLastMinute
+RED: m7d cap site says the warning -> theCapIsSaidAsAToastAfterTheTakeContinues

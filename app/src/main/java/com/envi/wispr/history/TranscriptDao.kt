@@ -109,6 +109,18 @@ internal interface TranscriptDao {
     suspend fun promoteUnroutedToReady(id: Long, nowMs: Long): Int
 
     /**
+     * A timed-out take's measured copy (#235): lands on its neutral row, or on the same row after recovery
+     * already read it as delivery unknown, because this process knows what the user got and recovery did not.
+     */
+    @Query(
+        "UPDATE transcripts SET status = '${TranscriptEntity.STATUS_INSERTION_INTERRUPTED}', insertionResult = :result, " +
+            "stateChangedAtMs = :nowMs, interrupted = 1 WHERE id = :id AND (" +
+            "(status = '${TranscriptEntity.STATUS_SAVED_UNROUTED}' AND insertionResult = 'pending') OR " +
+            "(status = '${TranscriptEntity.STATUS_COMPLETED}' AND insertionResult = '${InsertionResults.DELIVERY_UNKNOWN}'))",
+    )
+    suspend fun reconcileTimedOutCopy(id: Long, result: String, nowMs: Long): Int
+
+    /**
      * A neutral row that outlived the cutoff: its words are kept, and no route was recorded, so the
      * honest reading is delivery unknown, never an interrupted paste (#235).
      */

@@ -700,6 +700,8 @@ internal class DictationSessionRig {
             holdStatusWrites?.await()
             return if (rows.computeIfPresent(id) { _, row -> row.copy(status = status, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted, insertionResult = insertionResult ?: row.insertionResult) } != null) 1 else 0
         }
+        /** Runs after the publication's row is written, on the History worker: a recovery staged there (#235). */
+        @Volatile var afterFinalize: (suspend () -> Unit)? = null
         /** When set, only the publication's finalize throws, after any hold: a late failure (#235 row 3). */
         @Volatile var failFinalize = false
         /** When set, the publication's History write is held until the test completes it (#234 row 6f). */
@@ -709,7 +711,9 @@ internal class DictationSessionRig {
         override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int {
             holdFinalize?.let { held -> finalizeEntered.countDown(); held.await() }
             if (failInserts || failFinalize) throw IllegalStateException("disk full")
-            return if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted) } != null) 1 else 0
+            val written = if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted) } != null) 1 else 0
+            afterFinalize?.invoke()
+            return written
         }
         /** When set, an insertion-outcome write throws, as a failed Room update would (#235 row 13). */
         @Volatile var failOutcome = false
@@ -774,6 +778,20 @@ internal class DictationSessionRig {
                 if (row.status == TranscriptEntity.STATUS_SAVED_UNROUTED && row.insertionResult == "pending") {
                     updated = 1
                     row.copy(status = TranscriptEntity.STATUS_READY_FOR_INSERTION, stateChangedAtMs = nowMs)
+                } else row
+            }
+            return updated
+        }
+
+        /** Mirrors `TranscriptDao.reconcileTimedOutCopy`: the neutral row, or the same row read as delivery unknown. */
+        override suspend fun reconcileTimedOutCopy(id: Long, result: String, nowMs: Long): Int {
+            var updated = 0
+            rows.computeIfPresent(id) { _, row ->
+                val neutral = row.status == TranscriptEntity.STATUS_SAVED_UNROUTED && row.insertionResult == "pending"
+                val unknown = row.status == TranscriptEntity.STATUS_COMPLETED && row.insertionResult == com.envi.wispr.insertion.InsertionResults.DELIVERY_UNKNOWN
+                if (neutral || unknown) {
+                    updated = 1
+                    row.copy(status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED, insertionResult = result, stateChangedAtMs = nowMs, interrupted = true)
                 } else row
             }
             return updated

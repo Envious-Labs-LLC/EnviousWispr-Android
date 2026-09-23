@@ -256,7 +256,10 @@ internal class DictationSessionCoordinator(
         // process left open; the new take's rows are not among them.
         scope.launch {
             runCatching { transcripts.recoverStaleOpenRows(System.currentTimeMillis()) }
-                .onSuccess { recovered -> Telemetry.insertionsRecovered(recovered.readyRowIds) }
+                .onSuccess { recovered ->
+                    Telemetry.insertionsRecovered(recovered.readyRowIds)
+                    Telemetry.deliveryUnknownRecovered(recovered.unknownCount)
+                }
                 .onFailure { error ->
                     // A command that finds the owner IDLE stops the Service within milliseconds of this
                     // launch (`stopIfIdle`); that cancellation is the ordinary case, not a failure, and the

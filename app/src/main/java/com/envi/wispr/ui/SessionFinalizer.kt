@@ -288,14 +288,17 @@ internal class SessionFinalizer(
         }
     }
 
-    /** A timed-out take's late row, reconciled to the copy the user actually got (#235); conditional on neutral/pending. */
+    /**
+     * A timed-out take's late row, reconciled to the copy the user actually got (#235): onto the neutral row, or
+     * onto the same row after recovery already read it as delivery unknown. Zero rows means a later outcome
+     * already owns the row; it is logged, never retried.
+     */
     private suspend fun reconcileCopy(repository: TranscriptRepository, id: Long, copy: ClipboardOutcome) {
-        repository.finalizeInsertionOutcome(
+        val updated = repository.reconcileTimedOutCopy(
             id,
-            TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
             if (copy == ClipboardOutcome.COPIED) InsertionResults.CLIPBOARD else InsertionResults.INSERTION_FAILED,
-            interrupted = true,
         )
+        if (updated == 0) log.warn("Timed-out copy outcome found its row already resolved")
     }
 
     /**

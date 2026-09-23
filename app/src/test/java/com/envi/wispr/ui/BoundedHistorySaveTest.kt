@@ -193,6 +193,28 @@ class BoundedHistorySaveTest {
         assertEquals(TranscriptEntity.STATUS_SAVED_UNROUTED, rig.dao.rows.values.single().status)
     }
 
+    /**
+     * Row 14 (code review 1): recovery reads the late neutral row as delivery unknown before the measured copy
+     * lands; the copy still replaces "unknown", because this process knows what the user got. MUTATION: reconcile
+     * only a neutral/pending row (`finalizeInsertionOutcome` again).
+     */
+    @Test fun aKnownCopyReplacesADeliveryUnknownThatRecoveryWroteFirst() {
+        rig.dao.holdFinalize = CompletableDeferred()
+        val coordinator = rig.coordinator(historySaveBoundMs = 50L)
+        takeWithPolishedWords(coordinator)
+        rig.endings.awaitOne()
+        rig.host.awaitServiceStopped()
+        // Recovery runs between the late row's write and its reconciliation, with a cutoff past it.
+        rig.dao.afterFinalize = {
+            rig.dao.afterFinalize = null
+            TranscriptRepository(rig.dao).recoverStaleOpenRows(nowMs = Long.MAX_VALUE, cutoffMs = Long.MAX_VALUE - 1)
+        }
+        rig.dao.holdFinalize!!.complete(Unit)
+        val row = theOnlyRow()
+        assertEquals(TranscriptEntity.STATUS_INSERTION_INTERRUPTED, row.status)
+        assertEquals(InsertionResults.CLIPBOARD, row.insertionResult)
+    }
+
     // Recovery (row 9): the rig's DAO mirrors the Room queries; the SQL itself is TranscriptRouteDaoTest's.
 
     private fun row(id: Long, status: String, result: String, changedAtMs: Long) = TranscriptEntity(
@@ -210,6 +232,7 @@ class BoundedHistorySaveTest {
         dao.rows[4L] = row(4L, TranscriptEntity.STATUS_SAVED_UNROUTED, "pending", 99_000L)
         val recovered = TranscriptRepository(dao).recoverStaleOpenRows(nowMs = 100_000L, cutoffMs = 50_000L)
         assertEquals(listOf(2L), recovered.readyRowIds)
+        assertEquals("the delivery-unknown rows are counted, so they are reported (code review 1)", 1, recovered.unknownCount)
         assertEquals(TranscriptEntity.STATUS_COMPLETED to InsertionResults.DELIVERY_UNKNOWN, dao.rows.getValue(1L).let { it.status to it.insertionResult })
         assertEquals(InsertionResults.INSERTION_INTERRUPTED, dao.rows.getValue(2L).insertionResult)
         assertEquals("a reconciled copy row is left alone", InsertionResults.CLIPBOARD, dao.rows.getValue(3L).insertionResult)

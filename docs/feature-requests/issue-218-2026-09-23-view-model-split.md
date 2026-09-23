@@ -1,6 +1,6 @@
 # Issue #218 — Each screen owns its state — 2026-09-23
 
-GitHub issue: `#218`. Tier: REFACTOR (the app's view-model layer; every screen's state source moves). Status: DRAFT.
+GitHub issue: `#218`. Tier: REFACTOR (the app's view-model layer; every screen's state source moves). Status: APPROVED (coverage adopted; grounded rounds 1 to 4 adopted; round 5 PROCEED-AS-PLANNED).
 
 ## Preface — Lane + Hardware UAT declaration
 

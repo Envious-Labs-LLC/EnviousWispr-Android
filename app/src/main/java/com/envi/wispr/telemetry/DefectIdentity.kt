@@ -46,6 +46,15 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
     /** The owner's end-to-end reply budget for polish expired. */
     object PolishWatchdogTimeout : AppDefect("polish_watchdog_timeout", "polish.watchdog_timeout")
 
+    /** The polish service refused its bind, or was bound and never connected before speech answered; the take published the deterministic text (#234). */
+    object PolishServiceUnavailable : AppDefect("polish_service_unavailable", "polish.service_unavailable")
+
+    /** The polish process died while a take was live; the take published the deterministic text (#234). */
+    object PolishServiceDied : AppDefect("polish_service_died", "polish.service_died")
+
+    /** The polish request call itself threw; the take published the deterministic text (#234). */
+    object PolishCallFailed : AppDefect("polish_call_failed", "polish.call_failed")
+
     /** A Room write failed for an invalid statement or a schema contract, never for storage being full. */
     class HistoryContractViolation(cause: Throwable?) : AppDefect("history_contract_violation", "history.contract_violation", cause)
 
@@ -57,7 +66,8 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
         fun all(): List<AppDefect> = listOf(
             VadCallWedged("test"), LocalPolishDeadline, PolishProtocolViolation, CaptureStillRunningAfterStop,
             CaptureReleaseWedged, AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
-            PolishWatchdogTimeout, HistoryContractViolation(null), DebugProbe,
+            PolishWatchdogTimeout, PolishServiceUnavailable, PolishServiceDied, PolishCallFailed,
+            HistoryContractViolation(null), DebugProbe,
         )
     }
 }

@@ -1,0 +1,34 @@
+('RED', '1 refused bind ends the take', 'aRefusedPolishBindStillLandsTheWords', 'java.lang.IllegalStateException: the take never went live; surface events so far: [starting, target:field-1, processing, processing, hide]')
+('RED', '2 latch not checked', 'polishDyingWhileRecordingStillLandsTheWordsEvenAfterAReconnect', 'java.lang.IllegalStateException: the take never committed an ending; the owner is still open')
+('RED', '3 early death ends the take', 'polishDyingBeforeSpeechAnswersNoLongerEndsTheTake', 'java.lang.AssertionError: expected:&lt;COMPLETED&gt; but was:&lt;ASR_PROCESS_DIED&gt;')
+('RED', '4 open-request death mislabelled', 'polishDyingWithTheRequestOpenFallsBackAsDied', 'org.junit.ComparisonFailure: expected:&lt;SERVICE_[DIED]&gt; but was:&lt;SERVICE_[UNAVAILABLE]&gt;')
+('RED', '5 reconnect warms the lost take', 'aReconnectBeforeSpeechAnswersNeitherWarmsNorPolishesThisTake', 'java.lang.AssertionError: no warm-up for a take that lost polish expected:&lt;1&gt; but was:&lt;2&gt;')
+('RED', '6 healthy outcome forced to fallback', 'healthyPolishIsUnchanged', 'java.lang.AssertionError: expected:&lt;[(1, Hello world.)]&gt; but was:&lt;[(1, hello world)]&gt;')
+('RED', '6b lost reason passed as OFF', 'theNoticeShowsForLocalAndCloudFallbackAndNeverUnderOff', 'java.lang.AssertionError: LocalS1(control=S1ControlSettings(styling=SEMI_FORMAL, structure=LISTS, context=GENERAL)): the polish notice expected:&lt;tr')
+('RED', '6c disconnect claims regardless of the decision', 'anAnswerThatWonIsNeverReplacedByALaterDeath', 'java.lang.AssertionError: expected:&lt;POLISHED&gt; but was:&lt;SERVICE_DIED&gt;')
+('RED', '6d defect only at publication', 'aCancelledTakeThatLostPolishStillReportsItOnce', 'java.lang.AssertionError: expected:&lt;[polish_service_died]&gt; but was:&lt;[]&gt;')
+('RED', '6e null-link defect skipped', 'aPolishThatBindsButNeverConnectsStillLandsTheWords', 'java.lang.AssertionError: expected:&lt;[polish_service_unavailable]&gt; but was:&lt;[]&gt;')
+('RED', '6f later death bypasses the once gate', 'aThrownRequestReportsOnceEvenWhenPolishThenDies', 'java.lang.AssertionError: expected:&lt;[polish_call_failed]&gt; but was:&lt;[polish_call_failed, polish_service_died]&gt;')
+('RED', '6g speech drop publishes without the decision', 'aSpeechDropAfterThePolishAnswerWonChangesNothing', 'java.lang.AssertionError: expected:&lt;POLISHED&gt; but was:&lt;SERVICE_DIED&gt;')
+('RED', '6h claimed request not cancelled', 'aSpeechDropWithTheRequestOpenFallsBackAndCancelsIt', 'java.lang.AssertionError: the claimed request was cancelled on the engine expected:&lt;[1059202003820041]&gt; but was:&lt;[]&gt;')
+('RED', '6i disconnect after destroy reports', 'aPolishDisconnectAfterDestroyReportsNothing', 'java.lang.AssertionError: expected:&lt;[]&gt; but was:&lt;[polish_service_died]&gt;')
+('RED', '6j speech drop reads a blank answer', 'aSpeechDropRightAfterTheAnswerKeepsTheWords', 'java.lang.AssertionError: expected:&lt;COMPLETED&gt; but was:&lt;ASR_PROCESS_DIED&gt;')
+('RED', '7 disconnect defect unconditional', 'aDeathReconnectAndSecondDeathReportOnce', 'java.lang.AssertionError: expected:&lt;[polish_service_died]&gt; but was:&lt;[polish_service_died, polish_service_died]&gt;')
+
+RED: 1 refused bind ends the take -> aRefusedPolishBindStillLandsTheWords
+RED: 2 latch not checked -> polishDyingWhileRecordingStillLandsTheWordsEvenAfterAReconnect
+RED: 3 early death ends the take -> polishDyingBeforeSpeechAnswersNoLongerEndsTheTake
+RED: 4 open-request death mislabelled -> polishDyingWithTheRequestOpenFallsBackAsDied
+RED: 5 reconnect warms the lost take -> aReconnectBeforeSpeechAnswersNeitherWarmsNorPolishesThisTake
+RED: 6 healthy outcome forced to fallback -> healthyPolishIsUnchanged
+RED: 6b lost reason passed as OFF -> theNoticeShowsForLocalAndCloudFallbackAndNeverUnderOff
+RED: 6c disconnect claims regardless of the decision -> anAnswerThatWonIsNeverReplacedByALaterDeath
+RED: 6d defect only at publication -> aCancelledTakeThatLostPolishStillReportsItOnce
+RED: 6e null-link defect skipped -> aPolishThatBindsButNeverConnectsStillLandsTheWords
+RED: 6f later death bypasses the once gate -> aThrownRequestReportsOnceEvenWhenPolishThenDies
+RED: 6g speech drop publishes without the decision -> aSpeechDropAfterThePolishAnswerWonChangesNothing
+RED: 6h claimed request not cancelled -> aSpeechDropWithTheRequestOpenFallsBackAndCancelsIt
+RED: 6i disconnect after destroy reports -> aPolishDisconnectAfterDestroyReportsNothing
+RED: 6j speech drop reads a blank answer -> aSpeechDropRightAfterTheAnswerKeepsTheWords
+RED: 7 disconnect defect unconditional -> aDeathReconnectAndSecondDeathReportOnce
+ALL RED

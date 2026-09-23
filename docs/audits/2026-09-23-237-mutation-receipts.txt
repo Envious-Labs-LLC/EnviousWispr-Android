@@ -1,0 +1,24 @@
+# #237 mutation receipts (each mutation applied alone, its named row run, the source restored)
+RED: a watchdog never claims -> anAnswerThatWonIsNeverFollowedByTheWatchdog
+RED: b disconnect skips the claim -> aDisconnectAfterTheOwnerCancelledHandsBackNothing
+RED: c blank passes through -> aBlankAnswerGivesTheDeterministicTextAndOneViolation
+RED: d no re-send -> aCancelBeforeTheEngineRegisteredIsSentAgainOnTheSameLink
+RED: e loss latch ignored -> aLossBeforeSpeechFallsBackWithThatReasonAndSendsNothing
+RED: f null named mismatched -> aNullOutcomeFallsBackAndIsNamed
+RED: f2 mismatched accepted -> aMismatchedOutcomeFallsBackAndIsNamed
+RED: f3 v1 result unreported -> aLegacyResultFallsBackAndIsNamed
+RED: f4 v1 error unreported -> aLegacyErrorFallsBackAndIsNamed
+RED: h disconnect hands back under the lock -> nothingIsSentOrHandedBackUnderTheLock
+RED: h2 watchdog cancels under the lock -> theWatchdogCancelsWithTheLockReleased
+RED: h3 owner cancels under the lock -> theOwnersCancelWhileProcessingIsSentWithTheLockReleased
+RED: g1 return to IDLE -> anOwnerAdmitsExactlyOneTake
+RED: g2 admit from FINISHING -> anOwnerAdmitsExactlyOneTake
+RED: s fallback copied back into the owner -> theOwnerHandsPolishToTheTakesController
+RED: w1 warm-up on main -> aWarmUpThatNeverReturnsCannotHoldTheTake
+RED: w2 no live-take guard -> aReconnectAfterTheTakeEndedSendsNoWarmUp
+ALL RED
+# After review round 1 (cancelClaimed; one-take by behaviour), run alone:
+RED: h2 watchdog cancels under the lock -> theWatchdogCancelsWithTheLockReleased
+RED: i watchdog cancel warns -> theWatchdogsFailedCancelIsQuiet
+RED: i2 speech-drop cancel warns -> theSpeechDropsFailedCancelIsQuiet
+RED: g3 return to IDLE by behaviour -> anOwnerNeverAdmitsASecondTake

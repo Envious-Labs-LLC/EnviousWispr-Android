@@ -1332,7 +1332,9 @@ def _settle_choices_locked(where, state):
     """Settle each choice debt for this group whose recorded choice is chosen now. Caller holds the book."""
     for owed, named in _choice_debts(where, state):
         wanted = [n for n, on in named["group"].items() if on]
-        if len(wanted) == 1 and state.get(wanted[0]):
+        # The recorded member chosen AND it alone on (Codex r3): a several-on probe whose undo press
+        # was lost has the original on beside the new pick, and that is not put back.
+        if len(wanted) == 1 and state.get(wanted[0]) and sum(state.values()) == 1:
             _settled_locked(owed, _STATE["serial"])
 
 
@@ -4505,6 +4507,12 @@ def _exercise_screen(name, controls):
             back_again = switch(label) == was
         except Blocked as why:
             report.append(f"ISSUE: {name} / {label}: {why}")
+            # The same rule for a switch: put it back now, or say the debt is owed.
+            try:
+                set_switch(label, was, where=name)
+            except Blocked as stuck:
+                report.append(f"ISSUE: {name} / {label} could not be put back ({stuck}); the change is "
+                              "owed in the book for restore()")
             continue
         report.append(
             f"{'VERIFIED' if moved and back_again else 'ISSUE'}: {name} / {label} "
@@ -4532,6 +4540,15 @@ def _exercise_group(name, group):
                               f"{original}, so it was not picked through; {why}")
                 return report
             report.append(f"ISSUE: {name} / {other}: {why}")
+            # PUT THE ORIGINAL BACK BEFORE WALKING ON (Codex r3): a failure between the pick and the
+            # pick back left the Writing style changed for the rest of the scan. If even that fails,
+            # stop walking this group and say the debt is owed.
+            try:
+                choose(original, where=name)
+            except Blocked as stuck:
+                report.append(f"ISSUE: {name} / {original} could not be chosen back ({stuck}); the "
+                              "change is owed in the book for restore()")
+                return report
             continue
         report.append(
             f"VERIFIED: {name} / {other}: picks {other} and goes back to {original}" if moved and back_again

@@ -235,8 +235,11 @@ def chip_screen(state, hidden=()):
             f'checkable="false" clickable="false" enabled="true" text="">{body}</node>{tabs}</node></hierarchy>')
 
 
-def chip_phone(state, presses, hidden=()):
-    """A phone that renders `state` and applies each press the way the app does."""
+def chip_phone(state, presses, hidden=(), ignore=None):
+    """A phone that renders `state` and applies each press the way the app does.
+
+    `ignore` is a list of labels whose NEXT press lands and does nothing, like a tap lost mid-animation.
+    """
     def fake(command, timeout=60, check=True):
         if command.startswith("cat "):
             return 0, chip_screen(state, hidden)
@@ -247,6 +250,9 @@ def chip_phone(state, presses, hidden=()):
             assert len(hit) == 1, (x, y, hit)
             label = hit[0]
             presses.append(label)
+            if ignore and label in ignore:
+                ignore.remove(label)
+                return 0, ""
             group = CHIP_ROWS[label][1]
             if group in PICK_ONE:
                 for other, (_, g, _) in CHIP_ROWS.items():
@@ -421,6 +427,92 @@ def test_pick_one_groups():
             eyes.choose("Semi-formal", where="AI Polish")
             check("choosing the original back settles the record whatever part is in view", eyes._owed() == [], eyes._owed())
         eyes._adb = chip_phone(state, presses)
+
+        # Codex r3 P1: a several-on group whose UNDO press is lost keeps both on; the record must stay.
+        if callable(choose):
+            state.update(CHIP_START)
+            presses.clear()
+            lost = []
+            eyes._adb = chip_phone(state, presses, ignore=lost)
+            original_tap = eyes.tap
+            taps = []
+
+            def tap_then_lose_the_next(label, *args, **kwargs):
+                taps.append(label)
+                result = original_tap(label, *args, **kwargs)
+                if label == "Hashtags" and len(taps) == 1:
+                    lost.append("Hashtags")  # armed after the first press: the undo press lands on nothing
+                return result
+
+            eyes.tap = tap_then_lose_the_next
+            try:
+                choose("Hashtags", where="AI Polish")
+                check("a lost undo press is refused", False, "it accepted Hashtags")
+            except eyes.Blocked as refusal:
+                check("a lost undo press is refused and says the record is kept",
+                      "did NOT go back" in str(refusal), refusal)
+            finally:
+                eyes.tap = original_tap
+            check("and the record is kept while both are on",
+                  state["Emoji"] and state["Hashtags"] and [w for w, _ in eyes._owed()] == ["choice"],
+                  (state, eyes._owed()))
+            with eyes._journal_locked():
+                for entry in list(eyes._owed()):
+                    eyes._settled_locked(entry, eyes._STATE["serial"])
+            state.update(CHIP_START)
+            eyes._adb = chip_phone(state, presses)
+
+        # Codex r3 P2: a failed read right after a pick must not leave the pick changed.
+        exercise_group = getattr(eyes, "_exercise_group", None)
+        if callable(exercise_group) and callable(choose):
+            state.update(CHIP_START)
+            real_choose, real_state = eyes.choose, eyes._group_state
+            armed = []
+
+            def choose_then_arm(label, *args, **kwargs):
+                # The LAST member walked (sorted), so no later pick in the walk repairs it by accident.
+                result = real_choose(label, *args, **kwargs)
+                if label == "Semi-casual" and not armed:
+                    armed.append(True)
+                return result
+
+            def state_that_fails_once(*args, **kwargs):
+                if armed == [True]:
+                    armed.append("fired")
+                    raise eyes.Blocked("the screen could not be read")
+                return real_state(*args, **kwargs)
+
+            eyes.choose, eyes._group_state = choose_then_arm, state_that_fails_once
+            try:
+                report = exercise_group("AI Polish", {"Casual": False, "Semi-casual": False,
+                                                      "Semi-formal": True, "Formal": False})
+            finally:
+                eyes.choose, eyes._group_state = real_choose, real_state
+            check("a failed read after a pick is reported", any(l.startswith("ISSUE") for l in report), report)
+            check("and the original is chosen back at once, leaving nothing owed",
+                  state["Semi-formal"] and not state["Casual"] and eyes._owed() == [], (state, eyes._owed()))
+
+        # The same shape for a real switch: flipped, then the read fails.
+        exercise = getattr(eyes, "_exercise_screen", None)
+        if callable(exercise):
+            state.update(CHIP_START)
+            real_switch = eyes.switch
+            calls = []
+
+            def switch_that_fails_after_the_flip(label, *args, **kwargs):
+                if label == "Restore clipboard" and state["Restore clipboard"] and not calls:
+                    calls.append("failed")
+                    raise eyes.Blocked("the screen could not be read")
+                return real_switch(label, *args, **kwargs)
+
+            eyes.switch = switch_that_fails_after_the_flip
+            try:
+                report = exercise("AI Polish", {"Restore clipboard": False})
+            finally:
+                eyes.switch = real_switch
+            check("a failed read after a switch flip is reported", any(l.startswith("ISSUE") for l in report), report)
+            check("and the switch is flipped back at once, leaving nothing owed",
+                  not state["Restore clipboard"] and eyes._owed() == [], (state, eyes._owed()))
 
         # ---- scan's flip-and-put-back pass on this screen -------------------------------------------
         exercise = getattr(eyes, "_exercise_screen", None)

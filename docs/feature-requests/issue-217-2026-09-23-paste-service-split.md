@@ -1,6 +1,6 @@
 # Issue #217 — The paste service delegates targeting, insertion and the bubble — 2026-09-23
 
-GitHub issue: `#217`. Tier: MEDIUM (one service, the insertion path; behaviour unchanged). Status: DRAFT.
+GitHub issue: `#217`. Tier: MEDIUM (one service, the insertion path; behaviour unchanged). Status: APPROVED (coverage adopted; grounded rounds 1 to 3 adopted; round 4 PROCEED-AS-PLANNED).
 
 ## Preface — Lane + Hardware UAT declaration
 

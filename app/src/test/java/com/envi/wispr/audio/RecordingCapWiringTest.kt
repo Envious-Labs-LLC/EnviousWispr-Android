@@ -24,6 +24,8 @@ class RecordingCapWiringTest {
     private val asr = File("src/main/java/com/envi/wispr/asr/AsrService.kt").readText()
     /** Since #186 the cap notices, the warning latch and the polling loop live in the coordinator. */
     private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+    /** The recorder notices' sentences since #256. */
+    private val notices = File("src/main/java/com/envi/wispr/ui/SessionNotice.kt").readText()
 
     @Test
     fun theCapHasExactlyOneHome() {
@@ -63,7 +65,7 @@ class RecordingCapWiringTest {
         listOf("120 second" to asr, "two minute" to SessionSources.all, "2 minute" to SessionSources.all).forEach { (stale, source) ->
             assertFalse("a stale limit is still written out: $stale", source.contains(stale))
         }
-        listOf(asr, session).forEach { source ->
+        listOf(asr, notices).forEach { source ->
             assertTrue(
                 "every sentence about the limit must be built from RecordingLimits.MAX_DURATION_MINUTES",
                 source.contains("\${RecordingLimits.MAX_DURATION_MINUTES}"),
@@ -146,7 +148,7 @@ class RecordingCapWiringTest {
     @Test
     fun aTakeStoppedByTheCapSaysSoAndStillKeepsTheWords() {
         val ending = session.substringAfter("CaptureEnding.MaxDuration ->").substringBefore("CaptureEnding.Manual,")
-        assertTrue("the cap ending must say what happened", ending.contains("DURATION_REACHED_NOTICE"))
+        assertTrue("the cap ending must say what happened", ending.contains("notices.say(SessionNotice.DURATION_REACHED)"))
         // Since #115 the ending arrives with the closed file: the transition and the continuation.
         assertTrue("the cap ending must still transcribe", ending.contains("continueAfterEnding(ending)"))
         // Order matters and it is not cosmetic. The words are the thing that must survive, and the
@@ -154,7 +156,7 @@ class RecordingCapWiringTest {
         // the take it was describing.
         assertTrue(
             "the take must be secured before anything is announced about it",
-            ending.indexOf("continueAfterEnding(ending)") < ending.indexOf("sayAfterRecording("),
+            ending.indexOf("continueAfterEnding(ending)") < ending.indexOf("notices.say(SessionNotice.DURATION_REACHED)"),
         )
     }
 

@@ -127,6 +127,7 @@ internal class DictationSessionRig {
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
+        notices = SessionNoticePresenter(surface, insertion, host, scope, mainDispatcher),
         insertion = insertion,
         log = log,
         preferences = preferences,
@@ -417,8 +418,11 @@ internal class DictationSessionRig {
 
         /** Live, pushed by hand for a take that was held WAITING. */
         fun pushLive(takeId: String) {
-            push { it.onLive(takeId, false, 0, 0, 120L); it.onTick(takeId, 0L) }
+            push { it.onLive(takeId, false, liveRouteKind, 0, 120L); it.onTick(takeId, 0L) }
         }
+
+        /** The route kind every live event carries (`InputRouteKind.code`); 0 unless a row needs the Bluetooth tip (#256). */
+        @Volatile var liveRouteKind = 0
 
         override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean {
             events += "start"
@@ -441,8 +445,8 @@ internal class DictationSessionRig {
             audioFile = File.createTempFile("take", ".pcm").apply { writeBytes(ByteArray(32_000)) }
             capturing = true
             when (liveStateAfterStart) {
-                AudioCaptureService.LIVE_READY -> push { it.onLive(takeId, false, 0, 0, 120L); it.onTick(takeId, 0L) }
-                AudioCaptureService.LIVE_FORCED -> push { it.onLive(takeId, true, 0, 0, 120L); it.onTick(takeId, 0L) }
+                AudioCaptureService.LIVE_READY -> push { it.onLive(takeId, false, liveRouteKind, 0, 120L); it.onTick(takeId, 0L) }
+                AudioCaptureService.LIVE_FORCED -> push { it.onLive(takeId, true, liveRouteKind, 0, 120L); it.onTick(takeId, 0L) }
                 else -> Unit
             }
             // Reported AFTER the push, like every signal of this fake: an event is queued before anything a

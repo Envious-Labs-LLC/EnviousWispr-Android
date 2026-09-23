@@ -179,6 +179,9 @@ class AudioServiceShapeTest {
             "thread: AudioRouteThread",
             "thread: SilenceFeederThread",
             "thread: SpectrumAnalyserThread",
+            // #241: the warm hold's silence thread was always there; its multi-line `Thread({ … }, name)` hid it
+            // from the extraction, and the one-line form that runs `SilenceWriter` shows it.
+            "thread: WarmHoldSilence",
             "warn: AudioRecord stop failed: \${}",
             "warn: Auto-stop abandoned for this take",
             "warn: Auto-stop refused: pause \${} is out of range",

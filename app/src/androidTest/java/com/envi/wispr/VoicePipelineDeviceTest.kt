@@ -114,7 +114,22 @@ class VoicePipelineDeviceTest {
 
     @Test
     fun transcribesThenPolishesWithSavedCustomWords() {
-        assumeTrue("Physical-phone fixture is missing", File(fixturePath).isFile)
+        // ASSERTED, never assumed (#215): an assumption is reported as a pass by a bare run, so this row read
+        // green wherever nobody had staged its fixture.
+        assertTrue(
+            "The real-model fixture is missing at $fixturePath: stage it with wispr_eyes.stage_uat_fixture(sentence); " +
+                "a skipped row is not a pass",
+            File(fixturePath).isFile,
+        )
+        // The saved USER term, read alone, before anything is merged with built-ins: a built-in of the same
+        // spelling must never stand in for the founder's own data. The exact `Prerequisite:` prefix is what
+        // the harness door reports as NOT RUN (#215).
+        val userTerms = runBlocking { CustomTermRepository(context).list() }.map(CustomTermRecord::term)
+        assertTrue(
+            "Prerequisite: the saved custom name 'Saurabh' is not in this device's dictionary, so the row cannot judge " +
+                "saved spellings here (it is the founder's phone's data)",
+            userTerms.any { it.spelling == "Saurabh" },
+        )
         val (asr, asrConnection) = bind<IAsrService>(AsrService::class.java) { IAsrService.Stub.asInterface(it) }
         val (polish, polishConnection) = bind<IPolishService>(PolishService::class.java) { IPolishService.Stub.asInterface(it) }
         try {
@@ -124,9 +139,7 @@ class VoicePipelineDeviceTest {
             while (!polish.isLocalModelReady && System.currentTimeMillis() < deadline) Thread.sleep(250)
             assertTrue("S1-mini did not become ready: ${polish.localModelStatus()}", polish.isLocalModelReady)
 
-            val terms = BuiltinVocabulary.withUserTerms(
-                runBlocking { CustomTermRepository(context).list() }.map(CustomTermRecord::term),
-            )
+            val terms = BuiltinVocabulary.withUserTerms(userTerms)
             val matcher = StructuredTermRestorer.compile(terms)
 
             val asrFinished = CountDownLatch(1)
@@ -514,7 +527,11 @@ class VoicePipelineDeviceTest {
     /** The phone's own speaker plays the cached fixture; completion is the track's marker, not the clock. */
     private inner class SpeakerAudio : AudioSource() {
         override fun prepare() {
-            assumeTrue("Physical-phone fixture is missing", File(fixturePath).isFile)
+            assertTrue(
+                "The fixture is missing at $fixturePath: stage it with wispr_eyes.stage_uat_fixture(sentence); " +
+                    "a skipped row is not a pass",
+                File(fixturePath).isFile,
+            )
             assertTrue("-e expected_final is required with -e audio speaker", arguments.containsKey(ARG_EXPECTED_FINAL))
         }
 

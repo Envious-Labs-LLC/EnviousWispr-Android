@@ -1,6 +1,6 @@
 # Issue #235 — A stuck History save never holds the user's words — 2026-09-23
 
-GitHub issue: `#235`. Tier: LARGE (the heart path's wait on a limb). Status: DRAFT (coverage round adopted; grounded rounds 1 and 2 adopted, round 2 was a PIVOT to a neutral row).
+GitHub issue: `#235`. Tier: LARGE (the heart path's wait on a limb). Status: DRAFT (coverage round adopted; grounded rounds 1 and 2 adopted, round 2 was a PIVOT to a neutral row; round 3 adopted).
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -33,9 +33,9 @@ After polish, the session owner waits for the History save before it hands the w
 2. The save result is typed: `SaveOutcome.Saved(id)`, `SaveOutcome.Failed(cause)`, `SaveOutcome.TimedOut` (proposed), and `SessionFinalizer.deliver` takes it. `Failed` and `TimedOut` both take today's no-durable-row route: commit `COMPLETED`, force the clipboard copy even with auto-copy off, announce once, and return the measured `ClipboardOutcome`.
 3. Use one atomic decision with `Pending`, `Saved(id)`, `Failed(cause)`, and `TimedOut`. Save completion and timeout compete to set it. The owner's continuation reads the winner and alone commits and delivers once; a completion after `TimedOut` may only reconcile History.
 4. The row is neutral until its route is recorded. Once the finalized `saved_unrouted` (proposed, non-ready) row is durable, let `Saved(id)` compete directly with `TimedOut`. The winner decides delivery within the one second bound.
-   - `Saved` wins: hand the durable `saved_unrouted` id to insertion; allow the service's first-wins outcome update on that state (`finalizeInsertionOutcome` accepts `status IN ('ready_for_insertion', 'saved_unrouted') AND insertionResult = 'pending'`); after the handoff the owner enqueues, without waiting, one conditional promotion of that row to `ready_for_insertion` (`WHERE status = 'saved_unrouted' AND insertionResult = 'pending'`), so a process death after the promotion is recovered as today's interrupted insertion.
+   - `Saved` wins: hand the durable `saved_unrouted` id to insertion; allow the service's first-wins outcome update on that state (`finalizeInsertionOutcome` accepts `status IN ('ready_for_insertion', 'saved_unrouted') AND insertionResult = 'pending'`); after the handoff the owner enqueues, without waiting, one conditional promotion of that row to `ready_for_insertion`, so a process death after the promotion is recovered as today's interrupted insertion. Enqueue promotion only when `Delivery.handoff == SCHEDULED`. Require `WHERE status = saved_unrouted AND insertionResult = pending`; allow the outcome writer to update either neutral/pending or ready/pending. Test both queue orders and a failed non-scheduled outcome write.
    - `TimedOut` wins: copy immediately and reconcile the neutral row to the measured copy result asynchronously (`clipboard` or `insertion_failed`, as today's no-handoff rows: `STATUS_INSERTION_INTERRUPTED`, `interrupted = true`), by a conditional update on `saved_unrouted` plus `pending`; whichever of the owner's copy result and the late row id arrives second enqueues it.
-   - Recovery: after the 30 second cutoff, recover a surviving neutral row as **delivery unknown**, with its final text intact; do not claim `not_attempted` or an interrupted paste without a durable route record. Give that result an explicit stored token (`InsertionResults.DELIVERY_UNKNOWN` = `delivery_unknown` (proposed)) and telemetry reading (`InsertionResultKind` classifies it explicitly; the recovered-insertion event is not emitted for it). Hide the internal neutral status in History.
+   - Recovery: use one cutoff and scan drafts, then neutral, then ready. Make every recovery update conditional on its source status and pending result. After the 30 second cutoff (the same cutoff as ready rows; a row younger than it is never eligible, so a same-process take whose route or outcome is still queued is not recovered), recover a surviving neutral row as **delivery unknown**, with its final text intact; do not claim `not_attempted` or an interrupted paste without a durable route record. Give that result an explicit stored token (`InsertionResults.DELIVERY_UNKNOWN` = `delivery_unknown` (proposed)) and telemetry reading (`InsertionResultKind` classifies it explicitly; the recovered-insertion event is not emitted for it). The exact recovered pair: `status = 'completed'`, `insertionResult = 'delivery_unknown'`, `interrupted = 1`. Hide the internal neutral status (`saved_unrouted`) in History explicitly; `completed` already shows no status line. Keep neutral/pending rows in `TakeJournal.insertionTakeIdsToKeep` until resolved. Classify `DELIVERY_UNKNOWN` in telemetry without reporting it as an interrupted insertion.
 5. Logged to be fixed: `takeFacts.historySave` gains `timed_out`; a timeout raises new `AppDefect.HistorySaveTimedOut` (proposed) once per take, and the take log says so. On a late failure, keep the delivery outcome fixed but emit the content-free failure breadcrumb and existing defect classification (`TelemetryChannels.historySaveDefect`).
 
 ### 2.2 Non-goals
@@ -98,6 +98,8 @@ Product Outcome rows on the rig, each with a compiling mutation recorded RED. Ad
 8. Clipboard write fails after a timeout; the late row records `insertion_failed`. Mutation: record `clipboard` unconditionally.
 9. Recovery: test death before route choice, after clipboard copy, and after insertion handoff (before and after the promotion). A surviving neutral row becomes `delivery_unknown` with its text intact, never `not_attempted` or an interrupted paste; a promoted row is today's interrupted insertion. Test a stalled reconciliation with delivery already complete. Mutation: write the saved row as `ready_for_insertion`.
 10. No answer ever (the worker never runs the save): the take completes on the clipboard, and nothing is owed afterwards. Mutation: wait for the save after the timeout.
+12. Recovery ordering: a promotion between the neutral and ready scans, and recovery against a queued paste outcome; both leave one honest reading. Mutation: scan ready before neutral.
+13. A Saved handoff that is not scheduled: no promotion; the fallback outcome stands. Mutation: promote on every Saved.
 11. The promotion write stalls after a Saved handoff: the words were already handed off, the owner is not held, and the row is neutral until the promotion lands. Mutation: await the promotion before the handoff.
 6. A destroy while the save is held: no delivery, no announcement (today's revoked-reservation path). Mutation: deliver after a revoked commit.
 
@@ -109,7 +111,7 @@ Two healthy Gmail dictations by COMMIT. The stuck save is NOT RUN on the emulato
 The wait between the History save and the insertion. Rollback: revert the squash commit.
 
 ## 13. Ship criteria
-- [ ] Rows 1 to 11 green and each named mutation red.
+- [ ] Rows 1 to 13 green and each named mutation red.
 - [ ] Healthy emulator dictations land by COMMIT.
 
 ## 14. Open questions

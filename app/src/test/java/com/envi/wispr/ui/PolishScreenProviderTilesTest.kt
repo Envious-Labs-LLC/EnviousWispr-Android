@@ -1,6 +1,7 @@
 package com.envi.wispr.ui
 
 import com.envi.wispr.providers.Provider
+import com.envi.wispr.providers.ui.ProviderSettingsUiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

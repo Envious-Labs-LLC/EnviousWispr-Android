@@ -1,5 +1,7 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.providers.ui.ProviderDiscoveryUiState
+import com.envi.wispr.providers.ui.ProviderSettingsUiState
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction

@@ -1,5 +1,7 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.providers.ui.ProviderSettingsUiState
+import com.envi.wispr.providers.ui.ProviderDiscoveryUiState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas

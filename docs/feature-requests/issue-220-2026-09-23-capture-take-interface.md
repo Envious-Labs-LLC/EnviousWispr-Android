@@ -1,6 +1,6 @@
 # Issue #220 — The owner binds a take-sized capture interface — 2026-09-23
 
-GitHub issue: `#220`. Tier: REFACTOR (the cross-process API between the app and the `:audio` process). Status: DRAFT (coverage round adopted; grounded rounds 1 to 3 adopted).
+GitHub issue: `#220`. Tier: REFACTOR (the cross-process API between the app and the `:audio` process). Status: APPROVED (coverage adopted; grounded rounds 1 to 3 adopted; round 4 PROCEED-AS-PLANNED).
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -43,7 +43,7 @@ The production owner holds a proxy to all 28 transactions, including four legacy
 
 Grounded by Codex (`220-g0`, read-only) and re-read by Claude.
 1. Callers: production `PipelineBindings.kt:131,132,139,141,151`; instrumentation `CaptureWithSilenceStopDeviceTest.kt` and `SilenceStoppedTakeTranscribesDeviceTest.kt` bind actionless and decode the legacy binder (`C:54-69`, `S:69-73`).
-2. Binding: `AudioCaptureService.onBind` returns one binder regardless of intent (`AudioCaptureService.kt:319`); no action or extra is read anywhere in the service. The manifest declares the service `:audio`, `exported="false"`, no intent filter; an explicit component intent with an action needs none. Android caches one binder per `Intent.filterEquals` identity (action included), so an actionless and an actioned bind get separate `onBind` calls.
+2. Binding: `AudioCaptureService.onBind` returns one binder regardless of intent (`onBind` in `AudioCaptureService.kt`, before this change); no action or extra is read anywhere in the service. The manifest declares the service `:audio`, `exported="false"`, no intent filter; an explicit component intent with an action needs none. Android caches one binder per `Intent.filterEquals` (external) identity (action included), so an actionless and an actioned bind get separate `onBind` calls.
 3. Listener slots: one `spectrumListener` and one `takeListener` `AtomicReference`, set by the register calls, cleared with a binder-identity `compareAndSet` by the legacy unregister calls, and cleared outright by `onUnbind` (`AudioCaptureService.kt:327-330`).
 4. Pinning tests: `SilenceStopWiringTest` (legacy transaction order), `LiveAudioMeterWiringTest.theCaptureProxyMakesThreeCommandsAndTwoRegistrationsAndAsksNothing` and `.theServiceClearsOnlyTheObservedListener`, `RecorderLeaseTest.onlyTheProductionStartMayRecover` (slices the legacy stub and expects five starts).
 5. Already solved: `CaptureLink` already narrows the Kotlin surface; no Android mechanism narrows an app's binder for us, so the second interface is the fix (Android AIDL guidance: https://developer.android.com/develop/background-work/services/aidl).

@@ -10,7 +10,7 @@ import com.envi.wispr.asr.AsrService
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.audio.AudioCaptureService
-import com.envi.wispr.audio.IAudioCaptureService
+import com.envi.wispr.audio.IAudioTakeService
 import com.envi.wispr.audio.IAudioSpectrumListener
 import com.envi.wispr.audio.ITakeListener
 import com.envi.wispr.polish.IPolishCallback
@@ -53,7 +53,7 @@ internal class PipelineBindings(
 
     private val audioConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            capture = CaptureProxy(IAudioCaptureService.Stub.asInterface(binder))
+            capture = CaptureProxy(IAudioTakeService.Stub.asInterface(binder))
             listener?.onCaptureConnected()
         }
 
@@ -89,7 +89,8 @@ internal class PipelineBindings(
 
     override fun bind(listener: PipelineController.Listener): PipelineController.BindResult {
         this.listener = listener
-        val audioIntent = Intent(appContext, AudioCaptureService::class.java)
+        // The take-sized interface with a fresh identity per bind (#220), so this binding is its own epoch.
+        val audioIntent = AudioCaptureService.takeBindIntent(appContext)
         audioBound = runCatching {
             appContext.bindService(audioIntent, audioConnection, Context.BIND_AUTO_CREATE)
         }.getOrDefault(false)
@@ -125,7 +126,7 @@ internal class PipelineBindings(
     }
 
     /** Pass-through; a binder exception escapes to the caller's `runCatching`, exactly as the proxy's did. */
-    private class CaptureProxy(private val service: IAudioCaptureService) : CaptureLink {
+    private class CaptureProxy(private val service: IAudioTakeService) : CaptureLink {
 
         override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean =
             service.startCaptureForTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)

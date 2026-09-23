@@ -50,12 +50,17 @@ class AudioServiceShapeTest {
         // the loop still reading the route, and today's teardown never released it from here either.
         assertFalse("onDestroy leaves the route to the capture thread", destroy.contains("route.close("))
         // #115 review round 1, F8: the listener slots are the SERVICE's to clear; a warm hold keeps it
-        // alive past the owner's unbind, so both go on the last unbind and again on destroy.
+        // alive past the owner's unbind, so they go on the unbind and again on destroy. Since #220 each
+        // binding clears only what it set: a take unbind closes its epoch, the legacy unbind clears the
+        // legacy registrations, and destroy clears every slot with its origin.
         val unbind = member(service, "override fun onUnbind(intent: Intent?): Boolean")
-        listOf("spectrumListener.set(null)", "takeListener.set(null)").forEach {
-            assertTrue("onUnbind clears $it", unbind.contains(it))
-            assertTrue("onDestroy clears $it", destroy.contains(it))
-        }
+        assertTrue(
+            "onUnbind clears per binding: the take action closes its identifier's epoch, anything else the legacy registrations",
+            unbind.contains("if (intent?.action == ACTION_BIND_TAKE) listenerSlots.closeTakeEpoch(intent.identifier) else listenerSlots.unbindLegacy()"),
+        )
+        assertFalse("onUnbind clears no slot directly", unbind.contains(".set(null)") || unbind.contains("compareAndSet"))
+        assertTrue("onDestroy clears every slot with its origin", destroy.contains("listenerSlots.clearAll()"))
+        assertFalse("onDestroy clears no slot directly", destroy.contains("Listener.set(null)"))
         // #212 code review: the old form compared against a join #115 removed, so indexOf was -1 and it
         // could not fail. The order it meant: the publisher closes after route-thread shutdown begins.
         assertFalse("onDestroy never joins the capture thread", destroy.contains("thread.join("))
@@ -81,6 +86,8 @@ class AudioServiceShapeTest {
             "sweepEarlierTakeFiles",
             // #213: a production start that finds a recorder never released ends the process.
             "endCaptureProcess",
+            // #220: the take-sized binder per binding, and the two operations both interfaces share.
+            "newTakeBinder", "startTake", "finishTakeHold",
         )
         val actualFunctions = Regex("^ {4}(?:(?:private|internal|public|protected|inline|suspend|operator|tailrec|infix)\\s+)*fun\\s+(\\w+)\\s*\\(", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
@@ -94,6 +101,8 @@ class AudioServiceShapeTest {
             "takeListener", "takeEvents",
             // #213: the note-then-kill that endCaptureProcess runs.
             "processEnd",
+            // #220: the slots and which binding set each.
+            "listenerSlots",
         )
         val actualFields = Regex("^ {4}(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:(?:private|internal|public|protected|lateinit|const)\\s+)*(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
@@ -190,6 +199,9 @@ class AudioServiceShapeTest {
             "warn: Failed to release AudioRecord: \${}",
             "warn: Failed to stop AudioRecord: \${}",
             "warn: Live picture listener gone: \${}",
+            // #220: a registration from a take binding that already ended is refused.
+            "warn: Picture listener refused: its take binding already ended",
+            "warn: Take listener refused: its take binding already ended",
             "warn: Live picture stopped for this take: \${}",
             "warn: Live picture unavailable for this take: \${}",
             "warn: Routing listener not registered: \${}",

@@ -143,8 +143,10 @@ class LiveAudioMeterWiringTest {
             loop.contains("bands.fill(0f)\n            synchronized(bandsLock) { publishedBands.fill(0f) }\n            pushSpectrum(bands)"),
         )
         val push = body(picture, "private fun pushSpectrum(bands: FloatArray)")
-        assertTrue("the push reads the slot once", push.contains("val target = listener.get() ?: return"))
-        assertTrue("a dead client clears only the listener it was pushing to", push.contains("listener.compareAndSet(target, null)"))
+        assertTrue("the push reads the slot once, lock-free", push.contains("val target = listener.listener.get() ?: return"))
+        // #220: the failed-delivery clear goes through the slots, under their lock, origin with it.
+        assertTrue("a dead client clears only the listener it was pushing to", push.contains("listener.clearIfCurrent(target)"))
+        assertFalse("and never with a direct compareAndSet on the slot", push.contains("compareAndSet"))
         val captureLoop = body(capture, "private fun captureLoop(active: CaptureSession)")
         assertTrue("the capture thread never touches the listener", !captureLoop.contains("spectrumListener") && !captureLoop.contains("listener"))
         val offer = body(picture, "fun offer(buffer: ByteArray, bytesRead: Int, position: Long)")
@@ -208,14 +210,15 @@ class LiveAudioMeterWiringTest {
 
     @Test
     fun theServiceClearsOnlyTheObservedListener() {
-        assertTrue("the slot is an AtomicReference", capture.contains("private val spectrumListener = AtomicReference<IAudioSpectrumListener?>(null)"))
+        // #220: the slot belongs to the slots owner, keyed by the listener's binder; the rules for who may
+        // clear it are ListenerSlotsTest's, the wiring is pinned here.
+        assertTrue("the slot is the slots owner's, keyed by binder identity", capture.contains("private val spectrumListener = listenerSlots.slot<IAudioSpectrumListener> { it.asBinder() }"))
         val register = body(capture, "override fun registerSpectrumListener(listener: IAudioSpectrumListener?)")
-        assertTrue("registration replaces", register.contains("spectrumListener.set(listener)"))
+        assertTrue("the legacy registration replaces, as legacy", register.contains("spectrumListener.register(SlotOrigin.Legacy, listener)"))
         val unregister = body(capture, "override fun unregisterSpectrumListener(listener: IAudioSpectrumListener?)")
-        assertTrue("unregister compares binder identity and clears with compareAndSet",
-            unregister.contains("current.asBinder() == listener.asBinder()") && unregister.contains("spectrumListener.compareAndSet(current, null)"))
+        assertTrue("unregister goes through the legacy rule", unregister.contains("spectrumListener.unregisterLegacy(listener)"))
         val unbind = body(capture, "override fun onUnbind(intent: Intent?): Boolean")
-        assertTrue("unbind clears outright", unbind.contains("spectrumListener.set(null)"))
+        assertTrue("unbind clears per binding", unbind.contains("listenerSlots.closeTakeEpoch(intent.identifier)") && unbind.contains("listenerSlots.unbindLegacy()"))
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.envi.wispr.audio
 
 import com.envi.wispr.ui.SessionSources
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -102,7 +103,9 @@ class LiveGateWiringTest {
         val finish = owned(hold, "fun finishTake(): Boolean {")
         assertTrue("the hold keeps the service through the injected edge", finish.contains("keepAlive()"))
         assertTrue("which is a started lifetime", capture.contains("keepAlive = { startService(Intent(this, AudioCaptureService::class.java)) }"))
-        assertTrue("and the binder calls it under the session lock", capture.contains("override fun finishTake(): Boolean = synchronized(sessionLock) { this@AudioCaptureService.warmHoldOwner.finishTake() }"))
+        // #220: both interfaces call one helper, which takes the session lock.
+        assertTrue("the helper calls it under the session lock", capture.contains("private fun finishTakeHold(): Boolean = synchronized(sessionLock) { warmHoldOwner.finishTake() }"))
+        assertEquals("and both binders call that helper", 2, Regex("override fun finishTake\\(\\): Boolean = this@AudioCaptureService\\.finishTakeHold\\(\\)").findAll(capture).count())
         val start = body(capture, "override fun onStartCommand(")
         assertTrue(start.contains("return START_NOT_STICKY"))
         assertTrue(start.contains("if (!warmHoldOwner.isActive && session == null) stopSelf()"))

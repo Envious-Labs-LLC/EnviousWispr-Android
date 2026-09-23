@@ -4,7 +4,6 @@ import android.os.RemoteException
 import com.envi.wispr.debug.DebugLogger
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 
 /**
@@ -18,7 +17,8 @@ import java.util.concurrent.locks.LockSupport
  * [interrupt] is the one platform edge, injected so a JVM test can count that [close] interrupts once.
  */
 internal class PicturePublisher(
-    private val listener: AtomicReference<IAudioSpectrumListener?>,
+    /** The binding's slot (#220): read lock-free here; a failed push clears it only through the slot. */
+    private val listener: ListenerSlots.Slot<IAudioSpectrumListener>,
     private val tag: String,
     private val interrupt: (Thread) -> Unit = { it.interrupt() },
 ) {
@@ -137,16 +137,17 @@ internal class PicturePublisher(
      *
      * `oneway`, so this never waits on the app process; the parcel is written before the call returns,
      * so the analyser's own array is safe to pass. A dead client throws: the slot is cleared with
-     * `compareAndSet` so a registration that replaced this one in the meantime is kept, and the loss is
+     * `clearIfCurrent`, under the slots' lock with its origin, so a registration that replaced this one in
+     * the meantime is kept, and the loss is
      * logged once per take. The picture is a limb: nothing here can reach the capture thread or the take.
      */
     private fun pushSpectrum(bands: FloatArray) {
-        val target = listener.get() ?: return
+        val target = listener.listener.get() ?: return
         try {
             target.onSpectrum(bands)
             pushes.incrementAndGet()
         } catch (e: RemoteException) {
-            if (listener.compareAndSet(target, null)) {
+            if (listener.clearIfCurrent(target)) {
                 DebugLogger.warn(tag, "Live picture listener gone: ${e.javaClass.simpleName}")
             }
         }

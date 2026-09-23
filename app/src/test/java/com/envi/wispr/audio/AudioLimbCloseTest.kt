@@ -66,7 +66,7 @@ class AudioLimbCloseTest {
     @Test
     fun closingThePictureTwiceInterruptsTheAnalyserOnce() {
         var interrupts = 0
-        val picture = PicturePublisher(AtomicReference(null), "test", interrupt = { interrupts++; it.interrupt() })
+        val picture = PicturePublisher(ListenerSlots().slot<IAudioSpectrumListener> { it }, "test", interrupt = { interrupts++; it.interrupt() })
         picture.start(stillLive = { true })
         picture.close()
         picture.close()

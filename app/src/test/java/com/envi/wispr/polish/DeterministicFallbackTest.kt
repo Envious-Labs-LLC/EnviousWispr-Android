@@ -4,6 +4,7 @@ import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.DetectedLanguage
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.PolishPipeline
+import com.envi.wispr.ui.SessionSources
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -35,7 +36,8 @@ class DeterministicFallbackTest {
     @Test fun sessionOwnerUsesTheSharedDeterministicFallback() {
         val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
         assertTrue(source.contains("PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)"))
-        assertFalse(source.contains("RegexPolisher"))
+        // Every file of the session owner (#216): a regex polisher in a collaborator is the same drift.
+        assertFalse(SessionSources.all.contains("RegexPolisher"))
     }
 
     /**

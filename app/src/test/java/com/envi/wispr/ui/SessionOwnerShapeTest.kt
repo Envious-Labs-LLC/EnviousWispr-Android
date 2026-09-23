@@ -174,20 +174,85 @@ class SessionOwnerShapeTest {
      */
     @Test
     fun theOwnerNeverBlocksAndNeverPolls() {
-        val coordinator = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        // Since #216 the owner is three files; a blocking wait or a second thread is refused in any of them.
+        val owner = SessionSources.all
         listOf("runBlocking", "Thread.sleep", "startPolling", "waitForFileReady", "Thread.join", ".join(").forEach {
-            assertFalse("the coordinator must not contain $it", coordinator.contains(it))
+            assertFalse("the session owner must not contain $it", owner.contains(it))
         }
-        // The ONE thread the owner makes is the capture command lane's, inside its executor's factory;
-        // no other `Thread(` may appear (the old live waiter, poller, transcribe and cleanup threads).
-        assertEquals("one Thread( in the coordinator, the lane's", 1, Regex("""(^|[^A-Za-z0-9_.])Thread\(""").findAll(coordinator).count())
-        assertTrue(coordinator.contains("Thread(runnable, \"CaptureCommands\")"))
+        // The ONE thread the owner makes is the capture command lane's, inside its executor's factory in
+        // `CaptureSessionController`; no other `Thread(` may appear (the old live waiter, poller, transcribe
+        // and cleanup threads).
+        assertEquals("one Thread( in the session owner, the lane's", 1, Regex("""(^|[^A-Za-z0-9_.])Thread\(""").findAll(owner).count())
+        assertTrue(SessionSources.capture.contains("Thread(runnable, \"CaptureCommands\")"))
         val paste = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText().substringAfter("override fun onDestroy()")
         listOf("runBlocking", "joinAll", ".join(").forEach { assertFalse("the paste service's onDestroy must not contain $it", paste.contains(it)) }
         assertTrue("the clean-stop marker is written in onDestroy itself, last", paste.substringBefore("super.onDestroy()").trimEnd().endsWith("markStopWasClean()"))
         assertFalse("and never queued behind a History write", paste.contains("enqueue(\"clean-stop marker\")"))
         val audio = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText().substringAfter("override fun onDestroy()")
         listOf("runBlocking", ".join(", "Thread.sleep").forEach { assertFalse("the audio service's onDestroy must not contain $it", audio.contains(it)) }
+    }
+
+    /**
+     * Drift Guard (#216): the owner decides and delegates. [CaptureSessionController] talks to the capture
+     * process and [SessionFinalizer] writes the row and delivers the words; neither can see the state or
+     * end a take, and the owner holds none of their mechanics. Read as CODE through [codeOnly], so a
+     * comment or a string can neither satisfy nor break a row. When it fails, the user sees nothing at
+     * once; an edit is putting the take's decisions into a class that cannot see the state machine, or
+     * the transport back into the owner.
+     * REVERT: move the draft insert's `historyWrites.enqueue` back into `publishLive`; add a second
+     * `Executors.newSingleThreadExecutor` to the controller; give `SessionFinalizer.deliver` a
+     * `TerminalReason` parameter; add a `CaptureEvent` member carrying a `TerminalReason`; make
+     * `TakeContext.targetPin` a `var`.
+     */
+    @Test
+    fun theOwnerDecidesAndItsTwoCollaboratorsOnlyReport() {
+        val dir = "src/main/java/com/envi/wispr/ui"
+        val files = listOf("DictationSessionCoordinator.kt", "CaptureSessionController.kt", "SessionFinalizer.kt", "TakeContext.kt").map { File("$dir/$it") }
+        val code = codeOnly(files).mapKeys { it.key.name }
+        val owner = code.getValue("DictationSessionCoordinator.kt")
+        val controller = code.getValue("CaptureSessionController.kt")
+        val finalizer = code.getValue("SessionFinalizer.kt")
+        val context = code.getValue("TakeContext.kt")
+        fun count(text: String, pattern: String) = Regex(pattern).findAll(text).count()
+
+        // (a) The owner holds none of the mechanics it delegates.
+        listOf(
+            """historyWrites\??\.enqueue\(""", """\bExecutors\.""", """\bpostToMainDelayed\(""", """\blistenForTake\(""",
+            """\bstartCaptureForTake\(""", """\bpasteWhenTargetReturns\(""", """\bcopyToClipboard\(""", """\bInsertionJudgement\.""",
+            """\bpipeline\.capture\b""", """\bCaptureLink\b""",
+        ).forEach { assertEquals("the owner's code holds no $it", 0, count(owner, it)) }
+
+        // (b) Each mechanic has exactly the one home the split gave it.
+        assertEquals("one lane", 1, count(controller, """\bExecutors\.newSingleThreadExecutor\b"""))
+        assertEquals("one listener registration", 1, count(controller, """\blistenForTake\("""))
+        assertEquals("one start call", 1, count(controller, """\bstartCaptureForTake\("""))
+        assertEquals("three timer posts: the bound's arm and re-arm, the live deadline", 3, count(controller, """\bpostToMainDelayed\("""))
+        assertEquals(
+            "the seven History writes: draft insert, status, discard, interrupted, finalize, clipboard, history only",
+            7,
+            count(finalizer, """historyWrites\??\.enqueue\("""),
+        )
+        assertEquals("one handoff", 1, count(finalizer, """\bpasteWhenTargetReturns\("""))
+        assertEquals("one clipboard write", 1, count(finalizer, """\bcopyToClipboard\("""))
+
+        // (c) Neither collaborator can see the state or decide an ending.
+        mapOf("CaptureSessionController.kt" to controller, "SessionFinalizer.kt" to finalizer).forEach { (name, text) ->
+            listOf(
+                """\bSessionState\b""", """\bTerminalReason\b""", """\bTakeArbiter\b""", """\bTakeContext\b""", """\barbiter\b""",
+                """\.reserve\(""", """\.commit\(""", """\.commitNow\(""", """\.interrupt\(""",
+            ).forEach { assertEquals("$name holds no $it", 0, count(text, it)) }
+        }
+
+        // (d) The capture side reports exactly these facts.
+        val members = Regex("""\b(?:data class|data object|class|object)\s+(\w+)[^\n{]*:\s*CaptureEvent\b""").findAll(controller).map { it.groupValues[1] }.toSet()
+        assertEquals(setOf("Live", "Tick", "SilenceStatus", "Ended", "Silent", "LiveDeadlinePassed", "StartFailed"), members)
+
+        // (e) The take is fixed once built: every constructor property a `val`, no `var` anywhere.
+        val parameters = context.substringAfter("class TakeContext(").substringBefore(") {")
+        val declared = parameters.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        assertEquals("six properties", 6, declared.size)
+        declared.forEach { assertTrue("a fixed property: $it", it.startsWith("val ")) }
+        assertEquals("no var in TakeContext", 0, count(context, """\bvar\b"""))
     }
 
     @Test

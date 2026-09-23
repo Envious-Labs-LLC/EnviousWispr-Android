@@ -1,5 +1,6 @@
 package com.envi.wispr.audio
 
+import com.envi.wispr.ui.SessionSources
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -59,7 +60,7 @@ class RecordingCapWiringTest {
     fun noSentenceTheUserReadsWritesTheNumberOutByHand() {
         // The old refusal said "exceeds the 120 second limit" while the cap lived somewhere else
         // entirely. A sentence that spells the number cannot track the constant.
-        listOf("120 second" to asr, "two minute" to session, "2 minute" to session).forEach { (stale, source) ->
+        listOf("120 second" to asr, "two minute" to SessionSources.all, "2 minute" to SessionSources.all).forEach { (stale, source) ->
             assertFalse("a stale limit is still written out: $stale", source.contains(stale))
         }
         listOf(asr, session).forEach { source ->
@@ -80,7 +81,7 @@ class RecordingCapWiringTest {
         )
         assertFalse(
             "the session must not ask the capture service for the cap",
-            session.contains("maxDurationMs"),
+            SessionSources.all.contains("maxDurationMs"),
         )
     }
 
@@ -94,7 +95,7 @@ class RecordingCapWiringTest {
         )
         assertFalse(
             "no caller may redo the subtraction",
-            session.contains("- RecordingLimits.WARNING_LEAD_MS"),
+            SessionSources.all.contains("- RecordingLimits.WARNING_LEAD_MS"),
         )
         // The relationships are enforced by RecordingLimitsTest. A runtime `init` check in
         // RecordingLimits cannot do it: every value there is a `const val`, which the compiler inlines,

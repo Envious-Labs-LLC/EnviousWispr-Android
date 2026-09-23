@@ -1,0 +1,13 @@
+# #236 mutation receipts (each mutation applied alone, its named row run, the source restored)
+RED: 1 warm-up on main -> aWarmUpThatNeverReturnsCannotHoldTheTake
+RED: 2 no live-take guard -> aReconnectAfterTheTakeEndedSendsNoWarmUp
+RED: 3 both loss checks dropped -> aReconnectBeforeSpeechAnswersNeitherWarmsNorPolishesThisTake
+RED: 3b setup call outside the IO block -> setupWarmsOnIoAndCancelsOnStop
+RED: 3c setup never cancels -> setupWarmsOnIoAndCancelsOnStop
+RED: 3d setup call just after the IO block -> setupWarmsOnIoAndCancelsOnStop
+RED: 3e flag not volatile -> setupWarmsOnIoAndCancelsOnStop
+RED: 3f flag cleared after cancel -> setupWarmsOnIoAndCancelsOnStop
+RED: 4a service catch dropped -> theServiceLogsAFailedWarmUp
+RED: 4b refusal reset dropped -> aRefusedLoadNeverLeavesLoadingStuck
+ALL RED
+# After review round 2 changed the reconnect row, mutation 2 was rerun: RED

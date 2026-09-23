@@ -67,7 +67,7 @@ None.
 
 | Delta | Consumer | Change | Verified by |
 |---|---|---|---|
-| Warm-up dispatch | coordinator, setup | IO | JVM rows; `OnboardingWiringTest` updated |
+| Warm-up dispatch | coordinator, setup | IO | JVM rows; the setup row of `WarmUpOffMainTest` |
 | Service hardening | `PolishService` | catch, reset | shape rows |
 
 ## 7-9. Failure modes, signals, fallbacks
@@ -82,7 +82,7 @@ A warm-up failure is logged by the owner (take id), by setup, and now by the ser
 
 1. Product Outcome (rig): a warm-up that never returns (the fake polish link's `warmUpWithPolicy` blocks on a latch) while the take starts, stops, transcribes and publishes: the take completes and the words land. Mutation: call the warm-up on main (the rig's main thread then blocks and the take never ends).
 2. Test a reconnect after the take reaches FINISHING but before destroy; dropping the active-state guard must send warm-up and fail.
-3. Existing rows adjusted to the asynchronous call: `PolishFailsOpenTest` row 5 (`aReconnectBeforeSpeechAnswersNeitherWarmsNorPolishesThisTake`) waits for the warm-up's own completion signal rather than reading a count at once; for row 5, mutate both loss checks together, or add a signal-controlled case that tests the IO check. `OnboardingWiringTest` must check that the call itself sits inside the IO block.
+3. Existing rows adjusted to the asynchronous call: `PolishFailsOpenTest` row 5 (`aReconnectBeforeSpeechAnswersNeitherWarmsNorPolishesThisTake`) waits for the warm-up's own completion signal rather than reading a count at once; for row 5, mutate both loss checks together, or add a signal-controlled case that tests the IO check. The setup row of `WarmUpOffMainTest` checks that the call itself sits inside the IO block (in place of an `OnboardingWiringTest` edit).
 4. Service shape rows (code only): `warmUpWithPolicy` catches its failure; `ensureModelLoaded` resets `modelLoading` in the refusal branch; assertions pin the catch-and-log path and the refusal reset separately. Mutations: drop each.
 Use bounded signals, release the fake in `finally`, and run each stated mutation to a named failure.
 
@@ -94,8 +94,8 @@ Two Gmail dictations by COMMIT; setup's warm-up is not exercised on the emulator
 The warm-up's thread in two callers, and the service's warm-up error handling. Rollback: revert the squash commit.
 
 ## 13. Ship criteria
-- [ ] Rows 1 to 4 green, each mutation red.
-- [ ] Two emulator dictations land by COMMIT.
+- [x] Rows 1 to 4 green, each mutation red (10 of 10).
+- [x] Two emulator dictations land by COMMIT.
 
 ## 14. Open questions
 None.

@@ -5,7 +5,7 @@ package com.envi.wispr.ui
  *
  * The gate belongs to the CUE, not to the vibrate call, because the two kinds answer to different
  * settings. `Settings.System.HAPTIC_FEEDBACK_ENABLED` governs touch and long-press feedback,
- * so honouring it for a RESULT cue is parity with `PasteAccessibilityService.performResultHaptic`.
+ * so honouring it for a RESULT cue is parity with `AccessibilityInsertionRunner.performResultHaptic`.
  * A session cue is not feedback on a touch: on the side-button path there is no window, the
  * user's eyes are on another app's text field, and the buzz is the only signal that recording
  * started or stopped. Gating those on the touch-feedback switch silences the whole product for

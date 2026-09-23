@@ -267,7 +267,7 @@ internal class SessionFinalizer(
             // speak: the announcement has to originate here so insertion fails safe, never
             // silently (enviouswispr-android-parity-spec.md PAR-081). The routes
             // where the service DID accept the text and then failed announce themselves, in
-            // PasteAccessibilityService.recordAndAnnounce.
+            // AccessibilityInsertionRunner.recordAndAnnounce.
             announceInsertionFallback(
                 handoff = handoff,
                 clipboard = clipboard,

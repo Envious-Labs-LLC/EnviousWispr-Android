@@ -5,7 +5,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 /**
  * Drift Guard (#186): the Service is the Android shell and nothing else. A state machine cannot exist
@@ -125,47 +124,6 @@ class SessionOwnerShapeTest {
         }
     }
 
-    /** `scripts/check-visibility.py --code-only`, one process for every file, keyed back by path. */
-    private fun codeOnly(files: List<File>): Map<File, String> {
-        val script = File("../scripts/check-visibility.py").canonicalFile
-        assertTrue("the check must exist at ${script.path}", script.isFile)
-        val process = ProcessBuilder(listOf("python3", script.path, "--code-only") + files.map { it.path })
-            .redirectErrorStream(true)
-            .start()
-        val out = process.inputStream.bufferedReader().readText()
-        assertTrue("the check must finish", process.waitFor(120, TimeUnit.SECONDS))
-        assertEquals("the check must answer:\n$out", 0, process.exitValue())
-        // The stream is `=== <path>\n`, the answer, then one newline that is the answer's own or one the
-        // service adds, per file in order. The answer has exactly the file's LENGTH in CODE POINTS (the
-        // service blanks, never deletes, and counts as Python does; Kotlin's `length` is UTF-16 units and
-        // an emoji in a comment is one point but two units), so the reader walks by code points and
-        // never splits on newlines: rounds 6 and 7
-        // each found a newline shape a split-and-join reader rebuilt wrongly (no final newline; a
-        // blank-only file), and the class is closed here rather than patched a third time. A service
-        // that changed a length would land the next header check on the wrong bytes, loudly.
-        val result = LinkedHashMap<File, String>()
-        var pos = 0
-        for (file in files) {
-            val header = "=== ${file.path}\n"
-            assertEquals("answer ${result.size + 1} of ${files.size} is for ${file.path}", header, out.substring(pos, minOf(out.length, pos + header.length)))
-            pos += header.length
-            val text = file.readText()
-            val points = text.codePointCount(0, text.length)
-            assertTrue("the answer for ${file.path} is complete", out.codePointCount(pos, out.length) >= points)
-            val end = out.offsetByCodePoints(pos, points)
-            val answer = out.substring(pos, end)
-            pos = end
-            if (!text.endsWith("\n")) {
-                assertEquals("the service ends an unterminated answer with one newline", "\n", out.substring(pos, minOf(out.length, pos + 1)))
-                pos += 1
-            }
-            result[file] = answer
-        }
-        assertEquals("nothing after the last answer", out.length, pos)
-        assertEquals("every file answered", files.size, result.size)
-        return result
-    }
-
     /**
      * Drift Guard (#115): the owner never blocks and never polls. No `runBlocking`, no thread of its own,
      * no sleep in the coordinator; no `runBlocking` or join in the three teardowns (the owner's `destroy`,
@@ -184,10 +142,24 @@ class SessionOwnerShapeTest {
         // and cleanup threads).
         assertEquals("one Thread( in the session owner, the lane's", 1, Regex("""(^|[^A-Za-z0-9_.])Thread\(""").findAll(owner).count())
         assertTrue(SessionSources.capture.contains("Thread(runnable, \"CaptureCommands\")"))
-        val paste = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText().substringAfter("override fun onDestroy()")
-        listOf("runBlocking", "joinAll", ".join(").forEach { assertFalse("the paste service's onDestroy must not contain $it", paste.contains(it)) }
+        val pasteService = File("src/main/java/com/envi/wispr/paste/PasteAccessibilityService.kt").readText()
+        check(pasteService.contains("override fun onDestroy()"))
+        val paste = pasteService.substringAfter("override fun onDestroy()")
+        // Since #217 onDestroy hands its teardown to three collaborators' `close`; a wait there is the same
+        // hang, so their bodies are scanned too.
+        val closes = listOf("EditorTargetTracker.kt", "AccessibilityInsertionRunner.kt", "AccessibilityBubbleHost.kt").map { name ->
+            val text = File("src/main/java/com/envi/wispr/paste/$name").readText()
+            val from = text.indexOf("fun close() {")
+            check(from >= 0) { "$name must declare its close" }
+            val to = text.indexOf("\n    }\n", from)
+            check(to > from) { "$name's close must end" }
+            text.substring(from, to)
+        }
+        (listOf(paste) + closes).forEach { teardown ->
+            listOf("runBlocking", "joinAll", ".join(").forEach { assertFalse("the paste service's teardown must not contain $it", teardown.contains(it)) }
+            assertFalse("and never queued behind a History write", teardown.contains("enqueue(\"clean-stop marker\")"))
+        }
         assertTrue("the clean-stop marker is written in onDestroy itself, last", paste.substringBefore("super.onDestroy()").trimEnd().endsWith("markStopWasClean()"))
-        assertFalse("and never queued behind a History write", paste.contains("enqueue(\"clean-stop marker\")"))
         val audio = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText().substringAfter("override fun onDestroy()")
         listOf("runBlocking", ".join(", "Thread.sleep").forEach { assertFalse("the audio service's onDestroy must not contain $it", audio.contains(it)) }
     }

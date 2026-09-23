@@ -170,8 +170,10 @@ class AutoPasteWiringTest {
      */
     @Test
     fun everyDictationThatMissesTheFieldReachesTheAnnouncement() {
+        // Since #217 the insertion lives in the service's `AccessibilityInsertionRunner`; the count spans every paste file.
         val service = read("paste/PasteAccessibilityService.kt")
-        val keepCalls = Regex("keepTranscriptOnClipboard\\(").findAll(service).count()
+        val runner = read("paste/AccessibilityInsertionRunner.kt")
+        val keepCalls = Regex("keepTranscriptOnClipboard\\(").findAll(PasteSources.all).count()
         assertEquals(
             "The service keeps words on the clipboard from more than one place. Every such place " +
                 "is a dictation that missed the field, so the copy and the sentence have to be " +
@@ -181,7 +183,7 @@ class AutoPasteWiringTest {
             keepCalls,
         )
         val announce = slice(
-            service,
+            runner,
             "private fun recordAndAnnounce(reason: ServiceFallbackReason, pending: PendingInsertion) {",
             "\n    private fun ",
         )
@@ -190,17 +192,27 @@ class AutoPasteWiringTest {
                 "the sentence can be separated again",
             announce.contains("keepTranscriptOnClipboard(pending)"),
         )
-        listOf(
-            "override fun onInterrupt() {" to ServiceFallbackReason.SERVICE_INTERRUPTED,
-            "override fun onDestroy() {" to ServiceFallbackReason.SERVICE_DESTROYED,
-        ).forEach { (anchor, reason) ->
-            val teardown = slice(service, anchor, "\n    }")
-            assertTrue(
-                "$anchor disposes of a pending insertion without announcing it, so a user whose " +
-                    "service died mid-insertion is told nothing at all: $teardown",
-                teardown.contains("recordAndAnnounce(ServiceFallbackReason.$reason, pending)"),
-            )
-        }
+        // Both teardowns hand a pending insertion to the runner, and the runner announces it (#217).
+        assertTrue(
+            "onInterrupt disposes of a pending insertion without announcing it",
+            slice(service, "override fun onInterrupt() {", "\n    }").contains(
+                "runner.abandon(ServiceFallbackReason.SERVICE_INTERRUPTED, InsertionOutcomeLine.Outcome.INTERRUPTED)",
+            ),
+        )
+        assertTrue(
+            "onDestroy disposes of a pending insertion without announcing it",
+            slice(service, "override fun onDestroy() {", "\n    }").contains("runner.close()"),
+        )
+        assertTrue(slice(runner, "fun abandon(", "\n    }").contains("finalizePending(reason, outcome)"))
+        assertTrue(
+            slice(runner, "fun close() {", "\n    }").contains(
+                "finalizePending(ServiceFallbackReason.SERVICE_DESTROYED, InsertionOutcomeLine.Outcome.DESTROYED)",
+            ),
+        )
+        assertTrue(
+            "a pending insertion finalized at teardown is announced",
+            slice(runner, "private fun finalizePending(", "\n    }").contains("recordAndAnnounce(reason, pending)"),
+        )
         // Since #216 the delivery lives in the owner's `SessionFinalizer`, which logs through its `log` seam.
         val source = read("ui/SessionFinalizer.kt")
         // `substringAfter` and `substringBefore` return the WHOLE receiver when their delimiter is
@@ -378,20 +390,21 @@ class AutoPasteWiringTest {
         )
         // Which surface a service SHOWS is not visible to reflection, and one call site is what
         // keeps it reading from the same value.
-        val source = read("paste/PasteAccessibilityService.kt")
-        val toastCalls = Regex("Toast\\.makeText\\(").findAll(source).count()
+        // Since #217 the announcement is the service's `AccessibilityInsertionRunner`'s; counts span every paste file.
+        val source = read("paste/AccessibilityInsertionRunner.kt")
+        val toastCalls = Regex("Toast\\.makeText\\(").findAll(PasteSources.all).count()
         assertEquals("The service shows a toast from more than one place", 1, toastCalls)
         assertTrue(
             "The service composes a toast from something other than the announcement, so it can " +
                 "state a destination nothing measured",
-            source.contains("Toast.makeText(this, announcement.line, Toast.LENGTH_LONG)"),
+            source.contains("Toast.makeText(service, announcement.line, Toast.LENGTH_LONG)"),
         )
         assertTrue(
             "The service no longer asks FallbackAnnouncement what to say",
             source.contains("FallbackAnnouncement.serviceFallbackAnnouncement("),
         )
         val reasons = ServiceFallbackReason.entries.filterNot {
-            source.contains("ServiceFallbackReason.$it")
+            PasteSources.all.contains("ServiceFallbackReason.$it")
         }
         assertEquals(
             "A service fallback outcome announces nothing: $reasons",

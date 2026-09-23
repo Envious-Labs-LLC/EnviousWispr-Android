@@ -3227,48 +3227,84 @@ def _remote_size(path):
     return int(size) if code == 0 and size.isdigit() else None
 
 
+def _remote_presence(path):
+    """'present' or 'absent' for any name (file, directory or link) in the target's private storage; None
+    when the device could not tell, which callers never read as absent."""
+    probe = f"if [ -e {path} ] || [ -L {path} ]; then echo present; else echo absent; fi"
+    code, out = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(probe)}", check=False)
+    answer = out.strip()
+    return answer if code == 0 and answer in ("present", "absent") else None
+
+
+def _remove_owned(path):
+    """Remove a name THIS process created and prove it is gone: None when absent afterwards, otherwise a
+    sentence saying it may remain."""
+    removed, why = _adb(f"run-as {PACKAGE} rm -f {path}", check=False)
+    if _remote_presence(path) == "absent":
+        return None
+    return f"{PACKAGE}/{path} may remain (rm exit {removed}: {why.strip()[-120:] or 'no message'})"
+
+
 def stage_uat_fixture(sentence):
     """Write the real-boundary fixture into the target's cache ONLY where none exists (#215).
 
     Rendered locally at 16 kHz; streamed with `adb exec-in` into a unique temporary name; admitted only
     after a regular-file, exact-size read-back. Published in one device shell: `set -C` makes `true >
     final` refuse a name that exists (exit 3), so a fixture already there, or one that appears meanwhile,
-    is never touched; only then is the temporary copied in with `>|` (exit 4 on failure). Hard links are
-    not an option: SELinux denies `link` to `runas_app` on app data (emulator API 36, 2026-09-22). The
-    final name is read back again; a final name THIS call created and could not fill whole is removed;
-    the temporary name is removed on every path.
+    is never touched; only then is the temporary copied in with `>|` (exit 4 on failure). Exit 3 is read
+    as a race only when the final name is then present; otherwise the creation failed (permission, space)
+    and staging is Blocked. Hard links are not an option: SELinux denies `link` to `runas_app` on app data
+    (emulator API 36, 2026-09-22). The final name is read back again; a final name THIS call created and
+    could not fill whole is removed. The temporary name is removed on every path. Every removal is proved
+    by reading the name back absent; one that cannot be proved is Blocked, naming what may remain.
     """
     device()
-    if _remote_size(f"cache/{UAT_FIXTURE}") is not None:
-        return f"a fixture is already at {PACKAGE}/cache/{UAT_FIXTURE}; it was left untouched and nothing was staged"
+    final = f"cache/{UAT_FIXTURE}"
+    if _remote_size(final) is not None:
+        return f"a fixture is already at {PACKAGE}/{final}; it was left untouched and nothing was staged"
     scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wispr-eyes")
     os.makedirs(scratch, exist_ok=True)
     local = _pcm16_from_sentence(sentence, os.path.join(scratch, f"fixture-{uuid.uuid4().hex}.pcm"))
     size = os.path.getsize(local)
     temporary = f"cache/.{UAT_FIXTURE}.{uuid.uuid4().hex}.tmp"
-    try:
+
+    def publish():
         _exec_in(["run-as", PACKAGE, "sh", "-c", f"cat > {temporary}"], local)
         if _remote_size(temporary) != size:
             raise Blocked(f"the fixture did not arrive whole ({_remote_size(temporary)} of {size} bytes); nothing was staged")
-        final = f"cache/{UAT_FIXTURE}"
-        publish = f"set -C; true > {final} || exit 3; cat {temporary} >| {final} || exit 4"
-        published, why = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(publish)}", check=False)
+        script = f"set -C; true > {final} || exit 3; cat {temporary} >| {final} || exit 4"
+        published, why = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(script)}", check=False)
+        detail = why.strip()[-120:] or "no message"
         if published == 3:
-            return (f"a fixture appeared at {PACKAGE}/{final} while staging; it was left untouched and "
-                    f"nothing was staged ({why.strip()[-120:]})")
+            if _remote_presence(final) == "present":
+                return (f"a fixture appeared at {PACKAGE}/{final} while staging; it was left untouched and "
+                        f"nothing was staged ({detail})")
+            raise Blocked(f"{PACKAGE}/{final} could not be created and no fixture is there ({detail}); nothing was staged")
         if published == 4:
-            _adb(f"run-as {PACKAGE} rm -f {final}", check=False)
-            raise Blocked(f"the fixture could not be copied into {PACKAGE}/{final}; the name this call created "
-                          f"was removed ({why.strip()[-120:]})")
+            left = _remove_owned(final)
+            raise Blocked(f"the fixture could not be copied into {PACKAGE}/{final} ({detail}); "
+                          + (left or "the name this call created was removed"))
         if published != 0:
-            raise Blocked(f"the fixture could not be published at {PACKAGE}/{final} (exit {published}: {why.strip()[-120:]})")
+            raise Blocked(f"the fixture could not be published at {PACKAGE}/{final} (exit {published}: {detail})")
         if _remote_size(final) != size:
-            _adb(f"run-as {PACKAGE} rm -f {final}", check=False)
+            left = _remove_owned(final)
             raise Blocked(f"the published fixture at {PACKAGE}/{final} did not read back at {size} bytes; "
-                          "the name this call created was removed")
-        return f"staged {size} bytes ({size // (FIXTURE_SAMPLE_RATE * FIXTURE_BYTES_PER_SAMPLE):.0f} s) at {PACKAGE}/cache/{UAT_FIXTURE}"
-    finally:
-        _adb(f"run-as {PACKAGE} rm -f {temporary}", check=False)
+                          + (left or "the name this call created was removed"))
+        return f"staged {size} bytes ({size // (FIXTURE_SAMPLE_RATE * FIXTURE_BYTES_PER_SAMPLE):.0f} s) at {PACKAGE}/{final}"
+
+    try:
+        outcome = publish()
+    except Exception as failure:
+        left = _remove_owned(temporary)
+        if left and isinstance(failure, Blocked):
+            raise Blocked(f"{failure}; the temporary {left}") from failure
+        if left:
+            failure.add_note(f"the temporary {left}")
+        raise
+    left = _remove_owned(temporary)
+    if left:
+        raise Blocked(f"{outcome}, but the temporary {left}")
+    return outcome
 
 
 def open_page(url, package="com.android.chrome"):

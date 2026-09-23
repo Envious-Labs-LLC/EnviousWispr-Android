@@ -1807,7 +1807,8 @@ Group main:
         rendered["bytes"] = data
         return path
 
-    def make_fs(final=None, arrive_short=False, race=False, copy_fails=False, copy_short=False):
+    def make_fs(final=None, arrive_short=False, race=False, copy_fails=False, copy_short=False,
+                create_denied=False, rm_fails=()):
         fs = {"files": {} if final is None else {"cache/enviouswispr-uat.pcm": final}, "ops": []}
 
         def fake_adb(command, timeout=60, check=True, serial=None):
@@ -1826,6 +1827,8 @@ Group main:
                     fs["files"][dst] = b"theirs"
                 if dst in fs["files"]:
                     return 3, "sh: can't create: File exists"
+                if create_denied:
+                    return 3, "sh: can't create: Permission denied"
                 fs["files"][dst] = b""
                 if copy_fails:
                     return 4, "cat: write error"
@@ -1834,8 +1837,13 @@ Group main:
             if " rm -f " in command:
                 path = command.split(" rm -f ", 1)[1].strip()
                 fs["ops"].append(("rm", path))
+                if any(path.startswith(stuck) for stuck in rm_fails):
+                    return 1, "rm: Permission denied"
                 fs["files"].pop(path, None)
                 return 0, ""
+            if "then echo present" in command:
+                path = command.split("[ -e ", 1)[1].split(" ]", 1)[0]
+                return 0, "present\n" if path in fs["files"] else "absent\n"
             return 0, ""
 
         def fake_exec_in(remote, local_path):
@@ -1881,6 +1889,23 @@ Group main:
         check("a short transfer refuses, publishes nothing and removes the temporary name",
               "cache/enviouswispr-uat.pcm" not in fs["files"] and not any(k.startswith("cache/.") for k in fs["files"])
               and not any(op[0] == "publish" for op in fs["ops"]), fs["ops"])
+    fs, eyes._adb, eyes._exec_in = make_fs(create_denied=True)
+    try:
+        line = eyes.stage_uat_fixture("x")
+        check("a creation refused with nothing there is BLOCKED, never a race", False, line)
+    except eyes.Blocked as refusal:
+        check("a creation refused with nothing there is BLOCKED, never a race, and leaves no temporary",
+              "appeared" not in str(refusal) and "Permission denied" in str(refusal) and not fs["files"], (str(refusal), fs["ops"]))
+    for label, kwargs, stuck in (
+        ("a temporary that cannot be removed after a successful stage", {"rm_fails": ("cache/.",)}, "temporary"),
+        ("a final name that cannot be removed after a failed copy", {"copy_fails": True, "rm_fails": ("cache/enviouswispr",)}, "cache/enviouswispr-uat.pcm may remain"),
+    ):
+        fs, eyes._adb, eyes._exec_in = make_fs(**kwargs)
+        try:
+            line = eyes.stage_uat_fixture("x")
+            check(f"{label} is BLOCKED", False, line)
+        except eyes.Blocked as refusal:
+            check(f"{label} is BLOCKED and says what may remain", "may remain" in str(refusal) and stuck in str(refusal), str(refusal))
     for label, kwargs in (("a failed copy", {"copy_fails": True}), ("a short copy", {"copy_short": True})):
         fs, eyes._adb, eyes._exec_in = make_fs(**kwargs)
         try:

@@ -1,6 +1,6 @@
 # Issue #216 — The session owner delegates capture and finalization — 2026-09-22
 
-GitHub issue: `#216`. Tier: REFACTOR (session ownership and both engines' callers move across files; behaviour unchanged). Status: APPROVED (coverage adopted; grounded round 1 adopted; round 2 PROCEED-AS-PLANNED).
+GitHub issue: `#216`. Tier: REFACTOR (session ownership and both engines' callers move across files; behaviour unchanged). Status: APPROVED (coverage adopted; grounded round 1 adopted; round 2 PROCEED-AS-PLANNED). Built: one deviation, §11 item 2.
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -34,14 +34,14 @@ grep -c "@Volatile" app/src/main/java/com/envi/wispr/ui/DictationSessionCoordina
 ## 2. Goals & non-goals
 
 ### 2.1 Goals
-1. `DictationSessionCoordinator` keeps command admission, `SessionState`, `TakeArbiter` reservation and commit, the polish submission and every state transition; it holds one `TakeContext` per take instead of `takeId`, `facts`, `arbiter`, `targetPinAtStart`, `draftId` and `draftCreation`.
-2. `CaptureSessionController` owns the capture command lane (`CaptureCommands` thread), `commandCapture`, the `TakeListener`, the silence bound, the live deadline, the ending de-duplication, the start's lane body, the picture registration and `finishTakeOrStop`; it reports to the owner through a sealed `CaptureEvent` (proposed) on the main thread.
+1. `DictationSessionCoordinator` keeps command admission, `SessionState`, `TakeArbiter` reservation and commit, the polish submission and every state transition; it holds one `TakeContext` per take instead of `takeId`, `facts`, `arbiter`, `targetPinAtStart` (removed), `draftId` and `draftCreation`.
+2. `CaptureSessionController` owns the capture command lane (`CaptureCommands` thread), `commandCapture` (removed), the `TakeListener`, the silence bound, the live deadline, the ending de-duplication, the start's lane body, the picture registration and `finishTakeOrStop`; it reports to the owner through a sealed `CaptureEvent` (proposed) on the main thread.
 3. `SessionFinalizer` owns the History row (`TakeHistory`: draft insert, status, discard, `interrupted`, finalize-or-insert) and the delivery after the commit (route, handoff, clipboard, announcement, insertion telemetry, the delivery log line); it returns a `Delivery` (proposed) value.
 4. Neither collaborator can move the session: `SessionState` is private to the owner (the compiler enforces it) and neither file calls `reserve`, `commit`, `commitNow` or `interrupt` (a Drift Guard enforces it).
 5. Behaviour is unchanged: every coordinator behaviour row passes without an edit to its assertions.
 
 ### 2.2 Non-goals
-- The recorder notices (silence unavailable, the Bluetooth tip, the earbuds line, the duration warning and cap) stay in the owner. They read the take's state at the moment they render, and the audit's proposal names only two collaborators; a `RecordingNotices` split is a follow-up if the regrade asks for it.
+- The recorder notices (silence unavailable, the Bluetooth tip, the earbuds line, the duration warning and cap) stay in the owner. They read the take's state at the moment they render, and the audit's proposal names only two collaborators; a `RecordingNotices` (proposed) split is a follow-up if the regrade asks for it.
 - The per-take progress values `rawTranscript`, `recordingDurationMs`, `captureDeviceLabel` and `takePeakAmplitude` stay owner fields. They are written after admission by the ending and the speech answer and read by the disconnect callbacks, which carry no parameters; the service instance serves one take (it stops itself after every take and a FINISHING owner never returns to IDLE), so they are per-take already. `TakeContext` holds what is fixed at admission.
 - The ASR request (`continueAfterEnding`) and the polish submission (`polishAndPublish`, the watchdog, `publishFallback`) stay in the owner: they share `polishSubmissionLock` and the ledger with `cancelProcessing`, which is a transition.
 - No AIDL, manifest, process or Gradle change. The constructor of `DictationSessionCoordinator` does not change, so `DictationSessionRig` builds it as today.
@@ -63,7 +63,7 @@ grep -c "@Volatile" app/src/main/java/com/envi/wispr/ui/DictationSessionCoordina
 
 ### 3. Prior attempts and live direction
 
-#186 (PR #195, `a18be74`) moved every statement of the Service into this class and filed two follow-ups in its plan §14: a `dictation/` package move and "a per-take value replacing the volatile fields". This plan is the second. #115 added the lane, the bound and the pushed events; its review findings (the lane never on main, the bound disarmed only with the binding, the start re-checked on the lane) are carried as-is. #176 made the arbiter the one referee; #214 added `defectSink`. The catalog has no row for an internal split (`sqlite3 ~/.claude/knowledge/enviouswispr/catalog.db "SELECT feature_slug FROM feature_platform WHERE feature_slug LIKE '%session%'"` names product behaviour only); no decision governs the file layout.
+#186 (PR #195, commit a18be74) moved every statement of the Service into this class and filed two follow-ups in its plan §14: a `dictation/` package move and "a per-take value replacing the volatile fields". This plan is the second. #115 added the lane, the bound and the pushed events; its review findings (the lane never on main, the bound disarmed only with the binding, the start re-checked on the lane) are carried as-is. #176 made the arbiter the one referee; #214 added `defectSink`. The catalog has no row for an internal split (`sqlite3 ~/.claude/knowledge/enviouswispr/catalog.db "SELECT feature_slug FROM feature_platform WHERE feature_slug LIKE '%session%'"` names product behaviour only); no decision governs the file layout.
 
 ### 4. Boundaries
 
@@ -99,7 +99,7 @@ grep -c "@Volatile" app/src/main/java/com/envi/wispr/ui/DictationSessionCoordina
 **Owner's event handler**: `onCaptureEvent(event)` is an exhaustive `when` over the sealed `CaptureEvent` with no `else`, calling today's `publishLive`, `onTakeTick`, `publishSilenceNoticeIfNeeded`, `onTakeEnded`, the per-state body of today's `onCaptureSilent`, the body of `onLiveDeadline`, and the start failure's `handleServiceFailure` / `showError`.
 
 **SessionFinalizer** (proposed, `ui/SessionFinalizer.kt`), constructed once with `host`, `insertion`, `log`, `historyWrites`:
-- `TakeHistory` (proposed, same file): `insertDraft(takeId, createdAtMs)` returns the draft's deferred (the enqueue body of `:801-823`, with `Telemetry.journal?.associate`), `isCurrent(draft)`, `markStatus(...)` (today's `updateDraftStatus`), `discard()`, `markInterrupted()` (the `interrupted` write of `:1791`), `resolvedId()`.
+- `TakeHistory` (proposed, same file): `insertDraft(takeId, createdAtMs)` returns the draft's deferred (the enqueue body of `:801-823`, with `Telemetry.journal?.associate`), `isCurrent(draft)`, `markStatus(...)` (today's `updateDraftStatus` (removed)), `discard()`, `markInterrupted()` (the `interrupted` write of `:1791`), `resolvedId()`.
 - `Publication` (proposed): the immutable payload built today at `:1267-1272`.
 - `enqueueSave(history, publication)`: the finalize-or-insert enqueue of `:1282-1309`, returning the deferred save result; called by the owner inside `synchronized(publishLock)` after its reservation, as today.
 - `deliver(takeId, targetPin, publication, saveResult, clipboard)`: `:1350-1422` unchanged (route, `InsertionJudgement.handoffToJudge` with `startPin = targetPin`, `pasteWhenTargetReturns`, `releasePinnedTarget`, `keepOnClipboard`, `keepInHistoryOnly`, `announceInsertionFallback`, `InsertionTerminal`, the delivery log line); returns `Delivery(route, handoff)`.
@@ -110,7 +110,7 @@ The owner's `publishResult` keeps the polish facts head, the payload build call,
 
 ## 3b. Ownership justification
 
-The capture transport lives on `CaptureSessionController` because every piece of it (the lane, the listener, the two timers) exists to talk to `:audio` and none of it decides how a take ends; the alternative was leaving it in the owner, which is the finding. The History row and the delivery live on `SessionFinalizer` because they run only after the owner's decision and write where the words went; the alternative was a `HistoryWriter` plus an `InsertionDelivery`, two classes for one post-commit step.
+The capture transport lives on `CaptureSessionController` because every piece of it (the lane, the listener, the two timers) exists to talk to `:audio` and none of it decides how a take ends; the alternative was leaving it in the owner, which is the finding. The History row and the delivery live on `SessionFinalizer` because they run only after the owner's decision and write where the words went; the alternative was a `HistoryWriter` (proposed) plus an `InsertionDelivery` (proposed), both rejected: two classes for one post-commit step.
 
 ## 4. Contract deltas
 
@@ -164,7 +164,7 @@ Unchanged; `publishFallback` and `deterministicFallback` stay in the owner.
 ## 11. Testing
 
 1. New test: `SessionOwnerSplitShapeTest` (proposed), Drift Guard. Read as code through `scripts/check-visibility.py --code-only` (the one lexer owner, as `SessionOwnerShapeTest` does). Rows: (a) the owner's code has none of `historyWrites.enqueue(`, `Executors.`, `postToMainDelayed(`, `listenForTake(`, `startCaptureForTake(`, `pasteWhenTargetReturns(`, `copyToClipboard(`, `InsertionJudgement.`, `pipeline.capture`, `CaptureLink`; (b) positively, `CaptureSessionController.kt` holds exactly one `Executors.newSingleThreadExecutor`, one `listenForTake(`, one `startCaptureForTake(` and exactly three `postToMainDelayed(` sites (the bound's arm and re-arm, today `:616` and `:623`, and the live deadline, today `:518`), and `SessionFinalizer.kt` holds all seven `historyWrites.enqueue(` sites (draft insert, finalize, clipboard outcome, history-only outcome, status, discard, interrupted) plus the one `pasteWhenTargetReturns(` and the one `copyToClipboard(`; (c) the two collaborators' code has none of `SessionState`, `TerminalReason`, `TakeArbiter`, `.reserve(`, `.commit(`, `.commitNow(`, `.interrupt(`, `arbiter`; (d) the sealed `CaptureEvent` declares exactly `Live`, `Tick`, `SilenceStatus`, `Ended`, `Silent`, `LiveDeadlinePassed` and `StartFailed`, each carrying facts only; (e) every property of `TakeContext` is a `val`. TakeContext exposes `arbiter` to the owner only: the collaborators receive the fields they need (`takeId`, `targetPin`, `history`) as parameters, never the context. When it fails, the user sees nothing directly; a future edit is putting the take's decisions back into a class that cannot see the state machine, or the transport back into the owner. Revert: move the draft insert's `historyWrites.enqueue` back into `publishLive` (rows a and b red); add a second `Executors.newSingleThreadExecutor` in the controller (row b red); add a `TerminalReason` parameter to `SessionFinalizer.deliver` (row c red); add a `CaptureEvent.Failed(reason: TerminalReason)` member (rows c and d red); make `targetPin` a `var` (row e red).
-2. The 50 behaviour rows are the product-outcome evidence and are not edited beyond the constant's path. Revert that turns one red: in the controller's listener, drop the `ours(...)` filter (`anotherTakesEndingIsDiscarded` red); in `deliver`, skip `releasePinnedTarget` (`handoffNotScheduledCopiesAndAnnounces` or the pin rows red, whichever the run shows; recorded in the receipts).
+2. The 50 behaviour rows are the product-outcome evidence and are not edited beyond the constant's path, with one declared addition: the revert of `releasePinnedTarget` in `deliver` turned no row red, so `handoffNotScheduledCopiesAndAnnounces` now also asserts the pinned field is released exactly once (the gap predates this change). Revert that turns one red: in the controller's listener, drop the `ours(...)` filter (`anotherTakesEndingIsDiscarded` red); in `deliver`, skip `releasePinnedTarget` (`handoffNotScheduledCopiesAndAnnounces` or the pin rows red, whichever the run shows; recorded in the receipts).
 3. Every rewritten source row gets one revert receipt of the property it now pins.
 4. Not tested: a JVM row for the lane thread name beyond `noCaptureCommandRunsOnTheMainThread`, which already asserts `"CaptureCommands"`.
 

@@ -14,7 +14,8 @@ class WarmHoldTest {
     private class FakeTrack(private val failPlay: Boolean = false) : WarmHold.SilentTrack {
         var plays = 0
         var stops = 0
-        override fun play() { if (failPlay) throw IllegalStateException("no track"); plays++ }
+        var onFailed: (() -> Unit)? = null
+        override fun play(onFailed: () -> Unit) { if (failPlay) throw IllegalStateException("no track"); plays++; this.onFailed = onFailed }
         override fun stop() { stops++ }
     }
 
@@ -24,7 +25,8 @@ class WarmHoldTest {
         val route = RouteHold({ cleared++ }, { removed++ }).also { it.markCommunicationSet(); it.markListenerSet() }
         val track = FakeTrack(failPlay)
         val ends = ArrayList<String>()
-        val hold = WarmHold(route, track) { ends.add(it) }
+        var playbackFailures = 0
+        val hold = WarmHold(route = route, track = track, onEnded = { ends.add(it) }, onPlaybackFailed = { playbackFailures++ })
     }
 
     @Test

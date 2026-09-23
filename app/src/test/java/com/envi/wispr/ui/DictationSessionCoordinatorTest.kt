@@ -1049,5 +1049,8 @@ class DictationSessionCoordinatorTest {
         assertEquals("insertion_interrupted", row.status)
         assertEquals("clipboard", row.insertionResult)
         assertFalse("polished text carries no failure notice", rig.host.events.contains("polish-notice"))
+        // Nothing was handed to the accessibility service, so the field the take aimed at is let go here,
+        // once (#216: the delivery moved to `SessionFinalizer`, and no row pinned this release before).
+        assertEquals("the pinned field is released once", 1, rig.insertion.releases.get())
     }
 }

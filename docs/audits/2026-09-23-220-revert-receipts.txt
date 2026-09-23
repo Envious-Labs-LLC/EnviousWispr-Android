@@ -1,0 +1,38 @@
+('RED', "the owner's proxy back on the legacy interface", 'theOwnerBindsOnlyTheTakeInterfaceWithAFreshIdentifier', 'java.lang.AssertionError: PipelineBindings names the legacy interface')
+('RED', 'the take bind loses its action', 'theOwnerBindsOnlyTheTakeInterfaceWithAFreshIdentifier', 'java.lang.AssertionError: which carries the take action')
+('RED', 'the take bind loses its identifier (shape half)', 'theOwnerBindsOnlyTheTakeInterfaceWithAFreshIdentifier', 'java.lang.AssertionError: and a fresh identifier per call (CaptureBindingDeviceTest proves Android then gives a new binder)')
+('RED', 'onBind returns the legacy binder for every intent', 'theServiceHandsTheTakeBinderOnlyToTheTakeAction', 'java.lang.AssertionError')
+('RED', 'the take binder gets its own start body', 'everyTakeBinderMethodIsOneCallOfASharedServiceFunction', 'java.lang.AssertionError: the take binder calls this@AudioCaptureService.startTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)')
+('RED', 'an older legacy start redirected to startTake', 'onlyTheProductionStartMayRecover', 'java.lang.AssertionError: each calls the refusal-only startRecording')
+('RED', 'slots cleared regardless of origin', 'aTakeRegistrationSurvivesTheLegacyUnbind', "java.lang.AssertionError: the test client's disconnect silenced the dictation expected:&lt;com.envi.wispr.audio.ListenerSlotsTest$Listener@6497b078&gt; but was:")
+('RED', 'late registrations accepted', 'aLateRegistrationFromAnEndedBindingIsRefusedAndTheNextBindingKeepsItsListener', 'java.lang.AssertionError: a late sign-up from an ended connection was accepted')
+('RED', 'late registrations accepted (race row)', 'aRegistrationRacingItsUnbindNeverOutlivesTheBinding', 'java.lang.AssertionError: round 0: a listener outlived its closed binding expected null, but was:&lt;com.envi.wispr.audio.ListenerSlotsTest$Listener@6c779568&gt')
+('RED', 'registrations accepted after destroy', 'destroyClearsEverySlotAndRefusesEveryLaterRegistration', 'java.lang.AssertionError: a legacy registration refilled a slot after destroy')
+('RED', 'legacy unregister ignores the origin', 'theLegacyUnregisterNeverClearsATakeRegistrationOfTheSameListener', "java.lang.AssertionError: the legacy unregister cleared the dictation's listener expected:&lt;com.envi.wispr.audio.ListenerSlotsTest$Listener@c03cf28&gt; but wa")
+('RED', 'the picture clears the slot directly', 'thePictureClearGoesThroughTheSlots', 'java.lang.AssertionError: a failed push clears through the slots')
+('RED', 'onUnbind clears outright', 'everyLimbIsClosedWhereEveryEndingReaches', "java.lang.AssertionError: onUnbind clears per binding: the take action closes its identifier's epoch, anything else the legacy registrations")
+('RED', 'finishTake decided outside the session lock', 'finishTakeGivesTheServiceAStartedLifetimeAndTheStartIsNotSticky', 'java.lang.AssertionError: the helper calls it under the session lock')
+('RED', 'two appended legacy transactions swapped', 'startCaptureIsStillTheFirstTransactionAndNothingWasReordered', 'java.lang.AssertionError: expected:&lt;[startCapture, stopCapture, isCapturing, getTerminalReason, getCurrentAmplitude, getAudioFilePath, getElapsedMs, getMaxDu')
+
+RED: the owner's proxy back on the legacy interface -> theOwnerBindsOnlyTheTakeInterfaceWithAFreshIdentifier
+RED: the take bind loses its action -> theOwnerBindsOnlyTheTakeInterfaceWithAFreshIdentifier
+RED: the take bind loses its identifier (shape half) -> theOwnerBindsOnlyTheTakeInterfaceWithAFreshIdentifier
+RED: onBind returns the legacy binder for every intent -> theServiceHandsTheTakeBinderOnlyToTheTakeAction
+RED: the take binder gets its own start body -> everyTakeBinderMethodIsOneCallOfASharedServiceFunction
+RED: an older legacy start redirected to startTake -> onlyTheProductionStartMayRecover
+RED: slots cleared regardless of origin -> aTakeRegistrationSurvivesTheLegacyUnbind
+RED: late registrations accepted -> aLateRegistrationFromAnEndedBindingIsRefusedAndTheNextBindingKeepsItsListener
+RED: late registrations accepted (race row) -> aRegistrationRacingItsUnbindNeverOutlivesTheBinding
+RED: registrations accepted after destroy -> destroyClearsEverySlotAndRefusesEveryLaterRegistration
+RED: legacy unregister ignores the origin -> theLegacyUnregisterNeverClearsATakeRegistrationOfTheSameListener
+RED: the picture clears the slot directly -> thePictureClearGoesThroughTheSlots
+RED: onUnbind clears outright -> everyLimbIsClosedWhereEveryEndingReaches
+RED: finishTake decided outside the session lock -> finishTakeGivesTheServiceAStartedLifetimeAndTheStartIsNotSticky
+RED: two appended legacy transactions swapped -> startCaptureIsStillTheFirstTransactionAndNothingWasReordered
+ALL RED
+=== with setIdentifier removed (expect FAILURES):
+java.lang.AssertionError: the second take bind got the first take's binder, so its epoch would be the first's expected not same
+java.lang.AssertionError: the second take bind got the first take's binder, so its epoch would be the first's expected not same
+FAILURES!!!
+=== restored (expect OK):
+OK (1 test)

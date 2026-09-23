@@ -42,15 +42,14 @@ class SilenceStopWiringTest {
     fun startCaptureIsStillTheFirstTransactionAndNothingWasReordered() {
         // A separately installed client binds by transaction number. Reordering breaks it at runtime,
         // with no compile error anywhere.
-        val order = Regex("^\\s*(?:boolean|void|int|float|long|String|byte\\[])\\s+(\\w+)\\(", RegexOption.MULTILINE)
+        val order = Regex("^\\s*(?:boolean|void|int|float\\[]|float|long|String|byte\\[])\\s+(\\w+)\\(", RegexOption.MULTILINE)
             .findAll(aidl).map { it.groupValues[1] }.toList()
         assertEquals(
             listOf(
                 "startCapture", "stopCapture", "isCapturing", "getTerminalReason", "getCurrentAmplitude",
                 "getAudioFilePath", "getElapsedMs", "getMaxDurationMs", "waitForFileReady", "getAudioData",
-                // getSpectrumBands returns float[], which this regex does not match; its position is
-                // pinned by LiveAudioMeterWiringTest.theAidlMethodIsAppendedLast.
-                "startCaptureWithSilenceStop", "getSilenceStopStatus",
+                // Transaction 13, getSpectrumBands, is float[]; read since #220 so every transaction is pinned.
+                "startCaptureWithSilenceStop", "getSilenceStopStatus", "getSpectrumBands",
                 "startCaptureWithInputDevice", "getEffectiveInputDevice", "getInputRouteKind",
                 "getInputRouteReason", "getLastStartFailure",
                 // 2026-09-18, the live gate and the earbud hold (#26): appended, never inserted.

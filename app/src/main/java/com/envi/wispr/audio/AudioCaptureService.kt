@@ -1,6 +1,7 @@
 package com.envi.wispr.audio
 
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -18,6 +19,7 @@ import com.envi.wispr.vad.SilenceStopDetector
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -28,6 +30,21 @@ class AudioCaptureService : Service() {
 
     companion object {
         private const val TAG = "AudioCapture"
+
+        /**
+         * The session owner's bind (#220): with this action and a fresh identifier per bind, `onBind` returns
+         * a new `IAudioTakeService` for that binding; every other bind gets the legacy `IAudioCaptureService`.
+         */
+        const val ACTION_BIND_TAKE = "com.envi.wispr.audio.BIND_TAKE"
+
+        /**
+         * The owner's bind intent (#220): the take action and a fresh identifier every call. Android hands a
+         * bind with the same intent identity the cached binder while the service lives (a warm hold keeps it
+         * alive), so each binding must carry its own identity to get its own binder and epoch.
+         */
+        fun takeBindIntent(context: Context): Intent = Intent(context, AudioCaptureService::class.java)
+            .setAction(ACTION_BIND_TAKE)
+            .setIdentifier(UUID.randomUUID().toString())
         private const val SAMPLE_RATE = PcmAudio.SAMPLE_RATE
         private const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
@@ -132,20 +149,21 @@ class AudioCaptureService : Service() {
     @Volatile private var captureThread: Thread? = null
     @Volatile private var lastAudioFile: File? = null
     @Volatile private var currentAmplitude = 0f
+    /** Both listener slots and which binding set each (#220): cleared only by the binding that set it. */
+    private val listenerSlots = ListenerSlots()
     /**
      * The one listener the picture is pushed to (#187). Owned by the BINDING, not the take: a
-     * registration survives a take's release and goes with the client (unregister, unbind, or a push
-     * that finds it dead). Registration `set`s; unregister and failed-push cleanup
-     * `compareAndSet(observed, null)`, so a late clear can never erase a newer registration. Read by
-     * the analyser thread, written by binder threads and the service's main thread; never touched by
-     * the capture thread.
+     * registration survives a take's release and goes with the client that set it (unregister, its unbind,
+     * or a push that finds it dead, through `clearIfCurrent`, so a late clear can never erase a newer
+     * registration). Read by the analyser thread, written by binder threads and the service's main thread
+     * under the slots' lock; never touched by the capture thread.
      */
-    private val spectrumListener = AtomicReference<IAudioSpectrumListener?>(null)
+    private val spectrumListener = listenerSlots.slot<IAudioSpectrumListener> { it.asBinder() }
     /**
      * The one registered take-event listener (#115): the binding's slot, like the spectrum listener's, so it
      * is dropped with the binding and never has to be unregistered by an owner tearing down.
      */
-    private val takeListener = AtomicReference<ITakeListener?>(null)
+    private val takeListener = listenerSlots.slot<ITakeListener> { it.asBinder() }
     private lateinit var takeEvents: TakeEventPublisher
     /**
      * The loudest sample of the current or most recent take, 0..1 of full scale. Written on the capture
@@ -212,7 +230,7 @@ class AudioCaptureService : Service() {
             // A new take keeps the service; every other end lets it go once no session is open.
             onIdle = { if (session == null) stopSelf() },
         )
-        takeEvents = TakeEventPublisher(takeListener, TAG).also { it.start() }
+        takeEvents = TakeEventPublisher(takeListener.listener, TAG).also { it.start() }
     }
 
     private val binder = object : IAudioCaptureService.Stub() {
@@ -232,7 +250,7 @@ class AudioCaptureService : Service() {
         // admits a take only after it finished with the earlier one. The four legacy starts above carry no
         // such proof and only ever refuse.
         override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean, takeId: String?): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick), keepEarbudsReady, takeId.orEmpty(), mayRecover = true)
+            this@AudioCaptureService.startTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)
 
         override fun getTakePeakAmplitude(): Float = this@AudioCaptureService.takePeakAmplitude
 
@@ -252,7 +270,7 @@ class AudioCaptureService : Service() {
             return if (live > 0L) live - active.route.startedAtMs else 0L
         }
 
-        override fun finishTake(): Boolean = synchronized(sessionLock) { this@AudioCaptureService.warmHoldOwner.finishTake() }
+        override fun finishTake(): Boolean = this@AudioCaptureService.finishTakeHold()
 
         override fun getEffectiveInputDevice(): String = this@AudioCaptureService.lastEffective?.label().orEmpty()
         override fun getInputRouteKind(): Int = this@AudioCaptureService.lastEffective?.kind?.code ?: InputRouteKind.NONE.code
@@ -274,25 +292,19 @@ class AudioCaptureService : Service() {
         }
 
         override fun registerSpectrumListener(listener: IAudioSpectrumListener?) {
-            this@AudioCaptureService.spectrumListener.set(listener)
+            this@AudioCaptureService.spectrumListener.register(SlotOrigin.Legacy, listener)
         }
 
         override fun unregisterSpectrumListener(listener: IAudioSpectrumListener?) {
-            val current = this@AudioCaptureService.spectrumListener.get() ?: return
-            if (listener != null && current.asBinder() == listener.asBinder()) {
-                this@AudioCaptureService.spectrumListener.compareAndSet(current, null)
-            }
+            this@AudioCaptureService.spectrumListener.unregisterLegacy(listener)
         }
 
         override fun registerTakeListener(listener: ITakeListener?) {
-            this@AudioCaptureService.takeListener.set(listener)
+            this@AudioCaptureService.takeListener.register(SlotOrigin.Legacy, listener)
         }
 
         override fun unregisterTakeListener(listener: ITakeListener?) {
-            val current = this@AudioCaptureService.takeListener.get() ?: return
-            if (listener != null && current.asBinder() == listener.asBinder()) {
-                this@AudioCaptureService.takeListener.compareAndSet(current, null)
-            }
+            this@AudioCaptureService.takeListener.unregisterLegacy(listener)
         }
         override fun getAudioFilePath(): String? = this@AudioCaptureService.lastAudioFile?.absolutePath
 
@@ -316,17 +328,56 @@ class AudioCaptureService : Service() {
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    /**
+     * The owner's take-sized interface (#220): the five operations a take uses. One binder per take
+     * binding, so a registration the owner's command lane issues after its unbind reaches a closed epoch
+     * and is refused rather than inherited by the next take. Each method is a one-line call of the same
+     * service function the legacy binder calls.
+     */
+    private fun newTakeBinder(epoch: Long): IBinder = object : IAudioTakeService.Stub() {
+        private val from = SlotOrigin.Take(epoch)
+
+        override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean, takeId: String?): Boolean =
+            this@AudioCaptureService.startTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)
+
+        override fun stopCapture() = this@AudioCaptureService.stopRecording()
+
+        override fun finishTake(): Boolean = this@AudioCaptureService.finishTakeHold()
+
+        override fun registerSpectrumListener(listener: IAudioSpectrumListener?) {
+            if (!this@AudioCaptureService.spectrumListener.register(from, listener)) DebugLogger.warn(TAG, "Picture listener refused: its take binding already ended")
+        }
+
+        override fun registerTakeListener(listener: ITakeListener?) {
+            if (!this@AudioCaptureService.takeListener.register(from, listener)) DebugLogger.warn(TAG, "Take listener refused: its take binding already ended")
+        }
+    }
 
     /**
-     * The last binding is gone: clear both listener slots so no future push reaches an owner that left; a
-     * reference already read may still deliver once (#115 review round 1, F8: a warm hold keeps this
-     * service alive past the owner's unbind, so the slot is not dropped by the binding going). Runs on the
-     * service main thread.
+     * The only start that may recover an abandoned recorder (#213), for both interfaces' `startCaptureForTake`:
+     * it comes from the session owner, which admits a take only after it finished with the earlier one.
+     */
+    private fun startTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean, takeId: String?): Boolean =
+        startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick), keepEarbudsReady, takeId.orEmpty(), mayRecover = true)
+
+    /** The take is over: the warm hold decides whether the service outlives the owner's unbind (#26). */
+    private fun finishTakeHold(): Boolean = synchronized(sessionLock) { warmHoldOwner.finishTake() }
+
+    /**
+     * The owner's bind (the take action, a fresh identifier each time) gets a new take binder and epoch;
+     * every other bind, the device tests' actionless one included, gets the legacy binder (#220).
+     */
+    override fun onBind(intent: Intent?): IBinder =
+        if (intent?.action == ACTION_BIND_TAKE) newTakeBinder(listenerSlots.openTakeEpoch(intent.identifier)) else binder
+
+    /**
+     * A binding is gone: clear the listener slots THAT binding set, so no future push reaches a client that
+     * left, and close a take binding's epoch so its late registrations are refused; a reference already
+     * read may still deliver once (#115 review round 1, F8: a warm hold keeps this service alive past the
+     * owner's unbind, so the slot is not dropped by the binding going). Runs on the service main thread.
      */
     override fun onUnbind(intent: Intent?): Boolean {
-        spectrumListener.set(null)
-        takeListener.set(null)
+        if (intent?.action == ACTION_BIND_TAKE) listenerSlots.closeTakeEpoch(intent.identifier) else listenerSlots.unbindLegacy()
         return super.onUnbind(intent)
     }
 
@@ -940,8 +991,7 @@ class AudioCaptureService : Service() {
         // and then leaves (#115). Never joined. Both slots cleared here as well: a destroyed service
         // pushes nothing.
         takeEvents.close()
-        spectrumListener.set(null)
-        takeListener.set(null)
+        listenerSlots.clearAll()
         super.onDestroy()
     }
 }

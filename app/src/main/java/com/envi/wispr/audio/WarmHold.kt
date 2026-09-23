@@ -32,6 +32,8 @@ internal class WarmHold(
     interface SilentTrack {
         fun play(onFailed: () -> Unit)
         fun stop()
+        /** Its writer thread has left its loop, or never started (#257). */
+        fun writerExited(): Boolean
     }
 
     private val ended = AtomicReference<String?>(null)

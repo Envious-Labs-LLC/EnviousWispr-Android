@@ -29,6 +29,8 @@ internal class WarmHoldOwner(
     private val registerDeviceCallback: (AudioDeviceCallback) -> Unit,
     private val unregisterDeviceCallback: (AudioDeviceCallback) -> Unit,
     private val newTrack: () -> WarmHold.SilentTrack = { AudioTrackSilence() },
+    /** Every stopped silence writer of the process, until it exits (#257); a test passes its own. */
+    private val watch: SilenceWriterWatch = SilenceWriterWatch.PROCESS,
     private val keepAlive: () -> Unit,
     private val onIdle: () -> Unit,
 ) {
@@ -63,6 +65,8 @@ internal class WarmHoldOwner(
         if (!keepEarbudsReady || !route.targetBluetooth || route.sink == null) return false
         if (route.hold.isReleased) return false
         if (route.effective.currentKind != InputRouteKind.BLUETOOTH) return false
+        // Never while a stopped writer is still running, and never again after one overran its bound (#257).
+        if (!watch.admit()) return false
         // Exhaustive, no else: a new ending decides here whether it keeps the earbuds warm.
         return when (ending) {
             CaptureEnding.Manual, CaptureEnding.Silence, CaptureEnding.MaxDuration -> true
@@ -76,10 +80,15 @@ internal class WarmHoldOwner(
         val label = route.effective.label()
         // Assigned before the hold starts, so a failure can only ever name this hold (#241).
         var started: WarmHold? = null
+        val track = newTrack()
         val hold = WarmHold(
             route = route.hold,
-            track = newTrack(),
-            onEnded = { reason -> onHoldEnded(reason, label) },
+            track = track,
+            // Every end and the handover stop the track first; its writer is then watched until it exits (#257).
+            onEnded = { reason ->
+                watch.stopped(track)
+                onHoldEnded(reason, label)
+            },
             // Silent playback failed after it started (#241): off the track's thread onto the route thread,
             // then under the session lock, which waits for this start to finish registering, end THIS hold.
             // A late failure from a hold that already ended, was handed to a take, or was replaced does nothing.
@@ -173,8 +182,7 @@ internal class WarmHoldOwner(
      */
     private class AudioTrackSilence : WarmHold.SilentTrack {
         private var track: AudioTrack? = null
-        private var thread: Thread? = null
-        @Volatile private var writer: SilenceWriter? = null
+        @Volatile private var writer: SilenceWriterThread? = null
 
         override fun play(onFailed: () -> Unit) {
             val rate = PcmAudio.SAMPLE_RATE
@@ -203,10 +211,12 @@ internal class WarmHoldOwner(
             track = built
             built.play()
             val zeros = ByteArray(rate / 10 * PcmAudio.BYTES_PER_SAMPLE)
-            val silence = SilenceWriter(write = { built.write(zeros, 0, zeros.size) }, onFailed = onFailed)
+            val silence = SilenceWriterThread(write = { built.write(zeros, 0, zeros.size) }, onFailed = onFailed)
             writer = silence
-            thread = Thread({ silence.run() }, "WarmHoldSilence").apply { start() }
+            silence.start()
         }
+
+        override fun writerExited(): Boolean = writer?.exited() ?: true
 
         override fun stop() {
             // The writer first (#241): the platform stop below can fail the blocked write, which is not a failure.

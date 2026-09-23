@@ -67,6 +67,9 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
      */
     object PolishPreparationFailed : AppDefect("polish_preparation_failed", "polish.preparation_failed")
 
+    /** A warm hold's silence writer was still running two seconds after its stop (#257); no further hold in this process. */
+    object SilenceWriterExitWedged : AppDefect("silence_writer_exit_wedged", "audio.silence_writer_exit_wedged")
+
     /** A debug-only defect to prove the pipe end to end; never raised on a release build. */
     object DebugProbe : AppDefect("debug_probe", "debug.probe")
 
@@ -76,7 +79,7 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
             VadCallWedged("test"), LocalPolishDeadline, PolishProtocolViolation, CaptureStillRunningAfterStop,
             CaptureReleaseWedged, AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
             PolishWatchdogTimeout, PolishServiceUnavailable, PolishServiceDied, PolishCallFailed,
-            HistorySaveTimedOut, HistoryContractViolation(null), PolishPreparationFailed, DebugProbe,
+            HistorySaveTimedOut, HistoryContractViolation(null), PolishPreparationFailed, SilenceWriterExitWedged, DebugProbe,
         )
     }
 }

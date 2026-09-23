@@ -100,6 +100,8 @@ class TelemetryContractsTest {
             "history_save_timed_out" to "history.save_timed_out",
             "history_contract_violation" to "history.contract_violation",
             "polish_preparation_failed" to "polish.preparation_failed",
+            // #257: a warm hold's silence writer outlived its stop by the bound.
+            "silence_writer_exit_wedged" to "audio.silence_writer_exit_wedged",
             "debug_probe" to "debug.probe",
         )
         val all = AppDefect.all()

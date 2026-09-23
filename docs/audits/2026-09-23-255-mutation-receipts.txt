@@ -1,0 +1,12 @@
+# #255 mutation receipts (each applied alone, its named row run, the source restored)
+RED: m1 visibility ignored -> aHiddenModelIsNeitherObservedNorProjected
+RED: m2 Parakeet for Polish -> aiPolishProjectsS1Only
+RED: m3 download only -> anActiveAdoptionBeatsAFinishedDownload
+RED: m4 projection on main -> theProjectionRunsOffMain
+RED: m5 last value kept -> aReturningTabStartsAtCheckingThenShowsTheNewWork
+RED: m5b no cancellation -> aLateProjectionNeverLandsAfterTheTabChanged
+RED: m6 no distinct -> oneRefreshPerNewFinishedSnapshot
+RED: m6b no catch -> aFailedObservationShowsCheckingAndTheNextActivationRetries
+RED: m6c no refresh on failure -> aFailedRefreshWatcherRefreshesOnceAndTheNextStartWatchesAgain
+RED: m7a observation back in AppShell -> onlyTheOwnersObserveModelWork
+RED: m7b Transcription loses the owner's card -> theOwnersCardsReachTheScreensThroughAppUiState

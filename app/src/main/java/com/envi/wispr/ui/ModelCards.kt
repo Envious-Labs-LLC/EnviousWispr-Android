@@ -16,7 +16,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
@@ -24,9 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.work.WorkInfo
-import androidx.work.WorkManager
 import com.envi.wispr.models.ModelDeliveryControlStore
 import com.envi.wispr.models.ModelFootprint
 import com.envi.wispr.models.ModelStorage
@@ -146,28 +143,6 @@ internal fun workUiState(info: WorkInfo?, ready: Boolean, model: com.envi.wispr.
 internal fun preferredModelWork(download: List<WorkInfo>, adoption: List<WorkInfo>): WorkInfo? {
     val active = (download + adoption).firstOrNull { !it.state.isFinished }
     return active ?: download.firstOrNull() ?: adoption.firstOrNull { !it.outputData.getBoolean(ModelDeliveryWorker.KEY_NO_LEGACY, false) }
-}
-
-@Composable
-internal fun ModelWorkReadinessObserver(onRefreshReadiness: () -> Unit) {
-    val context = LocalContext.current
-    val workManager = WorkManager.getInstance(context)
-    val parakeetDownload by workManager.getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.downloadWorkName(ModelManifest.parakeet)).collectAsStateWithLifecycle(emptyList())
-    val s1Download by workManager.getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.downloadWorkName(ModelManifest.s1)).collectAsStateWithLifecycle(emptyList())
-    val parakeetAdoption by workManager.getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.adoptionWorkName(ModelManifest.parakeet)).collectAsStateWithLifecycle(emptyList())
-    val s1Adoption by workManager.getWorkInfosForUniqueWorkFlow(ModelDeliveryWorker.adoptionWorkName(ModelManifest.s1)).collectAsStateWithLifecycle(emptyList())
-    LaunchedEffect(
-        parakeetDownload.firstOrNull()?.state,
-        s1Download.firstOrNull()?.state,
-        parakeetAdoption.firstOrNull()?.state,
-        s1Adoption.firstOrNull()?.state,
-    ) {
-        if (listOf(parakeetDownload, s1Download, parakeetAdoption, s1Adoption)
-                .flatten()
-                .any { it.state.isFinished }) {
-            onRefreshReadiness()
-        }
-    }
 }
 
 /**

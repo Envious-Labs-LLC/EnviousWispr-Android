@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * `SessionNoticePresenter` (#256): the one place that says a recorder notice where the user can see it. Driven
@@ -52,12 +53,18 @@ class SessionNoticePresenterTest {
     /** Row 4: a toast that throws escapes neither `say` nor the scope. MUTATION: drop the `runCatching`. */
     @Test fun aThrowingToastEscapesNothing() {
         rig.insertion.bound = false
+        val calls = AtomicInteger()
         val broken = object : SessionHost by rig.host {
-            override fun toastFromApplication(line: String) = throw IllegalStateException("toast broke")
+            override fun toastFromApplication(line: String) {
+                calls.incrementAndGet()
+                throw IllegalStateException("toast broke")
+            }
         }
-        SessionNoticePresenter(rig.surface, rig.insertion, broken, rig.scope, rig.mainDispatcher).say(SessionNotice.EARBUDS_SILENT)
+        SessionNoticePresenter(rig.surface, rig.insertion, broken, rig.scope, rig.mainDispatcher)
+            .say(SessionNotice.EARBUDS_SILENT)
         rig.onMain { }
         rig.onMain { }
+        assertEquals("the toast was attempted", 1, calls.get())
         assertTrue("the scope's handler received nothing: ${rig.uncaught}", rig.uncaught.isEmpty())
     }
 

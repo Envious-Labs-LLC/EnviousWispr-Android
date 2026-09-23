@@ -182,6 +182,8 @@ class AudioServiceShapeTest {
             // #241: the warm hold's silence thread was always there; its multi-line `Thread({ … }, name)` hid it
             // from the extraction, and the one-line form that runs `SilenceWriter` shows it.
             "thread: WarmHoldSilence",
+            // #257: the process's one worker for the silence writers' bounded exit check.
+            "thread: SilenceWriterWatch",
             "warn: AudioRecord stop failed: \${}",
             "warn: Auto-stop abandoned for this take",
             "warn: Auto-stop refused: pause \${} is out of range",
@@ -213,6 +215,8 @@ class AudioServiceShapeTest {
             "warn: hold could not keep the service: \${}",
             "warn: hold device callback not registered: \${}",
             "warn: hold listener not registered: \${}",
+            // #257: a failed report of an overdue silence writer.
+            "warn: silence writer defect not reported: \${}",
             "warn: route forced=\${} after \${} ms",
             "warn: route refused=\${}: earbuds connected, phone would record; failing the take",
             "warn: route reset=\${} performed=\${} after \${} ms",
@@ -224,7 +228,8 @@ class AudioServiceShapeTest {
         val thread = Regex("(?:Thread\\([^\"\\n]*?|HandlerThread\\()\"([^\"]+)\"")
         val interpolation = Regex("\\$\\{[^}]*\\}|\\$\\w+")
         val placeholder = Regex.escapeReplacement("\${}")
-        val now = (listOf(service) + owners.values).flatMap { text ->
+        // #257: the warm hold's writer thread and its exit watch moved to SilenceWriterWatch.kt.
+        val now = (listOf(service) + owners.values + File("$audio/SilenceWriterWatch.kt").readText()).flatMap { text ->
             log.findAll(text).map { "${it.groupValues[1]}: ${interpolation.replace(it.groupValues[2], placeholder)}" }.toList() +
                 thread.findAll(text).map { "thread: ${it.groupValues[1]}" }.toList()
         }.sorted()

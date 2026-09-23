@@ -69,8 +69,12 @@ class SilenceWriterTest {
     @Test fun theSilentTrackRunsTheWriter() {
         val owner = source("audio/WarmHoldOwner.kt")
         val silence = owner.substringAfter("private class AudioTrackSilence")
-        assertTrue(silence.contains("SilenceWriter(write = { built.write(zeros, 0, zeros.size) }, onFailed = onFailed)"))
-        assertTrue(silence.contains("Thread({ silence.run() }, \"WarmHoldSilence\")"))
+        // Since #257 the thread lives in SilenceWriterThread, which runs the one SilenceWriter and says when it exited.
+        assertTrue(silence.contains("SilenceWriterThread(write = { built.write(zeros, 0, zeros.size) }, onFailed = onFailed)"))
+        assertTrue(silence.contains("silence.start()"))
+        val thread = source("audio/SilenceWriterWatch.kt").substringAfter("internal class SilenceWriterThread").substringBefore("\n}\n")
+        assertTrue(thread.contains("private val writer = SilenceWriter(write, onFailed)"))
+        assertTrue(thread.contains("Thread({ writer.run() }, \"WarmHoldSilence\")"))
         assertTrue("no second write loop", !Regex("while \\(").containsMatchIn(silence))
         val stop = silence.substringAfter("override fun stop()")
         assertTrue("the writer stops before the platform track", stop.indexOf("writer?.stop()") in 0 until stop.indexOf("t.stop()"))

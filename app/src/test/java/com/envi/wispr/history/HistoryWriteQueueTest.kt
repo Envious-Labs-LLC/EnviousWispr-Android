@@ -35,6 +35,9 @@ class HistoryWriteQueueTest {
         override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int = 0
         override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int = 0
         override suspend fun staleReadyRowIds(cutoffMs: Long): List<Long> = emptyList()
+        override suspend fun promoteUnroutedToReady(id: Long, nowMs: Long): Int { landed += "promote"; return 1 }
+        override suspend fun recoverStaleUnroutedRows(cutoffMs: Long, nowMs: Long): Int = 0
+        override suspend fun reconcileTimedOutCopy(id: Long, result: String, nowMs: Long): Int { landed += "reconcile:$result"; return 1 }
     }
 
     private val dao = RecordingDao()

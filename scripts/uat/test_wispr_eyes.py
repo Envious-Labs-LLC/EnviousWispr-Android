@@ -159,6 +159,446 @@ def restore_adb(original):
     eyes._adb = original
 
 
+# ---- pick-one chips, radio groups and real switches, as the #218 emulator read them -------------------
+# Measured 2026-09-23 on emulator-5554, AI Polish tab: every Writing style chip is a checkable View holding
+# a TextView and a CheckBox, and the CHOSEN chip stays clickable. The polish engine choice holds a
+# RadioButton and its chosen member is not clickable. A real switch row holds neither mark. The Tone
+# group wraps, so `Formal` sits on a second line below `Casual`.
+CHIP_ROWS = {
+    # label: (bounds, group, mark)
+    "Casual": ((108, 1552, 342, 1696), "tone", "CheckBox"),
+    "Semi-casual": ((366, 1552, 718, 1696), "tone", "CheckBox"),
+    "Semi-formal": ((742, 1552, 1096, 1696), "tone", "CheckBox"),
+    "Formal": ((108, 1696, 344, 1840), "tone", "CheckBox"),
+    "Prose": ((108, 2056, 321, 2200), "structure", "CheckBox"),
+    "Lists": ((345, 2056, 535, 2200), "structure", "CheckBox"),
+    # Chips that LOOK pick-one (one chosen) but let several be on: the harness must find out by pressing.
+    "Emoji": ((108, 2300, 321, 2380), "extras", "CheckBox"),
+    "Hashtags": ((345, 2300, 535, 2380), "extras", "CheckBox"),
+    "Off": ((60, 580, 450, 796), "engine", "RadioButton"),
+    "This phone": ((477, 580, 867, 796), "engine", "RadioButton"),
+    "Cloud": ((894, 580, 1284, 796), "engine", "RadioButton"),
+    # Two real switches side by side in one column, so "adjacent checkables" alone is not a group.
+    "Smart insertion": ((60, 900, 1284, 1100), None, None),
+    "Restore clipboard": ((60, 1103, 1284, 1300), None, None),
+}
+CHIP_START = {"Casual": False, "Semi-casual": False, "Semi-formal": True, "Formal": False,
+              "Prose": False, "Lists": True, "Emoji": True, "Hashtags": False,
+              "Off": False, "This phone": True, "Cloud": False,
+              "Smart insertion": True, "Restore clipboard": False}
+PICK_ONE = {"tone", "structure", "engine"}
+
+
+def chip_screen(state, hidden=()):
+    """The AI Polish tab as XML, rendered from `state`, in the sibling order the emulator reported.
+
+    `hidden` rows are scrolled out of view, so they are absent from the tree, as on the phone.
+    """
+    def row(label):
+        if label in hidden:
+            return ""
+        (x0, y0, x1, y1), group, mark = CHIP_ROWS[label]
+        on = "true" if state[label] else "false"
+        # A radio group's chosen member is not clickable; a chip and a switch always are.
+        click = "false" if (mark == "RadioButton" and state[label]) else "true"
+        child = (f'<node bounds="[{x0 + 10},{y0 + 10}][{x1 - 10},{y1 - 10}]" package="com.envi.wispr" '
+                 f'class="android.widget.{mark}" checkable="false" clickable="false" enabled="true" text="" />'
+                 if mark else
+                 f'<node bounds="[{x1 - 200},{y0 + 10}][{x1 - 10},{y1 - 10}]" package="com.envi.wispr" '
+                 'class="android.view.View" checkable="false" clickable="false" enabled="true" text="" />')
+        return (f'<node bounds="[{x0},{y0}][{x1},{y1}]" package="com.envi.wispr" class="android.view.View" '
+                f'checkable="true" checked="{on}" clickable="{click}" enabled="true" text="">'
+                f'<node bounds="[{x0 + 20},{y0 + 20}][{x0 + 100},{y0 + 60}]" package="com.envi.wispr" '
+                f'class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="{label}" />'
+                f'{child}</node>')
+
+    def text(label, y):
+        return (f'<node bounds="[108,{y}][400,{y + 60}]" package="com.envi.wispr" class="android.widget.TextView" '
+                f'checkable="false" clickable="false" enabled="true" text="{label}" />')
+
+    tabs = "".join(
+        f'<node bounds="[{i * 336},2800][{i * 336 + 336},2990]" package="com.envi.wispr" class="android.view.View" '
+        f'checkable="false" clickable="{"false" if name == "AI Polish" else "true"}" enabled="true" '
+        f'selected="{"true" if name == "AI Polish" else "false"}" text="">'
+        f'<node bounds="[{i * 336 + 40},2900][{i * 336 + 300},2960]" package="com.envi.wispr" '
+        f'class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="{name}" /></node>'
+        for i, name in enumerate(eyes.TABS))
+    body = (text("Engine", 500) + "".join(row(l) for l in ("Off", "This phone", "Cloud"))
+            + "".join(row(l) for l in ("Smart insertion", "Restore clipboard"))
+            + text("Tone", 1480) + "".join(row(l) for l in ("Casual", "Semi-casual", "Semi-formal", "Formal"))
+            + text("Structure", 1984) + "".join(row(l) for l in ("Prose", "Lists"))
+            + text("Extras", 2240) + "".join(row(l) for l in ("Emoji", "Hashtags")))
+    return ("<?xml version='1.0' encoding='UTF-8'?><hierarchy rotation=\"0\">"
+            '<node bounds="[0,0][1344,2992]" package="com.envi.wispr" class="android.widget.FrameLayout" '
+            'checkable="false" clickable="false" enabled="true" text="">'
+            f'<node bounds="[0,0][1344,2790]" package="com.envi.wispr" class="android.view.View" '
+            f'checkable="false" clickable="false" enabled="true" text="">{body}</node>{tabs}</node></hierarchy>')
+
+
+def chip_phone(state, presses, hidden=(), ignore=None):
+    """A phone that renders `state` and applies each press the way the app does.
+
+    `ignore` is a list of labels whose NEXT press lands and does nothing, like a tap lost mid-animation.
+    """
+    def fake(command, timeout=60, check=True):
+        if command.startswith("cat "):
+            return 0, chip_screen(state, hidden)
+        tapped = re.fullmatch(r"input tap (\d+) (\d+)", command)
+        if tapped:
+            x, y = int(tapped.group(1)), int(tapped.group(2))
+            hit = [l for l, (b, _, _) in CHIP_ROWS.items() if b[0] <= x <= b[2] and b[1] <= y <= b[3]]
+            assert len(hit) == 1, (x, y, hit)
+            label = hit[0]
+            presses.append(label)
+            if ignore and label in ignore:
+                ignore.remove(label)
+                return 0, ""
+            group = CHIP_ROWS[label][1]
+            if group in PICK_ONE:
+                for other, (_, g, _) in CHIP_ROWS.items():
+                    if g == group:
+                        state[other] = other == label
+            else:
+                state[label] = not state[label]
+            return 0, ""
+        return 0, ""
+    return fake
+
+
+# The Microphone page as the emulator showed it 2026-09-23: its title beside Back, and an "Access" row
+# whose value is ALSO the word Microphone.
+MICROPHONE_PAGE = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node bounds="[0,0][1344,2992]" package="com.envi.wispr" class="android.widget.FrameLayout" checkable="false" clickable="false" enabled="true" text="">
+    <node bounds="[12,183][156,327]" package="com.envi.wispr" class="android.widget.Button" checkable="false" clickable="true" enabled="true" text="" content-desc="Back" />
+    <node bounds="[168,214][536,295]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Microphone" />
+    <node bounds="[108,560][400,610]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Access" />
+    <node bounds="[186,623][465,684]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Microphone" />
+  </node>
+</hierarchy>"""
+
+# A screen that shows the word Microphone as body text and a Back button, but whose TITLE is another page.
+STORAGE_PAGE_SAYING_MICROPHONE = MICROPHONE_PAGE.replace(
+    '[168,214][536,295]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Microphone"',
+    '[168,214][536,295]" package="com.envi.wispr" class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Storage"')
+
+
+def test_pick_one_groups():
+    """Rows for the two #218 emulator-pass gaps: pick-one chips read as switches, and a doubled page name."""
+    import tempfile
+    import types
+    originals = {name: getattr(eyes, name) for name in ("_adb", "_JOURNAL", "ready", "time", "reveal")}
+    eyes._JOURNAL = Path(tempfile.mkdtemp()) / "restore.json"
+    eyes._STATE["serial"] = "fixture"
+    eyes._STATE["tree"] = None
+    eyes.ready = lambda: True
+    real_time = originals["time"]
+    eyes.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=real_time.monotonic, time=real_time.time)
+    state, presses = dict(CHIP_START), []
+    eyes._adb = chip_phone(state, presses)
+    try:
+        # ---- which controls are a pick-one choice ---------------------------------------------------
+        def way(label):
+            try:
+                return eyes.one_way(label)
+            except Exception as why:  # a refusal here is a wrong answer, not a crash of the suite
+                return f"raised {why}"
+        check("a chosen chip that stays clickable is a pick-one choice", way("Semi-formal") is True, way("Semi-formal"))
+        check("an unchosen chip in that group is too", way("Casual") is True, way("Casual"))
+        check("a chip wrapped onto the group's second line is too", way("Formal") is True, way("Formal"))
+        check("the two-chip Structure group is pick-one", way("Prose") is True and way("Lists") is True,
+              (way("Prose"), way("Lists")))
+        check("a radio group is still pick-one", way("Off") is True and way("This phone") is True)
+        check("a real switch beside another switch is still a switch",
+              way("Smart insertion") is False and way("Restore clipboard") is False,
+              (way("Smart insertion"), way("Restore clipboard")))
+
+        # ---- a pick-one chip is never flipped as a switch, and never journaled as one ----------------
+        try:
+            eyes.set_switch("Prose", True, where="AI Polish")
+            check("set_switch refuses a pick-one chip", False, "it pressed Prose as a switch")
+        except eyes.Blocked as refusal:
+            check("set_switch refuses a pick-one chip", "cannot be undone" in str(refusal), refusal)
+        check("and writes no switch debt for it", not any(w == "switch" for w, _ in eyes._owed()), eyes._owed())
+        check("and presses nothing", presses == [], presses)
+        state.update(CHIP_START)
+        with eyes._journal_locked():
+            for entry in list(eyes._owed()):
+                eyes._settled_locked(entry, eyes._STATE["serial"])
+
+        # ---- choose() picks by name, journals the group, and puts it back by name ------------------
+        def pay_book():
+            """Run restore() over every debt in the book; the refusal, or None when all were paid."""
+            try:
+                with eyes._journal_locked():
+                    for entry in list(eyes._owed()):
+                        eyes._restore_one(entry)
+                        eyes._settled_locked(entry, eyes._STATE["serial"])
+            except eyes.Blocked as why:
+                return why
+            return None
+
+        def clear_book():
+            with eyes._journal_locked():
+                for entry in list(eyes._owed()):
+                    eyes._settled_locked(entry, eyes._STATE["serial"])
+
+        # A view that SCROLLS: rows listed in `view` are out of sight until reveal() brings them in, as
+        # on the phone. The fixture has no scrollable node, so reveal() is modelled rather than driven.
+        view = []
+        real_reveal = eyes.reveal
+
+        def scrolling_reveal(label, *args, **kwargs):
+            if label in view:
+                view.remove(label)
+            return real_reveal(label, *args, **kwargs)
+
+        eyes.reveal = scrolling_reveal
+        eyes._adb = chip_phone(state, presses, hidden=view)
+
+        choose = getattr(eyes, "choose", None)
+        check("there is a call that picks a group member by name", callable(choose))
+        if callable(choose):
+            before = choose("Casual", where="AI Polish")
+            check("choose() answers the group as it was",
+                  before == {"Casual": False, "Semi-casual": False, "Semi-formal": True, "Formal": False}, before)
+            check("the pick moved to Casual", state["Casual"] and not state["Semi-formal"], state)
+            owed = eyes._owed()
+            check("the debt is a choice debt naming the group and the pressed chip, not a switch debt",
+                  [w for w, _ in owed] == ["choice"]
+                  and json.loads(owed[0][1]) == {"where": "AI Polish", "group": before, "pressed": "Casual"}, owed)
+            choose("Semi-formal", where="AI Polish")
+            check("choosing the original back by name restores it",
+                  state["Semi-formal"] and not state["Casual"], state)
+            check("and settles the debt", eyes._owed() == [], eyes._owed())
+
+            # A debt left by an interrupted run is paid from the book alone, by name.
+            choose("Prose", where="AI Polish")
+            check("an interrupted pick is owed", [w for w, _ in eyes._owed()] == ["choice"], eyes._owed())
+            check("restore puts Structure back on Lists by name",
+                  pay_book() is None and state["Lists"] and not state["Prose"] and eyes._owed() == [],
+                  (state, eyes._owed()))
+
+            # Chips that let several be on: ONE press, then a refusal; restore() turns the pressed chip off.
+            presses.clear()
+            try:
+                choose("Hashtags", where="AI Polish")
+                check("a group that allows several on is refused as pick-one", False, "it accepted Hashtags")
+            except eyes.Blocked as refusal:
+                check("a group that allows several on is refused as pick-one", "several" in str(refusal), refusal)
+            check("with one press and no second press to undo it, and the debt kept",
+                  presses == ["Hashtags"] and state["Emoji"] and state["Hashtags"]
+                  and [w for w, _ in eyes._owed()] == ["choice"], (presses, state, eyes._owed()))
+            check("restore turns the pressed chip off, keeps the original, and pays the debt",
+                  pay_book() is None and state["Emoji"] and not state["Hashtags"] and eyes._owed() == [],
+                  (state, eyes._owed()))
+
+            # Codex r6 P1: the same debt with the pressed chip scrolled out of view. restore() brings it
+            # into view by name and turns it off; it never settles on the original alone.
+            choose_refused = False
+            try:
+                choose("Hashtags", where="AI Polish")
+            except eyes.Blocked:
+                choose_refused = True
+            view.append("Hashtags")
+            reveals = []
+            eyes.reveal = lambda label, *a, **k: (reveals.append(label), scrolling_reveal(label, *a, **k))[1]
+            check("restore brings an off-screen pressed chip into view and turns it off",
+                  choose_refused and pay_book() is None and "Hashtags" in reveals
+                  and state["Emoji"] and not state["Hashtags"] and eyes._owed() == [], (state, eyes._owed(), reveals))
+            eyes.reveal = scrolling_reveal
+            # And when it cannot be brought into view at all, the debt is KEPT, never cleared.
+            try:
+                choose("Hashtags", where="AI Polish")
+            except eyes.Blocked:
+                pass
+            eyes.reveal = lambda label, *a, **k: False if label == "Hashtags" else scrolling_reveal(label, *a, **k)
+            refusal = pay_book()
+            check("a pressed chip that cannot be read keeps its debt",
+                  refusal is not None and [w for w, _ in eyes._owed()] == ["choice"] and state["Hashtags"],
+                  (refusal, eyes._owed(), state))
+            eyes.reveal = scrolling_reveal
+            check("and a later restore pays it", pay_book() is None and not state["Hashtags"] and eyes._owed() == [],
+                  (state, eyes._owed()))
+
+            # Codex r1 P2: two already on, and one of them asked for. Pressing it would turn it OFF; the
+            # call must refuse before pressing anything.
+            state.update(CHIP_START, Hashtags=True)
+            presses.clear()
+            try:
+                choose("Emoji", where="AI Polish")
+                check("an already-chosen chip in a several-on group is refused", False, "it accepted Emoji")
+            except eyes.Blocked as refusal:
+                check("an already-chosen chip in a several-on group is refused", "several" in str(refusal), refusal)
+            check("and nothing is pressed or owed, both stay on",
+                  presses == [] and eyes._owed() == [] and state["Emoji"] and state["Hashtags"],
+                  (presses, eyes._owed(), state))
+            check("a chip is never a switch, even with two on", way("Emoji") is True, way("Emoji"))
+            state.update(CHIP_START)
+
+        # ---- a chip with part of its group out of view is still never a switch (Codex r1, r6) -------
+        for hidden_now, label, wanted in ((["Semi-formal", "Formal"], "Casual", True),
+                                          (["Semi-casual", "Semi-formal", "Formal"], "Casual", True),
+                                          (["Casual", "Semi-casual", "Formal"], "Semi-formal", False)):
+            view[:] = hidden_now
+            presses.clear()
+            check(f"{label} with {', '.join(hidden_now)} out of view is one-way", way(label) is True, way(label))
+            try:
+                eyes.set_switch(label, wanted, where="AI Polish")
+                check(f"and set_switch refuses {label}", False, f"it pressed {label}")
+            except eyes.Blocked as refusal:
+                check(f"and set_switch refuses {label}", "cannot be undone" in str(refusal), refusal)
+            check(f"pressing and owing nothing for {label}", presses == [] and eyes._owed() == [],
+                  (presses, eyes._owed()))
+        # Codex r2: the chosen chip off screen with two unchosen chips in view. A pick from here would
+        # record no member to choose back.
+        view[:] = ["Semi-formal", "Formal"]
+        if callable(choose):
+            eyes.reveal = real_reveal
+            try:
+                choose("Casual", where="AI Polish")
+                check("choose() refuses a group whose chosen member is off screen", False, "it pressed Casual")
+            except eyes.Blocked as refusal:
+                check("choose() refuses a group whose chosen member is off screen", "whole group" in str(refusal), refusal)
+            check("and presses and owes nothing", presses == [] and eyes._owed() == [], (presses, eyes._owed()))
+            eyes.reveal = scrolling_reveal
+
+            # A pick made with part of the group in view is put back from a view showing all of it,
+            # and a second pick in the same group does not replace the first record.
+            view[:] = ["Formal"]
+            choose("Casual", where="AI Polish")
+            view[:] = []
+            choose("Formal", where="AI Polish")
+            owed = eyes._owed()
+            check("two picks in one group keep only the first record",
+                  len(owed) == 1 and json.loads(owed[0][1])["group"].get("Semi-formal") is True, owed)
+            check("restore chooses the recorded member back by name from a fuller view",
+                  pay_book() is None and state["Semi-formal"] and not state["Casual"] and not state["Formal"], state)
+            # And a choice back to the original from a narrower view settles a record made from a wider one.
+            choose("Casual", where="AI Polish")
+            view[:] = ["Formal", "Semi-casual"]
+            choose("Semi-formal", where="AI Polish")
+            check("choosing the original back settles the record whatever part is in view", eyes._owed() == [], eyes._owed())
+
+            # Codex r5: the recorded original in view, the CURRENT pick scrolled off.
+            view[:] = []
+            choose("Prose", where="AI Polish")
+            view[:] = ["Prose"]
+            check("restore chooses the original back while the current pick is off screen",
+                  pay_book() is None and state["Lists"] and not state["Prose"] and eyes._owed() == [],
+                  (state, eyes._owed()))
+            clear_book()
+            state.update(CHIP_START)
+        view[:] = []
+
+        # ---- scan's walker never leaves a several-on group changed as a harmless NOTE (Codex r4) -----
+        if callable(choose):
+            report = eyes._exercise_group("AI Polish", {"Emoji": True, "Hashtags": False})
+            check("a several-on group is an ISSUE in the scan, never a NOTE",
+                  any(line.startswith("ISSUE") and "Hashtags" in line for line in report)
+                  and not any(line.startswith("NOTE") for line in report), report)
+            check("and its debt is left for restore(), which pays it",
+                  pay_book() is None and state == CHIP_START and eyes._owed() == [], (state, eyes._owed()))
+
+        # Codex r3 P2: a failed read right after a pick must not leave the pick changed.
+        exercise_group = getattr(eyes, "_exercise_group", None)
+        if callable(exercise_group) and callable(choose):
+            state.update(CHIP_START)
+            real_choose, real_state = eyes.choose, eyes._group_state
+            armed = []
+
+            def choose_then_arm(label, *args, **kwargs):
+                # The LAST member walked (sorted), so no later pick in the walk repairs it by accident.
+                result = real_choose(label, *args, **kwargs)
+                if label == "Semi-casual" and not armed:
+                    armed.append(True)
+                return result
+
+            def state_that_fails_once(*args, **kwargs):
+                if armed == [True]:
+                    armed.append("fired")
+                    raise eyes.Blocked("the screen could not be read")
+                return real_state(*args, **kwargs)
+
+            eyes.choose, eyes._group_state = choose_then_arm, state_that_fails_once
+            try:
+                report = exercise_group("AI Polish", {"Casual": False, "Semi-casual": False,
+                                                      "Semi-formal": True, "Formal": False})
+            finally:
+                eyes.choose, eyes._group_state = real_choose, real_state
+            check("a failed read after a pick is reported", any(l.startswith("ISSUE") for l in report), report)
+            check("and the original is chosen back at once, leaving nothing owed",
+                  state["Semi-formal"] and not state["Casual"] and eyes._owed() == [], (state, eyes._owed()))
+
+        # The same shape for a real switch: flipped, then the read fails.
+        exercise = getattr(eyes, "_exercise_screen", None)
+        if callable(exercise):
+            state.update(CHIP_START)
+            real_switch = eyes.switch
+            calls = []
+
+            def switch_that_fails_after_the_flip(label, *args, **kwargs):
+                if label == "Restore clipboard" and state["Restore clipboard"] and not calls:
+                    calls.append("failed")
+                    raise eyes.Blocked("the screen could not be read")
+                return real_switch(label, *args, **kwargs)
+
+            eyes.switch = switch_that_fails_after_the_flip
+            try:
+                report = exercise("AI Polish", {"Restore clipboard": False})
+            finally:
+                eyes.switch = real_switch
+            check("a failed read after a switch flip is reported", any(l.startswith("ISSUE") for l in report), report)
+            check("and the switch is flipped back at once, leaving nothing owed",
+                  not state["Restore clipboard"] and eyes._owed() == [], (state, eyes._owed()))
+
+        # ---- scan's flip-and-put-back pass on this screen -------------------------------------------
+        exercise = getattr(eyes, "_exercise_screen", None)
+        check("scan's flip pass is a call of its own", callable(exercise))
+        if callable(exercise):
+            state.update(CHIP_START)
+            report = exercise("AI Polish", eyes.switches())
+            text = "\n".join(report)
+            check("the only ISSUEs are the several-on group, never a pick-one chip",
+                  all("Emoji" in line or "Hashtags" in line for line in report if line.startswith("ISSUE")), text)
+            check("each other Tone chip is picked and Tone goes back to Semi-formal",
+                  sum(line.startswith("VERIFIED: AI Polish / ") and "back to Semi-formal" in line
+                      for line in report) == 3, text)
+            check("and Structure is picked and goes back to Lists",
+                  any(line.startswith("VERIFIED: AI Polish / ") and "Prose" in line and "back to Lists" in line
+                      for line in report), text)
+            check("the radio group is still skipped",
+                  any(line.startswith("SKIPPED") and "Off" in line for line in report), text)
+            check("the several-on chips are reported, not flipped as switches",
+                  any("Hashtags" in line and "several" in line for line in report), text)
+            check("the real switches still move and come back",
+                  any(line.startswith("VERIFIED") and "Smart insertion" in line for line in report), text)
+            refusal = pay_book()
+            check("every control ends where it started once restore() has run", refusal is None and state == CHIP_START,
+                  {k: v for k, v in state.items() if CHIP_START[k] != v})
+            check("and the book is empty", eyes._owed() == [], eyes._owed())
+
+        # ---- a page named twice on screen is identified by its title beside Back --------------------
+        eyes._adb = lambda command, timeout=60, check=True: (
+            (0, MICROPHONE_PAGE) if command.startswith("cat ") else (0, ""))
+        try:
+            check("the Microphone page is recognised although its name appears twice",
+                  eyes.on_screen("Microphone") is True)
+        except eyes.Blocked as why:
+            check("the Microphone page is recognised although its name appears twice", False, why)
+        eyes._adb = lambda command, timeout=60, check=True: (
+            (0, STORAGE_PAGE_SAYING_MICROPHONE) if command.startswith("cat ") else (0, ""))
+        try:
+            check("a page that only mentions Microphone in its body is not the Microphone page",
+                  eyes.on_screen("Microphone") is False)
+        except eyes.Blocked as why:
+            check("a page that only mentions Microphone in its body is not the Microphone page", False, why)
+    finally:
+        for name, value in originals.items():
+            setattr(eyes, name, value)
+        eyes._STATE["tree"] = None
+
+
 def main():
     # THE FAKE TRANSPORTS' HARDWARE IDENTITIES (#161 H7), as `getprop ro.serialno` would answer them; the
     # book is keyed by these, and `_owed("emulator-5554")` reads the book under `EMU-5554`. A transport
@@ -1996,6 +2436,8 @@ Group main:
     Path(out).unlink()
     for name, fn in render_originals.items():
         setattr(eyes, name, fn)
+
+    test_pick_one_groups()
 
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")

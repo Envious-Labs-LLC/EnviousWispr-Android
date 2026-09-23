@@ -277,7 +277,7 @@ class AutoPasteWiringTest {
             "handoffToJudge is no longer reading the value the START recorded, so it can only " +
                 "repeat what insertion already said",
             finalizer.contains("startPin = targetPin,") &&
-                source.contains("finalizer.deliver(takeId, current.targetPin, payload, saveResult, sessionPreferences.clipboard)"),
+                source.contains("finalizer.deliver(takeId, current.targetPin, payload, saveOutcome, sessionPreferences.clipboard, saveGate)"),
         )
     }
 

@@ -51,6 +51,13 @@ internal data class TranscriptEntity(
         const val STATUS_ASR_ERROR = "asr_error"
         const val STATUS_INTERRUPTED = "interrupted"
         const val STATUS_READY_FOR_INSERTION = "ready_for_insertion"
+        /**
+         * The finalized row before its route is recorded (#235): durable, with its words, and neither
+         * ready nor terminal. The session owner decides the route within its History bound; a scheduled
+         * handoff promotes the row to ready later, a copy reconciles it to the clipboard outcome, and a row
+         * that outlives the cutoff in this state is recovered as `delivery_unknown`, never as a paste.
+         */
+        const val STATUS_SAVED_UNROUTED = "saved_unrouted"
         const val STATUS_INSERTION_INTERRUPTED = "insertion_interrupted"
     }
 }

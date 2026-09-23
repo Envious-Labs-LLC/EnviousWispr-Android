@@ -124,6 +124,11 @@ internal object Telemetry {
         }
     }
 
+    /** Neutral rows the recovery read as delivery unknown (#235): a breadcrumb, never an interrupted insertion. */
+    fun deliveryUnknownRecovered(count: Int) {
+        if (count > 0) breadcrumb("history", "delivery_unknown_recovered", mapOf("count" to count))
+    }
+
     /**
      * Recovered `ready_for_insertion` History rows (the owner died between the save and the insertion
      * outcome) are insertion outcomes, not new dictations (G2 D4): one `insertion.terminal` per row,

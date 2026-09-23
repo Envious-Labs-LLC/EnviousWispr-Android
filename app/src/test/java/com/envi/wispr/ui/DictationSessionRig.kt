@@ -118,6 +118,8 @@ internal class DictationSessionRig {
     fun coordinator(
         preferences: SessionPreferencesSource = preferencesSource,
         answerBoundMs: Long = 5_000L,
+        /** Generous by default so no healthy row races it; the #235 rows set a short one against a held save. */
+        historySaveBoundMs: Long = 5_000L,
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
@@ -133,6 +135,7 @@ internal class DictationSessionRig {
         mainDispatcher = mainDispatcher,
         polishTimeout = polishTimeout,
         answerBoundMs = answerBoundMs,
+        historySaveBoundMs = historySaveBoundMs,
         tipGate = BluetoothTipGate(),
         polishLedger = PolishRequestLedger(PolishRequestIdSource { System.nanoTime() }),
         endingSink = endings::record,
@@ -282,8 +285,13 @@ internal class DictationSessionRig {
          * worker, and a row read before that is a row read too early.
          */
         fun awaitStopped() {
-            check(stopped.await(10, TimeUnit.SECONDS)) { "the owner never stopped the Service; events so far: $events" }
+            awaitServiceStopped()
             awaitHistoryIdle()
+        }
+
+        /** The Service stopped, without waiting for History: for the #235 rows that hold a save on the queue. */
+        fun awaitServiceStopped() {
+            check(stopped.await(10, TimeUnit.SECONDS)) { "the owner never stopped the Service; events so far: $events" }
         }
     }
 
@@ -673,8 +681,11 @@ internal class DictationSessionRig {
         @Volatile var holdStatusWrites: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(rows.values.toList())
+        /** When set, only the take's draft insert fails, so the publication inserts its own row (#235 row 9c). */
+        @Volatile var failDraftInsert = false
         override suspend fun insert(transcript: TranscriptEntity): Long {
             if (failInserts) throw IllegalStateException("disk full")
+            if (failDraftInsert && transcript.status == TranscriptEntity.STATUS_DRAFT) throw IllegalStateException("draft insert failed")
             val id = nextId.getAndIncrement()
             rows[id] = transcript.copy(id = id)
             return id
@@ -689,19 +700,29 @@ internal class DictationSessionRig {
             holdStatusWrites?.await()
             return if (rows.computeIfPresent(id) { _, row -> row.copy(status = status, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted, insertionResult = insertionResult ?: row.insertionResult) } != null) 1 else 0
         }
+        /** Runs after the publication's row is written, on the History worker: a recovery staged there (#235). */
+        @Volatile var afterFinalize: (suspend () -> Unit)? = null
+        /** When set, only the publication's finalize throws, after any hold: a late failure (#235 row 3). */
+        @Volatile var failFinalize = false
         /** When set, the publication's History write is held until the test completes it (#234 row 6f). */
         @Volatile var holdFinalize: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         /** Counted down when a held publication write has been entered. */
         val finalizeEntered = CountDownLatch(1)
         override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int {
             holdFinalize?.let { held -> finalizeEntered.countDown(); held.await() }
-            if (failInserts) throw IllegalStateException("disk full")
-            return if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted) } != null) 1 else 0
+            if (failInserts || failFinalize) throw IllegalStateException("disk full")
+            val written = if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted) } != null) 1 else 0
+            afterFinalize?.invoke()
+            return written
         }
+        /** When set, an insertion-outcome write throws, as a failed Room update would (#235 row 13). */
+        @Volatile var failOutcome = false
+        /** Mirrors `TranscriptDao.finalizeInsertionOutcome`: ready or neutral, and still pending (#235). */
         override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean): Int {
+            if (failOutcome) throw IllegalStateException("outcome write failed")
             var updated = 0
             rows.computeIfPresent(id) { _, row ->
-                if (row.status != TranscriptEntity.STATUS_READY_FOR_INSERTION || row.insertionResult != "pending") {
+                if (row.status !in OPEN_ROUTE || row.insertionResult != "pending") {
                     row
                 } else {
                     updated = 1
@@ -712,8 +733,72 @@ internal class DictationSessionRig {
         }
         /** When set, the start-up recovery is held until the test completes it (the #115 review's F1 row). */
         @Volatile var holdRecovery: kotlinx.coroutines.CompletableDeferred<Unit>? = null
-        override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int { holdRecovery?.await(); return 0 }
-        override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int = 0
-        override suspend fun staleReadyRowIds(cutoffMs: Long): List<Long> = emptyList()
+        /** Every recovery body below mirrors its `TranscriptDao` query's predicate and writes (#235). */
+        private val recoveryLock = Any()
+        private fun recover(cutoffMs: Long, matches: (TranscriptEntity) -> Boolean, into: (TranscriptEntity) -> TranscriptEntity): Int = synchronized(recoveryLock) {
+            var updated = 0
+            rows.keys.forEach { id ->
+                rows.computeIfPresent(id) { _, row ->
+                    if (row.stateChangedAtMs <= cutoffMs && matches(row)) { updated++; into(row) } else row
+                }
+            }
+            updated
+        }
+        override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int {
+            holdRecovery?.await()
+            return recover(cutoffMs, { it.status == TranscriptEntity.STATUS_DRAFT || it.status == TranscriptEntity.STATUS_PROCESSING }) {
+                it.copy(status = TranscriptEntity.STATUS_INTERRUPTED, insertionResult = "not_attempted", interrupted = true)
+            }
+        }
+        override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int =
+            recover(cutoffMs, { it.status == TranscriptEntity.STATUS_READY_FOR_INSERTION && it.insertionResult == "pending" }) {
+                it.copy(status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED, insertionResult = com.envi.wispr.insertion.InsertionResults.INSERTION_INTERRUPTED, stateChangedAtMs = nowMs, interrupted = true)
+            }
+        override suspend fun staleReadyRowIds(cutoffMs: Long): List<Long> = synchronized(recoveryLock) {
+            rows.values.filter { it.stateChangedAtMs <= cutoffMs && it.status == TranscriptEntity.STATUS_READY_FOR_INSERTION && it.insertionResult == "pending" }.map { it.id }
+        }
+        /** Room runs the snapshot and the update in one transaction; the fake serializes them under one lock. */
+        override suspend fun recoverStaleReadyRowsReturningIds(cutoffMs: Long, nowMs: Long): List<Long> = synchronized(recoveryLock) {
+            val ids = rows.values.filter { it.stateChangedAtMs <= cutoffMs && it.status == TranscriptEntity.STATUS_READY_FOR_INSERTION && it.insertionResult == "pending" }.map { it.id }
+            ids.forEach { id ->
+                rows.computeIfPresent(id) { _, row -> row.copy(status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED, insertionResult = com.envi.wispr.insertion.InsertionResults.INSERTION_INTERRUPTED, stateChangedAtMs = nowMs, interrupted = true) }
+            }
+            ids
+        }
+        override suspend fun recoverStaleUnroutedRows(cutoffMs: Long, nowMs: Long): Int =
+            recover(cutoffMs, { it.status == TranscriptEntity.STATUS_SAVED_UNROUTED && it.insertionResult == "pending" }) {
+                it.copy(status = TranscriptEntity.STATUS_COMPLETED, insertionResult = com.envi.wispr.insertion.InsertionResults.DELIVERY_UNKNOWN, stateChangedAtMs = nowMs, interrupted = true)
+            }
+        /** When set, the promotion to ready is held until the test completes it (#235 row 11). */
+        @Volatile var holdPromotion: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        override suspend fun promoteUnroutedToReady(id: Long, nowMs: Long): Int {
+            holdPromotion?.await()
+            var updated = 0
+            rows.computeIfPresent(id) { _, row ->
+                if (row.status == TranscriptEntity.STATUS_SAVED_UNROUTED && row.insertionResult == "pending") {
+                    updated = 1
+                    row.copy(status = TranscriptEntity.STATUS_READY_FOR_INSERTION, stateChangedAtMs = nowMs)
+                } else row
+            }
+            return updated
+        }
+
+        /** Mirrors `TranscriptDao.reconcileTimedOutCopy`: the neutral row, or the same row read as delivery unknown. */
+        override suspend fun reconcileTimedOutCopy(id: Long, result: String, nowMs: Long): Int {
+            var updated = 0
+            rows.computeIfPresent(id) { _, row ->
+                val neutral = row.status == TranscriptEntity.STATUS_SAVED_UNROUTED && row.insertionResult == "pending"
+                val unknown = row.status == TranscriptEntity.STATUS_COMPLETED && row.insertionResult == com.envi.wispr.insertion.InsertionResults.DELIVERY_UNKNOWN
+                if (neutral || unknown) {
+                    updated = 1
+                    row.copy(status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED, insertionResult = result, stateChangedAtMs = nowMs, interrupted = true)
+                } else row
+            }
+            return updated
+        }
+
+        private companion object {
+            val OPEN_ROUTE = setOf(TranscriptEntity.STATUS_READY_FOR_INSERTION, TranscriptEntity.STATUS_SAVED_UNROUTED)
+        }
     }
 }

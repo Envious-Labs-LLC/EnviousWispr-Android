@@ -79,8 +79,8 @@ internal interface TranscriptDao {
 
     @Query(
             "UPDATE transcripts SET status = :status, insertionResult = :result, stateChangedAtMs = :stateChangedAtMs, interrupted = :interrupted " +
-            "WHERE id = :id AND status = '${TranscriptEntity.STATUS_READY_FOR_INSERTION}' " +
-            "AND insertionResult = 'pending'",
+            "WHERE id = :id AND status IN ('${TranscriptEntity.STATUS_READY_FOR_INSERTION}', " +
+            "'${TranscriptEntity.STATUS_SAVED_UNROUTED}') AND insertionResult = 'pending'",
     )
     suspend fun finalizeInsertionOutcome(
         id: Long,
@@ -98,14 +98,52 @@ internal interface TranscriptDao {
     )
     suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int
 
+    /**
+     * A scheduled handoff's row, promoted from neutral to ready AFTER the handoff and never awaited (#235):
+     * conditional, so an outcome that already landed wins and this updates nothing.
+     */
+    @Query(
+        "UPDATE transcripts SET status = '${TranscriptEntity.STATUS_READY_FOR_INSERTION}', stateChangedAtMs = :nowMs " +
+            "WHERE id = :id AND status = '${TranscriptEntity.STATUS_SAVED_UNROUTED}' AND insertionResult = 'pending'",
+    )
+    suspend fun promoteUnroutedToReady(id: Long, nowMs: Long): Int
+
+    /**
+     * A timed-out take's measured copy (#235): lands on its neutral row, or on the same row after recovery
+     * already read it as delivery unknown, because this process knows what the user got and recovery did not.
+     */
+    @Query(
+        "UPDATE transcripts SET status = '${TranscriptEntity.STATUS_INSERTION_INTERRUPTED}', insertionResult = :result, " +
+            "stateChangedAtMs = :nowMs, interrupted = 1 WHERE id = :id AND (" +
+            "(status = '${TranscriptEntity.STATUS_SAVED_UNROUTED}' AND insertionResult = 'pending') OR " +
+            "(status = '${TranscriptEntity.STATUS_COMPLETED}' AND insertionResult = '${InsertionResults.DELIVERY_UNKNOWN}'))",
+    )
+    suspend fun reconcileTimedOutCopy(id: Long, result: String, nowMs: Long): Int
+
+    /**
+     * A neutral row that outlived the cutoff: its words are kept, and no route was recorded, so the
+     * honest reading is delivery unknown, never an interrupted paste (#235).
+     */
+    @Query(
+        "UPDATE transcripts SET status = '${TranscriptEntity.STATUS_COMPLETED}', " +
+            "insertionResult = '${InsertionResults.DELIVERY_UNKNOWN}', stateChangedAtMs = :nowMs, interrupted = 1 " +
+            "WHERE stateChangedAtMs <= :cutoffMs AND status = '${TranscriptEntity.STATUS_SAVED_UNROUTED}' " +
+            "AND insertionResult = 'pending'",
+    )
+    suspend fun recoverStaleUnroutedRows(cutoffMs: Long, nowMs: Long): Int
+
     @Query(
         "UPDATE transcripts SET status = '${TranscriptEntity.STATUS_INSERTION_INTERRUPTED}', " +
             "insertionResult = '${InsertionResults.INSERTION_INTERRUPTED}', stateChangedAtMs = :nowMs, interrupted = 1 " +
-            "WHERE stateChangedAtMs <= :cutoffMs AND status = '${TranscriptEntity.STATUS_READY_FOR_INSERTION}'",
+            "WHERE stateChangedAtMs <= :cutoffMs AND status = '${TranscriptEntity.STATUS_READY_FOR_INSERTION}' " +
+            "AND insertionResult = 'pending'",
     )
     suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int
 
-    @Query("SELECT id FROM transcripts WHERE stateChangedAtMs <= :cutoffMs AND status = '${TranscriptEntity.STATUS_READY_FOR_INSERTION}'")
+    @Query(
+        "SELECT id FROM transcripts WHERE stateChangedAtMs <= :cutoffMs AND " +
+            "status = '${TranscriptEntity.STATUS_READY_FOR_INSERTION}' AND insertionResult = 'pending'",
+    )
     suspend fun staleReadyRowIds(cutoffMs: Long): List<Long>
 
     /**

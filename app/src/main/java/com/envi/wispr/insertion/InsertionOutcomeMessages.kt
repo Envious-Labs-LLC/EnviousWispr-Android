@@ -160,6 +160,8 @@ internal object InsertionOutcomeMessages {
         // Delivery outcome. The transcript itself is intact and is shown below this line.
         TranscriptEntity.STATUS_INSERTION_INTERRUPTED -> ""
         TranscriptEntity.STATUS_COMPLETED -> ""
+        // Internal (#235): a saved row whose route is not recorded yet. Its words are shown; it is not a state.
+        TranscriptEntity.STATUS_SAVED_UNROUTED -> ""
         else -> "Status: ${status.replace('_', ' ')}"
     }
 }

@@ -1194,9 +1194,18 @@ def one_way(label, package=PACKAGE):
         mark, members = group
         if mark == "RadioButton":
             return True
-        # Exactly one chosen is what a pick-one group looks like at rest. A chip group that is really
-        # several-at-once is caught by `choose()`, which presses, reads, and undoes.
-        return len(members) >= 2 and sum(bool(m["on"]) for m in members) == 1
+        chosen = sum(bool(m["on"]) for m in members)
+        # NO CHOSEN CHIP IN VIEW IS NOT A SWITCH (Codex r1). A pick-one group scrolled so its chosen
+        # chip is off screen shows only unchosen chips, alone or together; pressing one moves the pick
+        # and pressing it again does not move it back. It cannot be told from a several-at-once group
+        # with nothing on, so it is refused rather than guessed.
+        if chosen == 0:
+            raise Blocked(f"{label!r} is a chip whose group shows no chosen member, so whether it is "
+                          "pick-one cannot be told. Bring the whole group into view first.")
+        # Exactly one chosen is what a pick-one group looks like at rest; two or more on at once is a
+        # set of check boxes, each one a switch. A several-at-once group with one on is caught by
+        # `choose()`, which presses, reads, and undoes.
+        return chosen == 1 and len(members) >= 2
     top, bottom = row["bounds"][1], row["bounds"][3]
     band = [n for n in nodes
             if n["checkable"] and n["package"] == package
@@ -1319,7 +1328,14 @@ def choose(label, where, package=PACKAGE):
     _, before = _group_state(label, package=package)
     if len(before) < 2:
         raise Blocked(f"{label!r} is alone, not one of a set of choices")
-    if before[label] and sum(before.values()) == 1:
+    already_on = sorted([name for name, on in before.items() if on and name != label])
+    if len(already_on) + int(before[label]) > 1:
+        # Two already on is several-at-once on its face. Pressing an already-chosen member here would
+        # turn it OFF (Codex r1), so this refuses before pressing anything.
+        raise Blocked(f"the group holding {label!r} lets several be on at once: "
+                      f"{', '.join(sorted(already_on + ([label] if before[label] else [])))} are on, so it is not "
+                      "pick-one. Nothing was pressed.")
+    if before[label]:
         return before
     debt = ("choice", json.dumps({"where": where, "group": before}, sort_keys=True))
     _owe(debt)

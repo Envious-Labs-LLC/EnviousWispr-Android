@@ -189,9 +189,14 @@ CHIP_START = {"Casual": False, "Semi-casual": False, "Semi-formal": True, "Forma
 PICK_ONE = {"tone", "structure", "engine"}
 
 
-def chip_screen(state):
-    """The AI Polish tab as XML, rendered from `state`, in the sibling order the emulator reported."""
+def chip_screen(state, hidden=()):
+    """The AI Polish tab as XML, rendered from `state`, in the sibling order the emulator reported.
+
+    `hidden` rows are scrolled out of view, so they are absent from the tree, as on the phone.
+    """
     def row(label):
+        if label in hidden:
+            return ""
         (x0, y0, x1, y1), group, mark = CHIP_ROWS[label]
         on = "true" if state[label] else "false"
         # A radio group's chosen member is not clickable; a chip and a switch always are.
@@ -230,11 +235,11 @@ def chip_screen(state):
             f'checkable="false" clickable="false" enabled="true" text="">{body}</node>{tabs}</node></hierarchy>')
 
 
-def chip_phone(state, presses):
+def chip_phone(state, presses, hidden=()):
     """A phone that renders `state` and applies each press the way the app does."""
     def fake(command, timeout=60, check=True):
         if command.startswith("cat "):
-            return 0, chip_screen(state)
+            return 0, chip_screen(state, hidden)
         tapped = re.fullmatch(r"input tap (\d+) (\d+)", command)
         if tapped:
             x, y = int(tapped.group(1)), int(tapped.group(2))
@@ -351,6 +356,40 @@ def test_pick_one_groups():
             check("and the press is undone",
                   state["Emoji"] and not state["Hashtags"] and presses == ["Hashtags", "Hashtags"], (state, presses))
             check("and nothing is left owed", eyes._owed() == [], eyes._owed())
+
+            # Codex r1 P2: two already on in a several-on group, and one of them asked for. Pressing it
+            # would turn it OFF; the call must refuse before pressing anything.
+            state.update(CHIP_START, Hashtags=True)
+            presses.clear()
+            try:
+                choose("Emoji", where="AI Polish")
+                check("an already-chosen chip in a several-on group is refused", False, "it accepted Emoji")
+            except eyes.Blocked as refusal:
+                check("an already-chosen chip in a several-on group is refused", "several" in str(refusal), refusal)
+            check("and nothing is pressed or owed, both stay on",
+                  presses == [] and eyes._owed() == [] and state["Emoji"] and state["Hashtags"],
+                  (presses, eyes._owed(), state))
+            check("a chip group with two on is a set of switches, not one-way", way("Emoji") is False, way("Emoji"))
+            state.update(CHIP_START)
+
+        # ---- Codex r1 P1: the chosen chip scrolled out of view ---------------------------------------
+        # Seeing only unchosen chips of a group is not seeing a switch: pressing one would move the pick,
+        # and pressing it again would not move it back.
+        eyes._adb = chip_phone(state, presses, hidden=("Semi-formal", "Formal"))
+        presses.clear()
+        check("a chip group with no chosen member in view is refused, not read as a switch",
+              str(way("Casual")).startswith("raised") and "whole group" in str(way("Casual")), way("Casual"))
+        try:
+            eyes.set_switch("Casual", True, where="AI Polish")
+            check("and set_switch refuses it", False, "it pressed Casual")
+        except eyes.Blocked as refusal:
+            check("and set_switch refuses it", "whole group" in str(refusal), refusal)
+        check("pressing nothing and owing nothing", presses == [] and eyes._owed() == [], (presses, eyes._owed()))
+        # One unchosen chip alone in view is the same case.
+        eyes._adb = chip_phone(state, presses, hidden=("Semi-casual", "Semi-formal", "Formal"))
+        check("a lone unchosen chip in view is refused too",
+              str(way("Casual")).startswith("raised") and "whole group" in str(way("Casual")), way("Casual"))
+        eyes._adb = chip_phone(state, presses)
 
         # ---- scan's flip-and-put-back pass on this screen -------------------------------------------
         exercise = getattr(eyes, "_exercise_screen", None)

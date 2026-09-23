@@ -1,0 +1,50 @@
+# #215 revert receipts, in the order run. Each line breaks one guarded behaviour in a scratch edit, reruns the named row, and restores the file from the last commit.
+# The one MISS line was rerun after the row stopped ending the suite and is RED on the later line marked "rerun"; the hard-link receipts belong to the first staging design, replaced at cfd197b.
+RED preflight ignores the fixture: 'preflight: no fixture' (4 failed)
+RED preflight ignores the runner registration: 'preflight: no runner registration' (1 failed)
+RED preflight ignores the test APK: 'preflight: no test APK' (1 failed)
+RED real-boundary -4 mapped to NOT RUN: '-4 is ISSUE for the real-boundary door' (2 failed)
+RED Prerequisite matched anywhere: 'Prerequisite in a later frame is ISSUE' (2 failed)
+RED render at 48 kHz: 'the fixture renders s16le, 16 kHz, mono' (1 failed)
+MISS write the final name directly: 'a successful stage' (0 failed)
+RED no temporary cleanup: 'a successful stage' (3 failed)
+RED no final read-back: 'a successful stage' (1 failed)
+RED fixture assumed again: red=['theRealBoundaryRowAssertsItsFixture']
+RED saved-name check removed: red=['theSavedNameIsAPrerequisiteReadFromTheUserTermsAlone']
+RED speaker fixture assumed again: red=['theSpeakerSourceAssertsTheSameFixture']
+RED write the final name directly (rerun, row now reports a refusal): [" FAIL  a successful stage: temp write, temp read-back, ln to the final name, final read-back, temp removal, in order  <- ([('readback', 'cache/enviouswispr-uat.pcm'), ('exec-in', 'cache/enviouswispr-uat.pcm'), ('readback', 'cache/.enviouswispr-uat.pcm.2ecaea6d95384a8da8c7082a6f8e547a.tmp'), ('readback', 'cache/.enviouswispr-uat.pcm.2ecaea6d95384a8da8c7082a6f8e547a.tmp'), ('rm', 'cache/.enviouswispr-uat.pcm.2ecaea6d95384a8da8c7082a6f8e547a.tmp')], 'refused: the fixture did not arrive whole (None of 32000 bytes); nothing was staged')"]
+RED a message with a detached predicate: red=['theRealBoundaryRowAssertsItsFixture']
+RED test -f replaced by existence: 1 failed
+RED a truncated stream still verifies: 1 failed
+RED the fixture assertion commented out: red=['theRealBoundaryRowAssertsItsFixture']
+RED the prerequisite commented out: red=['theSavedNameIsAPrerequisiteReadFromTheUserTermsAlone']
+RED (r4) fixture assumed again: red=['theRealBoundaryRowAssertsItsFixture']
+RED (r4) fixture assumed with a space before the parenthesis: red=['theRealBoundaryRowAssertsItsFixture']
+RED (r4) an extra assumeTrue/* c */( before the assertion: red=['theRealBoundaryRowAssertsItsFixture']
+RED (r4) fixture assertion commented out: red=['theRealBoundaryRowAssertsItsFixture']
+RED (r4) fixture predicate only inside a template message: red=['theRealBoundaryRowAssertsItsFixture']
+RED (r4) saved-name check removed: red=['theSavedNameIsAPrerequisiteReadFromTheUserTermsAlone']
+RED (r4) saved name checked in the merged vocabulary: red=['theSavedNameIsAPrerequisiteReadFromTheUserTermsAlone']
+RED (r4) speaker fixture assumed again: red=['theSpeakerSourceAssertsTheSameFixture']
+RED (r4) speaker fixture assumed with a comment before the parenthesis: red=['theSpeakerSourceAssertsTheSameFixture']
+RED (r5) fixture assumed again: red=['assumptionsLiveOnlyInTheNoFieldRow', 'theRealBoundaryRowAssertsItsFixture']
+RED (r5) fixture assumed with a space before the parenthesis: red=['assumptionsLiveOnlyInTheNoFieldRow', 'theRealBoundaryRowAssertsItsFixture']
+RED (r5) an extra assumeTrue/* c */( before the assertion: red=['assumptionsLiveOnlyInTheNoFieldRow', 'theRealBoundaryRowAssertsItsFixture']
+RED (r5) fixture assertion commented out: red=['theRealBoundaryRowAssertsItsFixture']
+RED (r5) fixture predicate only inside a template message: red=['theRealBoundaryRowAssertsItsFixture']
+RED (r5) an assumption in a template in the row: red=['assumptionsLiveOnlyInTheNoFieldRow', 'theRealBoundaryRowAssertsItsFixture']
+RED (r5) an assumption wrapper outside the row: red=['assumptionsLiveOnlyInTheNoFieldRow']
+RED (r5) an aliased assumption import: red=['assumptionsLiveOnlyInTheNoFieldRow']
+RED (r5) saved-name check removed: red=['theSavedNameIsAPrerequisiteReadFromTheUserTermsAlone']
+RED (r5) saved name checked in the merged vocabulary: red=['theSavedNameIsAPrerequisiteReadFromTheUserTermsAlone']
+RED (r5) speaker fixture assumed again: red=['assumptionsLiveOnlyInTheNoFieldRow', 'theSpeakerSourceAssertsTheSameFixture']
+RED (r5) speaker fixture assumed with a comment before the parenthesis: red=['assumptionsLiveOnlyInTheNoFieldRow', 'theSpeakerSourceAssertsTheSameFixture']
+RED (r7) exit 3 always read as a race: 1 failed on 'a creation refused with nothing there'
+RED (r7) a removal trusted without the read-back: 1 failed on 'is BLOCKED and says what may remain'
+RED (r7) the temporary removal skipped on success: 2 failed on 'a successful stage'
+RED (r8) cleanup catches Exception only: 1 failed on 'an interrupt after the temporary write'
+RED (r8) an unknown presence read as absent: 1 failed on 'the device cannot see behind'
+RED (r9) a raising presence probe not caught: 1 failed on 'a presence probe that raises'
+RED (r9) a raising removal not caught: 1 failed on 'a removal that raises'
+RED (r9) a lost publish answer not named: 1 failed on 'a publish that loses its answer'
+RED (r9) a raising final read-back leaves the final: 1 failed on 'a final read-back that raises'

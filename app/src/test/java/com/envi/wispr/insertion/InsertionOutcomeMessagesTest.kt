@@ -293,8 +293,9 @@ class InsertionOutcomeMessagesTest {
                 "ordinary outcome of a working product: $session",
             session.contains("vibrate("),
         )
+        // Since #217 the announcement lives in the service's `AccessibilityInsertionRunner`.
         val service = slice(
-            read("paste/PasteAccessibilityService.kt"),
+            read("paste/AccessibilityInsertionRunner.kt"),
             "private fun recordAndAnnounce(reason: ServiceFallbackReason, pending: PendingInsertion) {",
             "\n    private fun ",
         )

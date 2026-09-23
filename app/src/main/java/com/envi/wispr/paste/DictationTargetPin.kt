@@ -12,7 +12,7 @@ package com.envi.wispr.paste
  * reason, which is issue #16; and a dictation started on top of one still being inserted fails for
  * a third, where the words at risk are the new ones.
  *
- * The members are produced by `PasteAccessibilityService.pinTarget` and its wrapper, one per exit,
+ * The members are produced by `EditorTargetTracker.pinTarget` and its wrapper, one per exit,
  * so a new way to decline has to name itself rather than inherit the ordinary case.
  */
 internal enum class DictationTargetPin {

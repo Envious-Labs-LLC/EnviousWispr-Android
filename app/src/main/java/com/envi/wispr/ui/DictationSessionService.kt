@@ -181,7 +181,7 @@ class DictationSessionService : Service() {
         }
         runCatching {
             // VibratorManager is API 31 against minSdk 33. Guarded here as well as in
-            // PasteAccessibilityService.performResultHaptic: the runCatching only degrades to no
+            // AccessibilityInsertionRunner.performResultHaptic: the runCatching only degrades to no
             // haptics at all on the oldest supported phone, which is a silent loss of every cue.
             val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 getSystemService(VibratorManager::class.java)?.defaultVibrator

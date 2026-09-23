@@ -15,7 +15,9 @@ class SilenceWriterTest {
     private fun writes(vararg results: Int?): Pair<() -> Int, () -> Int> {
         var i = 0
         val write = {
-            check(i < results.size) { "the loop wrote past its script" }
+            // An Error, not an Exception: the writer catches exceptions as write failures, and an extra write must
+            // fail the row, never count as the failure it expects (code review round 1).
+            if (i >= results.size) throw AssertionError("the loop wrote past its script")
             results[i++] ?: throw IllegalStateException("dead track")
         }
         return write to { i }

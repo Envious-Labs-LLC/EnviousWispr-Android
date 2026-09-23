@@ -577,6 +577,9 @@ internal class DictationSessionRig {
         val cancelled = CopyOnWriteArrayList<Long>()
         /** The thread each cancel arrived on, in order with [cancelled]. */
         val cancelThreads = CopyOnWriteArrayList<String>()
+        /** When set, each cancel records whether its thread held this lock (#237: never). */
+        @Volatile var lockToWatch: Any? = null
+        val cancelHeldLock = CopyOnWriteArrayList<Boolean>()
         val warmed = CopyOnWriteArrayList<PolishPolicy>()
         private val requested = CountDownLatch(1)
         /** The raw text the owner handed the engine, after vocabulary restoration (#193). */
@@ -605,6 +608,7 @@ internal class DictationSessionRig {
         }
         override fun cancel(requestId: Long) {
             cancelThreads += Thread.currentThread().name
+            lockToWatch?.let { cancelHeldLock += Thread.holdsLock(it) }
             cancelled += requestId
         }
         fun awaitRequest(diagnostics: () -> String = { "" }): PolishListener {

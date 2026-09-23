@@ -247,10 +247,10 @@ internal object SentryBootstrap {
         }
         contexts.device?.let { device ->
             device.name = null
-            device.manufacturer = device.manufacturer?.let(SentrySchema::contextLabel)
-            device.brand = device.brand?.let(SentrySchema::contextLabel)
+            device.manufacturer = device.manufacturer?.let(SentrySchema::buildLabel)
+            device.brand = device.brand?.let(SentrySchema::buildLabel)
             device.family = device.family?.let(SentrySchema::contextLabel)
-            device.model = device.model?.let(SentrySchema::contextLabel)
+            device.model = device.model?.let(SentrySchema::buildLabel)
             device.modelId = device.modelId?.let(SentrySchema::contextLabel)
             device.archs = device.archs?.mapNotNull { arch -> arch?.let(SentrySchema::contextLabel) }?.toTypedArray()
             device.id = device.id?.let(SentrySchema::contextLabel)

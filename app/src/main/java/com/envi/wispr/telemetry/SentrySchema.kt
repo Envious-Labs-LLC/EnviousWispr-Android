@@ -177,43 +177,20 @@ internal object SentrySchema {
 
     // ---- code locations --------------------------------------------------------------------------------------
     //
-    // THE LINE (#240, review round 2, the class enumerated): no validator admits whitespace-separated prose. A
-    // string with no whitespace (an identifier, a file name, a path) is admitted only in a field whose producer is
-    // compiled code, the OS loader or a build property, never user input: a frame, a thread, an exception type, a
-    // typed context. `SentrySchemaTest.noValidatorAdmitsProse` runs prose through every validator here.
+    // THE LINE (#240, review rounds 2 and 3, the class enumerated): no validator admits whitespace-separated
+    // prose. A string with no whitespace (an identifier, a file name, a path) is admitted only in a field whose
+    // producer is compiled code, the OS loader or a build property, never user input: a frame, a thread, an
+    // exception type, a typed context. The one exception is [buildLabel]: a device's model, maker and brand may
+    // carry spaces only when they EQUAL this phone's own build properties. A demangled C++ signature with spaces
+    // is redacted; the frame keeps its instruction address and library, which Sentry symbolicates on its server.
+    // `SentrySchemaTest.noValidatorAdmitsProse` runs prose through every validator here.
 
     /** A JVM class name, simple or qualified, with `$` nesting and synthetic lambda classes. */
     private val JVM_CLASS = Regex("\\A[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)*\\z")
     /** A JVM method: an identifier, `<init>`, `<clinit>`, or a synthetic `lambda$…$0` / `access$000` name. */
     private val JVM_METHOD = Regex("\\A(<init>|<clinit>|[A-Za-z_$][A-Za-z0-9_$-]*)\\z")
-    /** A native symbol with no whitespace: mangled, a bare C function name, or `name+0x10`. */
+    /** A native symbol with no whitespace: mangled, a bare C function name, or `name+0x10`. The only native function form kept. */
     private val NATIVE_SYMBOL = Regex("\\A[A-Za-z0-9_$.:<>~+@-]{1,512}\\z")
-    /** A demangled C++ signature's outer shape; [isCxxSignature] then checks where its spaces are. */
-    private val CXX_SHAPE = Regex("\\A([A-Za-z0-9_$:<>~, *&\\[\\]]+)\\(([A-Za-z0-9_$:<>~,*& \\[\\]]*)\\)( const)?\\z")
-    /** The C++ words a parameter type may repeat beside its one named type (`unsigned long`, `char const*`). */
-    private val CXX_TYPE_WORDS = setOf(
-        "const", "volatile", "unsigned", "signed", "long", "short", "int", "char", "bool", "float", "double", "void",
-        "wchar_t", "char16_t", "char32_t", "std::nullptr_t", "struct", "class", "enum",
-    )
-
-    /**
-     * A demangled C++ signature, the only symbol form with spaces: a qualified or templated name (a `::` or a
-     * `<`), whose spaces follow commas only, then a parameter list in which each comma-separated parameter names
-     * at most one type beside the C++ type words. So `std::vector<int, std::allocator<int>>::push_back(int const&)`
-     * passes and `meet(me at six)` or `std::x(me at six)` does not.
-     */
-    private fun isCxxSignature(text: String): Boolean {
-        val match = CXX_SHAPE.matchEntire(text) ?: return false
-        val (name, params) = match.destructured
-        if ("::" !in name && '<' !in name) return false
-        if (name.indices.any { name[it] == ' ' && (it == 0 || name[it - 1] != ',') }) return false
-        return params.split(',').all { param ->
-            param.trim().split(' ').filter { it.isNotEmpty() }
-                .map { it.trim('*', '&', '[', ']') }
-                .count { it.isNotEmpty() && it !in CXX_TYPE_WORDS } <= 1
-        }
-    }
-
     /** A source or library file name. */
     private val FILE_NAME = Regex("\\A[A-Za-z0-9_$.-]{1,128}\\.(kt|java|c|cc|cpp|cxx|h|hpp|so|jar|apk|dex|oat|odex|vdex)\\z")
     /**
@@ -229,7 +206,7 @@ internal object SentrySchema {
     fun exceptionType(text: String): String = if (JVM_CLASS.matches(text)) text else PayloadSanitizer.REDACTED
     fun module(text: String): String = if (JVM_CLASS.matches(text)) text else PayloadSanitizer.REDACTED
     fun function(text: String): String =
-        if (JVM_METHOD.matches(text) || NATIVE_SYMBOL.matches(text) || isCxxSignature(text)) text else PayloadSanitizer.REDACTED
+        if (JVM_METHOD.matches(text) || NATIVE_SYMBOL.matches(text)) text else PayloadSanitizer.REDACTED
     fun fileName(text: String): String = if (FILE_NAME.matches(text)) text else PayloadSanitizer.REDACTED
     fun path(text: String): String {
         val scrubbed = PayloadSanitizer.redactPatterns(text)
@@ -244,4 +221,15 @@ internal object SentrySchema {
     /** A field of an approved typed context: a build property or an SDK-computed label, never with spaces. */
     private val CONTEXT_LABEL = Regex("\\A[\\x21-\\x7E]{1,128}\\z")
     fun contextLabel(text: String): String = if (CONTEXT_LABEL.matches(text)) PayloadSanitizer.redactPatterns(text) else PayloadSanitizer.REDACTED
+
+    /**
+     * This phone's own build properties (`Build.MODEL`, `MANUFACTURER`, `BRAND`), read where the seam runs; a test
+     * replaces them. A model name can have spaces ("Pixel 9 Pro"), and a user cannot set these.
+     */
+    @Volatile var buildProperties: () -> Set<String> = {
+        setOfNotNull(android.os.Build.MODEL, android.os.Build.MANUFACTURER, android.os.Build.BRAND)
+    }
+
+    /** A device model, maker or brand: kept with spaces only when it is this phone's own build value; else a label. */
+    fun buildLabel(text: String): String = if (text in runCatching { buildProperties() }.getOrDefault(emptySet())) text else contextLabel(text)
 }

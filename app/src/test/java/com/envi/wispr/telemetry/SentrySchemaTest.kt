@@ -184,7 +184,8 @@ class SentrySchemaTest {
         assertEquals("lambda\$publishResult\$0", b.function)
         assertEquals("/data/app/~~abc==/com.envi.wispr-xyz==/lib/arm64/libgeniex.so", c.`package`)
         assertEquals("_ZN6geniex4loadEv", c.symbol)
-        assertEquals("geniex::load(int, char const*)", c.function)
+        assertEquals("a demangled signature with spaces is redacted", "[REDACTED]", c.function)
+        assertEquals("the address stays, so the server symbolicates it", "0x7a1b2c", c.instructionAddr)
         assertEquals("0x7a1b2c", c.instructionAddr)
     }
 
@@ -193,13 +194,19 @@ class SentrySchemaTest {
      * validation (prose in `manufacturer` stays); keep an unapproved context.
      */
     @Test fun onlyApprovedTypedContextsStayWithValidatedFields() {
-        val event = SentryEvent().apply {
-            contexts.setDevice(Device().apply { name = "Saurabh's Galaxy"; model = "SM-S938U"; manufacturer = words })
-            contexts.setFeedback(Feedback("please fix"))
+        val saved = SentrySchema.buildProperties
+        SentrySchema.buildProperties = { setOf("Pixel 9 Pro", "Google") }
+        val out = try {
+            SentryBootstrap.sanitize(SentryEvent().apply {
+                contexts.setDevice(Device().apply { name = "Saurabh's Galaxy"; model = "Pixel 9 Pro"; brand = "Google"; manufacturer = words })
+                contexts.setFeedback(Feedback("please fix"))
+            }).contexts
+        } finally {
+            SentrySchema.buildProperties = saved
         }
-        val out = SentryBootstrap.sanitize(event).contexts
         assertNull("the user-set device name is cleared", out.device!!.name)
-        assertEquals("an approved device value is kept", "SM-S938U", out.device!!.model)
+        assertEquals("this phone's own model is kept, spaces and all", "Pixel 9 Pro", out.device!!.model)
+        assertEquals("Google", out.device!!.brand)
         assertEquals("prose in an approved field is redacted", "[REDACTED]", out.device!!.manufacturer)
         assertNull("a feedback context is removed", out.feedback)
         assertFalse(out.keys().toList().contains(Feedback.TYPE))
@@ -386,17 +393,21 @@ class SentrySchemaTest {
     }
 
     /**
-     * Row 9 (review rounds 1 and 2): demangled C++ signatures, templated ones included, and bare C names pass;
-     * prose with parentheses does not. MUTATION: allow a space in the name that does not follow a comma.
+     * Row 9 (review rounds 1 to 3): a native function passes only with no whitespace (mangled, a bare C name, or
+     * a symbol and offset); every demangled signature with spaces is redacted, since C++ type syntax cannot be
+     * told from prose by shape, and the frame's address and library let Sentry symbolicate it on its server.
+     * MUTATION: accept a demangled `::` signature again.
      */
-    @Test fun nativeSignaturesPassAndProseInParenthesesDoesNot() {
-        val template = "std::vector<int, std::allocator<int>>::push_back(int const&)"
-        assertEquals(template, SentrySchema.function(template))
-        assertEquals("geniex::load(unsigned long, char const*)", SentrySchema.function("geniex::load(unsigned long, char const*)"))
+    @Test fun nativeFunctionsPassOnlyWithoutWhitespace() {
+        assertEquals("_ZN6geniex4loadEv", SentrySchema.function("_ZN6geniex4loadEv"))
         assertEquals("load", SentrySchema.function("load"))
-        assertEquals("[REDACTED]", SentrySchema.function("meet me at six(tonight)"))
-        assertEquals("[REDACTED]", SentrySchema.function("meet(me at six)"))
-        assertEquals("[REDACTED]", SentrySchema.function("std::meet me(int)"))
+        assertEquals("load+0x10", SentrySchema.function("load+0x10"))
+        for (text in listOf(
+            "std::vector<int, std::allocator<int>>::push_back(int const&)", "MyAllocator::operator new(unsigned long)",
+            "std::x(long ago)", "meet(me at six)", "std::meet me(int)",
+        )) {
+            assertEquals(text, "[REDACTED]", SentrySchema.function(text))
+        }
     }
 
     /**
@@ -406,12 +417,13 @@ class SentrySchemaTest {
     @Test fun noValidatorAdmitsProse() {
         val prose = listOf(
             "Meet me at six", "meet(me at six)", "std::x(me at six)", "std::x<a b>(int)", "/system/Meet me.so",
-            "Meet me.kt", "Meet me at six.", "Meet, me at six",
+            "Meet me.kt", "Meet me at six.", "Meet, me at six", "std::x(long ago)",
         )
         val validators: Map<String, (String) -> String> = mapOf(
             "exceptionType" to SentrySchema::exceptionType, "module" to SentrySchema::module,
             "function" to SentrySchema::function, "fileName" to SentrySchema::fileName, "path" to SentrySchema::path,
             "identifier" to SentrySchema::identifier, "contextLabel" to SentrySchema::contextLabel,
+            "buildLabel" to SentrySchema::buildLabel,
             "eventMessage" to SentrySchema::eventMessage,
         )
         for ((name, validate) in validators) for (text in prose) {

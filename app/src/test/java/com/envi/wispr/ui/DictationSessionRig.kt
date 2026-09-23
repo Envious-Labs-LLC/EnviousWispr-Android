@@ -141,8 +141,11 @@ internal class DictationSessionRig {
         tipGate = BluetoothTipGate(),
         polishLedger = PolishRequestLedger(PolishRequestIdSource { System.nanoTime() }),
         endingSink = endings::record,
-        defectSink = { defect, data -> defects += defect.fingerprint to data },
+        defectSink = { defect, data -> if (throwOnDefect) throw IllegalStateException("sink broke"); defects += defect.fingerprint to data },
     )
+
+    /** When set, the owner's defect sink throws (#252: a broken report must never stop the words). */
+    @Volatile var throwOnDefect = false
 
     /** The polish policy each take loads; Off unless a test sets another (#234 notice rows). */
     @Volatile var polishPolicy: PolishPolicy = PolishPolicy.Off

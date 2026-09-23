@@ -108,6 +108,18 @@ internal class TakePolishController(
     /** One preparation defect per take (#252): a different defect from a polish failure, so its own gate. */
     private val preparationFailureReported = AtomicBoolean(false)
 
+    /**
+     * Every defect this controller raises goes through here (#252): a sink that throws is logged and never
+     * stops the hand-back that follows the report.
+     */
+    private fun report(defect: AppDefect, data: Map<String, Any?>) {
+        try {
+            defectSink(defect, data)
+        } catch (error: Exception) {
+            log.warn("Defect ${defect.semanticId} not reported: ${error.javaClass.simpleName}")
+        }
+    }
+
     /** A request is open on the ledger; for the owner's cancel log line. */
     val openRequest: Boolean get() = ledger.openId != null
 
@@ -293,7 +305,7 @@ internal class TakePolishController(
             if (outcome == null || outcome.requestId != requestId) {
                 if (claim(requestId)) {
                     log.warn("Invalid polish outcome for request $requestId")
-                    defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to if (outcome == null) "null" else "mismatched"))
+                    report(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to if (outcome == null) "null" else "mismatched"))
                     fallBack(rawText, takePreferences, PolishReason.CALL_FAILED)
                 }
                 return
@@ -308,7 +320,7 @@ internal class TakePolishController(
             // broken engine: the owner's floor, never the raw transcript.
             if (outcome.text.isBlank() && rawText.isNotBlank()) {
                 log.warn("Blank polish outcome for request ${outcome.requestId} (reason=${outcome.reason}); publishing the owner's fallback")
-                defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "blank"))
+                report(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "blank"))
                 fallBack(rawText, takePreferences, PolishReason.CALL_FAILED)
                 return
             }
@@ -330,14 +342,14 @@ internal class TakePolishController(
         // session still fails open to the deterministic text.
         override fun onResult(text: String?, engine: String?, latencyMs: Long) {
             if (claim(requestId)) {
-                defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_result"))
+                report(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_result"))
                 fallBack(rawText, takePreferences, PolishReason.CALL_FAILED)
             }
         }
 
         override fun onError(message: String?) {
             if (claim(requestId)) {
-                defectSink(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_error"))
+                report(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_error"))
                 fallBack(rawText, takePreferences, PolishReason.CALL_FAILED)
             }
         }
@@ -351,7 +363,7 @@ internal class TakePolishController(
 
     /** One polish-failure defect per take, raised when the failure is observed, never again at publication. */
     private fun reportFailure(defect: AppDefect) {
-        if (failureReported.compareAndSet(false, true)) defectSink(defect, mapOf("take_id" to takeId))
+        if (failureReported.compareAndSet(false, true)) report(defect, mapOf("take_id" to takeId))
     }
 
     /**
@@ -413,8 +425,9 @@ internal class TakePolishController(
     }
 
     /**
-     * Runs one preparation step; a thrown `Exception` becomes null and one preparation defect per take. An
-     * `Error` is never caught. Runs outside [lock].
+     * Runs one preparation step; a thrown `Exception` becomes null and one preparation defect per take. This
+     * guard never catches an `Error` (the cancel paths' `runCatching` predates #252 and is out of its scope).
+     * Runs outside [lock].
      */
     private fun <T> guarded(step: String, block: () -> T): T? = try {
         block()
@@ -424,14 +437,10 @@ internal class TakePolishController(
         null
     }
 
-    /** One preparation defect per take; a sink that throws is logged and never blocks the hand-back (#252). */
+    /** One preparation defect per take (#252), through [report]. */
     private fun reportPreparationFailure(step: String) {
         if (!preparationFailureReported.compareAndSet(false, true)) return
-        try {
-            defectSink(AppDefect.PolishPreparationFailed, mapOf("take_id" to takeId, "step" to step))
-        } catch (error: Exception) {
-            log.warn("Polish preparation defect not reported: ${error.javaClass.simpleName}")
-        }
+        report(AppDefect.PolishPreparationFailed, mapOf("take_id" to takeId, "step" to step))
     }
 
     companion object {

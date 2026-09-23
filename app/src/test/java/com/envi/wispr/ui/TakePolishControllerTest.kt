@@ -401,9 +401,9 @@ class TakePolishControllerTest {
 
     /** Row 1b: the cleanup throws; the restored words land. MUTATION: remove the cleanup step's catch. */
     @Test fun aFailedCleanupHandsBackTheRestoredWords() {
-        val c = newController(restore = restoreThrowingOn(0), cleanup = { _, _, _ -> throw IllegalStateException("detector broke") })
+        val c = newController(restore = { text, _ -> "restored $text" }, cleanup = { _, _, _ -> throw IllegalStateException("detector broke") })
         c.claimSpeechLossFallback("hello world")
-        assertEquals("hello world", awaitHandedBack().text)
+        assertEquals("the restored words, not the raw ones", "restored hello world", awaitHandedBack().text)
         assertEquals(listOf(TakePolishController.STEP_CLEANUP), preparationSteps())
     }
 
@@ -435,11 +435,23 @@ class TakePolishControllerTest {
         assertEquals(listOf(TakePolishController.STEP_RESTORE_RAW), preparationSteps())
     }
 
-    /** Row 4: a defect sink that throws never stops the words. MUTATION: call the sink without its catch. */
+    /**
+     * Row 4: a defect sink that throws never stops the words, on the preparation defect and on a polish death's
+     * defect. MUTATION: call the sink directly in `report`.
+     */
     @Test fun aThrowingDefectSinkNeverStopsTheWords() {
         val c = newController(restore = restoreThrowingOn(1), defectSink = { _, _ -> throw IllegalStateException("sink broke") })
         c.claimSpeechLossFallback("hello world")
         assertEquals("hello world", awaitHandedBack().text)
         assertEquals(1, prepared.size)
+    }
+
+    /** Row 4b: a polish death whose defect report throws still hands the fallback back. MUTATION: as row 4. */
+    @Test fun aThrowingSinkOnAPolishDeathNeverStopsTheWords() {
+        val c = newController(defectSink = { _, _ -> throw IllegalStateException("sink broke") })
+        c.prepare("hello world", preferences)
+        link.awaitRequest()
+        c.disconnected()
+        assertEquals(PolishReason.SERVICE_DIED, (awaitHandedBack() as PreparedText.Fallback).reason)
     }
 }

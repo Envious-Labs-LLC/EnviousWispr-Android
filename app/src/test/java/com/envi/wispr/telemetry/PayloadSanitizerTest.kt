@@ -70,55 +70,40 @@ class PayloadSanitizerTest {
 
     @Test
     fun keyShapedStringsAreRedactedInFreeText() {
-        assertEquals("[REDACTED]", PayloadSanitizer.sanitizeFreeText("token sk-abcdefghijklmnopqrstuvwxyz1234"))
-        assertEquals("[REDACTED]", PayloadSanitizer.sanitizeFreeText("phc_abcdefghijklmnopqrstuvwxyz"))
-        assertEquals("[REDACTED]", PayloadSanitizer.sanitizeFreeText("AIzaSyAbcdefghijklmnopqrstuvwxyz0123456"))
+        assertEquals("[REDACTED]", PayloadSanitizer.redactPatterns("token sk-abcdefghijklmnopqrstuvwxyz1234"))
+        assertEquals("[REDACTED]", PayloadSanitizer.redactPatterns("phc_abcdefghijklmnopqrstuvwxyz"))
+        assertEquals("[REDACTED]", PayloadSanitizer.redactPatterns("AIzaSyAbcdefghijklmnopqrstuvwxyz0123456"))
     }
 
     @Test
-    fun aLongHexRunIsRedactedInFreeText() {
-        assertEquals("[REDACTED]", PayloadSanitizer.sanitizeFreeText("id 0123456789abcdef0123456789abcdef"))
-        assertEquals("id 0123456789abcdef", PayloadSanitizer.sanitizeFreeText("id 0123456789abcdef"))
+    fun aLongHexRunIsRedactedByThePatternPass() {
+        assertEquals("[REDACTED]", PayloadSanitizer.redactPatterns("id 0123456789abcdef0123456789abcdef"))
+        assertEquals("id 0123456789abcdef", PayloadSanitizer.redactPatterns("id 0123456789abcdef"))
     }
 
     @Test
-    fun anEmailIsRedactedInFreeText() {
-        assertEquals("[REDACTED]", PayloadSanitizer.sanitizeFreeText("mail saurabh@example.com now"))
+    fun anEmailIsRedactedByThePatternPass() {
+        assertEquals("[REDACTED]", PayloadSanitizer.redactPatterns("mail saurabh@example.com now"))
     }
 
     @Test
     fun androidPrivateAndSharedStoragePathsAreScrubbedInPlace() {
-        assertEquals("open [PATH] failed", PayloadSanitizer.sanitizeFreeText("open /data/user/0/com.envi.wispr/files/x.pcm failed"))
-        assertEquals("open [PATH] failed", PayloadSanitizer.sanitizeFreeText("open /data/data/com.envi.wispr/cache/y failed"))
-        assertEquals("read [PATH]", PayloadSanitizer.sanitizeFreeText("read /storage/emulated/0/Download/notes.txt"))
-        assertEquals("read [PATH]", PayloadSanitizer.sanitizeFreeText("read /sdcard/EnviousWispr/debug.log"))
+        assertEquals("open [PATH] failed", PayloadSanitizer.redactPatterns("open /data/user/0/com.envi.wispr/files/x.pcm failed"))
+        assertEquals("open [PATH] failed", PayloadSanitizer.redactPatterns("open /data/data/com.envi.wispr/cache/y failed"))
+        assertEquals("read [PATH]", PayloadSanitizer.redactPatterns("read /storage/emulated/0/Download/notes.txt"))
+        assertEquals("read [PATH]", PayloadSanitizer.redactPatterns("read /sdcard/EnviousWispr/debug.log"))
     }
 
     @Test
     fun aContentUriIsScrubbedInPlace() {
-        assertEquals("uri [PATH]", PayloadSanitizer.sanitizeFreeText("uri content://com.android.providers.media.documents/document/image%3A1234"))
+        assertEquals("uri [PATH]", PayloadSanitizer.redactPatterns("uri content://com.android.providers.media.documents/document/image%3A1234"))
     }
 
     @Test
-    fun aUrlWithCredentialsQueryOrFragmentIsRedactedAndABareUrlPasses() {
-        assertEquals("[REDACTED]", PayloadSanitizer.sanitizeFreeText("https://user:pw@host.example/path"))
-        assertEquals("[REDACTED]", PayloadSanitizer.sanitizeFreeText("https://host.example/path?token=abc"))
-        assertEquals("[REDACTED]", PayloadSanitizer.sanitizeFreeText("https://host.example/path#secret"))
-        assertEquals("https://models.enviouslabs.co/parakeet", PayloadSanitizer.sanitizeFreeText("https://models.enviouslabs.co/parakeet"))
-    }
-
-    @Test
-    fun freeTextOverTheCeilingIsRedactedWhole() {
-        assertEquals("[REDACTED]", PayloadSanitizer.sanitizeFreeText("z".repeat(101)))
-        assertEquals("z".repeat(100), PayloadSanitizer.sanitizeFreeText("z".repeat(100)))
-    }
-
-    @Test
-    fun nestedMapsAndListsAreWalked() {
-        val out = PayloadSanitizer.sanitizeFreeMap(
-            mapOf("a" to mapOf("b" to "mail x@y.io"), "c" to listOf("/sdcard/z", 5)),
-        )
-        assertEquals(mapOf("a" to mapOf("b" to "[REDACTED]"), "c" to listOf("[PATH]", 5)), out)
+    fun aUrlWithCredentialsQueryOrFragmentIsRedacted() {
+        assertEquals("[REDACTED]", PayloadSanitizer.redactPatterns("https://user:pw@host.example/path"))
+        assertEquals("[REDACTED]", PayloadSanitizer.redactPatterns("https://host.example/path?token=abc"))
+        assertEquals("[REDACTED]", PayloadSanitizer.redactPatterns("https://host.example/path#secret"))
     }
 
     @Test

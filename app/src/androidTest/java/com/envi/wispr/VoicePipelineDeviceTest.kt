@@ -1,5 +1,6 @@
 package com.envi.wispr
 
+import android.app.ActivityManager
 import android.app.NotificationManager
 import android.app.UiAutomation
 import android.content.BroadcastReceiver
@@ -34,7 +35,9 @@ import com.envi.wispr.polish.PolishOutcome
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.polish.PolishService
+import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.shortcuts.DictationNotificationController
+import com.envi.wispr.ui.DictationSessionService
 import com.envi.wispr.vocabulary.BuiltinVocabulary
 import com.envi.wispr.vocabulary.CustomTermRecord
 import com.envi.wispr.vocabulary.CustomTermRepository
@@ -60,7 +63,8 @@ import org.junit.runner.RunWith
  * words did not reach the field they were typing in, or reached it twice), [aTakeStartedInAAndFocusMovedToBInsertsNowhereAndKeepsTheWordsOnTheClipboard]
  * (the words reached a field the user had left, or the wrong field), [aDictationWithNoFieldToInsertIntoIsNotReportedToTheUserAsAFailure]
  * (an ordinary tile dictation is reported as broken), and [transcribesThenPolishesWithSavedCustomWords]
- * (the polish limb drops the user's own spellings).
+ * (the polish limb drops the user's own spellings), and [aSilenceStoppedTakeLandsInTheFocusedEditorExactlyOnce]
+ * (with stop-on-silence on, a take the user simply stops talking in never ends, or its words do not land).
  *
  * Every wait here is on a signal the SUBJECT fires, never elapsed time: the session owner's phase writes
  * (`DictationSurfaceState`, read through an `OnSharedPreferenceChangeListener`), the History row the
@@ -216,6 +220,61 @@ class VoicePipelineDeviceTest {
     }
 
     /**
+     * Stop-on-silence, end to end (#239, REF-06): the setting on, the audio in, NO stop sent. The take must end
+     * by itself, and the capture process's own ending line must name silence; the words must land in the
+     * focused editor exactly once by the commit route. A take silence never ends fails "silence did not end
+     * this take" and is ended by the row's cleanup. Replaces `SilenceStopEndToEndDeviceTest`, which slept and
+     * asserted nothing.
+     * REVERT: start capture with auto-stop off (`CaptureSessionController`, `preferences.autoStopOnSilence`
+     * to `false`); the row fails by that name. Or send the manual stop: the cause assertion fails.
+     */
+    @Test
+    fun aSilenceStoppedTakeLandsInTheFocusedEditorExactlyOnce() {
+        val expected = expectedFinal()
+        val preferences = AppPreferences(context)
+        val saved = runBlocking { preferences.authoritativeState.first().autoStopOnSilenceEnabled }
+        try {
+            // The owner reads its settings when its Service is created, and a Service is built per take; so the
+            // write below reaches the take only if no session Service is alive to have read them already.
+            awaitNoSessionService()
+            runBlocking { preferences.setAutoStopOnSilenceEnabled(true) }
+            val run = SideButtonRun()
+            startRig(twoFields = false)
+            run.recordOneTake(stage = {}, stopByUser = false)
+            run.ownTheVerdict {
+                val row = run.awaitFinalRow("silence did not end this take")
+                val endings = run.captureEndings()
+                assertEquals("one capture ending for this take: $endings", 1, endings.size)
+                assertTrue("the take ended, but the capture process never logged a silence ending: $endings", endings.single().contains("Stopped by silence."))
+                val text = receipt(PasteTargetActivity.RECEIPT_NAME)
+                assertEquals("the editor's whole text is the literal expectation", expected, text)
+                assertEquals("the words appear exactly once", 1, occurrences(text, expected.trim()))
+                assertEquals("the owner recorded the commit route", InsertionResults.COMMITTED, row.insertionResult)
+                DebugLogger.log("VoicePipelineDeviceTest", "silenceStoppedTake chars=${text.length} result=${row.insertionResult}")
+            }
+        } finally {
+            runBlocking { preferences.setAutoStopOnSilenceEnabled(saved) }
+        }
+    }
+
+    /**
+     * No session Service is alive: the previous take's owner publishes IDLE before it stops its Service, so
+     * IDLE alone is not enough. A bounded wait on harness scaffolding (the platform's own service list), named
+     * as staging when it fails.
+     */
+    private fun awaitNoSessionService() {
+        val manager = context.getSystemService(ActivityManager::class.java)
+        val name = DictationSessionService::class.java.name
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline) {
+            @Suppress("DEPRECATION") // Still answers for the caller's own services.
+            if (manager.getRunningServices(Int.MAX_VALUE).none { it.service.className == name }) return
+            Thread.sleep(100)
+        }
+        throw AssertionError("a session Service from an earlier take is still running after 15 s (staging)")
+    }
+
+    /**
      * REF-01's two-editor case, asserting the product's FAIL-SAFE (`architecture-rules.md` RULE:
      * insertion-fails-safe-never-silently): the take is pinned to editor A at its start; when B holds
      * focus at insertion time the words go into NEITHER editor and stay on the clipboard, the paste
@@ -345,6 +404,8 @@ class VoicePipelineDeviceTest {
         private val listening = CountDownLatch(1)
         private val idle = CountDownLatch(1)
         private val stopRequested = AtomicBoolean(false)
+        /** A take this run started and has not handed to a stop or a verdict yet; ended by [endTheTake] on failure. */
+        private var takeStarted = false
         private val surfaceState = context.getSharedPreferences(SURFACE_STATE_PREFERENCES, Context.MODE_PRIVATE)
         private val phaseListener = SharedPreferences.OnSharedPreferenceChangeListener { store, key ->
             if (key != SURFACE_STATE_PHASE) return@OnSharedPreferenceChangeListener
@@ -356,11 +417,14 @@ class VoicePipelineDeviceTest {
 
         fun phaseNow(): String? = surfaceState.getString(SURFACE_STATE_PHASE, null)
 
-        fun recordOneTake(stage: () -> Unit) {
+        /**
+         * [stopByUser] false (#239): no stop is sent; the take must end by itself, and the take stays this run's
+         * to end through the verdict ([ownTheVerdict]).
+         */
+        fun recordOneTake(stage: () -> Unit, stopByUser: Boolean = true) {
             surfaceState.registerOnSharedPreferenceChangeListener(phaseListener)
             val audio = audioForThisRun()
-            var takeStarted = false
-            var stopSent = false
+            var handedOff = false
             try {
                 audio.prepare()
                 // Instrumentation restarts the app's process, which kills the accessibility service; the
@@ -372,21 +436,28 @@ class VoicePipelineDeviceTest {
                         "enable_auto_paste() in the harness rebinds it)",
                     bound == true,
                 )
+                takeStarted = true
                 context.startActivity(
                     Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
-                takeStarted = true
                 assertTrue("The recorder never reported LISTENING; phase was ${phaseNow()}", listening.await(20, TimeUnit.SECONDS))
                 stage()
-                audio.deliver()
-                stopRequested.set(true)
-                context.startActivity(
-                    Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
-                        .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_STOP, true)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                )
-                stopSent = true
+                if (stopByUser) {
+                    audio.deliver()
+                    stopRequested.set(true)
+                    context.startActivity(
+                        Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
+                            .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_STOP, true)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                    )
+                    takeStarted = false
+                } else {
+                    // IDLE must count BEFORE the audio ends: the take may end itself as soon as it goes quiet.
+                    stopRequested.set(true)
+                    audio.deliver()
+                }
+                handedOff = true
             } catch (failure: Throwable) {
                 // A TAKE THIS TEST STARTED IS THIS TEST'S TO END. A failure between the start and the stop
                 // (LISTENING never came, the staging refused, the audio never arrived) would otherwise leave
@@ -396,31 +467,74 @@ class VoicePipelineDeviceTest {
                 // before it asks the capture process to stop (code review round 2): IDLE alone does not
                 // prove the microphone closed. A cleanup that could not prove it is attached to the
                 // original failure, never swallowed.
-                if (takeStarted && !stopSent) {
-                    stopRequested.set(true)
-                    val cancelledAtMs = System.currentTimeMillis()
-                    context.startActivity(
-                        Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
-                            .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_CANCEL, true)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                    )
-                    val idleSeen = idle.await(30, TimeUnit.SECONDS)
-                    val closed = captureClosedAfter(cancelledAtMs, 15_000)
-                    if (!idleSeen || !closed) {
-                        failure.addSuppressed(
-                            AssertionError(
-                                "cleanup after the failure could not prove the take ended: idle=$idleSeen " +
-                                    "captureClosed=$closed; the microphone may still be open on the device",
-                            ),
-                        )
-                    }
-                }
+                endTheTake(failure)
                 throw failure
             } finally {
                 audio.close()
-                if (!stopSent) surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
+                if (!handedOff) surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
                 // On success the listener stays registered until awaitIdle/awaitFinalRow release it.
             }
+        }
+
+        /**
+         * Runs a no-stop take's verdict; a failure there (the take never ended, or ended wrong) ends the take
+         * first, so the microphone is never left open behind a red row (#239).
+         */
+        fun ownTheVerdict(verdict: () -> Unit) {
+            try {
+                verdict()
+                takeStarted = false
+            } catch (failure: Throwable) {
+                endTheTake(failure)
+                throw failure
+            } finally {
+                surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
+            }
+        }
+
+        /**
+         * A TAKE THIS TEST STARTED IS THIS TEST'S TO END. A failure while it may still be live (LISTENING never
+         * came, the staging refused, the audio never arrived, silence never ended it) would otherwise leave the
+         * microphone open on the device with nothing recording that it was: this take did not go through the
+         * harness's journal (code review round 1). Cancel, then require BOTH the owner's IDLE and the capture
+         * process's own close line, because the owner publishes IDLE before it asks the capture process to stop
+         * (code review round 2): IDLE alone does not prove the microphone closed. A cleanup that could not prove
+         * it is attached to the original failure, never swallowed. The close line counts from the cancel, unless
+         * this run's IDLE came before it: a take that ended itself closed the microphone then, so from its start.
+         */
+        private fun endTheTake(failure: Throwable) {
+            if (!takeStarted) return
+            takeStarted = false
+            stopRequested.set(true)
+            val endedBeforeCancel = idle.count == 0L
+            val cancelledAtMs = System.currentTimeMillis()
+            context.startActivity(
+                Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
+                    .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_CANCEL, true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            )
+            val idleSeen = idle.await(30, TimeUnit.SECONDS)
+            val closed = captureClosedAfter(if (endedBeforeCancel) startedAtMs else cancelledAtMs, 15_000)
+            if (!idleSeen || !closed) {
+                failure.addSuppressed(
+                    AssertionError(
+                        "cleanup after the failure could not prove the take ended: idle=$idleSeen " +
+                            "captureClosed=$closed; the microphone may still be open on the device",
+                    ),
+                )
+            }
+        }
+
+        /**
+         * The capture process's own ending lines (`Stopped by <cause>.`, logged before the ending is published)
+         * since this take began. Read once, after the owner's final row, as the cause; never a completion
+         * signal. The row requires exactly one, so another take's ending cannot answer for this one.
+         */
+        fun captureEndings(): List<String> {
+            val stamp = java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date(startedAtMs))
+            return shell("logcat -d -v time -t 2000 AudioCapture:I *:S").lineSequence()
+                .filter { it.length > 18 && it.contains("Stopped by ") && it.substring(0, 18) >= stamp }
+                .toList()
         }
 
         /**
@@ -449,8 +563,8 @@ class VoicePipelineDeviceTest {
             surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
         }
 
-        /** The row the owner created for THIS take and finalised; the failure names the rows seen. */
-        fun awaitFinalRow(): TranscriptEntity {
+        /** The row the owner created for THIS take and finalised; the failure names [whenMissing] and the rows seen. */
+        fun awaitFinalRow(whenMissing: String = "No History row for this take reached a final status within 90 s"): TranscriptEntity {
             val dao = EnviousWisprDatabase.get(context).transcriptDao()
             var seen: List<TranscriptEntity> = emptyList()
             val row = try {
@@ -463,10 +577,11 @@ class VoicePipelineDeviceTest {
                     }
                 }
             } finally {
-                surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
+                // A no-stop take keeps listening until its verdict: a failed verdict still needs IDLE to prove the end.
+                if (!takeStarted) surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
             }
             assertTrue(
-                "No History row for this take reached a final status within 90 s; rows since the start: " +
+                "$whenMissing; rows since the start: " +
                     seen.joinToString { "id=${it.id} status=${it.status} insertion=${it.insertionResult}" },
                 row != null,
             )

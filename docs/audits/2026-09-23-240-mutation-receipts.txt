@@ -1,0 +1,30 @@
+# #240 mutation receipts (each mutation applied alone, its named row run, the source restored)
+RED: m1 event message passes -> ordinaryProseNeverLeavesOnAnySurface
+RED: m2 tags raw -> ordinaryProseNeverLeavesOnAnySurface
+RED: m3 extras raw -> ordinaryProseNeverLeavesOnAnySurface
+RED: m4 crumb message passes -> ordinaryProseNeverLeavesOnAnySurface
+RED: m5 crumb data raw -> ordinaryProseNeverLeavesOnAnySurface
+RED: m6 contexts unchanged -> ordinaryProseNeverLeavesOnAnySurface
+RED: m7 frame function unvalidated -> ordinaryProseNeverLeavesOnAnySurface
+RED: m8 user kept -> ordinaryProseNeverLeavesOnAnySurface
+RED: m9 fingerprints kept -> ordinaryProseNeverLeavesOnAnySurface
+RED: m10 reason takes the token rule -> aSingleOrdinaryWordIsRedactedUnderEveryFiniteKey
+RED: m11 UUID loosened -> aDefectEventKeepsItsDeclaredFacts
+RED: m12 undeclared key kept -> aDeclaredBreadcrumbKeepsItsPairAndData
+RED: m13 class names lose $ -> codeLocationsSurviveForKotlinJavaAndNativeFrames
+RED: m14 device field unvalidated -> onlyApprovedTypedContextsStayWithValidatedFields
+RED: m15 unapproved context kept -> onlyApprovedTypedContextsStayWithValidatedFields
+RED: m16 a breadcrumb undeclared -> everyBreadcrumbInTheSourceIsDeclared
+RED: m17 a key undeclared -> everySentryKeyInTheSourceIsDeclared
+RED: m18 a defect undeclared -> everyDefectTypeIsDeclared
+RED: m19 an SDK field unhandled -> everyTextBearingSdkFieldHasADeclaredHandling
+RED: m20 take_id tag unvalidated -> aDefectEventKeepsItsDeclaredFacts
+RED: m21 SDK ANR fingerprints dropped -> theSdksAnrFingerprintsLeaveUnchanged
+RED: m22 any absolute path -> aPathOutsideTheCodeRootsCannotCarryWords
+RED: m24 base names need a prefix -> baseThrowableNamesAreKept
+RED: m25 live take unvalidated -> anInvalidLiveTakeIdLeavesNoTag
+RED: m26 walked field unhandled -> everyTextBearingSdkFieldHasADeclaredHandling
+RED: m27 allowed root keeps any path -> aPathOutsideTheCodeRootsCannotCarryWords
+RED: m23 demangled signatures accepted -> nativeFunctionsPassOnlyWithoutWhitespace
+RED: m28 build labels take any name -> onlyApprovedTypedContextsStayWithValidatedFields
+ALL RED

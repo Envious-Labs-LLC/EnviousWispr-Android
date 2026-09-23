@@ -78,13 +78,14 @@ class SentryPayloadTest {
         assertNull("a stale scope tag is removed once no take is live", SentryBootstrap.sanitize(stale).getTag(SentryBootstrap.TAG_TAKE_ID))
     }
 
+    /** #240: a message that is not a defect's id, and an undeclared breadcrumb, leave nothing but the marker. */
     @Test
-    fun aMessageAndABreadcrumbAreScrubbedNotRemoved() {
+    fun anUndeclaredMessageAndBreadcrumbLeaveOnlyTheMarker() {
         val event = SentryEvent().apply { message = Message().apply { formatted = "saved /sdcard/EnviousWispr/debug.log for saurabh@example.com" } }
         assertEquals("[REDACTED]", SentryBootstrap.sanitize(event).message!!.formatted)
         val crumb = Breadcrumb("open /data/data/com.envi.wispr/cache/y failed").apply { setData("path", "/sdcard/z") }
         val out = SentryBootstrap.sanitize(crumb)
-        assertEquals("open [PATH] failed", out.message)
-        assertEquals("[PATH]", out.data["path"])
+        assertEquals("[REDACTED]", out.message)
+        assertNull("an undeclared key is dropped", out.data["path"])
     }
 }

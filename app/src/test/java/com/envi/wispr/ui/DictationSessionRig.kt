@@ -579,6 +579,8 @@ internal class DictationSessionRig {
         val cancelThreads = CopyOnWriteArrayList<String>()
         /** When set, each cancel records whether its thread held this lock (#237: never). */
         @Volatile var lockToWatch: Any? = null
+        /** When set, a cancel throws after it is recorded, as a dead engine's transaction would. */
+        @Volatile var throwOnCancel = false
         val cancelHeldLock = CopyOnWriteArrayList<Boolean>()
         val warmed = CopyOnWriteArrayList<PolishPolicy>()
         private val requested = CountDownLatch(1)
@@ -609,6 +611,7 @@ internal class DictationSessionRig {
         override fun cancel(requestId: Long) {
             cancelThreads += Thread.currentThread().name
             lockToWatch?.let { cancelHeldLock += Thread.holdsLock(it) }
+            if (throwOnCancel) throw IllegalStateException("engine gone")
             cancelled += requestId
         }
         fun awaitRequest(diagnostics: () -> String = { "" }): PolishListener {

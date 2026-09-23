@@ -161,7 +161,7 @@ internal class TakePolishController(
     fun claimSpeechLossFallback(rawText: String) {
         val claimed = claimFallback() ?: return
         // A claimed request is still running on a live engine: stop it, outside the lock.
-        if (claimed != NO_REQUEST) sendCancel(claimed)
+        if (claimed != NO_REQUEST) cancelClaimed(claimed)
         fallBack(rawText, preferences(), PolishReason.SERVICE_DIED)
     }
 
@@ -201,7 +201,7 @@ internal class TakePolishController(
                     timeout.await(takePreferences.policy)
                     if (!claim(opened)) return@launch
                     log.warn("Polish watchdog fired for request $opened; cancelling on the engine")
-                    sendCancel(opened)
+                    cancelClaimed(opened)
                     fallBack(rawText, takePreferences, PolishReason.WATCHDOG_TIMEOUT)
                 }
                 opened
@@ -257,6 +257,14 @@ internal class TakePolishController(
     fun sendCancel(requestId: Long) {
         runCatching { link()?.cancel(requestId) }
             .onFailure { error -> log.warn("Unable to cancel polish request $requestId: ${error.javaClass.simpleName}") }
+    }
+
+    /**
+     * Cancels a request this controller already claimed (a speech drop, the watchdog). Quiet on failure, as
+     * before the move: the take's own line already says why it is cancelling. Never called with [lock] held.
+     */
+    private fun cancelClaimed(requestId: Long) {
+        runCatching { link()?.cancel(requestId) }
     }
 
     /**

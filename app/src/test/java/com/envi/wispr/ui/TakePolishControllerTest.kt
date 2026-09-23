@@ -77,6 +77,7 @@ class TakePolishControllerTest {
         val cancels = CopyOnWriteArrayList<Long>()
         val cancelUnderLock = CopyOnWriteArrayList<Boolean>()
         @Volatile var cancelled = CountDownLatch(1)
+        @Volatile var throwOnCancel = false
         override fun warmUpWithPolicy(policy: PolishPolicy) = Unit
         override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
             this.requestId = requestId
@@ -88,6 +89,7 @@ class TakePolishControllerTest {
             cancelUnderLock += Thread.holdsLock(lock)
             cancels += requestId
             cancelled.countDown()
+            if (throwOnCancel) throw IllegalStateException("engine gone")
         }
         fun awaitRequest(): PolishListener {
             assertTrue("the controller never sent the request", requested.await(10, TimeUnit.SECONDS))
@@ -268,6 +270,71 @@ class TakePolishControllerTest {
         awaitHandedBack()
         assertTrue("the watchdog cancelled", link.cancelled.await(10, TimeUnit.SECONDS))
         assertEquals(listOf(false), link.cancelUnderLock.toList())
+    }
+
+    /**
+     * Row i. A claimed request's cancel that fails is quiet, as before the move: the watchdog's own line says
+     * why it cancelled. MUTATION: cancel through `sendCancel` in the watchdog (a failure warning appears).
+     */
+    @Test fun theWatchdogsFailedCancelIsQuiet() {
+        link.throwOnCancel = true
+        controller.prepare("hello world", preferences)
+        link.awaitRequest()
+        timeout.fire()
+        awaitHandedBack()
+        assertTrue("the watchdog cancelled", link.cancelled.await(10, TimeUnit.SECONDS))
+        awaitControllerIdle()
+        assertTrue(log.lines.any { it.contains("Polish watchdog fired") })
+        assertTrue("no failure warning: ${log.lines}", log.lines.none { it.contains("Unable to cancel polish request") })
+    }
+
+    /**
+     * Row i2 (the owner). A speech drop's failed cancel of the claimed request is quiet too. MUTATION: cancel
+     * through `sendCancel` in `claimSpeechLossFallback`.
+     */
+    @Test fun theSpeechDropsFailedCancelIsQuiet() {
+        val rig = DictationSessionRig()
+        try {
+            rig.polish.throwOnCancel = true
+            val coordinator = rig.coordinator()
+            coordinator.onCreated()
+            rig.command(coordinator, DictationSessionService.ACTION_START)
+            rig.surface.awaitShown()
+            rig.command(coordinator, DictationSessionService.ACTION_STOP)
+            rig.speech.awaitRequest().onResult("hello there")
+            rig.polish.awaitRequest()
+            rig.pipeline.disconnect("speech")
+            assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+            rig.host.awaitStopped()
+            assertTrue("the claimed request was cancelled", rig.polish.cancelThreads.contains(rig.mainThread.name))
+            assertTrue("no failure warning: ${rig.log.lines}", rig.log.lines.none { it.contains("Unable to cancel polish request") })
+        } finally {
+            rig.close()
+        }
+    }
+
+    /**
+     * Row g3 (the owner). An owner admits exactly one take, by behaviour: after its take ended, a new start is
+     * not admitted (no second pin). MUTATION: return to IDLE in `finishSession`.
+     */
+    @Test fun anOwnerNeverAdmitsASecondTake() {
+        val rig = DictationSessionRig()
+        try {
+            val coordinator = rig.coordinator()
+            coordinator.onCreated()
+            rig.command(coordinator, DictationSessionService.ACTION_START)
+            rig.surface.awaitShown()
+            rig.command(coordinator, DictationSessionService.ACTION_STOP)
+            rig.speech.awaitRequest().onResult("hello there")
+            rig.polish.awaitRequest().onOutcome(rig.polish.outcome("Hello there."))
+            assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+            rig.host.awaitStopped()
+            val pins = rig.insertion.pins.get()
+            rig.command(coordinator, DictationSessionService.ACTION_START)
+            assertEquals("no second take on this owner", pins, rig.insertion.pins.get())
+        } finally {
+            rig.close()
+        }
     }
 
     /**

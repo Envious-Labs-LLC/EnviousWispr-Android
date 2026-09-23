@@ -340,9 +340,15 @@ class SentrySchemaTest {
             else -> emptyList()
         }
         val contextTypes = Contexts::class.java.methods
-            .filter { it.name.startsWith("get") && it.parameterCount == 0 && it.returnType.name.startsWith("io.sentry.protocol") }
+            .filter { it.name.startsWith("get") && it.parameterCount == 0 && it.returnType.name.startsWith("io.sentry") }
             .map { it.returnType }.distinct()
         assertTrue("the Contexts accessors were found", contextTypes.size >= 8)
+        // Every discovered context type is either approved (walked below) or removed whole by the seam.
+        val removed = contextTypes.mapNotNull { type -> runCatching { type.getField("TYPE").get(null) as String }.getOrNull() }
+            .filter { it !in SentryBootstrap.APPROVED_CONTEXTS }
+        assertTrue("the trace and profile contexts are discovered and not approved", removed.containsAll(listOf("trace", "profile")))
+        val sanitized = SentryBootstrap.sanitize(SentryEvent().apply { removed.forEach { contexts.put(it, mapOf("k" to "v")) } }).contexts
+        removed.forEach { key -> assertNull("the $key context is removed", sanitized.get(key)) }
         val approved = contextTypes.filter { type ->
             val key = runCatching { type.getField("TYPE").get(null) as String }.getOrNull()
             key != null && key in SentryBootstrap.APPROVED_CONTEXTS
@@ -373,17 +379,47 @@ class SentrySchemaTest {
     /** Row 8 (review round 1): a path outside the code roots keeps only a source file name. MUTATION: accept any absolute path. */
     @Test fun aPathOutsideTheCodeRootsCannotCarryWords() {
         assertEquals("[REDACTED]", SentrySchema.path("/mnt/Meet-me-at-six"))
+        assertEquals("an allowed root keeps a full path only for a code or library file", "[REDACTED]", SentrySchema.path("/system/Meet-me-at-six"))
         assertEquals("Coordinator.kt", SentrySchema.path("/home/build/src/Coordinator.kt"))
         assertEquals("/system/lib64/libc.so", SentrySchema.path("/system/lib64/libc.so"))
         assertEquals("[PATH]", SentrySchema.path("/data/user/0/com.envi.wispr/files/x.kt"))
     }
 
-    /** Row 9 (review round 1): template and plain C signatures pass; prose with parentheses does not. MUTATION: drop the template comma. */
+    /**
+     * Row 9 (review rounds 1 and 2): demangled C++ signatures, templated ones included, and bare C names pass;
+     * prose with parentheses does not. MUTATION: allow a space in the name that does not follow a comma.
+     */
     @Test fun nativeSignaturesPassAndProseInParenthesesDoesNot() {
         val template = "std::vector<int, std::allocator<int>>::push_back(int const&)"
         assertEquals(template, SentrySchema.function(template))
-        assertEquals("load(int)", SentrySchema.function("load(int)"))
+        assertEquals("geniex::load(unsigned long, char const*)", SentrySchema.function("geniex::load(unsigned long, char const*)"))
+        assertEquals("load", SentrySchema.function("load"))
         assertEquals("[REDACTED]", SentrySchema.function("meet me at six(tonight)"))
+        assertEquals("[REDACTED]", SentrySchema.function("meet(me at six)"))
+        assertEquals("[REDACTED]", SentrySchema.function("std::meet me(int)"))
+    }
+
+    /**
+     * Row 12, the class row (review round 2): no validator admits whitespace-separated prose, in any shape a
+     * sentence can take. MUTATION: let a C++ parameter name more than one type.
+     */
+    @Test fun noValidatorAdmitsProse() {
+        val prose = listOf(
+            "Meet me at six", "meet(me at six)", "std::x(me at six)", "std::x<a b>(int)", "/system/Meet me.so",
+            "Meet me.kt", "Meet me at six.", "Meet, me at six",
+        )
+        val validators: Map<String, (String) -> String> = mapOf(
+            "exceptionType" to SentrySchema::exceptionType, "module" to SentrySchema::module,
+            "function" to SentrySchema::function, "fileName" to SentrySchema::fileName, "path" to SentrySchema::path,
+            "identifier" to SentrySchema::identifier, "contextLabel" to SentrySchema::contextLabel,
+            "eventMessage" to SentrySchema::eventMessage,
+        )
+        for ((name, validate) in validators) for (text in prose) {
+            assertEquals("$name admitted '$text'", "[REDACTED]", validate(text))
+        }
+        for (key in SentrySchema.keys.keys) for (text in prose) {
+            assertFalse("key $key admitted '$text'", SentrySchema.judge(key, text) is SentrySchema.Verdict.Keep)
+        }
     }
 
     /** Row 10 (review round 1): the base Throwable names are error types. MUTATION: require a prefix again. */

@@ -36,7 +36,9 @@ class DeterministicFallbackTest {
      */
     @Test fun sessionOwnerUsesTheSharedDeterministicFallback() {
         val source = java.io.File("src/main/java/com/envi/wispr/ui/TakePolishController.kt").readText()
-        assertTrue(source.contains("PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)"))
+        // Since #252 the call goes through the controller's `cleanup` seam, whose default IS the shared fallback.
+        assertTrue(source.contains("private val cleanup: (String, CleanupOptions, LanguageDetector) -> String = PolishFallback::deterministic,"))
+        assertTrue(source.contains("cleanup(prepared, takePreferences.cleanup, languageDetector)"))
         // Every file of the session owner (#216): a regex polisher in a collaborator is the same drift.
         assertFalse(SessionSources.all.contains("RegexPolisher"))
     }
@@ -84,7 +86,7 @@ class DeterministicFallbackTest {
         val terminals = listOf(
             Triple(
                 "src/main/java/com/envi/wispr/ui/TakePolishController.kt",
-                "PolishFallback.deterministic(prepared, takePreferences.cleanup, languageDetector)",
+                "cleanup(prepared, takePreferences.cleanup, languageDetector)",
                 "src/main/java/com/envi/wispr/ui/DictationSessionService.kt",
             ),
             Triple(

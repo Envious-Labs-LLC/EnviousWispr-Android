@@ -299,7 +299,8 @@ class SentrySchemaTest {
 
     /** Row 3b: every key a telemetry call sends to Sentry is declared. MUTATION: remove one declared key. */
     @Test fun everySentryKeyInTheSourceIsDeclared() {
-        val maps = calls(Regex("(?<![A-Za-z_])(Telemetry\\.defect|defectSink|(Telemetry\\.)?breadcrumb)\\("))
+        // #252: the owner and the take's polish controller report defects through their guarded wrappers.
+        val maps = calls(Regex("(?<![A-Za-z_])(Telemetry\\.defect|defectSink|reportDefect|report|(Telemetry\\.)?breadcrumb)\\("))
         val literalKeys = maps.flatMap { (path, args) -> Regex("\"([A-Za-z0-9_.]+)\"\\s+to\\b").findAll(args).map { path to it.groupValues[1] }.toList() }
         val setCalls = calls(Regex("\\.(setTag|setExtra)\\(")).mapNotNull { (path, args) ->
             Regex("\\A\\s*\"([A-Za-z0-9_.]+)\"").find(args)?.let { path to it.groupValues[1] }
@@ -453,5 +454,14 @@ class SentrySchemaTest {
         } finally {
             Telemetry.takeEnded("not-a-take")
         }
+    }
+
+    /** #252: the preparation step key keeps exactly its four tokens. MUTATION: widen `step` to any token. */
+    @Test fun thePreparationStepKeyKeepsExactlyItsFourSteps() {
+        for (step in listOf("restore_raw", "cleanup", "restore_cleaned", "restore_answer")) {
+            assertEquals(SentrySchema.Verdict.Keep(step), SentrySchema.judge("step", step))
+        }
+        assertEquals(SentrySchema.Verdict.Redact, SentrySchema.judge("step", "restore_everything"))
+        assertEquals(4, (SentrySchema.keys.getValue("step") as SentrySchema.Shape.OneOf).values.size)
     }
 }

@@ -75,7 +75,7 @@ internal object SentrySchema {
         AppDefect.AsrOverLimit, AppDefect.CleanupRecovered, AppDefect.LocalPolishFailed, AppDefect.PolishUnexpected,
         AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishServiceDied,
         AppDefect.PolishCallFailed, AppDefect.HistorySaveTimedOut, is AppDefect.HistoryContractViolation,
-        AppDefect.DebugProbe,
+        AppDefect.PolishPreparationFailed, AppDefect.DebugProbe,
         -> defect.semanticId
     }
 
@@ -86,7 +86,7 @@ internal object SentrySchema {
         AppDefect.AsrOverLimit, AppDefect.CleanupRecovered, AppDefect.LocalPolishFailed, AppDefect.PolishUnexpected,
         AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishServiceDied,
         AppDefect.PolishCallFailed, AppDefect.HistorySaveTimedOut, AppDefect.HistoryContractViolation(null),
-        AppDefect.DebugProbe,
+        AppDefect.PolishPreparationFailed, AppDefect.DebugProbe,
     )
 
     /** The event messages a defect may carry: its semantic id and nothing else. */
@@ -156,6 +156,8 @@ internal object SentrySchema {
         "source_host" to Shape.OneOf(ModelSourceHost.entries.map { it.wire }.toSet()),
         "shape" to Shape.OneOf(setOf("null", "mismatched", "blank", "v1_result", "v1_error")),
         "count" to Shape.Number,
+        // The owner's polish preparation step that threw (#252).
+        "step" to Shape.OneOf(com.envi.wispr.ui.TakePolishController.PREPARATION_STEPS),
         // A pending defect's detail: the capture release note or a VAD call name.
         "detail" to Shape.OneOf(setOf("capture_release", "start", "processBlock", "finish")),
     )

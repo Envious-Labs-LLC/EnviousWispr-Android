@@ -47,6 +47,8 @@ class WarmUpOffMainTest {
         coordinator.onCreated()
         rig.command(coordinator, DictationSessionService.ACTION_START)
         rig.surface.awaitShown()
+        // The first connect's warm-up has returned, so no late line from it can answer the reconnect's wait.
+        assertTrue("the first warm-up returned", rig.polish.warmUpCompleted.await(10, TimeUnit.SECONDS))
         rig.command(coordinator, DictationSessionService.ACTION_STOP)
         rig.speech.awaitRequest().onResult("hello world")
         val polish = rig.polish

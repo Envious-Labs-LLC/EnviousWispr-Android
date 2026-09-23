@@ -583,6 +583,8 @@ internal class DictationSessionRig {
         @Volatile var holdWarmUp: CountDownLatch? = null
         /** Counted down when a warm-up call has been entered. */
         val warmUpEntered = CountDownLatch(1)
+        /** Counted down when a warm-up call has returned. */
+        val warmUpCompleted = CountDownLatch(1)
         /** The thread each warm-up ran on (#236: never the rig's main thread). */
         val warmUpThreads = CopyOnWriteArrayList<String>()
         override fun warmUpWithPolicy(policy: PolishPolicy) {
@@ -590,6 +592,7 @@ internal class DictationSessionRig {
             warmUpEntered.countDown()
             holdWarmUp?.await(10, TimeUnit.SECONDS)
             warmed += policy
+            warmUpCompleted.countDown()
         }
         override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
             if (throwOnRequest) throw IllegalStateException("engine gone")

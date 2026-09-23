@@ -124,6 +124,8 @@ internal class DictationSessionRig {
         languageDetector: LanguageDetector = LanguageDetector { null },
         /** Runs each captured-audio delete at once by default; the #253 row holds it past a teardown. */
         audioCleanup: (Runnable) -> Unit = { it.run() },
+        /** No journal by default, as before; the #258 rows pass an admission they complete themselves. */
+        admit: (String, TriggerSource) -> kotlinx.coroutines.Deferred<Boolean>? = { _, _ -> null },
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
@@ -146,6 +148,7 @@ internal class DictationSessionRig {
         endingSink = endings::record,
         defectSink = { defect, data -> if (throwOnDefect) throw IllegalStateException("sink broke"); defects += defect.fingerprint to data },
         audioCleanup = audioCleanup,
+        admitTake = admit,
     )
 
     /** When set, the owner's defect sink throws (#252: a broken report must never stop the words). */
@@ -287,7 +290,9 @@ internal class DictationSessionRig {
             }
         }
         override fun onMainThread(): Boolean = Thread.currentThread() === mainThread
-        override fun elapsedRealtimeMs(): Long = System.nanoTime() / 1_000_000L
+        /** When set, every clock read answers from it, so a row can script time without a real clock (#258). */
+        @Volatile var clock: (() -> Long)? = null
+        override fun elapsedRealtimeMs(): Long = clock?.invoke() ?: (System.nanoTime() / 1_000_000L)
 
         /**
          * The Service stopped itself, which every terminal path ends in. Then the History queue is drained:

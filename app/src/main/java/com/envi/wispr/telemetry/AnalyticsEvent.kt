@@ -75,6 +75,13 @@ internal sealed class AnalyticsEvent(val name: String) {
         val polishStatus: Int?,
         val historySave: String?,
         val settingsFallback: String?,
+        /** The pre-capture chain (#258), ms since the owner accepted the start command. */
+        val settingsAnswerMs: Long?,
+        val matcherReadyMs: Long?,
+        val policyLoadedMs: Long?,
+        val admissionObservedMs: Long?,
+        val bindRequestedMs: Long?,
+        val liveReceivedMs: Long?,
     ) : AnalyticsEvent("dictation.terminal") {
         override fun properties(): Map<String, Any?> = mapOf(
             "take_id" to takeId,
@@ -100,6 +107,12 @@ internal sealed class AnalyticsEvent(val name: String) {
             "polish_status" to polishStatus,
             "history_save" to historySave,
             "settings_fallback" to settingsFallback,
+            "settings_answer_ms" to settingsAnswerMs,
+            "matcher_ready_ms" to matcherReadyMs,
+            "policy_loaded_ms" to policyLoadedMs,
+            "admission_observed_ms" to admissionObservedMs,
+            "bind_requested_ms" to bindRequestedMs,
+            "live_received_ms" to liveReceivedMs,
         )
     }
 

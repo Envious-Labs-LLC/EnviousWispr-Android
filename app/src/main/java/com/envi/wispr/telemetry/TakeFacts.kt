@@ -48,6 +48,21 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
      */
     @Volatile var settingsFallback: String? = null
 
+    // The pre-capture chain (#258): milliseconds since the owner accepted the start command (not the physical
+    // trigger), each written once when its step completes; a step that never ran stays null.
+    /** The settings and terms readers answered (a failed read still answers). */
+    @Volatile var settingsAnswerMs: Long? = null
+    /** The vocabulary matcher finished compiling. */
+    @Volatile var matcherReadyMs: Long? = null
+    /** The polish policy was read (a failed read still returns `Off`). */
+    @Volatile var policyLoadedMs: Long? = null
+    /** The journal admission's completion was observed true; the callback can follow the database write. */
+    @Volatile var admissionObservedMs: Long? = null
+    /** The owner asked the pipeline to bind, on main, still starting. */
+    @Volatile var bindRequestedMs: Long? = null
+    /** The owner received live and won the transition to recording: an upper bound on the first frame. */
+    @Volatile var liveReceivedMs: Long? = null
+
     /** The row, built from whatever was measured by the time [reason] was committed. */
     fun terminal(reason: TerminalReason): AnalyticsEvent.DictationTerminal = AnalyticsEvent.DictationTerminal(
         takeId = takeId,
@@ -71,6 +86,12 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
         polishStatus = polishStatus,
         historySave = historySave,
         settingsFallback = settingsFallback,
+        settingsAnswerMs = settingsAnswerMs,
+        matcherReadyMs = matcherReadyMs,
+        policyLoadedMs = policyLoadedMs,
+        admissionObservedMs = admissionObservedMs,
+        bindRequestedMs = bindRequestedMs,
+        liveReceivedMs = liveReceivedMs,
     )
 
     companion object {

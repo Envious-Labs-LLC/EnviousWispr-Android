@@ -223,7 +223,8 @@ class SessionOwnerShapeTest {
         // (e) The take is fixed once built: every constructor property a `val`, no `var` anywhere.
         val parameters = context.substringAfter("class TakeContext(").substringBefore(") {")
         val declared = parameters.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        assertEquals("six properties", 6, declared.size)
+        // Seven since #258: the accepted command's clock reading, the origin of the take's pre-capture timings.
+        assertEquals("seven properties", 7, declared.size)
         declared.forEach { assertTrue("a fixed property: $it", it.startsWith("val ")) }
         assertEquals("no var in TakeContext", 0, count(context, """\bvar\b"""))
     }

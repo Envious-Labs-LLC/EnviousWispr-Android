@@ -37,6 +37,9 @@ internal object PayloadSanitizer {
         "recording_s", "input_device", "asr_ms", "asr_chars", "asr_cold_start", "peak_amplitude",
         "polish_provider", "polish_reason", "polish_ms", "polish_status", "history_save", "stage",
         "settings_fallback",
+        // #258: the pre-capture chain, ms since the owner accepted the start command.
+        "settings_answer_ms", "matcher_ready_ms", "policy_loaded_ms", "admission_observed_ms", "bind_requested_ms",
+        "live_received_ms",
         // insertion.terminal
         "handoff", "route", "target_app", "latency_ms", "clipboard_outcome", "recovered",
         // app.launched and settings

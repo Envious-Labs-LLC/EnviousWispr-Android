@@ -575,6 +575,8 @@ internal class DictationSessionRig {
         @Volatile var requestId = 0L
         @Volatile var throwOnRequest = false
         val cancelled = CopyOnWriteArrayList<Long>()
+        /** The thread each cancel arrived on, in order with [cancelled]. */
+        val cancelThreads = CopyOnWriteArrayList<String>()
         val warmed = CopyOnWriteArrayList<PolishPolicy>()
         private val requested = CountDownLatch(1)
         /** The raw text the owner handed the engine, after vocabulary restoration (#193). */
@@ -601,7 +603,10 @@ internal class DictationSessionRig {
             this.listener = listener
             requested.countDown()
         }
-        override fun cancel(requestId: Long) { cancelled += requestId }
+        override fun cancel(requestId: Long) {
+            cancelThreads += Thread.currentThread().name
+            cancelled += requestId
+        }
         fun awaitRequest(diagnostics: () -> String = { "" }): PolishListener {
             check(requested.await(10, TimeUnit.SECONDS)) { "the owner never asked the polish process. ${diagnostics()}" }
             return checkNotNull(listener)

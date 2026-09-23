@@ -114,7 +114,7 @@ internal object SentryBootstrap {
         "SentryStackFrame.lock" to "cleared",
         "Breadcrumb.message" to "judged", "Breadcrumb.type" to "validated", "Breadcrumb.data" to "judged",
         "Breadcrumb.category" to "judged", "Breadcrumb.origin" to "validated", "Breadcrumb.unknown" to "cleared",
-        "Contexts.internalStorage" to "walked", "Contexts.responseLock" to "kept",
+        "Contexts.internalStorage" to "walked", "Contexts.responseLock" to "kept", "SentryValues.values" to "walked",
         "Device.name" to "cleared", "Device.manufacturer" to "validated", "Device.brand" to "validated", "Device.family" to "validated",
         "Device.model" to "validated", "Device.modelId" to "validated", "Device.archs" to "validated", "Device.timezone" to "kept",
         "Device.id" to "validated", "Device.locale" to "validated", "Device.connectionType" to "validated",
@@ -131,7 +131,7 @@ internal object SentryBootstrap {
     )
 
     /** The typed contexts that stay, each with its approved fields validated; every other context is removed. */
-    private val APPROVED_CONTEXTS = setOf(Device.TYPE, OperatingSystem.TYPE, App.TYPE, SentryRuntime.TYPE, Gpu.TYPE)
+    val APPROVED_CONTEXTS: Set<String> = setOf(Device.TYPE, OperatingSystem.TYPE, App.TYPE, SentryRuntime.TYPE, Gpu.TYPE)
 
     /**
      * The FINAL payload seam for an event (#240): every text-bearing field of the pinned SDK types is judged
@@ -184,7 +184,8 @@ internal object SentryBootstrap {
         // automatic crash that outran the queued scope update, carries the take live right now, or none
         // (round 2, F8; #240: the extra is validated before it becomes a tag).
         val explicitTakeId = (event.getExtra("take_id") as? String)?.takeIf { SentrySchema.judge("take_id", it) is SentrySchema.Verdict.Keep }
-        val effectiveTakeId = explicitTakeId ?: Telemetry.currentTakeId()
+        val liveTakeId = Telemetry.currentTakeId()?.takeIf { SentrySchema.judge("take_id", it) is SentrySchema.Verdict.Keep }
+        val effectiveTakeId = explicitTakeId ?: liveTakeId
         if (effectiveTakeId == null) event.removeTag(TAG_TAKE_ID) else event.setTag(TAG_TAKE_ID, effectiveTakeId)
         event.tags?.let { tags -> event.tags = judged(tags).mapValues { (_, v) -> v.toString() }.toMutableMap() }
         event.extras?.let { extras -> event.extras = judged(extras).toMutableMap() }

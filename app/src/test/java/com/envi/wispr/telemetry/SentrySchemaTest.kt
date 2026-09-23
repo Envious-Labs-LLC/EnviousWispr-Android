@@ -316,29 +316,93 @@ class SentrySchemaTest {
     }
 
     /**
-     * Row 3d, the seam inventory: every text-bearing field of the pinned SDK types the seam handles is in
-     * `SentryBootstrap.HANDLED_FIELDS`, so an SDK upgrade that adds one cannot pass unexamined. MUTATION: remove
-     * one entry from the table.
+     * Row 3d, the seam inventory: starting from the event and from every typed context the `Contexts` accessors
+     * return, every text-bearing field of the pinned SDK types, followed through superclasses and through the
+     * element types of the fields the seam walks (lists, `SentryValues`, maps, arrays), is in
+     * `SentryBootstrap.HANDLED_FIELDS`, so an SDK upgrade that adds one cannot pass unexamined. A context type the
+     * seam does not approve is removed whole, so only approved ones are walked. MUTATION: remove one entry.
      */
     @Test fun everyTextBearingSdkFieldHasADeclaredHandling() {
-        val types = listOf(
-            io.sentry.SentryBaseEvent::class.java, SentryEvent::class.java, Message::class.java, SentryException::class.java,
-            Mechanism::class.java, SentryThread::class.java, SentryStackTrace::class.java, SentryStackFrame::class.java,
-            Breadcrumb::class.java, Contexts::class.java, Device::class.java, OperatingSystem::class.java, App::class.java,
-            SentryRuntime::class.java, Gpu::class.java,
-        )
         fun textBearing(type: Class<*>): Boolean = when {
             type.isPrimitive || Number::class.java.isAssignableFrom(type) || type == java.lang.Boolean::class.java -> false
             type.isEnum || type == java.util.Date::class.java || type == java.util.TimeZone::class.java -> false
             else -> true
         }
-        val missing = types.flatMap { type ->
-            type.declaredFields.filter { !Modifier.isStatic(it.modifiers) && textBearing(it.type) }
-                .map { "${type.simpleName}.${it.name}" }
-                .filter { it !in SentryBootstrap.HANDLED_FIELDS }
+        fun sentryTypes(type: java.lang.reflect.Type): List<Class<*>> = when (type) {
+            is Class<*> -> when {
+                type.isArray -> sentryTypes(type.componentType)
+                type.name.startsWith("io.sentry") && !type.isEnum -> listOf(type)
+                else -> emptyList()
+            }
+            is java.lang.reflect.ParameterizedType -> sentryTypes(type.rawType) + type.actualTypeArguments.flatMap { sentryTypes(it) }
+            is java.lang.reflect.GenericArrayType -> sentryTypes(type.genericComponentType)
+            is java.lang.reflect.WildcardType -> type.upperBounds.flatMap { sentryTypes(it) }
+            else -> emptyList()
+        }
+        val contextTypes = Contexts::class.java.methods
+            .filter { it.name.startsWith("get") && it.parameterCount == 0 && it.returnType.name.startsWith("io.sentry.protocol") }
+            .map { it.returnType }.distinct()
+        assertTrue("the Contexts accessors were found", contextTypes.size >= 8)
+        val approved = contextTypes.filter { type ->
+            val key = runCatching { type.getField("TYPE").get(null) as String }.getOrNull()
+            key != null && key in SentryBootstrap.APPROVED_CONTEXTS
+        }
+        assertEquals("every approved context has an accessor type", SentryBootstrap.APPROVED_CONTEXTS.size, approved.size)
+        val visited = mutableSetOf<Class<*>>()
+        val missing = mutableListOf<String>()
+        val queue = ArrayDeque<Class<*>>(listOf(SentryEvent::class.java) + approved)
+        while (queue.isNotEmpty()) {
+            var type: Class<*>? = queue.removeFirst()
+            while (type != null && type.name.startsWith("io.sentry") && visited.add(type)) {
+                for (field in type.declaredFields) {
+                    if (Modifier.isStatic(field.modifiers) || !textBearing(field.type)) continue
+                    val name = "${type.simpleName}.${field.name}"
+                    when (SentryBootstrap.HANDLED_FIELDS[name]) {
+                        null -> missing += name
+                        "walked" -> queue.addAll(sentryTypes(field.genericType))
+                    }
+                }
+                type = type.superclass
+            }
         }
         assertEquals("text-bearing SDK fields with no declared handling", emptyList<String>(), missing)
-        val walked = SentryBootstrap.HANDLED_FIELDS.filterValues { it == "walked" }.keys
-        assertTrue("the walked fields are the event's containers", walked.containsAll(listOf("SentryEvent.exception", "SentryEvent.threads", "SentryBaseEvent.contexts")))
+        assertTrue("the walk reached the frames", SentryStackFrame::class.java in visited)
+        assertTrue("the walk reached the breadcrumbs", Breadcrumb::class.java in visited)
+    }
+
+    /** Row 8 (review round 1): a path outside the code roots keeps only a source file name. MUTATION: accept any absolute path. */
+    @Test fun aPathOutsideTheCodeRootsCannotCarryWords() {
+        assertEquals("[REDACTED]", SentrySchema.path("/mnt/Meet-me-at-six"))
+        assertEquals("Coordinator.kt", SentrySchema.path("/home/build/src/Coordinator.kt"))
+        assertEquals("/system/lib64/libc.so", SentrySchema.path("/system/lib64/libc.so"))
+        assertEquals("[PATH]", SentrySchema.path("/data/user/0/com.envi.wispr/files/x.kt"))
+    }
+
+    /** Row 9 (review round 1): template and plain C signatures pass; prose with parentheses does not. MUTATION: drop the template comma. */
+    @Test fun nativeSignaturesPassAndProseInParenthesesDoesNot() {
+        val template = "std::vector<int, std::allocator<int>>::push_back(int const&)"
+        assertEquals(template, SentrySchema.function(template))
+        assertEquals("load(int)", SentrySchema.function("load(int)"))
+        assertEquals("[REDACTED]", SentrySchema.function("meet me at six(tonight)"))
+    }
+
+    /** Row 10 (review round 1): the base Throwable names are error types. MUTATION: require a prefix again. */
+    @Test fun baseThrowableNamesAreKept() {
+        for (name in listOf("Exception", "Error", "Throwable", "IOException")) {
+            assertEquals(name, SentrySchema.Verdict.Keep(name), SentrySchema.judge("error_type", name))
+        }
+        assertEquals(SentrySchema.Verdict.Keep("settings:exception:Exception"), SentrySchema.judge("settings_fallback", "settings:exception:Exception"))
+        assertEquals(SentrySchema.Verdict.Redact, SentrySchema.judge("error_type", "Meet"))
+    }
+
+    /** Row 11 (review round 1): an invalid live take id never becomes the tag. MUTATION: use the live id unvalidated. */
+    @Test fun anInvalidLiveTakeIdLeavesNoTag() {
+        Telemetry.takeStarted("not-a-take")
+        try {
+            val out = SentryBootstrap.sanitize(SentryEvent().apply { setExtra("take_id", "meet-me") })
+            assertNull(out.getTag(SentryBootstrap.TAG_TAKE_ID))
+        } finally {
+            Telemetry.takeEnded("not-a-take")
+        }
     }
 }

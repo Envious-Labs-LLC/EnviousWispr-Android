@@ -56,8 +56,8 @@ internal object SentrySchema {
 
     private val UUID = Shape.Matching("UUID.randomUUID (take and install ids)", Regex("\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z"))
     private val PACKAGE = Shape.Matching("an Android package name from the accessibility event", Regex("\\A[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+\\z"))
-    /** `javaClass.simpleName` of a caught Throwable: a class name that ends in Exception or Error. */
-    private val THROWABLE_NAME = "[A-Z][A-Za-z0-9_$]{0,80}(Exception|Error)"
+    /** `javaClass.simpleName` of a caught Throwable: a class name that ends in Exception or Error, or a base class itself. */
+    private val THROWABLE_NAME = "([A-Z][A-Za-z0-9_$]{0,80}(Exception|Error)|Exception|Error|Throwable)"
     private val ERROR_TYPE = Shape.Matching("Throwable.javaClass.simpleName", Regex("\\A$THROWABLE_NAME\\z"))
     /** `ReadAnswers.fallbackToken`: which reader failed, each with a fixed reason or `exception:<Throwable>`. */
     private val SETTINGS_FALLBACK = Shape.Matching(
@@ -183,21 +183,38 @@ internal object SentrySchema {
     private val JVM_METHOD = Regex("\\A(<init>|<clinit>|[A-Za-z_$][A-Za-z0-9_$-]*)\\z")
     /** A native symbol with no whitespace (mangled, or `name+0x10`). */
     private val NATIVE_SYMBOL = Regex("\\A[A-Za-z0-9_$.:<>~+@-]{1,512}\\z")
-    /** A demangled C++ signature: a qualified name then a parameter list; the only symbol form with spaces. */
-    private val CXX_SIGNATURE = Regex("\\A[A-Za-z0-9_$:<>~]+\\([A-Za-z0-9_$:<>~,*& \\[\\]]*\\)( const)?\\z")
+    /**
+     * A demangled C++ signature: a qualified or templated name then a parameter list, the only symbol form with
+     * spaces. The name must be C++-shaped (a `::` or a template `<`), so "words(like this)" is not one.
+     */
+    private val CXX_SIGNATURE = Regex("\\A(?=[^(]*(::|<))[A-Za-z0-9_$:<>~, *&\\[\\]]+\\([A-Za-z0-9_$:<>~,*& \\[\\]]*\\)( const)?\\z")
+    /** A plain C function signature with no spaces in its name: `load(int)`. */
+    private val C_SIGNATURE = Regex("\\A[A-Za-z0-9_$]+\\([A-Za-z0-9_$,*& \\[\\]]*\\)\\z")
     /** A source file name. */
     private val FILE_NAME = Regex("\\A[A-Za-z0-9_$.-]{1,128}\\.(kt|java|c|cc|cpp|cxx|h|hpp|so)\\z")
-    /** A path with no whitespace (after the path rules rewrote the private roots to `[PATH]`). */
-    private val PATH = Regex("\\A(\\[PATH\\]|/[\\x21-\\x7E]{1,511})\\z")
+    /**
+     * A full path passes only under the roots code and libraries live in (the app's install directory, the
+     * system image, APEX modules, the vendor partition), or as the path rules' `[PATH]`. Any other path keeps
+     * only its file name, and only when that is a source or library file name (review round 1: a path under
+     * any other root could carry words).
+     */
+    private val CODE_ROOT_PATH = Regex("\\A/(data/app|system|apex|vendor|product|system_ext)/[\\x21-\\x7E]{1,500}\\z")
     /** A short identifier with no whitespace: a thread name, a mechanism type, a platform. */
     private val IDENT = Regex("\\A[A-Za-z0-9_.:#@$()\\[\\]-]{1,128}\\z")
 
     fun exceptionType(text: String): String = if (JVM_CLASS.matches(text)) text else PayloadSanitizer.REDACTED
     fun module(text: String): String = if (JVM_CLASS.matches(text)) text else PayloadSanitizer.REDACTED
     fun function(text: String): String =
-        if (JVM_METHOD.matches(text) || NATIVE_SYMBOL.matches(text) || CXX_SIGNATURE.matches(text)) text else PayloadSanitizer.REDACTED
+        if (JVM_METHOD.matches(text) || NATIVE_SYMBOL.matches(text) || CXX_SIGNATURE.matches(text) || C_SIGNATURE.matches(text)) text else PayloadSanitizer.REDACTED
     fun fileName(text: String): String = if (FILE_NAME.matches(text)) text else PayloadSanitizer.REDACTED
-    fun path(text: String): String = PayloadSanitizer.redactPatterns(text).let { if (it == PayloadSanitizer.REDACTED || PATH.matches(it)) it else PayloadSanitizer.REDACTED }
+    fun path(text: String): String {
+        val scrubbed = PayloadSanitizer.redactPatterns(text)
+        return when {
+            scrubbed == PayloadSanitizer.REDACTED || scrubbed == "[PATH]" -> scrubbed
+            CODE_ROOT_PATH.matches(scrubbed) -> scrubbed
+            else -> fileName(scrubbed.substringAfterLast('/'))
+        }
+    }
     fun identifier(text: String): String = if (IDENT.matches(text)) text else PayloadSanitizer.REDACTED
 
     /** A field of an approved typed context: a build property or an SDK-computed label, never with spaces. */

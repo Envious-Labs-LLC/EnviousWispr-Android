@@ -70,23 +70,27 @@ internal fun polishStatusChip(settings: ProviderSettingsUiState, s1State: ModelU
 
     PolishMode.PROVIDER -> if (!settings.configured) {
         PolishStatusChip(PolishStatusKind.OFF, "Cloud, not set up", PolishStatusDot.NEUTRAL)
-    } else when (settings.provider) {
+    } else {
         // `configured` alone does not mean a key exists — `ProviderConfigurationRepository.load()`
         // can return a saved provider/model with no stored key, and removing a key resets
         // `settings.provider` to its default rather than to null (same fact `initialKeyRung` in
         // `PolishScreen.kt` guards against; caught for the badge specifically while enumerating that
-        // class in code review, 2026-09-01). Self-hosted has no key concept, so it is exempt.
-        Provider.OPENAI, Provider.GEMINI, Provider.CLAUDE -> if (!settings.credentialStored) {
-            PolishStatusChip(kindFor(settings.provider), settings.model, PolishStatusDot.RED)
-        } else {
-            PolishStatusChip(kindFor(settings.provider), settings.model, PolishStatusDot.GREEN)
-        }
-        Provider.SELF_HOSTED_POLISH -> PolishStatusChip(
-            PolishStatusKind.SELF_HOSTED,
-            Provider.SELF_HOSTED_POLISH.capabilities().displayName,
-            PolishStatusDot.GREEN,
+        // class in code review, 2026-09-01). The gate reads the provider's declared capability (#332,
+        // `architecture-rules.md` RULE: gate-on-capability-not-identity-literal): a provider with no key
+        // concept is never red for a missing one.
+        val keyMissing = settings.provider.capabilities().requiresApiKey && !settings.credentialStored
+        PolishStatusChip(
+            kindFor(settings.provider),
+            labelFor(settings),
+            if (keyMissing) PolishStatusDot.RED else PolishStatusDot.GREEN,
         )
     }
+}
+
+/** What the badge names: the model for a keyed cloud provider, the provider for a self-hosted server. Identity is the presentation here. */
+private fun labelFor(settings: ProviderSettingsUiState): String = when (settings.provider) {
+    Provider.OPENAI, Provider.GEMINI, Provider.CLAUDE -> settings.model
+    Provider.SELF_HOSTED_POLISH -> Provider.SELF_HOSTED_POLISH.capabilities().displayName
 }
 
 private fun kindFor(provider: Provider): PolishStatusKind = when (provider) {

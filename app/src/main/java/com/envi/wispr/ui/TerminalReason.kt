@@ -63,6 +63,8 @@ internal enum class TerminalReason(val result: TerminalResult) {
     /** The audio process stopped publishing the take's events for the silence bound: frozen or wedged, not dead (#115). */
     AUDIO_PROCESS_UNRESPONSIVE(TerminalResult.AUDIO_INTERRUPTED),
     ASR_PROCESS_DIED(TerminalResult.ASR_INTERRUPTED),
+    /** The speech process held the take's request past its bound: alive and not answering, not dead (#356). */
+    ASR_PROCESS_UNRESPONSIVE(TerminalResult.ASR_INTERRUPTED),
 
     // Failures before capture. A settings or vocabulary read that fails is not one (#193): the take
     // starts on the last values and the failure is a fact of the take; nor is a refused polish bind (#234).

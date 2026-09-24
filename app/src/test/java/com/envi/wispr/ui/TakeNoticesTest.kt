@@ -30,6 +30,7 @@ class TakeNoticesTest {
         TerminalReason.AUDIO_PROCESS_DIED to "Microphone service stopped unexpectedly",
         TerminalReason.AUDIO_PROCESS_UNRESPONSIVE to "The microphone stopped answering. Try again.",
         TerminalReason.ASR_PROCESS_DIED to "Speech service stopped before transcription finished",
+        TerminalReason.ASR_PROCESS_UNRESPONSIVE to "Speech service stopped answering. Try again.",
         TerminalReason.AUDIO_BIND_FAILED to "Microphone service could not be connected",
         TerminalReason.ASR_BIND_FAILED to "Speech service could not be connected",
         TerminalReason.CAPTURE_START_NO_MICROPHONE to "No microphone found. Please connect one.",

@@ -22,14 +22,16 @@ import java.io.File
 class PasteServiceShapeTest {
     private val dir = "src/main/java/com/envi/wispr/paste"
     private val code = codeOnly(
-        listOf("PasteAccessibilityService.kt", "EditorTargetTracker.kt", "AccessibilityInsertionRunner.kt", "AccessibilityBubbleHost.kt")
+        listOf("PasteAccessibilityService.kt", "EditorTargetTracker.kt", "AccessibilityInsertionRunner.kt", "AccessibilityBubbleHost.kt", "InsertionOutcomeRecorder.kt")
             .map { File("$dir/$it") },
     ).mapKeys { it.key.name }
     private val service = code.getValue("PasteAccessibilityService.kt")
     private val tracker = code.getValue("EditorTargetTracker.kt")
     private val runner = code.getValue("AccessibilityInsertionRunner.kt")
     private val bubble = code.getValue("AccessibilityBubbleHost.kt")
-    private val all = listOf(service, tracker, runner, bubble)
+    /** The insertion's ending since #359: the History outcome and the terminal event. */
+    private val recorder = code.getValue("InsertionOutcomeRecorder.kt")
+    private val all = listOf(service, tracker, runner, bubble, recorder)
 
     private fun count(text: String, pattern: String) = Regex(pattern).findAll(text).count()
     private fun total(pattern: String) = all.sumOf { count(it, pattern) }
@@ -76,10 +78,10 @@ class PasteServiceShapeTest {
             assertEquals("$name declares exactly one close", 1, count(text, """\bfun close\(\)"""))
         }
         assertEquals("the service itself declares no close", 0, count(service, """\bfun close\(\)"""))
-        // The runner owns the announcement, the outcome write and every clipboard write.
+        // The runner owns the announcement and every clipboard write; the recorder owns the outcome write (#359).
         assertEquals("one toast", 1, total("""\bToast\.makeText\("""))
         assertEquals("the toast is the runner's", 1, count(runner, """\bToast\.makeText\("""))
-        assertEquals("one outcome enqueue, the runner's", 1, count(runner, """\bhistoryWrites\("""))
+        assertEquals("one outcome enqueue, the recorder's", 1, count(recorder, """\bhistoryWrites\("""))
         assertEquals("no other file enqueues an outcome", 1, total("""\bhistoryWrites\("""))
         assertTrue("the runner writes the clipboard", count(runner, """\bsetPrimaryClip\(""") > 0)
         assertEquals("only the runner writes the clipboard", count(runner, """\bsetPrimaryClip\("""), total("""\bsetPrimaryClip\("""))

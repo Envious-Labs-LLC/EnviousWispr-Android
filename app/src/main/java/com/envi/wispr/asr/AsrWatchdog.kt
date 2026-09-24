@@ -19,8 +19,8 @@ internal class AsrWatchdog(
     val wedged: Boolean get() = expired.get()
 
     /**
-     * Runs [work] under [boundMs]. Returns its value when it finished first; null when the bound expired first, in
-     * which case the process is already ending and the late value must deliver nothing.
+     * Runs [work] under [boundMs]. Returns its value (or its throw) when it finished first; null when the bound expired
+     * first, in which case the process is already ending and the late value or throw must deliver nothing.
      */
     fun <T> guard(boundMs: Long, what: String, work: () -> T): T? {
         val handle = deadline.arm(boundMs) {
@@ -30,7 +30,8 @@ internal class AsrWatchdog(
         val value = try {
             work()
         } catch (error: Throwable) {
-            handle.cancel()
+            // A throw after the bound is late too (review round 1): the process is ending, so it reports nothing.
+            if (!handle.cancel()) return null
             throw error
         }
         return if (handle.cancel()) value else null

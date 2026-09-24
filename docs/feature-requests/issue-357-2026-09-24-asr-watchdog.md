@@ -54,3 +54,15 @@ Persona: the founder after a take that hit #356's bound. #356 ends that take wit
 - `isReady` includes the wedged state.
 
 Mutations m1 to m4 are RED on fresh compiles.
+
+## 5. Code review round 1 (Codex)
+
+Three findings, all adopted:
+
+- A throw after the bound was rethrown and could report `DECODE_FAILED` for a task the watchdog already owned. `AsrWatchdog.guard` now returns null for a late throw too (row 5, m5).
+- The file read and the sample conversion were outside the decode's bound. Rather than add a bound per step, one bound now covers each whole worker task: `AsrService.bounded(audioBytes)` wraps the read, the conversion and the decode on both entry points, sized from the file's length before any of them runs (row 4 pins both entry points, m4).
+- The native release was unbounded, and shutting the watchdog's scheduler in `onDestroy` would have refused its bound. The release now runs under `RELEASE_BOUND_MS` (10 s), and `RecognizerOwner.close(after)` runs its follow-up after the release, on the worker, even when nothing was loaded; `onDestroy` passes `watchdogScheduler.shutdown()` as that follow-up (`RecognizerOwnerTest`, m6).
+
+A wedged release ends the process while the service is being destroyed. If Android started a replacement service in the same process meanwhile, its take sees a disconnect and ends `ASR_PROCESS_DIED`: bounded, and only after a native release that never returned.
+
+Mutations m1 to m6 are RED on fresh compiles.

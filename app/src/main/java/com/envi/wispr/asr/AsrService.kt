@@ -59,7 +59,7 @@ class AsrService : Service() {
     private val owner = RecognizerOwner<OfflineRecognizer>(
         transcriptionExecutor,
         free = { recognizer ->
-            recognizer.release()
+            watchdog.guard(AsrBounds.RELEASE_BOUND_MS, "the recognizer release") { recognizer.release() }
             DebugLogger.log(TAG, "Recognizer released")
         },
         discarded = { DebugLogger.log(TAG, "ASR answer discarded: the service closed during the decode") },
@@ -118,7 +118,7 @@ class AsrService : Service() {
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
             val failure = legacyReporter(callback)
             owner.use(refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
-                doTranscribe(rec, audioData, durationSec, callback, failure)
+                bounded(audioData.size.toLong()) { doTranscribe(rec, audioData, durationSec, callback, failure) }
             }
         }
 
@@ -146,19 +146,32 @@ class AsrService : Service() {
         }
 
         owner.use(refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
-            // The read is its own boundary (G1 D4): a failure here is the FILE, never the decoder.
-            val audioData = try {
-                file.readBytes()
-            } catch (e: Exception) {
-                DebugLogger.error(TAG, "Failed to read audio file", e)
-                val detail = e.javaClass.simpleName
-                return@use { failure.report(AsrFailureReason.AUDIO_UNREADABLE, detail) }
+            bounded(file.length()) {
+                // The read is its own boundary (G1 D4): a failure here is the FILE, never the decoder.
+                val audioData = try {
+                    file.readBytes()
+                } catch (e: Exception) {
+                    DebugLogger.error(TAG, "Failed to read audio file", e)
+                    val detail = e.javaClass.simpleName
+                    return@bounded { failure.report(AsrFailureReason.AUDIO_UNREADABLE, detail) }
+                }
+                val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
+                DebugLogger.log(TAG, "Read ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) for take $takeId")
+                DebugLogger.mark(TAG, "asr_file_read")
+                doTranscribe(rec, audioData, durationSec, callback, failure)
             }
-            val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
-            DebugLogger.log(TAG, "Read ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) for take $takeId")
-            DebugLogger.mark(TAG, "asr_file_read")
-            doTranscribe(rec, audioData, durationSec, callback, failure)
         }
+    }
+
+    /**
+     * One worker task under one hard bound (#357 review round 1): the file read, the conversion and the decode, so
+     * nothing on the only worker that can block natively is outside it. [audioBytes] sizes the bound before any of
+     * them runs, past the owner's own request bound; a task that outlives it ends the process and delivers nothing.
+     */
+    private fun bounded(audioBytes: Long, work: () -> () -> Unit): () -> Unit {
+        val boundMs = AsrBounds.requestBoundMs((PcmAudio.durationSeconds(audioBytes) * 1000f).toLong()) + AsrBounds.DECODE_GRACE_MS
+        return watchdog.guard(boundMs, "a transcription") { work() }
+            ?: { DebugLogger.warn(TAG, "A transcription returned after its bound; the process is ending") }
     }
 
     /**
@@ -187,18 +200,14 @@ class AsrService : Service() {
 
             val t0 = SystemClock.elapsedRealtime()
 
-            // Bounded past the owner's own request bound (#357): a decode that never returns ends this process.
-            val decodeBoundMs = AsrBounds.requestBoundMs((durationSec * 1000f).toLong()) + AsrBounds.DECODE_GRACE_MS
-            val result = watchdog.guard(decodeBoundMs, "a decode") {
-                val stream = rec.createStream()
-                try {
-                    stream.acceptWaveform(samples, SAMPLE_RATE)
-                    rec.decode(stream)
-                    rec.getResult(stream)
-                } finally {
-                    stream.release()
-                }
-            } ?: return { DebugLogger.warn(TAG, "A decode returned after its bound; the process is ending") }
+            val stream = rec.createStream()
+            val result = try {
+                stream.acceptWaveform(samples, SAMPLE_RATE)
+                rec.decode(stream)
+                rec.getResult(stream)
+            } finally {
+                stream.release()
+            }
 
             val decodeMs = SystemClock.elapsedRealtime() - t0
             val text = result.text.trim()
@@ -233,9 +242,9 @@ class AsrService : Service() {
 
     override fun onDestroy() {
         // Never waits and never frees here: the release is queued behind the decode in flight (#212).
-        owner.close()
-        // An armed bound survives `shutdown` (never `shutdownNow`), so a decode still wedged here still ends the process.
-        watchdogScheduler.shutdown()
+        // The watchdog's thread stops only after the release, which it also bounds (review round 1); a bound still
+        // armed for a wedged task survives `shutdown` (never `shutdownNow`) and still ends the process.
+        owner.close { watchdogScheduler.shutdown() }
         super.onDestroy()
         DebugLogger.log(TAG, "AsrService destroyed; recognizer release queued")
     }

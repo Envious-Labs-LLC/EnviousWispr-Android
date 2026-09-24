@@ -49,19 +49,27 @@ internal class RecognizerOwner<R : Any>(
         if (closed.get()) discarded() else deliver()
     }
 
-    /** Idempotent. Queues the release behind every admitted task, then stops the worker. */
-    fun close() {
+    /**
+     * Idempotent. Queues the release behind every admitted task, then stops the worker. [after] runs once, after the
+     * release (or at once if nothing could be queued), whether or not a recognizer was ever loaded.
+     */
+    fun close(after: () -> Unit = {}) {
         if (!closed.compareAndSet(false, true)) return
         ready = false
         try {
             worker.execute {
-                val current = recognizer
-                recognizer = null
-                ready = false
-                if (current != null) free(current)
+                try {
+                    val current = recognizer
+                    recognizer = null
+                    ready = false
+                    if (current != null) free(current)
+                } finally {
+                    after()
+                }
             }
         } catch (_: RejectedExecutionException) {
             // Only reachable if the worker was stopped outside this owner; nothing can be ordered then.
+            after()
         }
         worker.shutdown()
     }

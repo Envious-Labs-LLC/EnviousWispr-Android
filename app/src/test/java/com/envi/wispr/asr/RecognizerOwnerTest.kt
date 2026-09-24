@@ -273,4 +273,22 @@ class RecognizerOwnerTest {
         owner.close()
         worker.awaitTerminatedOrFail()
     }
+
+    /**
+     * #357 review round 1: the close's follow-up (the service stops its watchdog there) runs after the release, on the
+     * worker, and also when no recognizer was ever loaded. MUTATION m6: the follow-up only after a real release.
+     */
+    @Test
+    fun theCloseFollowUpRunsAfterTheReleaseAndWithNothingLoaded() {
+        val loadedWorker = worker()
+        loaded(loadedWorker).close { events += "after" }
+        loadedWorker.awaitTerminatedOrFail()
+        assertEquals(listOf("free", "after"), events.toList())
+
+        events.clear()
+        val emptyWorker = worker()
+        owner(emptyWorker).close { events += "after" }
+        emptyWorker.awaitTerminatedOrFail()
+        assertEquals(listOf("after"), events.toList())
+    }
 }

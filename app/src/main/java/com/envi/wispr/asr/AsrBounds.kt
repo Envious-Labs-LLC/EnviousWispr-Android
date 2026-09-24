@@ -27,5 +27,8 @@ internal object AsrBounds {
     /** The model load, matching the polish engine's (#344): about fourteen times the emulator's cold load. */
     const val LOAD_BOUND_MS = 60_000L
 
+    /** The native release at teardown (#357 review round 1): a release that never returns ends the process too. */
+    const val RELEASE_BOUND_MS = 10_000L
+
     fun requestBoundMs(audioMs: Long): Long = BASE_MS + audioMs.coerceAtLeast(0L) * PER_AUDIO_SECOND_MS / 1_000L
 }

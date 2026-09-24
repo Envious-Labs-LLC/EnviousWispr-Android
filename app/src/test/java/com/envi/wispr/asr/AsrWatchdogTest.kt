@@ -58,13 +58,28 @@ class AsrWatchdogTest {
         assertTrue(ended.isEmpty())
     }
 
-    /** Row 4, Drift Guard: the load and the decode both run inside the watchdog, and readiness drops once it fires. MUTATION m4: the decode unguarded. */
-    @Test fun theLoadAndTheDecodeAreGuarded() {
+    /**
+     * Row 4, Drift Guard: the load, the release and each whole transcription task (the read, the conversion and the
+     * decode, on both entry points) run inside the watchdog, and readiness drops once it fires. MUTATION m4: the file
+     * path's task unguarded.
+     */
+    @Test fun everyNativeTaskIsGuarded() {
         val service = java.io.File("src/main/java/com/envi/wispr/asr/AsrService.kt").readText()
         assertTrue(service.contains("owner.load { watchdog.guard(AsrBounds.LOAD_BOUND_MS, \"the model load\") { initRecognizer() } }"))
-        val decode = service.indexOf("rec.decode(stream)")
-        val guard = service.lastIndexOf("watchdog.guard(decodeBoundMs, \"a decode\")", decode)
-        assertTrue("the decode runs inside the watchdog", decode >= 0 && guard >= 0 && service.indexOf('}', guard) > decode)
+        assertTrue(service.contains("watchdog.guard(AsrBounds.RELEASE_BOUND_MS, \"the recognizer release\") { recognizer.release() }"))
+        val uses = Regex("""owner\.use\(refused = \{[^}]*\}\) \{ rec ->\s*\n\s*(\S+)""").findAll(service).map { it.groupValues[1] }.toList()
+        assertEquals("both entry points run their whole task bounded: $uses", listOf("bounded(audioData.size.toLong())", "bounded(file.length())"), uses)
+        assertTrue(service.contains("return watchdog.guard(boundMs, \"a transcription\") { work() }"))
         assertTrue(service.contains("override fun isReady(): Boolean = owner.isReady && !watchdog.wedged"))
+    }
+
+    /** Row 5: a throw after the bound is late too: it delivers nothing and never reaches the caller. MUTATION m5: the late throw rethrown. */
+    @Test fun aThrowPastItsBoundDeliversNothing() {
+        val value = watchdog.guard(50L, "a decode") {
+            assertTrue(endedSignal.await(5, TimeUnit.SECONDS))
+            error("late failure")
+        }
+        assertNull(value)
+        assertEquals(listOf("a decode outlived its 50 ms bound"), ended.toList())
     }
 }

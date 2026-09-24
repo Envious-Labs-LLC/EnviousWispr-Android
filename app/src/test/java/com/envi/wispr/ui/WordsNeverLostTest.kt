@@ -141,6 +141,32 @@ class WordsNeverLostTest {
         assertEquals(emptyList<File>(), rescued())
     }
 
+    /**
+     * Row 3d (review round 4): Delete all while the take's draft is still queued behind a stalled History, after its
+     * words were published; the draft, then the save, land after the delete and bring nothing back. MUTATION m17: the
+     * repository inserts without reading the deleted mark.
+     */
+    @Test fun aDraftQueuedBehindDeleteAllNeverBringsTheTakeBack() {
+        val release = CompletableDeferred<Unit>()
+        var take: String? = null
+        rig.dao.beforeGuardedInsert = { row ->
+            if (row.status == TranscriptEntity.STATUS_DRAFT) {
+                take = row.takeId
+                release.await()
+            }
+        }
+        val coordinator = rig.coordinator(historySaveBoundMs = 5_000L)
+        takeWithPolishedWords(coordinator)
+        awaitUntil("the take's words are on their way") { take?.let { rig.rescuedWords.tracking(it) } == true }
+        runBlocking { rig.rescuedWords.clearing { liveTakes -> rig.transcripts.deleteAll(liveTakes) } }
+        release.complete(Unit)
+        rig.endings.awaitOne()
+        rig.host.awaitServiceStopped()
+        rig.awaitHistoryIdle()
+        assertEquals("the deleted take stays deleted", emptyList<TranscriptEntity>(), rig.dao.rows.values.toList())
+        awaitUntil("no words left on the phone") { rescued().isEmpty() }
+    }
+
     /** Row 4: with the rescue failed and the save still pending, the line never says the words are lost. */
     @Test fun aPendingSaveIsNeverToldItsWordsAreLost() {
         rig.rescueDir.deleteRecursively()

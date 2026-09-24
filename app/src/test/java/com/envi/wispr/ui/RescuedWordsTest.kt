@@ -220,7 +220,7 @@ class RescuedWordsTest {
         assertTrue(file().delete())
         store.clearing { liveTakes -> repository.deleteAll(liveTakes) }
         val late = TranscriptEntity(originalText = "Keep these words.", finalText = "Keep these words.", createdAtMs = 5L, durationMs = 0L, speechEngine = "Parakeet", polishEngine = "", polishLatencyMs = 0L, insertionResult = "pending", status = TranscriptEntity.STATUS_SAVED_UNROUTED, takeId = take)
-        assertEquals("the late save inserts nothing", 0L, repository.insertUnlessDeleted(late))
+        assertEquals("the late save inserts nothing", 0L, repository.insert(late))
         assertEquals(0, dao.rows.size)
         // A crash had left the take's file behind: the next process's recovery removes it and writes nothing.
         File(dir, "$take.words").writeText("1000\nKeep these words.")

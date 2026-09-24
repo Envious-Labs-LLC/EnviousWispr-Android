@@ -9,7 +9,11 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     }
     val transcripts: Flow<List<TranscriptEntity>> = dao.observeAll()
 
-    suspend fun insert(transcript: TranscriptEntity): Long = dao.insert(
+    /**
+     * The one door into History for a row (#288): never for a take the user deleted, read in the insert's own
+     * transaction, so no writer of a take (its draft, its save, a recovery) can bring deleted words back. 0 then.
+     */
+    suspend fun insert(transcript: TranscriptEntity): Long = dao.insertUnlessDeleted(
         transcript.copy(stateChangedAtMs = transcript.stateChangedAtMs.takeIf { it > 0L } ?: clock()),
     )
 
@@ -20,11 +24,6 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
 
     /** The user's Delete all (#288); [liveTakes] are takes with words and no row yet, deleted with the rest. */
     suspend fun deleteAll(liveTakes: Collection<String> = emptyList()) = dao.deleteAllForGood(liveTakes)
-
-    /** Inserts a take's row unless the user deleted the take (#288); 0 when deleted. */
-    suspend fun insertUnlessDeleted(transcript: TranscriptEntity): Long = dao.insertUnlessDeleted(
-        transcript.copy(stateChangedAtMs = transcript.stateChangedAtMs.takeIf { it > 0L } ?: clock()),
-    )
 
     /** Removes one row outright. The session owner's exit for a dictation with no words in it. */
     suspend fun discard(id: Long) = dao.deleteById(id)
@@ -100,7 +99,7 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
             ) > 0
         }
         // Never for a take the user deleted: nothing is inserted then, and the rescue is done all the same.
-        insertUnlessDeleted(
+        insert(
             TranscriptEntity(
                 originalText = text,
                 finalText = text,

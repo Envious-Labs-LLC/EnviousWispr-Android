@@ -448,11 +448,11 @@ internal class SessionFinalizer(
 
     /**
      * The neutral saved row when there is no draft to finalize; every value is the payload's, read before the
-     * reservation. Never for a take the user deleted (#288): 0 then, read in the insert's own transaction.
+     * reservation. Never for a take the user deleted (#288): 0 then, as for every insert.
      */
     private suspend fun TranscriptRepository.insertSavedTranscript(publication: Publication, takeId: String): Long {
         val polishFacts = publication.polishFacts
-        return insertUnlessDeleted(
+        return insert(
             TranscriptEntity(
                 originalText = publication.originalText,
                 finalText = publication.finalText,

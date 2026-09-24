@@ -850,6 +850,12 @@ internal class DictationSessionRig {
         override suspend fun insertDeletedTakes(takes: List<com.envi.wispr.history.DeletedTake>) { takes.forEach { deletedTakes += it.takeId } }
         override suspend fun isTakeDeleted(takeId: String): Boolean = takeId in deletedTakes
         override suspend fun rowTakeIds(): List<String> = rows.values.mapNotNull { it.takeId }
+        /** When set, runs before a guarded insert reads the deleted mark: a write queued behind a delete (#288 row 3d). */
+        @Volatile var beforeGuardedInsert: (suspend (TranscriptEntity) -> Unit)? = null
+        override suspend fun insertUnlessDeleted(transcript: TranscriptEntity): Long {
+            beforeGuardedInsert?.invoke(transcript)
+            return super.insertUnlessDeleted(transcript)
+        }
         override suspend fun findByTakeId(takeId: String): TranscriptEntity? = rows.values.firstOrNull { it.takeId == takeId }
         /** When set, runs as a take's draft insert is attempted, with its take id (#288): a recovery staged ahead of the save. */
         @Volatile var onDraftInsert: (suspend (String) -> Unit)? = null

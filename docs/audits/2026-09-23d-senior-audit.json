@@ -1,0 +1,527 @@
+{
+  "reader_guide": "Read the overall grade first, then the nine dimensions. The letter grades judge the code and tests visible in this checkout. The three risk grades identify behavior that source reading alone cannot settle. Each finding includes a short, verbatim source excerpt and a test that could disprove the concern. Severity describes the effect on the founder’s phone today, not the effort to fix it. The ranked refactor targets describe concrete changes; the roadmap orders changes that depend on one another. Read the strengths alongside the findings: the process split, single session owner, polish fallback, insertion tests, and privacy filters are substantial engineering work worth keeping. This is a read-only audit. No build, device run, network capture, or timing measurement was performed. The missing root CLAUDE.md in this checkout and the runtime checks are listed under not_assessed. Clean-install recovery, download-from-empty, and reinstall recovery belong to stage 2 and did not lower the grade. The September service and navigation extractions were measured as they exist now; their old sizes were not treated as current defects.",
+  "overall_grade": {
+    "letter": "B",
+    "score_out_of_100": 83,
+    "rationale": "This is production-minded senior engineering, not AI slop. The single session owner, five-process isolation, first-wins decisions, outcome tests, and content-filtered diagnostics show deliberate design. The main defect is a pre-capture startup chain where optional preparation can wait without a deadline, potentially leaving a take in STARTING. Smaller risks sit in a polish binder fallback and the unbounded History queue. The coordinator is still large, but the service and navigation extractions are real.",
+    "confidence": "Medium",
+    "confidence_rationale": "The cited control flow is directly visible, but this read-only audit ran no build or S26 Ultra test. The checkout also lacks the requested root CLAUDE.md."
+  },
+  "dimensions": [
+    {
+      "name": "Architecture integrity",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "The inventory puts the current mass in DictationSessionCoordinator.kt at 1,341 lines, AudioCaptureService.kt at 997, RecordingAccessibilityOverlay.kt at 817, and AccessibilityInsertionRunner.kt at 711. DictationSessionService.kt is 253 lines and AppShell.kt is 240. The coordinator owns the take, while the service and shell have been split. The coordinator still mixes session transitions with notice delivery and telemetry payload construction; those presentation and projection details could move to their existing owners. The concrete heart risk is that vocabulary compilation and polish policy loading precede capture without a deadline.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/ui/TakeContext.kt",
+        "line_range": "L19-L27",
+        "snippet": "internal class TakeContext(\n    val takeId: String,\n    val trigger: TriggerSource,\n    val facts: TakeFacts,\n    val arbiter: TakeArbiter,\n    val targetPin: DictationTargetPin,\n    val history: TakeHistory,\n    val acceptedAtMs: Long,\n) {",
+        "why_exemplary": "One admitted take carries one fixed identity, target, and terminal arbiter."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt",
+        "line_range": "L411-L427",
+        "snippet": "val termsSnapshot: List<CustomTerm> = start.terms.structuredTerms\n            val matcher = withContext(Dispatchers.Default) {\n                StructuredTermRestorer.compile(termsSnapshot)\n            }\n            takeFacts.matcherReadyMs = sinceAccepted()\n            val policy = takePolicy(withContext(Dispatchers.IO) { loadPolicy() })\n            takeFacts.policyLoadedMs = sinceAccepted()",
+        "rule_violated": ".claude/rules/architecture-rules.md FACT: heart-and-limbs; RULE: isolate-limbs",
+        "severity": "HIGH",
+        "confidence": "Medium",
+        "confidence_rationale": "The missing bound and order are explicit. Whether policy storage or a large term set can stall long enough on this phone needs injection or measurement.",
+        "counterfactual": "The user presses to dictate and sees STARTING while the microphone never opens; no words can be captured.",
+        "counterfactual_rationale": "bindPipelineServices runs only after both preparation calls return. The capture live deadline is armed later.",
+        "falsifiability": "In DictationSessionRig, inject a loadPolicy function that never returns and assert that capture starts or a declared terminal outcome occurs within the startup budget.",
+        "concurrency_interleaving": "1. Main accepts START and publishes STARTING. 2. The session coroutine receives settings. 3. Its IO policy read stalls. 4. Main remains responsive, but the coroutine never reaches bindPipelineServices. 5. No capture timer is armed, so the take remains STARTING."
+      },
+      "top_refactor_target_ids": [
+        "REF-01",
+        "REF-04"
+      ]
+    },
+    {
+      "name": "Concurrency discipline",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "Capture commands have their own ordered lane, capture callbacks post to main, and the session scope has a service-owned job. The polish service nevertheless performs deterministic text preparation directly in several AIDL entry branches, including the poisoned-runtime branch. That branch can involve language detection on a binder thread.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/ui/CaptureSessionController.kt",
+        "line_range": "L267-L275",
+        "snippet": "private val takeListener = object : TakeListener {\n        private fun ours(eventTakeId: String): Boolean = eventTakeId == takeId\n\n        override fun onLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) {\n            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); events(CaptureEvent.Live(forced, routeKind, routeReason, liveAfterMs)) } }\n        }\n\n        override fun onTick(takeId: String, elapsedMs: Long) {\n            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); events(CaptureEvent.Tick(elapsedMs)) } }",
+        "why_exemplary": "A binder callback hands the event to the owner thread and checks take identity there."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/polish/PolishService.kt",
+        "line_range": "L164-L172",
+        "snippet": "val effectivePolicy: PolishPolicy = policy\n            if (poisoned.get()) {\n                // This process is ending after a timeout; a request queued behind the wedged worker would only\n                // learn that when the process died. Answer now.\n                deliver(\n                    callback,\n                    PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.LOCAL_FAILED, 0, 0),\n                )\n                return",
+        "rule_violated": ".claude/rules/kotlin-patterns.md RULE: never-block-a-binder-or-ui-thread",
+        "severity": "MEDIUM",
+        "confidence": "High",
+        "confidence_rationale": "accept is called by the AIDL implementation and fallbackText invokes deterministic cleanup and language detection synchronously.",
+        "counterfactual": "After a local polish timeout, a following request can occupy a polish binder thread doing text preparation before it receives its fallback.",
+        "counterfactual_rationale": "The poisoned branch bypasses the service executor and computes fallbackText before delivering the callback.",
+        "falsifiability": "Instrument the poisoned branch with a blocking fake language detector and assert that the AIDL call returns promptly while the fallback is completed on a worker.",
+        "concurrency_interleaving": "1. The deadline thread marks the polish process poisoned. 2. Before process exit, a binder thread enters accept for another request. 3. It takes the poisoned branch and calls fallbackText. 4. Language detection stalls on that binder thread. 5. The request callback waits until that work finishes or the process exits."
+      },
+      "top_refactor_target_ids": [
+        "REF-02"
+      ]
+    },
+    {
+      "name": "Error handling and observability",
+      "scale_type": "letter",
+      "grade": "A",
+      "justification": "Polish loss is latched once, requests are claimed once, and deterministic preparation guards its own steps while preserving the last successful text. Sentry drops exception messages, and the logger renders exception classes and locations without messages. The startup deadline concern is counted under architecture and performance.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/ui/TakePolishController.kt",
+        "line_range": "L445-L452",
+        "snippet": "private fun deterministic(rawText: String, takePreferences: SessionPreferences): String {\n        val prepared = restoreVocabulary(rawText, takePreferences, STEP_RESTORE_RAW) ?: return rawText\n        // The engine resolves the same answer on its own side. Detecting here too is what keeps this terminal\n        // from being the one that still applies English rules to foreign words when the engine is the side\n        // that failed (#107); the alternative was a new AIDL transaction to carry it across, which\n        // `workflow-process.md` RULE: tier-routing classifies as REFACTOR for a limb feature.\n        val cleaned = guarded(STEP_CLEANUP) { cleanup(prepared, takePreferences.cleanup, languageDetector) } ?: return prepared\n        return restoreVocabulary(cleaned, takePreferences, STEP_RESTORE_CLEANED) ?: cleaned",
+        "why_exemplary": "Each failed transformation returns the text from the last completed step."
+      },
+      "worst_violation": {
+        "file": "NONE",
+        "line_range": "L0-L0",
+        "snippet": "No violation found in this dimension.",
+        "rule_violated": "No violation found in this dimension.",
+        "severity": "LOW",
+        "confidence": "Medium",
+        "confidence_rationale": "No separate violation was established by static reading.",
+        "counterfactual": "No violation found in this dimension.",
+        "counterfactual_rationale": "No violation found in this dimension.",
+        "falsifiability": "No violation found in this dimension.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": []
+    },
+    {
+      "name": "Testability",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "The coordinator has injectable seams and outcome tests assert that words land once after polish failure. Device tests cross real service and editor boundaries. The startup tests exercise a returned PolicyRead.Failed but do not exercise a policy read that never returns, leaving the main architecture finding unprotected.",
+      "best_example": {
+        "file": "app/src/test/java/com/envi/wispr/ui/PolishFailsOpenTest.kt",
+        "line_range": "L55-L63",
+        "snippet": "/** Row 1. MUTATION: on a refused polish bind outcome call `handleServiceFailure(TerminalReason.ASR_BIND_FAILED)`. */\n    @Test fun aRefusedPolishBindStillLandsTheWords() {\n        rig.pipeline.bindPolish = false\n        val coordinator = rig.coordinator()\n        startAndGoLive(coordinator)\n        stopAndAnswerSpeech(coordinator, \"hello there\")\n        assertFellBack(\"SERVICE_UNAVAILABLE\")\n        assertEquals(listOf(\"polish_service_unavailable\"), polishDefects())\n        assertTrue(rig.log.lines.any { it.contains(\"Polish service did not bind\") })",
+        "why_exemplary": "The test checks delivery and one defect, and names a mutation that should make it fail."
+      },
+      "worst_violation": {
+        "file": "app/src/test/java/com/envi/wispr/ui/PolishFailsOpenTest.kt",
+        "line_range": "L68-L80",
+        "snippet": "* #278: the stored policy could not be read and none was read before. The take is never the user's Off:\n     * it publishes the deterministic text with the polish notice, sends no request, and raises one defect.\n     * MUTATION m2: the `Failed` branch of `takePolicy` returns `PolishPolicy.Off` without calling `policyReadFailed`.\n     */\n    @Test fun anUnreadablePolicyWithNoLastReadLandsTheDeterministicTextWithTheNotice() {\n        rig.policyRead = PolicyRead.Failed(lastRead = null)\n        val coordinator = rig.coordinator()\n        startAndGoLive(coordinator)\n        stopAndAnswerSpeech(coordinator, \"hello there\")\n        assertFellBack(\"SETTINGS_UNREADABLE\")",
+        "rule_violated": ".claude/rules/testing-philosophy.md RULE: a-public-product-promise-needs-a-binding-test",
+        "severity": "MEDIUM",
+        "confidence": "Medium",
+        "confidence_rationale": "The inspected UI tests cover a failed answer, and a scoped search found no never-returning policy read test. A differently named test outside that scope could reduce this gap.",
+        "counterfactual": "The suite can pass while a stalled policy read keeps the microphone from starting.",
+        "counterfactual_rationale": "Returning Failed exercises fallback after a read answers; it never exercises the earlier wait.",
+        "falsifiability": "Find or add an outcome test that injects a never-returning loadPolicy and fails if capture neither starts nor ends within the declared bound.",
+        "concurrency_interleaving": "1. A test fake returns PolicyRead.Failed immediately and passes. 2. In a separate run, the policy reader stalls before returning. 3. The coordinator waits before binding audio. 4. No assertion in the cited test observes that wait."
+      },
+      "top_refactor_target_ids": [
+        "REF-05"
+      ]
+    },
+    {
+      "name": "Code hygiene and maintainability",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "The service and app shell are appropriately smaller now. The coordinator remains the largest Kotlin file at 1,341 lines and contains telemetry projection and notice presentation alongside state transitions. One prominent comment still says completion waits for History, although current code commits and delivers without that wait.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/ui/AppShell.kt",
+        "line_range": "L69-L83",
+        "snippet": "var destinationName by rememberSaveable { mutableStateOf(AppDestination.History.name) }\n    val destination = AppRoutes.destination(destinationName)\n    var settingsPageName by rememberSaveable { mutableStateOf<String?>(null) }",
+        "why_exemplary": "The shell keeps route state and delegates route interpretation to AppRoutes."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt",
+        "line_range": "L995-L998",
+        "snippet": "// RESERVE, never commit: `completed` is unknown until the History save returns (G2 D2). A cancel\n        // that already owns the take, or a second final callback, loses here and does nothing. Under\n        // publishLock, and the write is ENQUEUED in the same operation (#115): destroy takes the same lock\n        // before enqueueing `interrupted`, so a reserved finalization is always queued ahead of it and",
+        "rule_violated": "Named engineering principle: comments must describe the current control flow",
+        "severity": "LOW",
+        "confidence": "High",
+        "confidence_rationale": "The same file says and implements that the words do not wait for History at L1027-L1044.",
+        "counterfactual": "A developer changing cancellation or History ordering may reason from an obsolete wait and alter the heart path incorrectly.",
+        "counterfactual_rationale": "The comment states the opposite of the current commit-before-handoff sequence.",
+        "falsifiability": "Trace L1027-L1044 or run a stalled-History-save coordinator test; if publication waits for save, this finding is wrong.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": [
+        "REF-04",
+        "REF-06"
+      ]
+    },
+    {
+      "name": "API surface",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "The new take AIDL interface has five operations, while the legacy capture interface is retained for append-only compatibility. Top-level app visibility is mostly narrowed. The service action and extra constants remain public members even though command sending and the service are app-internal concerns.",
+      "best_example": {
+        "file": "app/src/main/aidl/com/envi/wispr/audio/IAudioTakeService.aidl",
+        "line_range": "L14-L23",
+        "snippet": "interface IAudioTakeService {\n    boolean startCaptureForTake(boolean autoStopOnSilence, float pauseSeconds, String inputDevicePick, boolean keepEarbudsReady, String takeId);\n\n    void stopCapture();\n\n    boolean finishTake();\n\n    void registerSpectrumListener(IAudioSpectrumListener listener);\n\n    void registerTakeListener(ITakeListener listener);",
+        "why_exemplary": "A take binds to the small operation set it actually needs."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt",
+        "line_range": "L45-L50",
+        "snippet": "class DictationSessionService : Service() {\n    companion object {\n        const val ACTION_START = \"com.envi.wispr.action.START_DICTATION\"\n        const val ACTION_TOGGLE = \"com.envi.wispr.action.TOGGLE_DICTATION\"\n        const val ACTION_STOP = \"com.envi.wispr.action.STOP_DICTATION\"\n        const val ACTION_CANCEL = \"com.envi.wispr.action.CANCEL_DICTATION\"",
+        "rule_violated": ".claude/rules/architecture-rules.md RULE: minimize-visibility",
+        "severity": "LOW",
+        "confidence": "High",
+        "confidence_rationale": "These members use Kotlin's public default; the service must be public for Android construction, but its command constants need only app-module visibility.",
+        "counterfactual": "Another module can compile against service command details that were meant to remain implementation details.",
+        "counterfactual_rationale": "Public companion constants widen the source API without helping Android instantiate the service.",
+        "falsifiability": "Change the constants to internal and compile the app and instrumentation clients; a required external reference would disprove the proposed narrowing.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": [
+        "REF-07"
+      ]
+    },
+    {
+      "name": "Performance and latency",
+      "scale_type": "risk",
+      "grade": "Medium Risk",
+      "justification": "The first-audio path has a 2-second settings-answer bound but no bound for subsequent matcher compilation or policy loading. This creates an unmeasured tail before the microphone binds. Capture levels and take status are pushed rather than polled; the recording picture is a custom view, so a Compose recomposition claim was not established. Physical timings and simultaneous model residency still need a phone trace.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt",
+        "line_range": "L672-L678",
+        "snippet": "val requested = minOf(buffer.size.toLong(), remaining).toInt()\n                val bytesRead = active.record.read(buffer, 0, requested, AudioRecord.READ_BLOCKING)\n                if (bytesRead < 0) throw IOException(\"AudioRecord.read failed: $bytesRead\")\n                if (bytesRead == 0) continue\n                // The heartbeat, live or not, BEFORE the gate branch: its arrival is liveness to the owner\n                // (#115). One primitive comparison here; the publisher's worker makes the binder call.\n                takeEvents.offerTick(active.takeId, if (active.liveVisible) SystemClock.elapsedRealtime() - active.route.liveAtMs else 0L)",
+        "why_exemplary": "The hot read loop caps bytes and hands event delivery to another worker."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt",
+        "line_range": "L412-L416",
+        "snippet": "val matcher = withContext(Dispatchers.Default) {\n                StructuredTermRestorer.compile(termsSnapshot)\n            }\n            takeFacts.matcherReadyMs = sinceAccepted()\n            val policy = takePolicy(withContext(Dispatchers.IO) { loadPolicy() })",
+        "rule_violated": ".claude/rules/architecture-rules.md FACT: heart-and-limbs",
+        "severity": "HIGH",
+        "confidence": "Medium",
+        "confidence_rationale": "Both steps precede capture without a deadline; the actual tail on the S26 Ultra was not measured here.",
+        "counterfactual": "Trigger-to-first-audio time can become arbitrarily long when policy storage stalls or term compilation grows.",
+        "counterfactual_rationale": "There is no timeout between the bounded settings answer and bindPipelineServices.",
+        "falsifiability": "Time trigger-to-first-frame on the S26 Ultra while injecting a stalled policy read and a large term set; demonstrate a bounded fallback in both cases.",
+        "concurrency_interleaving": "1. START schedules preparation. 2. The settings read answers. 3. The preparation coroutine waits in matcher compilation or policy loading. 4. The main thread continues showing STARTING. 5. Audio binding is never reached until the preparation returns."
+      },
+      "top_refactor_target_ids": [
+        "REF-01"
+      ]
+    },
+    {
+      "name": "Resource lifecycle",
+      "scale_type": "risk",
+      "grade": "Medium Risk",
+      "justification": "The Bluetooth hold has an explicit 30-second expiry, an idempotent close path, listener cleanup, and a stopped-writer watch. The application History queue has unlimited capacity and one worker. A stalled Room operation can leave later writes accumulating without an upper bound, although insertion itself proceeds. Phone testing is needed to measure queue behavior under a genuinely slow database.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/audio/WarmHoldOwner.kt",
+        "line_range": "L138-L148",
+        "snippet": "private fun clearHoldBookkeeping() {\n        holdExpiry?.let { runCatching { scheduler.removeCallbacks(it) } }\n        holdExpiry = null\n        holdCommListener?.let { l -> runCatching { removeCommListener(l) } }\n        holdCommListener = null\n        holdDeviceCallback?.let { c -> runCatching { unregisterDeviceCallback(c) } }\n        holdDeviceCallback = null\n        warmHold = null\n        heldSinkType = -1\n        heldSinkName = \"\"",
+        "why_exemplary": "Ending the decided warm hold removes its timer, listeners, and route identity in one place."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/history/HistoryWriteQueue.kt",
+        "line_range": "L38-L44",
+        "snippet": "private val writes = Channel<Write>(Channel.UNLIMITED)\n\n    init {\n        scope.launch {\n            for (write in writes) {\n                runCatching { write.body(repository) }\n                    .onFailure { warn(\"History write failed (${write.label}): ${it.javaClass.simpleName}\") }",
+        "rule_violated": "Named engineering principle: background work queues need a finite capacity or explicit overload policy",
+        "severity": "MEDIUM",
+        "confidence": "Medium",
+        "confidence_rationale": "The queue is unbounded and serial by inspection. Sustained database blocking and the resulting memory cost remain runtime scenarios.",
+        "counterfactual": "If one History write remains blocked while dictation continues, later History rows stay pending and queued closures consume increasing memory.",
+        "counterfactual_rationale": "The single worker cannot advance past a blocked write, while trySend keeps accepting into an unlimited channel.",
+        "falsifiability": "Hold the repository's first write, enqueue repeated takes, and show a finite enforced queue limit or that later writes can progress without unbounded growth.",
+        "concurrency_interleaving": "1. The queue worker starts a Room write and stalls. 2. A take completes and enqueues more History writes. 3. Further takes enqueue again. 4. The one worker remains on the first write. 5. The unlimited channel retains the later writes until the stall ends or the process dies."
+      },
+      "top_refactor_target_ids": [
+        "REF-03"
+      ]
+    },
+    {
+      "name": "Security and privacy",
+      "scale_type": "risk",
+      "grade": "Low Risk",
+      "justification": "Audio is passed between app processes by file path, provider secrets use Android Keystore with encrypted app-private blobs, models are pinned and hash-verified, and clipboard restoration checks ownership. PostHog applies an allowlist and Sentry judges or clears text-bearing fields. GenieX logging is silenced before SDK initialization. Static reading cannot prove the final network payload or a vendor upgrade's logging behavior.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/telemetry/SentryBootstrap.kt",
+        "line_range": "L141-L160",
+        "snippet": "fun sanitize(event: SentryEvent): SentryEvent {\n        event.serverName = null\n        event.request = null\n        event.user = null\n        event.transaction = null\n        event.setModules(null)\n        event.setUnknown(null)\n        event.platform = event.platform?.let(SentrySchema::identifier)\n        event.logger = event.logger?.let(SentrySchema::identifier)",
+        "why_exemplary": "The outgoing crash event loses user, request, and unknown fields before the remaining strings are judged."
+      },
+      "worst_violation": {
+        "file": "NONE",
+        "line_range": "L0-L0",
+        "snippet": "No violation found in this dimension.",
+        "rule_violated": "No violation found in this dimension.",
+        "severity": "LOW",
+        "confidence": "Medium",
+        "confidence_rationale": "No privacy leak was established from source reading; outgoing payload and vendor logs were not captured.",
+        "counterfactual": "No violation found in this dimension.",
+        "counterfactual_rationale": "No violation found in this dimension.",
+        "falsifiability": "No violation found in this dimension.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": []
+    }
+  ],
+  "refactor_targets": [
+    {
+      "id": "REF-01",
+      "title": "Bound preparation before capture",
+      "dimension": "Architecture integrity",
+      "tier": "LARGE",
+      "estimated_loc_delta": 90,
+      "rule_violated": ".claude/rules/architecture-rules.md FACT: heart-and-limbs; RULE: isolate-limbs",
+      "severity": "HIGH",
+      "confidence": "Medium",
+      "fix_shape": "Introduce a typed TakePreparation result. Put matcher compilation and policy loading behind one measured startup deadline, preserving the last compiled matcher and last successfully read policy. On timeout or ordinary exception, freeze the fallback values, record a defect, and continue to bindPipelineServices. Keep capture admission and the state transition in DictationSessionCoordinator.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:L399-L427",
+        "app/src/main/java/com/envi/wispr/providers/ProviderConfigurationRepository.kt:L32-L42",
+        "app/src/main/java/com/envi/wispr/providers/ProviderConfigurationRepository.kt:L136-L141"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-02",
+      "title": "Keep fallback preparation off polish binder threads",
+      "dimension": "Concurrency discipline",
+      "tier": "MEDIUM",
+      "estimated_loc_delta": 45,
+      "rule_violated": ".claude/rules/kotlin-patterns.md RULE: never-block-a-binder-or-ui-thread",
+      "severity": "MEDIUM",
+      "confidence": "High",
+      "fix_shape": "Make the null-policy, poisoned-runtime, and duplicate-id branches enqueue a fallback task on a service-owned worker. The AIDL method should return after admission; the worker runs fallbackText and then delivers the outcome once. Keep request identity and cancellation checks before callback delivery.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/polish/PolishService.kt:L147-L187",
+        "app/src/main/java/com/envi/wispr/polish/PolishService.kt:L342-L355"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-03",
+      "title": "Give History writes an overload result",
+      "dimension": "Resource lifecycle",
+      "tier": "MEDIUM",
+      "estimated_loc_delta": 110,
+      "rule_violated": "Named engineering principle: background work queues need a finite capacity or explicit overload policy",
+      "severity": "MEDIUM",
+      "confidence": "Medium",
+      "fix_shape": "Replace Channel.UNLIMITED with a finite per-process queue and a typed Accepted or Rejected enqueue result. Preserve write order for each row. Have the finalizer treat rejection as a failed History save, keep the words available through insertion or clipboard, and emit one content-free defect. Add a stalled-repository stress test.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/history/HistoryWriteQueue.kt:L26-L54",
+        "app/src/main/java/com/envi/wispr/ui/SessionFinalizer.kt:L265-L298"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-04",
+      "title": "Trim the coordinator's presentation and telemetry work",
+      "dimension": "Code hygiene and maintainability",
+      "tier": "LARGE",
+      "estimated_loc_delta": 20,
+      "rule_violated": ".claude/rules/architecture-rules.md RULE: keep-central-types-thin",
+      "severity": "LOW",
+      "confidence": "Medium",
+      "fix_shape": "Move notice rendering and delivery calls into the existing SessionNoticePresenter. Move the mapping from polish reason and context to publication telemetry fields into a small TakeFacts projector. Leave the coordinator's reservation, terminal commit, and insertion decision in DictationSessionCoordinator; delete the moved code there in the same change.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:L956-L1007",
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:L1019-L1046",
+        "app/src/main/java/com/envi/wispr/ui/SessionNotice.kt:L1-L69"
+      ],
+      "depends_on": [
+        "REF-01"
+      ]
+    },
+    {
+      "id": "REF-05",
+      "title": "Test a policy read that never answers",
+      "dimension": "Testability",
+      "tier": "SMALL",
+      "estimated_loc_delta": 45,
+      "rule_violated": ".claude/rules/testing-philosophy.md RULE: a-public-product-promise-needs-a-binding-test",
+      "severity": "MEDIUM",
+      "confidence": "Medium",
+      "fix_shape": "In the existing DictationSessionRig, supply a suspended loadPolicy that never completes. Assert a subject-fired capture or terminal signal within the startup budget, the chosen fallback policy, and one defect. Keep the current PolicyRead.Failed tests for reads that do answer.",
+      "evidence_files": [
+        "app/src/test/java/com/envi/wispr/ui/PolishFailsOpenTest.kt:L68-L80",
+        "app/src/test/java/com/envi/wispr/ui/DictationSessionRig.kt:L141-L162"
+      ],
+      "depends_on": [
+        "REF-01"
+      ]
+    },
+    {
+      "id": "REF-06",
+      "title": "Correct the History completion comment",
+      "dimension": "Code hygiene and maintainability",
+      "tier": "SMALL",
+      "estimated_loc_delta": -2,
+      "rule_violated": "Named engineering principle: comments must describe the current control flow",
+      "severity": "LOW",
+      "confidence": "High",
+      "fix_shape": "Replace the claim that completion waits for the History save with the current rule: reserve and enqueue the save together, then commit and deliver without waiting. Keep the ordering explanation about teardown only if it still matches the tests.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:L995-L998",
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:L1027-L1044"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-07",
+      "title": "Narrow service command member visibility",
+      "dimension": "API surface",
+      "tier": "SMALL",
+      "estimated_loc_delta": 0,
+      "rule_violated": ".claude/rules/architecture-rules.md RULE: minimize-visibility",
+      "severity": "LOW",
+      "confidence": "High",
+      "fix_shape": "Mark the service action and extra companion constants internal. Keep DictationSessionService public for Android construction and keep the AIDL transactions unchanged.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt:L45-L62"
+      ],
+      "depends_on": []
+    }
+  ],
+  "phased_roadmap": [
+    {
+      "phase": 1,
+      "title": "Close immediate startup and binder risks",
+      "refactor_ids": [
+        "REF-01",
+        "REF-02",
+        "REF-06",
+        "REF-07"
+      ],
+      "rationale": "These changes have no dependencies. The startup bound protects the heart; the binder change protects a real failure branch. The two small corrections remove misleading or wider-than-needed API surface."
+    },
+    {
+      "phase": 2,
+      "title": "Make the failure contracts measurable",
+      "refactor_ids": [
+        "REF-05",
+        "REF-03"
+      ],
+      "rationale": "The startup outcome test pins REF-01. The History queue change requires an overload outcome and a stalled-writer test while preserving insertion."
+    },
+    {
+      "phase": 3,
+      "title": "Reduce coordinator mass",
+      "refactor_ids": [
+        "REF-04"
+      ],
+      "rationale": "Move presentation and telemetry projection after the startup behavior is protected, while the coordinator remains the sole terminal decision maker."
+    }
+  ],
+  "strengths": [
+    {
+      "file": "app/src/main/AndroidManifest.xml",
+      "line_range": "L79-L106",
+      "pattern_name": "Isolated capture, ASR, VAD, and polish services",
+      "why_preserve": "Separate processes limit model memory and crash impact."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/ui/TakeContext.kt",
+      "line_range": "L19-L27",
+      "pattern_name": "One fixed take context",
+      "why_preserve": "The target and terminal arbiter are assigned once at admission."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/ui/TakePolishController.kt",
+      "line_range": "L379-L407",
+      "pattern_name": "First-wins polish decision",
+      "why_preserve": "Disconnect, answer, and fallback cannot each publish their own result."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/audio/WarmHoldOwner.kt",
+      "line_range": "L138-L175",
+      "pattern_name": "Single warm-hold cleanup point",
+      "why_preserve": "Expiry, listeners, and route bookkeeping have one close path."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/models/ModelDelivery.kt",
+      "line_range": "L82-L88",
+      "pattern_name": "Verified model admission",
+      "why_preserve": "A model is ready only after receipt, file shape, byte count, and hash checks."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/telemetry/SentryBootstrap.kt",
+      "line_range": "L141-L160",
+      "pattern_name": "Outbound crash payload filtering",
+      "why_preserve": "Messages and user-supplied context are cleared or judged before sending."
+    },
+    {
+      "file": "app/src/androidTest/java/com/envi/wispr/VoicePipelineDeviceTest.kt",
+      "line_range": "L204-L219",
+      "pattern_name": "Editor text as insertion evidence",
+      "why_preserve": "The test checks the destination text and exactly-once result, not only that an action was called."
+    }
+  ],
+  "meta_recommendations": [
+    {
+      "recommendation": "Make the startup outcome test in REF-05 a gate for changes to session preparation.",
+      "triggered_by": "REF-01 and the Testability worst_violation"
+    },
+    {
+      "recommendation": "On the S26 Ultra, record trigger-to-first-frame and stop-to-insertion timings with stalled policy storage and many custom terms.",
+      "triggered_by": "Performance and latency worst_violation"
+    },
+    {
+      "recommendation": "Exercise a real Bluetooth take, its 30-second silent hold, handover, device removal, and teardown while observing route release and microphone state.",
+      "triggered_by": "Resource lifecycle static risk assessment"
+    }
+  ],
+  "not_assessed": [
+    {
+      "area": "Root CLAUDE.md",
+      "reason": "The requested file is absent from this checkout; the supplied adapter and the named project rules were read.",
+      "how_to_cover": "Restore or identify the root file and compare this report against it."
+    },
+    {
+      "area": "Physical S26 Ultra heart path and third-party editors",
+      "reason": "Read-only audit; no Gradle, adb, build, or device run was performed.",
+      "how_to_cover": "Run triggered dictation through capture, shipped ASR, polish failure, and exactly-once insertion into real editors."
+    },
+    {
+      "area": "Bluetooth hold runtime closure and idle power",
+      "reason": "Static code shows bounds and cleanup but cannot prove platform route release or battery cost.",
+      "how_to_cover": "Measure route, playback, microphone indicator, timers, and wake state through expiry, handover, device removal, and service death."
+    },
+    {
+      "area": "Actual PostHog and Sentry egress and vendor logging",
+      "reason": "Filtering and logger installation were read, but outgoing packets and vendor behavior were not observed.",
+      "how_to_cover": "Capture sanitized envelopes and logcat during dictated text, provider errors, native crashes, and a GenieX runtime load."
+    },
+    {
+      "area": "Clean-install setup, download-from-empty, and reinstall recovery",
+      "reason": "Explicitly stage 2 and excluded from this stage 1 grade.",
+      "how_to_cover": "Run the stage 2 clean-install and recovery matrix when that stage begins."
+    },
+    {
+      "area": "Accelerator benchmark",
+      "reason": "Explicitly excluded experiment and not an app gate.",
+      "how_to_cover": "Audit it separately if it becomes part of product delivery."
+    }
+  ],
+  "severity_confidence_distribution": {
+    "critical_high": 0,
+    "critical_medium": 0,
+    "critical_low": 0,
+    "high_high": 0,
+    "high_medium": 1,
+    "high_low": 0,
+    "medium_high": 1,
+    "medium_medium": 2,
+    "medium_low": 0,
+    "low_high": 2,
+    "low_medium": 1,
+    "low_low": 0
+  },
+  "internal_red_team": {
+    "least_confident_finding": {
+      "refactor_id_or_description": "REF-04",
+      "why_low_confidence": "The coordinator is large, but session decisions belong there. Moving notice and telemetry projection may improve reading without improving a user outcome, and a careless split could obscure ownership.",
+      "what_would_resolve_it": "Measure code review and change effort on the affected methods, then require an extraction that leaves terminal decisions and their outcome tests in the coordinator."
+    },
+    "top_not_assessed_gap": {
+      "gap": "The full heart path under process loss and real editor focus changes on the founder’s S26 Ultra.",
+      "runtime_test_required": "Run a spoken take into a real third-party editor; kill or stall polish, then separately kill capture or ASR, move focus between fields, and verify the text, notice, clipboard, History row, and single terminal defect.",
+      "why_this_matters_for_heart_limbs": "Static fallback branches and unit fakes cannot prove that the customer receives their last successful text in the intended place, exactly once, when Android services and editor focus change."
+    }
+  }
+}

@@ -253,6 +253,29 @@ class TelemetryContractsTest {
         assertEquals(names.toSet(), AnalyticsEvent.NAMES)
     }
 
+    /**
+     * #309: the arbiter's production sink, moved out of the session owner, makes its five calls in order. The rig
+     * replaces the sink and no JVM seam reaches `Telemetry.journal`, so the order is read from the source. REVERT: drop
+     * the journal commit, or end the error scope before it.
+     */
+    @Test
+    fun theTakeEndingReportLogsBreadcrumbsReportsCommitsThenLeavesTheScope() {
+        val body = java.io.File("src/main/java/com/envi/wispr/telemetry/TakeEndingReport.kt").readText()
+            .substringAfter("internal fun recordTakeEnding(takeFacts: TakeFacts, reason: TerminalReason) {")
+        val calls = listOf(
+            "DebugSessionLog.log(\"Take terminal: ",
+            "Telemetry.breadcrumb(\"take\", \"terminal\",",
+            "Telemetry.defect(defect,",
+            "Telemetry.journal?.terminal(takeFacts.terminal(reason))",
+            "Telemetry.takeEnded(takeFacts.takeId)",
+        )
+        val at = calls.map { body.indexOf(it) }
+        assertTrue("every call is present: $at", at.all { it >= 0 })
+        assertEquals("in order", at.sorted(), at)
+        val owner = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        assertTrue(owner.contains("private val endingSink: (TakeFacts, TerminalReason) -> Unit = ::recordTakeEnding,"))
+    }
+
     // ---- TelemetryFacadeTest: a limb before bootstrap
 
     /**

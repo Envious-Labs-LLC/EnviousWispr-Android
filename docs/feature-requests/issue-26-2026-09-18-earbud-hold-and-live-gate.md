@@ -223,7 +223,7 @@ publishing RECORDING when: the state is no longer STARTING (cancel or destroy wo
 is gone (`audioService == null` or a `DeadObjectException`), `isCapturing` went false (a capture error or
 cap during the wait: the terminal reason is read and shown as today's capture-ended path), or the
 STARTING bound passed (fails the take with `START_FAILURE_OTHER`). FORCED publishes the notice through
-the existing one-slot recorder line BEFORE `startPolling` runs, and `publishMicrophoneNoticesIfNeeded`
+the existing one-slot recorder line BEFORE `startPolling` runs, and `publishMicrophoneNoticesIfNeeded` (removed)
 returns early when the forced notice was shown, so neither the Bluetooth tip nor a pick-missing line can
 overwrite it; the silence auto-stop warning still ranks above it (parent plan round 6).
 `cancelStarting` now runs with capture live: it stops capture, waits for the file, deletes it, and hands

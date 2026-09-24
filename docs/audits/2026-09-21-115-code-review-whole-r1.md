@@ -188,8 +188,8 @@ nl -ba docs/feature-requests/issue-115-2026-09-21-push-not-poll.md | sed -n '410
    270	A3. **The owner** registers its listener in `startCaptureForTake`'s caller (`tryStartRecording`, next to
    271	   `listenForPicture`) BEFORE the start call, so no event can precede registration; each event is
    272	   `host.postToMain { … }` and then handled by the existing code paths: `onLive` → `publishLive(forced)` with
-   273	   the route facts stamped; `onTick` → `updateElapsed`, `publishDurationWarningIfNeeded`,
-   274	   `publishMicrophoneNoticesIfNeeded` once (the tip gate); `onSilenceStatus` → `publishSilenceNoticeIfNeeded`
+   273	   the route facts stamped; `onTick` → `updateElapsed`, `publishDurationWarningIfNeeded` (removed),
+   274	   `publishMicrophoneNoticesIfNeeded` (removed) once (the tip gate); `onSilenceStatus` → `publishSilenceNoticeIfNeeded`
    275	   with the pushed value; `onEnded` → the existing `when (CaptureEnding.fromAidl(reason))` with the path
    276	   handed to `stopAndTranscribe`, `takeFacts.captureTerminal`, `takeFacts.silenceStopStatus`,
    277	   `takeFacts.peakAmplitude` (from the payload's peak, replacing `takePeakAmplitude()`) and `captureDeviceLabel`

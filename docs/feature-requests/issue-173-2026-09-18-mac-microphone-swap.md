@@ -62,7 +62,7 @@ Founder, S26 Ultra, Play build 141, 2026-09-18, Input Device set to AirPods Pro 
 - **Device list:** `AudioManager.getDevices(GET_DEVICES_INPUTS)` (external) via `InputDeviceCandidate.from`; the page reads it in `rememberConnectedInputs` (line 473 to 494, `pickable` filter, `AudioDeviceCallback` on add/remove); the capture service reads its own list at take start (`AudioCaptureService.resolveRoute`, line 599 to 607); the accessibility service reads it for the colour.
 - **Decision:** `InputDeviceResolver.resolve(pick, inputs)` (line 55): explicit pick present → `PICKED`; explicit pick absent → Auto order with reason `PICK_MISSING`; Auto → `AUTO`. `earbudsAreTheMicrophone` (line 86) is a projection of it.
 - **Reason consumer in the app process:** `IAudioCaptureService.getInputRouteReason` (AIDL line 56 to 57) → `DictationSessionService.publishMicrophoneNoticesIfNeeded` (line 800 to 805) → `CaptureNotices.pickIsMissing` / `pickMissingLine` (removed) → `sayWhileRecording`. That is the ONLY reader of the reason code in the app process (`grep -rn "inputRouteReason\|InputRouteReason" app/src/main` lists the AIDL, the enum, `EffectiveDevice`, `AudioCaptureService` and this one site).
-- **Settings rows:** `MicrophonePage` builds the rows inline (line 393 to 423): Auto, then `inputs.map { it.pick to it.label }`, then the `pickedButAbsent` row. `InputDeviceRow` (line 497) is a radio row with an optional subtitle.
+- **Settings rows:** `MicrophonePage` builds the rows inline (line 393 to 423): Auto, then `inputs.map { it.pick to it.label }`, then the `pickedButAbsent` (removed) row. `InputDeviceRow` (line 497) is a radio row with an optional subtitle.
 - **History card:** `HistoryScreen.kt` line 276 to 278 shows "Microphone: <captureDevice>" from the row written at stop. Unchanged.
 
 ### 2. Existing authority
@@ -82,7 +82,7 @@ Capability search "which device will Auto open" → `InputDeviceResolver.resolve
 - **The Settings page is not always open:** the Mac reconciles on every device change because it writes the stored keys; Android writes nothing on a device change, so no listener is needed anywhere new. The page recomputes its rows from `rememberConnectedInputs`, which already re-reads on add/remove while the page is open.
 - **Tapping an already-selected Auto row:** Compose `selectable` fires `onClick` whether or not `selected` is true, so tapping Auto while it shows selected for an absent pick writes `InputDevicePick.Auto` and forgets the remembered device. Same for tapping a listed device.
 - **A take in flight when the earbuds reconnect:** the take keeps its device (freeze per take, #165); the row flips at once; the next take uses the pick. Unchanged.
-- **Session service latch:** `pickMissingNoticeShown` is reset in `tryStartRecording` (line 549) and read in the notice guard (line 799). Both sites go; `CaptureNoticesTest` pins the new guard text.
+- **Session service latch:** `pickMissingNoticeShown` (removed) is reset in `tryStartRecording` (line 549) and read in the notice guard (line 799). Both sites go; `CaptureNoticesTest` pins the new guard text.
 - **AIDL:** `getInputRouteReason` keeps its slot (append-only); after this change nothing in the app process calls it. Named as deliberate, not deleted.
 - **Screen reader:** the Auto row's subtitle is read as part of the row; "Using Storm" is the same fact the Mac pill carries. When the selected device row vanishes (disconnect while the page is open), Compose moves accessibility focus as it does today for any listed device that disconnects; this plan removes one row kind (the absent pick) and adds none, so row removal is not new behaviour.
 - **Leaving and reopening Settings:** the list and its callback belong to the composition (`rememberConnectedInputs`, `DisposableEffect`); a page opened after a reconnect reads the list fresh in `read()` at composition, so the rows are right on every open with no stored state.
@@ -102,7 +102,7 @@ Capability search "which device will Auto open" → `InputDeviceResolver.resolve
 
 - `ui/InputDeviceRows.kt`: `object InputDeviceRows` with `data class Row(val pick: InputDevicePick, val title: String, val subtitle: String?, val selected: Boolean)` and `fun build(pick: InputDevicePick, inputs: List<InputDeviceCandidate>): List<Row>`. Rule: `val resolution = InputDeviceResolver.resolve(pick, inputs)`; Auto is selected iff `resolution.reason != InputRouteReason.PICKED`; the Auto subtitle is `"Using ${target.label}"` when Auto is selected and a target exists, `"No microphone found"` when Auto is selected and there is none, and the existing explainer "Earbuds when they are connected, otherwise the phone" when a device is selected; one row per `InputDeviceResolver.pickable(inputs)` entry, selected iff `pick == it.pick`; no row for an absent pick.
 - `MicrophonePage`: replaces the inline rows with `InputDeviceRows.build(pick, inputs).forEach { ... }`; `onSelect` writes `row.pick` as today.
-- `DictationSessionService`: delete the `pickMissingNoticeShown` field, its reset, and the pick-missing branch; `publishMicrophoneNoticesIfNeeded` no longer reads `inputRouteReason`, only `inputRouteKind` for the tip. The KDoc describes one line (the tip) after the forced and silence notices.
+- `DictationSessionService`: delete the `pickMissingNoticeShown` (removed) field, its reset, and the pick-missing branch; `publishMicrophoneNoticesIfNeeded` (removed) no longer reads `inputRouteReason`, only `inputRouteKind` for the tip. The KDoc describes one line (the tip) after the forced and silence notices.
 - `CaptureNotices`: delete `pickMissingLine` and `pickIsMissing`.
 
 Rejected: the Mac's two-key model with a reconciler on device changes (Android has no always-running app process to host it; the resolver already carries the fallback per take, so one stored pick plus a display rule gives every outcome the founder listed). Rejected: rewriting the stored pick to Auto on disconnect (the reconnect-reclaims-it behaviour needs the memory; the Mac keeps it).
@@ -130,7 +130,7 @@ The row rule lives in `ui/` beside `CaptureNotices` because it is presentation o
 | Contract delta | Consumer | Current behaviour | Required behaviour | Code change? | Verified by |
 |---|---|---|---|---|---|
 | rows from `InputDeviceRows.build` | `MicrophonePage` | inline rule with an absent row | Auto selected + "Using X" when the pick is absent; no absent row | yes | `InputDeviceRowsTest` rows |
-| pick-missing line removed | `publishMicrophoneNoticesIfNeeded` | says the line once per take | no missing-pick sentence | yes | `CaptureNoticesTest` guard text |
+| pick-missing line removed | `publishMicrophoneNoticesIfNeeded` (removed) | says the line once per take | no missing-pick sentence | yes | `CaptureNoticesTest` guard text |
 | `getInputRouteReason` | none in the app process | read for the line | unread; kept | no | `SilenceStopWiringTest` still lists the AIDL method |
 | bubble colour (#171) | `applyEarbuds` | `resolve` projection | unchanged | no | existing `InputDeviceResolverTest` rows |
 | History card | `HistoryScreen` | names what recorded | unchanged | no | none needed |
@@ -167,8 +167,8 @@ The row rule lives in `ui/` beside `CaptureNotices` because it is presentation o
 ## 10. File-by-file changes
 
 - `app/src/main/java/com/envi/wispr/ui/InputDeviceRows.kt` (new): the row rule above.
-- `app/src/main/java/com/envi/wispr/ui/SettingsPages.kt`: `MicrophonePage` Input Device group uses `InputDeviceRows.build`; the `pickedButAbsent` block and its comment go; the group comment states the Mac rule (Auto shows what it opens; an absent pick is remembered, not shown); `rememberConnectedInputs.read()` wraps `getDevices` in `runCatching`.
-- `app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt`: remove `pickMissingNoticeShown` (field, reset, guard) and the pick-missing branch; KDoc updated.
+- `app/src/main/java/com/envi/wispr/ui/SettingsPages.kt`: `MicrophonePage` Input Device group uses `InputDeviceRows.build`; the `pickedButAbsent` (removed) block and its comment go; the group comment states the Mac rule (Auto shows what it opens; an absent pick is remembered, not shown); `rememberConnectedInputs.read()` wraps `getDevices` in `runCatching`.
+- `app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt`: remove `pickMissingNoticeShown` (removed) (field, reset, guard) and the pick-missing branch; KDoc updated.
 - `app/src/main/java/com/envi/wispr/ui/CaptureNotices.kt`: remove `pickMissingLine` and `pickIsMissing`.
 - `app/src/test/java/com/envi/wispr/ui/InputDeviceRowsTest.kt` (new): rows in §11.2.
 - `app/src/test/java/com/envi/wispr/ui/CaptureNoticesTest.kt`: guard text updated; `onlyThePickMissingReasonArmsThePickMissingLine` (removed) deleted (its subject is deleted; what it protected, the reason-to-line mapping, no longer exists); the forced-notice comment no longer names the pick-missing line.
@@ -176,7 +176,7 @@ The row rule lives in `ui/` beside `CaptureNotices` because it is presentation o
 ## 11. Testing
 
 1. **Class.** `InputDeviceRowsTest` rows: product outcome (when they fail, the user sees the wrong row selected, an absent device listed, or the wrong "Using X"). `CaptureNoticesTest` guard: drift guard, named as such.
-2. **Revert that turns each red.** Rows: restore the `pickedButAbsent` behaviour inside `build` (select the absent pick) → the absent-pick row fails; drop the `"Using "` prefix → the subtitle row fails; select Auto on `reason == AUTO` only → the absent-pick row fails. Guard: put `pickMissingNoticeShown` back in the guard line.
+2. **Revert that turns each red.** Rows: restore the `pickedButAbsent` (removed) behaviour inside `build` (select the absent pick) → the absent-pick row fails; drop the `"Using "` prefix → the subtitle row fails; select Auto on `reason == AUTO` only → the absent-pick row fails. Guard: put `pickMissingNoticeShown` (removed) back in the guard line.
 3. **Not tested.** Compose rendering of the rows (no Compose test rig in the unit suite; the phone pass covers it). Bluetooth on the emulator (impossible).
 
 ### 11.1 Hardware UAT spec

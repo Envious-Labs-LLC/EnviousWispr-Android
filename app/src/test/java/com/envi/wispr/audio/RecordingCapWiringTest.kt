@@ -22,9 +22,9 @@ class RecordingCapWiringTest {
     private val limits = File("src/main/java/com/envi/wispr/audio/RecordingLimits.kt").readText()
     private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
     private val asr = File("src/main/java/com/envi/wispr/asr/AsrService.kt").readText()
-    /** Since #186 the cap notices, the warning latch and the polling loop live in the coordinator. */
+    /** Since #186 the cap-reached notice and the heartbeat live in the coordinator. */
     private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
-    /** The recorder notices' sentences since #256. */
+    /** The recorder notices' sentences since #256, and the once-per-take warning since #309. */
     private val notices = File("src/main/java/com/envi/wispr/ui/SessionNotice.kt").readText()
 
     @Test
@@ -79,7 +79,7 @@ class RecordingCapWiringTest {
         // buy is a place this thread can hang before its loop has run once, which is issue #115.
         assertTrue(
             "the warning moment must come from the owner",
-            session.contains("RecordingLimits.WARNING_AT_MS"),
+            notices.contains("RecordingLimits.WARNING_AT_MS"),
         )
         assertFalse(
             "the session must not ask the capture service for the cap",
@@ -118,20 +118,19 @@ class RecordingCapWiringTest {
     fun theWarningIsShownOncePerTakeAndResetsForTheNextOne() {
         assertTrue(
             "the warning must be latched",
-            session.contains("if (durationWarningShown || elapsedMs < RecordingLimits.WARNING_AT_MS) return"),
+            notices.contains("if (durationWarningShown || elapsedMs < RecordingLimits.WARNING_AT_MS) return"),
         )
-        assertTrue("the latch must be set when it fires", session.contains("durationWarningShown = true"))
-        assertTrue(
-            "the latch must be cleared with the other per-take state",
-            session.contains("durationWarningShown = false"),
-        )
+        assertTrue("the latch must be set when it fires", notices.contains("durationWarningShown = true"))
         // Two lines read `durationWarningShown = false`: the field's own declaration and the per-take
         // reset. A third means a second place decides when a take starts, and the two will disagree.
         assertEquals(
             "the latch must be cleared in exactly one place, beside its sibling",
             1,
-            Regex("(?<!var )durationWarningShown = false").findAll(session).count(),
+            Regex("(?<!var )durationWarningShown = false").findAll(notices).count(),
         )
+        val begin = notices.substringAfter("fun beginTake() {").substringBefore("\n    }\n")
+        assertTrue("the latch must be cleared with the other per-take state", begin.contains("durationWarningShown = false") && begin.contains("silenceNoticeShown = false"))
+        assertFalse("the owner holds no latch", session.contains("durationWarningShown"))
     }
 
     @Test
@@ -165,10 +164,9 @@ class RecordingCapWiringTest {
         // Since #115 the ending and the warning arrive as separate pushed events: the warning rides the
         // heartbeat handler and can never sit on the path that ends a take, and it is a limb there.
         val tick = session.substringAfter("private fun onTakeTick(").substringBefore("\n    }\n")
-        assertTrue("the heartbeat publishes the warning", tick.contains("publishDurationWarningIfNeeded("))
-        assertTrue("as a limb", tick.contains("runCatching { publishDurationWarningIfNeeded(elapsedMs) }"))
+        assertTrue("the heartbeat publishes the warning, as a limb", tick.contains("runCatching { notices.sayDurationWarningIfDue(elapsedMs) }"))
         val ending = session.substringAfter("private fun onTakeEnded(").substringBefore("\n    }\n")
-        assertFalse("the ending handler never publishes the warning", ending.contains("publishDurationWarningIfNeeded("))
+        assertFalse("the ending handler never publishes the warning", ending.contains("sayDurationWarningIfDue("))
     }
 
     @Test

@@ -60,12 +60,17 @@ class SilenceStopSettingsTest {
 
     @Test
     fun theNoticeFiresOnlyOnceAndOnlyWhenAutoStopNeverBecameAvailable() {
+        // Since #309 the owner keeps the setting and state checks, and the presenter the once-per-take latch.
         val body = read("ui/DictationSessionCoordinator.kt")
             .substringAfter("private fun publishSilenceNoticeIfNeeded(")
             .substringBefore("private fun stopAndTranscribe(")
-        assertTrue("nothing to say when the user has it off", body.contains("if (!sessionPreferences.autoStopOnSilence || silenceNoticeShown) return"))
-        assertTrue("and only for the unavailable state", body.contains("!= AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return"))
-        assertTrue("shown once per take", body.contains("silenceNoticeShown = true"))
+        assertTrue("nothing to say when the user has it off", body.contains("if (!sessionPreferences.autoStopOnSilence) return"))
+        assertTrue(body.contains("notices.saySilenceUnavailableIfDue(status)"))
+        val due = read("ui/SessionNotice.kt")
+            .substringAfter("fun saySilenceUnavailableIfDue(")
+            .substringBefore("fun sayBluetoothTipIfDue(")
+        assertTrue("shown once per take", due.contains("if (silenceNoticeShown) return") && due.contains("silenceNoticeShown = true"))
+        assertTrue("and only for the unavailable state", due.contains("!= AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return"))
     }
 
     @Test
@@ -91,10 +96,13 @@ class SilenceStopSettingsTest {
 
         val notice = source
             .substringAfter("private fun publishSilenceNoticeIfNeeded(")
-            .substringBefore("private fun publishDurationWarningIfNeeded(")
+            .substringBefore("private fun stopAndTranscribe(")
+        val due = read("ui/SessionNotice.kt")
+            .substringAfter("fun saySilenceUnavailableIfDue(")
+            .substringBefore("fun sayBluetoothTipIfDue(")
         assertTrue(
             "the silence notice must go through the shared chooser, not pick a surface itself",
-            notice.contains("notices.say(SessionNotice.SILENCE_UNAVAILABLE)"),
+            notice.contains("notices.saySilenceUnavailableIfDue(status)") && due.contains("say(SessionNotice.SILENCE_UNAVAILABLE)"),
         )
     }
 

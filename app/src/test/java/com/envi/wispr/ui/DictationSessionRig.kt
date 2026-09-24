@@ -680,9 +680,15 @@ internal class DictationSessionRig {
     class FakeSpeech : SpeechLink {
         @Volatile var listener: SpeechListener? = null
         private val requested = CountDownLatch(1)
+        /** When set, the request blocks until it opens and then throws, as a binder call that failed late would (#356). */
+        @Volatile var throwWhenReleased: CountDownLatch? = null
         override fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener) {
             this.listener = listener
             requested.countDown()
+            throwWhenReleased?.let { release ->
+                check(release.await(10, TimeUnit.SECONDS)) { "the row never released the held request" }
+                throw android.os.RemoteException("the speech process failed late")
+            }
         }
         fun awaitRequest(): SpeechListener {
             check(requested.await(10, TimeUnit.SECONDS)) { "the owner never asked the speech process" }

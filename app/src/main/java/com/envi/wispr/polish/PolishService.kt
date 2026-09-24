@@ -478,13 +478,17 @@ class PolishService : Service() {
             modelReady = false
         }
         executor.shutdown()
-        // The orderly close waits behind whatever the worker is running (#344 review round 2): a vendor load, a
-        // language-detector acquisition or any other task with no deadline of its own. Rather than list each, the
-        // close itself is bounded: a worker not finished within ORDERLY_CLOSE_BOUND_MS holds something that never
-        // returns, and the process ends so nothing stays resident. The client has unbound; nothing is owed to it.
+        // The orderly close waits behind whatever the workers are running (#344 review rounds 2 and 3): a vendor load,
+        // a language-detector acquisition or any other task with no deadline of its own, on the main worker or the
+        // fallback lane's (whose detector close is queued behind its answers). Rather than list each, the close itself
+        // is bounded: BOTH workers must finish within one ORDERLY_CLOSE_BOUND_MS, or one holds something that never
+        // returns and the process ends so nothing stays resident. The client has unbound; nothing is owed to it.
         Thread({
-            val finished = runCatching { executor.awaitTermination(ORDERLY_CLOSE_BOUND_MS, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
-            if (!finished) endProcess("the worker did not finish within $ORDERLY_CLOSE_BOUND_MS ms of destruction")
+            val end = SystemClock.elapsedRealtime() + ORDERLY_CLOSE_BOUND_MS
+            val mainDone = runCatching { executor.awaitTermination(ORDERLY_CLOSE_BOUND_MS, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
+            val left = (end - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+            val fallbackDone = runCatching { fallbackLane.awaitTermination(left) }.getOrDefault(false)
+            if (!mainDone || !fallbackDone) endProcess("a worker did not finish within $ORDERLY_CLOSE_BOUND_MS ms of destruction")
         }, "PolishCloseWatch").apply { isDaemon = true }.start()
         super.onDestroy()
     }

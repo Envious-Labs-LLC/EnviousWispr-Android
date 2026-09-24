@@ -144,7 +144,9 @@ class EngineDeadlineTest {
         val shutdown = destroy.indexOf("executor.shutdown()")
         val watch = destroy.indexOf("executor.awaitTermination(ORDERLY_CLOSE_BOUND_MS")
         assertTrue("the watch waits on the worker after its shutdown", shutdown >= 0 && watch > shutdown)
-        assertTrue("an unfinished worker ends the process", destroy.substring(watch).contains("if (!finished) endProcess("))
+        // Review round 3: the fallback lane's worker too, within the same bound. MUTATION m7: the watch ignores it.
+        assertTrue("the fallback lane's worker is waited on too", destroy.substring(watch).contains("fallbackLane.awaitTermination(left)"))
+        assertTrue("either unfinished worker ends the process", destroy.substring(watch).contains("if (!mainDone || !fallbackDone) endProcess("))
         assertTrue("the watch never runs on main", destroy.contains("\"PolishCloseWatch\").apply { isDaemon = true }.start()"))
     }
 

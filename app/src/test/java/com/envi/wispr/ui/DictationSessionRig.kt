@@ -845,6 +845,11 @@ internal class DictationSessionRig {
         override suspend fun setKept(id: Long, kept: Boolean) { rows.computeIfPresent(id) { _, row -> row.copy(kept = kept) } }
         override suspend fun delete(transcript: TranscriptEntity) { rows.remove(transcript.id) }
         override suspend fun deleteAll() = rows.clear()
+        /** The takes the user deleted (#288); the fake's transactions are the interface's own bodies. */
+        val deletedTakes: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+        override suspend fun insertDeletedTakes(takes: List<com.envi.wispr.history.DeletedTake>) { takes.forEach { deletedTakes += it.takeId } }
+        override suspend fun isTakeDeleted(takeId: String): Boolean = takeId in deletedTakes
+        override suspend fun rowTakeIds(): List<String> = rows.values.mapNotNull { it.takeId }
         override suspend fun findByTakeId(takeId: String): TranscriptEntity? = rows.values.firstOrNull { it.takeId == takeId }
         /** When set, runs as a take's draft insert is attempted, with its take id (#288): a recovery staged ahead of the save. */
         @Volatile var onDraftInsert: (suspend (String) -> Unit)? = null

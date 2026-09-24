@@ -15,9 +15,16 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
 
     suspend fun setKept(id: Long, kept: Boolean) = dao.setKept(id, kept)
 
-    suspend fun delete(transcript: TranscriptEntity) = dao.delete(transcript)
+    /** The user's delete (#288): the take's words stay deleted, whatever writes for it later. */
+    suspend fun delete(transcript: TranscriptEntity) = dao.deleteForGood(transcript)
 
-    suspend fun deleteAll() = dao.deleteAll()
+    /** The user's Delete all (#288); [liveTakes] are takes with words and no row yet, deleted with the rest. */
+    suspend fun deleteAll(liveTakes: Collection<String> = emptyList()) = dao.deleteAllForGood(liveTakes)
+
+    /** Inserts a take's row unless the user deleted the take (#288); 0 when deleted. */
+    suspend fun insertUnlessDeleted(transcript: TranscriptEntity): Long = dao.insertUnlessDeleted(
+        transcript.copy(stateChangedAtMs = transcript.stateChangedAtMs.takeIf { it > 0L } ?: clock()),
+    )
 
     /** Removes one row outright. The session owner's exit for a dictation with no words in it. */
     suspend fun discard(id: Long) = dao.deleteById(id)
@@ -66,8 +73,9 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     /**
      * Writes a take's rescued words into History (#288), once per take: a row the take already wrote keeps its words
      * when it has any and receives the rescued ones when it has none (a draft that never saved); with no row, one is
-     * inserted, marked as an interrupted insertion so it reads as the words' last known place. True when History now
-     * holds the words. The rescue holds the final text only, so it is also the row's original text.
+     * inserted, marked as an interrupted insertion so it reads as the words' last known place. True when the rescue is
+     * no longer needed: History holds the words, or the user deleted the take. The rescue holds the final text only, so
+     * it is also the row's original text.
      */
     suspend fun keepRescuedWords(takeId: String, text: String, createdAtMs: Long): Boolean {
         val existing = dao.findByTakeId(takeId)
@@ -91,7 +99,8 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
                 interrupted = true,
             ) > 0
         }
-        insert(
+        // Never for a take the user deleted: nothing is inserted then, and the rescue is done all the same.
+        insertUnlessDeleted(
             TranscriptEntity(
                 originalText = text,
                 finalText = text,

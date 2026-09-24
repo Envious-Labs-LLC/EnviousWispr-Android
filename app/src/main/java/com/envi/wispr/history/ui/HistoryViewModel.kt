@@ -81,13 +81,13 @@ internal class HistoryViewModel(
     }
 
     fun deleteHistory(transcript: TranscriptEntity) {
-        // Deleted words stay deleted (#288): the row and the take's rescue go under one lock, so neither a queued
-        // rescue write nor a recovery can bring them back.
+        // Deleted words stay deleted (#288): the delete marks the take in its own transaction, and the take's rescue goes
+        // once it has committed, so neither a late save, a queued rescue write nor a recovery can bring them back.
         updateHistory { rescuedWords.deleting(transcript.takeId) { repository.delete(transcript) } }
     }
 
     fun deleteAllHistory() {
-        updateHistory { rescuedWords.clearing { repository.deleteAll() } }
+        updateHistory { rescuedWords.clearing { liveTakes -> repository.deleteAll(liveTakes) } }
     }
 
     private fun updateHistory(operation: suspend () -> Unit) {

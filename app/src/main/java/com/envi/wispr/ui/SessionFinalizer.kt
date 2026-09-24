@@ -334,13 +334,7 @@ internal class SessionFinalizer(
                             status = TranscriptEntity.STATUS_SAVED_UNROUTED,
                         )
                         // The draft is gone: re-created unless the user deleted it, which is never undone (#288).
-                        when {
-                            updated > 0 -> existingId
-                            rescuedWords.deletedByUser(takeId) -> existingId
-                            else -> repository.insertSavedTranscript(publication, takeId)
-                        }
-                    } else if (rescuedWords.deletedByUser(takeId)) {
-                        0L
+                        if (updated > 0) existingId else repository.insertSavedTranscript(publication, takeId)
                     } else {
                         repository.insertSavedTranscript(publication, takeId)
                     }
@@ -452,10 +446,13 @@ internal class SessionFinalizer(
         return Delivery(handoff, measuredCopy)
     }
 
-    /** The neutral saved row when there is no draft to finalize; every value is the payload's, read before the reservation. */
+    /**
+     * The neutral saved row when there is no draft to finalize; every value is the payload's, read before the
+     * reservation. Never for a take the user deleted (#288): 0 then, read in the insert's own transaction.
+     */
     private suspend fun TranscriptRepository.insertSavedTranscript(publication: Publication, takeId: String): Long {
         val polishFacts = publication.polishFacts
-        return insert(
+        return insertUnlessDeleted(
             TranscriptEntity(
                 originalText = publication.originalText,
                 finalText = publication.finalText,

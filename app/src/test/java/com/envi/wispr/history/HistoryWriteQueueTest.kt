@@ -25,6 +25,9 @@ class HistoryWriteQueueTest {
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(emptyList())
         override suspend fun insert(transcript: TranscriptEntity): Long { landed += "insert"; return 1L }
         override suspend fun findByTakeId(takeId: String): TranscriptEntity? = null
+        override suspend fun insertDeletedTakes(takes: List<DeletedTake>) = Unit
+        override suspend fun isTakeDeleted(takeId: String): Boolean = false
+        override suspend fun rowTakeIds(): List<String> = emptyList()
         override suspend fun setKept(id: Long, kept: Boolean) = Unit
         override suspend fun delete(transcript: TranscriptEntity) = Unit
         override suspend fun deleteAll() = Unit

@@ -12,7 +12,7 @@ import com.envi.wispr.vocabulary.CustomTermDao
 import com.envi.wispr.vocabulary.CustomTermEntity
 
 @Database(
-    entities = [TranscriptEntity::class, CustomTermEntity::class, TakeJournalEntry::class],
+    entities = [TranscriptEntity::class, CustomTermEntity::class, TakeJournalEntry::class, DeletedTake::class],
     version = 9,
     exportSchema = true,
 )
@@ -109,6 +109,7 @@ internal abstract class EnviousWisprDatabase : RoomDatabase() {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE transcripts ADD COLUMN takeId TEXT")
                 database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_transcripts_takeId ON transcripts (takeId)")
+                database.execSQL("CREATE TABLE IF NOT EXISTS deleted_takes (takeId TEXT NOT NULL, PRIMARY KEY(takeId))")
             }
         }
 

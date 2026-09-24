@@ -136,9 +136,9 @@ class RescuedWordsTest {
     }
 
     /**
-     * Row 7b (review round 1): a write still queued when the user deletes writes nothing, whether the row or all
-     * History was deleted. One thread runs the store, so the lock queues its waiters in the order they are started.
-     * MUTATION m9: the write ignores the delete.
+     * Row 7b (review round 1): a write still queued when the user's row delete commits writes nothing, and a write that
+     * lands while Delete all runs is removed with the rest. One thread runs the store, so the lock queues its waiters in
+     * the order they are started. MUTATION m9: the write ignores the delete.
      */
     @Test fun aWriteQueuedBehindADeleteWritesNothing() = runBlocking {
         val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -155,7 +155,7 @@ class RescuedWordsTest {
         gate.complete(Unit)
         holder.await(); deleting.await(); clearing.await()
         assertEquals("the row was deleted before its write ran", RescueOutcome.FAILED, queued.await())
-        assertEquals("all History was deleted after this take began", RescueOutcome.FAILED, otherWrite.await())
+        otherWrite.await()
         assertFalse(file().exists())
         assertFalse(File(dir, "$other.words").exists())
         one.cancel()
@@ -163,23 +163,82 @@ class RescuedWordsTest {
     }
 
     /**
-     * Row 7c (review round 2): a History delete that stalls holds no other take's rescue write back, and the take being
-     * deleted is not recovered meanwhile. MUTATION m13: the History delete runs inside the store's lock.
+     * Row 7c (review round 2): a History delete that stalls holds no other take's rescue write back, and once it commits
+     * the deleted take's words are nowhere, though a recovery ran meanwhile. MUTATION m13: the History delete runs
+     * inside the store's lock.
      */
     @Test fun aStalledDeleteNeverHoldsAnotherTakesWrite() = runBlocking {
         val other = "1a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
+        val row = TranscriptEntity(id = 1L, originalText = "", finalText = "", createdAtMs = 5L, durationMs = 0L, speechEngine = "Parakeet", polishEngine = "", polishLatencyMs = 0L, insertionResult = "pending", status = TranscriptEntity.STATUS_DRAFT, takeId = other)
+        dao.rows[1L] = row
         File(dir.apply { mkdirs() }, "$other.words").writeText("1000\nOther words.")
         val stalled = kotlinx.coroutines.CompletableDeferred<Unit>()
-        val deleting = scope.async { store.deleting(other) { stalled.await() } }
-        awaitUntil("the delete is pending") { store.deletedByUser(other) }
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val deleting = scope.async { store.deleting(other) { entered.complete(Unit); stalled.await(); repository.delete(row) } }
+        entered.await()
         val written = kotlinx.coroutines.withTimeoutOrNull(5_000L) { store.keep(take, "Keep these words.", SaveSlot()).await() }
         assertEquals("another take's write lands while the delete is stalled", RescueOutcome.KEPT, written)
-        // The written take is still tracked and the other is being deleted: a recovery now writes neither.
-        assertEquals("the take being deleted is not recovered", 0, store.recover(repository))
-        assertEquals(0, dao.rows.size)
+        store.recover(repository)
         stalled.complete(Unit)
         deleting.await()
+        assertEquals("the deleted take's words are nowhere", emptyList<TranscriptEntity>(), dao.rows.values.filter { it.takeId == other })
         assertFalse(File(dir, "$other.words").exists())
+        store.recover(repository)
+        assertTrue("and a recovery after it writes nothing back", dao.rows.values.none { it.takeId == other })
+    }
+
+    /**
+     * Row 7d (review round 3): a Delete all that fails leaves every take's words where they were: the file stays, and
+     * a failed save is still recovered into History. MUTATION m14: the store forgets the takes before the delete commits.
+     */
+    @Test fun aFailedDeleteAllLosesNoWords() = runBlocking {
+        val save = SaveSlot()
+        store.keep(take, "Keep these words.", save).await()
+        val failed = runCatching { store.clearing { throw IllegalStateException("disk full") } }
+        assertTrue(failed.isFailure)
+        assertTrue("the words are still on the phone", file().exists())
+        save.answer(SaveOutcome.Failed(IllegalStateException("disk full"))) { 0L }
+        awaitUntil("recovered into History") { runBlocking { store.recover(repository) } == 1 }
+        assertEquals("Keep these words.", dao.rows.values.single().finalText)
+    }
+
+    /**
+     * Row 7e (review round 3): Delete all while a take's save is stalled with no row yet deletes that take too: its late
+     * save and a recovery both find the mark in their own transaction and insert nothing, however many takes came
+     * since. MUTATION m15: Delete all marks only the rows' takes.
+     */
+    @Test fun deleteAllAlsoDeletesATakeWhoseSaveIsStillOnItsWay() = runBlocking {
+        val save = SaveSlot()
+        store.keep(take, "Keep these words.", save).await()
+        // Many later takes, each settled: nothing bounded forgets the stalled take.
+        repeat(80) { n ->
+            val later = SaveSlot()
+            store.keep("%08x-4e5f-4a6b-8c7d-9e8f7a6b5c4d".format(n + 0x10000000), "Later.", later).await()
+            later.answer(SaveOutcome.Saved(n + 100L)) { 0L }
+        }
+        // The write failed: the take is only on its way, with no row and no file.
+        assertTrue(file().delete())
+        store.clearing { liveTakes -> repository.deleteAll(liveTakes) }
+        val late = TranscriptEntity(originalText = "Keep these words.", finalText = "Keep these words.", createdAtMs = 5L, durationMs = 0L, speechEngine = "Parakeet", polishEngine = "", polishLatencyMs = 0L, insertionResult = "pending", status = TranscriptEntity.STATUS_SAVED_UNROUTED, takeId = take)
+        assertEquals("the late save inserts nothing", 0L, repository.insertUnlessDeleted(late))
+        assertEquals(0, dao.rows.size)
+        // A crash had left the take's file behind: the next process's recovery removes it and writes nothing.
+        File(dir, "$take.words").writeText("1000\nKeep these words.")
+        RescuedWords(dir, scope, wallClock = { 1_000L }, warn = {}).recover(repository)
+        assertEquals(0, dao.rows.size)
+        assertFalse(file().exists())
+    }
+
+    /**
+     * Row 7f (review round 3): the process died after the user's delete committed and before the take's file went; the
+     * next process's recovery reads the mark, writes nothing and removes the file. MUTATION m16: recovery ignores the mark.
+     */
+    @Test fun aFileLeftBehindForADeletedTakeIsNeverRecovered() = runBlocking {
+        dao.deletedTakes += take
+        File(dir.apply { mkdirs() }, "$take.words").writeText("1000\nKeep these words.")
+        store.recover(repository)
+        assertEquals(0, dao.rows.size)
+        assertFalse(file().exists())
     }
 
     /** Row 8: a take id that is not a UUID never names a file. */

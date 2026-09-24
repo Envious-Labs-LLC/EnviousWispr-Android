@@ -183,6 +183,11 @@ class EnviousWisprDatabaseMigrationTest {
             database.execSQL(insert, arrayOf<Any?>("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"))
             val second = runCatching { database.execSQL(insert, arrayOf<Any?>("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d")) }
             assertTrue("one row per take", second.isFailure)
+            // The user's deleted takes (#288): empty after the migration, one mark per take.
+            database.query("SELECT COUNT(*) FROM deleted_takes").use { cursor ->
+                cursor.moveToFirst()
+                assertEquals(0, cursor.getInt(0))
+            }
         }
     }
 

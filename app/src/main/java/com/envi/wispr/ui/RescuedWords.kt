@@ -24,11 +24,13 @@ internal enum class RescueOutcome { KEPT, FAILED, PENDING }
  *
  * One per process, owned by the application beside the History write queue (#304), on a scope nothing cancels, so
  * settlement outlives the Service that published the words. Never the History queue, which may be the thing failing.
- * Every file operation holds [lock]. A user's delete marks the take (or the whole store) PENDING under the lock, runs its
- * History delete outside it (a stalled database never holds a rescue write past its bound), then deletes the files
- * under the lock and records the take as deleted (or bumps the clear generation). A write, a recovery and the take's
- * own History save ([deletedByUser]) all respect both marks, so deleted words cannot reappear by any of them. Files
- * live under the app's private files directory; backup is disabled.
+ * Every file operation holds [lock]. The database decides what the user deleted: a History delete marks the take in
+ * the same transaction (`DeletedTake`), and the take's own late save and every recovery insert only in a transaction
+ * that reads that mark, so deleted words never come back and a delete that fails, or is cancelled, leaves the words
+ * where they were. The History delete runs outside [lock], so a stalled database never holds a rescue write; once it
+ * has committed, the take's files go under the lock, and a write still queued for it writes nothing. A file a crash
+ * left behind for a deleted take is removed by the next recovery. Files live under the app's private files directory;
+ * backup is disabled.
  *
  * A take is TRACKED from its write until its save answers or [trackingBoundMs] passes, whichever is first: recovery
  * never takes a tracked take's file, since its save may still land. A SAVED answer that comes later still settles the
@@ -52,28 +54,14 @@ internal class RescuedWords(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RescueOutcome>?): Boolean = size > OUTCOMES_KEPT
     }
 
-    /** Takes whose row the user deleted, and those whose delete is in progress. */
+    /** Takes whose History delete has COMMITTED in this process: a write still queued for one writes nothing. */
     private val deleted: MutableSet<String> = ConcurrentHashMap.newKeySet()
-    private val pendingDeletes: MutableSet<String> = ConcurrentHashMap.newKeySet()
-
-    /** How many Delete alls have completed, and whether one is in progress. */
-    @Volatile private var generation = 0L
-    @Volatile private var clearPending = false
-
-    /** The generation each recent take began in; bounded like [outcomes]. */
-    private val startedIn = object : LinkedHashMap<String, Long>() {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > OUTCOMES_KEPT
-    }
 
     /**
-     * Whether the user deleted [takeId]'s words, or is deleting them, since the take began (#288): its row, or all
-     * History. The take's own History save asks this before it would insert a row, so a delete is never undone.
+     * Takes whose words are on their way: from [keep] until both the save has answered and the write has finished,
+     * however long that takes. Delete all marks these with the rows, since a take here may have no row yet.
      */
-    fun deletedByUser(takeId: String): Boolean {
-        if (takeId in deleted || takeId in pendingDeletes || clearPending) return true
-        val began = synchronized(startedIn) { startedIn[takeId] } ?: return false
-        return began != generation
-    }
+    private val live: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     private fun record(takeId: String, outcome: RescueOutcome) = synchronized(outcomes) { outcomes[takeId] = outcome }
 
@@ -87,13 +75,13 @@ internal class RescuedWords(
             return scope.async { RescueOutcome.FAILED }
         }
         tracked += takeId
+        live += takeId
         record(takeId, RescueOutcome.PENDING)
-        synchronized(startedIn) { startedIn[takeId] = generation }
         val write = scope.async {
             val outcome = lock.withLock {
                 beforeWrite()
-                // Deleted, or being deleted, while this write was queued: the user's delete wins, and nothing is written.
-                if (deletedByUser(takeId)) RescueOutcome.FAILED else write(takeId, text)
+                // Deleted while this write was queued: the user's delete wins, and nothing is written.
+                if (takeId in deleted) RescueOutcome.FAILED else write(takeId, text)
             }
             record(takeId, outcome)
             outcome
@@ -105,6 +93,8 @@ internal class RescuedWords(
             withTimeoutOrNull(trackingBoundMs) { save.await() }
             write.await()
             tracked -= takeId
+            save.await()
+            live -= takeId
         }
         return write
     }
@@ -121,47 +111,34 @@ internal class RescuedWords(
     }
 
     /**
-     * The user deletes one History row: the take is marked pending under the lock, [delete] runs outside it, and on
-     * success the take's rescue goes with it; a failed delete lifts the mark and leaves the rescue.
+     * The user deletes one History row: [delete] runs outside the lock and marks the take in its own transaction; once
+     * it has committed, the take's rescue goes too. A failed or cancelled delete leaves everything as it was.
      */
     suspend fun deleting(takeId: String?, delete: suspend () -> Unit) {
-        val take = takeId?.takeIf { TAKE_ID.matches(it) }
-        if (take != null) lock.withLock { pendingDeletes += take }
-        try {
-            delete()
-        } catch (error: Throwable) {
-            if (take != null) pendingDeletes -= take
-            throw error
-        }
-        if (take == null) return
-        lock.withLock {
-            deleted += take
-            pendingDeletes -= take
-            File(dir, "$take$SUFFIX").delete()
-            synchronized(outcomes) { outcomes -= take }
-        }
+        delete()
+        val take = takeId?.takeIf { TAKE_ID.matches(it) } ?: return
+        forget(listOf(take))
     }
 
     /**
-     * The user deletes all History: the store is marked pending under the lock, [delete] runs outside it, and on success
-     * every rescue goes with it and every take begun before now counts as deleted; a failed delete lifts the mark.
+     * The user deletes all History: every take whose words are here or on their way when the delete begins is handed
+     * to [delete], which marks them with every row's take in its own transaction; once it has committed, their
+     * rescues go too. A take that begins after this point keeps its words. A failed delete leaves everything as it was.
      */
-    suspend fun clearing(delete: suspend () -> Unit) {
-        lock.withLock { clearPending = true }
-        try {
-            delete()
-        } catch (error: Throwable) {
-            clearPending = false
-            throw error
-        }
-        lock.withLock {
-            generation++
-            deleted.clear()
-            dir.listFiles()?.forEach { it.delete() }
-            synchronized(outcomes) { outcomes.clear() }
-            clearPending = false
-        }
+    suspend fun clearing(delete: suspend (liveTakes: Set<String>) -> Unit) {
+        val takes = lock.withLock { live + files().map { it.name.removeSuffix(SUFFIX) }.filter { TAKE_ID.matches(it) } }
+        delete(takes)
+        forget(takes)
     }
+
+    /** After a committed delete: the takes' files go, and a write still queued for one writes nothing. */
+    private suspend fun forget(takes: Collection<String>) = lock.withLock {
+        deleted += takes
+        for (take in takes) File(dir, "$take$SUFFIX").delete()
+        synchronized(outcomes) { outcomes -= takes.toSet() }
+    }
+
+    private fun files() = dir.listFiles().orEmpty().filter { it.name.endsWith(SUFFIX) }
 
     /**
      * Writes every untracked rescue file into History through [repository] and deletes it only after the write
@@ -176,7 +153,7 @@ internal class RescuedWords(
                 continue
             }
             val takeId = file.name.removeSuffix(SUFFIX)
-            if (!file.name.endsWith(SUFFIX) || !TAKE_ID.matches(takeId) || takeId in tracked || deletedByUser(takeId)) continue
+            if (!file.name.endsWith(SUFFIX) || !TAKE_ID.matches(takeId) || takeId in tracked) continue
             val record = runCatching { file.readText() }.getOrNull() ?: continue
             val createdAtMs = record.substringBefore('\n').toLongOrNull() ?: continue
             val text = record.substringAfter('\n')
@@ -187,6 +164,7 @@ internal class RescuedWords(
                 warn("Rescued words not written to History: ${error.javaClass.simpleName}")
                 false
             }
+            // Written, or the user deleted the take (a crash came between the delete and its file's removal).
             if (written) {
                 file.delete()
                 // In History now: a line still to be spoken for this take must not call the words lost.

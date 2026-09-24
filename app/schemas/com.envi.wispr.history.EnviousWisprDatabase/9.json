@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 9,
-    "identityHash": "c56428fa2c9d172260c47f84ae15b08b",
+    "identityHash": "84560939b3abc3944016acde7a2e712f",
     "entities": [
       {
         "tableName": "transcripts",
@@ -331,11 +331,29 @@
             "take_id"
           ]
         }
+      },
+      {
+        "tableName": "deleted_takes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`takeId` TEXT NOT NULL, PRIMARY KEY(`takeId`))",
+        "fields": [
+          {
+            "fieldPath": "takeId",
+            "columnName": "takeId",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "takeId"
+          ]
+        }
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'c56428fa2c9d172260c47f84ae15b08b')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '84560939b3abc3944016acde7a2e712f')"
     ]
   }
 }

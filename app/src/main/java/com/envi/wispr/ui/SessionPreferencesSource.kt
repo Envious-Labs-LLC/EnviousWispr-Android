@@ -57,7 +57,16 @@ internal sealed interface PreferenceRead {
         companion object {
             const val COMPLETED_WITHOUT_VALUE = "completed_without_value"
             const val TIMED_OUT = "timed_out"
-            fun exception(error: Throwable): Failed = Failed("exception:${error.javaClass.simpleName}")
+            /**
+             * The class's simple name when it has the Throwable-name shape both vendors admit, else `Exception`, so a
+             * `StoreFailure` or an anonymous class still reports a fallback instead of losing the field (#307).
+             */
+            fun exception(error: Throwable): Failed {
+                val name = error.javaClass.simpleName
+                return Failed("exception:" + if (THROWABLE_SHAPE.matches(name)) name else "Exception")
+            }
+
+            private val THROWABLE_SHAPE = Regex("\\A${com.envi.wispr.telemetry.SentrySchema.THROWABLE_NAME}\\z")
         }
     }
 }

@@ -218,6 +218,13 @@ class PostHogSchemaTest {
         val tokens = starts.map { it.fallbackToken()!! }
         assertEquals(listOf("settings:timed_out", "terms:completed_without_value", "both:timed_out:exception:IOException"), tokens)
         tokens.forEach { assertKept("settings_fallback", it) }
+        // A caught class whose name lacks the Exception or Error suffix, and an anonymous one, still report.
+        class StoreFailure : Exception()
+        for (odd in listOf(StoreFailure(), object : RuntimeException() {})) {
+            val token = PreferenceStart(SettingsSnapshot(read = PreferenceRead.Failed.exception(odd)), TermsSnapshot(read = PreferenceRead.Fresh)).fallbackToken()!!
+            assertEquals("settings:exception:Exception", token)
+            assertKept("settings_fallback", token)
+        }
         for (bad in listOf("both:timed_out:exception:java.io.IOException", "settings:hello world", "settings:timed_out:timed_out", "both:timed_out", "settings:hello")) {
             assertNull(bad, PayloadSanitizer.sanitizeValue("settings_fallback", bad))
         }

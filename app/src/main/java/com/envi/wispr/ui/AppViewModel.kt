@@ -93,44 +93,44 @@ internal class EnviousWisprViewModel(
     }
 
     fun setDynamicColorEnabled(enabled: Boolean) =
-        changeSetting("dynamic_color", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.dynamicColorEnabled) }) { appPreferences.setDynamicColorEnabled(enabled) }
+        changeSetting(AppLaunchFacts.DYNAMIC_COLOR, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.dynamicColorEnabled) }) { appPreferences.setDynamicColorEnabled(enabled) }
 
     fun setBubbleLook(look: BubbleLook) =
-        changeSetting("bubble_look", look.name.lowercase(), { it.bubbleLook.name.lowercase() }) { appPreferences.setBubbleLook(look) }
+        changeSetting(AppLaunchFacts.BUBBLE_LOOK, look.name.lowercase(), { it.bubbleLook.name.lowercase() }) { appPreferences.setBubbleLook(look) }
 
     fun setFillerRemovalEnabled(enabled: Boolean) =
-        changeSetting("filler_removal", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.fillerRemovalEnabled) }) { appPreferences.setFillerRemovalEnabled(enabled) }
+        changeSetting(AppLaunchFacts.FILLER_REMOVAL, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.fillerRemovalEnabled) }) { appPreferences.setFillerRemovalEnabled(enabled) }
 
     fun setEmojiFormatterEnabled(enabled: Boolean) =
-        changeSetting("emoji_formatter", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.emojiFormatterEnabled) }) { appPreferences.setEmojiFormatterEnabled(enabled) }
+        changeSetting(AppLaunchFacts.EMOJI_FORMATTER, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.emojiFormatterEnabled) }) { appPreferences.setEmojiFormatterEnabled(enabled) }
 
     fun setAutoStopOnSilenceEnabled(enabled: Boolean) =
-        changeSetting("auto_stop_on_silence", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.autoStopOnSilenceEnabled) }) { appPreferences.setAutoStopOnSilenceEnabled(enabled) }
+        changeSetting(AppLaunchFacts.AUTO_STOP_ON_SILENCE, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.autoStopOnSilenceEnabled) }) { appPreferences.setAutoStopOnSilenceEnabled(enabled) }
 
     /** The value is clamped in the store as well, so a bad one never reaches a take. */
     fun setSilencePauseSeconds(seconds: Float) =
-        changeSetting("silence_pause_seconds", SilenceStopDetector.sanitisePauseSeconds(seconds).toString(), { it.silencePauseSeconds.toString() }) { appPreferences.setSilencePauseSeconds(seconds) }
+        changeSetting(AppLaunchFacts.SILENCE_PAUSE_SECONDS, SilenceStopDetector.sanitisePauseSeconds(seconds).toString(), { it.silencePauseSeconds.toString() }) { appPreferences.setSilencePauseSeconds(seconds) }
 
     fun setInputDevicePick(pick: InputDevicePick) =
-        changeSetting("input_device", TakeFacts.inputDeviceToken(pick.serialize()), { TakeFacts.inputDeviceToken(it.inputDevicePick) }) { appPreferences.setInputDevicePick(pick) }
+        changeSetting(AppLaunchFacts.INPUT_DEVICE, TakeFacts.inputDeviceToken(pick.serialize()), { TakeFacts.inputDeviceToken(it.inputDevicePick) }) { appPreferences.setInputDevicePick(pick) }
 
     fun setKeepEarbudsReady(enabled: Boolean) =
-        changeSetting("keep_earbuds_ready", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.keepEarbudsReady) }) { appPreferences.setKeepEarbudsReady(enabled) }
+        changeSetting(AppLaunchFacts.KEEP_EARBUDS_READY, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.keepEarbudsReady) }) { appPreferences.setKeepEarbudsReady(enabled) }
 
     fun setShowBluetoothTips(enabled: Boolean) =
-        changeSetting("show_bluetooth_tips", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.showBluetoothTips) }) { appPreferences.setShowBluetoothTips(enabled) }
+        changeSetting(AppLaunchFacts.SHOW_BLUETOOTH_TIPS, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.showBluetoothTips) }) { appPreferences.setShowBluetoothTips(enabled) }
 
     fun setSpokenPunctuationEnabled(enabled: Boolean) =
-        changeSetting("spoken_punctuation", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.spokenPunctuationEnabled) }) { appPreferences.setSpokenPunctuationEnabled(enabled) }
+        changeSetting(AppLaunchFacts.SPOKEN_PUNCTUATION, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.spokenPunctuationEnabled) }) { appPreferences.setSpokenPunctuationEnabled(enabled) }
 
     fun setAutoCopyToClipboard(enabled: Boolean) =
-        changeSetting("auto_copy_to_clipboard", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.autoCopyToClipboard) }) { appPreferences.setAutoCopyToClipboard(enabled) }
+        changeSetting(AppLaunchFacts.AUTO_COPY_TO_CLIPBOARD, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.autoCopyToClipboard) }) { appPreferences.setAutoCopyToClipboard(enabled) }
 
     fun setRestoreClipboardAfterPaste(enabled: Boolean) =
-        changeSetting("restore_clipboard_after_paste", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.restoreClipboardAfterPaste) }) { appPreferences.setRestoreClipboardAfterPaste(enabled) }
+        changeSetting(AppLaunchFacts.RESTORE_CLIPBOARD_AFTER_PASTE, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.restoreClipboardAfterPaste) }) { appPreferences.setRestoreClipboardAfterPaste(enabled) }
 
     fun setSmartInsertionEnabled(enabled: Boolean) =
-        changeSetting("smart_insertion", AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.smartInsertionEnabled) }) { appPreferences.setSmartInsertionEnabled(enabled) }
+        changeSetting(AppLaunchFacts.SMART_INSERTION, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.smartInsertionEnabled) }) { appPreferences.setSmartInsertionEnabled(enabled) }
 
     class Factory(
         private val appPreferences: AppPreferences,

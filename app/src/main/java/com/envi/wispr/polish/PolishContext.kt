@@ -52,6 +52,17 @@ internal sealed class PolishContext {
             )
         }
 
+        /**
+         * Every token [from] can encode (#307): the three fixed contexts, each provider without Ollama, and the one
+         * provider that can speak it with it. `PostHogSchema` admits exactly these.
+         */
+        val TOKENS: Set<String>
+            get() = (
+                listOf(Off, Local, CloudUnconfigured) +
+                    Provider.entries.map { Cloud(it, ollama = false) } +
+                    Cloud(Provider.SELF_HOSTED_POLISH, ollama = true)
+                ).map { it.encode() }.toSet()
+
         /** Tolerant: null for an empty or unknown token, never a throw. */
         fun decode(token: String): PolishContext? = when {
             token == TOKEN_OFF -> Off

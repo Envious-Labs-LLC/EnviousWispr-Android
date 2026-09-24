@@ -22,9 +22,11 @@ the code:
 
 - `us.i.posthog.com` (usage rows) and `o4511097055477760.ingest.us.sentry.io` (crash reports and our own
   defects), since #176. Content-free by construction: every property leaves only under a name and a shape the
-  allowlist in `telemetry/PayloadSanitizer.kt` declares (closed tokens, numbers, booleans, a UUID, a package
-  name, the device model); a transcript, a product name, a key, an email or a path cannot pass, and exception
-  messages are always dropped. One random install id (`telemetry/InstallIdentity.kt`) tells installs apart; it
+  allowlist in `telemetry/PayloadSanitizer.kt` declares (numbers, booleans, and for a string the key's closed
+  value set or shape in `telemetry/PostHogSchema.kt`: a token the app itself makes, a UUID, a package name, the
+  device model). No field is written from a transcript, a product name, a key, an email or a path, and a
+  string outside its key's set or shape is dropped; the device and build label shapes admit short printable
+  text, so those keys carry only what the phone reports about itself. Exception messages are always dropped. One random install id (`telemetry/InstallIdentity.kt`) tells installs apart; it
   is minted on the phone, never derived from the person or the account, and never reset. What the rows say is
   in `.claude/knowledge/telemetry.md`.
 

@@ -27,7 +27,7 @@ Grounded by Codex (`240-g0`), re-read by Claude:
 - `SentryBootstrap.sanitize(event)`: message through `sanitizeFreeText` (removed); exception value dropped; frames' `absPath`, `filename`, `package` through `sanitizeFreeText` (removed); tags, extras and map contexts through `sanitizeFreeText` (removed) / `sanitizeFreeMap` (removed); `request` and `serverName` cleared; `user` untouched; fingerprints untouched.
 - `SentryBootstrap.sanitize(crumb)`: message and data through the same rule; category untouched.
 - `PayloadSanitizer.sanitizeFreeText`: `[REDACTED]` only over 100 characters or on a deny pattern; paths become `[PATH]`.
-- The PostHog side already has the right model (`allowedKeys`, `boundedStringKeys`, `sanitizeValue`, `TOKEN`): a string passes only as a closed token or a shaped bounded string.
+- The PostHog side already has the right model (`allowedKeys`, `boundedStringKeys` (removed), `sanitizeValue`, `TOKEN` (removed)): a string passes only as a closed token or a shaped bounded string.
 - Senders: `Telemetry.defect` (message = `AppDefect.semanticId`, tag `error.identity`, extras from the call's map), `Telemetry.breadcrumb` (literal category and message, a data map), `convertPendingDefects` (message = semantic id, tags, extras `take_id` and `detail`), the bootstrap's option tags, and SDK automatic crash and ANR events.
 
 ## 2. Goals & non-goals

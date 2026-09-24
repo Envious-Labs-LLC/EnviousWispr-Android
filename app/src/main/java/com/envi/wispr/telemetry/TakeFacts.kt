@@ -45,7 +45,7 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
     @Volatile var polishReason: PolishReason? = null
     @Volatile var polishMs: Long? = null
     @Volatile var polishStatus: Int? = null
-    /** `ok` or `failed`: whether the History save returned, known only on the completed route. */
+    /** [HISTORY_OK], [HISTORY_FAILED] or [HISTORY_PENDING], known only on the completed route. */
     @Volatile var historySave: String? = null
     /** The speech process's typed failure; reported only on an `ASR_FAILED` ending. */
     @Volatile var asrFailure: AsrFailureReason? = null
@@ -124,24 +124,50 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
 
         /** The capture process's silence status integer as a closed token; an unknown code is `unknown`. */
         fun silenceStatusToken(status: Int): String = when (status) {
-            AudioCaptureService.SILENCE_STATUS_DISABLED -> "off"
-            AudioCaptureService.SILENCE_STATUS_PREPARING -> "preparing"
-            AudioCaptureService.SILENCE_STATUS_READY -> "ready"
-            AudioCaptureService.SILENCE_STATUS_UNAVAILABLE -> "unavailable_before_ready"
-            AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY -> "lost_after_ready"
-            else -> "unknown"
+            AudioCaptureService.SILENCE_STATUS_DISABLED -> SILENCE_OFF
+            AudioCaptureService.SILENCE_STATUS_PREPARING -> SILENCE_PREPARING
+            AudioCaptureService.SILENCE_STATUS_READY -> SILENCE_READY
+            AudioCaptureService.SILENCE_STATUS_UNAVAILABLE -> SILENCE_UNAVAILABLE_BEFORE_READY
+            AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY -> SILENCE_LOST_AFTER_READY
+            else -> SILENCE_UNKNOWN
         }
+        const val SILENCE_OFF = "off"
+        const val SILENCE_PREPARING = "preparing"
+        const val SILENCE_READY = "ready"
+        const val SILENCE_UNAVAILABLE_BEFORE_READY = "unavailable_before_ready"
+        const val SILENCE_LOST_AFTER_READY = "lost_after_ready"
+        const val SILENCE_UNKNOWN = "unknown"
+        val SILENCE_STATUS_TOKENS: Set<String> = setOf(
+            SILENCE_OFF, SILENCE_PREPARING, SILENCE_READY, SILENCE_UNAVAILABLE_BEFORE_READY, SILENCE_LOST_AFTER_READY, SILENCE_UNKNOWN,
+        )
 
         /** The capture ending as a token; exhaustive over [CaptureEnding], no `else`. */
         fun captureEndingToken(reason: Int): String = when (CaptureEnding.fromAidl(reason)) {
-            CaptureEnding.StillRunning -> "still_running"
-            CaptureEnding.MaxDuration -> "max_duration"
+            CaptureEnding.StillRunning -> ENDING_STILL_RUNNING
+            CaptureEnding.MaxDuration -> ENDING_MAX_DURATION
             CaptureEnding.Manual -> MANUAL_ENDING
-            CaptureEnding.Silence -> "silence"
-            CaptureEnding.Failure -> "failure"
+            CaptureEnding.Silence -> ENDING_SILENCE
+            CaptureEnding.Failure -> ENDING_FAILURE
         }
+        const val ENDING_STILL_RUNNING = "still_running"
+        const val ENDING_MAX_DURATION = "max_duration"
+        const val ENDING_SILENCE = "silence"
+        const val ENDING_FAILURE = "failure"
+        val CAPTURE_ENDING_TOKENS: Set<String> =
+            setOf(ENDING_STILL_RUNNING, ENDING_MAX_DURATION, MANUAL_ENDING, ENDING_SILENCE, ENDING_FAILURE)
 
         /** `auto` or `picked`, from the stored pick string; the name after the bar never leaves. */
-        fun inputDeviceToken(pick: String): String = if (pick == com.envi.wispr.audio.InputDevicePick.AUTO) "auto" else "picked"
+        fun inputDeviceToken(pick: String): String = if (pick == com.envi.wispr.audio.InputDevicePick.AUTO) INPUT_AUTO else INPUT_PICKED
+        const val INPUT_AUTO = "auto"
+        const val INPUT_PICKED = "picked"
+
+        /** [liveState]: live arrived, or the take proceeded on earbuds that sent nothing. */
+        const val LIVE_READY = "ready"
+        const val LIVE_FORCED = "forced"
+
+        /** [historySave]: the save's answer at the commit, or `pending` when it had not answered yet (#277). */
+        const val HISTORY_OK = "ok"
+        const val HISTORY_FAILED = "failed"
+        const val HISTORY_PENDING = "pending"
     }
 }

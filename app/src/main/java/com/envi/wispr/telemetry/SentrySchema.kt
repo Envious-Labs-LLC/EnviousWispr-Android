@@ -57,7 +57,7 @@ internal object SentrySchema {
     private val UUID = Shape.Matching("UUID.randomUUID (take and install ids)", Regex("\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z"))
     private val PACKAGE = Shape.Matching("an Android package name from the accessibility event", Regex("\\A[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+\\z"))
     /** `javaClass.simpleName` of a caught Throwable: a class name that ends in Exception or Error, or a base class itself. */
-    private val THROWABLE_NAME = "([A-Z][A-Za-z0-9_$]{0,80}(Exception|Error)|Exception|Error|Throwable)"
+    const val THROWABLE_NAME = "([A-Z][A-Za-z0-9_$]{0,80}(Exception|Error)|Exception|Error|Throwable)"
     private val ERROR_TYPE = Shape.Matching("Throwable.javaClass.simpleName", Regex("\\A$THROWABLE_NAME\\z"))
     /** `ReadAnswers.fallbackToken`: which reader failed, each with a fixed reason or `exception:<Throwable>`. */
     private val SETTINGS_FALLBACK = Shape.Matching(

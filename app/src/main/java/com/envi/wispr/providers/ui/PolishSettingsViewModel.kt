@@ -136,7 +136,7 @@ internal class PolishSettingsViewModel(
             afterWrite = { succeeded ->
                 if (succeeded) {
                     val after = withContext(Dispatchers.IO) { polishPolicyToken() }
-                    if (after != before) Telemetry.capture(AnalyticsEvent.SettingsChanged("polish_policy", before, after))
+                    if (after != before) Telemetry.capture(AnalyticsEvent.SettingsChanged(AppLaunchFacts.POLISH_POLICY, before, after))
                 }
             },
         ) {
@@ -179,7 +179,7 @@ internal class PolishSettingsViewModel(
             // cache, never the stale one.
             afterWrite = { succeeded ->
                 // Never the key: the provider, what was done and whether it landed (macOS #1173).
-                Telemetry.capture(AnalyticsEvent.ApiKeyChanged(provider.name.lowercase(), if (suppliedKey) "save" else "model_change", if (succeeded) "success" else "failed"))
+                Telemetry.capture(AnalyticsEvent.ApiKeyChanged(provider.name.lowercase(), if (suppliedKey) ApiKeyTelemetry.ACTION_SAVE else ApiKeyTelemetry.ACTION_MODEL_CHANGE, if (succeeded) ApiKeyTelemetry.RESULT_SUCCESS else ApiKeyTelemetry.RESULT_FAILED))
                 when (ProviderDiscoveryApplyPolicy.afterSave(succeeded, suppliedKey, discoverySequence, draftResults[provider]?.first)) {
                     ProviderDiscoveryApplyPolicy.CacheAction.PROMOTE -> {
                         val listed = draftResults.remove(provider)?.second
@@ -219,7 +219,7 @@ internal class PolishSettingsViewModel(
      */
     fun removeProviderKey(provider: Provider): Int = updateProviderSettings(
         afterWrite = { succeeded ->
-            Telemetry.capture(AnalyticsEvent.ApiKeyChanged(provider.name.lowercase(), "remove", if (succeeded) "success" else "failed"))
+            Telemetry.capture(AnalyticsEvent.ApiKeyChanged(provider.name.lowercase(), ApiKeyTelemetry.ACTION_REMOVE, if (succeeded) ApiKeyTelemetry.RESULT_SUCCESS else ApiKeyTelemetry.RESULT_FAILED))
             if (succeeded) {
                 draftResults.remove(provider)
                 withContext(Dispatchers.IO) { modelCache.clear(provider) }
@@ -229,18 +229,6 @@ internal class PolishSettingsViewModel(
     ) {
         providerRepository.removeKey(provider)
         "${provider.capabilities().displayName} removed"
-    }
-
-    /** A key check's verdict as a closed token; exhaustive over the verdict type, no `else`. */
-    private fun keyCheckToken(outcome: ProviderDiscovery): String = when (outcome) {
-        is ProviderDiscovery.Listed -> "valid"
-        is ProviderDiscovery.Refused -> when (val verdict = outcome.verdict) {
-            ProviderKeyCheck.Accepted -> "valid"
-            ProviderKeyCheck.NotApplicable -> "not_applicable"
-            is ProviderKeyCheck.Rejected -> "rejected"
-            is ProviderKeyCheck.Denied -> "denied"
-            is ProviderKeyCheck.Unverified -> "unverified_" + verdict.failure.name.lowercase()
-        }
     }
 
     /** The page's cached list on open (#84); never replaces a live result already showing for that provider. */
@@ -312,7 +300,7 @@ internal class PolishSettingsViewModel(
                     ?: ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
             }
             val name = provider.capabilities().displayName
-            Telemetry.capture(AnalyticsEvent.ApiKeyValidationCompleted(provider.name.lowercase(), keyCheckToken(outcome)))
+            Telemetry.capture(AnalyticsEvent.ApiKeyValidationCompleted(provider.name.lowercase(), ApiKeyTelemetry.keyCheckToken(outcome)))
             // The class of defect this closes: a completion judged on state read BEFORE a suspension. There
             // are three suspensions in this coroutine (the discovery itself, the cache read for the merge,
             // the cache write), and after EACH the completion re-asks both questions on the state as it is

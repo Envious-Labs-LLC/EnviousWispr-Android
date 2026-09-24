@@ -1,6 +1,7 @@
 package com.envi.wispr.audio
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -15,17 +16,19 @@ import org.junit.Test
  */
 class CaptureBinderAdaptersTest {
     private val calls = mutableListOf<String>()
+    /** What every Boolean operation answers; row 5 flips it, so an adapter that answers for itself is caught. */
+    private var answer = true
 
     private val ops = object : CaptureOperations {
         override fun startLegacy(autoStopOnSilence: Boolean, pauseSeconds: Float, pick: InputDevicePick, keepEarbudsReady: Boolean): Boolean {
             calls += "legacy $autoStopOnSilence $pauseSeconds $pick $keepEarbudsReady"
-            return true
+            return answer
         }
         override fun startTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean, takeId: String?): Boolean {
             calls += "take $autoStopOnSilence $pauseSeconds $inputDevicePick $keepEarbudsReady $takeId"
-            return true
+            return answer
         }
-        override fun finishTake(): Boolean { calls += "finish"; return true }
+        override fun finishTake(): Boolean { calls += "finish"; return answer }
         override fun stopCapture() { calls += "stop" }
         override val takePeakAmplitude = 0.5f
         override val liveState = AudioCaptureService.LIVE_READY
@@ -41,7 +44,7 @@ class CaptureBinderAdaptersTest {
         override fun spectrumBands() = FloatArray(SpectrumAnalyzer.BAND_COUNT) { 0.1f }
         override val audioFilePath = "/cache/take.pcm"
         override val elapsedMs = 900L
-        override fun waitForFileReady(timeoutMs: Long): Boolean { calls += "wait $timeoutMs"; return true }
+        override fun waitForFileReady(timeoutMs: Long): Boolean { calls += "wait $timeoutMs"; return answer }
     }
     private val slots = ListenerSlots()
     private val spectrum = slots.slot<IAudioSpectrumListener> { it }
@@ -124,5 +127,20 @@ class CaptureBinderAdaptersTest {
         assertSame(listener, spectrum.listener.get())
         legacy.unregisterSpectrumListener(listener)
         assertNull(spectrum.listener.get())
+    }
+
+    /** Row 5 (review round 2): every Boolean answer is the operation's, "no" included. MUTATION m4: a start answers true itself. */
+    @Test fun aRefusalIsPassedBackAsARefusal() {
+        answer = false
+        val take = adapters.forTake(slots.openTakeEpoch("a")) as IAudioTakeService.Stub
+        assertFalse(legacy.startCapture())
+        assertFalse(legacy.startCaptureWithSilenceStop(true, 1.5f))
+        assertFalse(legacy.startCaptureWithInputDevice(true, 1.5f, null))
+        assertFalse(legacy.startCaptureWithInputDeviceHeld(false, 2f, null, true))
+        assertFalse(legacy.startCaptureForTake(true, 1.5f, "auto", true, "take-1"))
+        assertFalse(take.startCaptureForTake(false, 0f, null, false, "take-2"))
+        assertFalse(legacy.finishTake())
+        assertFalse(take.finishTake())
+        assertFalse(legacy.waitForFileReady(250L))
     }
 }

@@ -31,3 +31,7 @@ Codex compared all 28 legacy and 5 take transactions with `origin/main`: argumen
 
 - Adopted: the start, `finishTake` and `waitForFileReady` rows assert each Boolean answer, not only the call.
 - Rejected, with the wording fixed instead: route `getMaxDurationMs` and `getAudioData` through `CaptureOperations`. Neither reads service state (a constant, and the empty answer of a retired transaction), so the operation would add surface for nothing; the adapter KDoc and this plan now state the two exceptions rather than claiming every method delegates.
+
+## 3. Confirming round 2 (Codex)
+
+It accepted the two named exceptions. One finding, adopted: the fake's operations always answered true, so an adapter answering true for itself would pass. The fake's answer is now a variable, and row 5 sets it false and checks every Boolean transaction on both binders returns false (m4: the plain start answers true itself, RED).

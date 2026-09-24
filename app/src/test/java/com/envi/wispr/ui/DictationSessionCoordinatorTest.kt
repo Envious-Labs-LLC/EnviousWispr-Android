@@ -322,6 +322,34 @@ class DictationSessionCoordinatorTest {
     }
 
     /**
+     * #280: the audio process no longer orders a heartbeat against Live or the ending, so the owner must read a
+     * heartbeat only while RECORDING. One before Live and one after the stop publish no elapsed second; one while
+     * recording does. MUTATION m6: drop `onTakeTick`'s RECORDING check.
+     */
+    @Test
+    fun aHeartbeatOutsideRecordingPublishesNoElapsedSecond() {
+        val coordinator = rig.coordinator()
+        startAndStayStarting(coordinator)
+        rig.capture.tick(3_000L)
+        rig.capture.settle()
+        assertEquals("before live", emptyList<Int>(), rig.surface.elapsedUpdates.toList())
+        rig.capture.pushLive(rig.capture.currentTakeId)
+        rig.surface.awaitShown()
+        rig.capture.settle()
+        // Going live publishes its own second (the rig's live carries a heartbeat of 0); read the list from there.
+        val atLive = rig.surface.elapsedUpdates.toList()
+        rig.capture.tick(4_000L)
+        rig.capture.settle()
+        assertEquals("while recording", atLive + 4, rig.surface.elapsedUpdates.toList())
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        rig.capture.tick(9_000L)
+        rig.capture.settle()
+        assertEquals("after the stop", atLive + 4, rig.surface.elapsedUpdates.toList())
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+    }
+
+    /**
      * Drift Guard (#115): the owner ASKS the capture process nothing. Over a whole completed take the
      * fake saw exactly the three commands and the two registrations, in this order.
      * REVERT: add a read to `CaptureLink` and call it (the fake cannot be asked what it does not have).

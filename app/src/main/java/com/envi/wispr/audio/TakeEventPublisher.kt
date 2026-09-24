@@ -3,6 +3,7 @@ package com.envi.wispr.audio
 import com.envi.wispr.debug.DebugLogger
 import java.util.Queue
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
@@ -12,12 +13,20 @@ import java.util.concurrent.locks.LockSupport
  * status and the ending. Service-scoped like `WarmHoldOwner`: one publisher for the service's lifetime, one
  * worker thread, one queue.
  *
- * The capture thread only ever does a primitive clock comparison and a lock-free offer here: one small
- * event object and one queue node are allocated per event, no lock is taken (`ConcurrentLinkedQueue`), and
- * the worker is unparked, which is a permit write. A `oneway` binder transaction still allocates a Parcel
- * and can back-pressure its caller, so the worker makes every call, under `runCatching`: a dead or
- * unresponsive owner costs the event and nothing else, and never the capture loop. Delivery order is the
- * queue's: the order the producers' offers linearised in, which for one producer is the order it offered.
+ * The heartbeat, sent from the capture loop after each positive read, allocates NOTHING (#280): it is written
+ * into one preallocated slot (two fields and a three-state claim) that the worker reads, so every object and
+ * binder Parcel it needs is made on the worker. The other three events are rare and go through a lock-free
+ * queue (`ConcurrentLinkedQueue`), one event object and one node each. Neither path takes a lock; each ends
+ * with an unpark, which is a permit write. A `oneway` binder transaction still allocates a Parcel and can
+ * back-pressure its caller, so the worker makes every call, under `runCatching`: a dead or unresponsive
+ * owner costs the event and nothing else, and never the capture loop.
+ *
+ * Order: the three queued events arrive in the order their offers linearised in, which for one producer is
+ * the order it offered. A heartbeat is NOT ordered against them (#280): the worker delivers a waiting
+ * heartbeat, then one queued event, per pass. The owner reads a heartbeat only while recording, so one that
+ * arrives before Live or after the ending changes nothing but its silence bound; the cost is that the
+ * recorder's elapsed timer can skip one second at the start of a take when the worker is a second behind.
+ * A heartbeat is not sent while the previous one is still waiting in the slot; the next positive read retries.
  *
  * Every event names its take, passed by the caller at each publish (never read from a shared field, which a
  * detector callback outliving its take would read as the NEXT take's): the listener slot is the binding's
@@ -25,10 +34,10 @@ import java.util.concurrent.locks.LockSupport
  * events that are not its take's.
  *
  * [close] is the end of delivery, decided by ONE atomic word ([lifecycle]: a closed bit and a count of
- * offers between entry and enqueue): an offer enters only by a compare-and-set that fails once the closed
- * bit is set, an entered offer is always enqueued and delivered, and one that finds the bit set is dropped
- * by contract, never lost by a race (the worker leaves only once the bit is set, no offer is between entry
- * and enqueue, and the queue is empty). After the service's destroy nothing about any take can change, and
+ * offers between entry and enqueue): an offer, heartbeat or queued, enters only by a compare-and-set that
+ * fails once the closed bit is set, an entered offer is always delivered, and one that finds the bit set is
+ * dropped by contract, never lost by a race (the worker leaves only once the bit is set, no offer is between
+ * entry and enqueue, the heartbeat slot is empty and the queue is empty). After the service's destroy nothing about any take can change, and
  * the owner's silence bound covers a take whose ending was never published.
  *
  * Every event is a limb. The take does not know this class exists.
@@ -47,13 +56,17 @@ internal class TakeEventPublisher(
         /** The closed bit of [lifecycle]; the low bits count offers between entry and enqueue. */
         private const val CLOSED = 1L shl 62
         private const val ENTERED_MASK = CLOSED - 1
+
+        /** The heartbeat slot's states: empty, being written by the capture thread, ready for the worker. */
+        private const val TICK_IDLE = 0
+        private const val TICK_WRITING = 1
+        private const val TICK_READY = 2
     }
 
     internal sealed interface Event {
         val takeId: String
 
         data class Live(override val takeId: String, val forced: Boolean, val routeKind: Int, val routeReason: Int, val liveAfterMs: Long) : Event
-        data class Tick(override val takeId: String, val elapsedMs: Long) : Event
         data class SilenceStatus(override val takeId: String, val status: Int) : Event
         data class Ended(
             override val takeId: String,
@@ -69,6 +82,11 @@ internal class TakeEventPublisher(
     /** One word: the [CLOSED] bit and the count of offers that entered and have not enqueued yet. */
     private val lifecycle = AtomicLong(0L)
     @Volatile private var lastTickNanos = Long.MIN_VALUE
+
+    /** The waiting heartbeat: written only between a won IDLE to WRITING claim and READY, read only while READY. */
+    private var tickTakeId: String? = null
+    private var tickElapsedMs = 0L
+    private val tickState = AtomicInteger(TICK_IDLE)
     private val worker = Thread({ drain() }, "TakeEventPublisher").apply { isDaemon = true }
 
     /** Starts the worker; called once by the service's `onCreate`, before any event can be offered. */
@@ -82,8 +100,11 @@ internal class TakeEventPublisher(
     }
 
     /**
-     * Capture thread only, after each positive read. One primitive comparison; at most one event a second.
-     * **Nothing here logs, locks, waits or calls across a process**; the allocation is the event and its node.
+     * Capture thread, after each positive read; at most one heartbeat a second, assuming one capture loop at a
+     * time (overlapping callers could exceed the rate, never corrupt a heartbeat). **Nothing here allocates,
+     * logs, locks, waits or calls across a process** (#280): a clock read, two CAS, three field writes, one
+     * decrement and one unpark. A heartbeat is skipped while the previous one is still in the slot, and then
+     * the throttle is NOT advanced, so the next positive read tries again.
      */
     fun offerTick(takeId: String, elapsedMs: Long) {
         val now = nowNanos()
@@ -91,8 +112,17 @@ internal class TakeEventPublisher(
         // The sentinel is tested by identity: `now - Long.MIN_VALUE` overflows negative and would swallow
         // the first heartbeat of every take (found by TakeEventPublisherTest).
         if (last != Long.MIN_VALUE && now - last < TICK_INTERVAL_NANOS) return
-        lastTickNanos = now
-        offer(Event.Tick(takeId, elapsedMs))
+        if (!enter()) return
+        try {
+            if (!tickState.compareAndSet(TICK_IDLE, TICK_WRITING)) return
+            tickTakeId = takeId
+            tickElapsedMs = elapsedMs
+            tickState.set(TICK_READY)
+            lastTickNanos = now
+        } finally {
+            lifecycle.decrementAndGet()
+            LockSupport.unpark(worker)
+        }
     }
 
     fun publishLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) {
@@ -152,10 +182,15 @@ internal class TakeEventPublisher(
      */
     private fun drain() {
         while (true) {
+            // One waiting heartbeat, then one queued event, per pass: neither can starve the other (#280).
+            if (tickState.get() == TICK_READY) deliverTick()
             val event = queue.poll()
             if (event == null) {
+                // Lifecycle FIRST: a heartbeat sets READY before its decrement, so seeing no entered offer here
+                // means a READY set by an entered heartbeat is visible below. Never reuse the read above.
                 val state = lifecycle.get()
-                if (state and CLOSED != 0L && state and ENTERED_MASK == 0L && queue.isEmpty()) return
+                if (state and CLOSED != 0L && state and ENTERED_MASK == 0L && tickState.get() == TICK_IDLE && queue.isEmpty()) return
+                if (tickState.get() == TICK_READY) continue
                 LockSupport.park(this)
                 continue
             }
@@ -163,11 +198,21 @@ internal class TakeEventPublisher(
             runCatching {
                 when (event) {
                     is Event.Live -> target.onLive(event.takeId, event.forced, event.routeKind, event.routeReason, event.liveAfterMs)
-                    is Event.Tick -> target.onTick(event.takeId, event.elapsedMs)
                     is Event.SilenceStatus -> target.onSilenceStatus(event.takeId, event.status)
                     is Event.Ended -> target.onEnded(event.takeId, event.terminalReason, event.startFailure, event.audioFilePath, event.silenceStatus, event.takePeakAmplitude, event.effectiveInputDevice)
                 }
             }.onFailure { DebugLogger.warn(tag, "Take event not delivered: ${event.javaClass.simpleName} ${it.javaClass.simpleName}") }
         }
+    }
+
+    /** The worker's side of the slot: copy both fields, free the slot, then make the one binder call. */
+    private fun deliverTick() {
+        val takeId = tickTakeId
+        val elapsedMs = tickElapsedMs
+        tickState.set(TICK_IDLE)
+        val target = listener.get() ?: return
+        if (takeId == null) return
+        runCatching { target.onTick(takeId, elapsedMs) }
+            .onFailure { DebugLogger.warn(tag, "Take event not delivered: Tick ${it.javaClass.simpleName}") }
     }
 }

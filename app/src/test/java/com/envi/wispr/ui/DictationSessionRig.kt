@@ -363,7 +363,9 @@ internal class DictationSessionRig {
         override fun showNotice(text: String) { events += "notice:$text" }
         /** Every picture the owner published, with the serial it stamped. */
         val pictures = CopyOnWriteArrayList<Pair<Long, FloatArray>>()
-        override fun updateElapsed(seconds: Int) {}
+        /** Every elapsed second the owner published, apart from [events] so no existing event list changes (#280). */
+        val elapsedUpdates = CopyOnWriteArrayList<Int>()
+        override fun updateElapsed(seconds: Int) { elapsedUpdates += seconds }
         override fun updateBands(takeSerial: Long, bands: FloatArray) {
             pictures += takeSerial to bands.copyOf()
             timeline += "updateBands:$takeSerial"

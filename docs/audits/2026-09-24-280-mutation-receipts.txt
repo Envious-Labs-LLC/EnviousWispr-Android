@@ -1,0 +1,33 @@
+# #280 mutation receipts, 2026-09-24, worktree head 820eaf9 plus the change
+
+RED: m1 a heartbeat is queued again -> aHeartbeatNeverTouchesTheQueue
+     (the listener received a queued event beside each heartbeat)
+RED: m2 the fields are written without a claim -> aWaitingHeartbeatIsKeptAndASkippedOneRetries
+     (the waiting heartbeat was overwritten: t2:tick(200) delivered in place of t1:tick(100))
+RED: m3 the exit ignores the slot -> closeDeliversAHeartbeatAcceptedAtTheExitDecision
+     (the worker left at its exit decision; the accepted heartbeat was never delivered)
+RED: m4 a heartbeat skips enter -> aHeartbeatAfterCloseIsRefused
+     (a heartbeat offered after close was delivered)
+RED: m5 a failed claim advances the throttle -> aWaitingHeartbeatIsKeptAndASkippedOneRetries
+     (the retry on the next read was throttled and never sent)
+RED: m6 the owner reads a heartbeat outside RECORDING -> aHeartbeatOutsideRecordingPublishesNoElapsedSecond
+     (a heartbeat before live published an elapsed second)
+RED: m7 the worker drains the queue before the slot -> aHeartbeatIsNotStarvedByContinuingStatuses
+     (continuing statuses held the heartbeat back)
+RED: m8 a failed claim leaks the entered count -> aWaitingHeartbeatIsKeptAndASkippedOneRetries
+     (the worker never left after close)
+RED: m9 the worker loops on the slot -> queuedEventsAreNotHeldBackByContinuingHeartbeats
+     (continuing heartbeats held every status back)
+ALL RED (one run, m1 to m9)
+
+Repeats: TakeEventPublisherTest 20 of 20 green (--rerun each time).
+Suite: scripts/measure-tests.sh tests=1311 suites=162 failures=0 errors=0 skipped=0.
+Builds: :app:assembleDebug and :app:assembleDebugAndroidTest; scripts/check-visibility.py clean;
+scripts/check-cited-symbols.py all citations resolve.
+
+Emulator (emulator-5554, debug build of this change, logcat cleared first): "and I will send the deck tomorrow"
+spoken into a Gmail draft; the take ran 7.3 s and ended by a stop request; route=COMMIT, outcome=VERIFIED; the
+editor's whole text equals "And I will send the deck tomorrow." plus the insertion's trailing space;
+"Take terminal: COMPLETED". The owner's 3 s silence bound never fired (no "silent for" line) and no take event
+failed to deliver, so heartbeats reached the owner throughout a take longer than the bound.
+Not observed directly: the recorder's elapsed second on screen (the harness reads no timer).

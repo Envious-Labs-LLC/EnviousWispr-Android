@@ -37,8 +37,12 @@ internal class AccessibilityInsertionRunner(
     private val setContentChanges: (Boolean) -> Unit,
     /** The service's input-method pipe, when the framework created it. */
     private val inputSession: () -> EditorInputSession?,
-    /** Where an accepted insertion's ending is recorded (#359): its History outcome and its terminal event. */
-    private val outcomes: InsertionOutcomeRecorder = InsertionOutcomeRecorder.forProcess(service.applicationContext),
+    /**
+     * Where an accepted insertion's ending is recorded (#359): its History outcome and its terminal event. Built
+     * from the service itself, never its application context: the runner is built in a field initializer, before
+     * Android attaches the context, and the recorder reads it only when an ending is recorded (review round 1).
+     */
+    private val outcomes: InsertionOutcomeRecorder = InsertionOutcomeRecorder.forProcess(service),
 ) {
     private companion object {
         const val TAG = "PasteService"

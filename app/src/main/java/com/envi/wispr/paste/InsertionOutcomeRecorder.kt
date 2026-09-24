@@ -81,7 +81,10 @@ internal class InsertionOutcomeRecorder(
     companion object {
         private const val TAG = "PasteService"
 
-        /** The process's recorder: the application's History queue and the telemetry sinks. */
+        /**
+         * The process's recorder: the application's History queue and the telemetry sinks. [context] is read only
+         * when an ending is recorded, so a Service not yet attached to its context can build this.
+         */
         fun forProcess(context: Context) = InsertionOutcomeRecorder(
             enqueue = { label, kind, body -> ModelBootstrapApplication.historyWrites(context.applicationContext).enqueue(label, kind, body) },
             capture = Telemetry::capture,

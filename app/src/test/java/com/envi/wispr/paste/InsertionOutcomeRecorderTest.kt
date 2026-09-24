@@ -11,6 +11,8 @@ import com.envi.wispr.insertion.ClipboardOutcome
 import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.insertion.WordsKept
 import com.envi.wispr.telemetry.AnalyticsEvent
+import com.envi.wispr.telemetry.InsertionResultKind
+import com.envi.wispr.telemetry.InsertionRouteKind
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -89,6 +91,9 @@ class InsertionOutcomeRecorderTest {
         recorder(dao).record(ending(SavedRow(7L)))
         assertEquals(listOf("7:${TranscriptEntity.STATUS_INSERTION_INTERRUPTED}:${InsertionResults.COMMITTED}:true"), dao.outcomes)
         val event = events.single() as AnalyticsEvent.InsertionTerminal
+        assertEquals("the event carries the History row's result", InsertionResultKind.COMMITTED, event.result)
+        assertEquals(InsertionRouteKind.COMMIT, event.route)
+        assertEquals(false, event.recovered)
         assertEquals("take-1", event.takeId)
         assertEquals("com.google.android.gm", event.targetApp)
         assertEquals(420L, event.latencyMs)
@@ -110,7 +115,9 @@ class InsertionOutcomeRecorderTest {
         val dao = OutcomeDao(answer = 1)
         recorder(dao, admitted = Enqueued.REJECTED).record(ending(SavedRow(7L)))
         assertTrue(dao.outcomes.isEmpty())
-        assertEquals(1, events.size)
+        val event = events.single() as AnalyticsEvent.InsertionTerminal
+        assertEquals("take-1", event.takeId)
+        assertEquals(InsertionResultKind.COMMITTED, event.result)
     }
 
     /** Row 4: a debug probe (no take, no row) leaves a breadcrumb and no event or write. */
@@ -119,7 +126,7 @@ class InsertionOutcomeRecorderTest {
         recorder(dao).record(ending(HistoryRow.None, takeId = null))
         assertTrue(dao.outcomes.isEmpty())
         assertTrue(events.isEmpty())
-        assertEquals(1, crumbs.size)
+        assertEquals(listOf(mapOf("take_id" to null, "result" to InsertionResults.COMMITTED, "target_app" to "com.google.android.gm")), crumbs)
     }
 
     /** Row 5, Drift Guard: the runner no longer writes History or telemetry itself. MUTATION m3: the runner captures an event again. */

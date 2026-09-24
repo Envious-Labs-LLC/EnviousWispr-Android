@@ -27,6 +27,7 @@ import com.envi.wispr.shortcuts.DictationSurfaceState
 import com.envi.wispr.telemetry.AnalyticsEvent
 import com.envi.wispr.telemetry.AppDefect
 import com.envi.wispr.telemetry.TakeFacts
+import com.envi.wispr.telemetry.recordTakeEnding
 import com.envi.wispr.telemetry.TakeStage
 import com.envi.wispr.telemetry.Telemetry
 import com.envi.wispr.telemetry.TelemetryChannels
@@ -66,7 +67,7 @@ import java.util.concurrent.atomic.AtomicReference
 internal class DictationSessionCoordinator(
     private val host: SessionHost,
     private val surface: RecorderSurface,
-    /** Where a recorder notice is said: the pill or a toast (#256). The owner only picks which notice. */
+    /** Says recorder notices on the pill or a toast (#256), and decides whether a once-per-take line is due (#309). */
     private val notices: SessionNoticePresenter,
     private val insertion: InsertionGateway,
     private val log: SessionLog,
@@ -94,7 +95,6 @@ internal class DictationSessionCoordinator(
     /** The vocabulary matcher's compile (#290): production's own, a test throws or holds it. */
     private val compileMatcher: (List<CustomTerm>) -> StructuredTermRestorer.Matcher = StructuredTermRestorer::compile,
     /** Process-scoped on purpose: the tip's once-per-process allowance outlives the Service instance. */
-    private val tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS,
     /** The one first-wins gate on the polish answer; production mints ids off the device clock, a test off the JVM's. */
     private val polishLedger: PolishRequestLedger = PolishRequestLedger(),
     /** The arbiter's sink: where a committed ending goes. Production records it to telemetry. */
@@ -212,9 +212,6 @@ internal class DictationSessionCoordinator(
     }
 
     @Volatile private var sessionPreferences = SessionPreferences()
-    @Volatile private var silenceNoticeShown = false
-    /** The take proceeded on earbuds that sent nothing; said once, before any other microphone line. */
-    @Volatile private var forcedNoticeShown = false
 
     /**
      * Serialises the one STARTING→RECORDING publication (the CAS, the pill, the haptic, the surface) with
@@ -227,8 +224,6 @@ internal class DictationSessionCoordinator(
      * exited and the record is complete (#115). Empty means unknown and is stored as such (#26).
      */
     @Volatile private var captureDeviceLabel = ""
-    /** One warning per take, latched so the last minute is not announced ten times a second. */
-    @Volatile private var durationWarningShown = false
 
     /** True while a take is in PROCESSING; the Service picks the processing notification on a foreground command. */
     val isProcessing: Boolean get() = state.get() == SessionState.PROCESSING
@@ -633,9 +628,7 @@ internal class DictationSessionCoordinator(
         if (state.get() != SessionState.STARTING) return
         var captureStarted = false
         try {
-            silenceNoticeShown = false
-            durationWarningShown = false
-            forcedNoticeShown = false
+            notices.beginTake()
             captureDeviceLabel = ""
             // The take is STARTING until the capture process publishes live: the lips spin, no pill, no
             // timer, nothing written. The frozen snapshot, never the live source: a settings emission after
@@ -715,7 +708,7 @@ internal class DictationSessionCoordinator(
             surface.updateElapsed(second)
         }
         // Below the timer, and a limb: a failure here must not cost the take.
-        runCatching { publishDurationWarningIfNeeded(elapsedMs) }
+        runCatching { notices.sayDurationWarningIfDue(elapsedMs) }
     }
 
     /**
@@ -839,13 +832,9 @@ internal class DictationSessionCoordinator(
             surface.show()
             host.vibrate(HapticCue.SESSION_TRANSITION)
             log.log("Recording started (live after $liveAfterMs ms, forced=$forced)")
-            if (forced) {
-                // Said first, so neither the tip nor a pick-missing line can take the slot from it.
-                forcedNoticeShown = true
-                notices.say(SessionNotice.EARBUDS_SILENT)
-            }
+            if (forced) notices.sayEarbudsSilent()
             // Once, at live, from the pushed route kind (#115): the tip needs nothing more.
-            publishMicrophoneNoticesIfNeeded(routeKind)
+            notices.sayBluetoothTipIfDue(routeKind, sessionPreferences.showBluetoothTips)
             // After show() stamped the take's serial, which the picture is judged against.
             capture.listenForPicture()
             if (stopAfterRecording) {
@@ -858,55 +847,11 @@ internal class DictationSessionCoordinator(
         }
     }
 
-    /**
-     * Tell the user once, and only when auto-stop never became available for a take they had it on for.
-     *
-     * Losing the detector after it was already working leaves a correct recording, and a message
-     * several seconds into one is an interruption for nothing. The floating recorder only exists while
-     * the accessibility service runs, so clipboard-only mode gets the same sentence as a toast instead.
-     */
+    /** The auto-stop line, for a take the user had auto-stop on for, while it records; the presenter decides the rest. */
     private fun publishSilenceNoticeIfNeeded(status: Int) {
-        if (!sessionPreferences.autoStopOnSilence || silenceNoticeShown) return
+        if (!sessionPreferences.autoStopOnSilence) return
         if (state.get() != SessionState.RECORDING) return
-        if (status != AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return
-        silenceNoticeShown = true
-        notices.say(SessionNotice.SILENCE_UNAVAILABLE)
-    }
-
-    /**
-     * The one-time line about the microphone, decided from the kind code the capture process reports:
-     * the Bluetooth tip (once per app process, tips on, take started on Bluetooth). It never reads the
-     * display label. A pick that was not connected has no line of its own (#173, the Mac rule): the
-     * take records through Auto, the History card names what recorded, and a Bluetooth take reached
-     * that way is an ordinary Bluetooth take for the tip.
-     *
-     * The recorder has ONE notice slot and the last write wins, so the tip is never said in a take that
-     * already carries the auto-stop warning or the forced notice: a capture warning outranks a nudge.
-     * The tip's once-per-process allowance is spent only when the tip is actually said, so a take that
-     * had to say something else leaves it for the next Bluetooth take (Codex review 5, 2026-09-17).
-     */
-    private fun publishMicrophoneNoticesIfNeeded(kind: Int) {
-        if (silenceNoticeShown || forcedNoticeShown) return
-        if (tipGate.shouldShow(kind, sessionPreferences.showBluetoothTips)) {
-            log.log("Bluetooth tip shown")
-            notices.say(SessionNotice.BLUETOOTH_TIP)
-        }
-    }
-
-    /**
-     * Warn once, in the last minute of a take, that the cap is about to stop it.
-     *
-     * The moment comes from `RecordingLimits`, the same object the capture process stops the take with.
-     * An earlier revision asked the capture service for it over the binder, for authority across the
-     * process boundary. That bought nothing and cost something: both processes compile the SAME
-     * constant, so there was no drift to catch, while the call added a place this thread could hang
-     * before its loop had started even once (issue #115). The call is gone rather than guarded.
-     */
-    private fun publishDurationWarningIfNeeded(elapsedMs: Long) {
-        if (durationWarningShown || elapsedMs < RecordingLimits.WARNING_AT_MS) return
-        durationWarningShown = true
-        log.log("Duration warning shown at ${elapsedMs}ms")
-        notices.say(SessionNotice.DURATION_WARNING)
+        notices.saySilenceUnavailableIfDue(status)
     }
 
     /**
@@ -1386,22 +1331,4 @@ internal class DictationSessionCoordinator(
         // No further command is accepted; the stop above, if queued, still runs on the lane's own thread.
         capture.shutdown()
     }
-}
-
-/**
- * The arbiter's sink: the one place a committed ending becomes telemetry (issue #176). A breadcrumb
- * always; a Sentry defect only when the channel table says the cause is ours; the journal commit,
- * which captures the `dictation.terminal` row after its own Room transaction; then the take leaves
- * the error scope. Every call is a limb that returns at once.
- */
-internal fun recordTakeEnding(takeFacts: TakeFacts, reason: TerminalReason) {
-    // The pre-capture chain (#258), in ms since the accepted start command, so a UAT reads it without PostHog.
-    val start = with(takeFacts) { "settings=$settingsAnswerMs matcher=$matcherReadyMs policy=$policyLoadedMs admission=$admissionObservedMs bind=$bindRequestedMs live=$liveReceivedMs" }
-    DebugSessionLog.log("Take terminal: ${reason.name} (${reason.result.wire}) start: $start")
-    Telemetry.breadcrumb("take", "terminal", mapOf("take_id" to takeFacts.takeId, "reason" to reason.name, "result" to reason.result.wire))
-    TelemetryChannels.defectOf(reason, takeFacts.asrFailure)?.let { defect ->
-        Telemetry.defect(defect, mapOf("take_id" to takeFacts.takeId, "reason" to reason.name, "asr_failure_reason" to takeFacts.asrFailure?.name))
-    }
-    Telemetry.journal?.terminal(takeFacts.terminal(reason))
-    Telemetry.takeEnded(takeFacts.takeId)
 }

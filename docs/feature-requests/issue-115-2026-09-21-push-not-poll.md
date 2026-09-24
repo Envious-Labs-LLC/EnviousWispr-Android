@@ -130,7 +130,7 @@ executor is a pool, so `processing` then `asr_error` land in either order (#186 
   never waits on the owner. THIS is the pattern.
 
 **The owner's asks** (`DictationSessionCoordinator.kt`), the closed population from `grep "service\."` inside
-`waitForLive`, `startPolling`, `publishSilenceNoticeIfNeeded`, `publishMicrophoneNoticesIfNeeded`,
+`waitForLive`, `startPolling`, `publishSilenceNoticeIfNeeded`, `publishMicrophoneNoticesIfNeeded` (removed),
 `stopAndTranscribe` and `finishTakeOrStop`:
 | Call | Where | Becomes |
 |---|---|---|
@@ -138,14 +138,14 @@ executor is a pool, so `processing` then `asr_error` land in either order (#186 
 | `elapsedMs()` | `startPolling` `:621` | `onTick(elapsedMs)` pushed once a second |
 | `isCapturing()`, `terminalReason()` | `:629-630` | `onEnded(reason, audioFilePath)` pushed |
 | `silenceStopStatus()` | `publishSilenceNoticeIfNeeded` `:718`, `stopAndTranscribe` `:829` | `onSilenceStatus(status)` pushed on change; the stop reads the last pushed value |
-| `inputRouteKind()` (removed), `inputRouteReason()`, `liveAfterMs()` | `publishMicrophoneNoticesIfNeeded` `:731`, `publishLive` `:559-561` | carried on `onLive(forced, routeKind, routeReason, liveAfterMs)` |
+| `inputRouteKind()` (removed), `inputRouteReason()`, `liveAfterMs()` | `publishMicrophoneNoticesIfNeeded` (removed) `:731`, `publishLive` `:559-561` | carried on `onLive(forced, routeKind, routeReason, liveAfterMs)` |
 | `waitForFileReady(2000)` | `stopAndTranscribe` path, `waitForLive` failures | gone: `onEnded` carries the closed file's path; the failure paths that stop the service keep `stopCapture()` (a command, bounded by the binder's own timeout? NO: a binder call has no timeout; see §2.5.4) |
 | `takePeakAmplitude()`, `effectiveInputDevice()`, `audioFilePath()`, `lastStartFailure()` | one-shot reads at the ends | gone (coverage A2): every fact the owner read after an ending rides `onEnded` (peak, device label, path, the start failure code); no synchronous read remains after an event ends or advances the take |
 | `stopCapture()`, `finishTake()`, `startCaptureForTake(...)` | commands | stay synchronous COMMANDS, each on the owner's scope, never main; a hang there is the same wedge, and the bound (§3 A5) is armed from before the listener is registered until the binding is released, so it covers a command outstanding after `onEnded` (`finishTake`) too |
 | `listenForSpectrum`, `stopListeningForSpectrum` | the picture (#187) | unchanged; part of the closed `CaptureLink` population (coverage A1) |
 
 **Consumers of the pushed facts.** `surface.updateElapsed(second)`, `publishDurationWarningIfNeeded(elapsedMs)`,
-`publishSilenceNoticeIfNeeded`, `publishMicrophoneNoticesIfNeeded`, `publishLive(forced)`, the ending `when`
+`publishSilenceNoticeIfNeeded`, `publishMicrophoneNoticesIfNeeded` (removed), `publishLive(forced)`, the ending `when`
 over `CaptureEnding` (`:636-665`), `takeFacts.captureTerminal`, `takeFacts.silenceStopStatus`, the route facts.
 
 **The History writes** (`grep "transcripts\."` in the owner and the paste service): `insert` (`:577`, `:1233`),
@@ -270,8 +270,8 @@ A2. **`TakeEventPublisher` (proposed)** in `:audio`, service-scoped like `WarmHo
 A3. **The owner** registers its listener in `startCaptureForTake`'s caller (`tryStartRecording`, next to
    `listenForPicture`) BEFORE the start call, so no event can precede registration; each event is
    `host.postToMain { … }` and then handled by the existing code paths: `onLive` → `publishLive(forced)` with
-   the route facts stamped; `onTick` → `updateElapsed`, `publishDurationWarningIfNeeded`,
-   `publishMicrophoneNoticesIfNeeded` once (the tip gate); `onSilenceStatus` → `publishSilenceNoticeIfNeeded`
+   the route facts stamped; `onTick` → `updateElapsed`, `publishDurationWarningIfNeeded` (removed),
+   `publishMicrophoneNoticesIfNeeded` (removed) once (the tip gate); `onSilenceStatus` → `publishSilenceNoticeIfNeeded`
    with the pushed value; `onEnded` → the existing `when (CaptureEnding.fromAidl(reason))` with the path
    handed to `stopAndTranscribe`, `takeFacts.captureTerminal`, `takeFacts.silenceStopStatus`,
    `takeFacts.peakAmplitude` (from the payload's peak, replacing `takePeakAmplitude()`) and `captureDeviceLabel`

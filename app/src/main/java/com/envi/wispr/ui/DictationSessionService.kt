@@ -217,7 +217,7 @@ class DictationSessionService : Service() {
         coordinator = DictationSessionCoordinator(
             host = host,
             surface = OverlayRecorderSurface,
-            notices = SessionNoticePresenter(OverlayRecorderSurface, AccessibilityInsertionGateway, host, scope, mainDispatcher),
+            notices = SessionNoticePresenter(OverlayRecorderSurface, AccessibilityInsertionGateway, host, scope, mainDispatcher, DebugSessionLog),
             insertion = AccessibilityInsertionGateway,
             log = DebugSessionLog,
             preferences = preferences,

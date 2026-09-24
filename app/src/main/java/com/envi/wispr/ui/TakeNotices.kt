@@ -47,6 +47,7 @@ internal object TakeNotices {
         TerminalReason.AUDIO_PROCESS_DIED -> "Microphone service stopped unexpectedly"
         TerminalReason.AUDIO_PROCESS_UNRESPONSIVE -> "The microphone stopped answering. Try again."
         TerminalReason.ASR_PROCESS_DIED -> "Speech service stopped before transcription finished"
+        TerminalReason.ASR_PROCESS_UNRESPONSIVE -> "Speech service stopped answering. Try again."
 
         TerminalReason.AUDIO_BIND_FAILED -> "Microphone service could not be connected"
         TerminalReason.ASR_BIND_FAILED -> "Speech service could not be connected"

@@ -186,6 +186,11 @@ internal class DictationSessionCoordinator(
      */
     @Volatile private var stopAfterRecording = false
     @Volatile private var recordingDurationMs = 0L
+    /** The capture clock's last reading, in milliseconds: the speech bound's second source for the take's length (#356). */
+    @Volatile private var lastTickMs = 0L
+    /** The take's one speech request, bounded (#356); null before the request. */
+    @Volatile private var speechWait: SpeechWait? = null
+    @Volatile private var speechAudioPath: String? = null
     /** Set by [destroy]; the owner's surface is never touched from the application queue after it. */
     private val destroyed = AtomicBoolean(false)
     private var lastElapsedSecond = -1
@@ -397,6 +402,7 @@ internal class DictationSessionCoordinator(
         capture.begin(takeId, phaseView)
         teardownStarted.set(false)
         recordingDurationMs = 0L
+        lastTickMs = 0L
         lastElapsedSecond = -1
         pendingCancel = null
         scope.launch {
@@ -522,6 +528,8 @@ internal class DictationSessionCoordinator(
     override fun onSpeechDisconnected() {
         log.warn("Speech service disconnected")
         if (state.get() == SessionState.PROCESSING) {
+            // A request still open ends with the process; its bound goes with it (#356).
+            closeSpeechWait()
             // Read under the lock the speech answer is written under (#234), so an answer already handed off
             // is never seen as blank here.
             val text = synchronized(polishSubmissionLock) { rawTranscript }
@@ -631,6 +639,7 @@ internal class DictationSessionCoordinator(
     /** Main thread. A heartbeat: the timer while RECORDING; liveness in every state. */
     private fun onTakeTick(elapsedMs: Long) {
         if (state.get() != SessionState.RECORDING) return
+        lastTickMs = maxOf(lastTickMs, elapsedMs)
         val second = (elapsedMs / 1_000L).toInt().coerceAtLeast(0)
         if (second != lastElapsedSecond) {
             lastElapsedSecond = second
@@ -830,10 +839,19 @@ internal class DictationSessionCoordinator(
                     showError(TerminalReason.ASR_NOT_READY)
                     return@launch
                 }
+                // Armed BEFORE the request (#356), so no answer can arrive ahead of it. The length is the larger of
+                // the file's and the capture clock's, so a failed file read never shrinks a long take's bound.
+                val wait = SpeechWait(host) { onSpeechUnresponsive(current, audioFilePath) }
+                speechAudioPath = audioFilePath
+                speechWait = wait
+                wait.arm(maxOf(recordingDurationMs, lastTickMs))
                 log.mark("asr_request")
                 val asrRequestedAtMs = host.elapsedRealtimeMs()
                 speechService.transcribeFileForTake(audioFilePath, takeId, object : SpeechListener {
                     override fun onResult(text: String?) {
+                        // An answer after the bound, a cancel or a destroy touches nothing (#356): not the file,
+                        // which whatever closed the wait already deleted, and not the take's facts.
+                        if (!wait.answer()) return lateSpeechAnswer()
                         // Posted to main by the speech proxy (#253); the file delete runs on its own worker.
                         deleteCapturedAudio(audioFilePath)
                         outcome.asrResult(host.elapsedRealtimeMs() - asrRequestedAtMs, text?.length ?: 0)
@@ -845,6 +863,7 @@ internal class DictationSessionCoordinator(
 
                     /** The versioned request never answers this; a legacy sentence here is a service defect. */
                     override fun onError(message: String?) {
+                        if (!wait.answer()) return lateSpeechAnswer()
                         deleteCapturedAudio(audioFilePath)
                         log.error("Legacy onError on a versioned request")
                         // The fact is written before the claim so the ending's row carries it; a claim
@@ -856,6 +875,7 @@ internal class DictationSessionCoordinator(
                     }
 
                     override fun onFailure(reason: Int, detail: String?) {
+                        if (!wait.answer()) return lateSpeechAnswer()
                         deleteCapturedAudio(audioFilePath)
                         val failure = AsrFailureReason.fromCode(reason)
                         outcome.asrFailed(failure) { host.elapsedRealtimeMs() - asrRequestedAtMs }
@@ -869,6 +889,7 @@ internal class DictationSessionCoordinator(
                     }
                 })
             } catch (error: Exception) {
+                speechWait?.close()
                 pipeline.stopAudioService()
                 deleteCapturedAudio(ending.audioFilePath)
                 log.error("Transcription failed", error)
@@ -1130,7 +1151,29 @@ internal class DictationSessionCoordinator(
         showError(reason)
     }
 
+    /**
+     * Main thread. The speech request outlived its bound (#356): the speech process is alive and not answering. The
+     * file goes whoever owns the ending, since the wait that would have consumed it is over.
+     */
+    private fun onSpeechUnresponsive(current: TakeContext, audioFilePath: String) {
+        deleteCapturedAudio(audioFilePath)
+        log.error("Speech service did not answer within its bound; ending the take")
+        if (!current.arbiter.commitNow(TerminalReason.ASR_PROCESS_UNRESPONSIVE)) return
+        current.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
+        endAsFailure(TerminalReason.ASR_PROCESS_UNRESPONSIVE)
+    }
+
+    private fun lateSpeechAnswer() {
+        log.warn("Speech answer arrived after the request was closed; ignored")
+    }
+
+    /** Ends an open speech wait for anything but its answer; the file the request would have consumed goes with it. */
+    private fun closeSpeechWait() {
+        if (speechWait?.close() == true) deleteCapturedAudio(speechAudioPath)
+    }
+
     private fun finishSession() {
+        closeSpeechWait()
         if (state.getAndSet(SessionState.FINISHING) == SessionState.FINISHING) return
         polish?.cancelOpen()
         surface.showProcessing()
@@ -1206,9 +1249,10 @@ internal class DictationSessionCoordinator(
             }
             seen
         }
-        // Both delayed callbacks go now, on main, before any blocking cleanup: a bound firing into a
-        // destroyed owner would act on a Service that is gone (#115 review round 1, F4).
+        // Every delayed callback goes now, on main, before any blocking cleanup: a bound firing into a
+        // destroyed owner would act on a Service that is gone (#115 review round 1, F4; the speech bound, #356).
         capture.disarm()
+        closeSpeechWait()
         polish?.cancelOpen()
         val sessionWasOpen = destroyedState == SessionState.STARTING ||
             destroyedState == SessionState.RECORDING ||

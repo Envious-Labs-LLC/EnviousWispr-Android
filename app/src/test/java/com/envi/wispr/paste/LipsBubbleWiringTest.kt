@@ -20,7 +20,9 @@ class LipsBubbleWiringTest {
     /** The owner since #186; the overlay state is reached through its `surface` seam and the notification through `host`. */
     private val session = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
     private val recorder = File("src/main/java/com/envi/wispr/ui/RecorderSurface.kt").readText()
-    private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
+    /** The floating recorder since #360: the window, its views and its gesture rules, read as one text. */
+    private val overlay = listOf("RecordingAccessibilityOverlay", "BubbleViews", "BubbleGestureController")
+        .joinToString("\n") { File("src/main/java/com/envi/wispr/paste/$it.kt").readText() }
     private val launcher = File("src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt").readText()
     private val manifest = File("src/main/AndroidManifest.xml").readText()
     private val config = File("src/main/res/xml/accessibility_service_config.xml").readText()
@@ -77,16 +79,16 @@ class LipsBubbleWiringTest {
 
     @Test
     fun theBubbleMintsATokenAndSendsReleaseAndCancelWithIt() {
-        assertTrue(overlay.contains("BubbleRequests.mint(held)"))
+        // Since #360 the rules run in BubbleGestureController, whose own rows drive them; this pins the wiring.
         // The gesture is on the token, so the owner's snapshot can say which one a take answers.
-        assertTrue(overlay.contains("startDictation(held = false)"))
-        assertTrue(overlay.contains("DictationSessionService.ACTION_STOP, it.encode())"))
-        assertTrue(overlay.contains("DictationSessionService.ACTION_CANCEL, it.encode())"))
+        assertTrue(overlay.contains("mint = BubbleRequests::mint,"))
+        assertTrue(overlay.contains("is BubbleCommand.Stop -> DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP, command.request.encode())"))
+        assertTrue(overlay.contains("is BubbleCommand.Cancel -> DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL, command.request.encode())"))
         // A tap starts a new request only at IDLE.
-        assertTrue(overlay.contains("if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return null"))
+        assertTrue(overlay.contains("override fun idle(): Boolean = snapshot.phase == RecordingOverlayState.Phase.IDLE"))
         // A hold's release and cancel go to the request THAT hold created, never to an earlier take.
-        assertTrue(overlay.contains("holdRequest = startDictation(held = true)"))
-        assertTrue(overlay.contains("holdRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP, it.encode()) }"))
+        assertTrue(overlay.contains("holdRequest = request"))
+        assertTrue(overlay.contains("BubbleGesture.HoldRelease -> listOfNotNull(holdRequest?.let { BubbleCommand.Stop(it) })"))
         assertFalse(overlay.contains("currentRequest"))
     }
 
@@ -241,8 +243,9 @@ class LipsBubbleWiringTest {
     @Test
     fun aScreenReaderDoubleTapStartsDictationThroughTheClickAction() {
         val bubble = overlay.substringAfter("private fun buildBubble()").substringBefore("private fun buildPillColumn()")
-        assertTrue(bubble.contains("setOnClickListener { startDictation(held = false) }"))
-        assertTrue(bubble.contains("contentDescription = BUBBLE_LABEL"))
+        assertTrue(bubble.contains("setOnClickListener { onBubbleClick() }"))
+        assertTrue(overlay.contains("onBubbleClick = { perform(gestures.accessibilityTap()) },"))
+        assertTrue(bubble.contains("contentDescription = RecordingAccessibilityOverlay.BUBBLE_LABEL"))
         assertTrue(RecordingAccessibilityOverlay.BUBBLE_LABEL.contains("Double tap to dictate"))
     }
 
@@ -276,8 +279,8 @@ class LipsBubbleWiringTest {
 
     @Test
     fun theBubbleTellsAScreenReaderAboutTheEarbudsAndTakesItBack() {
-        val set = overlay.substringAfter("fun setEarbuds(earbuds: Boolean)").substringBefore("\n    }")
-        assertTrue(set.contains("bubble.contentDescription = if (earbuds) BUBBLE_LABEL_EARBUDS else BUBBLE_LABEL"))
+        val set = overlay.substringAfter("fun setEarbuds(earbuds: Boolean) {").substringBefore("\n    }")
+        assertTrue(set.contains("bubble.contentDescription = if (earbuds) RecordingAccessibilityOverlay.BUBBLE_LABEL_EARBUDS else RecordingAccessibilityOverlay.BUBBLE_LABEL"))
         assertTrue(RecordingAccessibilityOverlay.BUBBLE_LABEL_EARBUDS.contains("using your earbuds"))
         assertFalse(RecordingAccessibilityOverlay.BUBBLE_LABEL.contains("earbuds"))
         // The instructions survive in both labels.

@@ -15,7 +15,9 @@ import java.io.File
  */
 class RecorderBrandTest {
 
-    private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
+    /** The floating recorder since #360: the window, its views and its gesture rules, read as one text. */
+    private val overlay = listOf("RecordingAccessibilityOverlay", "BubbleViews", "BubbleGestureController")
+        .joinToString("\n") { File("src/main/java/com/envi/wispr/paste/$it.kt").readText() }
     private val palette = File("src/main/java/com/envi/wispr/paste/BrandPalette.kt").readText()
     private val meter = File("src/main/java/com/envi/wispr/paste/RecordingLevelMeterView.kt").readText()
     private val mark = File("src/main/java/com/envi/wispr/paste/BrandMarkView.kt").readText()
@@ -111,22 +113,23 @@ class RecorderBrandTest {
         assertTrue("the gradient is built from the palette", builder.contains("LinearGradient(start, 0f, end, 0f, palette,"))
         assertFalse("the rail never builds from the brand constant", builder.contains("BrandPalette.RAINBOW"))
         // The overlay sets both from one call, and only two palettes exist.
-        val set = overlay.substringAfter("fun setEarbuds(earbuds: Boolean)").substringBefore("\n    }")
+        val set = overlay.substringAfter("fun setEarbuds(earbuds: Boolean) {").substringBefore("\n    }")
         assertTrue(set.contains("bubbleMark.palette = palette") && set.contains("meter.palette = palette"))
         assertTrue(set.contains("if (earbuds) BrandPalette.RAINBOW_EARBUDS else BrandPalette.RAINBOW"))
     }
 
     @Test
     fun theAcceptButtonStopsAndTheCancelButtonCancels() {
-        val cancel = overlay.substringAfter("actionButton(ActionGlyph.CROSS").substringBefore("},")
-        val accept = overlay.substringAfter("actionButton(ActionGlyph.CHECK").substringBefore("},")
+        // Since #360 the views take the two actions as callbacks and the overlay supplies them.
+        assertTrue(overlay.contains("actionButton(ActionGlyph.CROSS, \"Cancel\", BrandPalette.NEUTRAL_CONTROL) { onCancel() }"))
+        assertTrue(overlay.contains("actionButton(ActionGlyph.CHECK, \"Stop and use these words\", BrandPalette.ACCENT) { onAccept() }"))
         assertTrue(
             "the X must cancel the dictation",
-            cancel.contains("DictationSessionService.ACTION_CANCEL"),
+            overlay.contains("onCancel = { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL) },"),
         )
         assertTrue(
-            "the tick must stop and keep the words",
-            accept.contains("DictationSessionService.ACTION_STOP"),
+            "the check must stop and keep the words",
+            overlay.contains("onAccept = { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP) },"),
         )
         assertTrue(
             "the tick is the one filled control, so it must carry the accent",
@@ -138,7 +141,7 @@ class RecorderBrandTest {
         )
         // Drawn, never typed: a text glyph sits where its font's line box puts it, and the founder saw
         // the "×" low in its circle on the phone (2026-09-12).
-        assertTrue("the controls must draw their symbols", overlay.contains(") = ActionGlyphView(service, glyph).apply {"))
+        assertTrue("the controls must draw their symbols", overlay.contains(") = ActionGlyphView(context, glyph).apply {"))
         assertTrue("no text glyph may remain", !overlay.contains("\"×\"") && !overlay.contains("\"✓\""))
     }
 

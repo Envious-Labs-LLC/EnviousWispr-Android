@@ -32,7 +32,9 @@ class LiveAudioMeterWiringTest {
     private val captureSide = SessionSources.capture
     private val recorder = File("src/main/java/com/envi/wispr/ui/RecorderSurface.kt").readText()
     private val overlayState = File("src/main/java/com/envi/wispr/shortcuts/RecordingOverlayState.kt").readText()
-    private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
+    /** The floating recorder since #360: the window, its views and its gesture rules, read as one text. */
+    private val overlay = listOf("RecordingAccessibilityOverlay", "BubbleViews", "BubbleGestureController")
+        .joinToString("\n") { File("src/main/java/com/envi/wispr/paste/$it.kt").readText() }
     private val meterView = File("src/main/java/com/envi/wispr/paste/RecordingLevelMeterView.kt").readText()
     private val aidl = File("src/main/aidl/com/envi/wispr/audio/IAudioCaptureService.aidl").readText()
     private val listenerAidl = File("src/main/aidl/com/envi/wispr/audio/IAudioSpectrumListener.aidl").readText()

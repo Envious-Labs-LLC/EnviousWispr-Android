@@ -34,6 +34,8 @@ internal class WarmHold(
         fun stop()
         /** Its writer thread has left its loop, or never started (#257). */
         fun writerExited(): Boolean
+        /** Its platform track's release returned, or it never held one; false keeps the handle and says so (#333). */
+        fun released(): Boolean
     }
 
     private val ended = AtomicReference<String?>(null)

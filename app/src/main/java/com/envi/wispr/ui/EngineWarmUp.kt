@@ -54,7 +54,12 @@ internal class EngineWarmUp(private val context: Context, private val scope: Cor
                 // The call itself on IO, never on the scope's main dispatcher (#236): it is a synchronous
                 // transaction into `:polish`, and setup must not freeze on a stalled polish process.
                 withContext(Dispatchers.IO) {
-                    val policy = ProviderConfigurationRepository(context).loadPolicy()
+                    // A store that cannot be read warms nothing (#278): a warm-up is best effort.
+                    val policy = ProviderConfigurationRepository(context).loadPolicy().freshPolicy
+                    if (policy == null) {
+                        DebugLogger.warn(TAG, "Polish policy unreadable; no warm-up for setup")
+                        return@withContext
+                    }
                     if (!polishBound) return@withContext
                     runCatching { service.warmUpWithPolicy(policy) }
                         .onFailure { error -> DebugLogger.warn(TAG, "Polish warm-up refused: ${error.javaClass.simpleName}") }

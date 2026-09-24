@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.providers.PolicyRead
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.history.HistoryWriteQueue
@@ -136,7 +137,7 @@ internal class DictationSessionRig {
         historyWrites = historyWrites,
         transcripts = transcripts,
         languageDetector = languageDetector,
-        loadPolicy = { polishPolicy },
+        loadPolicy = { policyRead ?: PolicyRead.Fresh(polishPolicy) },
         pipeline = pipeline,
         scope = scope,
         mainDispatcher = mainDispatcher,
@@ -156,6 +157,8 @@ internal class DictationSessionRig {
 
     /** The polish policy each take loads; Off unless a test sets another (#234 notice rows). */
     @Volatile var polishPolicy: PolishPolicy = PolishPolicy.Off
+    /** When set, the read the owner gets instead of `Fresh(polishPolicy)` (#278). */
+    @Volatile var policyRead: PolicyRead? = null
 
     /** Every defect the owner raised, by fingerprint, with its data (#214). */
     val defects = CopyOnWriteArrayList<Pair<String, Map<String, Any?>>>()
@@ -603,6 +606,8 @@ internal class DictationSessionRig {
         private val requested = CountDownLatch(1)
         /** The raw text the owner handed the engine, after vocabulary restoration (#193). */
         @Volatile var lastRawText: String? = null
+        /** The policy the owner sent with the last request (#278). */
+        @Volatile var lastPolicy: PolishPolicy? = null
         /** When set, a warm-up blocks until released, as a stalled `:polish` binder call would (#236). */
         @Volatile var holdWarmUp: CountDownLatch? = null
         /** Counted down when a warm-up call has been entered. */
@@ -621,6 +626,7 @@ internal class DictationSessionRig {
         override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
             if (throwOnRequest) throw IllegalStateException("engine gone")
             lastRawText = rawText
+            lastPolicy = policy
             this.requestId = requestId
             this.listener = listener
             requested.countDown()

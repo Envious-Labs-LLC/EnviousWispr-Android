@@ -147,11 +147,21 @@ class PolishService : Service() {
         ) {
             val raw = rawText.orEmpty().trim()
             val options = CleanupOptions(removeFillers, spokenEmoji, spokenPunctuation)
-            val effectivePolicy = policy ?: PolishPolicy.Off
             if (raw.isBlank()) {
                 deliver(callback, PolishOutcome(requestId, raw, PolishEngineLabels.NO_SPEECH, PolishReason.NO_SPEECH, 0, 0))
                 return
             }
+            // Our own client always sends the take's frozen policy; a null one is a protocol fault, never the
+            // user's Off (#278). Answer the deterministic text as UNEXPECTED, which raises its defect.
+            if (policy == null) {
+                DebugLogger.warn(TAG, "Polish request $requestId carried no policy")
+                deliver(
+                    callback,
+                    PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.UNEXPECTED, 0, 0),
+                )
+                return
+            }
+            val effectivePolicy: PolishPolicy = policy
             if (poisoned.get()) {
                 // This process is ending after a timeout; a request queued behind the wedged worker would only
                 // learn that when the process died. Answer now.

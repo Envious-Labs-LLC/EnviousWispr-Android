@@ -289,25 +289,25 @@ class ProviderConfigurationRepositoryTest {
     /**
      * Product Outcome: when this fails, the mode the user picked is not the mode the engine runs,
      * because the session owner's policy snapshot disagrees with what the screen saved. The
-     * unreadable-store branch is `readPolicy`, staged on the JVM in `PolishPolicyTest`.
+     * unreadable-store branch is `PolicyReader` (#278), staged on the JVM in `PolishPolicyTest`.
      */
     @Test fun loadPolicyReadsTheStoredSnapshotWithoutTheKey() {
-        assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), repository.loadPolicy())
+        assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), repository.loadPolicy().freshPolicy)
 
         repository.setMode(PolishMode.OFF)
-        assertEquals(PolishPolicy.Off, repository.loadPolicy())
+        assertEquals(PolishPolicy.Off, repository.loadPolicy().freshPolicy)
 
         repository.setMode(PolishMode.PROVIDER)
-        assertEquals(PolishPolicy.CloudUnconfigured, repository.loadPolicy())
+        assertEquals(PolishPolicy.CloudUnconfigured, repository.loadPolicy().freshPolicy)
 
         repository.save(Provider.OPENAI, "gpt-test", apiKey = "openai-secret")
         assertEquals(
             PolishPolicy.Cloud(Provider.OPENAI, "gpt-test", null, SelfHostedProtocol.OPENAI_COMPATIBLE),
-            repository.loadPolicy(),
+            repository.loadPolicy().freshPolicy,
         )
 
         repository.clearSelection()
-        assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), repository.loadPolicy())
+        assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), repository.loadPolicy().freshPolicy)
     }
 
     /**
@@ -320,12 +320,12 @@ class ProviderConfigurationRepositoryTest {
         repository.setS1Control(picked)
 
         assertEquals(picked, repository.loadS1Control())
-        assertEquals(PolishPolicy.LocalS1(picked), repository.loadPolicy())
+        assertEquals(PolishPolicy.LocalS1(picked), repository.loadPolicy().freshPolicy)
 
         repository.save(Provider.OPENAI, "gpt-test", apiKey = "openai-secret")
-        assertEquals("a cloud mode carries no S1 picks", true, repository.loadPolicy() is PolishPolicy.Cloud)
+        assertEquals("a cloud mode carries no S1 picks", true, repository.loadPolicy().freshPolicy is PolishPolicy.Cloud)
         repository.clearSelection()
-        assertEquals(PolishPolicy.LocalS1(picked), repository.loadPolicy())
+        assertEquals(PolishPolicy.LocalS1(picked), repository.loadPolicy().freshPolicy)
     }
 
     /** Records every ask and answers with [verdict]; Accepted by default so the older cases still save. */

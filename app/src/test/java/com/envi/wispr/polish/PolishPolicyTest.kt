@@ -2,9 +2,12 @@ package com.envi.wispr.polish
 
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
+import com.envi.wispr.providers.PolicyRead
+import com.envi.wispr.providers.PolicyReader
 import com.envi.wispr.providers.ProviderConfigurationRepository
 import com.envi.wispr.providers.SelfHostedProtocol
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -64,8 +67,34 @@ class PolishPolicyTest {
         )
     }
 
-    @Test fun anUnreadableStoreFailsClosedToOff() {
-        assertEquals(PolishPolicy.Off, ProviderConfigurationRepository.readPolicy { error("preference store unavailable") })
+    /** #278: an unreadable store is `Failed`, never the user's Off. MUTATION m1: the failure branch reads `Fresh(PolishPolicy.Off)`. */
+    @Test fun anUnreadableStoreIsFailedNeverOff() {
+        assertEquals(PolicyRead.Failed(null), PolicyReader().read { error("preference store unavailable") })
+        assertEquals(PolicyRead.Fresh(PolishPolicy.Off), PolicyReader().read { mapOf("mode" to PolishMode.OFF.name) })
+    }
+
+    /** #278: a failed read carries the last policy the same reader read. MUTATION m4: the `Fresh` branch does not write `lastRead`. */
+    @Test fun aFailedReadCarriesTheLastRead() {
+        val reader = PolicyReader()
+        assertEquals(PolicyRead.Fresh(PolishPolicy.Off), reader.read { mapOf("mode" to PolishMode.OFF.name) })
+        assertEquals(PolicyRead.Failed(PolishPolicy.Off), reader.read { error("preference store unavailable") })
+    }
+
+    /**
+     * #278 wiring: every `loadPolicy()` reads through the ONE process reader, so a later repository's failed read
+     * still carries an earlier repository's read. MUTATION m5: `loadPolicyWith` builds a new reader per call.
+     */
+    @Test fun theProcessReaderIsSharedAcrossLoads() {
+        ProviderConfigurationRepository.resetProcessReaderForTest()
+        try {
+            val stored = mapOf("mode" to PolishMode.OFF.name)
+            assertEquals(PolicyRead.Fresh(PolishPolicy.Off), ProviderConfigurationRepository.loadPolicyWith { stored })
+            assertEquals(PolicyRead.Failed(PolishPolicy.Off), ProviderConfigurationRepository.loadPolicyWith { error("preference store unavailable") })
+            val source = java.io.File("src/main/java/com/envi/wispr/providers/ProviderConfigurationRepository.kt").readText()
+            assertTrue("loadPolicy reads through the process reader", source.contains("fun loadPolicy(): PolicyRead = loadPolicyWith { preferences.all }"))
+        } finally {
+            ProviderConfigurationRepository.resetProcessReaderForTest()
+        }
     }
 
     @Test fun storedS1PicksRideOnTheLocalPolicy() {

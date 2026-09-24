@@ -133,6 +133,16 @@ internal class TakePolishController(
     fun bindRefused() = recordLoss(PolishReason.SERVICE_UNAVAILABLE, AppDefect.PolishServiceUnavailable)
 
     /**
+     * The stored polish policy could not be read at take start (#278). With a last read policy the take
+     * polishes on it and only the defect is raised; with none, polish is lost for this take like a refused
+     * bind, so it publishes the deterministic text with the polish notice.
+     */
+    fun policyReadFailed(usedLastRead: Boolean) {
+        if (usedLastRead) reportFailure(AppDefect.PolishPolicyUnreadable)
+        else recordLoss(PolishReason.SETTINGS_UNREADABLE, AppDefect.PolishPolicyUnreadable)
+    }
+
+    /**
      * Polish connected. A take that lost polish keeps its deterministic text (#234): a reconnect is for the
      * next take. Warm at connect, measured and decided (#72): every later moment ends with the same two
      * models resident, because the speech model stays loaded after it transcribes, and costs the user 0.9 to

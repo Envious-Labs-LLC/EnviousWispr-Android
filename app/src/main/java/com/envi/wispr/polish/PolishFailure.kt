@@ -99,6 +99,7 @@ internal enum class PolishFailure(val leadIn: LeadIn) {
                 PolishReason.LOCAL_NOT_READY -> LOCAL_NOT_READY
                 PolishReason.LOCAL_FAILED,
                 PolishReason.SERVICE_UNAVAILABLE,
+                PolishReason.SETTINGS_UNREADABLE,
                 PolishReason.SERVICE_DIED,
                 PolishReason.CALL_FAILED,
                 PolishReason.UNEXPECTED,

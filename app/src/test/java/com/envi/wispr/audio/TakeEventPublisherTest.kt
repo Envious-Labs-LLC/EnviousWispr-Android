@@ -110,6 +110,101 @@ class TakeEventPublisherTest {
         assertEquals(listOf("t1:tick(1000)"), recorder.events.filter { it.contains(":tick(") })
     }
 
+    /**
+     * #327, staged: the worker has already found the Live slot empty and is inside its poll when the take's Live
+     * (slot) and ending (queue) are offered; the polled ending must still wait for the Live. The queue holds the
+     * worker's first poll until both are offered. MUTATION m3: the worker delivers a polled event before a
+     * waiting Live.
+     */
+    @Test
+    fun aLiveOfferedDuringThePollStillPrecedesTheEndingPolled() {
+        val polling = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val held = object : java.util.concurrent.ConcurrentLinkedQueue<TakeEventPublisher.Event>() {
+            @Volatile var holdNext = true
+            override fun poll(): TakeEventPublisher.Event? {
+                if (holdNext) {
+                    holdNext = false
+                    polling.countDown()
+                    release.await(10, TimeUnit.SECONDS)
+                }
+                return super.poll()
+            }
+        }
+        val staged = TakeEventPublisher(slot, "test", nowNanos = { now.get() }, queue = held)
+        try {
+            staged.start()
+            assertTrue("the worker reached its poll", polling.await(10, TimeUnit.SECONDS))
+            recorder.expect(2)
+            staged.publishLive("t1", false, 1, 2, 7L)
+            staged.publishEnded("t1", AudioCaptureService.TERMINAL_REASON_MANUAL, AudioCaptureService.START_FAILURE_NONE, "/tmp/take.pcm", AudioCaptureService.SILENCE_STATUS_READY, 0.5f, "Phone microphone")
+            release.countDown()
+            recorder.await()
+            assertEquals("t1:live(false,1,2,7)", recorder.events.first())
+        } finally {
+            release.countDown()
+            staged.close()
+        }
+    }
+
+    /**
+     * #327 review round 1: the route's announce runs on the WORKER when the Live is delivered, from the slot and from
+     * the queue fallback (the slot held by the worker's first poll), never on the publishing thread. MUTATION m5:
+     * the slot path drops its hook.
+     */
+    @Test
+    fun theLiveHookRunsOnTheWorkerFromTheSlotAndTheFallback() {
+        val polling = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val held = object : java.util.concurrent.ConcurrentLinkedQueue<TakeEventPublisher.Event>() {
+            @Volatile var holdNext = true
+            override fun poll(): TakeEventPublisher.Event? {
+                if (holdNext) {
+                    holdNext = false
+                    polling.countDown()
+                    release.await(10, TimeUnit.SECONDS)
+                }
+                return super.poll()
+            }
+        }
+        val threads = CopyOnWriteArrayList<String>()
+        val hook = Runnable { threads += Thread.currentThread().name }
+        val staged = TakeEventPublisher(slot, "test", nowNanos = { now.get() }, queue = held)
+        try {
+            staged.start()
+            assertTrue(polling.await(10, TimeUnit.SECONDS))
+            recorder.expect(2)
+            staged.publishLive("t1", false, 1, 2, 7L, onDelivered = hook)
+            // The slot still holds t1's Live, so t2's takes the queue fallback.
+            staged.publishLive("t2", false, 1, 2, 8L, onDelivered = hook)
+            release.countDown()
+            recorder.await()
+            assertEquals(listOf("TakeEventPublisher", "TakeEventPublisher"), threads.toList())
+            assertEquals(listOf("t1:live(false,1,2,7)", "t2:live(false,1,2,8)"), recorder.events.toList())
+        } finally {
+            release.countDown()
+            staged.close()
+        }
+    }
+
+    /** #327: many takes back to back while the worker runs; each take's Live still arrives before its ending. */
+    @Test
+    fun aTakesLiveAlwaysArrivesBeforeItsEnding() {
+        val takes = 500
+        recorder.expect(takes * 2)
+        repeat(takes) { n ->
+            publisher.publishLive("t$n", false, 1, 2, n.toLong())
+            publisher.publishEnded("t$n", AudioCaptureService.TERMINAL_REASON_MANUAL, AudioCaptureService.START_FAILURE_NONE, "/tmp/take.pcm", AudioCaptureService.SILENCE_STATUS_READY, 0.5f, "Phone microphone")
+        }
+        recorder.await()
+        val events = recorder.events.toList()
+        repeat(takes) { n ->
+            val live = events.indexOf("t$n:live(false,1,2,$n)")
+            val ended = events.indexOfFirst { it.startsWith("t$n:ended(") }
+            assertTrue("take $n: live $live before ended $ended", live in 0 until ended)
+        }
+    }
+
     @Test
     fun aRefusedStartEndsUnderTheRequestedIdWhileThePreviousTakeKeepsItsOwn() {
         // Review round 1, F2 and F6: the previous take is still open (its id is current) when the next

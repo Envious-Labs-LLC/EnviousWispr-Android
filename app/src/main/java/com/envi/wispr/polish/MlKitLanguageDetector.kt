@@ -59,7 +59,14 @@ import java.util.concurrent.atomic.AtomicReference
  * **A caller on the main thread would not be acceptable and must not reach this**
  * (`kotlin-patterns.md` RULE: never-block-a-binder-or-ui-thread).
  */
-internal class MlKitLanguageDetector(private val context: Context) : LanguageDetector, Closeable {
+internal class MlKitLanguageDetector internal constructor(
+    /** Builds one client, or null when it cannot; production's is [buildClient]. A JVM test seam (#279). */
+    private val newClient: () -> LanguageIdentifier?,
+    /** Runs once right after a successful publication; a JVM test's pause in that window (#279). */
+    private val afterPublish: () -> Unit = {},
+) : LanguageDetector, Closeable {
+
+    constructor(context: Context) : this({ buildClient(context) })
 
     private companion object {
         const val TAG = "LanguageDetector"
@@ -69,12 +76,41 @@ internal class MlKitLanguageDetector(private val context: Context) : LanguageDet
          * the limit named in the class doc rather than a bound this constant pretends to give.
          */
         const val DEADLINE_MS = 400L
+
+        /** Today's client construction, timed; passed by the production constructor. */
+        fun buildClient(context: Context): LanguageIdentifier? {
+            // BEFORE `MlKit.initialize`, which is the unbounded part. Round 9 caught the timer starting
+            // after it, so the number being used to justify the design measured only `getClient()`.
+            val started = SystemClock.elapsedRealtime()
+            return try {
+                // `MlKit.initialize` is NOT idempotent: verified 2026-09-03 by disassembling the pinned
+                // `common-18.11.0.aar`, it reaches
+                // `Preconditions.checkState(instance == null, "MlKitContext is already initialized")`. ML Kit
+                // bootstraps from `MlKitInitProvider`, a ContentProvider with no `android:process`, so it runs
+                // in the DEFAULT process only: `:polish` needs this call, and the main process needs the throw
+                // ignored. Both broken states were observed on the phone before this shape.
+                try {
+                    MlKit.initialize(context.applicationContext)
+                } catch (_: IllegalStateException) {
+                    // Already initialized in this process. Normal wherever ML Kit's own provider ran.
+                }
+                LanguageIdentification.getClient().also {
+                    // Content-free, and the receipt for the unbounded-acquisition limit named in the class
+                    // doc. Covers initialization AND client construction. If this line grows large in the
+                    // field, the limit stopped being acceptable.
+                    DebugLogger.log(TAG, "client ready in ${SystemClock.elapsedRealtime() - started}ms")
+                }
+            } catch (error: Exception) {
+                DebugLogger.warn(TAG, "Language client unavailable: ${error.javaClass.simpleName}")
+                null
+            }
+        }
     }
 
     /** Set once by [close]. Read without a lock; it only ever goes false to true. */
     private val closed = AtomicBoolean(false)
 
-    /** The live client, or null before the first acquisition and after [close]. Pointer only. */
+    /** Published client pointer; it may remain non-null after close until the last detection exits. */
     private val client = AtomicReference<LanguageIdentifier?>(null)
 
     /**
@@ -91,12 +127,10 @@ internal class MlKitLanguageDetector(private val context: Context) : LanguageDet
         if (text.isBlank() || closed.get()) return null
         activeDetections.incrementAndGet()
         try {
-            // Re-checked AFTER counting in. A close that began before the increment has already decided
-            // whether to release, so this is the read that makes the decision consistent.
             if (closed.get()) return null
             return identify(text)
         } finally {
-            // The last detection out of a closed detector performs the release the closer deferred.
+            // Release paths: see [releaseClient].
             if (activeDetections.decrementAndGet() == 0 && closed.get()) releaseClient()
         }
     }
@@ -123,51 +157,24 @@ internal class MlKitLanguageDetector(private val context: Context) : LanguageDet
     /**
      * Builds the client and publishes it, holding NO lock at any point.
      *
-     * A caller that loses the publication, or that finishes after [close], releases the client it built
-     * instead of leaking it — and releases it outside any shared state, which is the defect that killed
-     * the previous three designs. Normal app takes are serialised, but concurrent first callers remain
-     * representable: a duplicate request reaching a binder early exit while another thread is acquiring
-     * produces two. The CAS publishes one and the loser releases its own, so the cost is a wasted
-     * allocation rather than a leak.
+     * Normal app takes are serialised, but concurrent first callers remain representable: a duplicate
+     * request reaching a binder early exit while another thread is acquiring produces two. A CAS loser uses
+     * the published client. It releases its constructed client only when that is a distinct instance, outside
+     * any shared state; a shared instance remains published.
+     * Release paths: see [releaseClient] (#279).
      */
     private fun acquire(): LanguageIdentifier? {
-        // BEFORE `MlKit.initialize`, which is the unbounded part. Round 9 caught the timer starting
-        // after it, so the number being used to justify the design measured only `getClient()`.
-        val started = SystemClock.elapsedRealtime()
-        val created = try {
-            // `MlKit.initialize` is NOT idempotent: verified 2026-09-03 by disassembling the pinned
-            // `common-18.11.0.aar`, it reaches
-            // `Preconditions.checkState(instance == null, "MlKitContext is already initialized")`. ML Kit
-            // bootstraps from `MlKitInitProvider`, a ContentProvider with no `android:process`, so it runs
-            // in the DEFAULT process only: `:polish` needs this call, and the main process needs the throw
-            // ignored. Both broken states were observed on the phone before this shape.
-            try {
-                MlKit.initialize(context.applicationContext)
-            } catch (_: IllegalStateException) {
-                // Already initialized in this process. Normal wherever ML Kit's own provider ran.
-            }
-            LanguageIdentification.getClient().also {
-                // Content-free, and the receipt for the unbounded-acquisition limit named in the class
-                // doc. Covers initialization AND client construction. If this line grows large in the
-                // field, the limit stopped being acceptable.
-                DebugLogger.log(TAG, "client ready in ${SystemClock.elapsedRealtime() - started}ms")
-            }
-        } catch (error: Exception) {
-            DebugLogger.warn(TAG, "Language client unavailable: ${error.javaClass.simpleName}")
-            return null
-        }
-
+        val created = newClient() ?: return null
         if (!client.compareAndSet(null, created)) {
-            // Another caller published first. Use theirs and release ours.
-            release(created)
-            return client.get()
+            // A CAS loser uses the published client. It releases its constructed client
+            // only when that is a distinct instance; a shared instance remains published.
+            val published = client.get()
+            if (created !== published) release(created)
+            return published
         }
-        if (closed.get()) {
-            // `close` ran while this was building. Whoever observes it cleans up; `getAndSet` makes that
-            // exactly one of us.
-            releaseClient()
-            return null
-        }
+        afterPublish()
+        // Release paths: see [releaseClient] (#279).
+        if (closed.get()) return null
         return created
     }
 
@@ -177,16 +184,21 @@ internal class MlKitLanguageDetector(private val context: Context) : LanguageDet
      * dictation and takes the model with it, but the session owner lives in the long-running app process
      * and would otherwise hold a resident model between dictations.
      *
-     * It cannot wait for anything: a flag and one atomic swap, then a vendor call that no other thread is
-     * blocked behind.
+     * The flag and pointer require no wait on another application thread; vendor `close()` remains synchronous.
      */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        // Only when nothing is using it. A detection in flight releases it on its way out instead.
+        // Release paths: see [releaseClient].
         if (activeDetections.get() == 0) releaseClient()
     }
 
-    /** Takes the published client, if any, and releases it. `getAndSet` makes that exactly one caller. */
+    /**
+     * Takes the published client, if any, and releases it. `getAndSet` makes that exactly one caller.
+     *
+     * The published client has exactly two release paths (#279): [close] reading an active count of zero, and
+     * the last detection out of [detect] after [close]. When both attempt it, the atomic swap allows one release.
+     * Nothing else releases the published client, so it is never closed while a counted-in detection holds it.
+     */
     private fun releaseClient() = release(client.getAndSet(null))
 
     private fun release(identifier: LanguageIdentifier?) {

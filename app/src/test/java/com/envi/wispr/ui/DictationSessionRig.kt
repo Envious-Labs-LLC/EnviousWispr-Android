@@ -144,6 +144,7 @@ internal class DictationSessionRig {
         languageDetector = languageDetector,
         loadPolicy = {
             try {
+                policyEntered.countDown()
                 policyHold?.await()
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 policyCancelled = true
@@ -176,6 +177,8 @@ internal class DictationSessionRig {
     @Volatile var polishPolicy: PolishPolicy = PolishPolicy.Off
     /** When set, the policy read suspends on it before answering (#290: a read that never answers). */
     @Volatile var policyHold: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    /** Counted down when the policy read has started (#290 review round 2: a row cancels only once it is in its held read). */
+    val policyEntered = CountDownLatch(1)
     /** Set when a held policy read was cancelled (#290 review: a cancel of the starting take stops it). */
     @Volatile var policyCancelled = false
     /** Runs as the policy read answers, on its thread (#290 review: a row moves the clock past the deadline there). */

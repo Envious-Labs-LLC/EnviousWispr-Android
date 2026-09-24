@@ -439,6 +439,9 @@ internal class DictationSessionCoordinator(
             // the owner's scope (never inside a scope that would wait for a blocked loser), each result is taken by the
             // deadline or replaced by its fallback, and a job that answers late is ignored.
             val deadlineMs = host.elapsedRealtimeMs() + preparationBoundMs
+            // Read BEFORE this take's read starts (#290 review round 2): a late read updates the process's last read as it
+            // lands, and this take must not fall back onto the very answer it refused as late.
+            val priorPolicy = lastReadPolicy()
             val matcherJob = scope.async(Dispatchers.Default) { Timed(preparing { compileMatcher(termsSnapshot) }, host.elapsedRealtimeMs()) }
             val policyJob = scope.async(Dispatchers.IO) { Timed(preparing { loadPolicy() }, host.elapsedRealtimeMs()) }
             // Take-owned (#290 review): a cancel of the starting take cancels both. Registered, then the state is
@@ -484,7 +487,7 @@ internal class DictationSessionCoordinator(
                     is Prepared.Ready -> policyPrepared.value
                     is Prepared.Failed -> {
                         log.warn("Polish policy read ${policyPrepared.kind}; this take uses the last read policy")
-                        PolicyRead.Failed(lastReadPolicy())
+                        PolicyRead.Failed(priorPolicy)
                     }
                 }
                 val policy = takePolicy(read)

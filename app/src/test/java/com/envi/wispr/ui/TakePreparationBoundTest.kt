@@ -161,6 +161,7 @@ class TakePreparationBoundTest {
         coordinator.onCreated()
         rig.command(coordinator, DictationSessionService.ACTION_START)
         assertTrue(entered.await(10, TimeUnit.SECONDS))
+        assertTrue("the policy read is in its held read", rig.policyEntered.await(10, TimeUnit.SECONDS))
         rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
         // The cancel waits for the capture's own ending, which the rig's bound-from-the-start capture never sends
         // (as the #258 rows note), so the take's terminal is not awaited here; the cancel reaching the jobs is.
@@ -177,16 +178,23 @@ class TakePreparationBoundTest {
 
     /**
      * Row 8. A policy read whose answer is stamped past the deadline is late even when it is already there when the
-     * owner looks: the take uses the last read policy. MUTATION m9: `awaitBy` ignores the finish stamp.
+     * owner looks: the take uses the policy read BEFORE this take, even though the late read already replaced the
+     * process's last read as it landed (review round 2). MUTATION m9: `awaitBy` ignores the finish stamp; MUTATION m10:
+     * the fallback reads the process's last read at fallback time instead of before the read started.
      */
     @Test fun anAnswerStampedPastTheDeadlineIsLate() {
         val lastRead = PolishPolicy.Cloud(Provider.SELF_HOSTED_POLISH, "last", "http://localhost:8080/v1", SelfHostedProtocol.OLLAMA)
+        val fresh = PolishPolicy.Cloud(Provider.SELF_HOSTED_POLISH, "fresh", "http://localhost:8080/v1", SelfHostedProtocol.OLLAMA)
         rig.lastReadPolicy = lastRead
-        rig.policyRead = PolicyRead.Fresh(PolishPolicy.Cloud(Provider.SELF_HOSTED_POLISH, "fresh", "http://localhost:8080/v1", SelfHostedProtocol.OLLAMA))
+        rig.policyRead = PolicyRead.Fresh(fresh)
         val now = java.util.concurrent.atomic.AtomicLong(10_000L)
         rig.host.clock = { now.get() }
-        // The read answers at once, but its clock reads far past the deadline as it does.
-        rig.policyAnswering = { now.addAndGet(60_000L) }
+        // The read answers at once, but its clock reads far past the deadline as it does, and, like the production
+        // reader, it replaces the process's last read as it lands.
+        rig.policyAnswering = {
+            now.addAndGet(60_000L)
+            rig.lastReadPolicy = fresh
+        }
         val coordinator = rig.coordinator(preparationBoundMs = 1_000L)
         goLive(coordinator)
         rawSentToPolish(coordinator)

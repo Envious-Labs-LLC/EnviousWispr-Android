@@ -1,6 +1,6 @@
 # Issue #283: the legacy capture wait helper is private (2026-09-24)
 
-GitHub issue: `#283`. Tier: SMALL (one visibility modifier). Status: built as the issue proposes; Codex reviews plan and diff together.
+GitHub issue: `#283`. Tier: SMALL (one visibility modifier). Status: built as the issue proposes; Codex reviewed plan and diff together (round 1: the hardware check, adopted on the emulator).
 
 ## Preface: Lane + Hardware UAT declaration
 
@@ -8,7 +8,7 @@ GitHub issue: `#283`. Tier: SMALL (one visibility modifier). Status: built as th
 
 **PAR rows closed:** none.
 
-**Hardware UAT:** N. Visibility only: the binder method the instrumentation client calls is unchanged, and the androidTest build compiles against it.
+**Hardware UAT:** Y, light (round 1). The four existing device rows that call the binder's `waitForFileReady` ran on the emulator through `am instrument` (the founder's S26 is excluded from agent UAT): `aQuietRoomNeverEndsATakeByItselfThroughTheWholeRealPath`, `theDetectorBecomesReadyForARealTakeAndTheStatusSaysSo`, `withTheSwitchOffNoDetectorIsAskedForAtAll`, `anOutOfRangePauseRefusesAutoStopButStillRecords`: all PASS, no `DeviceNotRun` line. This visibility change leaves the AIDL method and the wait logic unchanged.
 
 ## Preface — User Rubric
 

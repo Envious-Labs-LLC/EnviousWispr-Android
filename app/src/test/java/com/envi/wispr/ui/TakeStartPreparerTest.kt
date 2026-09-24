@@ -67,12 +67,14 @@ class TakeStartPreparerTest {
     @Test fun jobsPublishedAfterTheTakeStoppedStartingAreCancelled() = runBlocking {
         val facts = facts()
         var published: List<Job> = emptyList()
+        // Still starting until the jobs are published: only a recheck AFTER publication can see the cancel.
+        var starting = true
         val outcome = runCatching {
             preparer(
                 compileMatcher = { held.await(10, TimeUnit.SECONDS); StructuredTermRestorer.compile(emptyList()) },
                 loadPolicy = { CompletableDeferred<PolicyRead>().await() },
             )
-                .prepare(facts.takeId, facts, null, { 0L }, jobs = { published = it }, stillStarting = { false })
+                .prepare(facts.takeId, facts, null, { 0L }, jobs = { published = it; starting = false }, stillStarting = { starting })
         }
         assertEquals(2, published.size)
         assertTrue("both jobs were cancelled: $published", published.all { it.isCancelled })
@@ -89,6 +91,11 @@ class TakeStartPreparerTest {
         ).prepare(facts.takeId, facts, null, { 0L }, {}, { true })
         assertEquals(PolishPolicy.CloudUnconfigured, last.get())
         assertEquals(PolishPolicy.Off, prepared.priorPolicy)
+        // The job's start is scheduled, so the order itself is pinned too: the snapshot precedes the launch.
+        val source = SessionSources.preparer
+        val prior = source.indexOf("val priorPolicy = lastReadPolicy()")
+        val launch = source.indexOf("val policyJob = scope.async(")
+        assertTrue("snapshot before policy launch", prior >= 0 && launch > prior)
     }
 
     /** Row 4: an admission that never lands is waited for only up to its own deadline, and says so. MUTATION m3. */

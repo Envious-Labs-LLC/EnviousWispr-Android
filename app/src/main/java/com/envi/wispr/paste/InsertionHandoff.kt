@@ -24,7 +24,4 @@ internal enum class InsertionHandoff {
 
     /** The service is bound but its main thread did not answer within the handoff deadline. */
     SERVICE_DID_NOT_ANSWER,
-
-    /** Insertion was never requested because the transcript has no durable history row. */
-    HISTORY_NOT_DURABLE,
 }

@@ -47,7 +47,6 @@ class InsertionOutcomeMessagesTest {
             InsertionHandoff.SERVICE_NOT_RUNNING,
             InsertionHandoff.INSERTION_ALREADY_PENDING,
             InsertionHandoff.SERVICE_DID_NOT_ANSWER,
-            InsertionHandoff.HISTORY_NOT_DURABLE,
         )
         val silent = listOf(
             InsertionHandoff.NO_PINNED_TARGET,

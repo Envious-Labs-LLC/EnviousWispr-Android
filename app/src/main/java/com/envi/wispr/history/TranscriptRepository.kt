@@ -63,9 +63,6 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     /** After a scheduled handoff, never awaited by the owner (#235). */
     suspend fun promoteUnroutedToReady(id: Long) = dao.promoteUnroutedToReady(id, clock())
 
-    /** A timed-out take's measured copy, onto its neutral row or one recovery already read as unknown (#235). */
-    suspend fun reconcileTimedOutCopy(id: Long, result: String) = dao.reconcileTimedOutCopy(id, result, clock())
-
     suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, interrupted: Boolean = false) =
         dao.finalizeInsertionOutcome(id, status, result, clock(), interrupted)
 
@@ -76,13 +73,14 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     data class RecoveredRows(val readyRowIds: List<Long>, val unknownCount: Int = 0)
 
     /**
-     * One cutoff, three scans in this order (#235): drafts, then neutral rows, then ready rows, each update
-     * conditional on its source status, so a row promoted from neutral to ready between the scans is read
-     * once, as ready.
+     * One cutoff, four scans in this order (#235, #277): drafts, then processing rows, then neutral rows, then ready
+     * rows, each update conditional on its source status, so a row promoted from neutral to ready between the scans
+     * is read once, as ready. A processing row and a neutral row are both delivery unknown: insertion never waits on
+     * either (#277), so neither can say the words were not handed over.
      */
     suspend fun recoverStaleOpenRows(nowMs: Long, cutoffMs: Long = nowMs - STALE_OPEN_ROW_AGE_MS): RecoveredRows {
         dao.recoverStaleDrafts(cutoffMs, nowMs)
-        val unknownCount = dao.recoverStaleUnroutedRows(cutoffMs, nowMs)
+        val unknownCount = dao.recoverStaleProcessingRows(cutoffMs, nowMs) + dao.recoverStaleUnroutedRows(cutoffMs, nowMs)
         return RecoveredRows(dao.recoverStaleReadyRowsReturningIds(cutoffMs, nowMs), unknownCount)
     }
 }

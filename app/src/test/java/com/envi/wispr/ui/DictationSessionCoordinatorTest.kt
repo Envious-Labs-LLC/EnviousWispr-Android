@@ -1022,8 +1022,9 @@ class DictationSessionCoordinatorTest {
         assertEquals(1, rig.insertion.pastes.size)
     }
 
+    /** #277: a History that cannot save at all still has the words handed to insertion; History is a limb. */
     @Test
-    fun historySaveFailureCopiesToClipboard() {
+    fun historySaveFailureStillHandsTheWordsToInsertion() {
         rig.dao.failInserts = true
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
@@ -1032,10 +1033,9 @@ class DictationSessionCoordinatorTest {
 
         assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
         rig.host.awaitStopped()
-        assertTrue("nothing was handed to the accessibility service", rig.insertion.pastes.isEmpty())
-        assertTrue(rig.host.events.contains("clipboard:Keep these words."))
-        assertTrue("the user is told where the words went", rig.host.events.any { it.startsWith("toast:") })
-        assertTrue(rig.log.lines.contains("I History persistence unavailable; transcript kept on clipboard only (handoff=HISTORY_NOT_DURABLE)"))
+        assertEquals("handed to insertion with no saved row", listOf(0L to "Keep these words."), rig.insertion.pastes)
+        assertTrue("a scheduled handoff needs no clipboard copy", rig.host.events.none { it.startsWith("clipboard:") })
+        assertTrue(rig.log.lines.contains("I Auto-insert handed to accessibility target tracker (handoff=SCHEDULED)"))
     }
 
     // ---- #258: the pre-capture chain, timed from the accepted start command ------------------------------------

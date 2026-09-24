@@ -90,13 +90,25 @@ internal interface TranscriptDao {
         interrupted: Boolean = false,
     ): Int
 
+    /** A take that died while recording never reached insertion: nothing was attempted. */
     @Query(
         "UPDATE transcripts SET status = '${TranscriptEntity.STATUS_INTERRUPTED}', " +
             "insertionResult = 'not_attempted', stateChangedAtMs = :nowMs, interrupted = 1 " +
-            "WHERE stateChangedAtMs <= :cutoffMs AND status IN " +
-            "('${TranscriptEntity.STATUS_DRAFT}', '${TranscriptEntity.STATUS_PROCESSING}')",
+            "WHERE stateChangedAtMs <= :cutoffMs AND status = '${TranscriptEntity.STATUS_DRAFT}'",
     )
     suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int
+
+    /**
+     * A take that died after it stopped recording and before its save landed (#277): its words may already have
+     * been handed to insertion, because insertion never waits on this row, so the honest reading is delivery
+     * unknown, never "not attempted".
+     */
+    @Query(
+        "UPDATE transcripts SET status = '${TranscriptEntity.STATUS_INTERRUPTED}', " +
+            "insertionResult = '${InsertionResults.DELIVERY_UNKNOWN}', stateChangedAtMs = :nowMs, interrupted = 1 " +
+            "WHERE stateChangedAtMs <= :cutoffMs AND status = '${TranscriptEntity.STATUS_PROCESSING}'",
+    )
+    suspend fun recoverStaleProcessingRows(cutoffMs: Long, nowMs: Long): Int
 
     /**
      * A scheduled handoff's row, promoted from neutral to ready AFTER the handoff and never awaited (#235):
@@ -107,18 +119,6 @@ internal interface TranscriptDao {
             "WHERE id = :id AND status = '${TranscriptEntity.STATUS_SAVED_UNROUTED}' AND insertionResult = 'pending'",
     )
     suspend fun promoteUnroutedToReady(id: Long, nowMs: Long): Int
-
-    /**
-     * A timed-out take's measured copy (#235): lands on its neutral row, or on the same row after recovery
-     * already read it as delivery unknown, because this process knows what the user got and recovery did not.
-     */
-    @Query(
-        "UPDATE transcripts SET status = '${TranscriptEntity.STATUS_INSERTION_INTERRUPTED}', insertionResult = :result, " +
-            "stateChangedAtMs = :nowMs, interrupted = 1 WHERE id = :id AND (" +
-            "(status = '${TranscriptEntity.STATUS_SAVED_UNROUTED}' AND insertionResult = 'pending') OR " +
-            "(status = '${TranscriptEntity.STATUS_COMPLETED}' AND insertionResult = '${InsertionResults.DELIVERY_UNKNOWN}'))",
-    )
-    suspend fun reconcileTimedOutCopy(id: Long, result: String, nowMs: Long): Int
 
     /**
      * A neutral row that outlived the cutoff: its words are kept, and no route was recorded, so the

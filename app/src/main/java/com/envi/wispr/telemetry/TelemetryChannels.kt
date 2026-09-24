@@ -122,7 +122,7 @@ internal object TelemetryChannels {
     fun of(handoff: InsertionHandoff): Channel = when (handoff) {
         InsertionHandoff.SCHEDULED, InsertionHandoff.SERVICE_NOT_RUNNING, InsertionHandoff.NO_PINNED_TARGET,
         InsertionHandoff.INSERTION_ALREADY_PENDING, InsertionHandoff.EMPTY_TEXT,
-        InsertionHandoff.SERVICE_DID_NOT_ANSWER, InsertionHandoff.HISTORY_NOT_DURABLE,
+        InsertionHandoff.SERVICE_DID_NOT_ANSWER,
         -> Channel.BREADCRUMB
     }
 

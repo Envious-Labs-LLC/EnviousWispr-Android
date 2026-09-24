@@ -33,11 +33,11 @@ class HistoryWriteQueueTest {
         override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int { landed += "finalize"; return 1 }
         override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean): Int { landed += "outcome:$result"; return 1 }
         override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int = 0
+        override suspend fun recoverStaleProcessingRows(cutoffMs: Long, nowMs: Long): Int = 0
         override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int = 0
         override suspend fun staleReadyRowIds(cutoffMs: Long): List<Long> = emptyList()
         override suspend fun promoteUnroutedToReady(id: Long, nowMs: Long): Int { landed += "promote"; return 1 }
         override suspend fun recoverStaleUnroutedRows(cutoffMs: Long, nowMs: Long): Int = 0
-        override suspend fun reconcileTimedOutCopy(id: Long, result: String, nowMs: Long): Int { landed += "reconcile:$result"; return 1 }
     }
 
     private val dao = RecordingDao()

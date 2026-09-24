@@ -1,5 +1,6 @@
 package com.envi.wispr.paste
 
+import com.envi.wispr.history.HistoryRow
 import android.accessibilityservice.AccessibilityService
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -59,7 +60,8 @@ internal class AccessibilityInsertionRunner(
      * alone: it never clears.
      */
     private class PendingInsertion(
-        val transcriptId: Long,
+        /** The take's History row, resolved only inside a queued write (#277); [HistoryRow.None] from a debug probe. */
+        val row: HistoryRow,
         val text: String,
         val policy: ClipboardInsertionPolicy,
         val startedAtMs: Long,
@@ -104,7 +106,7 @@ internal class AccessibilityInsertionRunner(
     }
 
     fun requestInsertion(
-        transcriptId: Long,
+        row: HistoryRow,
         text: String,
         previousClipboard: ClipData?,
         policy: ClipboardInsertionPolicy,
@@ -128,7 +130,7 @@ internal class AccessibilityInsertionRunner(
         retryScheduled = false
         val now = SystemClock.elapsedRealtime()
         val pending = PendingInsertion(
-            transcriptId = transcriptId,
+            row = row,
             text = text,
             policy = policy,
             startedAtMs = now,
@@ -606,19 +608,21 @@ internal class AccessibilityInsertionRunner(
                 ),
             )
         }
-        if (pending.transcriptId <= 0L) {
-            emit()
-            return
-        }
         // On the application's History queue (#115), behind the owner's writes of the same row, so the
-        // outcome cannot land before the finalization it belongs to. The update is first-wins; the row
-        // leaves only when THIS writer won it, so a recovery or a second finalizer that got there first
-        // is the one that reports (round 1, F5).
+        // outcome cannot land before the finalization it belongs to, and the row is resolved THERE (#277): the
+        // words were handed over before the save answered. No saved row (the save failed, or a debug probe)
+        // emits once without a write. Otherwise the update is first-wins; the row leaves only when THIS writer
+        // won it, so a recovery or a second finalizer that got there first is the one that reports (round 1, F5).
         ModelBootstrapApplication.historyWrites(service.applicationContext).enqueue("insertion outcome") { repository ->
-            val changed = runCatching { repository.finalizeInsertionOutcome(pending.transcriptId, status, result, interrupted) }
-                .onFailure { error -> DebugLogger.warn(TAG, "Unable to update transcript insertion result: ${error.javaClass.simpleName}") }
-                .getOrNull()
-            if (changed == 1) emit()
+            recordInsertionOutcome(
+                id = pending.row.resolveOnQueue(),
+                write = { id ->
+                    runCatching { repository.finalizeInsertionOutcome(id, status, result, interrupted) }
+                        .onFailure { error -> DebugLogger.warn(TAG, "Unable to update transcript insertion result: ${error.javaClass.simpleName}") }
+                        .getOrNull()
+                },
+                emit = ::emit,
+            )
         }
     }
 
@@ -664,7 +668,7 @@ internal class AccessibilityInsertionRunner(
         val announcement = FallbackAnnouncement.serviceFallbackAnnouncement(
             reason = reason,
             clipboard = clipboard,
-            savedInHistory = pending.transcriptId > 0L,
+            savedInHistory = pending.row.savedNow,
         )
         Toast.makeText(service, announcement.line, Toast.LENGTH_LONG).show()
     }
@@ -690,4 +694,18 @@ internal class AccessibilityInsertionRunner(
             vibrator.vibrate(VibrationEffect.createPredefined(effect))
         }.onFailure { error -> DebugLogger.warn(TAG, "Result haptic unavailable: ${error.javaClass.simpleName}") }
     }
+}
+
+/**
+ * The insertion outcome's write and its one terminal event, on the History queue (#277). [id] is the take's saved
+ * row resolved there: 0 (the save failed, or a debug probe) emits once without a write; otherwise the write is
+ * first-wins and the event is emitted only when THIS writer won the row, so a recovery that got there first is
+ * the one that reports.
+ */
+internal suspend fun recordInsertionOutcome(id: Long, write: suspend (Long) -> Int?, emit: () -> Unit) {
+    if (id <= 0L) {
+        emit()
+        return
+    }
+    if (write(id) == 1) emit()
 }

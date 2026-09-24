@@ -997,18 +997,13 @@ internal class DictationSessionCoordinator(
         // publishLock, and the write is ENQUEUED in the same operation (#115): destroy takes the same lock
         // before enqueueing `interrupted`, so a reserved finalization is always queued ahead of it and
         // `interrupted` is the last word on the row.
-        val saved = CompletableDeferred<SaveOutcome>()
-        val saveGate = HistorySaveGate()
+        val saved = SaveSlot()
+        var saveEnqueuedAtMs = 0L
         val publication = synchronized(publishLock) {
             val reserved = current.arbiter.reserve(Claimants.PUBLICATION) ?: return@synchronized null
             if (finalText.isNotBlank()) {
-                finalizer.enqueueSave(current.history, payload, saveGate, saved) { error ->
-                    // The delivery already happened on the clipboard; the late failure is diagnosed, never
-                    // rerouted, and the take's facts stay as committed (#235).
-                    log.warn("History save failed after its bound: ${error.javaClass.simpleName}")
-                    Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName, "late" to true))
-                    TelemetryChannels.historySaveDefect(error)?.let { reportDefect(it, mapOf("take_id" to takeId)) }
-                }
+                saveEnqueuedAtMs = host.elapsedRealtimeMs()
+                finalizer.enqueueSave(current.history, payload, saved)
             }
             reserved
         }
@@ -1029,43 +1024,49 @@ internal class DictationSessionCoordinator(
             }
         }
 
+        watchSave(saved, saveEnqueuedAtMs, takeId)
         scope.launch {
-            // The save's answer, from the queue's worker, within the bound (#235); the owner's coroutine waits,
-            // main never. On the bound the timeout and the save compete once on the gate: if the save won an
-            // instant earlier, its outcome is already there and nothing is waited for.
-            val saveOutcome = withTimeoutOrNull(historySaveBoundMs) { saved.await() }
-                ?: if (saveGate.claimTimeout()) SaveOutcome.TimedOut else checkNotNull(saveGate.answered())
-            takeFacts.historySave = when (saveOutcome) {
+            // The words never wait on History (#277): insertion is the heart, History a limb. The save's answer is
+            // recorded if it is already in, else `pending`; the committed facts are never changed afterwards, and
+            // a slow or failed save is reported by [watchSave] alone.
+            takeFacts.historySave = when (saved.answeredNow()?.outcome) {
                 is SaveOutcome.Saved -> "ok"
                 is SaveOutcome.Failed -> "failed"
-                SaveOutcome.TimedOut -> "timed_out"
+                null -> "pending"
             }
-            when (saveOutcome) {
-                is SaveOutcome.Failed -> {
-                    val error = saveOutcome.cause
-                    log.warn("Unable to save transcript history: ${error.javaClass.simpleName}")
-                    // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal
-                    // statement is our schema contract (a defect). The message never leaves either way.
-                    Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName))
-                    TelemetryChannels.historySaveDefect(error)?.let { reportDefect(it, mapOf("take_id" to takeId)) }
-                }
-                SaveOutcome.TimedOut -> {
-                    log.warn("History save did not answer in $historySaveBoundMs ms; the words go to the clipboard")
-                    reportDefect(AppDefect.HistorySaveTimedOut, mapOf("take_id" to takeId))
-                }
-                is SaveOutcome.Saved -> Unit
-            }
-            // COMMIT now that the save result is known and BEFORE the insertion handoff: completed means
-            // the text finalised, never that insertion succeeded. A revoked reservation (the owner was
-            // destroyed while the save ran) stops here: no handoff, no announcement, no terminal; the
-            // teardown's own History write is the last word on that row (G2 D2).
+            // COMMIT BEFORE the insertion handoff: completed means the text finalised, never that insertion
+            // succeeded. A revoked reservation (the owner was destroyed) stops here: no handoff, no announcement,
+            // no terminal; the teardown's own History write is the last word on that row (G2 D2).
             if (!current.arbiter.commit(publication, TerminalReason.COMPLETED)) {
                 log.warn("Publication revoked before the handoff; not inserting")
                 return@launch
             }
-            finalizer.deliver(takeId, current.targetPin, payload, saveOutcome, sessionPreferences.clipboard, saveGate)
+            finalizer.deliver(takeId, current.targetPin, payload, current.history, sessionPreferences.clipboard)
             log.log(log.pipelineSummary())
             finishSession()
+        }
+    }
+
+    /**
+     * The History save's diagnostics (#277), independent of delivery: [watchSaveBound] decides "late" exactly, from the
+     * enqueue and the save's own stamp, and reports it at most once; a failure, early or late, raises its breadcrumb
+     * and defect once. Nothing here routes, inserts or changes the take's facts.
+     */
+    private fun watchSave(saved: SaveSlot, enqueuedAtMs: Long, takeId: String) {
+        scope.launch {
+            val answer = watchSaveBound(saved, enqueuedAtMs, historySaveBoundMs, host::elapsedRealtimeMs) {
+                log.warn("History save did not answer in $historySaveBoundMs ms; the words did not wait for it")
+                reportDefect(AppDefect.HistorySaveTimedOut, mapOf("take_id" to takeId))
+            }
+            val outcome = answer.outcome
+            if (outcome is SaveOutcome.Failed) {
+                val error = outcome.cause
+                log.warn("Unable to save transcript history: ${error.javaClass.simpleName}")
+                // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal statement is
+                // our schema contract (a defect). The message never leaves either way.
+                Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName))
+                TelemetryChannels.historySaveDefect(error)?.let { reportDefect(it, mapOf("take_id" to takeId)) }
+            }
         }
     }
 

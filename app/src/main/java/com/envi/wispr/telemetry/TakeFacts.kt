@@ -9,6 +9,13 @@ import com.envi.wispr.polish.PolishReason
 import com.envi.wispr.ui.TerminalReason
 import com.envi.wispr.ui.TriggerSource
 
+/** What [TakeFacts.recordPolish] answers: the `polish_done` breadcrumb's fields and the defect to raise, if any. */
+internal class PolishRecord(
+    val breadcrumb: Map<String, Any?>,
+    val defect: AppDefect?,
+    val defectData: Map<String, Any?>,
+)
+
 /**
  * What the session owner learned about ONE take, written as each fact becomes known and read once, at
  * the arbiter's commit, into the `dictation.terminal` row (issue #176, plan §3.1). Every field starts
@@ -62,6 +69,23 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
     @Volatile var bindRequestedMs: Long? = null
     /** The owner received live and won the transition to recording: an upper bound on the first frame. */
     @Volatile var liveReceivedMs: Long? = null
+
+    /**
+     * The polish outcome's four facts (#176, #293), written once, before the owner reserves the take so any later
+     * ending carries them. Answers the `polish_done` breadcrumb and the defect the reason names, if any; the owner
+     * raises both, because the defect sink is the owner's seam.
+     */
+    fun recordPolish(reason: PolishReason, latencyMs: Long, statusCode: Int, provider: String): PolishRecord {
+        polishProvider = provider
+        polishReason = reason
+        polishMs = latencyMs
+        polishStatus = statusCode
+        return PolishRecord(
+            breadcrumb = mapOf("take_id" to takeId, "polish_reason" to reason.name, "polish_ms" to latencyMs, "polish_provider" to provider),
+            defect = TelemetryChannels.defectOf(reason),
+            defectData = mapOf("take_id" to takeId, "polish_status" to statusCode),
+        )
+    }
 
     /** The row, built from whatever was measured by the time [reason] was committed. */
     fun terminal(reason: TerminalReason): AnalyticsEvent.DictationTerminal = AnalyticsEvent.DictationTerminal(

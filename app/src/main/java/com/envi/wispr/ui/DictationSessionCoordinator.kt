@@ -563,7 +563,6 @@ internal class DictationSessionCoordinator(
         }
     }
 
-    /** Not destroyed and still live: the polish warm-up is still worth sending (#236). */
     /**
      * Every defect the owner raises goes through here (#252): a sink that throws is logged and never stops the
      * publication or delivery that follows the report.
@@ -576,6 +575,7 @@ internal class DictationSessionCoordinator(
         }
     }
 
+    /** Not destroyed and still live: the polish warm-up is still worth sending (#236). */
     private fun polishStillWanted(): Boolean {
         val seen = state.get()
         return !destroyed.get() &&
@@ -1077,12 +1077,9 @@ internal class DictationSessionCoordinator(
         val current = take
         val takeId = current.takeId
         val takeFacts = current.facts
-        takeFacts.polishProvider = polishContext.encode()
-        takeFacts.polishReason = reason
-        takeFacts.polishMs = latencyMs
-        takeFacts.polishStatus = statusCode
-        Telemetry.breadcrumb("take", "polish_done", mapOf("take_id" to takeId, "polish_reason" to reason.name, "polish_ms" to latencyMs, "polish_provider" to takeFacts.polishProvider))
-        TelemetryChannels.defectOf(reason)?.let { reportDefect(it, mapOf("take_id" to takeId, "polish_status" to statusCode)) }
+        val polishRecord = takeFacts.recordPolish(reason, latencyMs, statusCode, polishContext.encode())
+        Telemetry.breadcrumb("take", "polish_done", polishRecord.breadcrumb)
+        polishRecord.defect?.let { reportDefect(it, polishRecord.defectData) }
         // The immutable payload FIRST, so the reservation and its write can be one operation below.
         val payload = Publication(
             finalText = text.ifBlank { rawTranscript },
@@ -1120,10 +1117,7 @@ internal class DictationSessionCoordinator(
         }
         payload.polishFacts.notice?.let { notice ->
             log.log("Polish notice shown: ${payload.polishFacts.failure}")
-            host.postToMain {
-                host.toastFromService(notice.toastLine)
-                host.showPolishNotice(notice)
-            }
+            notices.sayPolishFailure(notice)
         }
 
         watchSave(saved, saveEnqueuedAtMs, takeId)
@@ -1309,7 +1303,7 @@ internal class DictationSessionCoordinator(
         insertion.releasePinnedTarget()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
         host.vibrate(HapticCue.FAILURE)
-        if (line != null) host.postToMain { host.toastFromService(line) }
+        if (line != null) notices.sayFailure(line)
         pipeline.stopAudioService()
         finishSession()
     }

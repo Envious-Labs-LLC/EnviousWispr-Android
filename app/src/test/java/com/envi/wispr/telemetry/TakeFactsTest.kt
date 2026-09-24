@@ -39,6 +39,25 @@ class TakeFactsTest {
         assertNull(facts.terminal(TerminalReason.CANCELLED_PROCESSING).properties()["asr_failure_reason"])
     }
 
+    /** #293: the polish outcome's four facts, its breadcrumb and its defect, from one call. MUTATIONS m3, m4. */
+    @Test
+    fun recordPolishWritesTheFourFactsAndAnswersTheBreadcrumbAndTheDefect() {
+        val facts = TakeFacts("t", TriggerSource.TILE)
+        val failed = facts.recordPolish(PolishReason.LOCAL_TIMEOUT, 2_500L, 7, "local")
+        assertEquals("local", facts.polishProvider)
+        assertEquals(PolishReason.LOCAL_TIMEOUT, facts.polishReason)
+        assertEquals(2_500L, facts.polishMs)
+        assertEquals(7, facts.polishStatus)
+        assertEquals(
+            mapOf("take_id" to "t", "polish_reason" to "LOCAL_TIMEOUT", "polish_ms" to 2_500L, "polish_provider" to "local"),
+            failed.breadcrumb,
+        )
+        assertEquals(AppDefect.LocalPolishDeadline, failed.defect)
+        assertEquals(mapOf("take_id" to "t", "polish_status" to 7), failed.defectData)
+        assertNull("a polished take names no defect", facts.recordPolish(PolishReason.POLISHED, 900L, 0, "cloud:GEMINI").defect)
+        assertEquals("cloud:GEMINI", facts.polishProvider)
+    }
+
     @Test
     fun everyMeasuredFactLandsUnderItsOwnKey() {
         val facts = TakeFacts("t", TriggerSource.BUBBLE_HOLD).apply {

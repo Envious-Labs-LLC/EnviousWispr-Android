@@ -1,10 +1,13 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.polish.PolishFailure
+import com.envi.wispr.polish.PolishFailureNotice
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -85,6 +88,41 @@ class SessionNoticePresenterTest {
     }
 
     /**
+     * Row 7 (#293): a polish failure is the toast line then the notification, both from one post on main.
+     * MUTATION m1: drop the notification.
+     */
+    @Test fun aPolishFailureIsTheToastThenTheNotificationOnMain() {
+        val held = HeldPosts()
+        SessionNoticePresenter(rig.surface, rig.insertion, held, rig.scope, rig.mainDispatcher)
+            .sayPolishFailure(PolishFailureNotice.notice(PolishFailure.KEY_REJECTED, null))
+        assertEquals("nothing is said before the one post runs", emptyList<String>(), held.said)
+        assertEquals("one post", 1, held.posts.size)
+        rig.onMain { held.posts.single().run() }
+        assertEquals(listOf("toast:${PolishFailureNotice.LOCKED_SENTENCE}@main", "polish-notice@main"), held.said)
+    }
+
+    /** Row 8 (#293): a take's failure sentence is one toast from the service, on main. MUTATION m2: drop the toast. */
+    @Test fun aFailureSentenceIsOneToast() {
+        val held = HeldPosts()
+        SessionNoticePresenter(rig.surface, rig.insertion, held, rig.scope, rig.mainDispatcher)
+            .sayFailure("Microphone service stopped unexpectedly")
+        assertEquals("nothing is said before the one post runs", emptyList<String>(), held.said)
+        assertEquals("one post", 1, held.posts.size)
+        rig.onMain { held.posts.single().run() }
+        assertEquals(listOf("toast:Microphone service stopped unexpectedly@main"), held.said)
+    }
+
+    /** The rig's host with `postToMain` held rather than run, and each delivery stamped with whether it ran on main. */
+    private inner class HeldPosts : SessionHost by rig.host {
+        val posts = CopyOnWriteArrayList<Runnable>()
+        val said = CopyOnWriteArrayList<String>()
+        private fun where() = if (rig.host.onMainThread()) "main" else "off-main"
+        override fun postToMain(runnable: Runnable) { posts += runnable }
+        override fun toastFromService(line: String) { said += "toast:$line@${where()}" }
+        override fun showPolishNotice(notice: PolishFailureNotice) { said += "polish-notice@${where()}" }
+    }
+
+    /**
      * Row 6: the owner picks which notice and never where. MUTATION: a direct `surface.showNotice(` back in the
      * coordinator.
      */
@@ -92,6 +130,11 @@ class SessionNoticePresenterTest {
         val owner = SessionSources.coordinator
         assertFalse(owner.contains("showNotice("))
         assertFalse(owner.contains("toastFromApplication("))
+        // Since #293 the polish failure and the take's failure sentence are the presenter's too. MUTATION m5.
+        assertFalse(owner.contains("toastFromService("))
+        assertFalse(owner.contains("showPolishNotice("))
+        assertEquals(1, Regex("""\bnotices\.sayPolishFailure\(notice\)""").findAll(owner).count())
+        assertEquals(1, Regex("""\bnotices\.sayFailure\(line\)""").findAll(owner).count())
         assertEquals(5, Regex("""\bnotices\.say\(SessionNotice\.""").findAll(owner).count())
         assertEquals(SessionNotice.entries.map { it.name }.toSet(), Regex("""\bnotices\.say\(SessionNotice\.([A-Z_]+)\)""").findAll(owner).map { it.groupValues[1] }.toSet())
     }

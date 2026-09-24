@@ -224,6 +224,7 @@ class DictationSessionService : Service() {
             transcripts = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()),
             languageDetector = languageDetector,
             loadPolicy = { providerConfiguration.loadPolicy() },
+            lastReadPolicy = { ProviderConfigurationRepository.lastProcessRead() },
             pipeline = bindings,
             scope = scope,
             mainDispatcher = mainDispatcher,

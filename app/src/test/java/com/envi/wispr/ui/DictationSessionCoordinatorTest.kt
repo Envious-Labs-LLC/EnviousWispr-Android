@@ -1048,8 +1048,10 @@ class DictationSessionCoordinatorTest {
 
     /**
      * Row 1: with the admission already landed, every read in the start chain happens in one order: the origin,
-     * the admission's observed completion, then settings, matcher, policy, bind and live. MUTATIONS: record a
-     * step's absolute time instead of its offset; record admission when the wait returns.
+     * the admission's observed completion, then settings, matcher, policy, bind and live. Since #290 the preparation
+     * reads the clock more times, two of them on its own jobs' threads (their finish stamps), so the offsets past the
+     * settings answer are no longer literal; the first two still are, and the rest must rise in step order and stay
+     * offsets. MUTATIONS: record a step's absolute time instead of its offset; record admission when the wait returns.
      */
     @Test
     fun theStartChainIsTimedFromTheAcceptedCommandInStepOrder() {
@@ -1060,10 +1062,11 @@ class DictationSessionCoordinatorTest {
         rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
         rig.endings.awaitOne()
         val facts = rig.endings.facts.single()
-        assertEquals(
-            listOf(10L, 20L, 30L, 40L, 50L, 60L),
-            listOf(facts.admissionObservedMs, facts.settingsAnswerMs, facts.matcherReadyMs, facts.policyLoadedMs, facts.bindRequestedMs, facts.liveReceivedMs),
-        )
+        val steps = listOf(facts.admissionObservedMs, facts.settingsAnswerMs, facts.matcherReadyMs, facts.policyLoadedMs, facts.bindRequestedMs, facts.liveReceivedMs).map { checkNotNull(it) }
+        assertEquals("the admission and the settings answer are the first reads after the origin", listOf(10L, 20L), steps.take(2))
+        assertEquals("every step rises in step order: $steps", steps.sorted(), steps)
+        assertEquals("no two steps share a read: $steps", steps.size, steps.toSet().size)
+        assertTrue("offsets from the accepted command, never absolute times: $steps", steps.all { it in 1L until 1_000L })
     }
 
     /**

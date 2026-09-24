@@ -52,6 +52,9 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
     /** The stored polish policy could not be read at take start; the take ran on the last read policy or published the deterministic text (#278). */
     object PolishPolicyUnreadable : AppDefect("polish_policy_unreadable", "polish.policy_unreadable")
 
+    /** A take's start preparation (the vocabulary matcher) threw or missed its bound; the take started on the fallback (#290). */
+    object TakePreparationFailed : AppDefect("take_preparation_failed", "take.preparation_failed")
+
     /** The polish process died while a take was live; the take published the deterministic text (#234). */
     object PolishServiceDied : AppDefect("polish_service_died", "polish.service_died")
 
@@ -82,7 +85,7 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
             VadCallWedged("test"), LocalPolishDeadline, PolishProtocolViolation, CaptureStillRunningAfterStop,
             CaptureReleaseWedged, AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
             PolishWatchdogTimeout, PolishServiceUnavailable, PolishPolicyUnreadable, PolishServiceDied, PolishCallFailed,
-            HistorySaveTimedOut, HistoryContractViolation(null), PolishPreparationFailed, SilenceWriterExitWedged, DebugProbe,
+            TakePreparationFailed, HistorySaveTimedOut, HistoryContractViolation(null), PolishPreparationFailed, SilenceWriterExitWedged, DebugProbe,
         )
     }
 }

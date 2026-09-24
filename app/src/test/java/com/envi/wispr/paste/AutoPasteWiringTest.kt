@@ -264,7 +264,7 @@ class AutoPasteWiringTest {
             "beginSession discards the pin result again, so nothing can tell a dead service at " +
                 "the start from the four entry points that never had a target: $begin",
             begin.contains("val targetPin = insertion.pinTargetForDictation()") &&
-                begin.contains("take = TakeContext(takeId, trigger, takeFacts, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs)"),
+                begin.contains("take = TakeContext(takeId, trigger, takeFacts, outcome, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs)"),
         )
         assertEquals(
             "The handoff must pass through InsertionJudgement.handoffToJudge exactly once, at the " +

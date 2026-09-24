@@ -3,8 +3,6 @@ package com.envi.wispr.ui
 import com.envi.wispr.asr.AsrFailureReason
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.CaptureEnding
-import com.envi.wispr.audio.InputRouteKind
-import com.envi.wispr.audio.InputRouteReason
 import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.audio.SpeechEvidence
@@ -27,8 +25,8 @@ import com.envi.wispr.shortcuts.DictationSurfaceState
 import com.envi.wispr.telemetry.AnalyticsEvent
 import com.envi.wispr.telemetry.AppDefect
 import com.envi.wispr.telemetry.TakeFacts
+import com.envi.wispr.telemetry.TakeOutcomeRecorder
 import com.envi.wispr.telemetry.recordTakeEnding
-import com.envi.wispr.telemetry.TakeStage
 import com.envi.wispr.telemetry.Telemetry
 import com.envi.wispr.telemetry.TelemetryChannels
 import com.envi.wispr.vocabulary.CustomTerm
@@ -361,8 +359,9 @@ internal class DictationSessionCoordinator(
         // The referee for THIS take, in memory, before anything else (G2 D2). Its sink is a limb: it
         // hands the committed reason to telemetry and never waits on storage or the network.
         val arbiter = TakeArbiter { reason -> endingSink(takeFacts, reason) }
-        Telemetry.takeStarted(takeId)
-        Telemetry.breadcrumb("take", "admitted", mapOf("take_id" to takeId, "trigger_source" to trigger.wire))
+        // Every take-fact stamp, journal stage and take breadcrumb goes through the take's recorder (#329).
+        val outcome = TakeOutcomeRecorder(takeFacts, defect = ::reportDefect)
+        outcome.admitted()
         // Queued HERE, on the main thread, before any command can end this take: the journal applies
         // writes in arrival order, so a cancel that lands during the settings wait can never queue its
         // ending ahead of the admission and leave an open row (code review round 1, F2). The wait for
@@ -379,7 +378,7 @@ internal class DictationSessionCoordinator(
         // An optional measurement: nothing in this handler may throw into the journal writer.
         admission?.invokeOnCompletion { cause ->
             if (cause == null) runCatching {
-                if (admission.getCompleted()) takeFacts.admissionObservedMs = sinceAccepted()
+                if (admission.getCompleted()) outcome.admissionObserved(sinceAccepted())
             }
         }
         surface.showStarting(admittedRequest)
@@ -392,7 +391,7 @@ internal class DictationSessionCoordinator(
         surface.nameTarget(if (targetPin == DictationTargetPin.PINNED) insertion.pinnedFieldId() else null)
         // The take, published once (#216). `beginSession` is one uninterrupted main-thread call, and nothing
         // is bound and no coroutine launched before this line, so nothing reads half of one take.
-        take = TakeContext(takeId, trigger, takeFacts, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs)
+        take = TakeContext(takeId, trigger, takeFacts, outcome, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs)
         // After the take, in the same main-thread call, and before anything is bound (#237).
         polish = TakePolishController(
             lock = polishSubmissionLock,
@@ -453,7 +452,7 @@ internal class DictationSessionCoordinator(
                 }
                 val policy = takePolicy(read)
                 sessionPreferences = preferences.freeze(prepared.start, matcher, policy)
-                takeFacts.bindRequestedMs = sinceAccepted()
+                outcome.bindRequested(sinceAccepted())
                 bindPipelineServices()
             }
         }
@@ -665,11 +664,10 @@ internal class DictationSessionCoordinator(
      * own ending before live.
      */
     private fun onTakeEnded(ending: TakeEnding) {
-        val takeFacts = take.facts
+        val outcome = take.outcome
         captureDeviceLabel = ending.effectiveInputDevice
         takePeakAmplitude = ending.takePeakAmplitude
-        takeFacts.peakAmplitude = ending.takePeakAmplitude
-        takeFacts.silenceStopStatus = runCatching { TakeFacts.silenceStatusToken(ending.silenceStatus) }.getOrNull()
+        outcome.captureEnded(ending.takePeakAmplitude, ending.silenceStatus)
         when (state.get()) {
             SessionState.STARTING -> {
                 // Ended before live: the earbud deadline, a start refused before capture began (no
@@ -688,7 +686,7 @@ internal class DictationSessionCoordinator(
                 // The ending as a fact for the take's row, stamped here at the ONE place it is
                 // classified; a stop the owner itself requested never reaches this branch and is
                 // stamped `manual` at the stop (issue #176).
-                takeFacts.captureTerminal = TakeFacts.captureEndingToken(ending.terminalReason)
+                outcome.captureTerminal(ending.terminalReason)
                 // Exhaustive over CaptureEnding with no `else`, so a reason this build does not
                 // know cannot fall through into an ordinary transcription.
                 when (CaptureEnding.fromAidl(ending.terminalReason)) {
@@ -752,22 +750,11 @@ internal class DictationSessionCoordinator(
             }
             capture.cancelLiveDeadline()
             val current = take
-            val takeId = current.takeId
-            val takeFacts = current.facts
-            takeFacts.routeKind = runCatching { InputRouteKind.fromCode(routeKind) }.getOrNull()
-            takeFacts.routeReason = runCatching { InputRouteReason.fromCode(routeReason) }.getOrNull()
-            takeFacts.liveAfterMs = liveAfterMs
-            takeFacts.liveReceivedMs = host.elapsedRealtimeMs() - current.acceptedAtMs
-            takeFacts.liveState = if (forced) TakeFacts.LIVE_FORCED else TakeFacts.LIVE_READY
-            Telemetry.journal?.advance(takeId, TakeStage.RECORDING)
-            Telemetry.breadcrumb(
-                "take", "live",
-                mapOf("take_id" to takeId, "route_kind" to takeFacts.routeKind?.name?.lowercase(), "live_after_ms" to takeFacts.liveAfterMs, "live_state" to takeFacts.liveState),
-            )
+            current.outcome.live(routeKind, routeReason, liveAfterMs, host.elapsedRealtimeMs() - current.acceptedAtMs, forced)
             // The FIRST queued write of the take (#115), on the application's worker (`TakeHistory`). The id
             // comes back through the deferred; the still-live owner attaches it to its surface from MAIN (a
             // dead surface is never called from the queue).
-            val draft = current.history.insertDraft(takeFacts.takeId, System.currentTimeMillis())
+            val draft = current.history.insertDraft(current.takeId, System.currentTimeMillis())
             draft.invokeOnCompletion { cause ->
                 if (cause != null) return@invokeOnCompletion
                 val id = draft.getCompleted()
@@ -841,16 +828,8 @@ internal class DictationSessionCoordinator(
                 }.getOrNull()?.coerceAtLeast(0L) ?: 0L
                 val current = take
                 val takeId = current.takeId
-                val takeFacts = current.facts
-                takeFacts.recordingSeconds = recordingDurationMs / 1000.0
-                // Stamped by the ending handler when capture ended on its own; otherwise this stop is the
-                // owner's own request, which the capture process reports as a manual ending.
-                if (takeFacts.captureTerminal == null) takeFacts.captureTerminal = TakeFacts.MANUAL_ENDING
-                Telemetry.journal?.advance(takeId, TakeStage.PROCESSING)
-                Telemetry.breadcrumb(
-                    "take", "stopped",
-                    mapOf("take_id" to takeId, "capture_terminal" to takeFacts.captureTerminal, "recording_s" to takeFacts.recordingSeconds, "silence_stop_status" to takeFacts.silenceStopStatus),
-                )
+                val outcome = current.outcome
+                outcome.stopped(recordingDurationMs)
                 capture.finishTakeOrStop()
 
                 // Queued behind the draft insert; the id is resolved on the worker (#115). Nothing here
@@ -874,11 +853,9 @@ internal class DictationSessionCoordinator(
                     override fun onResult(text: String?) {
                         // Posted to main by the speech proxy (#253); the file delete runs on its own worker.
                         deleteCapturedAudio(audioFilePath)
-                        takeFacts.asrMs = host.elapsedRealtimeMs() - asrRequestedAtMs
-                        takeFacts.asrChars = text?.length ?: 0
+                        outcome.asrDone(host.elapsedRealtimeMs() - asrRequestedAtMs, text?.length ?: 0)
                         log.log("Transcription result received (chars=${text?.length ?: 0})")
                         log.mark("result_received")
-                        Telemetry.breadcrumb("take", "asr_done", mapOf("take_id" to takeId, "asr_ms" to takeFacts.asrMs, "asr_chars" to takeFacts.asrChars))
                         polishAndPublish(text.orEmpty())
                     }
 
@@ -888,8 +865,7 @@ internal class DictationSessionCoordinator(
                         log.error("Legacy onError on a versioned request")
                         // The fact is written before the claim so the ending's row carries it; a claim
                         // that loses leaves an unread fact, never a rewritten row (G1 D2).
-                        takeFacts.asrFailure = AsrFailureReason.UNKNOWN
-                        takeFacts.asrMs = host.elapsedRealtimeMs() - asrRequestedAtMs
+                        outcome.asrFailed(AsrFailureReason.UNKNOWN, host.elapsedRealtimeMs() - asrRequestedAtMs)
                         if (!current.arbiter.commitNow(TerminalReason.ASR_FAILED)) return
                         current.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                         endAsFailure(TerminalReason.ASR_FAILED)
@@ -898,8 +874,7 @@ internal class DictationSessionCoordinator(
                     override fun onFailure(reason: Int, detail: String?) {
                         deleteCapturedAudio(audioFilePath)
                         val failure = AsrFailureReason.fromCode(reason)
-                        takeFacts.asrFailure = failure
-                        takeFacts.asrMs = host.elapsedRealtimeMs() - asrRequestedAtMs
+                        outcome.asrFailed(failure, host.elapsedRealtimeMs() - asrRequestedAtMs)
                         // Claim FIRST: a cancel that already owns the take must not see its History row
                         // rewritten or a failure toast over its acknowledgement (G1 D2).
                         if (!current.arbiter.commitNow(TerminalReason.ASR_FAILED)) return
@@ -962,10 +937,7 @@ internal class DictationSessionCoordinator(
         // name is raised once here, whoever ends up owning the take (issue #176, plan §3.6).
         val current = take
         val takeId = current.takeId
-        val takeFacts = current.facts
-        val polishRecord = takeFacts.recordPolish(reason, latencyMs, statusCode, polishContext.encode())
-        Telemetry.breadcrumb("take", "polish_done", polishRecord.breadcrumb)
-        polishRecord.defect?.let { reportDefect(it, polishRecord.defectData) }
+        current.outcome.polishDone(reason, latencyMs, statusCode, polishContext.encode())
         // The immutable payload FIRST, so the reservation and its write can be one operation below.
         val payload = Publication(
             finalText = text.ifBlank { rawTranscript },
@@ -999,20 +971,19 @@ internal class DictationSessionCoordinator(
             if (current.arbiter.commit(publication, TerminalReason.FINAL_TEXT_EMPTY)) finishSession()
             return
         }
-        payload.polishFacts.notice?.let { notice ->
-            log.log("Polish notice shown: ${payload.polishFacts.failure}")
-            notices.sayPolishFailure(notice)
-        }
+        notices.sayPolishFailureIfAny(payload.polishFacts)
 
         scope.launch {
             // The words never wait on History (#277): insertion is the heart, History a limb. The save's answer is
             // recorded if it is already in, else `pending`; the committed facts are never changed afterwards, and
             // a slow or failed save is reported by the application's [HistorySaveObserver] alone (#304).
-            takeFacts.historySave = when (saved.answeredNow()?.outcome) {
-                is SaveOutcome.Saved -> TakeFacts.HISTORY_OK
-                is SaveOutcome.Failed -> TakeFacts.HISTORY_FAILED
-                null -> TakeFacts.HISTORY_PENDING
-            }
+            current.outcome.historySaved(
+                when (saved.answeredNow()?.outcome) {
+                    is SaveOutcome.Saved -> true
+                    is SaveOutcome.Failed -> false
+                    null -> null
+                },
+            )
             // COMMIT BEFORE the insertion handoff: completed means the text finalised, never that insertion
             // succeeded. A revoked reservation (the owner was destroyed) stops here: no handoff, no announcement,
             // no terminal; the teardown's own History write is the last word on that row (G2 D2).

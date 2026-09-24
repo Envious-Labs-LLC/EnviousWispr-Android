@@ -224,7 +224,8 @@ class SessionOwnerShapeTest {
         val parameters = context.substringAfter("class TakeContext(").substringBefore(") {")
         val declared = parameters.lines().map { it.trim() }.filter { it.isNotEmpty() }
         // Seven since #258: the accepted command's clock reading, the origin of the take's pre-capture timings.
-        assertEquals("seven properties", 7, declared.size)
+        // Eight since #329: the take's outcome recorder, which only records.
+        assertEquals("eight properties", 8, declared.size)
         declared.forEach { assertTrue("a fixed property: $it", it.startsWith("val ")) }
         assertEquals("no var in TakeContext", 0, count(context, """\bvar\b"""))
     }
@@ -262,5 +263,29 @@ class SessionOwnerShapeTest {
         assertEquals("one admission", 1, Regex("""SessionState\.STARTING\)""").findAll(owner).count { it.range.first > 0 && owner.substring(0, it.range.first).endsWith(", ") })
         assertFalse("nothing writes IDLE again", Regex("""(set|compareAndSet\([^,]+,|getAndSet)\s*\(?\s*SessionState\.IDLE\)""").containsMatchIn(owner))
         assertEquals("the initial IDLE is the only other one", 1, Regex("""AtomicReference\(SessionState\.IDLE\)""").findAll(owner).count())
+    }
+
+    /**
+     * Drift Guard (#329): every take-fact stamp, journal stage and take breadcrumb goes through the take's
+     * `TakeOutcomeRecorder`; the owner writes none itself, and the recorder takes no part in the ending. REVERT:
+     * stamp `takeFacts.asrMs` in the coordinator again.
+     */
+    @Test fun theOwnerRecordsTheTakeThroughItsRecorderOnly() {
+        fun count(text: String, pattern: String) = Regex(pattern).findAll(text).count()
+        val owner = SessionSources.coordinator
+        assertEquals("no journal stage in the owner", 0, count(owner, """Telemetry\.journal\?\.advance\("""))
+        assertEquals("no take breadcrumb in the owner", 0, count(owner, """Telemetry\.breadcrumb\("take""""))
+        assertEquals("no fact assignment in the owner", 0, count(owner, """\b(?:takeFacts|facts)\.\w+\s*=(?!=)"""))
+        // An ASR failure's facts are recorded BEFORE its commit, so the ending's row carries them (G1 D2): both
+        // failure callbacks, in source order. MUTATION m4: the failure stamped after `commitNow`.
+        val failures = Regex("""outcome\.asrFailed\(""").findAll(owner).map { it.range.first }.toList()
+        val commits = Regex("""commitNow\(TerminalReason\.ASR_FAILED\)""").findAll(owner).map { it.range.first }.toList()
+        assertEquals("two ASR failure callbacks", 2, failures.size)
+        assertEquals(2, commits.size)
+        failures.zip(commits).forEach { (stamp, commit) -> assertTrue("the failure is recorded before its commit", stamp < commit) }
+        val recorder = SessionSources.recorder
+        listOf("""\.reserve\(""", """\.commit\(""", """\.commitNow\(""", """TerminalReason""").forEach {
+            assertEquals("the recorder holds no $it", 0, count(recorder, it))
+        }
     }
 }

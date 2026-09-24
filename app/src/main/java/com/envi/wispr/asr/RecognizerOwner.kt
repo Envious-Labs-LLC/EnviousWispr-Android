@@ -23,8 +23,8 @@ internal class RecognizerOwner<R : Any>(
     private val worker: ExecutorService,
     private val free: (R) -> Unit,
     private val discarded: () -> Unit,
-    private val releaseBoundMs: Long = 0L,
-    private val bounded: (boundMs: Long, what: String, task: () -> Unit) -> Unit = { _, _, task -> task() },
+    private val releaseBoundMs: Long,
+    private val bounded: (boundMs: Long, what: String, task: () -> Unit) -> Unit,
 ) {
     private val closed = AtomicBoolean(false)
 
@@ -38,7 +38,7 @@ internal class RecognizerOwner<R : Any>(
     val isReady: Boolean
         get() = !closed.get() && ready
 
-    fun load(boundMs: Long = 0L, open: () -> R?) = submit(boundMs, "the model load", refused = {}) {
+    fun load(boundMs: Long, open: () -> R?) = submit(boundMs, "the model load", refused = {}) {
         val opened = open()
         recognizer = opened
         ready = opened != null
@@ -50,7 +50,7 @@ internal class RecognizerOwner<R : Any>(
      * [discarded] runs. The check is best-effort: a synchronous callback already in flight when [close]
      * flips still arrives. After close, [refused] runs instead, exactly once.
      */
-    fun use(boundMs: Long = 0L, refused: () -> Unit, work: (R?) -> () -> Unit) = submit(boundMs, "a transcription", refused) {
+    fun use(boundMs: Long, refused: () -> Unit, work: (R?) -> () -> Unit) = submit(boundMs, "a transcription", refused) {
         val deliver = work(recognizer)
         if (closed.get()) discarded() else deliver()
     }

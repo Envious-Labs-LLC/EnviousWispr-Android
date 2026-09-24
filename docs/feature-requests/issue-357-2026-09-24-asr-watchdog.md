@@ -76,3 +76,10 @@ Two findings of the class round 1 opened: work on `:asr`'s only worker that runs
 Tests: `RecognizerOwnerTest.everyWorkerTaskRunsWholeInsideTheBound` records the load, a use with its delivery and the release each inside with its bound (m7: the release outside); `AsrWatchdogTest.everyWorkerTaskIsBoundedByTheOwner` pins the two submissions and both production bounds (m4: the owner's submit unbounded).
 
 Mutations m1 to m7 are RED on fresh compiles.
+
+## 7. Code review round 3 (Codex)
+
+The class is closed: both worker submitters enter the bound; outside it only the post-expiry warning and the scheduler `shutdown` remain. Two new points:
+
+- Adopted: the `boundMs`, `releaseBoundMs` and `bounded` parameters had defaults that would let a future production call run unbounded. They are required now; the ordering rows pass a named placeholder with a direct `bounded`.
+- Rejected: a decode that returns just after its expiry can deliver before `guard` learns it lost. The expiry ends the process at once, so the window is the kill's own latency. The words delivered in it are the real transcript: an owner that already ended the take drops them (`SpeechWait.answer`, `SpeechWaitTest` row 2), and an owner still waiting takes correct words. A test for that window cannot be staged deterministically.

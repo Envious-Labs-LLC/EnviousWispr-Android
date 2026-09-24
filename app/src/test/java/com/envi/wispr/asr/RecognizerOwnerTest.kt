@@ -43,7 +43,15 @@ class RecognizerOwnerTest {
             discards.incrementAndGet()
             events += "discarded"
         },
+        // These rows pin ordering, not the bound (#357): the bound runs the task directly, and its own rows are below.
+        releaseBoundMs = UNBOUNDED,
+        bounded = { _, _, task -> task() },
     )
+
+    private companion object {
+        /** A placeholder bound for rows about ordering; the direct `bounded` above never reads it. */
+        const val UNBOUNDED = 0L
+    }
 
     /** A wait on the worker cannot throw into the test, so a deadline it reaches is recorded and asserted. */
     private val workerWaitFailures: MutableList<String> = Collections.synchronizedList(mutableListOf())
@@ -75,7 +83,7 @@ class RecognizerOwnerTest {
     private fun loaded(worker: ExecutorService): RecognizerOwner<Recognizer> {
         val owner = owner(worker)
         val done = CountDownLatch(1)
-        owner.load { Recognizer("parakeet") }
+        owner.load(UNBOUNDED) { Recognizer("parakeet") }
         // A FIFO barrier after the load task: signalled once the owner has installed the recognizer.
         worker.execute { done.countDown() }
         done.awaitOrFail("the load")
@@ -90,7 +98,7 @@ class RecognizerOwnerTest {
         val owner = loaded(worker)
         val inside = CountDownLatch(1)
         val finish = CountDownLatch(1)
-        owner.use(refused = { events += "refused" }) { _ ->
+        owner.use(UNBOUNDED, refused = { events += "refused" }) { _ ->
             inside.countDown()
             finish.awaitOnWorker("the decode's finish")
             events += "work-end"
@@ -112,7 +120,7 @@ class RecognizerOwnerTest {
         val inside = CountDownLatch(1)
         val finish = CountDownLatch(1)
         val opened = Recognizer("parakeet")
-        owner.load {
+        owner.load(UNBOUNDED) {
             inside.countDown()
             finish.awaitOnWorker("the load's finish")
             opened
@@ -150,7 +158,7 @@ class RecognizerOwnerTest {
         val worker = worker()
         val owner = loaded(worker)
         val gate = worker.park()
-        owner.use(refused = { events += "refused" }) { _ ->
+        owner.use(UNBOUNDED, refused = { events += "refused" }) { _ ->
             events += "work"
             return@use { events += "delivered" }
         }
@@ -168,7 +176,7 @@ class RecognizerOwnerTest {
         owner.close()
         worker.awaitTerminatedOrFail()
         val refusals = AtomicInteger(0)
-        owner.use(refused = { refusals.incrementAndGet() }) { _ ->
+        owner.use(UNBOUNDED, refused = { refusals.incrementAndGet() }) { _ ->
             events += "work"
             return@use {}
         }
@@ -182,7 +190,7 @@ class RecognizerOwnerTest {
         val owner = owner(worker)
         owner.close()
         val opens = AtomicInteger(0)
-        owner.load {
+        owner.load(UNBOUNDED) {
             opens.incrementAndGet()
             Recognizer("parakeet")
         }
@@ -236,12 +244,12 @@ class RecognizerOwnerTest {
         val threads: MutableList<Thread> = Collections.synchronizedList(mutableListOf())
         val owner = owner(worker)
         val delivered = CountDownLatch(1)
-        owner.load {
+        owner.load(UNBOUNDED) {
             threads += Thread.currentThread()
             events += "open"
             Recognizer("parakeet")
         }
-        owner.use(refused = { events += "refused" }) { recognizer ->
+        owner.use(UNBOUNDED, refused = { events += "refused" }) { recognizer ->
             threads += Thread.currentThread()
             events += "use:${recognizer?.name}"
             return@use {
@@ -265,7 +273,7 @@ class RecognizerOwnerTest {
         val worker = worker()
         val owner = loaded(worker)
         val delivered = CountDownLatch(1)
-        owner.use(refused = { events += "refused" }) { _ ->
+        owner.use(UNBOUNDED, refused = { events += "refused" }) { _ ->
             return@use { delivered.countDown() }
         }
         delivered.awaitOrFail("the delivery")

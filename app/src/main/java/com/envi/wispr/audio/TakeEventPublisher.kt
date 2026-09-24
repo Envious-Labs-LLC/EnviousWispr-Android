@@ -35,11 +35,10 @@ internal fun interface NanoClock {
  * owner costs the event and nothing else, and never the capture loop.
  *
  * Order: the queued events arrive in the order their offers linearised in, which for one producer is the order
- * it offered. A Live in a slot is delivered before any queued event the worker polls after it: the worker
- * re-reads the slots after each poll and delivers every waiting Live first, claimed and copied, then in the
- * order the capture thread published them (a sequence number), and a producer marks its slot ready before it
- * offers anything later. So a take's Live precedes every event of that take offered AFTER it; an event offered
- * earlier (a silence status published as capture starts) still arrives first, as before #327. A heartbeat is NOT ordered against them (#280): the worker delivers a waiting
+ * it offered. A retained Live is delivered before a queued event polled after it: the worker re-reads the slots
+ * after each poll and delivers every waiting Live first, claimed and copied, then in the order the capture thread
+ * published them (a sequence number). Earlier queued events may be overtaken by a waiting Live, and a superseded
+ * Live is never delivered at all (review round 1). A heartbeat is NOT ordered against them (#280): the worker delivers a waiting
  * heartbeat, then one queued event, per pass. The owner reads a heartbeat only while recording, so one that
  * arrives before Live or after the ending changes nothing but its silence bound; the cost is that the
  * recorder's elapsed timer can skip one second at the start of a take when the worker is a second behind.
@@ -71,6 +70,11 @@ internal class TakeEventPublisher(
     private val nowNanos: NanoClock = NanoClock { System.nanoTime() },
     /** The event queue; a test hands in one whose enqueue it can hold, to stage close against an entered offer. */
     private val queue: Queue<Event> = ConcurrentLinkedQueue(),
+    /**
+     * Runs on the capture thread after `publishLive` found no free slot, before it tries a replace (#343 review round
+     * 1); production passes the no-op. A test uses it to let the worker empty both slots in exactly that gap.
+     */
+    private val afterFreePass: () -> Unit = {},
 ) {
     companion object {
         /** Heartbeats are throttled by WALL-CLOCK second: elapsed is 0 before live and would send one. */
@@ -200,11 +204,20 @@ internal class TakeEventPublisher(
                     return
                 }
             }
+            afterFreePass()
             // Both hold a waiting Live: replace the older (the capture thread wrote every seq, so reading them is safe).
             val older = if (liveSlots[0].seq <= liveSlots[1].seq) 0 else 1
             for (k in 0..1) {
                 val slot = liveSlots[(older + k) % 2]
                 if (slot.state.compareAndSet(LIVE_READY, LIVE_WRITING)) {
+                    fill(slot, takeId, forced, routeKind, routeReason, liveAfterMs, onDelivered)
+                    return
+                }
+            }
+            // The worker emptied both slots between the passes (review round 1): one is now free, since the worker
+            // holds at most one READING and only this thread makes a slot READY.
+            for (slot in liveSlots) {
+                if (slot.state.compareAndSet(LIVE_IDLE, LIVE_WRITING)) {
                     fill(slot, takeId, forced, routeKind, routeReason, liveAfterMs, onDelivered)
                     return
                 }

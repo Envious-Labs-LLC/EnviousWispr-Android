@@ -228,6 +228,54 @@ class TakeEventPublisherTest {
     }
 
     /**
+     * #343 review round 1, staged: the worker empties both slots in the gap between `publishLive`'s free-slot pass and
+     * its replace pass, so neither replace can claim; the Live still lands, through the final free-slot pass. The
+     * capture-thread seam releases the held worker and waits until both waiting Lives are delivered. MUTATION m6: no
+     * final free-slot pass, so take C's Live is lost.
+     */
+    @Test
+    fun aLiveStillLandsWhenTheWorkerEmptiesBothSlotsBetweenThePasses() {
+        val polling = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val held = object : java.util.concurrent.ConcurrentLinkedQueue<TakeEventPublisher.Event>() {
+            @Volatile var holdNext = true
+            override fun poll(): TakeEventPublisher.Event? {
+                if (holdNext) {
+                    holdNext = false
+                    polling.countDown()
+                    release.await(10, TimeUnit.SECONDS)
+                }
+                return super.poll()
+            }
+        }
+        val armed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val staged = TakeEventPublisher(slot, "test", nowNanos = { now.get() }, queue = held, afterFreePass = {
+            if (armed.getAndSet(false)) {
+                release.countDown()
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+                while (recorder.events.size < 2) {
+                    check(System.nanoTime() < deadline) { "the worker never emptied both slots" }
+                    Thread.sleep(1)
+                }
+            }
+        })
+        try {
+            staged.start()
+            assertTrue(polling.await(10, TimeUnit.SECONDS))
+            recorder.expect(3)
+            staged.publishLive("tA", false, 1, 2, 1L)
+            staged.publishLive("tB", false, 1, 2, 2L)
+            armed.set(true)
+            staged.publishLive("tC", false, 1, 2, 3L)
+            recorder.await()
+            assertEquals(listOf("tA:live(false,1,2,1)", "tB:live(false,1,2,2)", "tC:live(false,1,2,3)"), recorder.events.toList())
+        } finally {
+            release.countDown()
+            staged.close()
+        }
+    }
+
+    /**
      * #327, #343: many takes back to back while the worker runs. Every Live that arrives precedes its take's ending
      * and arrives in publish order; a stale Live may be superseded, but the newest take's never is.
      */

@@ -42,7 +42,9 @@ internal interface CaptureOperations {
  * `IAudioCaptureService` transaction and its old meaning for the older clients and the device tests
  * (`architecture-rules.md` RULE: aidl-is-append-only); [forTake] is the owner's five-operation take interface
  * (#220), one binder per take binding, so a registration issued after its unbind reaches a closed epoch and is
- * refused. Each method is one call of [ops] or one listener slot; the service decides everything.
+ * refused. Each method is one call of [ops] or one listener slot, except two legacy ones that read no service state:
+ * `getMaxDurationMs` returns the one recording limit, and `getAudioData` is the empty answer of a transaction
+ * retired for the file path. The service decides everything else.
  */
 internal class CaptureBinderAdapters(
     private val ops: CaptureOperations,

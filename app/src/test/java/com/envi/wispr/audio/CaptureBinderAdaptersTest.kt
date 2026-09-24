@@ -54,12 +54,14 @@ class CaptureBinderAdaptersTest {
      * the one that may recover. MUTATION m1: the held start drops keepEarbudsReady; m2: the legacy take start loses recovery.
      */
     @Test fun everyStartMeansWhatItAlwaysMeant() {
-        legacy.startCapture()
-        legacy.startCaptureWithSilenceStop(true, 1.5f)
-        legacy.startCaptureWithInputDevice(true, 1.5f, null)
-        legacy.startCaptureWithInputDeviceHeld(false, 2f, null, true)
-        legacy.startCaptureForTake(true, 1.5f, "auto", true, "take-1")
-        (adapters.forTake(slots.openTakeEpoch("a")) as IAudioTakeService.Stub).startCaptureForTake(false, 0f, null, false, "take-2")
+        // Each answer is the operation's own (review round 1): a binder that reached the right call but answered
+        // differently would fail here.
+        assertTrue(legacy.startCapture())
+        assertTrue(legacy.startCaptureWithSilenceStop(true, 1.5f))
+        assertTrue(legacy.startCaptureWithInputDevice(true, 1.5f, null))
+        assertTrue(legacy.startCaptureWithInputDeviceHeld(false, 2f, null, true))
+        assertTrue(legacy.startCaptureForTake(true, 1.5f, "auto", true, "take-1"))
+        assertTrue((adapters.forTake(slots.openTakeEpoch("a")) as IAudioTakeService.Stub).startCaptureForTake(false, 0f, null, false, "take-2"))
         assertEquals(
             listOf(
                 "legacy false 0.0 ${InputDevicePick.Auto} false",
@@ -87,9 +89,9 @@ class CaptureBinderAdaptersTest {
         assertEquals(900L, legacy.elapsedMs)
         assertEquals(RecordingLimits.MAX_DURATION_MS, legacy.maxDurationMs)
         assertEquals(0, legacy.audioData.size)
-        legacy.finishTake()
+        assertTrue(legacy.finishTake())
         legacy.stopCapture()
-        legacy.waitForFileReady(250L)
+        assertTrue(legacy.waitForFileReady(250L))
         assertEquals(listOf("finish", "stop", "wait 250"), calls)
     }
 

@@ -41,9 +41,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
-import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -412,113 +410,54 @@ internal class DictationSessionCoordinator(
         lastElapsedSecond = -1
         pendingCancel = null
         scope.launch {
-            // The readers are limbs (#193): a failed or silent read never ends the take. The start carries
-            // both outcomes and the values that came with them, taken by one atomic read each, and the
-            // take is built from it alone; nothing below rereads the live source after suspending.
-            val start = preferences.awaitAnswers(answerBoundMs)
-            takeFacts.settingsAnswerMs = sinceAccepted()
-            start.fallbackToken()?.let { token ->
-                takeFacts.settingsFallback = token
-                log.warn("Settings reader fell back; the take runs on the last values: $token")
-                Telemetry.breadcrumb("take", "settings_fallback", mapOf("take_id" to takeId, "settings_fallback" to token))
-            }
-            takeFacts.inputDevice = TakeFacts.inputDeviceToken(start.settings.inputDevicePick)
-            val termsSnapshot: List<CustomTerm> = start.terms.structuredTerms
-            // The matcher and the policy are limbs with ONE deadline (#290): they run side by side as sibling jobs on
-            // the owner's scope (never inside a scope that would wait for a blocked loser), each result is taken by the
-            // deadline or replaced by its fallback, and a job that answers late is ignored.
-            val deadlineMs = host.elapsedRealtimeMs() + preparationBoundMs
-            // Read BEFORE this take's read starts (#290 review round 2): a late read updates the process's last read as it
-            // lands, and this take must not fall back onto the very answer it refused as late.
-            val priorPolicy = lastReadPolicy()
-            val matcherJob = scope.async(Dispatchers.Default) { Timed(preparing { compileMatcher(termsSnapshot) }, host.elapsedRealtimeMs()) }
-            val policyJob = scope.async(Dispatchers.IO) { Timed(preparing { loadPolicy() }, host.elapsedRealtimeMs()) }
-            // Take-owned (#290 review): a cancel of the starting take cancels both. Registered, then the state is
-            // rechecked, so a cancel that landed between the launch and the registration still cancels them.
-            preparationJobs = listOf(matcherJob, policyJob)
-            if (state.get() != SessionState.STARTING) preparationJobs.forEach { it.cancel() }
-            val matcherPrepared = awaitBy(matcherJob, deadlineMs)
-            takeFacts.matcherReadyMs = sinceAccepted()
-            val policyPrepared = awaitBy(policyJob, deadlineMs)
-            takeFacts.policyLoadedMs = sinceAccepted()
-            // Admission is written before capture starts, under a deadline that never gates the take:
-            // the queued write still lands in order if this stops waiting (issue #176, plan §3.3). A failed
-            // admission never gates it either (#290).
-            if (admission != null) {
-                val landed = try {
-                    withTimeoutOrNull(JOURNAL_ADMISSION_DEADLINE_MS) { admission.await() }
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    log.warn("Journal admission failed: ${error.javaClass.simpleName}; starting anyway")
-                    false
-                }
-                if (landed == null) log.warn("Journal admission did not land within $JOURNAL_ADMISSION_DEADLINE_MS ms; starting anyway")
-            }
+            // The four steps before the bind (#281): settings, matcher, policy, admission wait. The jobs are published
+            // to this owner as they launch, so a cancel of the starting take cancels them.
+            val prepared = preparer.prepare(
+                takeId = takeId,
+                facts = takeFacts,
+                admission = admission,
+                sinceAccepted = ::sinceAccepted,
+                jobs = { preparationJobs = it },
+                stillStarting = { state.get() == SessionState.STARTING },
+            )
             withContext(mainDispatcher) {
                 // Checked BEFORE any fallback is reported or taken (#290): a take cancelled or ended during the wait
                 // reports nothing and freezes nothing.
                 if (state.get() != SessionState.STARTING) {
-                    matcherJob.cancel()
-                    policyJob.cancel()
+                    prepared.jobs.forEach { it.cancel() }
                     return@withContext
                 }
                 preparationJobs = emptyList()
-                val matcher = when (matcherPrepared) {
-                    is Prepared.Ready -> matcherPrepared.value
+                val matcher = when (val step = prepared.matcher) {
+                    is Prepared.Ready -> step.value
                     is Prepared.Failed -> {
-                        log.warn("Vocabulary matcher ${matcherPrepared.kind}; this take restores no custom words")
-                        reportDefect(AppDefect.TakePreparationFailed, mapOf("take_id" to takeId, "step" to STEP_MATCHER, "kind" to matcherPrepared.kind))
+                        log.warn("Vocabulary matcher ${step.kind}; this take restores no custom words")
+                        reportDefect(AppDefect.TakePreparationFailed, mapOf("take_id" to takeId, "step" to STEP_MATCHER, "kind" to step.kind))
                         StructuredTermRestorer.compile(emptyList())
                     }
                 }
-                val read = when (policyPrepared) {
-                    is Prepared.Ready -> policyPrepared.value
+                val read = when (val step = prepared.policy) {
+                    is Prepared.Ready -> step.value
                     is Prepared.Failed -> {
-                        log.warn("Polish policy read ${policyPrepared.kind}; this take uses the last read policy")
-                        PolicyRead.Failed(priorPolicy)
+                        log.warn("Polish policy read ${step.kind}; this take uses the last read policy")
+                        PolicyRead.Failed(prepared.priorPolicy)
                     }
                 }
                 val policy = takePolicy(read)
-                sessionPreferences = preferences.freeze(start, matcher, policy)
+                sessionPreferences = preferences.freeze(prepared.start, matcher, policy)
                 takeFacts.bindRequestedMs = sinceAccepted()
                 bindPipelineServices()
             }
         }
     }
 
-    /** A start preparation's answer and the host time its job finished (#290 review): late means stamped past the deadline. */
-    private data class Timed<T>(val result: Prepared<T>, val finishedAtMs: Long)
-
     /** The starting take's two preparation jobs (#290 review), cancelled by a cancel of that take; empty otherwise. */
     @Volatile private var preparationJobs: List<Job> = emptyList()
 
-    /** A start preparation's answer by its deadline (#290): the value, or why there is none (`timeout` or `error`). */
-    private sealed interface Prepared<out T> {
-        data class Ready<T>(val value: T) : Prepared<T>
-        data class Failed(val kind: String) : Prepared<Nothing>
-    }
-
-    /** Runs one preparation step as a limb (#290): an ordinary exception is an `error`, cancellation is rethrown. */
-    private suspend fun <T> preparing(step: suspend () -> T): Prepared<T> = try {
-        Prepared.Ready(step())
-    } catch (error: CancellationException) {
-        throw error
-    } catch (error: Exception) {
-        Prepared.Failed(KIND_ERROR)
-    }
-
-    /**
-     * [job]'s answer by [deadlineMs] on the host clock (#290), or `timeout`. Late is the job's OWN finish stamp past the
-     * deadline, never when this looked: an answer stamped in time is taken even if the wait timed out first, and one
-     * stamped late is refused even if it was already there. A job still running is left to finish unread.
-     */
-    private suspend fun <T> awaitBy(job: Deferred<Timed<T>>, deadlineMs: Long): Prepared<T> {
-        val leftMs = deadlineMs - host.elapsedRealtimeMs()
-        val answered = if (leftMs > 0L) withTimeoutOrNull(leftMs) { job.await() } else null
-        val seen = answered ?: job.takeIf { it.isCompleted && !it.isCancelled }?.getCompleted()
-        return seen?.takeIf { it.finishedAtMs <= deadlineMs }?.result ?: Prepared.Failed(KIND_TIMEOUT)
-    }
+    /** The steps before the bind (#281), from this owner's own collaborators. */
+    private val preparer = TakeStartPreparer(
+        preferences, answerBoundMs, preparationBoundMs, compileMatcher, loadPolicy, lastReadPolicy, host::elapsedRealtimeMs, scope, log,
+    )
 
     /**
      * The policy this take runs on (#278). A store that cannot be read is never the user's Off: the take

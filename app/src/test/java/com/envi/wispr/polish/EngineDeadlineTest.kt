@@ -95,9 +95,38 @@ class EngineDeadlineTest {
     }
 
     @Test fun activeLocalWorkKeepsOnDestroyFromCancellingItsOnlyHardDeadline() {
-        assertTrue(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 1))
-        assertTrue(mustKillEngineOnDestroy(poisoned = true, activeLocalRequests = 0))
-        assertFalse(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 0))
+        assertTrue(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 1, modelLoading = false))
+        assertTrue(mustKillEngineOnDestroy(poisoned = true, activeLocalRequests = 0, modelLoading = false))
+        assertFalse(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 0, modelLoading = false))
+    }
+
+    /** #344: a model load queued or running forces the kill on its own. MUTATION m1: the predicate ignores it. */
+    @Test fun aLoadingModelEndsTheProcessRatherThanQueueTheCloseBehindIt() {
+        assertTrue(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 0, modelLoading = true))
+    }
+
+    /**
+     * #344, source shape (the engine service cannot be built in a JVM test): the load is admitted and destruction
+     * decides under one lock; the whole load body clears the flag and its deadline in one `finally`; the deadline
+     * is armed before model selection. MUTATIONS m2 (onDestroy passes `false`), m3 (the flag cleared only after
+     * selection) and m4 (no load deadline).
+     */
+    @Test fun theLoadIsBoundedAndDestructionSeesIt() {
+        val source = java.io.File("src/main/java/com/envi/wispr/polish/PolishService.kt").readText()
+        val destroy = source.substringAfter("override fun onDestroy()").substringBefore("\n    }\n")
+        assertTrue(destroy.contains("mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get(), loading)"))
+        assertTrue(destroy.contains("synchronized(loadLock)") && destroy.contains("destroyed = true"))
+        val ensure = source.substringAfter("private fun ensureModelLoaded()").substringBefore("\n    }\n")
+        assertTrue(ensure.contains("synchronized(loadLock)") && ensure.contains("if (destroyed || modelReady || modelLoading)"))
+        val load = source.substringAfter("private fun loadModel()").substringBefore("\n    /**")
+        // The constant is the scheduled DELAY, not only a word in the log line.
+        val deadline = load.indexOf("MODEL_LOAD_DEADLINE_MS,\n                java.util.concurrent.TimeUnit.MILLISECONDS")
+        val selection = load.indexOf("S1ModelSelector.resolve(this)")
+        assertTrue("the deadline is armed before selection", deadline in 0 until selection)
+        val finally = load.lastIndexOf("} finally {")
+        assertTrue("one finally after selection clears the flag and the deadline", finally > selection &&
+            load.substring(finally).contains("modelLoading = false") && load.substring(finally).contains("stall?.cancel(false)"))
+        assertEquals("the flag is cleared only in that finally", 1, Regex("""modelLoading = false""").findAll(load).count())
     }
 
     @Test fun overrideBoundsAreExact() {

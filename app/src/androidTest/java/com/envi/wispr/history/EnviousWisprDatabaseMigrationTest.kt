@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -149,15 +150,51 @@ class EnviousWisprDatabaseMigrationTest {
         }
     }
 
-    /** The whole supported chain, 1 through 8, against the exported schemas: what an old install walks. */
+    /**
+     * #288: version 9 adds the take a row records. A populated version-8 row reads null for it and keeps every other
+     * value; the column is uniquely indexed, so a second row for one take is refused while two nulls are not.
+     */
     @Test
-    fun theWholeMigrationChainReachesVersion8() {
+    fun migration8To9AddsTheTakeIdAndPreservesEveryExistingValue() {
+        helper.createDatabase(TEST_DATABASE, 8).use { database ->
+            database.execSQL(
+                "INSERT INTO transcripts (id, originalText, finalText, createdAtMs, durationMs, speechEngine, polishEngine, " +
+                    "polishLatencyMs, insertionResult, kept, recovered, interrupted, status, stateChangedAtMs, " +
+                    "polishReason, polishStatus, polishContext, captureDevice) " +
+                    "VALUES (11, 'canary raw', 'canary final', 1000, 2000, 'Parakeet', 'S1-mini', 410, 'committed', 1, 0, 0, 'completed', 3000, " +
+                    "'POLISHED', 0, 'general', 'AirPods Pro 3')",
+            )
+        }
+
+        helper.runMigrationsAndValidate(TEST_DATABASE, 9, true, EnviousWisprDatabase.MIGRATION_8_9).use { database ->
+            database.query("SELECT originalText, finalText, status, captureDevice, takeId FROM transcripts WHERE id = 11").use { cursor ->
+                cursor.moveToFirst()
+                assertEquals("canary raw", cursor.getString(0))
+                assertEquals("canary final", cursor.getString(1))
+                assertEquals("completed", cursor.getString(2))
+                assertEquals("AirPods Pro 3", cursor.getString(3))
+                assertTrue("an existing row records no take", cursor.isNull(4))
+            }
+            val insert = "INSERT INTO transcripts (originalText, finalText, createdAtMs, durationMs, speechEngine, polishEngine, " +
+                "polishLatencyMs, insertionResult, kept, recovered, interrupted, status, stateChangedAtMs, " +
+                "polishReason, polishStatus, polishContext, captureDevice, takeId) " +
+                "VALUES ('a', 'a', 1, 1, 'Parakeet', '', 0, 'pending', 0, 0, 0, 'draft', 1, '', 0, '', '', ?)"
+            database.execSQL(insert, arrayOf<Any?>(null))
+            database.execSQL(insert, arrayOf<Any?>("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"))
+            val second = runCatching { database.execSQL(insert, arrayOf<Any?>("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d")) }
+            assertTrue("one row per take", second.isFailure)
+        }
+    }
+
+    /** The whole supported chain, 1 through 9, against the exported schemas: what an old install walks. */
+    @Test
+    fun theWholeMigrationChainReachesVersion9() {
         helper.createDatabase(TEST_DATABASE, 1).close()
         helper.runMigrationsAndValidate(
-            TEST_DATABASE, 8, true,
+            TEST_DATABASE, 9, true,
             EnviousWisprDatabase.MIGRATION_1_2, EnviousWisprDatabase.MIGRATION_2_3, EnviousWisprDatabase.MIGRATION_3_4,
             EnviousWisprDatabase.MIGRATION_4_5, EnviousWisprDatabase.MIGRATION_5_6, EnviousWisprDatabase.MIGRATION_6_7,
-            EnviousWisprDatabase.MIGRATION_7_8,
+            EnviousWisprDatabase.MIGRATION_7_8, EnviousWisprDatabase.MIGRATION_8_9,
         ).close()
     }
 

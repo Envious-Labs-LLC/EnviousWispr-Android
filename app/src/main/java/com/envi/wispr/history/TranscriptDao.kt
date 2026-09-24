@@ -23,6 +23,10 @@ internal interface TranscriptDao {
     @Delete
     suspend fun delete(transcript: TranscriptEntity)
 
+    /** The row a take wrote, if any (#288). */
+    @Query("SELECT * FROM transcripts WHERE takeId = :takeId LIMIT 1")
+    suspend fun findByTakeId(takeId: String): TranscriptEntity?
+
     @Query("DELETE FROM transcripts")
     suspend fun deleteAll()
 

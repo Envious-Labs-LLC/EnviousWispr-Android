@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.ui.RescuedWords
 import com.envi.wispr.telemetry.Telemetry
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +28,8 @@ internal data class HistoryUiState(
 /** Owns the History tab (#218): the transcripts, the search, the error, and the startup recovery. */
 internal class HistoryViewModel(
     private val repository: TranscriptRepository,
+    /** The words' last resort (#288): recovered into History here, and deleted with the rows they became. */
+    private val rescuedWords: RescuedWords,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     private val historySearch = MutableStateFlow("")
@@ -59,6 +62,8 @@ internal class HistoryViewModel(
                 val recovered = repository.recoverStaleOpenRows(clock())
                 Telemetry.insertionsRecovered(recovered.readyRowIds)
                 Telemetry.deliveryUnknownRecovered(recovered.unknownCount)
+                // Words an earlier take could not get into History (#288); a take still tracked in this process is left alone.
+                rescuedWords.recover(repository)
                 // Rows an older build saved for a dictation with no words in them. Swept here rather
                 // than left for the user to delete, because they are the reason History could not be
                 // scanned. Nothing writes them any more, so on a phone that has run this once it
@@ -76,11 +81,18 @@ internal class HistoryViewModel(
     }
 
     fun deleteHistory(transcript: TranscriptEntity) {
-        updateHistory { repository.delete(transcript) }
+        updateHistory {
+            repository.delete(transcript)
+            // Deleted words stay deleted (#288): a rescue of the same take cannot bring them back.
+            transcript.takeId?.let { rescuedWords.forget(it) }
+        }
     }
 
     fun deleteAllHistory() {
-        updateHistory { repository.deleteAll() }
+        updateHistory {
+            repository.deleteAll()
+            rescuedWords.clear()
+        }
     }
 
     private fun updateHistory(operation: suspend () -> Unit) {
@@ -95,11 +107,12 @@ internal class HistoryViewModel(
 
     class Factory(
         private val repository: TranscriptRepository,
+        private val rescuedWords: RescuedWords,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             require(modelClass.isAssignableFrom(HistoryViewModel::class.java))
-            return HistoryViewModel(repository) as T
+            return HistoryViewModel(repository, rescuedWords) as T
         }
     }
 }

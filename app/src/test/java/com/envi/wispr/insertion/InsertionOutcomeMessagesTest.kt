@@ -528,6 +528,45 @@ class InsertionOutcomeMessagesTest {
         return tail.substringBefore(before)
     }
 
+    /**
+     * #288: with the copy failed and the words not saved, the rescue decides the line, and only a failed save AND a
+     * failed rescue say the words are lost. Both surfaces, every rescue state, literal lines. MUTATION m7.
+     */
+    @Test
+    fun theRescueDecidesTheLineWhenTheWordsAreNeitherCopiedNorSaved() {
+        val expected = mapOf(
+            WordsKept.KEPT to "Kept on this phone. Open EnviousWispr to find them.",
+            WordsKept.UNCONFIRMED to "Saving your words. Open EnviousWispr to check.",
+            WordsKept.LOST to lostLine,
+        )
+        for ((kept, line) in expected) {
+            val owner = FallbackAnnouncement.fallbackAnnouncement(
+                autoPaste = AutoPasteAvailability.LIVE,
+                handoff = InsertionHandoff.SERVICE_DID_NOT_ANSWER,
+                clipboard = ClipboardOutcome.WRITE_FAILED,
+                savedInHistory = false,
+                kept = kept,
+            )
+            assertEquals(kept.name, line, owner?.line)
+            val service = FallbackAnnouncement.serviceFallbackAnnouncement(ServiceFallbackReason.TARGET_NEVER_RETURNED, ClipboardOutcome.WRITE_FAILED, savedInHistory = false, kept = kept)
+            assertEquals(kept.name, line, service.line)
+        }
+        // A copy or a saved row outranks the rescue, and the unverified hedge keeps its words unless the rescue holds them.
+        assertEquals(copiedLine, FallbackAnnouncement.serviceFallbackAnnouncement(ServiceFallbackReason.TARGET_NEVER_RETURNED, ClipboardOutcome.COPIED, savedInHistory = false, kept = WordsKept.LOST).line)
+        assertEquals(historyLine, FallbackAnnouncement.serviceFallbackAnnouncement(ServiceFallbackReason.TARGET_NEVER_RETURNED, ClipboardOutcome.WRITE_FAILED, savedInHistory = true, kept = WordsKept.LOST).line)
+        assertEquals("Kept on this phone too, if it did not arrive.", FallbackAnnouncement.serviceFallbackAnnouncement(ServiceFallbackReason.UNVERIFIED, ClipboardOutcome.WRITE_FAILED, savedInHistory = false, kept = WordsKept.KEPT).line)
+        for (kept in listOf(WordsKept.UNCONFIRMED, WordsKept.LOST)) {
+            assertEquals("Check your text field before dictating again.", FallbackAnnouncement.serviceFallbackAnnouncement(ServiceFallbackReason.UNVERIFIED, ClipboardOutcome.WRITE_FAILED, savedInHistory = false, kept = kept).line)
+        }
+    }
+
+    /** #288: both fallback surfaces pass the measured rescue, never the default. */
+    @Test
+    fun bothFallbackSurfacesPassTheMeasuredRescue() {
+        assertTrue(read("ui/SessionFinalizer.kt").contains("kept = row.wordsKept(),"))
+        assertTrue(read("paste/AccessibilityInsertionRunner.kt").contains("kept = pending.row.wordsKept(),"))
+    }
+
     private fun read(relativePath: String): String {
         // A wrong working directory must fail loudly rather than pass vacuously.
         val candidates = listOf(

@@ -60,6 +60,52 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
         status = status,
     )
 
+    /**
+     * Writes a take's rescued words into History (#288), once per take: a row the take already wrote keeps its words
+     * when it has any and receives the rescued ones when it has none (a draft that never saved); with no row, one is
+     * inserted, marked as an interrupted insertion so it reads as the words' last known place. True when History now
+     * holds the words. The rescue holds the final text only, so it is also the row's original text.
+     */
+    suspend fun keepRescuedWords(takeId: String, text: String, createdAtMs: Long): Boolean {
+        val existing = dao.findByTakeId(takeId)
+        if (existing != null) {
+            if (existing.finalText.isNotBlank()) return true
+            return dao.finalize(
+                id = existing.id,
+                originalText = text,
+                finalText = text,
+                speechEngine = existing.speechEngine,
+                polishEngine = existing.polishEngine,
+                polishLatencyMs = existing.polishLatencyMs,
+                insertionResult = com.envi.wispr.insertion.InsertionResults.INSERTION_FAILED,
+                durationMs = existing.durationMs,
+                stateChangedAtMs = clock(),
+                polishReason = existing.polishReason,
+                polishStatus = existing.polishStatus,
+                polishContext = existing.polishContext,
+                captureDevice = existing.captureDevice,
+                status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+                interrupted = true,
+            ) > 0
+        }
+        insert(
+            TranscriptEntity(
+                originalText = text,
+                finalText = text,
+                createdAtMs = createdAtMs,
+                durationMs = 0L,
+                speechEngine = "Parakeet",
+                polishEngine = com.envi.wispr.polish.PolishEngineLabels.NOT_RECORDED,
+                polishLatencyMs = 0L,
+                insertionResult = com.envi.wispr.insertion.InsertionResults.INSERTION_FAILED,
+                interrupted = true,
+                status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+                takeId = takeId,
+            ),
+        )
+        return true
+    }
+
     /** After a scheduled handoff, never awaited by the owner (#235). */
     suspend fun promoteUnroutedToReady(id: Long) = dao.promoteUnroutedToReady(id, clock())
 

@@ -74,6 +74,8 @@ internal class DictationSessionCoordinator(
     private val historyWrites: HistoryWriteQueue,
     /** The History save's diagnostics (#304), application-owned so they outlive this Service's scope. */
     private val historySaves: HistorySaveObserver,
+    /** The words' last resort (#288), application-owned: written ahead of delivery, recovered into History at start. */
+    private val rescuedWords: RescuedWords,
     /** For the start-up recovery ONLY, on the session scope: a stalled recovery must not sit ahead of a take's writes on the queue. */
     private val transcripts: TranscriptRepository,
     private val languageDetector: LanguageDetector,
@@ -198,7 +200,7 @@ internal class DictationSessionCoordinator(
     private val capture = CaptureSessionController(host, surface, log, pipeline, ::onCaptureEvent)
 
     /** The History row and the delivery, after this owner has decided (#216). */
-    private val finalizer = SessionFinalizer(host, insertion, log, historyWrites, historySaves)
+    private val finalizer = SessionFinalizer(host, insertion, log, historyWrites, historySaves, rescuedWords)
 
     /** What the start's lane may read of this owner: two answers, never the state (#216). */
     private val phaseView = object : TakePhaseView {
@@ -242,6 +244,12 @@ internal class DictationSessionCoordinator(
                     // launch (`stopIfIdle`); that cancellation is the ordinary case, not a failure, and the
                     // next instance runs the recovery again (measured on the emulator 2026-09-21).
                     if (error !is kotlinx.coroutines.CancellationException) log.warn("Unable to recover stale history: ${error.javaClass.simpleName}")
+                }
+            // Words an earlier take could not get into History (#288); a take still tracked in this process is left alone.
+            runCatching { rescuedWords.recover(transcripts) }
+                .onSuccess { recovered -> if (recovered > 0) log.log("Rescued words written to History: $recovered") }
+                .onFailure { error ->
+                    if (error !is kotlinx.coroutines.CancellationException) log.warn("Unable to recover rescued words: ${error.javaClass.simpleName}")
                 }
         }
         preferences.start(scope)
@@ -1012,6 +1020,8 @@ internal class DictationSessionCoordinator(
                 log.warn("Publication revoked before the handoff; not inserting")
                 return@launch
             }
+            // The words are on this phone before they are handed anywhere (#288), bounded so a slow disk never holds them.
+            finalizer.awaitRescue(current.history)
             finalizer.deliver(takeId, current.targetPin, payload, current.history, sessionPreferences.clipboard)
             log.log(log.pipelineSummary())
             finishSession()

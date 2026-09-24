@@ -673,6 +673,7 @@ internal class AccessibilityInsertionRunner(
             reason = reason,
             clipboard = clipboard,
             savedInHistory = pending.row.savedNow,
+            kept = pending.row.wordsKept(),
         )
         Toast.makeText(service, announcement.line, Toast.LENGTH_LONG).show()
     }

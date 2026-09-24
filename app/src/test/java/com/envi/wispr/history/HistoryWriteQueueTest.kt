@@ -24,6 +24,7 @@ class HistoryWriteQueueTest {
         val landed = CopyOnWriteArrayList<String>()
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(emptyList())
         override suspend fun insert(transcript: TranscriptEntity): Long { landed += "insert"; return 1L }
+        override suspend fun findByTakeId(takeId: String): TranscriptEntity? = null
         override suspend fun setKept(id: Long, kept: Boolean) = Unit
         override suspend fun delete(transcript: TranscriptEntity) = Unit
         override suspend fun deleteAll() = Unit
@@ -212,6 +213,7 @@ class HistoryWriteQueueTest {
                 defectSink = { _, _ -> },
                 breadcrumb = { _, message, _ -> breadcrumbs += message },
             ),
+            rescuedWords = com.envi.wispr.ui.RescuedWords(java.nio.file.Files.createTempDirectory("rescued-words").toFile(), observerScope, wallClock = { 0L }, warn = {}),
         )
         val slot = com.envi.wispr.ui.SaveSlot()
         val publication = com.envi.wispr.ui.Publication(

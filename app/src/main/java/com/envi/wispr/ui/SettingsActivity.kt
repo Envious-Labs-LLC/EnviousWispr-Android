@@ -38,7 +38,10 @@ class SettingsActivity : ComponentActivity() {
         EnviousWisprViewModel.Factory(appPreferences = AppPreferences(applicationContext))
     }
     private val historyViewModel: HistoryViewModel by viewModels {
-        HistoryViewModel.Factory(repository = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()))
+        HistoryViewModel.Factory(
+            repository = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()),
+            rescuedWords = com.envi.wispr.models.ModelBootstrapApplication.rescuedWords(applicationContext),
+        )
     }
     private val dictionaryViewModel: DictionaryViewModel by viewModels {
         DictionaryViewModel.Factory(customTermRepository = CustomTermRepository(applicationContext), appContext = applicationContext)

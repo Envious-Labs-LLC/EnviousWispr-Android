@@ -21,21 +21,24 @@ internal fun interface NanoClock {
  * The heartbeat, sent from the capture loop after each positive read, allocates NOTHING (#280): it is written
  * into one preallocated slot (two fields and a three-state claim) that the worker reads, so every object and
  * binder Parcel it needs is made on the worker. Live, also published by the capture loop (on the first admitted
- * block), has its own preallocated slot the same way (#327); only if that slot is still occupied by an earlier
- * take's undelivered Live does it fall back to the queue. The silence status and the ending are published off
- * the capture thread and go through a lock-free queue (`ConcurrentLinkedQueue`), one event object and one node
- * each. Neither path takes a lock; each ends
+ * block), has two preallocated slots (#327, #343), so it never allocates either: the capture thread claims a free
+ * slot, or replaces a READY one, with one compare-and-set each, and the worker claims a slot (READY to READING)
+ * before it copies it, so a replace never tears. The worker reads one slot at a time, so one of the two is always
+ * claimable and the capture thread never waits. A slot still READY at the next take's first live block can only
+ * hold a STALE Live: one capture runs at a time, and that take's ending, queued after its Live, has not been
+ * delivered either, so for the app's session owner its take is gone (a refused start publishes only an ending,
+ * and every owner discards another take's events). A superseded stale Live, and its hook, are discarded by
+ * contract. The silence status and the ending are published off the capture thread and go through a lock-free
+ * queue (`ConcurrentLinkedQueue`), one event object and one node each. Neither path takes a lock; each ends
  * with an unpark, which is a permit write. A `oneway` binder transaction still allocates a Parcel and can
  * back-pressure its caller, so the worker makes every call, under `runCatching`: a dead or unresponsive
  * owner costs the event and nothing else, and never the capture loop.
  *
  * Order: the queued events arrive in the order their offers linearised in, which for one producer is the order
- * it offered. A Live in its slot is delivered before any queued event the worker polls after it: the worker
- * re-reads the slot after each poll and delivers a waiting Live first, and a producer marks the slot ready
- * before it offers anything later. So a take's Live precedes every event of that take offered AFTER it; an event
- * offered earlier (a silence status published as capture starts) still arrives first, as before #327. Events of
- * two DIFFERENT takes can interleave when a Live took the queue fallback; each names its take, and the owner
- * discards another take's. A heartbeat is NOT ordered against them (#280): the worker delivers a waiting
+ * it offered. A retained Live is delivered before a queued event polled after it: the worker re-reads the slots
+ * after each poll and delivers every waiting Live first, claimed and copied, then in the order the capture thread
+ * published them (a sequence number). Earlier queued events may be overtaken by a waiting Live, and a superseded
+ * Live is never delivered at all (review round 1). A heartbeat is NOT ordered against them (#280): the worker delivers a waiting
  * heartbeat, then one queued event, per pass. The owner reads a heartbeat only while recording, so one that
  * arrives before Live or after the ending changes nothing but its silence bound; the cost is that the
  * recorder's elapsed timer can skip one second at the start of a take when the worker is a second behind.
@@ -67,6 +70,11 @@ internal class TakeEventPublisher(
     private val nowNanos: NanoClock = NanoClock { System.nanoTime() },
     /** The event queue; a test hands in one whose enqueue it can hold, to stage close against an entered offer. */
     private val queue: Queue<Event> = ConcurrentLinkedQueue(),
+    /**
+     * Runs on the capture thread after `publishLive` found no free slot, before it tries a replace (#343 review round
+     * 1); production passes the no-op. A test uses it to let the worker empty both slots in exactly that gap.
+     */
+    private val afterFreePass: () -> Unit = {},
 ) {
     companion object {
         /** Heartbeats are throttled by WALL-CLOCK second: elapsed is 0 before live and would send one. */
@@ -80,19 +88,43 @@ internal class TakeEventPublisher(
         private const val TICK_IDLE = 0
         private const val TICK_WRITING = 1
         private const val TICK_READY = 2
+
+        /** A Live slot's states (#343): the heartbeat's three, and the worker's claim while it copies. */
+        private const val LIVE_IDLE = 0
+        private const val LIVE_WRITING = 1
+        private const val LIVE_READY = 2
+        private const val LIVE_READING = 3
     }
+
+    /**
+     * One preallocated Live (#343): written by the capture thread only between a won claim and READY, read by the
+     * worker only between its READING claim and IDLE. [seq] orders two waiting Lives.
+     */
+    private class LiveSlot {
+        val state = AtomicInteger(LIVE_IDLE)
+        var seq = 0L
+        var takeId: String? = null
+        var forced = false
+        var routeKind = 0
+        var routeReason = 0
+        var liveAfterMs = 0L
+        var onDelivered: Runnable? = null
+    }
+
+    /** What the worker copied out of a slot before releasing it; made on the worker, never the capture thread. */
+    private class LiveCopy(
+        val seq: Long,
+        val takeId: String?,
+        val forced: Boolean,
+        val routeKind: Int,
+        val routeReason: Int,
+        val liveAfterMs: Long,
+        val onDelivered: Runnable?,
+    )
 
     internal sealed interface Event {
         val takeId: String
 
-        data class Live(
-            override val takeId: String,
-            val forced: Boolean,
-            val routeKind: Int,
-            val routeReason: Int,
-            val liveAfterMs: Long,
-            val onDelivered: Runnable? = null,
-        ) : Event
         data class SilenceStatus(override val takeId: String, val status: Int) : Event
         data class Ended(
             override val takeId: String,
@@ -114,14 +146,9 @@ internal class TakeEventPublisher(
     private var tickElapsedMs = 0L
     private val tickState = AtomicInteger(TICK_IDLE)
 
-    /** The waiting Live (#327): written only between a won IDLE to WRITING claim and READY, read only while READY. */
-    private var liveTakeId: String? = null
-    private var liveForced = false
-    private var liveRouteKind = 0
-    private var liveRouteReason = 0
-    private var liveAfterMsSlot = 0L
-    private var liveOnDelivered: Runnable? = null
-    private val liveState = AtomicInteger(TICK_IDLE)
+    /** The two Live slots (#343), and the capture thread's own publish counter (one producer). */
+    private val liveSlots = arrayOf(LiveSlot(), LiveSlot())
+    private var liveSeq = 0L
     private val worker = Thread({ drain() }, "TakeEventPublisher").apply { isDaemon = true }
 
     /** Starts the worker; called once by the service's `onCreate`, before any event can be offered. */
@@ -161,25 +188,39 @@ internal class TakeEventPublisher(
     }
 
     /**
-     * Capture thread, on the first admitted block (#327): into the Live slot, allocating nothing, like [offerTick].
-     * Only when the slot still holds an earlier take's undelivered Live does it take the queue, which allocates,
-     * and that fallback stays inside the same lifecycle entry, so a close can never drop an accepted Live (review
-     * round 1). [onDelivered] is a prebuilt runnable the WORKER runs when it delivers this Live, whether or not a
-     * listener is registered: the capture thread passes a reference and never posts it itself.
+     * Capture thread, on the first admitted block (#327, #343): into a Live slot, allocating nothing, never waiting,
+     * like [offerTick]. It claims a free slot first; only when both hold a waiting Live does it replace one, the
+     * older first, whose Live is stale (see the class doc). The slot the worker may be READING is skipped, and the
+     * other is then always claimable. [onDelivered] is a
+     * prebuilt runnable the WORKER runs when it delivers this Live, whether or not a listener is registered: the
+     * capture thread passes a reference and never posts it itself.
      */
     fun publishLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long, onDelivered: Runnable? = null) {
         if (!enter()) return
         try {
-            if (liveState.compareAndSet(TICK_IDLE, TICK_WRITING)) {
-                liveTakeId = takeId
-                liveForced = forced
-                liveRouteKind = routeKind
-                liveRouteReason = routeReason
-                liveAfterMsSlot = liveAfterMs
-                liveOnDelivered = onDelivered
-                liveState.set(TICK_READY)
-            } else {
-                queue.offer(Event.Live(takeId, forced, routeKind, routeReason, liveAfterMs, onDelivered))
+            for (slot in liveSlots) {
+                if (slot.state.compareAndSet(LIVE_IDLE, LIVE_WRITING)) {
+                    fill(slot, takeId, forced, routeKind, routeReason, liveAfterMs, onDelivered)
+                    return
+                }
+            }
+            afterFreePass()
+            // Both hold a waiting Live: replace the older (the capture thread wrote every seq, so reading them is safe).
+            val older = if (liveSlots[0].seq <= liveSlots[1].seq) 0 else 1
+            for (k in 0..1) {
+                val slot = liveSlots[(older + k) % 2]
+                if (slot.state.compareAndSet(LIVE_READY, LIVE_WRITING)) {
+                    fill(slot, takeId, forced, routeKind, routeReason, liveAfterMs, onDelivered)
+                    return
+                }
+            }
+            // The worker emptied both slots between the passes (review round 1): one is now free, since the worker
+            // holds at most one READING and only this thread makes a slot READY.
+            for (slot in liveSlots) {
+                if (slot.state.compareAndSet(LIVE_IDLE, LIVE_WRITING)) {
+                    fill(slot, takeId, forced, routeKind, routeReason, liveAfterMs, onDelivered)
+                    return
+                }
             }
         } finally {
             lifecycle.decrementAndGet()
@@ -240,28 +281,26 @@ internal class TakeEventPublisher(
         while (true) {
             // One waiting heartbeat, then one queued event, per pass: neither can starve the other (#280).
             if (tickState.get() == TICK_READY) deliverTick()
-            // A waiting Live goes before any queued event polled after it (#327): see the class doc's order.
-            if (liveState.get() == TICK_READY) deliverLive()
+            // Every waiting Live goes before any queued event polled after it (#327, #343): see the class doc's order.
+            if (anyLiveReady()) deliverLives()
             val event = queue.poll()
             if (event == null) {
                 // The exit decision's read order: see the class doc.
                 val state = lifecycle.get()
                 if (state and CLOSED != 0L && state and ENTERED_MASK == 0L && tickState.get() == TICK_IDLE &&
-                    liveState.get() == TICK_IDLE && queue.isEmpty()
+                    liveSlots[0].state.get() == LIVE_IDLE && liveSlots[1].state.get() == LIVE_IDLE && queue.isEmpty()
                 ) {
                     return
                 }
-                if (tickState.get() == TICK_READY || liveState.get() == TICK_READY) continue
+                if (tickState.get() == TICK_READY || anyLiveReady()) continue
                 LockSupport.park(this)
                 continue
             }
             // A Live marked ready before this event was offered is delivered first (#327).
-            if (liveState.get() == TICK_READY) deliverLive()
-            if (event is Event.Live) runHook(event.onDelivered)
+            if (anyLiveReady()) deliverLives()
             val target = listener.get() ?: continue
             runCatching {
                 when (event) {
-                    is Event.Live -> target.onLive(event.takeId, event.forced, event.routeKind, event.routeReason, event.liveAfterMs)
                     is Event.SilenceStatus -> target.onSilenceStatus(event.takeId, event.status)
                     is Event.Ended -> target.onEnded(event.takeId, event.terminalReason, event.startFailure, event.audioFilePath, event.silenceStatus, event.takePeakAmplitude, event.effectiveInputDevice)
                 }
@@ -269,20 +308,54 @@ internal class TakeEventPublisher(
         }
     }
 
-    /** The worker's side of the Live slot (#327): copy the fields, free the slot, then make the one binder call. */
-    private fun deliverLive() {
-        val takeId = liveTakeId
-        val forced = liveForced
-        val routeKind = liveRouteKind
-        val routeReason = liveRouteReason
-        val liveAfterMs = liveAfterMsSlot
-        val onDelivered = liveOnDelivered
-        liveOnDelivered = null
-        liveState.set(TICK_IDLE)
-        runHook(onDelivered)
+    /** Capture thread, holding the slot's WRITING claim: the fields, the next sequence, then READY. */
+    private fun fill(slot: LiveSlot, takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long, onDelivered: Runnable?) {
+        liveSeq += 1
+        slot.seq = liveSeq
+        slot.takeId = takeId
+        slot.forced = forced
+        slot.routeKind = routeKind
+        slot.routeReason = routeReason
+        slot.liveAfterMs = liveAfterMs
+        slot.onDelivered = onDelivered
+        slot.state.set(LIVE_READY)
+    }
+
+    private fun anyLiveReady(): Boolean =
+        liveSlots[0].state.get() == LIVE_READY || liveSlots[1].state.get() == LIVE_READY
+
+    /**
+     * The worker's side of the Live slots (#343): claim and copy each waiting slot, releasing it before the next,
+     * THEN deliver the copies in the order the capture thread published them. Choosing a slot before claiming it
+     * would race a replace (coverage round).
+     */
+    private fun deliverLives() {
+        val first = claimLive(liveSlots[0])
+        val second = claimLive(liveSlots[1])
+        if (first != null && second != null && second.seq < first.seq) {
+            deliverLive(second)
+            deliverLive(first)
+        } else {
+            first?.let(::deliverLive)
+            second?.let(::deliverLive)
+        }
+    }
+
+    /** READY to READING, copy, IDLE; null when the slot holds no waiting Live. */
+    private fun claimLive(slot: LiveSlot): LiveCopy? {
+        if (!slot.state.compareAndSet(LIVE_READY, LIVE_READING)) return null
+        val copy = LiveCopy(slot.seq, slot.takeId, slot.forced, slot.routeKind, slot.routeReason, slot.liveAfterMs, slot.onDelivered)
+        slot.onDelivered = null
+        slot.state.set(LIVE_IDLE)
+        return copy
+    }
+
+    /** One copied Live: its hook, then the one binder call. */
+    private fun deliverLive(live: LiveCopy) {
+        runHook(live.onDelivered)
         val target = listener.get() ?: return
-        if (takeId == null) return
-        runCatching { target.onLive(takeId, forced, routeKind, routeReason, liveAfterMs) }
+        val takeId = live.takeId ?: return
+        runCatching { target.onLive(takeId, live.forced, live.routeKind, live.routeReason, live.liveAfterMs) }
             .onFailure { DebugLogger.warn(tag, "Take event not delivered: Live ${it.javaClass.simpleName}") }
     }
 

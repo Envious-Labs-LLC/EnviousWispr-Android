@@ -40,8 +40,8 @@ class SilenceStopWiringTest {
 
     @Test
     fun startCaptureIsStillTheFirstTransactionAndNothingWasReordered() {
-        // A separately installed client binds by transaction number. Reordering breaks it at runtime,
-        // with no compile error anywhere.
+        // Append-only (architecture-rules.md RULE: aidl-is-append-only): an older installed test APK calls these
+        // methods through the app's own generated classes (#330), so the order and names stay as they are.
         val order = Regex("^\\s*(?:boolean|void|int|float\\[]|float|long|String|byte\\[])\\s+(\\w+)\\(", RegexOption.MULTILINE)
             .findAll(aidl).map { it.groupValues[1] }.toList()
         assertEquals(

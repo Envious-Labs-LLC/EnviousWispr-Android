@@ -58,7 +58,7 @@ class CaptureThreadPathTest {
     /**
      * #327: going live costs the capture thread no allocation and no lock. `TakeRoute.markLive` writes the clock
      * and posts nothing (the event worker posts the route's prebuilt announce), `TakeEventPublisher.publishLive`
-     * writes the Live slot and builds an event only in the fallback after a failed claim, and `EffectiveDevice`'s
+     * claims one of two preallocated Live slots and builds no event and offers nothing to the queue (#343), and `EffectiveDevice`'s
      * three capture-thread reads take no lock. MUTATIONS m1 (markLive posts again), m2 (the event built before the
      * claim) and m4 (a synchronized read again).
      */
@@ -75,10 +75,13 @@ class CaptureThreadPathTest {
             .forEach { read -> assertTrue("a lock-free capture-thread read: $read", record.contains(read)) }
         val publisher = File("src/main/java/com/envi/wispr/audio/TakeEventPublisher.kt").readText()
         val publishLive = member(publisher, "fun publishLive(")
-        val claim = publishLive.indexOf("liveState.compareAndSet(TICK_IDLE, TICK_WRITING)")
-        assertTrue("the slot is claimed", claim >= 0)
-        val built = publishLive.indexOf("Event.Live(")
-        assertTrue("an event is built only in the fallback, after the claim", built > claim && publishLive.substring(claim, built).contains("} else {"))
-        assertFalse("no log on the Live path", publishLive.contains("DebugLogger"))
+        assertTrue("a free slot is claimed", publishLive.contains("slot.state.compareAndSet(LIVE_IDLE, LIVE_WRITING)"))
+        assertTrue("a stale READY slot is replaced, only after no slot was free", publishLive.indexOf("slot.state.compareAndSet(LIVE_READY, LIVE_WRITING)") > publishLive.indexOf("slot.state.compareAndSet(LIVE_IDLE, LIVE_WRITING)"))
+        val fill = member(publisher, "private fun fill(")
+        listOf("Event.", "queue.", "DebugLogger", "while (").forEach { token -> assertFalse("fill must not contain $token", fill.contains(token)) }
+        // #343: no queue fallback, so nothing is built and no node is offered on the capture thread. MUTATION m3.
+        listOf("Event.Live(", "queue.offer(", "DebugLogger", "while (").forEach { token ->
+            assertFalse("publishLive must not contain $token", publishLive.contains(token))
+        }
     }
 }

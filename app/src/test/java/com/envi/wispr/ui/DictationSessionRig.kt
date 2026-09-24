@@ -116,6 +116,18 @@ internal class DictationSessionRig {
      */
     val saveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, error -> uncaught += error })
 
+    /** The rescue store's directory (#288): a fresh temporary one per rig, app-private in production. */
+    val rescueDir: java.io.File = java.nio.file.Files.createTempDirectory("rescued-words").toFile()
+
+    /** The words' last resort (#288), on the observer's scope: application-owned in production, so it outlives the owner. */
+    val rescuedWords = RescuedWords(
+        rescueDir, saveScope, wallClock = { 1_000L }, warn = { line -> log.warn(line) },
+        beforeWrite = { if (rescueWriteDelayMs > 0L) kotlinx.coroutines.delay(rescueWriteDelayMs) },
+    )
+
+    /** When set, each rescue write starts this late (#288): well inside the owner's bound, so only its wait sees KEPT. */
+    @Volatile var rescueWriteDelayMs = 0L
+
     /** The observer's breadcrumbs, as (message, data) (#304). */
     val breadcrumbs = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Map<String, Any?>>>()
 
@@ -162,6 +174,7 @@ internal class DictationSessionRig {
             breadcrumb = { _, message, data -> breadcrumbs += message to data },
             boundMs = historySaveBoundMs,
         ),
+        rescuedWords = rescuedWords,
         transcripts = transcripts,
         languageDetector = languageDetector,
         loadPolicy = {
@@ -228,6 +241,10 @@ internal class DictationSessionRig {
 
     fun close() {
         saveScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        // The session's own scope too (#288): a polish timeout still waiting holds a shared IO thread in
+        // `runInterruptible`; left running, those threads pile up across a test run until the pool of 64 is exhausted
+        // and a later rig's take can never be scheduled. Cancelling interrupts the wait and frees the thread.
+        scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         mainExecutor.shutdownNow()
         capture.close()
         capture.audioFile?.delete()
@@ -428,7 +445,10 @@ internal class DictationSessionRig {
             }
         }
         fun releaseOutcome() = deferred.forEach(::enqueueOutcome).also { deferred.clear() }
+        /** When set, runs at the start of each handoff, on the owner's worker (#288): a row stages an answer first. */
+        @Volatile var beforeHandoff: (() -> Unit)? = null
         override fun pasteWhenTargetReturns(row: HistoryRow, text: String, policy: ClipboardInsertionPolicy, takeId: String): InsertionHandoff {
+            beforeHandoff?.invoke()
             requests += row to text
             savedAtHandoff += row.savedNow
             if (handoff == InsertionHandoff.SCHEDULED && outcomeQueue != null) {
@@ -813,6 +833,9 @@ internal class DictationSessionRig {
         val routeWrites = java.util.concurrent.CopyOnWriteArrayList<String>()
         override suspend fun insert(transcript: TranscriptEntity): Long {
             if (failInserts) throw IllegalStateException("disk full")
+            // The unique take id index (#288).
+            if (transcript.takeId != null && rows.values.any { it.takeId == transcript.takeId }) throw IllegalStateException("UNIQUE constraint failed: transcripts.takeId")
+            if (transcript.status == TranscriptEntity.STATUS_DRAFT) transcript.takeId?.let { onDraftInsert?.invoke(it) }
             if (failDraftInsert && transcript.status == TranscriptEntity.STATUS_DRAFT) throw IllegalStateException("draft insert failed")
             if (transcript.status == TranscriptEntity.STATUS_SAVED_UNROUTED) holdSavedInsert?.await()
             val id = nextId.getAndIncrement()
@@ -822,6 +845,20 @@ internal class DictationSessionRig {
         override suspend fun setKept(id: Long, kept: Boolean) { rows.computeIfPresent(id) { _, row -> row.copy(kept = kept) } }
         override suspend fun delete(transcript: TranscriptEntity) { rows.remove(transcript.id) }
         override suspend fun deleteAll() = rows.clear()
+        /** The takes the user deleted (#288); the fake's transactions are the interface's own bodies. */
+        val deletedTakes: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+        override suspend fun insertDeletedTakes(takes: List<com.envi.wispr.history.DeletedTake>) { takes.forEach { deletedTakes += it.takeId } }
+        override suspend fun isTakeDeleted(takeId: String): Boolean = takeId in deletedTakes
+        override suspend fun rowTakeIds(): List<String> = rows.values.mapNotNull { it.takeId }
+        /** When set, runs before a guarded insert reads the deleted mark: a write queued behind a delete (#288 row 3d). */
+        @Volatile var beforeGuardedInsert: (suspend (TranscriptEntity) -> Unit)? = null
+        override suspend fun insertUnlessDeleted(transcript: TranscriptEntity): Long {
+            beforeGuardedInsert?.invoke(transcript)
+            return super.insertUnlessDeleted(transcript)
+        }
+        override suspend fun findByTakeId(takeId: String): TranscriptEntity? = rows.values.firstOrNull { it.takeId == takeId }
+        /** When set, runs as a take's draft insert is attempted, with its take id (#288): a recovery staged ahead of the save. */
+        @Volatile var onDraftInsert: (suspend (String) -> Unit)? = null
         override suspend fun deleteById(id: Long): Int = if (rows.remove(id) != null) 1 else 0
         override suspend fun deleteWordlessRows(): Int = 0
         override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int {

@@ -9,6 +9,7 @@ import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.telemetry.Telemetry
 import com.envi.wispr.ui.DebugSessionLog
 import com.envi.wispr.ui.HistorySaveObserver
+import com.envi.wispr.ui.RescuedWords
 import android.os.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +32,23 @@ class ModelBootstrapApplication : Application() {
          */
         internal fun historySaves(context: Context): HistorySaveObserver =
             (context.applicationContext as ModelBootstrapApplication).historySaves
+
+        /**
+         * The process's one rescue store (#288), beside the save observer and as long-lived: a take's words are kept on
+         * the phone until History saves them, which can be after the Service has stopped.
+         */
+        internal fun rescuedWords(context: Context): RescuedWords =
+            (context.applicationContext as ModelBootstrapApplication).rescuedWords
+    }
+
+    private val rescuedWords: RescuedWords by lazy {
+        RescuedWords(
+            dir = java.io.File(filesDir, "rescued-words"),
+            // Never cancelled: it lives as long as the process, like the queue.
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+            wallClock = System::currentTimeMillis,
+            warn = { DebugSessionLog.warn(it) },
+        )
     }
 
     private val historySaves: HistorySaveObserver by lazy {

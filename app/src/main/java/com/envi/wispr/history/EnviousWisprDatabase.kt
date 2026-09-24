@@ -12,8 +12,8 @@ import com.envi.wispr.vocabulary.CustomTermDao
 import com.envi.wispr.vocabulary.CustomTermEntity
 
 @Database(
-    entities = [TranscriptEntity::class, CustomTermEntity::class, TakeJournalEntry::class],
-    version = 8,
+    entities = [TranscriptEntity::class, CustomTermEntity::class, TakeJournalEntry::class, DeletedTake::class],
+    version = 9,
     exportSchema = true,
 )
 internal abstract class EnviousWisprDatabase : RoomDatabase() {
@@ -31,7 +31,7 @@ internal abstract class EnviousWisprDatabase : RoomDatabase() {
                     context.applicationContext,
                     EnviousWisprDatabase::class.java,
                     "enviouswispr.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build().also { database -> instance = database }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build().also { database -> instance = database }
             }
         }
 
@@ -101,6 +101,18 @@ internal abstract class EnviousWisprDatabase : RoomDatabase() {
          * #176: the take journal. Creates one table and its indexes; touches no existing row or column,
          * so a rollback build keeps version 8 and this table rather than ever downgrading.
          */
+        /**
+         * #288: the take a row records. One nullable column and its unique index; every existing row reads null, and
+         * no existing value changes, so a rollback build keeps version 9 rather than ever downgrading.
+         */
+        internal val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE transcripts ADD COLUMN takeId TEXT")
+                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_transcripts_takeId ON transcripts (takeId)")
+                database.execSQL("CREATE TABLE IF NOT EXISTS deleted_takes (takeId TEXT NOT NULL, PRIMARY KEY(takeId))")
+            }
+        }
+
         internal val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL(

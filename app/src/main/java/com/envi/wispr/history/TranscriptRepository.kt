@@ -9,15 +9,21 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     }
     val transcripts: Flow<List<TranscriptEntity>> = dao.observeAll()
 
-    suspend fun insert(transcript: TranscriptEntity): Long = dao.insert(
+    /**
+     * The one door into History for a row (#288): never for a take the user deleted, read in the insert's own
+     * transaction, so no writer of a take (its draft, its save, a recovery) can bring deleted words back. 0 then.
+     */
+    suspend fun insert(transcript: TranscriptEntity): Long = dao.insertUnlessDeleted(
         transcript.copy(stateChangedAtMs = transcript.stateChangedAtMs.takeIf { it > 0L } ?: clock()),
     )
 
     suspend fun setKept(id: Long, kept: Boolean) = dao.setKept(id, kept)
 
-    suspend fun delete(transcript: TranscriptEntity) = dao.delete(transcript)
+    /** The user's delete (#288): the take's words stay deleted, whatever writes for it later. */
+    suspend fun delete(transcript: TranscriptEntity) = dao.deleteForGood(transcript)
 
-    suspend fun deleteAll() = dao.deleteAll()
+    /** The user's Delete all (#288); [liveTakes] are takes with words and no row yet, deleted with the rest. */
+    suspend fun deleteAll(liveTakes: Collection<String> = emptyList()) = dao.deleteAllForGood(liveTakes)
 
     /** Removes one row outright. The session owner's exit for a dictation with no words in it. */
     suspend fun discard(id: Long) = dao.deleteById(id)
@@ -59,6 +65,57 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
         captureDevice = captureDevice,
         status = status,
     )
+
+    /** The id of the row [takeId] wrote, or 0 (#288). */
+    suspend fun rowIdForTake(takeId: String): Long = dao.findByTakeId(takeId)?.id ?: 0L
+
+    /**
+     * Writes a take's rescued words into History (#288), once per take: a row the take already wrote keeps its words
+     * when it has any and receives the rescued ones when it has none (a draft that never saved); with no row, one is
+     * inserted, marked as an interrupted insertion so it reads as the words' last known place. True when the rescue is
+     * no longer needed: History holds the words, or the user deleted the take. The rescue holds the final text only, so
+     * it is also the row's original text.
+     */
+    suspend fun keepRescuedWords(takeId: String, text: String, createdAtMs: Long): Boolean {
+        val existing = dao.findByTakeId(takeId)
+        if (existing != null) {
+            if (existing.finalText.isNotBlank()) return true
+            return dao.finalize(
+                id = existing.id,
+                originalText = text,
+                finalText = text,
+                speechEngine = existing.speechEngine,
+                polishEngine = existing.polishEngine,
+                polishLatencyMs = existing.polishLatencyMs,
+                insertionResult = com.envi.wispr.insertion.InsertionResults.INSERTION_FAILED,
+                durationMs = existing.durationMs,
+                stateChangedAtMs = clock(),
+                polishReason = existing.polishReason,
+                polishStatus = existing.polishStatus,
+                polishContext = existing.polishContext,
+                captureDevice = existing.captureDevice,
+                status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+                interrupted = true,
+            ) > 0
+        }
+        // Never for a take the user deleted: nothing is inserted then, and the rescue is done all the same.
+        insert(
+            TranscriptEntity(
+                originalText = text,
+                finalText = text,
+                createdAtMs = createdAtMs,
+                durationMs = 0L,
+                speechEngine = "Parakeet",
+                polishEngine = com.envi.wispr.polish.PolishEngineLabels.NOT_RECORDED,
+                polishLatencyMs = 0L,
+                insertionResult = com.envi.wispr.insertion.InsertionResults.INSERTION_FAILED,
+                interrupted = true,
+                status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+                takeId = takeId,
+            ),
+        )
+        return true
+    }
 
     /** After a scheduled handoff, never awaited by the owner (#235). */
     suspend fun promoteUnroutedToReady(id: Long) = dao.promoteUnroutedToReady(id, clock())

@@ -11,6 +11,7 @@ import com.envi.wispr.insertion.ClipboardInsertionPolicy
 import com.envi.wispr.insertion.ClipboardOutcome
 import com.envi.wispr.insertion.FallbackAnnouncement
 import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.insertion.WordsKept
 import com.envi.wispr.paste.DictationTargetPin
 import com.envi.wispr.paste.InsertionHandoff
 import com.envi.wispr.paste.InsertionJudgement
@@ -21,6 +22,7 @@ import com.envi.wispr.telemetry.InsertionResultKind
 import com.envi.wispr.telemetry.InsertionRouteKind
 import com.envi.wispr.telemetry.Telemetry
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicLong
 
@@ -70,6 +72,7 @@ internal class TakeHistory(private val historyWrites: HistoryWriteQueue?) : Hist
                         polishLatencyMs = 0L,
                         insertionResult = "pending",
                         status = TranscriptEntity.STATUS_DRAFT,
+                        takeId = takeId,
                     ),
                 )
             } catch (error: Exception) {
@@ -167,6 +170,25 @@ internal class TakeHistory(private val historyWrites: HistoryWriteQueue?) : Hist
 
     override val savedNow: Boolean get() = savedId > 0L
 
+    /** The save answered FAILED (#288): with a failed rescue, the only state in which the words are lost. */
+    @Volatile private var saveFailed = false
+
+    /** The take's rescue write (#288), set when the save is enqueued; null before, or for a take with no words. */
+    @Volatile internal var rescue: Deferred<RescueOutcome>? = null
+
+    /** The rescue's state now, as the store measures it (#288). */
+    @Volatile internal var rescueOutcome: () -> RescueOutcome = { RescueOutcome.FAILED }
+
+    internal fun saveFailed() {
+        saveFailed = true
+    }
+
+    override fun wordsKept(): WordsKept = when (rescueOutcome()) {
+        RescueOutcome.KEPT -> WordsKept.KEPT
+        RescueOutcome.FAILED -> if (saveFailed) WordsKept.LOST else WordsKept.UNCONFIRMED
+        RescueOutcome.PENDING -> WordsKept.UNCONFIRMED
+    }
+
     /**
      * The row's id, ON THE QUEUE'S WORKER: the draft insert is queued before every other write of the row,
      * so this awaits at most a write already applied; a failed insert or a take that never went live is 0.
@@ -217,6 +239,11 @@ internal class SaveSlot {
     fun answeredNow(): SaveAnswer? = synchronized(lock) { answer }
 
     suspend fun await(): SaveAnswer = done.await()
+
+    /** Runs [callback] once, with the answer, when it is stamped (#288); nothing waits for it meanwhile. */
+    fun onAnswered(callback: (SaveAnswer) -> Unit) {
+        done.invokeOnCompletion { cause -> if (cause == null) synchronized(lock) { answer }?.let(callback) }
+    }
 }
 
 /**
@@ -266,6 +293,8 @@ internal class SessionFinalizer(
     private val historyWrites: HistoryWriteQueue,
     /** The save's diagnostics (#304): application-owned, so they outlive the Service that asked for the save. */
     private val historySaves: HistorySaveObserver,
+    /** The words' last resort (#288): application-owned, written ahead of delivery and settled by a SAVED answer. */
+    private val rescuedWords: RescuedWords,
 ) {
     /**
      * The finalize-or-insert write, ENQUEUED inside the owner's reservation (#115): destroy takes the same
@@ -278,11 +307,15 @@ internal class SessionFinalizer(
         saved: SaveSlot,
         takeId: String,
     ) {
+        // Written ahead of everything else (#288): until History answers SAVED, the words are also on this phone.
+        history.rescueOutcome = { rescuedWords.outcome(takeId) }
+        history.rescue = rescuedWords.keep(takeId, publication.finalText, saved)
         // Taken IMMEDIATELY before the enqueue (#304), so the refusal path has it too.
         val enqueuedAtMs = host.elapsedRealtimeMs()
         val admitted = historyWrites.enqueue("finalize", WriteKind.TERMINAL) { repository ->
             val answer = runCatching {
-                    val existingId = history.resolvedId()
+                    // The take's own draft, or a row a recovery already wrote for this take (#288): one row per take.
+                    val existingId = history.resolvedId().takeIf { it > 0L } ?: repository.rowIdForTake(takeId)
                     val persistedId = if (existingId > 0L) {
                         val updated = repository.finalize(
                             id = existingId,
@@ -300,18 +333,32 @@ internal class SessionFinalizer(
                             // Neutral until the route is recorded (#235): never ready before a handoff.
                             status = TranscriptEntity.STATUS_SAVED_UNROUTED,
                         )
-                        if (updated > 0) existingId else repository.insertSavedTranscript(publication)
+                        // The draft is gone: re-created unless the user deleted it, which is never undone (#288).
+                        if (updated > 0) existingId else repository.insertSavedTranscript(publication, takeId)
                     } else {
-                        repository.insertSavedTranscript(publication)
+                        repository.insertSavedTranscript(publication, takeId)
                     }
                     history.remember(persistedId)
                     persistedId
                 }.fold({ SaveOutcome.Saved(it) }, { SaveOutcome.Failed(it) })
+            if (answer is SaveOutcome.Failed) history.saveFailed()
             saved.answer(answer, host::elapsedRealtimeMs)
         }
         // A refused save is a failed save (#292): the words never waited on it, and its diagnostics report it.
-        if (admitted == Enqueued.REJECTED) saved.answer(SaveOutcome.Failed(HistoryQueueFullException()), host::elapsedRealtimeMs)
+        if (admitted == Enqueued.REJECTED) {
+            history.saveFailed()
+            saved.answer(SaveOutcome.Failed(HistoryQueueFullException()), host::elapsedRealtimeMs)
+        }
         historySaves.observe(saved, enqueuedAtMs, takeId)
+    }
+
+    /**
+     * Waits for the take's rescue write off main, bounded by [RescuedWords.RESCUE_WRITE_BOUND_MS] (#288): the words are
+     * the heart, so a slow disk never holds the handoff; the write goes on after the wait gives up.
+     */
+    suspend fun awaitRescue(history: TakeHistory) {
+        val write = history.rescue ?: return
+        withTimeoutOrNull(RescuedWords.RESCUE_WRITE_BOUND_MS) { write.await() }
     }
 
     /**
@@ -363,6 +410,7 @@ internal class SessionFinalizer(
                 handoff = handoff,
                 clipboard = clipboard,
                 savedInHistory = saved,
+                kept = row.wordsKept(),
             )
             // The owner is one of the three insertion writers (G1 D3): nothing was handed off, so
             // this is where the words ended up, as the same values the History row received.
@@ -398,8 +446,11 @@ internal class SessionFinalizer(
         return Delivery(handoff, measuredCopy)
     }
 
-    /** The neutral saved row when there is no draft to finalize; every value is the payload's, read before the reservation. */
-    private suspend fun TranscriptRepository.insertSavedTranscript(publication: Publication): Long {
+    /**
+     * The neutral saved row when there is no draft to finalize; every value is the payload's, read before the
+     * reservation. Never for a take the user deleted (#288): 0 then, as for every insert.
+     */
+    private suspend fun TranscriptRepository.insertSavedTranscript(publication: Publication, takeId: String): Long {
         val polishFacts = publication.polishFacts
         return insert(
             TranscriptEntity(
@@ -416,6 +467,7 @@ internal class SessionFinalizer(
                 polishStatus = polishFacts.statusCode,
                 polishContext = polishFacts.contextToken,
                 captureDevice = publication.captureDevice,
+                takeId = takeId,
             ),
         )
     }
@@ -452,12 +504,14 @@ internal class SessionFinalizer(
         handoff: InsertionHandoff,
         clipboard: ClipboardOutcome,
         savedInHistory: Boolean,
+        kept: WordsKept,
     ) {
         val announcement = FallbackAnnouncement.fallbackAnnouncement(
             autoPaste = host.autoPasteAvailability(),
             handoff = handoff,
             clipboard = clipboard,
             savedInHistory = savedInHistory,
+            kept = kept,
         ) ?: return
         host.postToMain {
             host.toastFromService(announcement.line)

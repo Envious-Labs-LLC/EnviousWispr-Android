@@ -153,7 +153,10 @@ internal class AccessibilityInsertionRunner(
         pendingInsertion = pending
         setContentChanges(true)
         DebugLogger.log(TAG, "Insertion requested; waiting for the original editor")
-        tryPendingInsertion()
+        // Admission returns before any editor work (#362): the first attempt is the retry loop's first turn, on the
+        // next pass of the main looper, so the caller waiting in `MainThreadHandoff` is released at once instead of
+        // through an accessibility action's binder call into the editor's process. The deadline was set above.
+        scheduleRetry(delayMs = 0L)
         return InsertionHandoff.SCHEDULED
     }
 

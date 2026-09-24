@@ -73,11 +73,117 @@ class HistoryWriteQueueTest {
         val release = CountDownLatch(1)
         queue.enqueue("held") { repository -> release.await(10, TimeUnit.SECONDS); repository.discard(1L) }
         val started = System.nanoTime()
-        assertTrue(queue.enqueue("after the held one") { repository -> repository.discard(2L) })
+        assertEquals(Enqueued.ACCEPTED, queue.enqueue("after the held one") { repository -> repository.discard(2L) })
         val enqueueNanos = System.nanoTime() - started
         release.countDown()
         check(drained().await(10, TimeUnit.SECONDS))
         assertTrue("enqueue took ${enqueueNanos / 1_000_000} ms", enqueueNanos < 100_000_000L)
         assertEquals(listOf("discard", "discard"), dao.landed.toList())
+    }
+
+    // ---- #292: a bounded queue with a typed refusal ------------------------------------------------------------
+
+    /** A queue of [capacity] (ordinary limit [ordinaryLimit]) whose FIRST write holds until [release], recording overload episodes. */
+    private class HeldQueue(capacity: Int, ordinaryLimit: Int) {
+        val dao = RecordingDao()
+        val episodes = java.util.concurrent.atomic.AtomicInteger(0)
+        val entered = CountDownLatch(1)
+        var release = CountDownLatch(1)
+        val queue = HistoryWriteQueue(
+            TranscriptRepository(dao, clock = { 1_000L }),
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+            warn = {},
+            capacity = capacity,
+            ordinaryLimit = ordinaryLimit,
+            onOverload = { episodes.incrementAndGet() },
+        )
+
+        /** Holds the worker in its first write and waits until it has entered it. */
+        fun hold(label: String) {
+            val gate = release
+            check(queue.enqueue(label) { entered.countDown(); gate.await(10, TimeUnit.SECONDS); dao.landed += label } == Enqueued.ACCEPTED)
+            check(entered.await(10, TimeUnit.SECONDS)) { "the worker never entered the held write" }
+        }
+
+        fun write(label: String, kind: WriteKind) = queue.enqueue(label, kind) { dao.landed += label }
+
+        fun drain() {
+            val done = CountDownLatch(1)
+            check(queue.enqueue("drain marker", WriteKind.TERMINAL) { done.countDown() } == Enqueued.ACCEPTED)
+            check(done.await(10, TimeUnit.SECONDS))
+        }
+    }
+
+    /**
+     * Row 1. Capacity 4, ordinary limit 3, the worker held in its first write: ordinary writes are refused past 3
+     * outstanding while a terminal one is still taken; past 4 a terminal write is refused too; nothing blocks; one
+     * episode for all those refusals; exactly the accepted writes land, in order. A new stall after the backlog
+     * drained is a second episode. MUTATIONS m1 (never rejects), m2 (overload on every refusal), m5 (terminal held
+     * to the ordinary limit).
+     */
+    @Test fun aFullQueueRefusesOrdinaryWritesFirstAndReportsOnceAnEpisode() {
+        val held = HeldQueue(capacity = 4, ordinaryLimit = 3)
+        held.hold("held")
+        assertEquals(Enqueued.ACCEPTED, held.write("ordinary 1", WriteKind.ORDINARY))
+        assertEquals(Enqueued.ACCEPTED, held.write("ordinary 2", WriteKind.ORDINARY))
+        val started = System.nanoTime()
+        assertEquals("past the ordinary limit", Enqueued.REJECTED, held.write("ordinary 3", WriteKind.ORDINARY))
+        assertEquals("a terminal write keeps the reserve", Enqueued.ACCEPTED, held.write("terminal 1", WriteKind.TERMINAL))
+        assertEquals("past the capacity", Enqueued.REJECTED, held.write("terminal 2", WriteKind.TERMINAL))
+        assertEquals(Enqueued.REJECTED, held.write("ordinary 4", WriteKind.ORDINARY))
+        assertTrue("refusals never block", System.nanoTime() - started < 100_000_000L)
+        assertEquals("one episode for every refusal of one stall", 1, held.episodes.get())
+        held.release.countDown()
+        held.drain()
+        assertEquals(listOf("held", "ordinary 1", "ordinary 2", "terminal 1"), held.dao.landed.toList())
+
+        // A second stall, after the backlog drained, is a second episode.
+        held.release = CountDownLatch(1)
+        val secondEntered = CountDownLatch(1)
+        val gate = held.release
+        check(held.queue.enqueue("held again") { secondEntered.countDown(); gate.await(10, TimeUnit.SECONDS) } == Enqueued.ACCEPTED)
+        check(secondEntered.await(10, TimeUnit.SECONDS))
+        repeat(2) { held.write("fill $it", WriteKind.ORDINARY) }
+        assertEquals(Enqueued.REJECTED, held.write("over again", WriteKind.ORDINARY))
+        assertEquals(2, held.episodes.get())
+        held.release.countDown()
+    }
+
+    /** Row 2. A refused draft insert completes its deferred with the queue-full cause at once, and the row resolves to 0. MUTATION m3. */
+    @Test fun aRefusedDraftNeverLeavesItsDeferredOpen() {
+        val held = HeldQueue(capacity = 2, ordinaryLimit = 1)
+        held.hold("held")
+        val history = com.envi.wispr.ui.TakeHistory(held.queue)
+        val draft = history.insertDraft("take-1", 1_000L)
+        val cause = kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.withTimeout(2_000L) { runCatching { draft.await() }.exceptionOrNull() }
+        }
+        assertTrue("the queue-full cause, not any failure: $cause", cause is HistoryQueueFullException)
+        assertEquals(0L, kotlinx.coroutines.runBlocking { history.resolvedId() })
+        held.release.countDown()
+    }
+
+    /** Row 3. A refused save answers its slot `Failed(HistoryQueueFullException)` at once. MUTATION m4. */
+    @Test fun aRefusedSaveAnswersItsSlotFailed() {
+        val held = HeldQueue(capacity = 2, ordinaryLimit = 1)
+        held.hold("held")
+        check(held.write("terminal fill", WriteKind.TERMINAL) == Enqueued.ACCEPTED)
+        val finalizer = com.envi.wispr.ui.SessionFinalizer(
+            host = com.envi.wispr.ui.DictationSessionRig().host,
+            insertion = com.envi.wispr.ui.DictationSessionRig.FakeInsertion(),
+            log = com.envi.wispr.ui.DictationSessionRig().log,
+            historyWrites = held.queue,
+        )
+        val slot = com.envi.wispr.ui.SaveSlot()
+        val publication = com.envi.wispr.ui.Publication(
+            finalText = "Words.", engine = "Fake", originalText = "words", latencyMs = 0L, durationMs = 1L, captureDevice = "",
+            polishFacts = com.envi.wispr.polish.PolishPublicationFacts.from(com.envi.wispr.polish.PolishReason.POLISHED, 0, com.envi.wispr.polish.PolishContext.Off),
+        )
+        finalizer.enqueueSave(com.envi.wispr.ui.TakeHistory(held.queue), publication, slot)
+        val answer = kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(2_000L) { slot.await() } }
+        val outcome = answer.outcome
+        assertTrue("a failed save, not any outcome: $outcome", outcome is com.envi.wispr.ui.SaveOutcome.Failed)
+        assertTrue((outcome as com.envi.wispr.ui.SaveOutcome.Failed).cause is HistoryQueueFullException)
+        held.release.countDown()
     }
 }

@@ -1,6 +1,9 @@
 package com.envi.wispr.ui
 
 import com.envi.wispr.history.HistoryRow
+import com.envi.wispr.history.WriteKind
+import com.envi.wispr.history.HistoryQueueFullException
+import com.envi.wispr.history.Enqueued
 import com.envi.wispr.history.HistoryWriteQueue
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
@@ -54,7 +57,7 @@ internal class TakeHistory(private val historyWrites: HistoryWriteQueue?) : Hist
     fun insertDraft(takeId: String, createdAtMs: Long): CompletableDeferred<Long> {
         val draft = CompletableDeferred<Long>()
         draftCreation = draft
-        historyWrites?.enqueue("draft insert") { repository ->
+        val admitted = historyWrites?.enqueue("draft insert", WriteKind.ORDINARY) { repository ->
             val id = try {
                 repository.insert(
                     TranscriptEntity(
@@ -77,6 +80,9 @@ internal class TakeHistory(private val historyWrites: HistoryWriteQueue?) : Hist
             Telemetry.journal?.associate(takeId, id)
             draft.complete(id)
         }
+        // A refused draft must never leave its deferred open (#292): every later write of the row awaits it on the
+        // worker, so an open one would wedge the queue. Refused, the take has no draft and its finalize inserts one.
+        if (admitted == Enqueued.REJECTED) draft.completeExceptionally(HistoryQueueFullException())
         return draft
     }
 
@@ -84,7 +90,9 @@ internal class TakeHistory(private val historyWrites: HistoryWriteQueue?) : Hist
     fun isCurrent(draft: CompletableDeferred<Long>): Boolean = draftCreation === draft
 
     fun markStatus(status: String, interrupted: Boolean = false, insertionResult: String? = null) {
-        historyWrites?.enqueue("draft status") { repository ->
+        // Processing is ordinary; any other status (today an ASR error) is the row's last word (#292).
+        val kind = if (status == TranscriptEntity.STATUS_PROCESSING) WriteKind.ORDINARY else WriteKind.TERMINAL
+        historyWrites?.enqueue("draft status", kind) { repository ->
             val id = resolvedId()
             if (id > 0L) repository.updateStatus(id, status, interrupted, insertionResult)
         }
@@ -121,7 +129,7 @@ internal class TakeHistory(private val historyWrites: HistoryWriteQueue?) : Hist
      * `UPDATE` matches zero rows and cannot bring the draft back.
      */
     fun discard() {
-        historyWrites?.enqueue("discard") { repository ->
+        historyWrites?.enqueue("discard", WriteKind.TERMINAL) { repository ->
             val id = resolvedId()
             if (id > 0L) {
                 repository.discard(id)
@@ -136,7 +144,7 @@ internal class TakeHistory(private val historyWrites: HistoryWriteQueue?) : Hist
      * already queued ahead of this (#115 plan §3 C1).
      */
     fun markInterrupted() {
-        historyWrites?.enqueue("interrupted") { repository ->
+        historyWrites?.enqueue("interrupted", WriteKind.TERMINAL) { repository ->
             val id = resolvedId()
             if (id > 0L) {
                 repository.updateStatus(
@@ -267,7 +275,7 @@ internal class SessionFinalizer(
         publication: Publication,
         saved: SaveSlot,
     ) {
-        historyWrites.enqueue("finalize") { repository ->
+        val admitted = historyWrites.enqueue("finalize", WriteKind.TERMINAL) { repository ->
             val answer = runCatching {
                     val existingId = history.resolvedId()
                     val persistedId = if (existingId > 0L) {
@@ -296,6 +304,8 @@ internal class SessionFinalizer(
                 }.fold({ SaveOutcome.Saved(it) }, { SaveOutcome.Failed(it) })
             saved.answer(answer, host::elapsedRealtimeMs)
         }
+        // A refused save is a failed save (#292): the words never waited on it, and its diagnostics report it.
+        if (admitted == Enqueued.REJECTED) saved.answer(SaveOutcome.Failed(HistoryQueueFullException()), host::elapsedRealtimeMs)
     }
 
     /**
@@ -365,7 +375,7 @@ internal class SessionFinalizer(
             Telemetry.breadcrumb("take", "insertion_handed_off", mapOf("take_id" to takeId))
             // Promoted from neutral to ready AFTER the handoff and never awaited (#235), resolved on the queue
             // behind the save (#277): an outcome that lands first wins the conditional update.
-            historyWrites.enqueue("promote to ready") { repository ->
+            historyWrites.enqueue("promote to ready", WriteKind.ORDINARY) { repository ->
                 val id = row.resolveOnQueue()
                 if (id > 0L) repository.promoteUnroutedToReady(id)
             }
@@ -410,7 +420,7 @@ internal class SessionFinalizer(
         text: String,
     ): Boolean {
         val copied = host.copyToClipboard(text)
-        historyWrites.enqueue("clipboard-only outcome") { repository ->
+        historyWrites.enqueue("clipboard-only outcome", WriteKind.TERMINAL) { repository ->
             val id = row.resolveOnQueue()
             if (id <= 0L) return@enqueue
             repository.finalizeInsertionOutcome(
@@ -450,7 +460,7 @@ internal class SessionFinalizer(
 
     /** History is the destination by the user's own auto-copy setting: the row records it. */
     private fun keepInHistoryOnly(row: HistoryRow) {
-        historyWrites.enqueue("history-only outcome") { repository ->
+        historyWrites.enqueue("history-only outcome", WriteKind.TERMINAL) { repository ->
             val id = row.resolveOnQueue()
             if (id <= 0L) return@enqueue
             repository.finalizeInsertionOutcome(

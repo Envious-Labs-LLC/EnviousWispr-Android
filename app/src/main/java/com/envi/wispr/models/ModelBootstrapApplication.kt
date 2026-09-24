@@ -1,5 +1,6 @@
 package com.envi.wispr.models
 
+import com.envi.wispr.telemetry.AppDefect
 import android.app.Application
 import android.content.Context
 import com.envi.wispr.history.EnviousWisprDatabase
@@ -20,7 +21,10 @@ class ModelBootstrapApplication : Application() {
     }
 
     private val historyWrites: HistoryWriteQueue by lazy {
-        HistoryWriteQueue(TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()))
+        HistoryWriteQueue(
+            TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()),
+            onOverload = { Telemetry.defect(AppDefect.HistoryQueueOverloaded) },
+        )
     }
 
     override fun onCreate() {

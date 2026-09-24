@@ -1,6 +1,8 @@
 package com.envi.wispr.paste
 
+import com.envi.wispr.history.Enqueued
 import com.envi.wispr.history.HistoryRow
+import com.envi.wispr.history.WriteKind
 import android.accessibilityservice.AccessibilityService
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -613,7 +615,7 @@ internal class AccessibilityInsertionRunner(
         // words were handed over before the save answered. No saved row (the save failed, or a debug probe)
         // emits once without a write. Otherwise the update is first-wins; the row leaves only when THIS writer
         // won it, so a recovery or a second finalizer that got there first is the one that reports (round 1, F5).
-        ModelBootstrapApplication.historyWrites(service.applicationContext).enqueue("insertion outcome") { repository ->
+        val admitted = ModelBootstrapApplication.historyWrites(service.applicationContext).enqueue("insertion outcome", WriteKind.TERMINAL) { repository ->
             recordInsertionOutcome(
                 id = pending.row.resolveOnQueue(),
                 write = { id ->
@@ -624,6 +626,8 @@ internal class AccessibilityInsertionRunner(
                 emit = ::emit,
             )
         }
+        // A refused outcome write still reports the insertion once (#292), as a take with no saved row does.
+        if (admitted == Enqueued.REJECTED) emit()
     }
 
     /**

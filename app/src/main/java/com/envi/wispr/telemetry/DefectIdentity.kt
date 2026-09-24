@@ -52,6 +52,9 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
     /** The stored polish policy could not be read at take start; the take ran on the last read policy or published the deterministic text (#278). */
     object PolishPolicyUnreadable : AppDefect("polish_policy_unreadable", "polish.policy_unreadable")
 
+    /** The History write queue refused writes: the database is stalled past its backlog (#292). Once per episode. */
+    object HistoryQueueOverloaded : AppDefect("history_queue_overloaded", "history.queue_overloaded")
+
     /** A take's start preparation (the vocabulary matcher) threw or missed its bound; the take started on the fallback (#290). */
     object TakePreparationFailed : AppDefect("take_preparation_failed", "take.preparation_failed")
 
@@ -85,7 +88,7 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
             VadCallWedged("test"), LocalPolishDeadline, PolishProtocolViolation, CaptureStillRunningAfterStop,
             CaptureReleaseWedged, AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
             PolishWatchdogTimeout, PolishServiceUnavailable, PolishPolicyUnreadable, PolishServiceDied, PolishCallFailed,
-            TakePreparationFailed, HistorySaveTimedOut, HistoryContractViolation(null), PolishPreparationFailed, SilenceWriterExitWedged, DebugProbe,
+            TakePreparationFailed, HistorySaveTimedOut, HistoryQueueOverloaded, HistoryContractViolation(null), PolishPreparationFailed, SilenceWriterExitWedged, DebugProbe,
         )
     }
 }

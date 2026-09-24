@@ -26,7 +26,7 @@ Prior context: #234 (polish is a limb: bind refused, never connected or died pub
 
 ## 1. The producer and its callers (grounded 2026-09-23 against main 4e1395c)
 
-Producer: `ProviderConfigurationRepository.readPolicy(readSnapshot)` = `runCatching { decodePolicy(readSnapshot()) }.getOrDefault(PolishPolicy.Off)`; `loadPolicy()` wraps it over `preferences.all`. `decodePolicy` itself never throws on bad values (unknown mode reads as the shipped default `OFFLINE_S1`), so the failure is the store read.
+Producer: `ProviderConfigurationRepository.readPolicy(readSnapshot)` (removed) = `runCatching { decodePolicy(readSnapshot()) }.getOrDefault(PolishPolicy.Off)`; `loadPolicy()` wraps it over `preferences.all`. `decodePolicy` itself never throws on bad values (unknown mode reads as the shipped default `OFFLINE_S1`), so the failure is the store read.
 
 Callers of `loadPolicy` in `app/src/main` (`git grep -n loadPolicy`), each classified:
 
@@ -43,7 +43,7 @@ The polish process side: `PolishService` maps a null AIDL `policy` to `PolishPol
 
 ## 2. Design
 
-1. `ProviderConfigurationRepository`: `sealed interface PolicyRead { data class Fresh(val policy: PolishPolicy); data class Failed(val lastRead: PolishPolicy?) }`. `readPolicy(readSnapshot, lastRead)` returns `Fresh(decodePolicy(...))` or `Failed(lastRead)`; The last read lives in a small `PolicyReader` (`@Volatile lastRead`, `read(snapshot): PolicyRead`, written on every `Fresh`) with one process instance in the companion; `loadPolicy(): PolicyRead` calls it over `preferences.all`, and a test builds its own reader. The cache lives in the process, not in the session owner: `DictationSessionService` stops itself when the owner returns to IDLE (`host.stopSelfNow()`), so an owner, like its service, serves one take (coverage finding B). `DECLARED_DEFAULT_POLICY = decodePolicy(emptyMap())` (today `LocalS1` with the default control), named once.
+1. `ProviderConfigurationRepository`: `sealed interface PolicyRead { data class Fresh(val policy: PolishPolicy); data class Failed(val lastRead: PolishPolicy?) }`. `readPolicy(readSnapshot, lastRead)` (removed; built as `PolicyReader.read`) returns `Fresh(decodePolicy(...))` or `Failed(lastRead)`; The last read lives in a small `PolicyReader` (`@Volatile lastRead`, `read(snapshot): PolicyRead`, written on every `Fresh`) with one process instance in the companion; `loadPolicy(): PolicyRead` calls it over `preferences.all`, and a test builds its own reader. The cache lives in the process, not in the session owner: `DictationSessionService` stops itself when the owner returns to IDLE (`host.stopSelfNow()`), so an owner, like its service, serves one take (coverage finding B). `DECLARED_DEFAULT_POLICY = decodePolicy(emptyMap())` (today `LocalS1` with the default control), named once.
 2. `DictationSessionCoordinator`, at take start:
    - `Fresh` -> the take uses it, as today.
    - `Failed(lastRead)` with a last read -> the take uses it and polishes normally; `polish.policyReadFailed(usedLastRead = true)` raises one `AppDefect.PolishPolicyUnreadable` and nothing is shown. A last read of `Off` is the user's own choice: the take runs Off, no notice, and still the one defect.
@@ -74,6 +74,15 @@ The heart: none on a normal day (a readable store gives `Fresh` and every path i
 - [ ] Emulator: a normal take polishes and lands.
 - [ ] Codex code review ALL-CLEAR.
 
-## 6. Related
+## 6. As built (2026-09-23)
+
+- `PolicyRead` (`Fresh`, `Failed(lastRead)`) and `PolicyReader` in `ProviderConfigurationRepository.kt`; one process reader behind the companion's `loadPolicyWith`; `loadPolicy()` is the one line `loadPolicyWith { preferences.all }`. `DECLARED_DEFAULT_POLICY` is `decodePolicy(emptyMap())`. `PolicyRead.freshPolicy` serves the three non-heart callers.
+- The owner's `takePolicy` maps the read; `TakePolishController.policyReadFailed(usedLastRead)` raises `AppDefect.PolishPolicyUnreadable` once, and with no last read latches `PolishReason.SETTINGS_UNREADABLE` through `recordLoss` (first reason wins).
+- Deviation: `takeFacts.policyRead` (a new take token) was not built. The defect and, on the no-last-read path, the terminal's polish reason already carry the fact; the token would have added a field in five telemetry files with nothing new in it.
+- `PolishService`: a null policy answers the deterministic text as `UNEXPECTED` before registration or pipeline work.
+- Mutation receipts: `docs/audits/2026-09-23-278-mutation-receipts.txt`, 6 of 6 RED. Full unit suite: 1273 tests, 0 failures. `PolishFailsOpenTest` 20 of 20 runs green. `:app:assembleDebug` and `:app:assembleDebugAndroidTest` build; `check-visibility.py` clean.
+- Emulator: the app installs and the AI Polish tab reads the stored policy (on this phone). A spoken take is NOT RUN: the emulator records only silence on main too (#273).
+
+## 7. Related
 
 #234, #193, #238; REF-02 of the third 2026-09-23 audit.

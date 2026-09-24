@@ -84,7 +84,7 @@ class ModelDeliveryStoreTest {
         // attributed to any revision, so it is discarded rather than resumed: that is the one-time cost of
         // introducing the stamp, paid by anyone mid-download when it first ships.
         val partial = java.io.File(root, ".demo.download/model.bin.part").apply { parentFile.mkdirs(); writeBytes(bytes.copyOf(5)) }
-        java.io.File(root, ".demo.download/.staging-revision").writeText("r1")
+        java.io.File(root, ".demo.download/.staging-revision").writeText(R1)
         val status = ModelDeliveryStore(root).download(model, ModelTransport { _, offset ->
             assertEquals(5, offset)
             TransportResponse(ByteArrayInputStream(bytes.copyOfRange(offset.toInt(), bytes.size)), true)
@@ -138,8 +138,8 @@ class ModelDeliveryStoreTest {
 
     @Test fun admittedOlderReceiptReportsUpdateWithoutReplacingModel() {
         val bytes = "model payload".toByteArray()
-        val installed = descriptor(bytes, "r1")
-        val newer = descriptor(bytes, "r2")
+        val installed = descriptor(bytes, R1)
+        val newer = descriptor(bytes, R2)
         val root = Files.createTempDirectory("models").toFile()
         val store = ModelDeliveryStore(root)
         store.download(installed, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(bytes), false) })
@@ -149,8 +149,8 @@ class ModelDeliveryStoreTest {
     }
 
     @Test fun aCorruptUpdateLeavesTheAdmittedModelByteIdentical() {
-        val installed = descriptor("first payload".toByteArray(), "r1")
-        val newer = descriptor("second payload".toByteArray(), "r2")
+        val installed = descriptor("first payload".toByteArray(), R1)
+        val newer = descriptor("second payload".toByteArray(), R2)
         val root = Files.createTempDirectory("models").toFile()
         val store = ModelDeliveryStore(root)
         store.download(installed, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream("first payload".toByteArray()), false) })
@@ -169,8 +169,8 @@ class ModelDeliveryStoreTest {
     }
 
     @Test fun aValidUpdateReplacesTheAdmittedModelAndItsReceipt() {
-        val installed = descriptor("first payload".toByteArray(), "r1")
-        val newer = descriptor("second payload".toByteArray(), "r2")
+        val installed = descriptor("first payload".toByteArray(), R1)
+        val newer = descriptor("second payload".toByteArray(), R2)
         val root = Files.createTempDirectory("models").toFile()
         val store = ModelDeliveryStore(root)
         store.download(installed, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream("first payload".toByteArray()), false) })
@@ -197,7 +197,7 @@ class ModelDeliveryStoreTest {
             "old" to "shorter than the new file",
         ).forEach { (stale, note) ->
             val bytes = "second payload".toByteArray()
-            val newer = descriptor(bytes, "r2")
+            val newer = descriptor(bytes, R2)
             val root = Files.createTempDirectory("models").toFile()
             java.io.File(root, ".demo.download/model.bin.part").apply {
                 parentFile.mkdirs()
@@ -239,10 +239,10 @@ class ModelDeliveryStoreTest {
         root.deleteRecursively()
     }
 
-    private fun descriptor(bytes: ByteArray, revision: String = "r1") = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", revision, listOf(ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://huggingface.co/test/model/resolve/$revision/model.bin")))
+    private fun descriptor(bytes: ByteArray, revision: String = R1) = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", revision, listOf(ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://huggingface.co/test/model/resolve/$revision/model.bin")))
 
-    private fun twoHostDescriptor(bytes: ByteArray) = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", "r1", listOf(
-        ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://models.enviouslabs.co/demo/r1/model.bin", "https://huggingface.co/test/model/resolve/r1/model.bin"),
+    private fun twoHostDescriptor(bytes: ByteArray) = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", R1, listOf(
+        ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://models.enviouslabs.co/demo/$R1/model.bin", "https://huggingface.co/test/model/resolve/$R1/model.bin"),
     ))
 
     /** Our host refuses to open, Hugging Face serves, the file is admitted, and the log names the host (#168). */
@@ -257,7 +257,7 @@ class ModelDeliveryStoreTest {
             TransportResponse(ByteArrayInputStream(payload), false)
         }, onSource = { file, host -> served += "$file@$host" })
         assertEquals(DownloadState.READY, status.state)
-        assertEquals(listOf("https://models.enviouslabs.co/demo/r1/model.bin", "https://huggingface.co/test/model/resolve/r1/model.bin"), opened)
+        assertEquals(listOf("https://models.enviouslabs.co/demo/$R1/model.bin", "https://huggingface.co/test/model/resolve/$R1/model.bin"), opened)
         assertEquals(listOf("model.bin@huggingface.co"), served)
     }
 
@@ -271,7 +271,7 @@ class ModelDeliveryStoreTest {
             TransportResponse(ByteArrayInputStream(payload), false)
         }, onSource = { file, host -> served += "$file@$host" })
         assertEquals(DownloadState.READY, status.state)
-        assertEquals(listOf("https://models.enviouslabs.co/demo/r1/model.bin"), opened)
+        assertEquals(listOf("https://models.enviouslabs.co/demo/$R1/model.bin"), opened)
         assertEquals(listOf("model.bin@models.enviouslabs.co"), served)
     }
 
@@ -283,3 +283,7 @@ class ModelDeliveryStoreTest {
     }
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }
+
+/** Pinned revisions in the shape the manifest requires (#284): full 40-character commit hashes. */
+private const val R1 = "1111111111111111111111111111111111111111"
+private const val R2 = "2222222222222222222222222222222222222222"

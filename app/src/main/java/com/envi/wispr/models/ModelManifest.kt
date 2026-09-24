@@ -29,7 +29,7 @@ internal data class ModelDescriptor(
     val isAvailable: Boolean
         get() = id.isSafeFileName() && files.isNotEmpty() && files.all {
             it.name.isSafeFileName() && it.expectedBytes > 0 && it.sha256?.matches(SHA256) == true &&
-                it.sources.all { url -> validateModelSource(url) && url.contains("/$pinnedRevision/") }
+                it.sources.all { url -> validateModelSource(url, pinnedRevision, it.name) }
         }
 }
 

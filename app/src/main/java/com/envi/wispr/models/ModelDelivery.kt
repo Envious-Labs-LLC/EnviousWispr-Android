@@ -296,12 +296,32 @@ internal class ModelDeliveryStore(private val root: File) {
 internal const val MODEL_HOST_OWN = "models.enviouslabs.co"
 internal const val MODEL_HOST_HUGGING_FACE = "huggingface.co"
 
-internal fun validateModelSource(url: String): Boolean = runCatching {
+/** A pinned revision: a full 40-character lowercase commit hash, never a branch, a tag or a short hash (#284). */
+private val REVISION = Regex("\\A[0-9a-f]{40}\\z")
+
+/** One path segment of a model address: no separator, no escape, no dot segment. */
+private val SEGMENT = Regex("\\A[A-Za-z0-9][A-Za-z0-9._-]*\\z")
+
+/**
+ * [url] is a source for [fileName] at [revision] (#284): parsed ONCE, https on the default port with no user info or
+ * fragment, on one of the two hosts, and in that host's exact path shape, where the revision is one whole segment in
+ * its place and the last segment is the file's own name. Our bucket is `/<prefix>/<revision>/<file>` with no query;
+ * Hugging Face is `/<owner>/<repo>/resolve/<revision>/<file>` with no query or `download=true`. A revision that is
+ * not a full commit hash admits nothing. The byte count and SHA-256 checks still judge what arrives.
+ */
+internal fun validateModelSource(url: String, revision: String, fileName: String): Boolean = runCatching {
+    if (!REVISION.matches(revision)) return@runCatching false
     val uri = URI(url)
-    uri.scheme == "https" && uri.host?.isNotBlank() == true && uri.userInfo == null && uri.fragment == null &&
-        (uri.port == -1 || uri.port == 443) && when (uri.host) {
-            MODEL_HOST_OWN -> uri.path.count { it == '/' } >= 3
-            MODEL_HOST_HUGGING_FACE -> uri.path.contains("/resolve/")
+    // The raw path equal to the decoded one: an escaped separator or dot cannot hide inside a segment.
+    val rawPath = uri.rawPath ?: return@runCatching false
+    if (rawPath != uri.path || !rawPath.startsWith("/")) return@runCatching false
+    val segments = rawPath.removePrefix("/").split("/")
+    if (segments.any { !SEGMENT.matches(it) }) return@runCatching false
+    uri.scheme == "https" && uri.userInfo == null && uri.fragment == null && (uri.port == -1 || uri.port == 443) &&
+        when (uri.host) {
+            MODEL_HOST_OWN -> uri.rawQuery == null && segments.size == 3 && segments[1] == revision && segments[2] == fileName
+            MODEL_HOST_HUGGING_FACE -> (uri.rawQuery == null || uri.rawQuery == "download=true") && segments.size == 5 &&
+                segments[2] == "resolve" && segments[3] == revision && segments[4] == fileName
             else -> false
         }
 }.getOrDefault(false)

@@ -750,7 +750,7 @@ internal class DictationSessionCoordinator(
             }
             capture.cancelLiveDeadline()
             val current = take
-            current.outcome.live(routeKind, routeReason, liveAfterMs, host.elapsedRealtimeMs() - current.acceptedAtMs, forced)
+            current.outcome.live(routeKind, routeReason, liveAfterMs, { host.elapsedRealtimeMs() - current.acceptedAtMs }, forced)
             // The FIRST queued write of the take (#115), on the application's worker (`TakeHistory`). The id
             // comes back through the deferred; the still-live owner attaches it to its surface from MAIN (a
             // dead surface is never called from the queue).
@@ -866,7 +866,7 @@ internal class DictationSessionCoordinator(
                         log.error("Legacy onError on a versioned request")
                         // The fact is written before the claim so the ending's row carries it; a claim
                         // that loses leaves an unread fact, never a rewritten row (G1 D2).
-                        outcome.asrFailed(AsrFailureReason.UNKNOWN, host.elapsedRealtimeMs() - asrRequestedAtMs)
+                        outcome.asrFailed(AsrFailureReason.UNKNOWN) { host.elapsedRealtimeMs() - asrRequestedAtMs }
                         if (!current.arbiter.commitNow(TerminalReason.ASR_FAILED)) return
                         current.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                         endAsFailure(TerminalReason.ASR_FAILED)
@@ -875,7 +875,7 @@ internal class DictationSessionCoordinator(
                     override fun onFailure(reason: Int, detail: String?) {
                         deleteCapturedAudio(audioFilePath)
                         val failure = AsrFailureReason.fromCode(reason)
-                        outcome.asrFailed(failure, host.elapsedRealtimeMs() - asrRequestedAtMs)
+                        outcome.asrFailed(failure) { host.elapsedRealtimeMs() - asrRequestedAtMs }
                         // Claim FIRST: a cancel that already owns the take must not see its History row
                         // rewritten or a failure toast over its acknowledgement (G1 D2).
                         if (!current.arbiter.commitNow(TerminalReason.ASR_FAILED)) return

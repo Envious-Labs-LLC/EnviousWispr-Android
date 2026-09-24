@@ -29,7 +29,7 @@ class TakeOutcomeRecorderTest {
 
     /** MUTATION m1: `live` no longer advances the journal to RECORDING. */
     @Test fun liveStampsTheRouteAndAdvancesTheJournal() {
-        recorder.live(InputRouteKind.PHONE.code, 0, 120L, 340L, forced = true)
+        recorder.live(InputRouteKind.PHONE.code, 0, 120L, { 340L }, forced = true)
         assertEquals(InputRouteKind.PHONE, facts.routeKind)
         assertEquals(120L, facts.liveAfterMs)
         assertEquals(340L, facts.liveReceivedMs)
@@ -74,7 +74,7 @@ class TakeOutcomeRecorderTest {
         assertEquals(0.25f, facts.peakAmplitude!!, 0f)
         assertEquals(TakeFacts.silenceStatusToken(AudioCaptureService.SILENCE_STATUS_READY), facts.silenceStopStatus)
         assertEquals(34, facts.asrChars)
-        recorder.asrFailed(AsrFailureReason.UNKNOWN, 950L)
+        recorder.asrFailed(AsrFailureReason.UNKNOWN) { 950L }
         assertEquals(AsrFailureReason.UNKNOWN, facts.asrFailure)
         assertEquals(950L, facts.asrMs)
         assertEquals(listOf("take/admitted", "take/asr_done"), crumbs)

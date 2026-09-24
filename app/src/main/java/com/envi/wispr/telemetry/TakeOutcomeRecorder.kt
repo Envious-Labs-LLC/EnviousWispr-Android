@@ -52,12 +52,15 @@ internal class TakeOutcomeRecorder(
         facts.captureTerminal = TakeFacts.captureEndingToken(terminalReason)
     }
 
-    /** The STARTING to RECORDING transition won, under the owner's publish lock. */
-    fun live(routeKind: Int, routeReason: Int, liveAfterMs: Long, receivedSinceAcceptedMs: Long, forced: Boolean) {
+    /**
+     * The STARTING to RECORDING transition won, under the owner's publish lock. [receivedSinceAcceptedMs] is read at
+     * its own assignment, after the route facts, where the owner read it (#329 review round 2).
+     */
+    fun live(routeKind: Int, routeReason: Int, liveAfterMs: Long, receivedSinceAcceptedMs: () -> Long, forced: Boolean) {
         facts.routeKind = runCatching { InputRouteKind.fromCode(routeKind) }.getOrNull()
         facts.routeReason = runCatching { InputRouteReason.fromCode(routeReason) }.getOrNull()
         facts.liveAfterMs = liveAfterMs
-        facts.liveReceivedMs = receivedSinceAcceptedMs
+        facts.liveReceivedMs = receivedSinceAcceptedMs()
         facts.liveState = if (forced) TakeFacts.LIVE_FORCED else TakeFacts.LIVE_READY
         advance(takeId, TakeStage.RECORDING)
         breadcrumb(
@@ -91,10 +94,13 @@ internal class TakeOutcomeRecorder(
         breadcrumb("take", "asr_done", mapOf("take_id" to takeId, "asr_ms" to facts.asrMs, "asr_chars" to facts.asrChars))
     }
 
-    /** Before the owner's `commitNow`, so the ending's row carries it; no breadcrumb, as before. */
-    fun asrFailed(failure: AsrFailureReason, asrMs: Long) {
+    /**
+     * Before the owner's `commitNow`, so the ending's row carries it; no breadcrumb, as before. [elapsedMs] is read
+     * after the failure is stamped, where the owner read it (#329 review round 2).
+     */
+    fun asrFailed(failure: AsrFailureReason, elapsedMs: () -> Long) {
         facts.asrFailure = failure
-        facts.asrMs = asrMs
+        facts.asrMs = elapsedMs()
     }
 
     /** Before the payload and the reservation (#176): any later ending carries the polish facts. */

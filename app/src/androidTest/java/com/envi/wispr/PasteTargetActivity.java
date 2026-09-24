@@ -13,6 +13,8 @@ import android.view.Gravity;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.view.ViewGroup;
+import android.widget.TextView;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -56,6 +58,13 @@ public final class PasteTargetActivity extends Activity {
 
     public static final String EXTRA_TWO_FIELDS = "two_fields";
 
+    /**
+     * #331: the no-field host. A full-screen page with no editable node, holding window focus: the paste
+     * service's window scan pins only a FOCUSED editable node (`EditorTargetTracker`), and while this window has
+     * input focus no other app's editor does. Its ready receipt is written once THIS window holds focus.
+     */
+    public static final String EXTRA_NO_FIELD = "no_field";
+
     /** A random token the test mints per run; the rig echoes it into {@link #READY_NAME} once A has focus. */
     public static final String EXTRA_RIG_TOKEN = "rig_token";
 
@@ -81,6 +90,8 @@ public final class PasteTargetActivity extends Activity {
 
     private EditText fieldB;
     private BroadcastReceiver focusReceiver;
+    /** The no-field host's token, written to the ready receipt at its first window focus (#331). */
+    private String noFieldToken;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -88,6 +99,10 @@ public final class PasteTargetActivity extends Activity {
         Intent intent = getIntent();
         boolean twoFields = intent != null && intent.getBooleanExtra(EXTRA_TWO_FIELDS, false);
         final String rigToken = intent == null ? null : intent.getStringExtra(EXTRA_RIG_TOKEN);
+        if (intent != null && intent.getBooleanExtra(EXTRA_NO_FIELD, false)) {
+            showNoField(rigToken);
+            return;
+        }
         final EditText a = editor("Silent auto-paste target");
         final EditText b = twoFields ? editor("Second editor, never the target") : null;
         LinearLayout column = new LinearLayout(this);
@@ -142,6 +157,34 @@ public final class PasteTargetActivity extends Activity {
         }
         a.postDelayed(() -> getSystemService(InputMethodManager.class)
                 .showSoftInput(a, InputMethodManager.SHOW_IMPLICIT), 250);
+    }
+
+    /**
+     * #331: a page with one plain line of text and no editor, filling the screen. The ready receipt waits for this
+     * window's own focus, which is what proves no other app's editor holds input focus, the only kind the paste
+     * service's scan pins. Whether focus stayed here through the take is read from the system's own focus log by
+     * the row, since this window cannot tell a brief null focus from another window's.
+     */
+    private void showNoField(String rigToken) {
+        field = null;
+        fieldB = null;
+        new File(getFilesDir(), READY_NAME).delete();
+        TextView line = new TextView(this);
+        line.setText("No field here");
+        line.setTextSize(18f);
+        line.setPadding(48, 48, 48, 48);
+        setContentView(line, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        noFieldToken = rigToken;
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        String token = noFieldToken;
+        if (hasFocus && token != null) {
+            noFieldToken = null;
+            write(new File(getFilesDir(), READY_NAME), token);
+        }
     }
 
     private EditText editor(String hintText) {

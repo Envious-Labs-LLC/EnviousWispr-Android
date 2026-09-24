@@ -691,12 +691,15 @@ class AudioCaptureService : Service() {
                     // Live is published only once the first admitted block is on disk (#115 review).
                     active.liveVisible = true
                     val effective = lastEffective
+                    val forced = active.route.gate.state == LiveGate.State.FORCED
                     takeEvents.publishLive(
                         active.takeId,
-                        active.route.gate.state == LiveGate.State.FORCED,
+                        forced,
                         effective?.kind?.code ?: InputRouteKind.NONE.code,
                         effective?.reasonCode() ?: InputRouteReason.AUTO.code,
                         (active.route.liveAtMs - active.route.startedAtMs).coerceAtLeast(0L),
+                        // The route's own announce, posted by the event worker (#327); a forced gate announced itself.
+                        onDelivered = if (forced) null else active.route.announceFromWorker,
                     )
                 }
                 active.detector.offer(buffer, bytesRead, position)

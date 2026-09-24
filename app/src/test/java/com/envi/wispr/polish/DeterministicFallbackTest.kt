@@ -91,7 +91,7 @@ class DeterministicFallbackTest {
             ),
             Triple(
                 "src/main/java/com/envi/wispr/polish/PolishService.kt",
-                "PolishFallback.deterministic(raw, options, languageDetector)",
+                "PolishFallback.deterministicOrWords(raw, options, languageDetector, warn = { DebugLogger.warn(TAG, it) })",
                 "src/main/java/com/envi/wispr/polish/PolishService.kt",
             ),
         )
@@ -111,6 +111,30 @@ class DeterministicFallbackTest {
             "the coordinator no longer hands its detector to the take's polish controller",
             java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText().contains("languageDetector = languageDetector,"),
         )
+    }
+
+    /**
+     * #326: an engine fallback whose detection or cleanup throws still answers, with the words as handed, and warns
+     * with the exception type only. Every engine failure exit goes through this (the drift guard above pins the
+     * call). MUTATION m1: the guard is removed, so the throw reaches the exit and nothing answers.
+     */
+    @Test fun aFallbackWhoseDetectionOrCleanupThrowsAnswersTheWordsAsHanded() {
+        val warnings = mutableListOf<String>()
+        val broken = LanguageDetector { throw IllegalStateException("detector closed") }
+        assertEquals("uh hello world", PolishFallback.deterministicOrWords("uh hello world", CleanupOptions(removeFillers = true), broken, warn = { warnings += it }))
+        val failing: (String, CleanupOptions, LanguageDetector) -> String = { _, _, _ -> throw IndexOutOfBoundsException() }
+        assertEquals("uh hello world", PolishFallback.deterministicOrWords("uh hello world", CleanupOptions(removeFillers = true), silent, warn = { warnings += it }, clean = failing))
+        assertEquals(
+            listOf(
+                "Deterministic fallback failed: IllegalStateException; answering the words as handed",
+                "Deterministic fallback failed: IndexOutOfBoundsException; answering the words as handed",
+            ),
+            warnings,
+        )
+        assertTrue("never the words in a warning", warnings.none { it.contains("hello") })
+        // An ordinary fallback is unchanged.
+        assertEquals("hello world", PolishFallback.deterministicOrWords("uh hello world", CleanupOptions(removeFillers = true), silent, warn = { warnings += it }))
+        assertEquals(2, warnings.size)
     }
 
     @Test fun fallbackStillAppliesTheTakeCleanupOptions() {

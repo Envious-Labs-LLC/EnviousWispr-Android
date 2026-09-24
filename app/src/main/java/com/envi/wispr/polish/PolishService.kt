@@ -353,7 +353,7 @@ class PolishService : Service() {
      * seven call sites it replaced, so a new failure exit cannot forget the language.
      */
     private fun fallbackText(raw: String, options: CleanupOptions): String =
-        PolishFallback.deterministic(raw, options, languageDetector)
+        PolishFallback.deterministicOrWords(raw, options, languageDetector, warn = { DebugLogger.warn(TAG, it) })
 
     /** The single delivery site. A dead client throws here; the throw is logged and goes no further. */
     private fun deliver(callback: IPolishCallback?, outcome: PolishOutcome) {

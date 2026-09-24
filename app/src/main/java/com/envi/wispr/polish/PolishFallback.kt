@@ -27,4 +27,24 @@ import com.envi.wispr.cleanup.PolishPipeline
 internal object PolishFallback {
     fun deterministic(rawText: String, options: CleanupOptions, detector: LanguageDetector): String =
         PolishPipeline.run(rawText, options, CleanupLanguagePolicy.resolve(detector.detect(rawText))).text
+
+    /**
+     * The engine's text for every failure exit (#326): [deterministic], or the words as handed when detection or
+     * cleanup throws, so an exit that is already failing always answers (`kotlin-patterns.md` RULE:
+     * fail-open-to-the-last-good-text). A failed step is never retried as an abstention, which could still change
+     * words after the failure. [warn] gets the exception type only, never the words. The owner's side keeps its own
+     * step guards and preparation defect (`TakePolishController.deterministic`). [clean] is a test seam.
+     */
+    fun deterministicOrWords(
+        rawText: String,
+        options: CleanupOptions,
+        detector: LanguageDetector,
+        warn: (String) -> Unit,
+        clean: (String, CleanupOptions, LanguageDetector) -> String = ::deterministic,
+    ): String = try {
+        clean(rawText, options, detector)
+    } catch (error: Exception) {
+        warn("Deterministic fallback failed: ${error.javaClass.simpleName}; answering the words as handed")
+        rawText
+    }
 }

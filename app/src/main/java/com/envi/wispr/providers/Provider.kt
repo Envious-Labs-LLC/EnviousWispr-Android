@@ -15,16 +15,26 @@ internal data class ProviderCapabilities(
     val requiresEndpoint: Boolean,
     val sendsTextOffDevice: Boolean,
     val offlineAvailable: Boolean,
+    /**
+     * Whether a fresh setup offers this provider as a tile (#310). Self-hosted is not offered: the catalog decision
+     * of 2026-09-01 keeps it only for a configuration an older build saved.
+     */
+    val offeredAsSetupTile: Boolean,
 )
 
 internal fun Provider.capabilities(): ProviderCapabilities = when (this) {
-    Provider.OPENAI -> ProviderCapabilities(this, "OpenAI", true, false, true, false)
-    Provider.GEMINI -> ProviderCapabilities(this, "Gemini", true, false, true, false)
-    Provider.CLAUDE -> ProviderCapabilities(this, "Claude", true, false, true, false)
-    Provider.SELF_HOSTED_POLISH -> ProviderCapabilities(this, "Self-hosted polish", false, true, true, false)
+    Provider.OPENAI -> ProviderCapabilities(this, "OpenAI", true, false, true, false, offeredAsSetupTile = true)
+    Provider.GEMINI -> ProviderCapabilities(this, "Gemini", true, false, true, false, offeredAsSetupTile = true)
+    Provider.CLAUDE -> ProviderCapabilities(this, "Claude", true, false, true, false, offeredAsSetupTile = true)
+    Provider.SELF_HOSTED_POLISH -> ProviderCapabilities(this, "Self-hosted polish", false, true, true, false, offeredAsSetupTile = false)
 }
 
-/** User-facing disclosure kept here so callers cannot imply that configuration is an offline feature. */
+/**
+ * The one per-provider disclosure (#308): the sentence the setup screen shows before a user's text leaves the phone.
+ * Its `when (this)` stays exhaustive with no `else`, so a new provider breaks the build instead of inheriting a wrong
+ * disclosure; `ProviderDisclosureTest` pins every sentence. The Privacy page's own sentences are
+ * `privacy/PrivacyDisclosure.kt`.
+ */
 internal data class ProviderDisclosure(
     val provider: Provider,
     val summary: String,

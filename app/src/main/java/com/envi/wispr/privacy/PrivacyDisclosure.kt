@@ -1,9 +1,10 @@
 package com.envi.wispr.privacy
 
-internal enum class PolishProvider { OFFLINE, OPENAI, GEMINI, CLAUDE, SELF_HOSTED }
-
-internal data class PrivacyDisclosure(val provider: PolishProvider, val summary: String, val sendsText: Boolean)
-
+/**
+ * The Privacy page's sentences (#308): what stays on the phone, and what leaves for telemetry. The per-provider
+ * disclosure a user reads before their text leaves is `providers/Provider.disclosure()`, the one table the setup
+ * screen shows.
+ */
 internal object PrivacyDisclosures {
     /** The privacy policy page, one URL for both products. */
     const val POLICY_URL = "https://enviouswispr.com/privacy-policy/"
@@ -25,10 +26,4 @@ internal object PrivacyDisclosures {
 
     const val TELEMETRY_VENDORS = "These reports go to PostHog (usage) and Sentry (crashes), stored in the United States. " +
         "PostHog may work out an approximate city or region from the connection; EnviousWispr never reads your phone's location."
-
-    fun forProvider(provider: PolishProvider): PrivacyDisclosure = when (provider) {
-        PolishProvider.OFFLINE -> PrivacyDisclosure(provider, "Audio and text stay on this phone.", false)
-        PolishProvider.SELF_HOSTED -> PrivacyDisclosure(provider, "Selected text is sent only to your configured endpoint.", true)
-        PolishProvider.OPENAI, PolishProvider.GEMINI, PolishProvider.CLAUDE -> PrivacyDisclosure(provider, "Selected text is sent to the provider you chose, using your key.", true)
-    }
 }

@@ -3,7 +3,8 @@
 The exact answers to give in the Play Console Data Safety form, grounded in the shipping code and the
 privacy boundary in `CLAUDE.md` (the boundary is the network, not the phone). Verified against the tree
 2026-09-20 (telemetry added by #176). Owner of the code truth: `app/src/main/java/com/envi/wispr/privacy/PrivacyDisclosure.kt`
-(the sentences) with `app/src/main/java/com/envi/wispr/telemetry/PayloadSanitizer.kt` (what a row may carry).
+(the Privacy page and telemetry sentences), `app/src/main/java/com/envi/wispr/providers/Provider.kt` (`disclosure()`,
+the cloud-text sentence per provider, #308) with `app/src/main/java/com/envi/wispr/telemetry/PayloadSanitizer.kt` (what a row may carry).
 This is not required for an internal-only release; it gates the first closed or public track.
 
 ## FACT: what-the-app-actually-sends
@@ -54,7 +55,8 @@ rather than lean on the user-initiated-sharing exception (the conservative, revi
 | Privacy policy URL | **Required** (a public HTTPS non-PDF page). | Mandatory even when we collect nothing ourselves, because the app requests the Accessibility API. |
 
 ## FACT: the-listing-and-policy-must-agree
-The four claims must match `PrivacyDisclosure.kt`: audio never leaves the phone (true on every path);
+The four claims must match `PrivacyDisclosure.kt` (the page and telemetry sentences) and `Provider.disclosure()` (cloud
+text per provider): audio never leaves the phone (true on every path);
 selected TEXT goes to the user's chosen cloud provider under their key (true, and must appear); usage and
 crash reports leave with no dictated words, entered names, file contents or keys, under a random install id,
 with an approximate location derived by PostHog from the IP (true since #176, and must appear: the old "no

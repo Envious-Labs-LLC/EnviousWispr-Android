@@ -97,6 +97,10 @@ class BubbleGestureControllerTest {
         val first = controller.move(700f, 820f, 50L)
         assertEquals(BubbleCommand.DisarmHoldTimer, first.first())
         assertTrue(first.contains(BubbleCommand.ShowHideTarget(screen)))
+        assertTrue(
+            "the target is shown before its emphasis is judged",
+            first.indexOf(BubbleCommand.ShowHideTarget(screen)) < first.indexOfFirst { it is BubbleCommand.HideTargetEmphasis },
+        )
         assertEquals("from the resting box by the finger's travel", Box(682, 800, 738, 856), controller.dragBox)
         val second = controller.move(-400f, 820f, 80L)
         assertFalse("the hide target is shown once per drag", second.any { it is BubbleCommand.ShowHideTarget })
@@ -115,7 +119,7 @@ class BubbleGestureControllerTest {
         controller.move(700f, 1900f, 50L)
         overHide = true
         val over = controller.move(700f, 1950f, 60L)
-        assertTrue(over.contains(BubbleCommand.HideTargetEmphasis(true)))
+        assertTrue("the emphasis is judged where the bubble now is", over.contains(BubbleCommand.HideTargetEmphasis(682, 1930)))
         assertEquals(listOf(BubbleCommand.RemoveHideTarget, BubbleCommand.HideForField, BubbleCommand.Render), controller.up(90L))
     }
 

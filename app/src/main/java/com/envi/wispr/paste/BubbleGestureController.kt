@@ -14,7 +14,11 @@ internal sealed class BubbleCommand {
     object DisarmHoldTimer : BubbleCommand()
     data class ShowHideTarget(val bounds: BubbleBounds) : BubbleCommand()
     object RemoveHideTarget : BubbleCommand()
-    data class HideTargetEmphasis(val over: Boolean) : BubbleCommand()
+    /**
+     * Light the hide target when the bubble at ([left], [top]) is over it. Judged when applied, after a
+     * [ShowHideTarget] earlier in the same list has placed the target (review round 1).
+     */
+    data class HideTargetEmphasis(val left: Int, val top: Int) : BubbleCommand()
     /** The bubble was dropped on "Drop to hide": hidden until the next text box. */
     object HideForField : BubbleCommand()
     data class Snap(val position: BubblePosition) : BubbleCommand()
@@ -130,7 +134,7 @@ internal class BubbleGestureController(
         val left = (origin.left + gesture.dx.toInt()).coerceIn(bounds.usable.left, bounds.usable.right - size)
         val top = (origin.top + gesture.dy.toInt()).coerceIn(bounds.usable.top, bounds.usable.bottom - size)
         dragBox = Box(left, top, left + size, top + size)
-        commands += BubbleCommand.HideTargetEmphasis(geometry.overHideTarget(left, top))
+        commands += BubbleCommand.HideTargetEmphasis(left, top)
         commands += BubbleCommand.Render
         return commands
     }

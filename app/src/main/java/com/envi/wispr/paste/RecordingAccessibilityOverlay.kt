@@ -377,7 +377,7 @@ internal class RecordingAccessibilityOverlay(
                 BubbleCommand.DisarmHoldTimer -> root.removeCallbacks(holdRunnable)
                 is BubbleCommand.ShowHideTarget -> showHideTarget(command.bounds)
                 BubbleCommand.RemoveHideTarget -> removeHideTarget()
-                is BubbleCommand.HideTargetEmphasis -> hideTarget.alpha = if (command.over) 1f else 0.7f
+                is BubbleCommand.HideTargetEmphasis -> hideTarget.alpha = if (overHideTarget(command.left, command.top)) 1f else 0.7f
                 BubbleCommand.HideForField -> {
                     hiddenForKey = fieldKey ?: HIDDEN_WITHOUT_KEY
                     Toast.makeText(service, "Hidden until your next text box", Toast.LENGTH_SHORT).show()

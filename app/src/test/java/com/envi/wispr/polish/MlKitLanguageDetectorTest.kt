@@ -1,5 +1,6 @@
 package com.envi.wispr.polish
 
+import com.envi.wispr.cleanup.DetectedLanguage
 import com.google.android.gms.common.Feature
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.nl.languageid.IdentifiedLanguage
@@ -14,6 +15,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 /**
@@ -53,7 +55,18 @@ class MlKitLanguageDetectorTest {
         override fun getOptionalFeatures(): Array<Feature> = emptyArray()
     }
 
-    private fun Thread.joined() = apply { join(10_000) }.also { assertFalse("the detection finished", it.isAlive) }
+    /** A detection on its own thread whose answer, or failure, is asserted on the test thread. */
+    private class Worker(detector: MlKitLanguageDetector, text: String) {
+        private val result = AtomicReference<Result<DetectedLanguage?>>()
+        private val thread = thread { result.set(runCatching { detector.detect(text) }) }
+
+        /** Joins, then asserts the detection finished without throwing and answered null (the fake always throws). */
+        fun answeredNull() {
+            thread.join(10_000)
+            assertFalse("the detection finished", thread.isAlive)
+            assertNull(result.get().getOrThrow())
+        }
+    }
 
     /**
      * Row 1, the audit's interleaving: A publishes X and pauses; B counts in, reads X and is inside it; `close` defers;
@@ -69,20 +82,20 @@ class MlKitLanguageDetectorTest {
             published.countDown()
             check(resumeA.await(10, TimeUnit.SECONDS))
         })
-        val a = thread { detector.detect("first words") }
+        val a = Worker(detector, "first words")
         check(published.await(10, TimeUnit.SECONDS))
-        val b = thread { detector.detect("second words") }
+        val b = Worker(detector, "second words")
         check(x.entered.await(10, TimeUnit.SECONDS))
 
         detector.close()
         assertEquals("close deferred: two detections are counted in", 0, x.closes.get())
         resumeA.countDown()
-        a.joined()
+        a.answeredNull()
         assertEquals("A saw close and released nothing", 0, x.closes.get())
         assertFalse("never closed while B was inside it", x.closedWhileHeld)
 
         holdB.countDown()
-        b.joined()
+        b.answeredNull()
         assertEquals("the last detection out released it once", 1, x.closes.get())
         assertFalse(x.closedWhileHeld)
     }
@@ -111,7 +124,7 @@ class MlKitLanguageDetectorTest {
         val detector = MlKitLanguageDetector(newClient = {
             FakeClient().also { built += it; barrier.await(10, TimeUnit.SECONDS) }
         })
-        listOf(thread { detector.detect("one") }, thread { detector.detect("two") }).forEach { it.joined() }
+        listOf(Worker(detector, "one"), Worker(detector, "two")).forEach { it.answeredNull() }
 
         assertEquals(2, built.size)
         val winner = built.single { it.calls.get() > 0 }
@@ -122,5 +135,22 @@ class MlKitLanguageDetectorTest {
         detector.close()
         assertEquals(1, winner.closes.get())
         assertTrue(listOf(winner, loser).none { it.closedWhileHeld })
+    }
+
+    /**
+     * Row 4 (#279 review): a builder that hands both racers the SAME instance; the loser must not close the client it
+     * shares with the winner. MUTATION m4: the loser releases what it built unconditionally.
+     */
+    @Test fun aLoserHoldingThePublishedInstanceClosesNothing() {
+        val barrier = CyclicBarrier(2)
+        val shared = FakeClient()
+        val detector = MlKitLanguageDetector(newClient = { shared.also { barrier.await(10, TimeUnit.SECONDS) } })
+        listOf(Worker(detector, "one"), Worker(detector, "two")).forEach { it.answeredNull() }
+
+        assertEquals("both detections used it", 2, shared.calls.get())
+        assertEquals("nothing closed it before close", 0, shared.closes.get())
+        detector.close()
+        assertEquals(1, shared.closes.get())
+        assertFalse(shared.closedWhileHeld)
     }
 }

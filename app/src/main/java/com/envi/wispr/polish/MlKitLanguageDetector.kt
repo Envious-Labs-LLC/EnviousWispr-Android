@@ -77,7 +77,7 @@ internal class MlKitLanguageDetector internal constructor(
          */
         const val DEADLINE_MS = 400L
 
-        /** Today's client construction, timed; the default for [newClient]. */
+        /** Today's client construction, timed; passed by the production constructor. */
         fun buildClient(context: Context): LanguageIdentifier? {
             // BEFORE `MlKit.initialize`, which is the unbounded part. Round 9 caught the timer starting
             // after it, so the number being used to justify the design measured only `getClient()`.
@@ -160,8 +160,9 @@ internal class MlKitLanguageDetector internal constructor(
      * Builds the client and publishes it, holding NO lock at any point.
      *
      * A caller that loses the publication releases the client it built instead of leaking it, outside any
-     * shared state, which is the defect that killed the previous three designs. A caller that publishes after
-     * [close] releases nothing: the published client has exactly the two release paths named on [releaseClient] (#279).
+     * shared state, which is the defect that killed the previous three designs. [acquire] does not release a
+     * published client after [close]; [close] or the last detection out attempts its release, as named on
+     * [releaseClient] (#279).
      * Normal app takes are serialised, but concurrent first callers remain
      * representable: a duplicate request reaching a binder early exit while another thread is acquiring
      * produces two. The CAS publishes one and the loser releases its own, so the cost is a wasted
@@ -170,9 +171,11 @@ internal class MlKitLanguageDetector internal constructor(
     private fun acquire(): LanguageIdentifier? {
         val created = newClient() ?: return null
         if (!client.compareAndSet(null, created)) {
-            // Another caller published first. Use theirs and release ours, which nobody else ever saw.
-            release(created)
-            return client.get()
+            // Another caller published first. Use theirs and release ours, which nobody else ever saw; a builder
+            // that handed back the very instance already published must not close it (#279 review).
+            val published = client.get()
+            if (created !== published) release(created)
+            return published
         }
         afterPublish()
         // `close` ran while this was building. Do NOT release here: another counted-in detection may already be

@@ -6,10 +6,12 @@ RED: m2 close never releases -> closeWithNothingActiveReleasesOnceAndLaterDetect
      (AssertionError: expected:<1> but was:<0>)
 RED: m3 the loser releases the published client -> theLoserReleasesOnlyItsOwnClient
      (AssertionError: both detections used the winner expected:<2> but was:<1>)
-ALL RED
+RED: m4 the loser releases what it built unconditionally -> aLoserHoldingThePublishedInstanceClosesNothing
+     (AssertionError: nothing closed it before close expected:<0> but was:<1>)  [code review round 1]
+ALL RED (rerun after the round 1 fixes, m1 to m4 in one run)
 
-Repeats: MlKitLanguageDetectorTest 20 of 20 green (--rerun each time).
-Suite: scripts/measure-tests.sh tests=1302 suites=162 failures=0 errors=0 skipped=0.
+Repeats: MlKitLanguageDetectorTest 20 of 20 green before and again after the round 1 fixes (--rerun each time).
+Suite (after round 1): scripts/measure-tests.sh tests=1303 suites=162 failures=0 errors=0 skipped=0.
 Builds: :app:assembleDebug and :app:assembleDebugAndroidTest; scripts/check-visibility.py clean;
 scripts/check-cited-symbols.py all citations resolve.
 

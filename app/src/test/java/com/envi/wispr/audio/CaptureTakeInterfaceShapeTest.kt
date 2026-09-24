@@ -19,6 +19,8 @@ import java.io.File
 class CaptureTakeInterfaceShapeTest {
     private val takeAidl = File("src/main/aidl/com/envi/wispr/audio/IAudioTakeService.aidl").readText()
     private val service = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
+    /** Both binders since #361. */
+    private val adapters = File("src/main/java/com/envi/wispr/audio/CaptureBinderAdapters.kt").readText()
     private val bindings = File("src/main/java/com/envi/wispr/ui/PipelineBindings.kt").readText()
     private val picture = File("src/main/java/com/envi/wispr/audio/PicturePublisher.kt").readText()
 
@@ -48,25 +50,25 @@ class CaptureTakeInterfaceShapeTest {
 
     @Test fun theServiceHandsTheTakeBinderOnlyToTheTakeAction() {
         assertTrue(
-            service.contains("if (intent?.action == ACTION_BIND_TAKE) newTakeBinder(listenerSlots.openTakeEpoch(intent.identifier)) else binder"),
+            service.contains("if (intent?.action == ACTION_BIND_TAKE) binders.forTake(listenerSlots.openTakeEpoch(intent.identifier)) else binders.legacy"),
         )
     }
 
     @Test fun everyTakeBinderMethodIsOneCallOfASharedServiceFunction() {
-        val take = block(service, "private fun newTakeBinder(epoch: Long): IBinder = object : IAudioTakeService.Stub() {")
-        val legacy = block(service, "private val binder = object : IAudioCaptureService.Stub() {")
+        val take = block(adapters, "fun forTake(epoch: Long): IBinder = object : IAudioTakeService.Stub() {")
+        val legacy = block(adapters, "val legacy: IBinder = object : IAudioCaptureService.Stub() {")
         val shared = listOf(
-            "this@AudioCaptureService.startTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)",
-            "this@AudioCaptureService.stopRecording()",
-            "this@AudioCaptureService.finishTakeHold()",
+            "ops.startTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)",
+            "ops.stopCapture()",
+            "ops.finishTake()",
         )
         shared.forEach { call ->
             assertTrue("the take binder calls $call", take.contains(call))
             assertTrue("and the legacy binder calls it too", legacy.contains(call))
         }
-        assertTrue(take.contains("this@AudioCaptureService.spectrumListener.register(from, listener)"))
-        assertTrue(take.contains("this@AudioCaptureService.takeListener.register(from, listener)"))
-        assertFalse("the take binder starts nothing itself", take.contains("startRecording("))
+        assertTrue(take.contains("spectrumListener.register(from, listener)"))
+        assertTrue(take.contains("takeListener.register(from, listener)"))
+        assertFalse("the take binder starts nothing itself", take.contains("startLegacy(") || take.contains("startRecording("))
         assertFalse("and unregisters nothing: the binding's end clears its slots", take.contains("unregister"))
     }
 

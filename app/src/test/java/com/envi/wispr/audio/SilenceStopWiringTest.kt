@@ -69,8 +69,9 @@ class SilenceStopWiringTest {
     fun theOldStartMeansExactlyWhatItMeantBefore() {
         assertTrue(
             "startCapture must be the no-auto-stop case of the new one, not a second implementation",
-            service.contains("startRecording(autoStopOnSilence = false, pauseSeconds = 0f, pick = InputDevicePick.Auto, takeId = \"\")"),
+            File("src/main/java/com/envi/wispr/audio/CaptureBinderAdapters.kt").readText().contains("override fun startCapture(): Boolean = ops.startLegacy(autoStopOnSilence = false, pauseSeconds = 0f, pick = InputDevicePick.Auto, keepEarbudsReady = false)"),
         )
+        assertTrue("and the legacy start is the same startRecording", service.contains("startRecording(autoStopOnSilence, pauseSeconds, pick, keepEarbudsReady, takeId = \"\")"))
     }
 
     @Test

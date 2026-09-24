@@ -192,14 +192,19 @@ class RecorderLeaseTest {
     // Row 16. REVERT: let a legacy transaction pass mayRecover = true, or redirect an older start to startTake.
     @Test
     fun onlyTheProductionStartMayRecover() {
-        val legacy = service.substringAfter("private val binder = object : IAudioCaptureService.Stub() {").substringBefore("override fun getTakePeakAmplitude")
+        // #361: the transactions live in the adapters and call the service's operations.
+        val adapters = File("src/main/java/com/envi/wispr/audio/CaptureBinderAdapters.kt").readText()
+        val legacy = adapters.substringAfter("val legacy: IBinder = object : IAudioCaptureService.Stub() {").substringBefore("override fun getTakePeakAmplitude")
         val older = legacy.substringBefore("override fun startCaptureForTake(")
-        val olderStarts = Regex("""this@AudioCaptureService\.(\w+)\(([^\n]*)\)""").findAll(older).toList()
+        val olderStarts = Regex("""ops\.(\w+)\(([^\n]*)\)""").findAll(older).toList()
         assertEquals("four older start transactions", 4, olderStarts.size)
-        assertTrue("each calls the refusal-only startRecording", olderStarts.all { it.groupValues[1] == "startRecording" && !it.groupValues[2].contains("mayRecover") })
+        assertTrue("each calls the refusal-only legacy start", olderStarts.all { it.groupValues[1] == "startLegacy" })
+        val legacyStart = service.substringAfter("override fun startLegacy(").substringBefore("\n\n")
+        assertTrue("which is startRecording without recovery", legacyStart.contains("startRecording(") && !legacyStart.contains("mayRecover"))
         // #220: both interfaces' startCaptureForTake call ONE helper, and only it may recover.
-        val takeStarts = Regex("""override fun startCaptureForTake\([^\n]*\n\s*this@AudioCaptureService\.(\w+)\(""").findAll(service).map { it.groupValues[1] }.toList()
+        val takeStarts = Regex("""override fun startCaptureForTake\([^\n]*\n\s*ops\.(\w+)\(""").findAll(adapters).map { it.groupValues[1] }.toList()
         assertEquals("both startCaptureForTake transactions delegate to startTake", listOf("startTake", "startTake"), takeStarts)
+        assertTrue("which is the service's startTake", service.contains("this@AudioCaptureService.startTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)"))
         assertEquals("exactly one call in the service may recover", 1, Regex("mayRecover = true").findAll(service).count())
         assertTrue("and it is startTake's", service.substringAfter("private fun startTake(").substringBefore("\n\n").contains("mayRecover = true"))
         assertTrue("the default is refusal-only", start.contains("mayRecover: Boolean = false"))

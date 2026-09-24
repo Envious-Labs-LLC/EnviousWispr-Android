@@ -1,0 +1,19 @@
+# #279 mutation receipts, 2026-09-24, worktree head 3fa1d42 plus the change
+
+RED: m1 the published-after-close branch releases -> aPublisherThatSeesCloseNeverReleasesAClientAnotherDetectionHolds
+     (AssertionError: A saw close and released nothing expected:<0> but was:<1>)
+RED: m2 close never releases -> closeWithNothingActiveReleasesOnceAndLaterDetectionsBuildNothing
+     (AssertionError: expected:<1> but was:<0>)
+RED: m3 the loser releases the published client -> theLoserReleasesOnlyItsOwnClient
+     (AssertionError: both detections used the winner expected:<2> but was:<1>)
+ALL RED
+
+Repeats: MlKitLanguageDetectorTest 20 of 20 green (--rerun each time).
+Suite: scripts/measure-tests.sh tests=1302 suites=162 failures=0 errors=0 skipped=0.
+Builds: :app:assembleDebug and :app:assembleDebugAndroidTest; scripts/check-visibility.py clean;
+scripts/check-cited-symbols.py all citations resolve.
+
+Emulator (emulator-5554, debug build of this change): "and I will send the deck tomorrow" spoken into a Gmail draft;
+route=COMMIT, outcome=VERIFIED; the editor's whole text equals "And I will send the deck tomorrow." plus the
+insertion's trailing space. The production constructor built the real client: "LanguageDetector: client ready in
+40ms", then "language=en confidence=0.99946254".

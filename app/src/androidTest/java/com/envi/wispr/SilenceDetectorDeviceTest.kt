@@ -10,7 +10,6 @@ import com.envi.wispr.vad.ISilenceVadService
 import com.envi.wispr.vad.SilenceVadService
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -62,7 +61,7 @@ class SilenceDetectorDeviceTest {
     /** The recorded speech fixture, pushed to this package's cache by the caller. */
     private fun speechBlocks(): List<ByteArray> {
         val fixture = File(context.cacheDir, "enviouswispr-uat.pcm")
-        assumeTrue("the speech fixture must be present", fixture.isFile && fixture.length() > blockBytes)
+        assertTrue("the speech fixture must be present (pushed to the app's cache)", fixture.isFile && fixture.length() > blockBytes)
         val bytes = fixture.readBytes()
         return (0 until bytes.size / blockBytes).map {
             bytes.copyOfRange(it * blockBytes, (it + 1) * blockBytes)

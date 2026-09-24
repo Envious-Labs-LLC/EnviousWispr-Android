@@ -1,0 +1,43 @@
+# #305 receipts, 2026-09-24, worktree head a33e407 plus the change
+
+Before the change (main a33e407, only the shape test and DeviceNotRun added):
+  SilenceDeviceRowsShapeTest.theSilenceRowsAssertTheirPreconditionsInsteadOfSkipping
+  RED: SilenceStoppedTakeTranscribesDeviceTest.kt calls assumeTrue, which a device run reports as a pass
+
+Mutations, one run on the final code (after code review round 3):
+RED: m1 a skip back in SilenceStoppedTakeTranscribesDeviceTest -> theSilenceRowsAssertTheirPreconditionsInsteadOfSkipping
+RED: m2 a skip back in CaptureWithSilenceStopDeviceTest -> theSilenceRowsAssertTheirPreconditionsInsteadOfSkipping
+RED: m3 the fixture skip back in SilenceDetectorDeviceTest -> theSilenceRowsAssertTheirPreconditionsInsteadOfSkipping
+ALL RED
+Rounds 1 and 2 added guard rows pinning each replacement assertion and the NOT RUN log (mutations m4 to m9, all RED
+then); round 3 found two more evasions of the same class, so those rows were deleted by the consequence committed in the
+round 2 prompt. The shape test keeps only the no-assumeTrue row, and KotlinSourceLexer keeps only the round 1 move.
+
+Suite (after round 3): scripts/measure-tests.sh tests=1318 suites=164 failures=0 errors=0 skipped=0 (1,317 before: one new row;
+VoicePipelineDeviceShapeTest 5 of 5 on the shared lexer). Builds: :app:assembleDebug and :app:assembleDebugAndroidTest;
+scripts/check-visibility.py clean; scripts/check-cited-symbols.py all citations resolve. DiagnosticsShapeTest caught the
+first draft's android.util.Log import in DeviceNotRun; it logs through DebugLogger.
+
+Device rows on emulator-5554 through direct `am instrument -w -r`, one row per run, status read per row (0 PASS, -2
+FAIL, -3/-4 NOT RUN), the RECORD_AUDIO grant staged with `pm grant`, the speech fixture pushed to the TARGET app's
+cache (`run-as com.envi.wispr`):
+  PASS  CaptureWithSilenceStopDeviceTest#aQuietRoomNeverEndsATakeByItselfThroughTheWholeRealPath
+  PASS  CaptureWithSilenceStopDeviceTest#theDetectorBecomesReadyForARealTakeAndTheStatusSaysSo
+  PASS  CaptureWithSilenceStopDeviceTest#withTheSwitchOffNoDetectorIsAskedForAtAll
+  PASS  CaptureWithSilenceStopDeviceTest#anOutOfRangePauseRefusesAutoStopButStillRecords
+  PASS  CaptureWithSilenceStopDeviceTest#aRegisteredListenerReceivesThePictureDuringATake
+  PASS  SilenceDetectorDeviceTest#theRealModelLoadsInItsOwnProcessAndScoresRealSpeech (16 kHz s16le mono fixture)
+  PASS  SilenceDetectorDeviceTest#aSilentRoomNeverEndsATakeThatNeverStarted
+  PASS  SilenceDetectorDeviceTest#aBlockFromAnOlderTakeIsRefused
+  PASS  SilenceDetectorDeviceTest#aWronglySizedBlockIsRefusedRatherThanScored
+  No DeviceNotRun line: nothing skipped.
+  After code review round 1 (the permission check moved before each start; the manifest check added), the five
+  CaptureWithSilenceStopDeviceTest rows above were rerun on the rebuilt test APK: all five PASS, no DeviceNotRun line.
+The first push used a 48 kHz file; the model row then FAILED ("silence after speech must end the take, it did not in
+40 blocks") instead of skipping, as the row now should for a fixture it cannot score. Rerun with the documented 16 kHz
+s16le mono format: PASS. The temporary /data/local/tmp copy was removed.
+
+NOT RUN (a physical phone's speaker-to-microphone path; the emulator has none, and this session does not drive the
+founder's phone): SilenceStoppedTakeTranscribesDeviceTest#aTakeThatEndedOnSilenceStillProducesWords,
+CaptureWithSilenceStopDeviceTest#realSpeechThroughTheMicrophoneEndsTheTakeWhenItStops and
+#theWaitSettingDecidesWhetherAThinkingPauseEndsTheTake.

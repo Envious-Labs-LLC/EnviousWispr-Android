@@ -149,7 +149,7 @@ internal class DictationSessionRig {
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
-        notices = SessionNoticePresenter(surface, insertion, host, scope, mainDispatcher),
+        notices = SessionNoticePresenter(surface, insertion, host, scope, mainDispatcher, log, BluetoothTipGate()),
         insertion = insertion,
         log = log,
         preferences = preferences,
@@ -181,7 +181,6 @@ internal class DictationSessionRig {
         mainDispatcher = mainDispatcher,
         polishTimeout = polishTimeout,
         answerBoundMs = answerBoundMs,
-        tipGate = BluetoothTipGate(),
         polishLedger = PolishRequestLedger(PolishRequestIdSource { System.nanoTime() }),
         endingSink = endings::record,
         defectSink = { defect, data -> if (throwOnDefect) throw IllegalStateException("sink broke"); defects += defect.fingerprint to data },

@@ -209,7 +209,7 @@ the Sentry breadcrumbs; the limb outcome joins it rather than a new channel.
    **The four capture fields are frozen with the snapshot** (round G2.1): `SessionPreferences` gains
    `autoStopOnSilence`, `silencePauseSeconds`, `inputDevicePick`, `keepEarbudsReady` and `showBluetoothTips`,
    written by `freeze` at the answer; `tryStartRecording` (`:461-464`), `publishSilenceNoticeIfNeeded` (`:710`)
-   and `publishMicrophoneNoticesIfNeeded` (`:732`) read `sessionPreferences`, never the live source, so a
+   and `publishMicrophoneNoticesIfNeeded` (removed) (`:732`) read `sessionPreferences`, never the live source, so a
    late emission after the bound cannot change a take already started. `takeFacts.inputDevice` (`:334`) is
    written from the same frozen snapshot after the answer, not before it (round G2.2).
 5. **`SETTINGS_UNAVAILABLE` removed** from `TerminalReason`, `TakeNotices`, both `TelemetryChannels` sets,

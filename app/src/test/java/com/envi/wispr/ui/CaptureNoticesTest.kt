@@ -39,9 +39,9 @@ class CaptureNoticesTest {
     @Test
     fun theSessionOwnerUsesTheProcessGateNotOneItBuildsPerService() {
         // The service stops itself after every take; a gate it constructed would reset every dictation.
-        // Since #186 the owner is the coordinator: the gate is a constructor default, never built per instance,
-        // and the Service does not pass one, so the process-scoped default is what production runs with.
-        val source = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        // Since #309 the gate is the notice presenter's constructor default, never built per instance, and the
+        // Service does not pass one, so the process-scoped default is what production runs with.
+        val source = java.io.File("src/main/java/com/envi/wispr/ui/SessionNotice.kt").readText()
         assertTrue(source.contains("private val tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS"))
         assertFalse(SessionSources.all.contains("BluetoothTipGate()"))
         val service = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText()
@@ -51,11 +51,12 @@ class CaptureNoticesTest {
 
     @Test
     fun theRecorderSaysAtMostOneMicrophoneLinePerTakeAndACaptureWarningOutranksIt() {
-        // One notice slot on the recorder, last write wins: the tip must not overwrite the auto-stop
-        // warning, and must not spend its once-per-process allowance in a take that said something else.
-        val body = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
-            .substringAfter("private fun publishMicrophoneNoticesIfNeeded(")
-            .substringBefore("private fun publishDurationWarningIfNeeded(")
+        // One notice slot on the recorder, last write wins: the tip must not overwrite the auto-stop warning, and must
+        // not spend its once-per-process allowance in a take that said something else. The behaviour is pinned by
+        // `SessionNoticePresenterTest` rows 9 and 10; this row keeps #173's absence of a pick-missing line.
+        val body = java.io.File("src/main/java/com/envi/wispr/ui/SessionNotice.kt").readText()
+            .substringAfter("fun sayBluetoothTipIfDue(")
+            .substringBefore("fun sayDurationWarningIfDue(")
         assertTrue(body.contains("if (silenceNoticeShown || forcedNoticeShown) return"))
         // #173: a pick that was not connected has no line and no latch of its own; the take is an
         // ordinary take for the tip. The old branch returned before the tip was considered.
@@ -74,9 +75,8 @@ class CaptureNoticesTest {
         val publish = owner
             .substringAfter("private fun publishLive(")
             .substringBefore("private fun publishSilenceNoticeIfNeeded(")
-        val forced = publish.indexOf("notices.say(SessionNotice.EARBUDS_SILENT)")
-        assertTrue(forced >= 0 && forced < publish.indexOf("publishMicrophoneNoticesIfNeeded(routeKind)"))
-        assertTrue(publish.indexOf("forcedNoticeShown = true") < forced)
+        val forced = publish.indexOf("notices.sayEarbudsSilent()")
+        assertTrue(forced >= 0 && forced < publish.indexOf("notices.sayBluetoothTipIfDue(routeKind,"))
         assertEquals("Earbuds are not sending sound.", CaptureNotices.EARBUDS_SILENT)
         // The Android tip no longer asks the user to wait: the recorder waits for the earbuds itself.
         assertFalse(CaptureNotices.BLUETOOTH_TIP.contains("moment"))

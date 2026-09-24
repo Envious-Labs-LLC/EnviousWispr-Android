@@ -219,7 +219,8 @@ class SilenceStopWiringTest {
         assertTrue("an already-terminal status is left alone",
             abandon.contains("AudioCaptureService.SILENCE_STATUS_UNAVAILABLE,\n                AudioCaptureService.SILENCE_STATUS_LOST_AFTER_READY -> return"))
 
-        val notice = File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        // The presenter decides whether the line is due (#309).
+        val notice = File("src/main/java/com/envi/wispr/ui/SessionNotice.kt").readText()
         assertTrue("only the never-became-available status speaks",
             notice.contains("!= AudioCaptureService.SILENCE_STATUS_UNAVAILABLE) return"))
     }

@@ -148,6 +148,9 @@ dependencies {
     // `isReturnDefaultValues` answers every JSON call with null and `ModelListCache` reads and writes JSON.
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("org.json:json:20240303")
+    // #275: a companion `const val` is a public static field whatever its Kotlin visibility; only the class metadata,
+    // read through Kotlin reflection at the compiler's version, tells `internal` from public.
+    testImplementation("org.jetbrains.kotlin:kotlin-reflect:2.0.21")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.room:room-testing:2.8.4")

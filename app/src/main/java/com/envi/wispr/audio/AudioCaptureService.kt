@@ -35,24 +35,24 @@ class AudioCaptureService : Service() {
          * The session owner's bind (#220): with this action and a fresh identifier per bind, `onBind` returns
          * a new `IAudioTakeService` for that binding; every other bind gets the legacy `IAudioCaptureService`.
          */
-        const val ACTION_BIND_TAKE = "com.envi.wispr.audio.BIND_TAKE"
+        internal const val ACTION_BIND_TAKE = "com.envi.wispr.audio.BIND_TAKE"
 
         /**
          * The owner's bind intent (#220): the take action and a fresh identifier every call. Android hands a
          * bind with the same intent identity the cached binder while the service lives (a warm hold keeps it
          * alive), so each binding must carry its own identity to get its own binder and epoch.
          */
-        fun takeBindIntent(context: Context): Intent = Intent(context, AudioCaptureService::class.java)
+        internal fun takeBindIntent(context: Context): Intent = Intent(context, AudioCaptureService::class.java)
             .setAction(ACTION_BIND_TAKE)
             .setIdentifier(UUID.randomUUID().toString())
         private const val SAMPLE_RATE = PcmAudio.SAMPLE_RATE
         private const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
 
-        const val SILENCE_STATUS_DISABLED = 0
-        const val SILENCE_STATUS_PREPARING = 1
-        const val SILENCE_STATUS_READY = 2
-        const val SILENCE_STATUS_UNAVAILABLE = 3
+        internal const val SILENCE_STATUS_DISABLED = 0
+        internal const val SILENCE_STATUS_PREPARING = 1
+        internal const val SILENCE_STATUS_READY = 2
+        internal const val SILENCE_STATUS_UNAVAILABLE = 3
 
         /**
          * The detector was working and then stopped being available.
@@ -61,7 +61,7 @@ class AudioCaptureService : Service() {
          * that is going fine is an interruption for nothing. Only [SILENCE_STATUS_UNAVAILABLE], which
          * means auto-stop never became available at all, is worth telling the user about.
          */
-        const val SILENCE_STATUS_LOST_AFTER_READY = 4
+        internal const val SILENCE_STATUS_LOST_AFTER_READY = 4
         /**
          * The terminal reasons, re-exported under the names callers already use. `CaptureEnding` owns the
          * values, because they cross a process boundary and must have exactly one definition.
@@ -69,23 +69,23 @@ class AudioCaptureService : Service() {
          * [TERMINAL_REASON_SILENCE] is a NORMAL ending in the same class as [TERMINAL_REASON_MANUAL]: a
          * reader that treats it as a failure discards a good transcript. Nothing sets it yet.
          */
-        const val TERMINAL_REASON_NONE = CaptureEnding.NONE
-        const val TERMINAL_REASON_MAX_DURATION = CaptureEnding.MAX_DURATION
-        const val TERMINAL_REASON_MANUAL = CaptureEnding.MANUAL
-        const val TERMINAL_REASON_ERROR = CaptureEnding.ERROR
-        const val TERMINAL_REASON_SILENCE = CaptureEnding.SILENCE
+        internal const val TERMINAL_REASON_NONE = CaptureEnding.NONE
+        internal const val TERMINAL_REASON_MAX_DURATION = CaptureEnding.MAX_DURATION
+        internal const val TERMINAL_REASON_MANUAL = CaptureEnding.MANUAL
+        internal const val TERMINAL_REASON_ERROR = CaptureEnding.ERROR
+        internal const val TERMINAL_REASON_SILENCE = CaptureEnding.SILENCE
 
         /** Why the last start returned false. A start that never began is not a `CaptureEnding`. */
-        const val START_FAILURE_NONE = 0
-        const val START_FAILURE_NO_INPUT_DEVICE = 1
-        const val START_FAILURE_OTHER = 2
+        internal const val START_FAILURE_NONE = 0
+        internal const val START_FAILURE_NO_INPUT_DEVICE = 1
+        internal const val START_FAILURE_OTHER = 2
         /** The earbuds are connected and Android would only record from the phone; the founder's rule refuses that. */
-        const val START_FAILURE_EARBUDS = 3
+        internal const val START_FAILURE_EARBUDS = 3
 
         /** `getLiveState`: what the session owner waits on before it opens the pill. */
-        const val LIVE_WAITING = 0
-        const val LIVE_READY = 1
-        const val LIVE_FORCED = 2
+        internal const val LIVE_WAITING = 0
+        internal const val LIVE_READY = 1
+        internal const val LIVE_FORCED = 2
     }
 
     /** Every native and file resource for one take has one owner and one lifetime. */
@@ -950,7 +950,7 @@ class AudioCaptureService : Service() {
     }
 
     /** Wait for the capture thread to finish writing and close the file. */
-    fun waitForFileReady(timeoutMs: Long = 2_000L): Boolean {
+    internal fun waitForFileReady(timeoutMs: Long = 2_000L): Boolean {
         val thread = captureThread
         if (thread != null && Thread.currentThread() !== thread) {
             thread.join(timeoutMs.coerceAtLeast(0L))

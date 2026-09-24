@@ -1,5 +1,6 @@
 package com.envi.wispr.debug
 
+import com.envi.wispr.history.HistoryRow
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -33,7 +34,7 @@ class PasteProbeActivity : Activity() {
         val text = intent.getStringExtra("text") ?: "EnviousWispr auto-insert proof"
         val previousClipboard = clipboard.primaryClip
         finish()
-        val handoff = PasteAccessibilityService.pasteWhenTargetReturns(0L, text, previousClipboard)
+        val handoff = PasteAccessibilityService.pasteWhenTargetReturns(HistoryRow.None, text, previousClipboard)
         if (handoff != InsertionHandoff.SCHEDULED) {
             clipboard.setPrimaryClip(ClipData.newPlainText("EnviousWispr", text))
         }

@@ -61,9 +61,9 @@ class PolishPublicationRoutesTest {
         assertTrue(
             "the reservation and the save are one operation under the lock",
             locked.contains("current.arbiter.reserve(Claimants.PUBLICATION)") &&
-                locked.contains("finalizer.enqueueSave(current.history, payload, saveGate, saved)"),
+                locked.contains("finalizer.enqueueSave(current.history, payload, saved)"),
         )
-        val reservation = publication.indexOf("finalizer.enqueueSave(current.history, payload, saveGate, saved)")
+        val reservation = publication.indexOf("finalizer.enqueueSave(current.history, payload, saved)")
         assertTrue(
             "the finalizer's save is the finalize write",
             section("fun enqueueSave(", "\n    }\n", finalizer).contains("historyWrites.enqueue(\"finalize\")"),

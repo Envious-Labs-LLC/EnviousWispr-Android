@@ -220,9 +220,6 @@ private fun autoPasteWasExpectedToWork(
         InsertionHandoff.INSERTION_ALREADY_PENDING -> true
         // The service was bound and did not answer within the handoff deadline.
         InsertionHandoff.SERVICE_DID_NOT_ANSWER -> true
-        // Insertion was never attempted because the transcript has no durable row, so the
-        // clipboard is the only copy and the user should know before overwriting it.
-        InsertionHandoff.HISTORY_NOT_DURABLE -> true
     }
 }
 

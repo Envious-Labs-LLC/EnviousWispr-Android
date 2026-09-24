@@ -1,5 +1,6 @@
 package com.envi.wispr.debug
 
+import com.envi.wispr.history.HistoryRow
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -23,7 +24,7 @@ class DebugInsertReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val text = intent.getStringExtra("text") ?: "EnviousWispr debug insert"
         val pin = PasteAccessibilityService.pinTargetForDictation()
-        val handoff = PasteAccessibilityService.pasteWhenTargetReturns(0L, text)
+        val handoff = PasteAccessibilityService.pasteWhenTargetReturns(HistoryRow.None, text)
         DebugLogger.log("DebugInsert", "pin=$pin handoff=$handoff textChars=${text.length}")
     }
 }

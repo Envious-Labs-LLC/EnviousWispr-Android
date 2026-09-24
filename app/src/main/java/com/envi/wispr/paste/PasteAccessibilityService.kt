@@ -1,5 +1,6 @@
 package com.envi.wispr.paste
 
+import com.envi.wispr.history.HistoryRow
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.InputMethod
@@ -74,7 +75,7 @@ class PasteAccessibilityService : AccessibilityService() {
          * clipboard even if Android never restores a safe editable target.
          */
         internal fun pasteWhenTargetReturns(
-            transcriptId: Long,
+            row: HistoryRow,
             text: String,
             previousClipboard: ClipData? = null,
             policy: ClipboardInsertionPolicy = ClipboardInsertionPolicy(),
@@ -85,7 +86,7 @@ class PasteAccessibilityService : AccessibilityService() {
                 return InsertionHandoff.SERVICE_NOT_RUNNING
             }
             return service.callOnMain(InsertionHandoff.SERVICE_DID_NOT_ANSWER) {
-                service.runner.requestInsertion(transcriptId, text, previousClipboard, policy, takeId)
+                service.runner.requestInsertion(row, text, previousClipboard, policy, takeId)
             }
         }
 

@@ -39,13 +39,13 @@ internal fun interface NanoClock {
  * events that are not its take's.
  *
  * [close] is the end of delivery, decided by ONE atomic word ([lifecycle]: a closed bit and a count of
- * offers between entry and enqueue): an offer, heartbeat or queued, enters only by a compare-and-set that
- * fails once the closed bit is set. Accepted heartbeats and enqueued events are handled by the worker before
- * it exits (a heartbeat whose slot claim fails is skipped, and an event with no listener registered is
- * discarded); an offer that finds the bit set is dropped by contract, never lost by a race (the worker leaves
- * only once the bit is set, no offer is between entry and enqueue, the heartbeat slot is empty and the queue
- * is empty). After the service's destroy nothing about any take can change, and
- * the owner's silence bound covers a take whose ending was never published.
+ * calls that entered and have not finished publishing or skipping): an offer, heartbeat or queued, enters
+ * only by a compare-and-set that fails once the closed bit is set. Accepted heartbeats and enqueued events
+ * are handled by the worker before it exits (a heartbeat whose slot claim fails is skipped, and an event with
+ * no listener registered is discarded); an offer that finds the bit set is dropped by contract, never lost by
+ * a race (the worker leaves only once the bit is set, no call has entered without finishing publishing or
+ * skipping, the heartbeat slot is empty and the queue is empty). After the service's destroy nothing about any
+ * take can change, and the owner's silence bound covers a take whose ending was never published.
  *
  * Every event is a limb. The take does not know this class exists.
  */
@@ -61,7 +61,7 @@ internal class TakeEventPublisher(
         /** Heartbeats are throttled by WALL-CLOCK second: elapsed is 0 before live and would send one. */
         const val TICK_INTERVAL_NANOS = 1_000_000_000L
 
-        /** The closed bit of [lifecycle]; the low bits count offers between entry and enqueue. */
+        /** The closed bit of [lifecycle]; the low bits count calls that entered and have not finished publishing or skipping. */
         private const val CLOSED = 1L shl 62
         private const val ENTERED_MASK = CLOSED - 1
 
@@ -87,7 +87,7 @@ internal class TakeEventPublisher(
         ) : Event
     }
 
-    /** One word: the [CLOSED] bit and the count of offers that entered and have not enqueued yet. */
+    /** CLOSED bit plus calls that entered and have not finished publishing or skipping. */
     private val lifecycle = AtomicLong(0L)
     @Volatile private var lastTickNanos = Long.MIN_VALUE
 
@@ -154,7 +154,7 @@ internal class TakeEventPublisher(
         offer(Event.Ended(takeId, terminalReason, startFailure, audioFilePath.orEmpty(), silenceStatus, takePeakAmplitude, effectiveInputDevice.orEmpty()))
     }
 
-    /** Stops the worker once every offer that entered before this is delivered. Idempotent; never joined. */
+    /** Refuses new entries; the worker handles accepted ticks and queued events before exiting. Idempotent; never joined. */
     fun close() {
         val before = lifecycle.getAndUpdate { it or CLOSED }
         if (before and CLOSED != 0L) return
@@ -185,8 +185,8 @@ internal class TakeEventPublisher(
 
     /**
      * Parked between events: no timer, no wake at idle (`architecture-rules.md` RULE: no-idle-cost). The
-     * unpark from an offer or from [close] is the only thing that wakes it; after close, what is queued
-     * and what is still being offered is delivered, then the worker leaves.
+     * unpark from an offer or from [close] is the only thing that wakes it; after close, it handles the
+     * queued events and an accepted heartbeat, waits out any call still publishing or skipping, then leaves.
      */
     private fun drain() {
         while (true) {

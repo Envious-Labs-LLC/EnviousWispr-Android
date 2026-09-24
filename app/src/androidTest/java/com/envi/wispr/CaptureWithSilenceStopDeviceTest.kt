@@ -14,7 +14,6 @@ import com.envi.wispr.audio.SpectrumAnalyzer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -94,17 +93,16 @@ class CaptureWithSilenceStopDeviceTest {
         // take that does NOT end here is a take that would never end.
         val (capture, connection) = bindCapture()
         try {
-            assumeTrue(
-                "the microphone must be available to this test",
-                capture.startCaptureWithSilenceStop(true, 1.5f),
-            )
+            DeviceNotRun.requireMicrophone(context, "realSpeechThroughTheMicrophoneEndsTheTakeWhenItStops")
+            val started = capture.startCaptureWithSilenceStop(true, 1.5f)
+            assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
 
             var ready = false
             for (i in 0 until 40) {
                 if (capture.silenceStopStatus == AudioCaptureService.SILENCE_STATUS_READY) { ready = true; break }
                 Thread.sleep(100)
             }
-            assumeTrue("the detector must be ready before the audio starts", ready)
+            assertTrue("the detector must be ready before the audio starts", ready)
 
             playFixture()
 
@@ -153,16 +151,15 @@ class CaptureWithSilenceStopDeviceTest {
         listOf(1.5f, 3.0f).forEach { pause ->
             val (capture, connection) = bindCapture()
             try {
-                assumeTrue(
-                    "the microphone must be available to this test",
-                    capture.startCaptureWithSilenceStop(true, pause),
-                )
+                DeviceNotRun.requireMicrophone(context, "theWaitSettingDecidesWhetherAThinkingPauseEndsTheTake")
+                val started = capture.startCaptureWithSilenceStop(true, pause)
+                assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
                 var ready = false
                 for (i in 0 until 40) {
                     if (capture.silenceStopStatus == AudioCaptureService.SILENCE_STATUS_READY) { ready = true; break }
                     Thread.sleep(100)
                 }
-                assumeTrue("the detector must be ready before the audio starts", ready)
+                assertTrue("the detector must be ready before the audio starts", ready)
 
                 playFixture()
                 val startedAt = System.currentTimeMillis()
@@ -203,9 +200,10 @@ class CaptureWithSilenceStopDeviceTest {
         val (capture, connection) = bindCapture()
         try {
             val started = capture.startCaptureWithSilenceStop(true, 1.5f)
-            // The microphone may be refused to a background caller on this Android version. That is a
-            // property of the harness, not of the change, so it is a SKIP rather than a red row.
-            assumeTrue("the microphone must be available to this test", started)
+            // A skip only for a separately observed harness restriction (#305): a start that fails while the app
+            // holds the microphone permission is a red row, naming the capture process's last start failure.
+            DeviceNotRun.requireMicrophone(context, "aQuietRoomNeverEndsATakeByItselfThroughTheWholeRealPath")
+            assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
 
             // Long enough that a detector willing to stop on silence alone would have done so many times
             // over: the nominal wait at 1.5 seconds is under two.
@@ -238,7 +236,8 @@ class CaptureWithSilenceStopDeviceTest {
         val (capture, connection) = bindCapture()
         try {
             val started = capture.startCaptureWithSilenceStop(true, 1.5f)
-            assumeTrue("the microphone must be available to this test", started)
+            DeviceNotRun.requireMicrophone(context, "theDetectorBecomesReadyForARealTakeAndTheStatusSaysSo")
+            assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
 
             var status = capture.silenceStopStatus
             for (i in 0 until 50) {
@@ -264,7 +263,8 @@ class CaptureWithSilenceStopDeviceTest {
         val (capture, connection) = bindCapture()
         try {
             val started = capture.startCaptureWithSilenceStop(false, 0f)
-            assumeTrue("the microphone must be available to this test", started)
+            DeviceNotRun.requireMicrophone(context, "withTheSwitchOffNoDetectorIsAskedForAtAll")
+            assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
             Thread.sleep(1_500)
             assertEquals(
                 "off must mean off: no detector, no status to report",
@@ -283,7 +283,8 @@ class CaptureWithSilenceStopDeviceTest {
         val (capture, connection) = bindCapture()
         try {
             val started = capture.startCaptureWithSilenceStop(true, 99f)
-            assumeTrue("the microphone must be available to this test", started)
+            DeviceNotRun.requireMicrophone(context, "anOutOfRangePauseRefusesAutoStopButStillRecords")
+            assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
             Thread.sleep(500)
             assertEquals(
                 "a value nobody could have chosen refuses auto-stop rather than substituting one",
@@ -322,7 +323,9 @@ class CaptureWithSilenceStopDeviceTest {
                 }
             }
             capture.registerSpectrumListener(listener)
-            assumeTrue("the microphone must be available to this test", capture.startCapture())
+            DeviceNotRun.requireMicrophone(context, "aRegisteredListenerReceivesThePictureDuringATake")
+            val started = capture.startCapture()
+            assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
             assertTrue(
                 "a picture must arrive over the callback within five seconds of a take starting; none did",
                 first.await(5, TimeUnit.SECONDS),

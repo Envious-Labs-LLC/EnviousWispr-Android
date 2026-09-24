@@ -21,6 +21,8 @@ import java.lang.reflect.Modifier
 import kotlin.reflect.KClass
 import kotlin.reflect.KMutableProperty
 import kotlin.reflect.KVisibility
+import kotlin.reflect.full.declaredMemberExtensionFunctions
+import kotlin.reflect.full.declaredMemberExtensionProperties
 import kotlin.reflect.full.declaredMemberFunctions
 import kotlin.reflect.full.declaredMemberProperties
 import kotlin.reflect.jvm.javaField
@@ -33,10 +35,13 @@ import kotlin.reflect.jvm.javaSetter
  * (`scripts/visibility-allowlist.txt`), but the members it declares for the app's own use must not be public Kotlin
  * API (`architecture-rules.md` RULE: minimize-visibility). `scripts/check-visibility.py` reads top-level declarations
  * only, so this reads the COMPILED classes: every public JVM method and field of each component, of its companion and
- * of its other nested objects, judged by the Kotlin visibility its class metadata records (a companion `const val` is
- * a public static field whatever it is declared, and an `internal` function a public method with a module-tagged
- * name). A method that overrides a supertype's instance method is the component's contract and passes. When this
- * fails, mark the named member `internal` (or `private`).
+ * of the types nested in its companion, judged by the Kotlin visibility its class metadata records (a companion
+ * `const val` is a public static field whatever it is declared, and an `internal` function a public method with a
+ * module-tagged name). Every other nested type must itself be non-public. A method that overrides a supertype's
+ * instance method, and a constructor (Android and WorkManager construct the component), are the component's contract
+ * and pass. A member with no Kotlin declaration passes only when the compiler made it (synthetic, a bridge, Compose's
+ * `$stable`, or the companion and object instance handles, recognised by their exact type). When this fails, mark the
+ * named member or type `internal` (or `private`).
  */
 class ComponentMemberVisibilityTest {
     private val components: List<Class<*>> = listOf(
@@ -67,8 +72,8 @@ class ComponentMemberVisibilityTest {
 
     /** The Kotlin visibility of the declaration behind [method], looked up in each Kotlin class that may declare it. */
     private fun visibilityOf(method: Method, owners: List<KClass<*>>): KVisibility? = owners.firstNotNullOfOrNull { owner ->
-        owner.declaredMemberFunctions.firstOrNull { it.javaMethod == method }?.visibility
-            ?: owner.declaredMemberProperties.firstNotNullOfOrNull { property ->
+        (owner.declaredMemberFunctions + owner.declaredMemberExtensionFunctions).firstOrNull { it.javaMethod == method }?.visibility
+            ?: (owner.declaredMemberProperties + owner.declaredMemberExtensionProperties).firstNotNullOfOrNull { property ->
                 when (method) {
                     property.javaGetter -> property.getter.visibility
                     (property as? KMutableProperty<*>)?.javaSetter -> property.setter.visibility
@@ -78,34 +83,43 @@ class ComponentMemberVisibilityTest {
     }
 
     private fun visibilityOf(field: Field, owners: List<KClass<*>>): KVisibility? = owners.firstNotNullOfOrNull { owner ->
-        owner.declaredMemberProperties.firstOrNull { it.javaField == field }?.visibility
+        (owner.declaredMemberProperties + owner.declaredMemberExtensionProperties).firstOrNull { it.javaField == field }?.visibility
     }
 
     /** Public JVM members of [type] whose Kotlin declaration is public, or that have no Kotlin declaration at all. */
     private fun exposedIn(type: Class<*>, label: String, owners: List<KClass<*>>): List<String> {
         val supertypes = supertypesOf(type)
         val methods = type.declaredMethods.filter { method ->
-            Modifier.isPublic(method.modifiers) && !method.isSynthetic && !method.isBridge && !method.overridesIn(supertypes) &&
-                (visibilityOf(method, owners) ?: KVisibility.PUBLIC) == KVisibility.PUBLIC
+            val declared = visibilityOf(method, owners)
+            // `@JvmSynthetic` marks a source declaration synthetic too, so synthetic passes only with no declaration.
+            Modifier.isPublic(method.modifiers) && (!method.isSynthetic || declared != null) && !method.isBridge &&
+                !method.overridesIn(supertypes) && (declared ?: KVisibility.PUBLIC) == KVisibility.PUBLIC
         }.map { "$label.${it.name}" }
         val fields = type.declaredFields.filter { field ->
-            // The companion and object instance handles are the object's own reference, judged by its members; a `$`
-            // name (the Compose compiler's `$stable`) is compiler-generated, never a declaration.
-            Modifier.isPublic(field.modifiers) && !field.isSynthetic && field.name != "Companion" && field.name != "INSTANCE" &&
-                !field.name.startsWith("$") &&
-                (visibilityOf(field, owners) ?: KVisibility.PUBLIC) == KVisibility.PUBLIC
+            val declared = visibilityOf(field, owners)
+            val generated = field.name == "\$stable" && declared == null
+            val handle = (field.name == "INSTANCE" && field.type == type) ||
+                (field.name == "Companion" && type.declaredClasses.any { it == field.type && it.kotlin.isCompanion })
+            Modifier.isPublic(field.modifiers) && (!field.isSynthetic || declared != null) && !generated && !handle &&
+                (declared ?: KVisibility.PUBLIC) == KVisibility.PUBLIC
         }.map { "$label.${it.name} (field)" }
         return methods + fields
     }
 
-    /** MUTATIONS: a method, a companion constant, an instance `@JvmField` and a nested object's member put back to public. */
+    /** Every type nested in [type], at any depth. */
+    private fun nestedIn(type: Class<*>): List<Class<*>> = type.declaredClasses.flatMap { listOf(it) + nestedIn(it) }
+
+    /** MUTATIONS: a method, a companion constant, an instance `@JvmField`, a `@JvmSynthetic` member and a nested type put back to public. */
     @Test fun componentMembersAreNarrowerThanTheirComponent() {
         val exposed = components.flatMap { type ->
-            val nested = type.declaredClasses.filter { it.declaredFields.any { field -> field.name == "INSTANCE" } || it.simpleName == "Companion" }
             // A component's static fields and @JvmStatic methods belong to its companion's properties and functions.
-            val companion = type.declaredClasses.singleOrNull { it.simpleName == "Companion" }?.kotlin
-            exposedIn(type, type.simpleName, listOfNotNull(type.kotlin, companion)) +
-                nested.flatMap { exposedIn(it, "${type.simpleName}.${it.simpleName}", listOf(it.kotlin)) }
+            val companion = type.declaredClasses.singleOrNull { it.kotlin.isCompanion }
+            exposedIn(type, type.simpleName, listOfNotNull(type.kotlin, companion?.kotlin)) +
+                listOfNotNull(companion).flatMap { exposedIn(it, "${type.simpleName}.Companion", listOf(it.kotlin)) } +
+                // Any other nested type, including one inside the companion, must not itself be public. A synthetic class
+                // (the compiler's `$WhenMappings`) has no source declaration; `@JvmSynthetic` cannot target a class.
+                nestedIn(type).filter { it != companion && !it.isSynthetic && it.kotlin.visibility == KVisibility.PUBLIC }
+                    .map { "${it.name.substringAfterLast('.')} (type)" }
         }.distinct().sorted()
         assertEquals("members reachable from outside the app", emptyList<String>(), exposed)
     }

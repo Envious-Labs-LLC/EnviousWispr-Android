@@ -950,7 +950,7 @@ class AudioCaptureService : Service() {
     }
 
     /** Wait for the capture thread to finish writing and close the file. */
-    internal fun waitForFileReady(timeoutMs: Long = 2_000L): Boolean {
+    private fun waitForFileReady(timeoutMs: Long = 2_000L): Boolean {
         val thread = captureThread
         if (thread != null && Thread.currentThread() !== thread) {
             thread.join(timeoutMs.coerceAtLeast(0L))

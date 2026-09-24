@@ -74,7 +74,8 @@ internal object SentrySchema {
         AppDefect.CaptureStillRunningAfterStop, AppDefect.CaptureReleaseWedged, is AppDefect.AsrDecodeFailed,
         AppDefect.AsrOverLimit, AppDefect.CleanupRecovered, AppDefect.LocalPolishFailed, AppDefect.PolishUnexpected,
         AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishPolicyUnreadable,
-        AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.HistorySaveTimedOut, is AppDefect.HistoryContractViolation,
+        AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.TakePreparationFailed, AppDefect.HistorySaveTimedOut,
+        is AppDefect.HistoryContractViolation,
         AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.DebugProbe,
         -> defect.semanticId
     }
@@ -85,7 +86,8 @@ internal object SentrySchema {
         AppDefect.CaptureStillRunningAfterStop, AppDefect.CaptureReleaseWedged, AppDefect.AsrDecodeFailed(null),
         AppDefect.AsrOverLimit, AppDefect.CleanupRecovered, AppDefect.LocalPolishFailed, AppDefect.PolishUnexpected,
         AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishPolicyUnreadable,
-        AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.HistorySaveTimedOut, AppDefect.HistoryContractViolation(null),
+        AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.TakePreparationFailed, AppDefect.HistorySaveTimedOut,
+        AppDefect.HistoryContractViolation(null),
         AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.DebugProbe,
     )
 
@@ -156,8 +158,10 @@ internal object SentrySchema {
         "source_host" to Shape.OneOf(ModelSourceHost.entries.map { it.wire }.toSet()),
         "shape" to Shape.OneOf(setOf("null", "mismatched", "blank", "v1_result", "v1_error")),
         "count" to Shape.Number,
-        // The owner's polish preparation step that threw (#252).
-        "step" to Shape.OneOf(com.envi.wispr.ui.TakePolishController.PREPARATION_STEPS),
+        // The owner's polish preparation step that threw (#252), or the take's start preparation (#290).
+        "step" to Shape.OneOf(com.envi.wispr.ui.TakePolishController.PREPARATION_STEPS + com.envi.wispr.ui.DictationSessionCoordinator.STEP_MATCHER),
+        // Why a start preparation fell back (#290).
+        "kind" to Shape.OneOf(setOf(com.envi.wispr.ui.DictationSessionCoordinator.KIND_TIMEOUT, com.envi.wispr.ui.DictationSessionCoordinator.KIND_ERROR)),
         // A pending defect's detail: the capture release note or a VAD call name.
         "detail" to Shape.OneOf(setOf("capture_release", "start", "processBlock", "finish")),
     )

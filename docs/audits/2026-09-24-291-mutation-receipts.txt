@@ -1,0 +1,7 @@
+# #291 mutation receipts (each applied alone, its named row run, the source restored)
+RED: m1 prepare inline before submitting -> anAnswerIsPreparedOnTheWorkerNeverOnTheCaller
+RED: m2 the refusal delivers inline -> aRefusedAnswerDeliversTheRawWordsOffTheCaller
+RED: m3 the task ignores the token -> aCancelledAnswerIsNeverDelivered
+RED: m4 close runs then immediately -> closeRunsItsFinalStepBehindTheAdmittedAnswers
+RED: m5 a branch answers inline again -> theRequestEntryPreparesNothingOnItsBinderThread
+COVERED: m6 (the refusal ignores the token) is m3: both answers go through the one `deliver`

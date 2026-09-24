@@ -58,6 +58,14 @@ The `:polish` process's three failure answers now arrive from another thread a m
 - [ ] Emulator: a normal take polishes and lands.
 - [ ] Codex code review ALL-CLEAR.
 
-## 6. Related
+## 6. As built (2026-09-24)
+
+- `polish/PolishFallbackLane.kt`: one token per answer with a single `settled` flag won once by the deliverer or by `cancel` (so a cancel between the check and the claim cannot slip through); a cleanup that throws answers the raw words; a refusal delivers the raw words from `startRefusal` (a daemon thread in production); `close(then)` marks closed, enqueues `then` and shuts the worker down under the admission lock.
+- `PolishService`: `fallbackLane` on a daemon `PolishFallbackThread`; the three branches call `fallbackLane.answer`; `cancel` also cancels the lane; `localBudget()` is read inside the queued `work` call; `onDestroy` checks the kill condition first, and on the orderly path closes the lane with the detector close as its final step.
+- Deviation: m6 is not a separate mutation: the refusal and the queued answer share one `deliver`, so m3 (the token ignored there) covers both, and row 3 asserts both.
+- Mutation receipts: `docs/audits/2026-09-24-291-mutation-receipts.txt`, 5 of 5 RED. Full unit suite: 1291 tests, 0 failures. App and androidTest build; `check-visibility.py` clean.
+- Emulator: the build installs and a take goes live (`Take terminal: NO_SPEECH ... live=152`), but the emulator's audio input failed again (91 `pcm_readi failed` read errors over two takes, #273), so a spoken polished take is NOT RUN. The three changed branches are failure paths no device run could stage anyway; the only normal-path change is where the debug-build budget file is read.
+
+## 7. Related
 
 #75, #278, #107; REF-02 of the fourth 2026-09-23 audit.

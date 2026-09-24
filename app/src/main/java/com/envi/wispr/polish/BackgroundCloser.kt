@@ -47,10 +47,16 @@ internal class BackgroundCloser(private val executor: Executor) {
         try {
             resource.close()
             // Content-free: which resource, on which thread. The receipt that the close left the caller's thread.
-            runCatching { DebugLogger.log(TAG, "Closed ${resource.javaClass.simpleName} on ${Thread.currentThread().name}") }
+            try {
+                DebugLogger.log(TAG, "Closed ${resource.javaClass.simpleName} on ${Thread.currentThread().name}")
+            } catch (_: Exception) {
+            }
         } catch (error: Exception) {
             // Shape only, never a message (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
-            runCatching { DebugLogger.warn(TAG, "Close failed: ${error.javaClass.simpleName}") }
+            try {
+                DebugLogger.warn(TAG, "Close failed: ${error.javaClass.simpleName}")
+            } catch (_: Exception) {
+            }
         }
     }
 }

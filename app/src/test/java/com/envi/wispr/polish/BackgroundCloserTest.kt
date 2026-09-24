@@ -15,8 +15,8 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 /**
- * `BackgroundCloser` (#306): a Service's close of a vendor resource never runs on the caller's thread, is never
- * dropped when the worker refuses it, and a close that throws never escapes. Every wait is a bounded latch or join.
+ * `BackgroundCloser` (#306): with PROCESS, close runs off the caller. Injected executors may run inline; rejection
+ * uses a daemon thread if it starts. A close that throws never escapes. Every wait is a bounded latch or join.
  */
 class BackgroundCloserTest {
 

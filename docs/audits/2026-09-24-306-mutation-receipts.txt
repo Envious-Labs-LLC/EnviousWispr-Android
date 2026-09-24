@@ -4,8 +4,10 @@ Before the change (main aef5dde, only the new row added):
   DictationSessionServiceTeardownTest.theSessionIsInvalidatedBeforeTheDetectorClosesOffMain
   RED: AssertionError: the detector is closed through the background closer (onDestroy closed it on main, first)
 
-Mutations, one run on the final code (m4's anchor refreshed after the close log line was added):
-RED: m1 the original order, on main -> theSessionIsInvalidatedBeforeTheDetectorClosesOffMain
+Mutations, one run on the final code (after code review round 1; m1 swaps the order only, keeping the background
+close, and m4's anchor follows the logging guards):
+RED: m1 the original order only -> theSessionIsInvalidatedBeforeTheDetectorClosesOffMain
+     (AssertionError: the session is invalidated before the detector closes)
 RED: m2 close on the calling thread -> theCallerNeverWaitsForTheClose
      (the caller did not return while the close was still running)
 RED: m3 no rejection fallback -> aRefusedCloseStillRunsOffTheCaller (the refused close never ran)

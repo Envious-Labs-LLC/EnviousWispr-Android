@@ -1,5 +1,6 @@
 package com.envi.wispr.polish
 
+import com.envi.wispr.process.EngineDeadline
 import java.util.concurrent.Callable
 import java.util.concurrent.Delayed
 import java.util.concurrent.ScheduledExecutorService

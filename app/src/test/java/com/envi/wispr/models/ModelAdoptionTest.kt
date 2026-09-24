@@ -37,6 +37,10 @@ class ModelAdoptionTest {
         root.deleteRecursively(); legacy.deleteRecursively(); Files.deleteIfExists(outside)
     }
 
-    private fun descriptor(bytes: ByteArray) = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", "r1", listOf(ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://huggingface.co/test/model/resolve/r1/model.bin")))
+    private fun descriptor(bytes: ByteArray) = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", R1, listOf(ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://huggingface.co/test/model/resolve/$R1/model.bin")))
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }
+
+/** Pinned revisions in the shape the manifest requires (#284): full 40-character commit hashes. */
+private const val R1 = "1111111111111111111111111111111111111111"
+private const val R2 = "2222222222222222222222222222222222222222"

@@ -1,0 +1,4 @@
+# #261 mutation receipts (each applied alone, its named row run, the source restored)
+Before the change: componentMembersAreNarrowerThanTheirComponent failed naming exactly the six members of plan section 1.
+RED: m1 windowTreeXml public again -> componentMembersAreNarrowerThanTheirComponent
+RED: m2 startDictationFromBubble public again -> componentMembersAreNarrowerThanTheirComponent

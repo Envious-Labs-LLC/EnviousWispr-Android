@@ -62,7 +62,7 @@ class PasteAccessibilityService : AccessibilityService() {
          * readers pay nothing at idle (`architecture-rules.md` RULE: no-idle-cost). The Android
          * setting string cannot answer this: it still names a service that has crashed.
          */
-        val isBound: StateFlow<Boolean> = boundState.asStateFlow()
+        internal val isBound: StateFlow<Boolean> = boundState.asStateFlow()
 
         private fun publishBinding(service: PasteAccessibilityService?) {
             instance = service
@@ -104,7 +104,7 @@ class PasteAccessibilityService : AccessibilityService() {
             }
         }
 
-        fun releasePinnedTarget() {
+        internal fun releasePinnedTarget() {
             val service = instance ?: return
             service.callOnMain(Unit) {
                 if (!service.runner.isPending) service.tracker.clearPinnedTarget()
@@ -112,7 +112,7 @@ class PasteAccessibilityService : AccessibilityService() {
         }
 
         /** The accessibility view id of the pinned editor, or null when nothing is pinned or it has none. */
-        fun pinnedFieldId(): String? {
+        internal fun pinnedFieldId(): String? {
             val service = instance ?: return null
             return service.callOnMain(null) { service.tracker.pinnedViewId }
         }
@@ -122,7 +122,7 @@ class PasteAccessibilityService : AccessibilityService() {
          * bound (#181). Read on the main thread like every other read of `windows`. Only the
          * debug-build dump receiver calls this; it is here because [instance] stays private.
          */
-        fun windowTreeXml(): String? {
+        internal fun windowTreeXml(): String? {
             val service = instance ?: return null
             return service.callOnMain(null) {
                 WindowTreeXml.render(WindowTreeXml.fromWindows(service.windows))
@@ -134,7 +134,7 @@ class PasteAccessibilityService : AccessibilityService() {
          * accessibility event to say so (setup left its practice screen): re-check the remembered
          * editor, so the bubble leaves with the field instead of lingering on the next screen.
          */
-        fun refreshBubble() {
+        internal fun refreshBubble() {
             val service = instance ?: return
             service.mainHandler.post { service.bubble.refresh() }
         }
@@ -216,7 +216,7 @@ class PasteAccessibilityService : AccessibilityService() {
      * The direct route exists because launching an activity, even a 1x1 non-focusable one, pauses the
      * user's app and Chrome then hides its keyboard (measured on the Android 16 emulator, 2026-09-12).
      */
-    fun startDictationFromBubble(request: String): Boolean {
+    internal fun startDictationFromBubble(request: String): Boolean {
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             return false
         }

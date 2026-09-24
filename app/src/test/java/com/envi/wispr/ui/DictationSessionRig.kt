@@ -826,10 +826,15 @@ internal class DictationSessionRig {
         }
         override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int {
             holdRecovery?.await()
-            return recover(cutoffMs, { it.status == TranscriptEntity.STATUS_DRAFT || it.status == TranscriptEntity.STATUS_PROCESSING }) {
+            return recover(cutoffMs, { it.status == TranscriptEntity.STATUS_DRAFT }) {
                 it.copy(status = TranscriptEntity.STATUS_INTERRUPTED, insertionResult = "not_attempted", interrupted = true)
             }
         }
+        /** Mirrors `TranscriptDao.recoverStaleProcessingRows` (#277): delivery unknown, never "not attempted". */
+        override suspend fun recoverStaleProcessingRows(cutoffMs: Long, nowMs: Long): Int =
+            recover(cutoffMs, { it.status == TranscriptEntity.STATUS_PROCESSING }) {
+                it.copy(status = TranscriptEntity.STATUS_INTERRUPTED, insertionResult = com.envi.wispr.insertion.InsertionResults.DELIVERY_UNKNOWN, interrupted = true)
+            }
         override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int =
             recover(cutoffMs, { it.status == TranscriptEntity.STATUS_READY_FOR_INSERTION && it.insertionResult == "pending" }) {
                 it.copy(status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED, insertionResult = com.envi.wispr.insertion.InsertionResults.INSERTION_INTERRUPTED, stateChangedAtMs = nowMs, interrupted = true)

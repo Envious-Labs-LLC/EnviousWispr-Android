@@ -317,10 +317,45 @@ class HistoryNeverHoldsTheWordsTest {
         val order = mutableListOf<String>()
         val recording = object : com.envi.wispr.history.TranscriptDao by rig.dao {
             override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int { order += "drafts"; return 0 }
+            override suspend fun recoverStaleProcessingRows(cutoffMs: Long, nowMs: Long): Int { order += "processing"; return 0 }
             override suspend fun recoverStaleUnroutedRows(cutoffMs: Long, nowMs: Long): Int { order += "neutral"; return 0 }
             override suspend fun recoverStaleReadyRowsReturningIds(cutoffMs: Long, nowMs: Long): List<Long> { order += "ready"; return emptyList() }
         }
         TranscriptRepository(recording).recoverStaleOpenRows(nowMs = 100_000L)
-        assertEquals(listOf("drafts", "neutral", "ready"), order)
+        assertEquals(listOf("drafts", "processing", "neutral", "ready"), order)
+    }
+
+    /**
+     * Code review round 1: a take killed after its words were handed over and before its save landed leaves a
+     * processing row; recovery reads it as delivery unknown, never "not attempted". A draft (still recording) stays
+     * "not attempted". MUTATION m6: `recoverStaleOpenRows` skips the processing scan (the draft scan then no longer
+     * matches it, and the row stays processing).
+     */
+    @Test fun recoveryReadsAProcessingRowAsDeliveryUnknownAndADraftAsNotAttempted() = runBlocking {
+        val dao = rig.dao
+        dao.rows[1L] = row(1L, TranscriptEntity.STATUS_PROCESSING, "pending", 1_000L)
+        dao.rows[2L] = row(2L, TranscriptEntity.STATUS_DRAFT, "pending", 1_000L)
+        val recovered = TranscriptRepository(dao).recoverStaleOpenRows(nowMs = 100_000L, cutoffMs = 50_000L)
+        assertEquals(InsertionResults.DELIVERY_UNKNOWN, dao.rows.getValue(1L).insertionResult)
+        assertEquals(TranscriptEntity.STATUS_INTERRUPTED, dao.rows.getValue(1L).status)
+        assertEquals("not_attempted", dao.rows.getValue(2L).insertionResult)
+        assertEquals("the unknown row is counted, so it is reported", 1, recovered.unknownCount)
+    }
+
+    /**
+     * Code review round 1: the bound is measured from the save's enqueue, not from when the observer started. The
+     * clock jumps past the bound the moment the save lands; the observer, still inside its real wait, must report it.
+     * MUTATION m5: drop the elapsed-since-enqueue check after the answer.
+     */
+    @Test fun aSaveAnsweredPastTheBoundIsReportedEvenIfTheObserverSawItInTime() {
+        val bound = 1_000L
+        var now = 50_000L
+        rig.host.clock = { now }
+        rig.dao.afterFinalize = { now += bound + 1 }
+        val coordinator = rig.coordinator(historySaveBoundMs = bound)
+        takeWithPolishedWords(coordinator)
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        awaitUntil("the late save's defect") { rig.defects.any { it.first == "history_save_timed_out" } }
     }
 }

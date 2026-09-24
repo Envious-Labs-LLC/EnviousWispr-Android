@@ -998,9 +998,13 @@ internal class DictationSessionCoordinator(
         // before enqueueing `interrupted`, so a reserved finalization is always queued ahead of it and
         // `interrupted` is the last word on the row.
         val saved = CompletableDeferred<SaveOutcome>()
+        var saveEnqueuedAtMs = 0L
         val publication = synchronized(publishLock) {
             val reserved = current.arbiter.reserve(Claimants.PUBLICATION) ?: return@synchronized null
-            if (finalText.isNotBlank()) finalizer.enqueueSave(current.history, payload, saved)
+            if (finalText.isNotBlank()) {
+                saveEnqueuedAtMs = host.elapsedRealtimeMs()
+                finalizer.enqueueSave(current.history, payload, saved)
+            }
             reserved
         }
         if (publication == null) {
@@ -1020,7 +1024,7 @@ internal class DictationSessionCoordinator(
             }
         }
 
-        watchSave(saved, takeId)
+        watchSave(saved, saveEnqueuedAtMs, takeId)
         scope.launch {
             // The words never wait on History (#277): insertion is the heart, History a limb. The save's answer is
             // recorded if it is already in, else `pending`; the committed facts are never changed afterwards, and
@@ -1044,17 +1048,20 @@ internal class DictationSessionCoordinator(
     }
 
     /**
-     * The History save's diagnostics (#277), independent of delivery: the bound starts when the save is enqueued;
-     * a save still unanswered at it raises one `HistorySaveTimedOut`, and a failure, early or late, raises its
-     * breadcrumb and defect once. Nothing here routes, inserts or changes the take's facts.
+     * The History save's diagnostics (#277), independent of delivery. The bound is measured from [enqueuedAtMs], when
+     * the save was enqueued, never from when this observer happened to start: a save whose answer is observed past
+     * it raises one `HistorySaveTimedOut`, and a failure, early or late, raises its breadcrumb and defect once.
+     * Nothing here routes, inserts or changes the take's facts.
      */
-    private fun watchSave(saved: CompletableDeferred<SaveOutcome>, takeId: String) {
+    private fun watchSave(saved: CompletableDeferred<SaveOutcome>, enqueuedAtMs: Long, takeId: String) {
         scope.launch {
-            val answer = withTimeoutOrNull(historySaveBoundMs) { saved.await() } ?: run {
+            val remainingMs = historySaveBoundMs - (host.elapsedRealtimeMs() - enqueuedAtMs)
+            val inTime = if (remainingMs > 0L) withTimeoutOrNull(remainingMs) { saved.await() } else null
+            if (inTime == null || host.elapsedRealtimeMs() - enqueuedAtMs > historySaveBoundMs) {
                 log.warn("History save did not answer in $historySaveBoundMs ms; the words did not wait for it")
                 reportDefect(AppDefect.HistorySaveTimedOut, mapOf("take_id" to takeId))
-                saved.await()
             }
+            val answer = inTime ?: saved.await()
             if (answer is SaveOutcome.Failed) {
                 val error = answer.cause
                 log.warn("Unable to save transcript history: ${error.javaClass.simpleName}")

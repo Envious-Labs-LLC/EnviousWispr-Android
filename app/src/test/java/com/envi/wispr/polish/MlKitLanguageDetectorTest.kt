@@ -60,7 +60,7 @@ class MlKitLanguageDetectorTest {
         private val result = AtomicReference<Result<DetectedLanguage?>>()
         private val thread = thread { result.set(runCatching { detector.detect(text) }) }
 
-        /** Joins, then asserts the detection finished without throwing and answered null (the fake always throws). */
+        /** Joins, then asserts the detection finished; the detection must answer null without throwing. */
         fun answeredNull() {
             thread.join(10_000)
             assertFalse("the detection finished", thread.isAlive)

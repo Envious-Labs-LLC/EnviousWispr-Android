@@ -159,20 +159,17 @@ internal class MlKitLanguageDetector internal constructor(
     /**
      * Builds the client and publishes it, holding NO lock at any point.
      *
-     * A caller that loses the publication releases the client it built instead of leaking it, outside any
-     * shared state, which is the defect that killed the previous three designs. [acquire] does not release a
-     * published client after [close]; [close] or the last detection out attempts its release, as named on
-     * [releaseClient] (#279).
-     * Normal app takes are serialised, but concurrent first callers remain
-     * representable: a duplicate request reaching a binder early exit while another thread is acquiring
-     * produces two. The CAS publishes one and the loser releases its own, so the cost is a wasted
-     * allocation rather than a leak.
+     * Normal app takes are serialised, but concurrent first callers remain representable: a duplicate
+     * request reaching a binder early exit while another thread is acquiring produces two. A CAS loser uses
+     * the published client. It releases its constructed client only when that is a distinct instance, outside
+     * any shared state; a shared instance remains published. [acquire] does not release a published client
+     * after [close]; [close] or the last detection out attempts its release, as named on [releaseClient] (#279).
      */
     private fun acquire(): LanguageIdentifier? {
         val created = newClient() ?: return null
         if (!client.compareAndSet(null, created)) {
-            // Another caller published first. Use theirs and release ours, which nobody else ever saw; a builder
-            // that handed back the very instance already published must not close it (#279 review).
+            // A CAS loser uses the published client. It releases its constructed client
+            // only when that is a distinct instance; a shared instance remains published.
             val published = client.get()
             if (created !== published) release(created)
             return published
@@ -196,7 +193,7 @@ internal class MlKitLanguageDetector internal constructor(
      */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        // Only when nothing is using it. A detection in flight releases it on its way out instead.
+        // Only when nothing is using it. Otherwise the last detection out releases it instead.
         if (activeDetections.get() == 0) releaseClient()
     }
 

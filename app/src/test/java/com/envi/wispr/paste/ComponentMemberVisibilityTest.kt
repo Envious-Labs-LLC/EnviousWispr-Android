@@ -98,8 +98,10 @@ class ComponentMemberVisibilityTest {
         val fields = type.declaredFields.filter { field ->
             val declared = visibilityOf(field, owners)
             val generated = field.name == "\$stable" && declared == null
-            val handle = (field.name == "INSTANCE" && field.type == type) ||
-                (field.name == "Companion" && type.declaredClasses.any { it == field.type && it.kotlin.isCompanion })
+            val handle = declared == null && (
+                (field.name == "INSTANCE" && type.kotlin.isCompanion && field.type == type) ||
+                    (field.name == "Companion" && type.declaredClasses.any { it == field.type && it.kotlin.isCompanion })
+                )
             Modifier.isPublic(field.modifiers) && (!field.isSynthetic || declared != null) && !generated && !handle &&
                 (declared ?: KVisibility.PUBLIC) == KVisibility.PUBLIC
         }.map { "$label.${it.name} (field)" }

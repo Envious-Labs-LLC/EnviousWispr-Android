@@ -201,7 +201,7 @@ class LiveGateWiringTest {
     fun theHistoryDurationIsTheFileLengthReadBeforeTranscriptionCanDeleteIt() {
         // Since #115 the file arrives CLOSED on the ending event; the duration is read from it there.
         val stop = body(session, "private fun continueAfterEnding(")
-        val duration = stop.indexOf("PcmAudio.durationSeconds(File(it).length())")
+        val duration = stop.indexOf("capturedAudio.durationMs(audioFilePath)")
         assertTrue(duration > 0)
         assertTrue("read from the ending's path", stop.indexOf("val audioFilePath = ending.audioFilePath") in 0 until duration)
         assertTrue("and before the take is handed to the service", duration < stop.indexOf("finishTakeOrStop()"))

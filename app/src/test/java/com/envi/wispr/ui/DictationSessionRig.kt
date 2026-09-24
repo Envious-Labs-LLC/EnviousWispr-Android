@@ -204,7 +204,7 @@ internal class DictationSessionRig {
         polishLedger = PolishRequestLedger(PolishRequestIdSource { System.nanoTime() }),
         endingSink = endings::record,
         defectSink = { defect, data -> if (throwOnDefect) throw IllegalStateException("sink broke"); defects += defect.fingerprint to data },
-        audioCleanup = audioCleanup,
+        capturedAudio = CapturedAudioFiles(execute = audioCleanup, warn = { log.warn(it) }),
         admitTake = admit,
         preparationBoundMs = preparationBoundMs,
         compileMatcher = compileMatcher,

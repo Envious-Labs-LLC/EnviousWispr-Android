@@ -472,7 +472,14 @@ internal class SessionFinalizer(
         )
     }
 
-    /** @return whether the words actually reached the clipboard, which the copy depends on. */
+    /** @return whether the words actually reached the clipboard, which the copy depends on.
+     *
+     * The take's FIRST copy of its own words, never a restore or a rewrite (#325): it may replace a clip Android will
+     * not let us inspect, since Android 10+ refuses the read to an app that is not in focus (`code-gotchas.md` RULE:
+     * never-clobber-a-clipboard-you-do-not-own), so it never claims to preserve a newer clip. Skipping it when the
+     * clip is unreadable would take the words off the clipboard on almost every fallback; they are kept on the phone
+     * regardless (#288). Never treat an unreadable clip as permission to restore or rewrite.
+     */
     private fun keepOnClipboard(
         row: HistoryRow,
         text: String,

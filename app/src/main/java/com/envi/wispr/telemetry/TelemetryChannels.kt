@@ -171,6 +171,9 @@ internal object TelemetryChannels {
      * this list does not name is the world: an unknown failure is never promoted to a defect.
      */
     fun historySaveDefect(error: Throwable): AppDefect? = when (error) {
+        // A refusal is overload, not a broken contract (#304): the queue already raises one
+        // `HistoryQueueOverloaded` per overload episode (#292). Before the IllegalStateException branch it extends.
+        is com.envi.wispr.history.HistoryQueueFullException -> null
         is android.database.sqlite.SQLiteConstraintException,
         is android.database.sqlite.SQLiteMisuseException,
         is IllegalArgumentException,

@@ -110,6 +110,18 @@ internal class DictationSessionRig {
     val uncaught = CopyOnWriteArrayList<Throwable>()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, error -> uncaught += error })
 
+    /**
+     * The History save observer's own scope (#304), never the owner's: production's observer is application-owned,
+     * so destroying the owner must not end a save's diagnostics.
+     */
+    val saveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, error -> uncaught += error })
+
+    /** The observer's breadcrumbs, as (message, data) (#304). */
+    val breadcrumbs = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Map<String, Any?>>>()
+
+    /** When set, the observer's warn sink throws (#304 row 2c). */
+    @Volatile var throwOnSaveWarn = false
+
     var preferencesSource: SessionPreferencesSource = SessionPreferencesSource(
         preferenceStates = preferenceStates,
         terms = terms,
@@ -120,8 +132,10 @@ internal class DictationSessionRig {
     fun coordinator(
         preferences: SessionPreferencesSource = preferencesSource,
         answerBoundMs: Long = 5_000L,
-        /** Generous by default so no healthy row races it; the #235 rows set a short one against a held save. */
+        /** The observer's bound (#304); generous by default so no healthy row races it; the #235 rows set a short one. */
         historySaveBoundMs: Long = 5_000L,
+        /** The observer's scope: the rig's own by default, never the owner's (#304). */
+        historySaveScope: CoroutineScope = saveScope,
         /** Abstains by default; the #252 row passes one that throws. */
         languageDetector: LanguageDetector = LanguageDetector { null },
         /** Runs each captured-audio delete at once by default; the #253 row holds it past a teardown. */
@@ -140,6 +154,14 @@ internal class DictationSessionRig {
         log = log,
         preferences = preferences,
         historyWrites = historyWrites,
+        historySaves = HistorySaveObserver(
+            scope = historySaveScope,
+            clock = { host.elapsedRealtimeMs() },
+            warn = { line -> if (throwOnSaveWarn) throw IllegalStateException("warn broke"); log.warn(line) },
+            defectSink = { defect, data -> if (throwOnDefect) throw IllegalStateException("sink broke"); defects += defect.fingerprint to data },
+            breadcrumb = { _, message, data -> breadcrumbs += message to data },
+            boundMs = historySaveBoundMs,
+        ),
         transcripts = transcripts,
         languageDetector = languageDetector,
         loadPolicy = {
@@ -159,7 +181,6 @@ internal class DictationSessionRig {
         mainDispatcher = mainDispatcher,
         polishTimeout = polishTimeout,
         answerBoundMs = answerBoundMs,
-        historySaveBoundMs = historySaveBoundMs,
         tipGate = BluetoothTipGate(),
         polishLedger = PolishRequestLedger(PolishRequestIdSource { System.nanoTime() }),
         endingSink = endings::record,
@@ -207,6 +228,7 @@ internal class DictationSessionRig {
     }
 
     fun close() {
+        saveScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         mainExecutor.shutdownNow()
         capture.close()
         capture.audioFile?.delete()

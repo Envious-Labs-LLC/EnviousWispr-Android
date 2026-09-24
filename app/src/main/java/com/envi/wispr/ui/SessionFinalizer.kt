@@ -264,6 +264,8 @@ internal class SessionFinalizer(
     private val insertion: InsertionGateway,
     private val log: SessionLog,
     private val historyWrites: HistoryWriteQueue,
+    /** The save's diagnostics (#304): application-owned, so they outlive the Service that asked for the save. */
+    private val historySaves: HistorySaveObserver,
 ) {
     /**
      * The finalize-or-insert write, ENQUEUED inside the owner's reservation (#115): destroy takes the same
@@ -274,7 +276,10 @@ internal class SessionFinalizer(
         history: TakeHistory,
         publication: Publication,
         saved: SaveSlot,
+        takeId: String,
     ) {
+        // Taken IMMEDIATELY before the enqueue (#304), so the refusal path has it too.
+        val enqueuedAtMs = host.elapsedRealtimeMs()
         val admitted = historyWrites.enqueue("finalize", WriteKind.TERMINAL) { repository ->
             val answer = runCatching {
                     val existingId = history.resolvedId()
@@ -306,6 +311,7 @@ internal class SessionFinalizer(
         }
         // A refused save is a failed save (#292): the words never waited on it, and its diagnostics report it.
         if (admitted == Enqueued.REJECTED) saved.answer(SaveOutcome.Failed(HistoryQueueFullException()), host::elapsedRealtimeMs)
+        historySaves.observe(saved, enqueuedAtMs, takeId)
     }
 
     /**

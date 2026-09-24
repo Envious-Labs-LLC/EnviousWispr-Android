@@ -1,0 +1,29 @@
+# #304 receipts, 2026-09-24, worktree head 6cbd5fb plus the change
+
+Before the change (main 6cbd5fb, only the new row added):
+  HistoryNeverHoldsTheWordsTest.aSaveStillHeldWhenTheServiceIsDestroyedIsStillDiagnosed
+  RED: java.lang.IllegalStateException: never: the bound's defect after the Service is gone
+  (the row then used a 300 ms real bound; it was made decisive with a scripted clock afterwards, and m1 below
+  reproduces the same failure against the final row)
+
+Mutations, one run:
+RED: m1 the observer on the owner's scope -> aSaveStillHeldWhenTheServiceIsDestroyedIsStillDiagnosed
+     (never: the bound's defect after the Service is gone)
+RED: m2 the observer drops the failure report -> aSaveThatFailsAfterTheServiceIsDestroyedIsStillDiagnosed
+     (never: the failure's defect after the Service is gone)
+RED: m3 one guard around the three failure sinks -> aThrowingWarnSinkNeverCostsTheOtherReports
+     (never: the failure's defect with a broken warn sink)
+RED: m4 a refusal is a contract violation again -> aRefusedSaveNamesNoDefectOfItsOwn
+     (expected null but was HistoryContractViolation)
+ALL RED
+
+Repeats: HistoryNeverHoldsTheWordsTest 20 of 20 green (--rerun each time).
+Suite: scripts/measure-tests.sh tests=1313 suites=161 failures=0 errors=0 skipped=0 (1,309 before: four new rows).
+Builds: :app:assembleDebug and :app:assembleDebugAndroidTest; scripts/check-visibility.py clean;
+scripts/check-cited-symbols.py all citations resolve.
+
+Emulator (emulator-5554, debug build of this change, logcat cleared first): "and I will send the deck tomorrow" spoken
+into a Gmail draft; route=COMMIT, outcome=VERIFIED; the editor's whole text equals "And I will send the deck
+tomorrow." plus the insertion's trailing space; "Take terminal: COMPLETED"; the History page's newest row reads
+"And I will send the deck tomorrow." at 4:14 AM. No "History save did not answer" or "Unable to save transcript
+history" line: a healthy save reports nothing.

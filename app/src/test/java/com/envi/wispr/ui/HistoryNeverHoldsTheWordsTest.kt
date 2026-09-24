@@ -83,6 +83,63 @@ class HistoryNeverHoldsTheWordsTest {
     }
 
     /**
+     * Row 1b (#304). The Service is destroyed right after the words are handed over, as it is after every
+     * ordinary take, while the save is still held: the bound's defect must still be raised, because the
+     * save's diagnostics belong to the History write, not to the Service's scope.
+     */
+    @Test fun aSaveStillHeldWhenTheServiceIsDestroyedIsStillDiagnosed() {
+        // A scripted clock that moves past the bound only AFTER the owner is destroyed, so the row cannot pass by the
+        // bound expiring first (#304 coverage). MUTATION m1: the observer on the owner's scope.
+        val bound = 1_000L
+        // Shared across the test and observer threads, so an atomic (#304 review).
+        val now = java.util.concurrent.atomic.AtomicLong(50_000L)
+        rig.host.clock = now::get
+        rig.dao.holdFinalize = CompletableDeferred()
+        val coordinator = rig.coordinator(historySaveBoundMs = bound)
+        takeWithPolishedWords(coordinator)
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitServiceStopped()
+        coordinator.destroy()
+        assertTrue("nothing reported before the clock moves", rig.defects.none { it.first == "history_save_timed_out" })
+        now.addAndGet(bound + 1)
+        awaitUntil("the bound's defect after the Service is gone") { rig.defects.any { it.first == "history_save_timed_out" } }
+        rig.dao.holdFinalize!!.complete(Unit)
+    }
+
+    /**
+     * Row 2b (#304). A save held past the owner's destroy, then failing with a classified error: the warning, the
+     * `history_save_failed` breadcrumb and exactly one contract defect still arrive. MUTATION m2.
+     */
+    @Test fun aSaveThatFailsAfterTheServiceIsDestroyedIsStillDiagnosed() {
+        rig.dao.holdFinalize = CompletableDeferred()
+        rig.dao.failFinalize = true
+        val coordinator = rig.coordinator(historySaveBoundMs = 5_000L)
+        takeWithPolishedWords(coordinator)
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitServiceStopped()
+        coordinator.destroy()
+        rig.dao.holdFinalize!!.complete(Unit)
+        awaitUntil("the failure's defect after the Service is gone") { rig.defects.any { it.first == "history_contract_violation" } }
+        rig.log.awaitLine("Unable to save transcript history: IllegalStateException")
+        assertEquals(listOf("history_save_failed"), rig.breadcrumbs.map { it.first })
+        assertEquals(1, rig.defects.count { it.first == "history_contract_violation" })
+    }
+
+    /**
+     * Row 2c (#304). A warning sink that throws costs its own line only: the failure's breadcrumb and defect still
+     * arrive. MUTATION m3: one guard around all three sinks.
+     */
+    @Test fun aThrowingWarnSinkNeverCostsTheOtherReports() {
+        rig.throwOnSaveWarn = true
+        rig.dao.failFinalize = true
+        val coordinator = rig.coordinator(historySaveBoundMs = 5_000L)
+        takeWithPolishedWords(coordinator)
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        awaitUntil("the failure's defect with a broken warn sink") { rig.defects.any { it.first == "history_contract_violation" } }
+        assertEquals(listOf("history_save_failed"), rig.breadcrumbs.map { it.first })
+    }
+
+    /**
      * Row 2. A failed save after its draft exists: the words are still handed to insertion; the draft stays
      * unfinalized; the handle resolves 0, so no outcome is written to the draft; the failure is diagnosed once.
      */
@@ -400,9 +457,10 @@ class HistoryNeverHoldsTheWordsTest {
      */
     @Test fun aSaveAnsweredPastTheBoundIsReportedEvenIfTheObserverSawItInTime() {
         val bound = 1_000L
-        var now = 50_000L
-        rig.host.clock = { now }
-        rig.dao.afterFinalize = { now += bound + 1 }
+        // Shared across the test, History and observer threads, so an atomic (#304 review).
+        val now = java.util.concurrent.atomic.AtomicLong(50_000L)
+        rig.host.clock = now::get
+        rig.dao.afterFinalize = { now.addAndGet(bound + 1) }
         // Held until the take has ended, so the observer (launched at publication, before the commit) is already
         // inside its real wait when the save lands and the clock jumps.
         rig.dao.holdFinalize = CompletableDeferred()

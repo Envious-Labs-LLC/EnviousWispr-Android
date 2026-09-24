@@ -73,6 +73,8 @@ internal class DictationSessionCoordinator(
     private val preferences: SessionPreferencesSource,
     /** Every per-take History write goes through here, in enqueue order, on the application's worker (#115). */
     private val historyWrites: HistoryWriteQueue,
+    /** The History save's diagnostics (#304), application-owned so they outlive this Service's scope. */
+    private val historySaves: HistorySaveObserver,
     /** For the start-up recovery ONLY, on the session scope: a stalled recovery must not sit ahead of a take's writes on the queue. */
     private val transcripts: TranscriptRepository,
     private val languageDetector: LanguageDetector,
@@ -87,11 +89,6 @@ internal class DictationSessionCoordinator(
     private val polishTimeout: PolishTimeout = DelayPolishTimeout,
     /** How long a take waits for the settings readers to answer before starting on the last values; a test shortens it (#193). */
     private val answerBoundMs: Long = SETTINGS_ANSWER_BOUND_MS,
-    /**
-     * The History save's diagnostic bound (#235, #277): a save slower than this raises one defect. The words
-     * never wait for it; a product ceiling for the report, not a Room time.
-     */
-    private val historySaveBoundMs: Long = HISTORY_SAVE_BOUND_MS,
     /** How long the matcher compile and the policy read may take together before the take starts on fallbacks (#290); a test shortens it. */
     private val preparationBoundMs: Long = PREPARATION_BOUND_MS,
     /** The vocabulary matcher's compile (#290): production's own, a test throws or holds it. */
@@ -113,9 +110,6 @@ internal class DictationSessionCoordinator(
     private val audioCleanup: (Runnable) -> Unit = CapturedAudioCleanup::execute,
 ) : PipelineController.Listener {
     companion object {
-        /** The History save's diagnostic bound (#235, #277): past it one defect, never a wait for the words. */
-        const val HISTORY_SAVE_BOUND_MS = 1_000L
-
         /**
          * How long the matcher compile and the policy read may take together (#290). Both are milliseconds on a
          * normal day (#258); past this the take starts on their fallbacks, so neither can hold it in STARTING.
@@ -206,7 +200,7 @@ internal class DictationSessionCoordinator(
     private val capture = CaptureSessionController(host, surface, log, pipeline, ::onCaptureEvent)
 
     /** The History row and the delivery, after this owner has decided (#216). */
-    private val finalizer = SessionFinalizer(host, insertion, log, historyWrites)
+    private val finalizer = SessionFinalizer(host, insertion, log, historyWrites, historySaves)
 
     /** What the start's lane may read of this owner: two answers, never the state (#216). */
     private val phaseView = object : TakePhaseView {
@@ -1097,12 +1091,10 @@ internal class DictationSessionCoordinator(
         // `interrupted`, so a reserved finalization is always queued ahead of it and `interrupted` is the last
         // word on the row.
         val saved = SaveSlot()
-        var saveEnqueuedAtMs = 0L
         val publication = synchronized(publishLock) {
             val reserved = current.arbiter.reserve(Claimants.PUBLICATION) ?: return@synchronized null
             if (finalText.isNotBlank()) {
-                saveEnqueuedAtMs = host.elapsedRealtimeMs()
-                finalizer.enqueueSave(current.history, payload, saved)
+                finalizer.enqueueSave(current.history, payload, saved, takeId)
             }
             reserved
         }
@@ -1120,11 +1112,10 @@ internal class DictationSessionCoordinator(
             notices.sayPolishFailure(notice)
         }
 
-        watchSave(saved, saveEnqueuedAtMs, takeId)
         scope.launch {
             // The words never wait on History (#277): insertion is the heart, History a limb. The save's answer is
             // recorded if it is already in, else `pending`; the committed facts are never changed afterwards, and
-            // a slow or failed save is reported by [watchSave] alone.
+            // a slow or failed save is reported by the application's [HistorySaveObserver] alone (#304).
             takeFacts.historySave = when (saved.answeredNow()?.outcome) {
                 is SaveOutcome.Saved -> "ok"
                 is SaveOutcome.Failed -> "failed"
@@ -1140,29 +1131,6 @@ internal class DictationSessionCoordinator(
             finalizer.deliver(takeId, current.targetPin, payload, current.history, sessionPreferences.clipboard)
             log.log(log.pipelineSummary())
             finishSession()
-        }
-    }
-
-    /**
-     * The History save's diagnostics (#277), independent of delivery: [watchSaveBound] decides "late" exactly, from the
-     * enqueue and the save's own stamp, and reports it at most once; a failure, early or late, raises its breadcrumb
-     * and defect once. Nothing here routes, inserts or changes the take's facts.
-     */
-    private fun watchSave(saved: SaveSlot, enqueuedAtMs: Long, takeId: String) {
-        scope.launch {
-            val answer = watchSaveBound(saved, enqueuedAtMs, historySaveBoundMs, host::elapsedRealtimeMs) {
-                log.warn("History save did not answer in $historySaveBoundMs ms; the words did not wait for it")
-                reportDefect(AppDefect.HistorySaveTimedOut, mapOf("take_id" to takeId))
-            }
-            val outcome = answer.outcome
-            if (outcome is SaveOutcome.Failed) {
-                val error = outcome.cause
-                log.warn("Unable to save transcript history: ${error.javaClass.simpleName}")
-                // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal statement is
-                // our schema contract (a defect). The message never leaves either way.
-                Telemetry.breadcrumb("take", "history_save_failed", mapOf("take_id" to takeId, "error_type" to error.javaClass.simpleName))
-                TelemetryChannels.historySaveDefect(error)?.let { reportDefect(it, mapOf("take_id" to takeId)) }
-            }
         }
     }
 

@@ -7,6 +7,12 @@ import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.HistoryWriteQueue
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.telemetry.Telemetry
+import com.envi.wispr.ui.DebugSessionLog
+import com.envi.wispr.ui.HistorySaveObserver
+import android.os.SystemClock
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /** Enqueues idempotent model bootstrap before any launcher or side-button activity can run. */
 class ModelBootstrapApplication : Application() {
@@ -18,6 +24,25 @@ class ModelBootstrapApplication : Application() {
          */
         internal fun historyWrites(context: Context): HistoryWriteQueue =
             (context.applicationContext as ModelBootstrapApplication).historyWrites
+
+        /**
+         * The process's one History save observer (#304), beside the write queue and as long-lived: a save's
+         * diagnostics must outlive the Service, which stops right after an ordinary take hands its words over.
+         */
+        internal fun historySaves(context: Context): HistorySaveObserver =
+            (context.applicationContext as ModelBootstrapApplication).historySaves
+    }
+
+    private val historySaves: HistorySaveObserver by lazy {
+        HistorySaveObserver(
+            // Never cancelled: it lives as long as the process, like the queue.
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+            clock = SystemClock::elapsedRealtime,
+            // The session's own log tag, where these lines were before #304.
+            warn = { DebugSessionLog.warn(it) },
+            defectSink = Telemetry::defect,
+            breadcrumb = Telemetry::breadcrumb,
+        )
     }
 
     private val historyWrites: HistoryWriteQueue by lazy {

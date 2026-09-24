@@ -127,8 +127,6 @@ internal class MlKitLanguageDetector internal constructor(
         if (text.isBlank() || closed.get()) return null
         activeDetections.incrementAndGet()
         try {
-            // Re-checked AFTER counting in. A close that began before the increment has already decided
-            // whether to release, so this is the read that makes the decision consistent.
             if (closed.get()) return null
             return identify(text)
         } finally {

@@ -343,6 +343,23 @@ class HistoryNeverHoldsTheWordsTest {
     }
 
     /**
+     * Code review round 2: late is the save's OWN answer time against its enqueue, in both directions, so an observer
+     * that starts or wakes late cannot invent a timeout and one that looks early cannot hide one. MUTATION m7: the
+     * rule compares `>=` against the bound, or the watcher passes the time it observed the answer.
+     */
+    @Test fun lateIsTheSavesOwnAnswerTimeNeverTheObservers() {
+        assertFalse("answered within the bound, however late anyone looked", saveMissedBound(enqueuedAtMs = 1_000L, answeredAtMs = 2_000L, boundMs = 1_000L))
+        assertTrue("answered past the bound, however early anyone looked", saveMissedBound(enqueuedAtMs = 1_000L, answeredAtMs = 2_001L, boundMs = 1_000L))
+        assertTrue("no answer when the deadline passed", saveMissedBound(enqueuedAtMs = 1_000L, answeredAtMs = null, boundMs = 1_000L))
+        val watcher = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+            .substringAfter("private fun watchSave(").substringBefore("\n    }\n")
+        assertEquals("both checks read the save's own answer time", 2, Regex("""saveMissedBound\(enqueuedAtMs, (seen\?|answer)\.answeredAtMs, historySaveBoundMs\)""").findAll(watcher).count())
+        assertFalse("no decision reads when the observer looked", watcher.contains("host.elapsedRealtimeMs() - enqueuedAtMs >"))
+        val finalizer = java.io.File("src/main/java/com/envi/wispr/ui/SessionFinalizer.kt").readText()
+        assertTrue("the History worker stamps the answer", finalizer.contains("saved.complete(SaveAnswer(answer, host.elapsedRealtimeMs()))"))
+    }
+
+    /**
      * Code review round 1: the bound is measured from the save's enqueue, not from when the observer started. The
      * clock jumps past the bound the moment the save lands; the observer, still inside its real wait, must report it.
      * MUTATION m5: drop the elapsed-since-enqueue check after the answer.

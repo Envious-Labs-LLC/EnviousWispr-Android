@@ -186,6 +186,16 @@ internal sealed interface SaveOutcome {
     data class Failed(val cause: Throwable) : SaveOutcome
 }
 
+/** The save's answer and the monotonic time the History worker produced it (#277), never the time someone saw it. */
+internal class SaveAnswer(val outcome: SaveOutcome, val answeredAtMs: Long)
+
+/**
+ * Whether a History save missed its diagnostic bound (#277): measured from the enqueue to the answer as the History
+ * worker produced it; null means it had not answered when the deadline passed. Nobody's observation time enters it.
+ */
+internal fun saveMissedBound(enqueuedAtMs: Long, answeredAtMs: Long?, boundMs: Long): Boolean =
+    answeredAtMs == null || answeredAtMs - enqueuedAtMs > boundMs
+
 /**
  * The History and insertion half of a publication (#216). The session owner decides: it reserves the
  * ending, asks for the save with [enqueueSave] in the same operation, commits COMPLETED, and asks for
@@ -206,7 +216,7 @@ internal class SessionFinalizer(
     fun enqueueSave(
         history: TakeHistory,
         publication: Publication,
-        saved: CompletableDeferred<SaveOutcome>,
+        saved: CompletableDeferred<SaveAnswer>,
     ) {
         historyWrites.enqueue("finalize") { repository ->
             val answer = runCatching {
@@ -235,7 +245,7 @@ internal class SessionFinalizer(
                     history.remember(persistedId)
                     persistedId
                 }.fold({ SaveOutcome.Saved(it) }, { SaveOutcome.Failed(it) })
-            saved.complete(answer)
+            saved.complete(SaveAnswer(answer, host.elapsedRealtimeMs()))
         }
     }
 

@@ -997,7 +997,7 @@ internal class DictationSessionCoordinator(
         // publishLock, and the write is ENQUEUED in the same operation (#115): destroy takes the same lock
         // before enqueueing `interrupted`, so a reserved finalization is always queued ahead of it and
         // `interrupted` is the last word on the row.
-        val saved = CompletableDeferred<SaveOutcome>()
+        val saved = CompletableDeferred<SaveAnswer>()
         var saveEnqueuedAtMs = 0L
         val publication = synchronized(publishLock) {
             val reserved = current.arbiter.reserve(Claimants.PUBLICATION) ?: return@synchronized null
@@ -1029,7 +1029,7 @@ internal class DictationSessionCoordinator(
             // The words never wait on History (#277): insertion is the heart, History a limb. The save's answer is
             // recorded if it is already in, else `pending`; the committed facts are never changed afterwards, and
             // a slow or failed save is reported by [watchSave] alone.
-            takeFacts.historySave = when (saved.takeIf { it.isCompleted }?.getCompleted()) {
+            takeFacts.historySave = when (saved.takeIf { it.isCompleted }?.getCompleted()?.outcome) {
                 is SaveOutcome.Saved -> "ok"
                 is SaveOutcome.Failed -> "failed"
                 null -> "pending"
@@ -1048,22 +1048,34 @@ internal class DictationSessionCoordinator(
     }
 
     /**
-     * The History save's diagnostics (#277), independent of delivery. The bound is measured from [enqueuedAtMs], when
-     * the save was enqueued, never from when this observer happened to start: a save whose answer is observed past
-     * it raises one `HistorySaveTimedOut`, and a failure, early or late, raises its breadcrumb and defect once.
-     * Nothing here routes, inserts or changes the take's facts.
+     * The History save's diagnostics (#277), independent of delivery. Late means [saveMissedBound]: the save's own
+     * answer time against [enqueuedAtMs], or no answer when the deadline passed. When this observer starts or wakes
+     * never enters it, so a late start cannot invent a timeout and an early look cannot hide one. The timeout is
+     * reported at most once, and a failure, early or late, raises its breadcrumb and defect once. Nothing here routes,
+     * inserts or changes the take's facts.
      */
-    private fun watchSave(saved: CompletableDeferred<SaveOutcome>, enqueuedAtMs: Long, takeId: String) {
+    private fun watchSave(saved: CompletableDeferred<SaveAnswer>, enqueuedAtMs: Long, takeId: String) {
         scope.launch {
-            val remainingMs = historySaveBoundMs - (host.elapsedRealtimeMs() - enqueuedAtMs)
-            val inTime = if (remainingMs > 0L) withTimeoutOrNull(remainingMs) { saved.await() } else null
-            if (inTime == null || host.elapsedRealtimeMs() - enqueuedAtMs > historySaveBoundMs) {
+            var timeoutReported = false
+            fun reportTimeout() {
+                if (timeoutReported) return
+                timeoutReported = true
                 log.warn("History save did not answer in $historySaveBoundMs ms; the words did not wait for it")
                 reportDefect(AppDefect.HistorySaveTimedOut, mapOf("take_id" to takeId))
             }
-            val answer = inTime ?: saved.await()
-            if (answer is SaveOutcome.Failed) {
-                val error = answer.cause
+            // Wait at most until the deadline; an observer that starts after it looks instead of waiting.
+            val remainingMs = historySaveBoundMs - (host.elapsedRealtimeMs() - enqueuedAtMs)
+            val seen = if (remainingMs > 0L) {
+                withTimeoutOrNull(remainingMs) { saved.await() }
+            } else {
+                saved.takeIf { it.isCompleted }?.getCompleted()
+            }
+            if (saveMissedBound(enqueuedAtMs, seen?.answeredAtMs, historySaveBoundMs)) reportTimeout()
+            val answer = seen ?: saved.await()
+            if (saveMissedBound(enqueuedAtMs, answer.answeredAtMs, historySaveBoundMs)) reportTimeout()
+            val outcome = answer.outcome
+            if (outcome is SaveOutcome.Failed) {
+                val error = outcome.cause
                 log.warn("Unable to save transcript history: ${error.javaClass.simpleName}")
                 // Storage being full or locked is the world (a breadcrumb); a constraint or an illegal statement is
                 // our schema contract (a defect). The message never leaves either way.

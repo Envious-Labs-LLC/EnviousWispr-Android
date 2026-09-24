@@ -1,0 +1,27 @@
+# #306 receipts, 2026-09-24, worktree head aef5dde plus the change
+
+Before the change (main aef5dde, only the new row added):
+  DictationSessionServiceTeardownTest.theSessionIsInvalidatedBeforeTheDetectorClosesOffMain
+  RED: AssertionError: the detector is closed through the background closer (onDestroy closed it on main, first)
+
+Mutations, one run on the final code (after code review round 1; m1 swaps the order only, keeping the background
+close, and m4's anchor follows the logging guards):
+RED: m1 the original order only -> theSessionIsInvalidatedBeforeTheDetectorClosesOffMain
+     (AssertionError: the session is invalidated before the detector closes)
+RED: m2 close on the calling thread -> theCallerNeverWaitsForTheClose
+     (the caller did not return while the close was still running)
+RED: m3 no rejection fallback -> aRefusedCloseStillRunsOffTheCaller (the refused close never ran)
+RED: m4 no catch around the close -> aThrowingCloseEscapesNothing (IllegalStateException: vendor close broke)
+ALL RED
+
+Repeats: BackgroundCloserTest 20 of 20 green (--rerun each time).
+Suite: scripts/measure-tests.sh tests=1317 suites=163 failures=0 errors=0 skipped=0 (1,313 before: four new rows).
+Builds: :app:assembleDebug and :app:assembleDebugAndroidTest; scripts/check-visibility.py clean;
+scripts/check-cited-symbols.py all citations resolve.
+
+Emulator (emulator-5554, debug build of this change, logcat cleared first): "and I will send the deck tomorrow" spoken
+into a Gmail draft; route=COMMIT, outcome=VERIFIED; the editor's whole text matched; "Take terminal: COMPLETED" at
+04:37:01.059, then "BackgroundCloser: Closed MlKitLanguageDetector on DetectorClose" at 04:37:01.237 and again at
+04:37:01.827, both on thread 16731 (DetectorClose) of process 16196, not its main thread. Two lines: two
+DictationSessionService instances were destroyed after this take, each closing its own detector; that count is
+unchanged by this change and not examined here.

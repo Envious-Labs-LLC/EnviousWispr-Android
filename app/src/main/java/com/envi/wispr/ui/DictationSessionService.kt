@@ -22,6 +22,7 @@ import com.envi.wispr.paste.AccessibilityPermission
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.AutoPasteReadiness
 import com.envi.wispr.paste.PasteAccessibilityService
+import com.envi.wispr.polish.BackgroundCloser
 import com.envi.wispr.polish.MlKitLanguageDetector
 import com.envi.wispr.polish.PolishFailureNotice
 import com.envi.wispr.providers.ProviderConfigurationRepository
@@ -246,8 +247,10 @@ class DictationSessionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        if (::languageDetector.isInitialized) languageDetector.close()
+        // The session is invalidated FIRST, then the detector's vendor close goes to a background worker, never main
+        // (#306); a detection already counted in still keeps the client open until it leaves (#279).
         if (::coordinator.isInitialized) coordinator.destroy()
+        if (::languageDetector.isInitialized) BackgroundCloser.PROCESS.close(languageDetector)
         stopForeground(STOP_FOREGROUND_REMOVE)
         DictationNotificationController.dismiss(this)
         super.onDestroy()

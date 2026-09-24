@@ -39,6 +39,8 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -75,6 +77,8 @@ internal class DictationSessionCoordinator(
     private val transcripts: TranscriptRepository,
     private val languageDetector: LanguageDetector,
     private val loadPolicy: suspend () -> PolicyRead,
+    /** The process's last successful policy read, never waiting for a read in progress (#290): the fallback when the read misses its bound. */
+    private val lastReadPolicy: () -> PolishPolicy?,
     private val pipeline: PipelineController,
     /** The one session scope; the Service's `SupervisorJob() + Dispatchers.IO`. Its job is cancelled on destroy, never joined (#115). */
     private val scope: CoroutineScope,
@@ -84,10 +88,14 @@ internal class DictationSessionCoordinator(
     /** How long a take waits for the settings readers to answer before starting on the last values; a test shortens it (#193). */
     private val answerBoundMs: Long = SETTINGS_ANSWER_BOUND_MS,
     /**
-     * How long the words may wait for their History save (#235). A healthy save is milliseconds; past this
-     * the words go to the clipboard and the save only reconciles its row. A product ceiling, not a Room time.
+     * The History save's diagnostic bound (#235, #277): a save slower than this raises one defect. The words
+     * never wait for it; a product ceiling for the report, not a Room time.
      */
     private val historySaveBoundMs: Long = HISTORY_SAVE_BOUND_MS,
+    /** How long the matcher compile and the policy read may take together before the take starts on fallbacks (#290); a test shortens it. */
+    private val preparationBoundMs: Long = PREPARATION_BOUND_MS,
+    /** The vocabulary matcher's compile (#290): production's own, a test throws or holds it. */
+    private val compileMatcher: (List<CustomTerm>) -> StructuredTermRestorer.Matcher = StructuredTermRestorer::compile,
     /** Process-scoped on purpose: the tip's once-per-process allowance outlives the Service instance. */
     private val tipGate: BluetoothTipGate = BluetoothTipGate.PROCESS,
     /** The one first-wins gate on the polish answer; production mints ids off the device clock, a test off the JVM's. */
@@ -105,8 +113,19 @@ internal class DictationSessionCoordinator(
     private val audioCleanup: (Runnable) -> Unit = CapturedAudioCleanup::execute,
 ) : PipelineController.Listener {
     companion object {
-        /** The words' longest wait for their History save (#235). */
+        /** The History save's diagnostic bound (#235, #277): past it one defect, never a wait for the words. */
         const val HISTORY_SAVE_BOUND_MS = 1_000L
+
+        /**
+         * How long the matcher compile and the policy read may take together (#290). Both are milliseconds on a
+         * normal day (#258); past this the take starts on their fallbacks, so neither can hold it in STARTING.
+         */
+        const val PREPARATION_BOUND_MS = 1_000L
+
+        /** The only values a preparation defect carries (#290): `SentrySchema` allowlists exactly these. */
+        const val STEP_MATCHER = "matcher"
+        const val KIND_TIMEOUT = "timeout"
+        const val KIND_ERROR = "error"
 
         /** How long a take waits for its journal admission before starting anyway (a limb, never a gate). */
         const val JOURNAL_ADMISSION_DEADLINE_MS = 300L
@@ -353,7 +372,14 @@ internal class DictationSessionCoordinator(
         // writes in arrival order, so a cancel that lands during the settings wait can never queue its
         // ending ahead of the admission and leave an open row (code review round 1, F2). The wait for
         // it happens below, before capture starts, under a deadline that never gates the take.
-        val admission = admitTake(takeId, trigger)
+        // A limb (#290): a throw here logs and leaves the take without an admission; it never prevents capture.
+        // It must stay a non-blocking enqueue, because this wrapper can catch a throw but cannot bound a block.
+        val admission = try {
+            admitTake(takeId, trigger)
+        } catch (error: Exception) {
+            log.warn("Journal admission failed to queue: ${error.javaClass.simpleName}; starting anyway")
+            null
+        }
         // Where the admission is observed to have landed, not where the wait below returns (#258).
         // An optional measurement: nothing in this handler may throw into the journal writer.
         admission?.invokeOnCompletion { cause ->
@@ -409,24 +435,84 @@ internal class DictationSessionCoordinator(
             }
             takeFacts.inputDevice = TakeFacts.inputDeviceToken(start.settings.inputDevicePick)
             val termsSnapshot: List<CustomTerm> = start.terms.structuredTerms
-            val matcher = withContext(Dispatchers.Default) {
-                StructuredTermRestorer.compile(termsSnapshot)
-            }
+            // The matcher and the policy are limbs with ONE deadline (#290): they run side by side as sibling jobs on
+            // the owner's scope (never inside a scope that would wait for a blocked loser), each result is taken by the
+            // deadline or replaced by its fallback, and a job that answers late is ignored.
+            val deadlineMs = host.elapsedRealtimeMs() + preparationBoundMs
+            val matcherJob = scope.async(Dispatchers.Default) { preparing { compileMatcher(termsSnapshot) } }
+            val policyJob = scope.async(Dispatchers.IO) { preparing { loadPolicy() } }
+            val matcherPrepared = awaitBy(matcherJob, deadlineMs)
             takeFacts.matcherReadyMs = sinceAccepted()
-            val policy = takePolicy(withContext(Dispatchers.IO) { loadPolicy() })
+            val policyPrepared = awaitBy(policyJob, deadlineMs)
             takeFacts.policyLoadedMs = sinceAccepted()
             // Admission is written before capture starts, under a deadline that never gates the take:
-            // the queued write still lands in order if this stops waiting (issue #176, plan §3.3).
-            if (admission != null && withTimeoutOrNull(JOURNAL_ADMISSION_DEADLINE_MS) { admission.await() } == null) {
-                log.warn("Journal admission did not land within $JOURNAL_ADMISSION_DEADLINE_MS ms; starting anyway")
+            // the queued write still lands in order if this stops waiting (issue #176, plan §3.3). A failed
+            // admission never gates it either (#290).
+            if (admission != null) {
+                val landed = try {
+                    withTimeoutOrNull(JOURNAL_ADMISSION_DEADLINE_MS) { admission.await() }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    log.warn("Journal admission failed: ${error.javaClass.simpleName}; starting anyway")
+                    false
+                }
+                if (landed == null) log.warn("Journal admission did not land within $JOURNAL_ADMISSION_DEADLINE_MS ms; starting anyway")
             }
             withContext(mainDispatcher) {
-                if (state.get() != SessionState.STARTING) return@withContext
-                sessionPreferences = preferences.freeze(start, matcher, policy)
+                // Checked BEFORE any fallback is reported or taken (#290): a take cancelled or ended during the wait
+                // reports nothing and freezes nothing.
+                if (state.get() != SessionState.STARTING) {
+                    matcherJob.cancel()
+                    policyJob.cancel()
+                    return@withContext
+                }
+                val (matcher, effectiveTerms) = when (matcherPrepared) {
+                    is Prepared.Ready -> matcherPrepared.value to termsSnapshot
+                    is Prepared.Failed -> {
+                        log.warn("Vocabulary matcher ${matcherPrepared.kind}; this take restores no custom words")
+                        reportDefect(AppDefect.TakePreparationFailed, mapOf("take_id" to takeId, "step" to STEP_MATCHER, "kind" to matcherPrepared.kind))
+                        StructuredTermRestorer.compile(emptyList()) to emptyList()
+                    }
+                }
+                val read = when (policyPrepared) {
+                    is Prepared.Ready -> policyPrepared.value
+                    is Prepared.Failed -> {
+                        log.warn("Polish policy read ${policyPrepared.kind}; this take uses the last read policy")
+                        PolicyRead.Failed(lastReadPolicy())
+                    }
+                }
+                val policy = takePolicy(read)
+                sessionPreferences = preferences.freeze(start, matcher, effectiveTerms, policy)
                 takeFacts.bindRequestedMs = sinceAccepted()
                 bindPipelineServices()
             }
         }
+    }
+
+    /** A start preparation's answer by its deadline (#290): the value, or why there is none (`timeout` or `error`). */
+    private sealed interface Prepared<out T> {
+        data class Ready<T>(val value: T) : Prepared<T>
+        data class Failed(val kind: String) : Prepared<Nothing>
+    }
+
+    /** Runs one preparation step as a limb (#290): an ordinary exception is an `error`, cancellation is rethrown. */
+    private suspend fun <T> preparing(step: suspend () -> T): Prepared<T> = try {
+        Prepared.Ready(step())
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Prepared.Failed(KIND_ERROR)
+    }
+
+    /**
+     * [job]'s answer by [deadlineMs] on the host clock (#290), or `timeout`. A job already finished is taken even when
+     * the deadline has passed; one still running is left to finish unread.
+     */
+    private suspend fun <T> awaitBy(job: Deferred<Prepared<T>>, deadlineMs: Long): Prepared<T> {
+        val leftMs = deadlineMs - host.elapsedRealtimeMs()
+        val answered = if (leftMs > 0L) withTimeoutOrNull(leftMs) { job.await() } else null
+        return answered ?: job.takeIf { it.isCompleted }?.getCompleted() ?: Prepared.Failed(KIND_TIMEOUT)
     }
 
     /**
@@ -992,11 +1078,11 @@ internal class DictationSessionCoordinator(
             polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext),
         )
         val finalText = payload.finalText
-        // RESERVE, never commit: `completed` is unknown until the History save returns (G2 D2). A cancel
-        // that already owns the take, or a second final callback, loses here and does nothing. Under
-        // publishLock, and the write is ENQUEUED in the same operation (#115): destroy takes the same lock
-        // before enqueueing `interrupted`, so a reserved finalization is always queued ahead of it and
-        // `interrupted` is the last word on the row.
+        // RESERVE, then commit and deliver without waiting for the History save (#277): a cancel that already
+        // owns the take, or a second final callback, loses the reservation and does nothing. Under publishLock,
+        // and the write is ENQUEUED in the same operation (#115): destroy takes the same lock before enqueueing
+        // `interrupted`, so a reserved finalization is always queued ahead of it and `interrupted` is the last
+        // word on the row.
         val saved = SaveSlot()
         var saveEnqueuedAtMs = 0L
         val publication = synchronized(publishLock) {

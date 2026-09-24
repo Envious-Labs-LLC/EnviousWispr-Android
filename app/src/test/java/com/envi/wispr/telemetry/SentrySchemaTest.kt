@@ -457,11 +457,19 @@ class SentrySchemaTest {
     }
 
     /** #252: the preparation step key keeps exactly its four tokens. MUTATION: widen `step` to any token. */
-    @Test fun thePreparationStepKeyKeepsExactlyItsFourSteps() {
-        for (step in listOf("restore_raw", "cleanup", "restore_cleaned", "restore_answer")) {
+    /** The four polish preparation steps (#252) and the take's start preparation step (#290), and nothing else. */
+    @Test fun thePreparationStepKeyKeepsExactlyItsFiveSteps() {
+        for (step in listOf("restore_raw", "cleanup", "restore_cleaned", "restore_answer", "matcher")) {
             assertEquals(SentrySchema.Verdict.Keep(step), SentrySchema.judge("step", step))
         }
         assertEquals(SentrySchema.Verdict.Redact, SentrySchema.judge("step", "restore_everything"))
-        assertEquals(4, (SentrySchema.keys.getValue("step") as SentrySchema.Shape.OneOf).values.size)
+        assertEquals(5, (SentrySchema.keys.getValue("step") as SentrySchema.Shape.OneOf).values.size)
+    }
+
+    /** A start preparation's fallback carries only `timeout` or `error` (#290). */
+    @Test fun thePreparationKindKeyKeepsExactlyTwoValues() {
+        for (kind in listOf("timeout", "error")) assertEquals(SentrySchema.Verdict.Keep(kind), SentrySchema.judge("kind", kind))
+        assertEquals(SentrySchema.Verdict.Redact, SentrySchema.judge("kind", "IllegalStateException: broken term"))
+        assertEquals(2, (SentrySchema.keys.getValue("kind") as SentrySchema.Shape.OneOf).values.size)
     }
 }

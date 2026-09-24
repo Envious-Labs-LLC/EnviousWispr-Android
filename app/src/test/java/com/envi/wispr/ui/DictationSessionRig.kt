@@ -128,6 +128,10 @@ internal class DictationSessionRig {
         audioCleanup: (Runnable) -> Unit = { it.run() },
         /** No journal by default, as before; the #258 rows pass an admission they complete themselves. */
         admit: (String, TriggerSource) -> kotlinx.coroutines.Deferred<Boolean>? = { _, _ -> null },
+        /** Generous by default; the #290 rows shorten it against a held matcher or policy. */
+        preparationBoundMs: Long = 5_000L,
+        /** Production's compile by default; the #290 rows throw or hold it. */
+        compileMatcher: (List<CustomTerm>) -> com.envi.wispr.vocabulary.StructuredTermRestorer.Matcher = com.envi.wispr.vocabulary.StructuredTermRestorer::compile,
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
@@ -138,7 +142,8 @@ internal class DictationSessionRig {
         historyWrites = historyWrites,
         transcripts = transcripts,
         languageDetector = languageDetector,
-        loadPolicy = { policyRead ?: PolicyRead.Fresh(polishPolicy) },
+        loadPolicy = { policyHold?.await(); policyRead ?: PolicyRead.Fresh(polishPolicy) },
+        lastReadPolicy = { lastReadPolicy },
         pipeline = pipeline,
         scope = scope,
         mainDispatcher = mainDispatcher,
@@ -151,6 +156,8 @@ internal class DictationSessionRig {
         defectSink = { defect, data -> if (throwOnDefect) throw IllegalStateException("sink broke"); defects += defect.fingerprint to data },
         audioCleanup = audioCleanup,
         admitTake = admit,
+        preparationBoundMs = preparationBoundMs,
+        compileMatcher = compileMatcher,
     )
 
     /** When set, the owner's defect sink throws (#252: a broken report must never stop the words). */
@@ -158,6 +165,10 @@ internal class DictationSessionRig {
 
     /** The polish policy each take loads; Off unless a test sets another (#234 notice rows). */
     @Volatile var polishPolicy: PolishPolicy = PolishPolicy.Off
+    /** When set, the policy read suspends on it before answering (#290: a read that never answers). */
+    @Volatile var policyHold: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    /** The process's last read policy the owner falls back to when the read misses its bound (#290). */
+    @Volatile var lastReadPolicy: PolishPolicy? = null
     /** When set, the read the owner gets instead of `Fresh(polishPolicy)` (#278). */
     @Volatile var policyRead: PolicyRead? = null
 

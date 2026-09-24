@@ -1048,8 +1048,10 @@ class DictationSessionCoordinatorTest {
 
     /**
      * Row 1: with the admission already landed, every read in the start chain happens in one order: the origin,
-     * the admission's observed completion, then settings, matcher, policy, bind and live. MUTATIONS: record a
-     * step's absolute time instead of its offset; record admission when the wait returns.
+     * the admission's observed completion, then settings, matcher, policy, bind and live. Since #290 the preparation
+     * bound reads the clock three more times (its deadline, then once before each of the two waits), so the matcher
+     * and policy steps sit 30 and 20 past their predecessors; the order is unchanged. MUTATIONS: record a step's
+     * absolute time instead of its offset; record admission when the wait returns.
      */
     @Test
     fun theStartChainIsTimedFromTheAcceptedCommandInStepOrder() {
@@ -1061,7 +1063,7 @@ class DictationSessionCoordinatorTest {
         rig.endings.awaitOne()
         val facts = rig.endings.facts.single()
         assertEquals(
-            listOf(10L, 20L, 30L, 40L, 50L, 60L),
+            listOf(10L, 20L, 50L, 70L, 80L, 90L),
             listOf(facts.admissionObservedMs, facts.settingsAnswerMs, facts.matcherReadyMs, facts.policyLoadedMs, facts.bindRequestedMs, facts.liveReceivedMs),
         )
     }

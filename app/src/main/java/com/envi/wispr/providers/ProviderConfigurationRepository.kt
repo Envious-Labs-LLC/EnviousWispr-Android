@@ -283,6 +283,9 @@ internal class ProviderConfigurationRepository internal constructor(
         /** [loadPolicy] through the process's one reader, separated so the JVM can stage a store that cannot be read. */
         internal fun loadPolicyWith(readSnapshot: () -> Map<String, *>): PolicyRead = processReader.read(readSnapshot)
 
+        /** The process's last successful policy read, read without waiting for a read in progress (#290). */
+        fun lastProcessRead(): PolishPolicy? = processReader.lastRead
+
         internal fun resetProcessReaderForTest() {
             processReader = PolicyReader()
         }

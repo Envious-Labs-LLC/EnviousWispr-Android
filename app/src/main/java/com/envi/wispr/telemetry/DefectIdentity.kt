@@ -79,6 +79,12 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
     /** A warm hold's silence writer was still running two seconds after its stop (#257); no further hold in this process. */
     object SilenceWriterExitWedged : AppDefect("silence_writer_exit_wedged", "audio.silence_writer_exit_wedged")
 
+    /**
+     * A warm hold's stopped silent track: its platform release had not returned two seconds after its stop (#333).
+     * Unconfirmed, not proven leaked; no further hold in this process.
+     */
+    object SilentTrackReleaseUnconfirmed : AppDefect("silent_track_release_unconfirmed", "audio.silent_track_release_unconfirmed")
+
     /** A debug-only defect to prove the pipe end to end; never raised on a release build. */
     object DebugProbe : AppDefect("debug_probe", "debug.probe")
 
@@ -88,7 +94,7 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
             VadCallWedged("test"), LocalPolishDeadline, PolishProtocolViolation, CaptureStillRunningAfterStop,
             CaptureReleaseWedged, AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
             PolishWatchdogTimeout, PolishServiceUnavailable, PolishPolicyUnreadable, PolishServiceDied, PolishCallFailed,
-            TakePreparationFailed, HistorySaveTimedOut, HistoryQueueOverloaded, HistoryContractViolation(null), PolishPreparationFailed, SilenceWriterExitWedged, DebugProbe,
+            TakePreparationFailed, HistorySaveTimedOut, HistoryQueueOverloaded, HistoryContractViolation(null), PolishPreparationFailed, SilenceWriterExitWedged, SilentTrackReleaseUnconfirmed, DebugProbe,
         )
     }
 }

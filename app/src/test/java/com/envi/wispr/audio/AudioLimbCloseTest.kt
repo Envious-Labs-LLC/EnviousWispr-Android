@@ -37,6 +37,7 @@ class AudioLimbCloseTest {
         override fun play(onFailed: () -> Unit) { plays++; this.onFailed = onFailed }
         override fun stop() { stops++ }
         override fun writerExited(): Boolean = true
+        override fun released(): Boolean = true
     }
 
     /** An SDK stub instance: its constructor and methods return defaults, and nothing here reads them. */

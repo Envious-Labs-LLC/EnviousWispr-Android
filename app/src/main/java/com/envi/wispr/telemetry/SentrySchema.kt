@@ -76,7 +76,7 @@ internal object SentrySchema {
         AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishPolicyUnreadable,
         AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.TakePreparationFailed, AppDefect.HistorySaveTimedOut,
         AppDefect.HistoryQueueOverloaded, is AppDefect.HistoryContractViolation,
-        AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.DebugProbe,
+        AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.SilentTrackReleaseUnconfirmed, AppDefect.DebugProbe,
         -> defect.semanticId
     }
 
@@ -88,7 +88,7 @@ internal object SentrySchema {
         AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishPolicyUnreadable,
         AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.TakePreparationFailed, AppDefect.HistorySaveTimedOut,
         AppDefect.HistoryQueueOverloaded, AppDefect.HistoryContractViolation(null),
-        AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.DebugProbe,
+        AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.SilentTrackReleaseUnconfirmed, AppDefect.DebugProbe,
     )
 
     /** The event messages a defect may carry: its semantic id and nothing else. */

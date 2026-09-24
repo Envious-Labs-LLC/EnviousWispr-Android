@@ -359,34 +359,38 @@ class HistoryNeverHoldsTheWordsTest {
      * times out with no answer (the race the round found).
      */
     @Test fun aTimerThatWinsTheRaceNeverInventsATimeout() = runBlocking {
-        var now = 0L
+        val now = java.util.concurrent.atomic.AtomicLong(0L)
+        val reads = java.util.concurrent.atomic.AtomicInteger(0)
+        // The watcher's second clock read happens only after its first timed wait returned with no answer.
+        val timerWoke = CompletableDeferred<Unit>()
+        val clock = { if (reads.incrementAndGet() == 2) timerWoke.complete(Unit); now.get() }
         val slot = SaveSlot()
-        var timeouts = 0
-        val watch = async(kotlinx.coroutines.Dispatchers.Default) { watchSaveBound(slot, 0L, 50L, { now }) { timeouts += 1 } }
-        Thread.sleep(200) // the real timer has fired at least once; the save's clock still reads 0
-        now = 50L
-        slot.answer(SaveOutcome.Saved(1L)) { now }
-        now = 500L
+        val timeouts = java.util.concurrent.atomic.AtomicInteger(0)
+        val watch = async(kotlinx.coroutines.Dispatchers.Default) { watchSaveBound(slot, 0L, 50L, clock) { timeouts.incrementAndGet() } }
+        kotlinx.coroutines.withTimeout(10_000L) { timerWoke.await() }
+        now.set(50L)
+        slot.answer(SaveOutcome.Saved(1L)) { now.get() }
+        now.set(500L)
         assertEquals(SaveOutcome.Saved(1L), watch.await().outcome)
-        assertEquals(0, timeouts)
+        assertEquals(0, timeouts.get())
     }
 
     /** Round 3: no answer once the save's clock is past the bound reports once, and a late answer later adds nothing. */
     @Test fun anUnansweredSaveTimesOutOnceEvenWhenItAnswersLater() = runBlocking {
-        var now = 0L
+        val now = java.util.concurrent.atomic.AtomicLong(0L)
         val slot = SaveSlot()
-        var timeouts = 0
-        val watch = async(kotlinx.coroutines.Dispatchers.Default) { watchSaveBound(slot, 0L, 50L, { now }) { timeouts += 1 } }
-        now = 51L
+        val timeouts = java.util.concurrent.atomic.AtomicInteger(0)
+        val watch = async(kotlinx.coroutines.Dispatchers.Default) { watchSaveBound(slot, 0L, 50L, { now.get() }) { timeouts.incrementAndGet() } }
+        now.set(51L)
         val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
-        while (timeouts == 0) {
+        while (timeouts.get() == 0) {
             check(System.nanoTime() < deadline) { "never timed out" }
             Thread.sleep(5)
         }
-        now = 300L
-        slot.answer(SaveOutcome.Saved(1L)) { now }
+        now.set(300L)
+        slot.answer(SaveOutcome.Saved(1L)) { now.get() }
         watch.await()
-        assertEquals(1, timeouts)
+        assertEquals(1, timeouts.get())
     }
 
     /**

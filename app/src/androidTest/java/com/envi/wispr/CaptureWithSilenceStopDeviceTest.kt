@@ -199,10 +199,10 @@ class CaptureWithSilenceStopDeviceTest {
     fun aQuietRoomNeverEndsATakeByItselfThroughTheWholeRealPath() {
         val (capture, connection) = bindCapture()
         try {
+            DeviceNotRun.requireMicrophone(context, "aQuietRoomNeverEndsATakeByItselfThroughTheWholeRealPath")
             val started = capture.startCaptureWithSilenceStop(true, 1.5f)
             // A skip only for a separately observed harness restriction (#305): a start that fails while the app
             // holds the microphone permission is a red row, naming the capture process's last start failure.
-            DeviceNotRun.requireMicrophone(context, "aQuietRoomNeverEndsATakeByItselfThroughTheWholeRealPath")
             assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
 
             // Long enough that a detector willing to stop on silence alone would have done so many times
@@ -235,8 +235,8 @@ class CaptureWithSilenceStopDeviceTest {
     fun theDetectorBecomesReadyForARealTakeAndTheStatusSaysSo() {
         val (capture, connection) = bindCapture()
         try {
-            val started = capture.startCaptureWithSilenceStop(true, 1.5f)
             DeviceNotRun.requireMicrophone(context, "theDetectorBecomesReadyForARealTakeAndTheStatusSaysSo")
+            val started = capture.startCaptureWithSilenceStop(true, 1.5f)
             assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
 
             var status = capture.silenceStopStatus
@@ -262,8 +262,8 @@ class CaptureWithSilenceStopDeviceTest {
     fun withTheSwitchOffNoDetectorIsAskedForAtAll() {
         val (capture, connection) = bindCapture()
         try {
-            val started = capture.startCaptureWithSilenceStop(false, 0f)
             DeviceNotRun.requireMicrophone(context, "withTheSwitchOffNoDetectorIsAskedForAtAll")
+            val started = capture.startCaptureWithSilenceStop(false, 0f)
             assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
             Thread.sleep(1_500)
             assertEquals(
@@ -282,8 +282,8 @@ class CaptureWithSilenceStopDeviceTest {
     fun anOutOfRangePauseRefusesAutoStopButStillRecords() {
         val (capture, connection) = bindCapture()
         try {
-            val started = capture.startCaptureWithSilenceStop(true, 99f)
             DeviceNotRun.requireMicrophone(context, "anOutOfRangePauseRefusesAutoStopButStillRecords")
+            val started = capture.startCaptureWithSilenceStop(true, 99f)
             assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
             Thread.sleep(500)
             assertEquals(

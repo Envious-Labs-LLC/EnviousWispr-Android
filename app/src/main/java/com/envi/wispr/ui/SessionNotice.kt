@@ -3,6 +3,7 @@ package com.envi.wispr.ui
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.polish.PolishFailureNotice
+import com.envi.wispr.polish.PolishPublicationFacts
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -148,6 +149,16 @@ internal class SessionNoticePresenter(
             host.toastFromService(notice.toastLine)
             host.showPolishNotice(notice)
         }
+    }
+
+    /**
+     * The publication's polish notice, if its facts carry one (#329): logged by failure name, then said as
+     * [sayPolishFailure]. The owner calls this once per publication, before its continuation starts.
+     */
+    fun sayPolishFailureIfAny(facts: PolishPublicationFacts) {
+        val notice = facts.notice ?: return
+        log.log("Polish notice shown: ${facts.failure}")
+        sayPolishFailure(notice)
     }
 
     /** A take's failure sentence (#293), from [TakeNotices]; a toast on main, since the recorder is going away. */

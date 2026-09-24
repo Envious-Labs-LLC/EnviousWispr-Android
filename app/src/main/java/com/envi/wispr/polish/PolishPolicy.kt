@@ -72,7 +72,10 @@ internal sealed class PolishPolicy : Parcelable {
                 TAG_OFF -> Off
                 // Writer and reader are one class in one APK, so a null or unknown token is never
                 // produced; mapping it to the default is ordinary defensive decoding, not a
-                // compatibility promise.
+                // compatibility promise. The current instrumentation APK defines neither this parcel nor
+                // the generated AIDL classes (dex class_defs, 2026-09-24, #330). Its calls use the
+                // installed app's classes on both sides of the Binder. Recheck this assumption if tests or
+                // another client package their own copies.
                 TAG_LOCAL_S1 -> LocalS1(
                     S1ControlSettings(
                         styling = S1Styling.fromToken(source.readString()),

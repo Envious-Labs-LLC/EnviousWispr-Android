@@ -26,6 +26,11 @@ internal object SessionSources {
     /** The steps before the bind since #281. */
     val preparer: String get() = read("TakeStartPreparer.kt")
 
+    /** The take's outcome record since #329 (telemetry package). */
+    val recorder: String get() = File("src/main/java/com/envi/wispr/telemetry/TakeOutcomeRecorder.kt").also {
+        check(it.isFile) { "the session source ${it.path} must exist" }
+    }.readText()
+
     /** Every file of the session owner, for a scan that says something is absent. */
-    val all: String get() = listOf(coordinator, capture, finalizer, context, polish, notices, preparer).joinToString("\n")
+    val all: String get() = listOf(coordinator, capture, finalizer, context, polish, notices, preparer, recorder).joinToString("\n")
 }

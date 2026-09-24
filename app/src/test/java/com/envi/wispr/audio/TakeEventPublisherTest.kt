@@ -230,6 +230,17 @@ class TakeEventPublisherTest {
         }
     }
 
+    /**
+     * Row 2b (#280 review): the clock read on every positive read returns a primitive. A `() -> Long` answers
+     * through `Function0.invoke`, which returns an Object, so each read would box a Long. MUTATION m10.
+     */
+    @Test
+    fun theHeartbeatClockReturnsAPrimitive() {
+        val clock = TakeEventPublisher::class.java.getDeclaredField("nowNanos")
+        assertEquals(NanoClock::class.java, clock.type)
+        assertEquals(java.lang.Long.TYPE, NanoClock::class.java.getMethod("now").returnType)
+    }
+
     /** Row 2: a heartbeat never touches the queue, and each accepted one is delivered. MUTATION m1. */
     @Test
     fun aHeartbeatNeverTouchesTheQueue() {

@@ -8,6 +8,11 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 
+/** The publisher's clock, returning a primitive so reading it on the capture thread allocates nothing (#280). */
+internal fun interface NanoClock {
+    fun now(): Long
+}
+
 /**
  * Pushes the take's events to the one registered [ITakeListener] (#115): live, a heartbeat, the silence
  * status and the ending. Service-scoped like `WarmHoldOwner`: one publisher for the service's lifetime, one
@@ -35,9 +40,11 @@ import java.util.concurrent.locks.LockSupport
  *
  * [close] is the end of delivery, decided by ONE atomic word ([lifecycle]: a closed bit and a count of
  * offers between entry and enqueue): an offer, heartbeat or queued, enters only by a compare-and-set that
- * fails once the closed bit is set, an entered offer is always delivered, and one that finds the bit set is
- * dropped by contract, never lost by a race (the worker leaves only once the bit is set, no offer is between
- * entry and enqueue, the heartbeat slot is empty and the queue is empty). After the service's destroy nothing about any take can change, and
+ * fails once the closed bit is set. Accepted heartbeats and enqueued events are handled by the worker before
+ * it exits (a heartbeat whose slot claim fails is skipped, and an event with no listener registered is
+ * discarded); an offer that finds the bit set is dropped by contract, never lost by a race (the worker leaves
+ * only once the bit is set, no offer is between entry and enqueue, the heartbeat slot is empty and the queue
+ * is empty). After the service's destroy nothing about any take can change, and
  * the owner's silence bound covers a take whose ending was never published.
  *
  * Every event is a limb. The take does not know this class exists.
@@ -45,7 +52,8 @@ import java.util.concurrent.locks.LockSupport
 internal class TakeEventPublisher(
     private val listener: AtomicReference<ITakeListener?>,
     private val tag: String,
-    private val nowNanos: () -> Long = System::nanoTime,
+    /** A primitive clock: a `() -> Long` returns a boxed Long through `invoke`, on every positive read (#280 review). */
+    private val nowNanos: NanoClock = NanoClock { System.nanoTime() },
     /** The event queue; a test hands in one whose enqueue it can hold, to stage close against an entered offer. */
     private val queue: Queue<Event> = ConcurrentLinkedQueue(),
 ) {
@@ -107,7 +115,7 @@ internal class TakeEventPublisher(
      * the throttle is NOT advanced, so the next positive read tries again.
      */
     fun offerTick(takeId: String, elapsedMs: Long) {
-        val now = nowNanos()
+        val now = nowNanos.now()
         val last = lastTickNanos
         // The sentinel is tested by identity: `now - Long.MIN_VALUE` overflows negative and would swallow
         // the first heartbeat of every take (found by TakeEventPublisherTest).
@@ -153,7 +161,7 @@ internal class TakeEventPublisher(
         LockSupport.unpark(worker)
     }
 
-    /** Enter: one compare-and-set that fails once the closed bit is set. True means this offer WILL enqueue. */
+    /** Reserves one lifecycle entry; the caller releases it in finally. One compare-and-set that fails once closed. */
     private fun enter(): Boolean {
         while (true) {
             val current = lifecycle.get()

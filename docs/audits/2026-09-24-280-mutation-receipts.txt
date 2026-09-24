@@ -18,14 +18,16 @@ RED: m8 a failed claim leaks the entered count -> aWaitingHeartbeatIsKeptAndASki
      (the worker never left after close)
 RED: m9 the worker loops on the slot -> queuedEventsAreNotHeldBackByContinuingHeartbeats
      (continuing heartbeats held every status back)
-ALL RED (one run, m1 to m9)
+RED: m10 the clock is a boxed lambda again -> theHeartbeatClockReturnsAPrimitive  [code review round 1]
+     (the publisher's clock field was a Function0, whose invoke returns a boxed Long)
+ALL RED (rerun after the round 1 fixes, m1 to m10 in one run)
 
-Repeats: TakeEventPublisherTest 20 of 20 green (--rerun each time).
-Suite: scripts/measure-tests.sh tests=1311 suites=162 failures=0 errors=0 skipped=0.
+Repeats: TakeEventPublisherTest 20 of 20 green (--rerun each time), before and again after the round 1 fixes.
+Suite (after round 1): scripts/measure-tests.sh tests=1312 suites=162 failures=0 errors=0 skipped=0.
 Builds: :app:assembleDebug and :app:assembleDebugAndroidTest; scripts/check-visibility.py clean;
 scripts/check-cited-symbols.py all citations resolve.
 
-Emulator (emulator-5554, debug build of this change, logcat cleared first): "and I will send the deck tomorrow"
+Emulator (emulator-5554, debug build of this change before the round 1 clock type, which a take reads identically; logcat cleared first): "and I will send the deck tomorrow"
 spoken into a Gmail draft; the take ran 7.3 s and ended by a stop request; route=COMMIT, outcome=VERIFIED; the
 editor's whole text equals "And I will send the deck tomorrow." plus the insertion's trailing space;
 "Take terminal: COMPLETED". The owner's 3 s silence bound never fired (no "silent for" line) and no take event

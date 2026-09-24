@@ -67,15 +67,23 @@ internal class HistoryWriteQueue(
     init {
         scope.launch {
             for (write in writes) {
-                runCatching { write.body(repository) }
-                    .onFailure { warn("History write failed (${write.label}): ${it.javaClass.simpleName}") }
-                synchronized(lock) {
-                    pending -= 1
-                    if (pending == 0) overloaded = false
+                // The count always comes down, whatever the write or its log line throws (#292 review): a stuck count
+                // would refuse every later write for good.
+                try {
+                    runCatching { write.body(repository) }
+                        .onFailure { error -> runCatching { warn("History write failed (${write.label}): ${error.javaClass.simpleName}") } }
+                } finally {
+                    synchronized(lock) {
+                        pending -= 1
+                        if (pending == 0) overloaded = false
+                    }
                 }
             }
         }
     }
+
+    /** Accepted writes not yet finished (for the tests' drain). */
+    internal fun pendingForTest(): Int = synchronized(lock) { pending }
 
     /**
      * Queue one write. Returns at once, never suspending and never blocking. [label] names the write for the log
@@ -101,7 +109,8 @@ internal class HistoryWriteQueue(
             }
         }
         if (result == Enqueued.REJECTED) {
-            warn("History write refused, the queue is full ($label)")
+            // Best effort: a log line that throws must never keep a caller from answering its refusal (#292 review).
+            runCatching { warn("History write refused, the queue is full ($label)") }
             if (episodeStarted) runCatching { onOverload() }
         }
         return result

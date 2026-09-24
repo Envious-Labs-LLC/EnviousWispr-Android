@@ -107,10 +107,13 @@ class HistoryWriteQueueTest {
 
         fun write(label: String, kind: WriteKind) = queue.enqueue(label, kind) { dao.landed += label }
 
+        /** Waits until the worker has finished every accepted write and brought the count to zero. */
         fun drain() {
-            val done = CountDownLatch(1)
-            check(queue.enqueue("drain marker", WriteKind.TERMINAL) { done.countDown() } == Enqueued.ACCEPTED)
-            check(done.await(10, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (queue.pendingForTest() > 0) {
+                check(System.nanoTime() < deadline) { "the backlog never drained" }
+                Thread.sleep(2)
+            }
         }
     }
 
@@ -143,10 +146,33 @@ class HistoryWriteQueueTest {
         val gate = held.release
         check(held.queue.enqueue("held again") { secondEntered.countDown(); gate.await(10, TimeUnit.SECONDS) } == Enqueued.ACCEPTED)
         check(secondEntered.await(10, TimeUnit.SECONDS))
-        repeat(2) { held.write("fill $it", WriteKind.ORDINARY) }
+        repeat(2) { assertEquals(Enqueued.ACCEPTED, held.write("fill $it", WriteKind.ORDINARY)) }
         assertEquals(Enqueued.REJECTED, held.write("over again", WriteKind.ORDINARY))
         assertEquals(2, held.episodes.get())
         held.release.countDown()
+    }
+
+    /** A log line that throws never stops the count coming down, nor a refusal being answered (#292 review). MUTATION m6. */
+    @Test fun aThrowingLogNeverWedgesTheQueue() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val throwing = HistoryWriteQueue(
+            TranscriptRepository(RecordingDao(), clock = { 1_000L }),
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+            warn = { error("the log broke") },
+            capacity = 2,
+            ordinaryLimit = 1,
+        )
+        assertEquals(Enqueued.ACCEPTED, throwing.enqueue("held") { entered.countDown(); release.await(10, TimeUnit.SECONDS); error("the write broke") })
+        check(entered.await(10, TimeUnit.SECONDS))
+        assertEquals("a refusal is still answered", Enqueued.REJECTED, throwing.enqueue("refused") { })
+        release.countDown()
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (throwing.pendingForTest() > 0) {
+            check(System.nanoTime() < deadline) { "the count never came down after a write and its log line threw" }
+            Thread.sleep(2)
+        }
+        assertEquals(Enqueued.ACCEPTED, throwing.enqueue("after") { })
     }
 
     /** Row 2. A refused draft insert completes its deferred with the queue-full cause at once, and the row resolves to 0. MUTATION m3. */

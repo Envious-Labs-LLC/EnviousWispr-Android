@@ -9,6 +9,7 @@ import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
+import com.envi.wispr.process.EngineDeadline
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
@@ -44,7 +45,20 @@ class AsrService : Service() {
         Thread(it, "AsrTranscriptionThread").apply { isDaemon = true }
     }
 
-    /** Load, every decode and the release run on [transcriptionExecutor], in that order (#212). */
+    /** The watchdog's own thread (#357): never the worker it bounds. */
+    private val watchdogScheduler = Executors.newSingleThreadScheduledExecutor {
+        Thread(it, "AsrWatchdog").apply { isDaemon = true }
+    }
+
+    private val watchdog = AsrWatchdog(EngineDeadline(watchdogScheduler)) { why ->
+        DebugLogger.warn(TAG, "Ending the speech process: $why")
+        android.os.Process.killProcess(android.os.Process.myPid())
+    }
+
+    /**
+     * Load, every decode and the release run on [transcriptionExecutor], in that order (#212), and each runs whole
+     * under the watchdog (#357): a task that outlives its bound ends this process and its late result delivers nothing.
+     */
     private val owner = RecognizerOwner<OfflineRecognizer>(
         transcriptionExecutor,
         free = { recognizer ->
@@ -52,6 +66,12 @@ class AsrService : Service() {
             DebugLogger.log(TAG, "Recognizer released")
         },
         discarded = { DebugLogger.log(TAG, "ASR answer discarded: the service closed during the decode") },
+        releaseBoundMs = AsrBounds.RELEASE_BOUND_MS,
+        bounded = { boundMs, what, task ->
+            if (watchdog.guard(boundMs, what, task) == null) {
+                DebugLogger.warn(TAG, "A task returned after its bound; the process is ending")
+            }
+        },
     )
 
     /**
@@ -106,12 +126,12 @@ class AsrService : Service() {
             DebugLogger.warn(TAG, "Legacy transcribe(ByteArray) called — prefer transcribeFile()")
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
             val failure = legacyReporter(callback)
-            owner.use(refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
+            owner.use(transcriptionBoundMs(audioData.size.toLong()), refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
                 doTranscribe(rec, audioData, durationSec, callback, failure)
             }
         }
 
-        override fun isReady(): Boolean = owner.isReady
+        override fun isReady(): Boolean = owner.isReady && !watchdog.wedged
     }
 
     private fun transcribeFromFile(audioFilePath: String, takeId: String, callback: IAsrCallback?, failure: FailureReporter) {
@@ -124,17 +144,19 @@ class AsrService : Service() {
         // Not an independent limit. `RecordingLimits` owns the number and the capture process
         // stops a take before this can be reached, so arriving here means something upstream is
         // wrong rather than that the user talked for too long.
-        if (file.length() > RecordingLimits.MAX_AUDIO_BYTES) {
+        // Read once, on the binder thread, never on the worker (#357 review round 2): it sizes the task's bound too.
+        val audioBytes = file.length()
+        if (audioBytes > RecordingLimits.MAX_AUDIO_BYTES) {
             DebugLogger.warn(
                 TAG,
-                "Audio file is ${file.length()} bytes, over the " +
+                "Audio file is $audioBytes bytes, over the " +
                     "${RecordingLimits.MAX_AUDIO_BYTES} byte ceiling",
             )
             failure.report(AsrFailureReason.OVER_LIMIT, OVER_LIMIT_MESSAGE)
             return
         }
 
-        owner.use(refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
+        owner.use(transcriptionBoundMs(audioBytes), refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
             // The read is its own boundary (G1 D4): a failure here is the FILE, never the decoder.
             val audioData = try {
                 file.readBytes()
@@ -149,6 +171,10 @@ class AsrService : Service() {
             doTranscribe(rec, audioData, durationSec, callback, failure)
         }
     }
+
+    /** One whole transcription task's bound (#357): past the owner's own request bound, sized before the task runs. */
+    private fun transcriptionBoundMs(audioBytes: Long): Long =
+        AsrBounds.requestBoundMs((PcmAudio.durationSeconds(audioBytes) * 1000f).toLong()) + AsrBounds.DECODE_GRACE_MS
 
     /**
      * Decodes on the worker and RETURNS the answer's delivery rather than making it, so the owner can
@@ -213,12 +239,14 @@ class AsrService : Service() {
         super.onCreate()
         DebugLogger.log(TAG, "AsrService created (PID: ${android.os.Process.myPid()})")
         // Receipt verification and native model loading are deliberately off the service main thread.
-        owner.load { initRecognizer() }
+        owner.load(AsrBounds.LOAD_BOUND_MS) { initRecognizer() }
     }
 
     override fun onDestroy() {
         // Never waits and never frees here: the release is queued behind the decode in flight (#212).
-        owner.close()
+        // The watchdog's thread stops only after the release, which it also bounds (review round 1); a bound still
+        // armed for a wedged task survives `shutdown` (never `shutdownNow`) and still ends the process.
+        owner.close { watchdogScheduler.shutdown() }
         super.onDestroy()
         DebugLogger.log(TAG, "AsrService destroyed; recognizer release queued")
     }

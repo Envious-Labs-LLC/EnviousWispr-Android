@@ -1,5 +1,6 @@
 package com.envi.wispr.polish
 
+import com.envi.wispr.process.EngineDeadline
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder

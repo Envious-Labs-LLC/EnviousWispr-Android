@@ -43,7 +43,15 @@ class RecognizerOwnerTest {
             discards.incrementAndGet()
             events += "discarded"
         },
+        // These rows pin ordering, not the bound (#357): the bound runs the task directly, and its own rows are below.
+        releaseBoundMs = UNBOUNDED,
+        bounded = { _, _, task -> task() },
     )
+
+    private companion object {
+        /** A placeholder bound for rows about ordering; the direct `bounded` above never reads it. */
+        const val UNBOUNDED = 0L
+    }
 
     /** A wait on the worker cannot throw into the test, so a deadline it reaches is recorded and asserted. */
     private val workerWaitFailures: MutableList<String> = Collections.synchronizedList(mutableListOf())
@@ -75,7 +83,7 @@ class RecognizerOwnerTest {
     private fun loaded(worker: ExecutorService): RecognizerOwner<Recognizer> {
         val owner = owner(worker)
         val done = CountDownLatch(1)
-        owner.load { Recognizer("parakeet") }
+        owner.load(UNBOUNDED) { Recognizer("parakeet") }
         // A FIFO barrier after the load task: signalled once the owner has installed the recognizer.
         worker.execute { done.countDown() }
         done.awaitOrFail("the load")
@@ -90,7 +98,7 @@ class RecognizerOwnerTest {
         val owner = loaded(worker)
         val inside = CountDownLatch(1)
         val finish = CountDownLatch(1)
-        owner.use(refused = { events += "refused" }) { _ ->
+        owner.use(UNBOUNDED, refused = { events += "refused" }) { _ ->
             inside.countDown()
             finish.awaitOnWorker("the decode's finish")
             events += "work-end"
@@ -112,7 +120,7 @@ class RecognizerOwnerTest {
         val inside = CountDownLatch(1)
         val finish = CountDownLatch(1)
         val opened = Recognizer("parakeet")
-        owner.load {
+        owner.load(UNBOUNDED) {
             inside.countDown()
             finish.awaitOnWorker("the load's finish")
             opened
@@ -150,7 +158,7 @@ class RecognizerOwnerTest {
         val worker = worker()
         val owner = loaded(worker)
         val gate = worker.park()
-        owner.use(refused = { events += "refused" }) { _ ->
+        owner.use(UNBOUNDED, refused = { events += "refused" }) { _ ->
             events += "work"
             return@use { events += "delivered" }
         }
@@ -168,7 +176,7 @@ class RecognizerOwnerTest {
         owner.close()
         worker.awaitTerminatedOrFail()
         val refusals = AtomicInteger(0)
-        owner.use(refused = { refusals.incrementAndGet() }) { _ ->
+        owner.use(UNBOUNDED, refused = { refusals.incrementAndGet() }) { _ ->
             events += "work"
             return@use {}
         }
@@ -182,7 +190,7 @@ class RecognizerOwnerTest {
         val owner = owner(worker)
         owner.close()
         val opens = AtomicInteger(0)
-        owner.load {
+        owner.load(UNBOUNDED) {
             opens.incrementAndGet()
             Recognizer("parakeet")
         }
@@ -236,12 +244,12 @@ class RecognizerOwnerTest {
         val threads: MutableList<Thread> = Collections.synchronizedList(mutableListOf())
         val owner = owner(worker)
         val delivered = CountDownLatch(1)
-        owner.load {
+        owner.load(UNBOUNDED) {
             threads += Thread.currentThread()
             events += "open"
             Recognizer("parakeet")
         }
-        owner.use(refused = { events += "refused" }) { recognizer ->
+        owner.use(UNBOUNDED, refused = { events += "refused" }) { recognizer ->
             threads += Thread.currentThread()
             events += "use:${recognizer?.name}"
             return@use {
@@ -265,12 +273,66 @@ class RecognizerOwnerTest {
         val worker = worker()
         val owner = loaded(worker)
         val delivered = CountDownLatch(1)
-        owner.use(refused = { events += "refused" }) { _ ->
+        owner.use(UNBOUNDED, refused = { events += "refused" }) { _ ->
             return@use { delivered.countDown() }
         }
         delivered.awaitOrFail("the delivery")
         assertEquals(0, discards.get())
         owner.close()
         worker.awaitTerminatedOrFail()
+    }
+
+    /**
+     * #357 review round 1: the close's follow-up (the service stops its watchdog there) runs after the release, on the
+     * worker, and also when no recognizer was ever loaded. MUTATION m6: the follow-up only after a real release.
+     */
+    @Test
+    fun theCloseFollowUpRunsAfterTheReleaseAndWithNothingLoaded() {
+        val loadedWorker = worker()
+        loaded(loadedWorker).close { events += "after" }
+        loadedWorker.awaitTerminatedOrFail()
+        assertEquals(listOf("free", "after"), events.toList())
+
+        events.clear()
+        val emptyWorker = worker()
+        owner(emptyWorker).close { events += "after" }
+        emptyWorker.awaitTerminatedOrFail()
+        assertEquals(listOf("after"), events.toList())
+    }
+
+    /**
+     * #357 review round 2: every worker task runs whole inside the owner's bound, named, with its bound: the load,
+     * a use (its delivery included) and the release. MUTATION m7: the release outside the bound.
+     */
+    @Test
+    fun everyWorkerTaskRunsWholeInsideTheBound() {
+        val worker = worker()
+        val inside = Collections.synchronizedList(mutableListOf<String>())
+        val owner = RecognizerOwner<Recognizer>(
+            worker,
+            free = { events += "free" },
+            discarded = { events += "discarded" },
+            releaseBoundMs = 7L,
+            bounded = { boundMs, what, task ->
+                inside += "enter $what $boundMs"
+                task()
+                inside += "exit $what"
+            },
+        )
+        owner.load(5L) { Recognizer("parakeet") }
+        val delivered = CountDownLatch(1)
+        owner.use(6L, refused = { events += "refused" }) { _ -> { events += "delivered"; inside += "delivery"; delivered.countDown() } }
+        delivered.awaitOrFail("the delivery")
+        owner.close()
+        worker.awaitTerminatedOrFail()
+        assertEquals(
+            listOf(
+                "enter the model load 5", "exit the model load",
+                "enter a transcription 6", "delivery", "exit a transcription",
+                "enter the recognizer release 7", "exit the recognizer release",
+            ),
+            inside.toList(),
+        )
+        assertEquals(listOf("delivered", "free"), events.toList())
     }
 }

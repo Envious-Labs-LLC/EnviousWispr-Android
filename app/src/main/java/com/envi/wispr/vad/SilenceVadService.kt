@@ -208,19 +208,19 @@ class SilenceVadService : Service() {
         private const val NO_TOKEN = 0L
 
         /** Matches the caller's eight-slot ring: 8 blocks of 256 ms is 2.048 seconds. */
-        const val CALL_DEADLINE_MS = 2_000L
+        internal const val CALL_DEADLINE_MS = 2_000L
         /** How long the dying process waits for its pending-defect note before the kill proceeds. */
-        const val PENDING_DEFECT_BOUND_MS = 500L
+        internal const val PENDING_DEFECT_BOUND_MS = 500L
 
-        const val STATUS_READY = 2
-        const val STATUS_UNAVAILABLE = 3
+        internal const val STATUS_READY = 2
+        internal const val STATUS_UNAVAILABLE = 3
 
-        const val RESULT_CONTINUE = 0
-        const val RESULT_SILENCE = 1
-        const val RESULT_UNAVAILABLE = 2
+        internal const val RESULT_CONTINUE = 0
+        internal const val RESULT_SILENCE = 1
+        internal const val RESULT_UNAVAILABLE = 2
 
         /** 4096 samples of 16 kHz mono PCM16. Anything else is not one of our blocks. */
-        const val PCM_BYTES_PER_BLOCK = 8_192
+        internal const val PCM_BYTES_PER_BLOCK = 8_192
     }
 }
 

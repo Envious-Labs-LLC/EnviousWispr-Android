@@ -13,26 +13,26 @@ import androidx.core.content.ContextCompat
 /** Samsung side-button trampoline. It never owns a recording session or visible window. */
 class VoiceInputActivity : Activity() {
     companion object {
-        const val EXTRA_STOP = "stop"
-        const val EXTRA_CANCEL = "cancel"
-        const val EXTRA_TOGGLE = "toggle"
+        internal const val EXTRA_STOP = "stop"
+        internal const val EXTRA_CANCEL = "cancel"
+        internal const val EXTRA_TOGGLE = "toggle"
 
         /**
          * Start, never toggle. The floating bubble sends this: a TOGGLE arriving while a take is still
          * STARTING would cancel it, and a second tap during startup is exactly what a user does when
          * nothing has visibly happened yet.
          */
-        const val EXTRA_START = "start"
+        internal const val EXTRA_START = "start"
 
         /** The bubble's request token, forwarded onto the service intent unchanged. */
-        const val EXTRA_REQUEST = "request"
+        internal const val EXTRA_REQUEST = "request"
 
         /**
          * `TriggerSource.wire` from a surface that launches this window (the tile, the app). Absent on
          * the side button, which arrives as `ACTION_ASSIST` and is read as such; absent on anything else
          * (an `am start` from a harness) is `unknown`, never a guess (issue #176).
          */
-        const val EXTRA_TRIGGER_SOURCE = "trigger_source"
+        internal const val EXTRA_TRIGGER_SOURCE = "trigger_source"
 
         /** The surface this launch names, from its extra or its action. Pure, for `TriggerSourceTest`. */
         internal fun triggerOf(action: String?, extra: String?): TriggerSource = when {

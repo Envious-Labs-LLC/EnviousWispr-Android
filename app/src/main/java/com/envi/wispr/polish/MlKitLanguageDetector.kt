@@ -110,7 +110,7 @@ internal class MlKitLanguageDetector internal constructor(
     /** Set once by [close]. Read without a lock; it only ever goes false to true. */
     private val closed = AtomicBoolean(false)
 
-    /** The live client, or null before the first acquisition and after [close]. Pointer only. */
+    /** Published client pointer; it may remain non-null after close until the last detection exits. */
     private val client = AtomicReference<LanguageIdentifier?>(null)
 
     /**
@@ -132,7 +132,7 @@ internal class MlKitLanguageDetector internal constructor(
             if (closed.get()) return null
             return identify(text)
         } finally {
-            // The last detection out of a closed detector performs the release the closer deferred.
+            // Release paths: see [releaseClient].
             if (activeDetections.decrementAndGet() == 0 && closed.get()) releaseClient()
         }
     }
@@ -162,8 +162,8 @@ internal class MlKitLanguageDetector internal constructor(
      * Normal app takes are serialised, but concurrent first callers remain representable: a duplicate
      * request reaching a binder early exit while another thread is acquiring produces two. A CAS loser uses
      * the published client. It releases its constructed client only when that is a distinct instance, outside
-     * any shared state; a shared instance remains published. [acquire] does not release a published client
-     * after [close]; [close] or the last detection out attempts its release, as named on [releaseClient] (#279).
+     * any shared state; a shared instance remains published.
+     * Release paths: see [releaseClient] (#279).
      */
     private fun acquire(): LanguageIdentifier? {
         val created = newClient() ?: return null
@@ -175,9 +175,7 @@ internal class MlKitLanguageDetector internal constructor(
             return published
         }
         afterPublish()
-        // `close` ran while this was building. Do NOT release here: another counted-in detection may already be
-        // calling through this client (#279). This caller is still counted, so one of the two release paths named on
-        // [releaseClient] releases it once nothing holds it.
+        // Release paths: see [releaseClient] (#279).
         if (closed.get()) return null
         return created
     }
@@ -188,12 +186,11 @@ internal class MlKitLanguageDetector internal constructor(
      * dictation and takes the model with it, but the session owner lives in the long-running app process
      * and would otherwise hold a resident model between dictations.
      *
-     * It cannot wait for anything: a flag and one atomic swap, then a vendor call that no other thread is
-     * blocked behind.
+     * The flag and pointer require no wait on another application thread; vendor `close()` remains synchronous.
      */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        // Only when nothing is using it. Otherwise the last detection out releases it instead.
+        // Release paths: see [releaseClient].
         if (activeDetections.get() == 0) releaseClient()
     }
 

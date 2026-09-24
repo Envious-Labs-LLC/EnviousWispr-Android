@@ -21,7 +21,7 @@ import kotlin.concurrent.thread
 /**
  * `MlKitLanguageDetector` (#279): the published client is released only by `close` reading an active count of zero
  * or by the last detection out after `close`, so it is never closed while a counted-in detection holds it. Driven
- * with a fake client; every wait is a bounded latch, never a clock. The rows assert ownership and close counts,
+ * with a fake client; synchronization uses bounded latches, a barrier, and joins, never a clock. The rows assert ownership and close counts,
  * never a language result: the fake throws a controlled exception, which the detector turns into null.
  */
 class MlKitLanguageDetectorTest {

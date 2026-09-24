@@ -1,8 +1,10 @@
-# #290 mutation receipts (each applied alone, its named row run, the source restored)
+# #290 mutation receipts (each applied alone, its named row run, the source restored); final run after code review round 1
 RED: m1 the preparation catch removed -> aMatcherThatThrowsStartsTheTakeWithNoCustomWords
 RED: m2 the policy awaited without the deadline -> aPolicyReadThatNeverAnswersUsesTheLastReadPolicy
 RED: m3 the matcher awaited without the deadline -> aMatcherThatNeverFinishesStartsTheTakeByTheBound
 RED: m4 the policy job started only after the matcher returned -> thePolicyAnswersWhileTheMatcherIsHeld
 RED: m5 the admission wrapper removed -> anAdmissionThatThrowsNeverPreventsTheTake
 RED: m6 the admission wait's catch removed -> anAdmissionThatFailsNeverPreventsTheTake
-NOT STAGED: m7 (fallbacks before the STARTING check); see the plan's section 6
+RED: m7 no STARTING check before the fallbacks -> aCancelDuringThePreparationWaitReportsNothingAndStopsBothJobs
+RED: m8 the cancel does not cancel the jobs -> aCancelDuringThePreparationWaitReportsNothingAndStopsBothJobs (alone: "the held policy read was not cancelled by the cancel")
+RED: m9 the finish stamp ignored -> anAnswerStampedPastTheDeadlineIsLate

@@ -38,6 +38,7 @@ class TakeStartPreparerTest {
         loadPolicy: suspend () -> PolicyRead = { PolicyRead.Fresh(PolishPolicy.Off) },
         lastRead: () -> PolishPolicy? = { null },
         boundMs: Long = 2_000L,
+        clock: () -> Long = { 0L },
     ) = TakeStartPreparer(
         preferences = rig.preferencesSource,
         answerBoundMs = 50L,
@@ -45,7 +46,7 @@ class TakeStartPreparerTest {
         compileMatcher = { compileMatcher() },
         loadPolicy = loadPolicy,
         lastReadPolicy = lastRead,
-        clock = { 0L },
+        clock = clock,
         scope = rig.scope,
         log = rig.log,
     )
@@ -127,5 +128,36 @@ class TakeStartPreparerTest {
         val matcher = main.indexOf("when (val step = prepared.matcher)")
         val policy = main.indexOf("when (val step = prepared.policy)")
         assertTrue("the state check precedes both fallbacks", check >= 0 && matcher > check && policy > check)
+    }
+
+    /**
+     * Row 7 (#345): the policy read needs nothing from the settings, so it starts before their answer; only the matcher
+     * waits for them. MUTATION m6: the policy launched after the settings wait.
+     */
+    @Test fun thePolicyReadStartsBeforeTheSettingsAnswer() = runBlocking {
+        val facts = facts()
+        var startedBeforeSettings: Boolean? = null
+        preparer(loadPolicy = { startedBeforeSettings = facts.settingsAnswerMs == null; PolicyRead.Fresh(PolishPolicy.Off) })
+            .prepare(facts.takeId, facts, admission = null, sinceAccepted = { ticks.incrementAndGet() }, jobs = {}, stillStarting = { true })
+        assertEquals(true, startedBeforeSettings)
+    }
+
+    /**
+     * Row 8 (#345): the admission's window counts from the start of preparation, so when the settings and the matcher
+     * have already used it, an admission that never lands adds no wait after them. The clock reads the start as 0 and
+     * every later reading past the window. MUTATION m7: the window counts from after the matcher again.
+     */
+    @Test fun theAdmissionWindowIsSpentWhileTheSettingsAnswer() = runBlocking {
+        val facts = facts()
+        val readings = AtomicLong()
+        val startedNs = System.nanoTime()
+        withTimeout(5_000L) {
+            preparer(clock = { if (readings.getAndIncrement() == 0L) 0L else 10_000L })
+                .prepare(facts.takeId, facts, CompletableDeferred(), { 0L }, {}, { true })
+        }
+        val tookMs = (System.nanoTime() - startedNs) / 1_000_000
+        assertTrue(rig.log.lines.any { it.contains("Journal admission did not land within ${DictationSessionCoordinator.JOURNAL_ADMISSION_DEADLINE_MS} ms; starting anyway") })
+        // The settings wait is 50 ms here; waiting the admission's whole 300 ms window again would take well over 250.
+        assertTrue("no admission wait after the window passed, took $tookMs ms", tookMs < 250)
     }
 }

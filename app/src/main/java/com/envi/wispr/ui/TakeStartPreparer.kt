@@ -70,6 +70,18 @@ internal class TakeStartPreparer(
         jobs: (List<Job>) -> Unit,
         stillStarting: () -> Boolean,
     ): TakeStartPreparation {
+        // The steps that need nothing from the settings start NOW (#345): the policy read runs beside the settings wait,
+        // and the journal admission's own window counts from here, so neither adds to the chain behind the settings.
+        // Only the matcher waits for the settings, because it compiles the terms they carry.
+        val preparedFromMs = clock()
+        // Read BEFORE this take's read starts (#290 review round 2): a late read updates the process's last read as it
+        // lands, and this take must not fall back onto the very answer it refused as late.
+        val priorPolicy = lastReadPolicy()
+        val policyJob = scope.async(Dispatchers.IO) { Timed(preparing { loadPolicy() }, clock()) }
+        // Take-owned (#290 review): published at once, then the state rechecked, so a cancel during the settings wait,
+        // or between the launch and the publication, cancels it.
+        jobs(listOf(policyJob))
+        if (!stillStarting()) policyJob.cancel()
         // The readers are limbs (#193): a failed or silent read never ends the take. The start carries
         // both outcomes and the values that came with them, taken by one atomic read each, and the
         // take is built from it alone; nothing below rereads the live source after suspending.
@@ -84,13 +96,10 @@ internal class TakeStartPreparer(
         val termsSnapshot: List<CustomTerm> = start.terms.structuredTerms
         // The matcher and the policy are limbs with ONE deadline (#290): they run side by side as sibling jobs on
         // the owner's scope (never inside a scope that would wait for a blocked loser), each result is taken by the
-        // deadline or replaced by its fallback, and a job that answers late is ignored.
+        // deadline or replaced by its fallback, and a job that answers late is ignored. The policy has been running
+        // since the start (#345), so it has at least as long as before.
         val deadlineMs = clock() + preparationBoundMs
-        // Read BEFORE this take's read starts (#290 review round 2): a late read updates the process's last read as it
-        // lands, and this take must not fall back onto the very answer it refused as late.
-        val priorPolicy = lastReadPolicy()
         val matcherJob = scope.async(Dispatchers.Default) { Timed(preparing { compileMatcher(termsSnapshot) }, clock()) }
-        val policyJob = scope.async(Dispatchers.IO) { Timed(preparing { loadPolicy() }, clock()) }
         // Take-owned (#290 review): a cancel of the starting take cancels both. Published, then the state is
         // rechecked, so a cancel that landed between the launch and the publication still cancels them.
         val launched = listOf(matcherJob, policyJob)
@@ -102,10 +111,12 @@ internal class TakeStartPreparer(
         facts.policyLoadedMs = sinceAccepted()
         // Admission is written before capture starts, under a deadline that never gates the take:
         // the queued write still lands in order if this stops waiting (issue #176, plan §3.3). A failed
-        // admission never gates it either (#290).
+        // admission never gates it either (#290). Its window counts from the start of preparation (#345), so the
+        // time spent on the settings and the matcher is spent on it too, and it adds nothing after them.
         if (admission != null) {
+            val leftMs = (preparedFromMs + JOURNAL_ADMISSION_DEADLINE_MS - clock()).coerceAtLeast(0L)
             val landed = try {
-                withTimeoutOrNull(JOURNAL_ADMISSION_DEADLINE_MS) { admission.await() }
+                if (admission.isCompleted) admission.await() else withTimeoutOrNull(leftMs) { admission.await() }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {

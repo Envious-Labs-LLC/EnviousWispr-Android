@@ -288,4 +288,19 @@ class SessionOwnerShapeTest {
             assertEquals("the recorder holds no $it", 0, count(recorder, it))
         }
     }
+
+    /**
+     * Drift Guard (#346): the start-up recovery has one owner, `history/HistoryRecoveryCoordinator`; neither the session
+     * owner nor the History screen runs its steps itself. REVERT: the recovery body back in `onCreated`.
+     */
+    @Test fun theStartUpRecoveryHasOneOwner() {
+        val owner = SessionSources.coordinator
+        val history = java.io.File("src/main/java/com/envi/wispr/history/ui/HistoryViewModel.kt").readText()
+        listOf("recoverStaleOpenRows(", "rescuedWords.recover(", "insertionsRecovered(").forEach { step ->
+            assertFalse("the session owner runs $step", owner.contains(step))
+            assertFalse("the History screen runs $step", history.contains(step))
+        }
+        assertTrue(owner.contains("historyRecovery.recover()"))
+        assertTrue(history.contains("recovery.recover().await()"))
+    }
 }

@@ -41,6 +41,7 @@ class SettingsActivity : ComponentActivity() {
         HistoryViewModel.Factory(
             repository = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()),
             rescuedWords = com.envi.wispr.models.ModelBootstrapApplication.rescuedWords(applicationContext),
+            recovery = com.envi.wispr.models.ModelBootstrapApplication.historyRecovery(applicationContext),
         )
     }
     private val dictionaryViewModel: DictionaryViewModel by viewModels {

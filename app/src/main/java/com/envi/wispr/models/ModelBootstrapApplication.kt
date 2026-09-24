@@ -39,6 +39,22 @@ class ModelBootstrapApplication : Application() {
          */
         internal fun rescuedWords(context: Context): RescuedWords =
             (context.applicationContext as ModelBootstrapApplication).rescuedWords
+
+        /** The process's one start-up History recovery (#346), shared by the session owner and the History screen. */
+        internal fun historyRecovery(context: Context): com.envi.wispr.history.HistoryRecoveryCoordinator =
+            (context.applicationContext as ModelBootstrapApplication).historyRecovery
+    }
+
+    private val historyRecovery: com.envi.wispr.history.HistoryRecoveryCoordinator by lazy {
+        com.envi.wispr.history.HistoryRecoveryCoordinator(
+            repository = TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()),
+            rescuedWords = rescuedWords,
+            // Never cancelled: a Service stopping must not cancel a run the History screen waits on.
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+            clock = System::currentTimeMillis,
+            log = { DebugSessionLog.log(it) },
+            warn = { DebugSessionLog.warn(it) },
+        )
     }
 
     private val rescuedWords: RescuedWords by lazy {

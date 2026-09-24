@@ -5,9 +5,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import com.envi.wispr.KotlinSourceLexer.Kind
-import com.envi.wispr.KotlinSourceLexer.body
-import com.envi.wispr.KotlinSourceLexer.calls
-import com.envi.wispr.KotlinSourceLexer.normalized
 import com.envi.wispr.KotlinSourceLexer.callStarts
 import com.envi.wispr.KotlinSourceLexer.codeMask
 import com.envi.wispr.KotlinSourceLexer.view
@@ -35,6 +32,45 @@ import java.io.File
 class VoicePipelineDeviceShapeTest {
 
     private val source = File("src/androidTest/java/com/envi/wispr/VoicePipelineDeviceTest.kt").readText()
+
+    private fun normalized(value: String) = value.replace(Regex("\\s+"), " ").trim()
+
+    /** The original text between the `{` after the CODE occurrence of [signature] and its matching `}`. */
+    private fun body(text: String, signature: String): String {
+        val code = codeMask(text)
+        val start = code.indexOf(signature)
+        assertTrue("$signature must exist in code", start >= 0)
+        val open = code.indexOf('{', start)
+        var depth = 0
+        for (i in open until code.length) {
+            when (code[i]) {
+                '{' -> depth++
+                '}' -> if (--depth == 0) return text.substring(open + 1, i)
+            }
+        }
+        error("unbalanced $signature")
+    }
+
+    /** Every CODE call of [name] in [text]: its start and its argument texts, split at top-level code commas. */
+    private fun calls(text: String, name: String): List<Pair<Int, List<String>>> {
+        val code = codeMask(text)
+        return callStarts(text, name).map { (from, open) ->
+            var depth = 0
+            var argStart = open + 1
+            val args = mutableListOf<String>()
+            for (i in open until code.length) {
+                when (code[i]) {
+                    '(', '{', '[' -> depth++
+                    ')', '}', ']' -> {
+                        depth--
+                        if (depth == 0) { args += text.substring(argStart, i); break }
+                    }
+                    ',' -> if (depth == 1) { args += text.substring(argStart, i); argStart = i + 1 }
+                }
+            }
+            from to args
+        }
+    }
 
     /**
      * The start of the CODE `assertTrue` call with exactly two arguments whose second argument, comments

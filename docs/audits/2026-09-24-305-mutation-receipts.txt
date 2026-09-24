@@ -4,21 +4,16 @@ Before the change (main a33e407, only the shape test and DeviceNotRun added):
   SilenceDeviceRowsShapeTest.theSilenceRowsAssertTheirPreconditionsInsteadOfSkipping
   RED: SilenceStoppedTakeTranscribesDeviceTest.kt calls assumeTrue, which a device run reports as a pass
 
-Mutations, one run on the final code:
+Mutations, one run on the final code (after code review round 3):
 RED: m1 a skip back in SilenceStoppedTakeTranscribesDeviceTest -> theSilenceRowsAssertTheirPreconditionsInsteadOfSkipping
 RED: m2 a skip back in CaptureWithSilenceStopDeviceTest -> theSilenceRowsAssertTheirPreconditionsInsteadOfSkipping
 RED: m3 the fixture skip back in SilenceDetectorDeviceTest -> theSilenceRowsAssertTheirPreconditionsInsteadOfSkipping
-RED: m4 DeviceNotRun skips without logging -> theOneSkipLogsNotRunBeforeItAssumes
-RED: m5 a replacement assertion deleted -> theReplacementAssertionsAreThere  [code review round 1; its first draft
-     MISSED because the file repeats that assertion in two rows, so the row now counts occurrences]
-RED: m6 the NOT RUN log commented out -> theOneSkipLogsNotRunBeforeItAssumes  [code review round 1]
-RED: m7 a real assertion replaced by its text in a raw string -> theReplacementAssertionsAreThere  [round 2]
-RED: m8 an assertion moved to another row -> theReplacementAssertionsAreThere  [round 2]
-RED: m9 the log's text in a raw string beside an unrelated warn -> theOneSkipLogsNotRunBeforeItAssumes  [round 2]
-ALL RED (rerun after the round 2 fixes, m1 to m9 in one run; the guard now counts parsed CODE calls inside each named
-row, through the call parser that moved from VoicePipelineDeviceShapeTest into KotlinSourceLexer)
+ALL RED
+Rounds 1 and 2 added guard rows pinning each replacement assertion and the NOT RUN log (mutations m4 to m9, all RED
+then); round 3 found two more evasions of the same class, so those rows were deleted by the consequence committed in the
+round 2 prompt. The shape test keeps only the no-assumeTrue row, and KotlinSourceLexer keeps only the round 1 move.
 
-Suite (after round 2): scripts/measure-tests.sh tests=1320 suites=164 failures=0 errors=0 skipped=0 (1,317 before: three new rows;
+Suite (after round 3): scripts/measure-tests.sh tests=1318 suites=164 failures=0 errors=0 skipped=0 (1,317 before: one new row;
 VoicePipelineDeviceShapeTest 5 of 5 on the shared lexer). Builds: :app:assembleDebug and :app:assembleDebugAndroidTest;
 scripts/check-visibility.py clean; scripts/check-cited-symbols.py all citations resolve. DiagnosticsShapeTest caught the
 first draft's android.util.Log import in DeviceNotRun; it logs through DebugLogger.

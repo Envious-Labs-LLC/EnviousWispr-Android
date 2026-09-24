@@ -42,14 +42,14 @@ Prior context: #161 (harness true verdicts), #239 (the end-to-end silence take l
 1. Detector readiness and the pushed fixture become `assertTrue(<same message>, <same condition>)`.
 2. Capture start: before starting, `DeviceNotRun.skipUnless(<the app holds RECORD_AUDIO>, "<row>", "the app does not hold the microphone permission")`; then `assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)`. `DeviceNotRun` (new, `app/src/androidTest/java/com/envi/wispr/DeviceNotRun.kt`) is the ONE place in these files' reach that calls `assumeTrue`: it logs `NOT RUN: row: reason` with `android.util.Log.w("DeviceNotRun", ...)` and then assumes. The runner's verdict (grounded finding 2, round 4): for these direct runs, read each instrumentation status: `-3/-4` means NOT RUN. Pair that status with the `DeviceNotRun` log for the reason. `run_device_test` is a separate driver and supplies no verdict for these rows.
 3. The speech-model block (coverage finding 3): remove the one-second assumption; await the answer once (60 s), then fail for a missing model (`assertFalse("the speech model must be installed on this phone: $error", error.contains("not ready", true))`) or empty words (the existing assertion).
-4. `SilenceDeviceRowsShapeTest` (JVM), reusing `VoicePipelineDeviceShapeTest`'s code-call detection (coverage finding 4; its helpers move to a small shared test utility so both use one detector): the three files contain no `assumeTrue` CALL (comments and strings do not count) and no `org.junit.Assume` import; `DeviceNotRun.kt` logs before it assumes.
+4. `SilenceDeviceRowsShapeTest` (JVM), reusing `VoicePipelineDeviceShapeTest`'s code-call detection (moved unchanged into the shared `KotlinSourceLexer`): the three files contain no `assumeTrue` CALL (comments and strings do not count) and no `org.junit.Assume` import. As built after code review: rows that also pinned each replacement assertion and the NOT RUN log were added in rounds 1 and 2 and DELETED in round 3 by a pre-committed consequence, because each round found a new way to satisfy a text or call-shape pin; what each row asserts instead is read in review.
 
 ## 3. Tests
 
-1. `SilenceDeviceRowsShapeTest` RED on main a33e407 (the skips are there), GREEN after. MUTATION m1: one `assumeTrue` back in `SilenceStoppedTakeTranscribesDeviceTest` (RED). MUTATION m2: one back in `CaptureWithSilenceStopDeviceTest` (RED). MUTATION m3: the fixture skip back in `SilenceDetectorDeviceTest` (RED). MUTATION m4: `DeviceNotRun` assumes without logging (RED). All run against the finished guard.
+1. `SilenceDeviceRowsShapeTest` RED on main a33e407 (the skips are there), GREEN after. MUTATION m1: one `assumeTrue` back in `SilenceStoppedTakeTranscribesDeviceTest` (RED). MUTATION m2: one back in `CaptureWithSilenceStopDeviceTest` (RED). MUTATION m3: the fixture skip back in `SilenceDetectorDeviceTest` (RED). All run against the finished guard.
 2. `:app:assembleDebugAndroidTest` compiles the three rows.
 3. The rows themselves, on the emulator through `am instrument` (never `connectedDebugAndroidTest`): `CaptureWithSilenceStopDeviceTest`'s five rows without speaker playback and `SilenceDetectorDeviceTest`'s four rows (`enviouswispr-uat.pcm` pushed to the TARGET app package's cache first, since the row reads `targetContext.cacheDir`), for these direct runs, each instrumentation status is read: assumption codes `-3/-4` are NOT RUN, with the `DeviceNotRun` log for the reason; the three speaker rows NOT RUN (physical phone only).
-4. m1 to m4 are planned controls until run; their results go in the receipt.
+4. m1 to m3 are the guard's controls; their results are in the receipt.
 
 ## 4. Blast radius
 
@@ -57,5 +57,5 @@ Test-only: three device test files, one new androidTest helper, one new JVM shap
 
 ## 5. Ship criteria
 
-- [ ] The shape row RED before and GREEN after; m1 to m4 RED; the suite green; the androidTest build compiles; checks clean.
+- [ ] The shape row RED before and GREEN after; m1 to m3 RED; the suite green; the androidTest build compiles; checks clean.
 - [ ] Codex code review ALL-CLEAR with a confirming round.

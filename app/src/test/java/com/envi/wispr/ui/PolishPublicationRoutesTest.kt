@@ -48,7 +48,19 @@ class PolishPublicationRoutesTest {
     @Test fun theFactsAreDerivedOnceTheWriteIsEnqueuedWithTheReservationAndTheNoticePrecedesTheContinuation() {
         assertEquals(1, Regex("""PolishPublicationFacts\.from\(""").findAll(SessionSources.all).count())
         val publication = section("private fun publishResult(", "private fun cancelRecording()")
-        val notice = publication.indexOf("host.showPolishNotice(notice)")
+        // Since #293 the notice is the presenter's, which still posts the toast then the notification.
+        val notice = publication.indexOf("notices.sayPolishFailure(notice)")
+        val presenter = section("fun sayPolishFailure(", "\n    }\n", SessionSources.notices)
+        assertTrue(presenter.indexOf("host.toastFromService(notice.toastLine)") in 0 until presenter.indexOf("host.showPolishNotice(notice)"))
+        // The polish facts, their breadcrumb and their defect keep their place before the payload and the reservation.
+        val order = listOf(
+            "takeFacts.recordPolish(reason, latencyMs, statusCode, polishContext.encode())",
+            "Telemetry.breadcrumb(\"take\", \"polish_done\", polishRecord.breadcrumb)",
+            "reportDefect(it, polishRecord.defectData)",
+            "val payload = Publication(",
+            "synchronized(publishLock)",
+        ).map { publication.indexOf(it) }
+        assertTrue("recordPolish < breadcrumb < defect < payload < reservation: $order", order.all { it >= 0 } && order == order.sorted())
         // The host delegate must still reach the notification controller (Codex review C1, 2026-09-20).
         assertTrue(File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText().contains("DictationNotificationController.showPolishNotice(this@DictationSessionService, notice)"))
         // Since #115 the History write is ENQUEUED in the same operation as the reservation, under the

@@ -1,6 +1,7 @@
 package com.envi.wispr.ui
 
 import com.envi.wispr.audio.RecordingLimits
+import com.envi.wispr.polish.PolishFailureNotice
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -65,5 +66,21 @@ internal class SessionNoticePresenter(
                 }
             }
         }
+    }
+
+    /**
+     * A polish that did not do its job (#77, #293): the toast line, then the silent notification that carries the
+     * full reason, both on main. The owner posts it before its continuation starts, so it precedes the delivery.
+     */
+    fun sayPolishFailure(notice: PolishFailureNotice) {
+        host.postToMain {
+            host.toastFromService(notice.toastLine)
+            host.showPolishNotice(notice)
+        }
+    }
+
+    /** A take's failure sentence (#293), from [TakeNotices]; a toast on main, since the recorder is going away. */
+    fun sayFailure(line: String) {
+        host.postToMain { host.toastFromService(line) }
     }
 }

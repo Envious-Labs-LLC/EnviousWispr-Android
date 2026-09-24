@@ -30,7 +30,7 @@ Prior context: #181 (PR #184) added `windowTreeXml` for the harness fast eye; it
 
 | Member | Where declared | Callers (all in `:app`) |
 |---|---|---|
-| `isBound` | companion (property; JVM getter `getIsBound`) | main (8 files), test (6), androidTest `VoicePipelineDeviceTest` |
+| `isBound` | companion (property; its JVM getter keeps the name isBound) | main (8 files), test (6), androidTest `VoicePipelineDeviceTest` |
 | `releasePinnedTarget` | companion | main (3), test (2) |
 | `pinnedFieldId` | companion | main (2), test (2) |
 | `windowTreeXml` | companion | debug `DebugDumpReceiver`, test `PasteServiceShapeTest` (source text only) |
@@ -45,7 +45,7 @@ All six become `internal`. `internal` is visible to the `debug`, `test` and `and
 
 ## 2. Tests
 
-1. `ComponentMemberVisibilityTest` (new, JVM unit test). For each class in its list (today only `PasteAccessibilityService`), read the compiled class with Java reflection. Kotlin compiles an `internal` member as a public JVM method whose name ends in the module tag (`$app_debug`), so the test counts a public, non-synthetic, non-bridge method as exposed unless its name ends in `$app_<variant>`, or (on the class, not the companion) it overrides a public method of the superclass or an interface (`getMethod`, same name and parameters). The companion's property getter `getIsBound` is covered the same way. Fails naming each offender. It reads the compiler's output rather than the source text. The mangling is a compiler convention, not the language's definition of visibility; the row is run red before the change as evidence it tells the two apart here.
+1. `ComponentMemberVisibilityTest` (new, JVM unit test). For each class in its list (today only `PasteAccessibilityService`), read the compiled class with Java reflection. Kotlin compiles an `internal` member as a public JVM method whose name ends in the module tag (`$app_debug`), so the test counts a public, non-synthetic, non-bridge method as exposed unless its name ends in `$app_<variant>`, or (on the class, not the companion) it overrides a public method of the superclass or an interface (`getMethod`, same name and parameters). The companion's property getter (JVM name isBound) is covered the same way. Fails naming each offender. It reads the compiler's output rather than the source text. The mangling is a compiler convention, not the language's definition of visibility; the row is run red before the change as evidence it tells the two apart here.
    MUTATION m1: put `windowTreeXml` back to public. MUTATION m2: put `startDictationFromBubble` back to public.
 2. Existing `PasteServiceShapeTest` source-text rows that quote `fun windowTreeXml()` and similar are updated to the new `internal fun` text.
 
@@ -59,6 +59,15 @@ None at runtime: `internal` changes only Kotlin compile-time access and JVM meth
 - [ ] Emulator: auto-paste bound, the debug window dump answers.
 - [ ] Follow-up issue filed for the other 12 components.
 
-## 5. Related
+## 5. As built (2026-09-23)
+
+- The six members in section 1 are `internal`; nothing else in the file changed. No caller moved; `:app:assembleDebug` and `:app:assembleDebugAndroidTest` build.
+- `ComponentMemberVisibilityTest` failed on main's code naming exactly those six, then passed. It reads methods only: a public companion `const val` compiles to a static field and is not read. This class declares none; #275 extends the test to fields with the other 12 components.
+- `PasteServiceShapeTest` needed no edit: `companionBody` finds each member by a substring the `internal fun` text still contains (deviation from section 2 item 2).
+- Mutation receipts: `docs/audits/2026-09-23-261-mutation-receipts.txt`, 2 of 2 RED. Full unit suite: 1268 tests, 0 failures. `scripts/check-visibility.py` clean.
+- Emulator: auto-paste bound; the harness fast eye (`DebugDumpReceiver` to `windowTreeXml`) read the Appearance page.
+- Follow-up: #275.
+
+## 6. Related
 
 #191 (REF-08, top-level visibility sweep), REF-10 of the second 2026-09-23 audit.

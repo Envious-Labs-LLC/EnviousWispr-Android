@@ -33,6 +33,8 @@ internal class PolicyReader {
     @Volatile var lastRead: PolishPolicy? = null
         private set
 
+    /** One read at a time, so an older snapshot can never overwrite a newer [lastRead] (#278 review). */
+    @Synchronized
     fun read(readSnapshot: () -> Map<String, *>): PolicyRead =
         runCatching { ProviderConfigurationRepository.decodePolicy(readSnapshot()) }.fold(
             onSuccess = { policy -> lastRead = policy; PolicyRead.Fresh(policy) },

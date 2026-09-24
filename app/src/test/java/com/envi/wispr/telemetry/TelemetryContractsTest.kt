@@ -100,6 +100,8 @@ class TelemetryContractsTest {
             "polish_policy_unreadable" to "polish.policy_unreadable",
             // #290: the take's start preparation threw or missed its bound.
             "take_preparation_failed" to "take.preparation_failed",
+            // #292: the History write queue refused writes, once per overload episode.
+            "history_queue_overloaded" to "history.queue_overloaded",
             // #235: the History save did not answer within the owner's bound.
             "history_save_timed_out" to "history.save_timed_out",
             "history_contract_violation" to "history.contract_violation",

@@ -66,7 +66,7 @@ class PolishPublicationRoutesTest {
         val reservation = publication.indexOf("finalizer.enqueueSave(current.history, payload, saved)")
         assertTrue(
             "the finalizer's save is the finalize write",
-            section("fun enqueueSave(", "\n    }\n", finalizer).contains("historyWrites.enqueue(\"finalize\")"),
+            section("fun enqueueSave(", "\n    }\n", finalizer).contains("historyWrites.enqueue(\"finalize\", WriteKind.TERMINAL)"),
         )
         val continuation = publication.indexOf("scope.launch")
         assertTrue("the write is enqueued with the reservation", reservation >= 0 && reservation < notice)

@@ -75,7 +75,7 @@ internal object SentrySchema {
         AppDefect.AsrOverLimit, AppDefect.CleanupRecovered, AppDefect.LocalPolishFailed, AppDefect.PolishUnexpected,
         AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishPolicyUnreadable,
         AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.TakePreparationFailed, AppDefect.HistorySaveTimedOut,
-        is AppDefect.HistoryContractViolation,
+        AppDefect.HistoryQueueOverloaded, is AppDefect.HistoryContractViolation,
         AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.DebugProbe,
         -> defect.semanticId
     }
@@ -87,7 +87,7 @@ internal object SentrySchema {
         AppDefect.AsrOverLimit, AppDefect.CleanupRecovered, AppDefect.LocalPolishFailed, AppDefect.PolishUnexpected,
         AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishPolicyUnreadable,
         AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.TakePreparationFailed, AppDefect.HistorySaveTimedOut,
-        AppDefect.HistoryContractViolation(null),
+        AppDefect.HistoryQueueOverloaded, AppDefect.HistoryContractViolation(null),
         AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.DebugProbe,
     )
 

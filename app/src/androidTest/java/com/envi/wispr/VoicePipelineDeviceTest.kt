@@ -784,7 +784,15 @@ class VoicePipelineDeviceTest {
      */
     private fun focusedWindowsSinceClear(): List<String> {
         val events = shell("logcat -d -b events -s input_focus")
-        return Regex("Focus entering \\S+ ([^,\\]]+)").findAll(events).map { it.groupValues[1].trim() }.toList()
+        val entering = events.lineSequence().filter { "Focus entering " in it }.toList()
+        // Never green on no evidence (#331 review round 2): the launcher's start and stop hand focus back to the host,
+        // so a take always logs at least one entry; none means the read or its format failed.
+        assertTrue("no input_focus entry after the take", entering.isNotEmpty())
+        return entering.map { line ->
+            Regex("""Focus entering \S+ ([^,\]]+)""").find(line)
+                ?.groupValues?.get(1)?.trim()
+                ?: throw AssertionError("unparsed input_focus entry: $line")
+        }
     }
 
     private fun observedHandoff(): String {

@@ -158,7 +158,7 @@ class TelemetryContractsTest {
             reason = TerminalReason.COMPLETED, asrFailure = null, trigger = TriggerSource.BUBBLE_TAP,
             routeKind = InputRouteKind.BLUETOOTH, routeReason = InputRouteReason.AUTO, liveAfterMs = 120L,
             liveState = "ready", silenceStopStatus = "ready", captureTerminal = "manual", recordingSeconds = 4.2, inputDevice = "auto",
-            asrMs = 830L, asrChars = 57, peakAmplitude = 0.31f, polishProvider = "offline",
+            asrMs = 830L, asrChars = 57, peakAmplitude = 0.31f, polishProvider = "local",
             polishReason = PolishReason.POLISHED, polishMs = 410L, polishStatus = 0, historySave = "ok",
             settingsFallback = "settings:exception:IOException",
             settingsAnswerMs = 12L, matcherReadyMs = 30L, policyLoadedMs = 41L, admissionObservedMs = 9L, bindRequestedMs = 44L,
@@ -180,7 +180,7 @@ class TelemetryContractsTest {
             "asr_ms" to 830L,
             "asr_chars" to 57,
             "peak_amplitude" to 0.31f,
-            "polish_provider" to "offline",
+            "polish_provider" to "local",
             "polish_reason" to "POLISHED",
             "polish_ms" to 410L,
             "polish_status" to 0,
@@ -246,6 +246,11 @@ class TelemetryContractsTest {
             AnalyticsEvent.ApiKeyValidationCompleted("openai", "valid").name,
         )
         assertEquals(names, built)
+        // #307: the debug log prints only these names; every subclass literal is in the set, and nothing else is.
+        val source = java.io.File("src/main/java/com/envi/wispr/telemetry/AnalyticsEvent.kt").readText()
+        val literals = Regex("""AnalyticsEvent\("([^"]+)"\)""").findAll(source).map { it.groupValues[1] }.toSet()
+        assertEquals(names.toSet(), literals)
+        assertEquals(names.toSet(), AnalyticsEvent.NAMES)
     }
 
     // ---- TelemetryFacadeTest: a limb before bootstrap

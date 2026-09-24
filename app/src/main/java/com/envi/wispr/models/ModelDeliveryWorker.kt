@@ -268,13 +268,20 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
 
         /** Bytes moved this attempt, as a closed bucket token: enough to tell a stall from a near-miss. */
         fun bytesBucket(bytes: Long): String = when {
-            bytes <= 0L -> "0"
-            bytes < 10L * 1024 * 1024 -> "lt_10mb"
-            bytes < 100L * 1024 * 1024 -> "lt_100mb"
-            bytes < 500L * 1024 * 1024 -> "lt_500mb"
-            bytes < 1024L * 1024 * 1024 -> "lt_1gb"
-            else -> "ge_1gb"
+            bytes <= 0L -> BYTES_NONE
+            bytes < 10L * 1024 * 1024 -> BYTES_LT_10MB
+            bytes < 100L * 1024 * 1024 -> BYTES_LT_100MB
+            bytes < 500L * 1024 * 1024 -> BYTES_LT_500MB
+            bytes < 1024L * 1024 * 1024 -> BYTES_LT_1GB
+            else -> BYTES_GE_1GB
         }
+        const val BYTES_NONE = "0"
+        const val BYTES_LT_10MB = "lt_10mb"
+        const val BYTES_LT_100MB = "lt_100mb"
+        const val BYTES_LT_500MB = "lt_500mb"
+        const val BYTES_LT_1GB = "lt_1gb"
+        const val BYTES_GE_1GB = "ge_1gb"
+        val BYTES_BUCKETS: Set<String> = setOf(BYTES_NONE, BYTES_LT_10MB, BYTES_LT_100MB, BYTES_LT_500MB, BYTES_LT_1GB, BYTES_GE_1GB)
         private const val DOWNLOAD_PREFIX = "model-download-"
         private const val ADOPT_PREFIX = "model-adopt-"
 

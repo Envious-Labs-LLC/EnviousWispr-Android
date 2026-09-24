@@ -51,6 +51,9 @@ class ModelManifestTest {
         assertFalse("a query on our host", ok("$own?v=1"))
         assertFalse("another query on Hugging Face", ok(hf.replace("download=true", "download=true&x=1")))
         assertFalse("a fragment", ok("$own#x"))
+        assertFalse("an escaped ordinary character", ok(own.replace("parakeet-onnx", "para%6beet-onnx")))
+        assertFalse("a trailing slash", ok("$own/"))
+        assertFalse("a doubled slash", ok(own.replace("/$rev/", "//$rev/")))
     }
 
     @Test fun theRevisionIsAFullCommitHashAndTheLastSegmentIsTheFile() {

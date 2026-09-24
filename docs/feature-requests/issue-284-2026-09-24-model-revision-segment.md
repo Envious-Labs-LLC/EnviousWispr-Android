@@ -1,6 +1,6 @@
 # Issue #284: the pinned model revision is one whole path segment in its place (2026-09-24)
 
-GitHub issue: `#284`. Tier: SMALL (one validator and its one caller). Status: built as the issue proposes; Codex reviews plan and diff together.
+GitHub issue: `#284`. Tier: SMALL (one validator and its one caller). Status: built as the issue proposes; Codex reviewed plan and diff together (round 1: three parser rows and one sentence, adopted).
 
 ## Preface: Lane + Hardware UAT declaration
 
@@ -24,12 +24,12 @@ REF-08 of `docs/audits/2026-09-23c-senior-audit.json` (`architecture-rules.md` R
 
 - `ModelManifest.kt` L29 to L33: `isAvailable`, the only caller of `validateModelSource`.
 - `ModelDelivery.kt` L299 to L307: the old validator.
-- The two shipped descriptors use full 40-character revisions and the two path shapes above; the redirect rule in `ModelDeliveryWorker` (a redirect may not leave its host) is separate and unchanged.
+- The two shipped descriptors use full 40-character revisions and the two path shapes above; redirects use a separate host policy in `ModelDeliveryWorker` that permits Hugging Face CDN hosts and does not recheck the revision path; byte count and SHA-256 still verify the result (review round 1).
 - `ModelDeliveryStoreTest` and `ModelAdoptionTest` built their test descriptors with revisions `r1` and `r2`, which the new rule refuses; they now use 40-character hashes.
 
 ## 2. Tests and receipts
 
-- `ModelManifestTest`: the two-host and https rows now pass the revision and file; new rows `theRevisionIsOneWholeSegmentInItsPlace` (a revision inside a longer segment, in the wrong place, an extra segment, the Hugging Face repo place, an escaped separator, a dot segment, a query on our host, another query on Hugging Face, a fragment) and `theRevisionIsAFullCommitHashAndTheLastSegmentIsTheFile` (blank, branch, short, uppercase, another file), and `aRevisionOutOfPlaceOrOfTheWrongShapeMakesTheModelUnavailable` on the descriptor. The shipped files are checked through the validator itself.
+- `ModelManifestTest`: the two-host and https rows now pass the revision and file; new rows `theRevisionIsOneWholeSegmentInItsPlace` (a revision inside a longer segment, in the wrong place, an extra segment, the Hugging Face repo place, an escaped separator, a dot segment, a query on our host, another query on Hugging Face, a fragment, an escaped ordinary character, a trailing slash, a doubled slash) and `theRevisionIsAFullCommitHashAndTheLastSegmentIsTheFile` (blank, branch, short, uppercase, another file), and `aRevisionOutOfPlaceOrOfTheWrongShapeMakesTheModelUnavailable` on the descriptor. The shipped files are checked through the validator itself.
 - Mutations (`284-mut.py`): m1 the revision as a substring, m2 any revision shape, m3 no file check, m4 any query on Hugging Face, m5 the manifest back to substring containment: all RED.
 - Suite 1352, 0 failures; app and androidTest build; visibility and cited-symbol checks clean.
 - Emulator: this build installed over the admitted models; Settings, Storage lists Parakeet (670.5 MB) and S1-mini (484.2 MB) with no download or repair offer.

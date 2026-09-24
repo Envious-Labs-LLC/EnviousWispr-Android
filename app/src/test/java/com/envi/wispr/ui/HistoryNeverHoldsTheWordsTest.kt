@@ -352,10 +352,16 @@ class HistoryNeverHoldsTheWordsTest {
         var now = 50_000L
         rig.host.clock = { now }
         rig.dao.afterFinalize = { now += bound + 1 }
+        // Held until the take has ended, so the observer (launched at publication, before the commit) is already
+        // inside its real wait when the save lands and the clock jumps.
+        rig.dao.holdFinalize = CompletableDeferred()
         val coordinator = rig.coordinator(historySaveBoundMs = bound)
         takeWithPolishedWords(coordinator)
         assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
-        rig.host.awaitStopped()
+        rig.host.awaitServiceStopped()
+        assertTrue(rig.dao.finalizeEntered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        assertTrue("no timeout yet: the scripted clock has not moved", rig.defects.none { it.first == "history_save_timed_out" })
+        rig.dao.holdFinalize!!.complete(Unit)
         awaitUntil("the late save's defect") { rig.defects.any { it.first == "history_save_timed_out" } }
     }
 }

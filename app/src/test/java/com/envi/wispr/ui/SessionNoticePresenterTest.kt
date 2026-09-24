@@ -1,5 +1,7 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.polish.PolishFailure
+import com.envi.wispr.polish.PolishFailureNotice
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -85,6 +87,27 @@ class SessionNoticePresenterTest {
     }
 
     /**
+     * Row 7 (#293): a polish failure is the toast line then the notification, both from one post on main.
+     * MUTATION m1: drop the notification.
+     */
+    @Test fun aPolishFailureIsTheToastThenTheNotificationOnMain() {
+        val notice = PolishFailureNotice.notice(PolishFailure.KEY_REJECTED, null)
+        presenter.sayPolishFailure(notice)
+        rig.onMain { }
+        assertEquals(
+            listOf("toast:${PolishFailureNotice.LOCKED_SENTENCE}", "polish-notice"),
+            rig.host.events.filter { it.startsWith("toast:") || it == "polish-notice" },
+        )
+    }
+
+    /** Row 8 (#293): a take's failure sentence is one toast from the service, on main. MUTATION m2: drop the toast. */
+    @Test fun aFailureSentenceIsOneToast() {
+        presenter.sayFailure("Microphone service stopped unexpectedly")
+        rig.onMain { }
+        assertEquals(listOf("toast:Microphone service stopped unexpectedly"), rig.host.events.filter { it.startsWith("toast:") })
+    }
+
+    /**
      * Row 6: the owner picks which notice and never where. MUTATION: a direct `surface.showNotice(` back in the
      * coordinator.
      */
@@ -92,6 +115,11 @@ class SessionNoticePresenterTest {
         val owner = SessionSources.coordinator
         assertFalse(owner.contains("showNotice("))
         assertFalse(owner.contains("toastFromApplication("))
+        // Since #293 the polish failure and the take's failure sentence are the presenter's too. MUTATION m5.
+        assertFalse(owner.contains("toastFromService("))
+        assertFalse(owner.contains("showPolishNotice("))
+        assertEquals(1, Regex("""\bnotices\.sayPolishFailure\(notice\)""").findAll(owner).count())
+        assertEquals(1, Regex("""\bnotices\.sayFailure\(line\)""").findAll(owner).count())
         assertEquals(5, Regex("""\bnotices\.say\(SessionNotice\.""").findAll(owner).count())
         assertEquals(SessionNotice.entries.map { it.name }.toSet(), Regex("""\bnotices\.say\(SessionNotice\.([A-Z_]+)\)""").findAll(owner).map { it.groupValues[1] }.toSet())
     }

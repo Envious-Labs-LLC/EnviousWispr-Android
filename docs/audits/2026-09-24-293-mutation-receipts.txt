@@ -1,0 +1,14 @@
+# #293 mutation receipts, 2026-09-24, worktree head af8c4ce plus the change
+
+RED: m1 the polish notification is dropped -> aPolishFailureIsTheToastThenTheNotificationOnMain
+RED: m2 the failure toast is dropped -> aFailureSentenceIsOneToast
+RED: m3 polishStatus is not written -> recordPolishWritesTheFourFactsAndAnswersTheBreadcrumbAndTheDefect
+RED: m4 the breadcrumb omits the provider -> recordPolishWritesTheFourFactsAndAnswersTheBreadcrumbAndTheDefect
+RED: m5 a direct toast back in the owner -> theOwnerPicksTheNoticeAndThePresenterPicksTheSurface
+ALL RED
+
+Suite: scripts/measure-tests.sh tests=1299 suites=161 failures=0 errors=0 skipped=0
+Builds: :app:assembleDebug and :app:assembleDebugAndroidTest; scripts/check-visibility.py clean.
+Emulator (emulator-5554, debug build of this change): "and I will send the deck tomorrow" spoken into a Gmail
+draft; route=COMMIT, outcome=VERIFIED; the editor holds "And I will send the deck tomorrow." followed by the
+insertion's trailing space.

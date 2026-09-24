@@ -1,11 +1,7 @@
 package com.envi.wispr.paste
 
 import android.content.Intent
-import android.content.res.Configuration
 import android.graphics.PixelFormat
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.InsetDrawable
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
@@ -13,14 +9,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.LinearLayout.LayoutParams.MATCH_PARENT as MATCH
-import android.widget.LinearLayout.LayoutParams.WRAP_CONTENT as WRAP
-import android.widget.TextView
 import android.widget.Toast
-import androidx.core.content.res.ResourcesCompat
-import com.envi.wispr.R
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.shortcuts.BubbleRequestToken
 import com.envi.wispr.shortcuts.BubbleRequests
@@ -48,23 +37,29 @@ internal class RecordingAccessibilityOverlay(
 ) : RecordingOverlayState.Listener {
     private val windowManager = service.getSystemService(WindowManager::class.java)
     private val density = service.resources.displayMetrics.density
-    /** Declared before the views: `buildPill` applies it while the views are still being built. */
-    private var look = BubbleLook.DEFAULT
-    private val timer = InkEdgedTextView(service)
-    private val meter = RecordingLevelMeterView(service)
-    private val recordMark = RecordMarkView(service)
-    private val notice = TextView(service)
-    private val bubbleMark = BrandMarkView(service)
-    private val cancelButton = actionButton(ActionGlyph.CROSS, "Cancel", BrandPalette.NEUTRAL_CONTROL) {
-        DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL)
-    }
-    private val acceptButton = actionButton(ActionGlyph.CHECK, "Stop and use these words", BrandPalette.ACCENT) {
-        DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP)
-    }
-    private val bubble = buildBubble()
-    private val pillColumn = buildPillColumn()
-    private val root = buildRoot()
-    private val hideTarget = buildHideTarget()
+    /** The views, built and painted (#360); every touch and click comes back here. */
+    private val views = BubbleViews(
+        context = service,
+        onBubbleTouch = ::onTouch,
+        onBubbleClick = { perform(gestures.accessibilityTap()) },
+        onCancel = { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL) },
+        onAccept = { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP) },
+        onConfigurationChanged = {
+            // A rotation cancels any gesture in flight BEFORE relayout, and re-places the window at once.
+            if (active) {
+                cancelGesture()
+                render()
+            }
+        },
+    )
+    private val timer get() = views.timer
+    private val meter get() = views.meter
+    private val notice get() = views.notice
+    private val bubbleMark get() = views.bubbleMark
+    private val bubble get() = views.bubble
+    private val pillColumn get() = views.pillColumn
+    private val root get() = views.root
+    private val hideTarget get() = views.hideTarget
     private val layoutParams = WindowManager.LayoutParams(
         // Set per shape in `render`, never MATCH_PARENT and never WRAP_CONTENT for the width: with
         // FLAG_NOT_TOUCH_MODAL, transparent room inside the window still swallows the taps under it.
@@ -93,11 +88,24 @@ internal class RecordingAccessibilityOverlay(
         title = "EnviousWispr hide target"
     }
 
-    private val classifier = BubbleGestureClassifier(
-        slopPx = ViewConfiguration.get(service).scaledTouchSlop.toFloat(),
-        holdTimeoutMs = ViewConfiguration.getLongPressTimeout().toLong(),
+    /** What each gesture does (#360): which request starts, which stop goes with which hold, where a drag lands. */
+    private val gestures = BubbleGestureController(
+        classifier = BubbleGestureClassifier(
+            slopPx = ViewConfiguration.get(service).scaledTouchSlop.toFloat(),
+            holdTimeoutMs = ViewConfiguration.getLongPressTimeout().toLong(),
+        ),
+        geometry = object : BubbleGestureController.Geometry {
+            override val bubblePx: Int get() = dp(BUBBLE_DP)
+            override val marginPx: Int get() = dp(MARGIN_DP)
+            override fun lastBounds(): BubbleBounds? = lastBounds
+            override fun restingBox(bounds: BubbleBounds): Box? = BubblePlacement.bubbleBox(position, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
+            override fun overHideTarget(left: Int, top: Int): Boolean = this@RecordingAccessibilityOverlay.overHideTarget(left, top)
+            // Only an IDLE owner takes a new request; a tap while starting or processing does nothing.
+            override fun idle(): Boolean = snapshot.phase == RecordingOverlayState.Phase.IDLE
+        },
+        mint = BubbleRequests::mint,
     )
-    private val holdRunnable = Runnable { onGesture(classifier.holdTimeout(nowMs())) }
+    private val holdRunnable = Runnable { perform(gestures.holdTimeout(nowMs())) }
 
     private var attached = false
     private var hideTargetAttached = false
@@ -115,8 +123,7 @@ internal class RecordingAccessibilityOverlay(
     private var keyboardTop: Int? = null
     private var position = BubblePosition.DEFAULT
     /** The bubble's box while a drag is in progress, in screen pixels; null otherwise. */
-    private var dragBox: Box? = null
-    private var dragOrigin: Box? = null
+    private val dragBox: Box? get() = gestures.dragBox
     private var lastBounds: BubbleBounds? = null
 
     fun start() {
@@ -168,11 +175,7 @@ internal class RecordingAccessibilityOverlay(
     var onPositionChanged: ((BubblePosition) -> Unit)? = null
 
     /** The look the user chose in Settings > Appearance, delivered by the bubble host on the main thread. */
-    fun setLook(look: BubbleLook) {
-        if (this.look == look) return
-        this.look = look
-        applyLook()
-    }
+    fun setLook(look: BubbleLook) = views.setLook(look)
 
     /**
      * Whether the earbuds are the chosen microphone right now, delivered by the bubble host on the main
@@ -180,46 +183,8 @@ internal class RecordingAccessibilityOverlay(
      * earbud rainbow, and the bubble's spoken label says so; anything else (the phone, a wired or USB
      * headset, nothing known) is the brand rainbow and the plain label. Idempotent.
      */
-    fun setEarbuds(earbuds: Boolean) {
-        val palette = if (earbuds) BrandPalette.RAINBOW_EARBUDS else BrandPalette.RAINBOW
-        bubbleMark.palette = palette
-        meter.palette = palette
-        bubble.contentDescription = if (earbuds) BUBBLE_LABEL_EARBUDS else BUBBLE_LABEL
-    }
+    fun setEarbuds(earbuds: Boolean) = views.setEarbuds(earbuds)
 
-    /**
-     * Paint the three surfaces for [look]. One ground colour and one shadow depth shared by the bubble
-     * and both pills, no outline on any of them; the lips, the rail and the clock carry the look's ink
-     * edge, so all three read on a white page and a dark one alike. The values are
-     * Codex's from `docs/mockups/android-bubble-v2/README.md`, ported one to one.
-     */
-    private fun applyLook() {
-        val ground = look.surfaceFill
-        val shadow = dp(look.surfaceElevationDp).toFloat()
-        // The bubble's visible ground is a 48 dp square inside the 56 dp touch target.
-        bubble.background = if (ground ushr 24 == 0) {
-            null
-        } else {
-            InsetDrawable(roundedBackground(ground, dp(BUBBLE_RADIUS_DP).toFloat()), dp(BUBBLE_INSET_DP))
-        }
-        bubble.elevation = shadow
-        bubble.outlineSpotShadowColor = BrandPalette.PILL_BACKGROUND
-        bubble.outlineAmbientShadowColor = BrandPalette.PILL_BACKGROUND
-        val lipsInset = dp((BUBBLE_DP - look.lipsDp) / 2)
-        bubbleMark.setPadding(lipsInset, lipsInset, lipsInset, lipsInset)
-        bubbleMark.inkEdgePx = look.inkEdgeDp * density
-        pill.background = if (ground ushr 24 == 0) null else roundedBackground(ground, dp(PILL_RADIUS_DP).toFloat())
-        pill.elevation = shadow
-        pill.outlineSpotShadowColor = BrandPalette.PILL_BACKGROUND
-        pill.outlineAmbientShadowColor = BrandPalette.PILL_BACKGROUND
-        meter.inkEdgePx = look.inkEdgeDp * density
-        // The clock's edge is heavier than the bars': 1.5 dp, Codex's value, so the digits hold their
-        // shape on a white page at 15 sp.
-        timer.inkEdgePx = if (look.inkEdgeDp > 0f) CLOCK_INK_EDGE_DP * density else 0f
-        // The two controls are see-through like the ground they sit on; only their glyphs are solid.
-        cancelButton.background = roundedBackground(look.cancelFill, dp(CONTROL_RADIUS_DP).toFloat())
-        acceptButton.background = roundedBackground(look.acceptFill, dp(CONTROL_RADIUS_DP).toFloat())
-    }
 
     // ---- what the session owner tells the overlay ----
 
@@ -290,8 +255,8 @@ internal class RecordingAccessibilityOverlay(
                     ?: Box(bounds.usable.right - dp(MARGIN_DP) - dp(BUBBLE_DP), bounds.usable.top + dp(MARGIN_DP), bounds.usable.right - dp(MARGIN_DP), bounds.usable.top + dp(MARGIN_DP) + dp(BUBBLE_DP))
                 // Measure the whole column, notice line included, so a warning that grows it is
                 // placed above the keyboard rather than hanging over the keys (Play-branch review).
-                val compact = snapshot.requestToken != null && snapshot.requestToken == heldTake
-                layOutPill(compact, mirrored = position.side == BubbleSide.LEFT)
+                val compact = gestures.isHeldTake(snapshot.requestToken)
+                views.layOutPill(compact, mirrored = position.side == BubbleSide.LEFT)
                 val width = if (compact) dp(COMPACT_PILL_DP) else dp(FULL_PILL_DP)
                 pillColumn.measure(
                     View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
@@ -382,120 +347,51 @@ internal class RecordingAccessibilityOverlay(
         // Only the primary pointer drives the gesture. A second finger arriving or leaving is ignored,
         // and the primary finger leaving while a second is down reads as up.
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                onGesture(classifier.down(event.rawX, event.rawY, nowMs()))
-                root.removeCallbacks(holdRunnable)
-                root.postDelayed(holdRunnable, ViewConfiguration.getLongPressTimeout().toLong())
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val bounds = lastBounds ?: return true
-                val origin = dragOrigin ?: currentBubbleBox(bounds) ?: return true
-                val left = origin.left + (event.rawX - downRawX).toInt()
-                val top = origin.top + (event.rawY - downRawY).toInt()
-                onGesture(classifier.move(event.rawX, event.rawY, nowMs(), overHideTarget(left, top)))
-            }
-            MotionEvent.ACTION_UP -> onGesture(classifier.up(nowMs()))
-            MotionEvent.ACTION_CANCEL -> onGesture(classifier.cancel())
+            MotionEvent.ACTION_DOWN -> perform(gestures.down(event.rawX, event.rawY, nowMs()))
+            MotionEvent.ACTION_MOVE -> perform(gestures.move(event.rawX, event.rawY, nowMs()))
+            MotionEvent.ACTION_UP -> perform(gestures.up(nowMs()))
+            MotionEvent.ACTION_CANCEL -> perform(gestures.cancel())
             MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
                 if (event.actionIndex == 0 && event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
-                    onGesture(classifier.up(nowMs()))
+                    perform(gestures.up(nowMs()))
                 }
             }
         }
         return true
     }
 
-    /** Where the primary finger went down, in screen pixels; a drag is measured from here. */
-    private var downRawX = 0f
-    private var downRawY = 0f
-
-    /**
-     * The request the hold in progress created, or null when that hold created none (the owner was
-     * not IDLE). Its release or cancel goes to this request and no other; the owner's ledger orders
-     * everything else.
-     */
-    private var holdRequest: BubbleRequestToken? = null
-
-    /**
-     * The request the LAST hold created, kept past its release. The pill drawn for that request is the
-     * compact one (just the level rail), and it must stay compact between the finger lifting and the
-     * owner hearing the STOP, which is why this is not [holdRequest]. Tokens are unique per request, so
-     * a later take, from a tap or from the side button, never matches it.
-     */
-    private var heldTake: BubbleRequestToken? = null
-    /** What the pill's parts were last laid out for; null until the first pill. */
-    private var pillCompact: Boolean? = null
-
-    private fun onGesture(gesture: BubbleGesture) {
-        when (gesture) {
-            BubbleGesture.Nothing -> Unit
-            BubbleGesture.Tap -> {
-                root.removeCallbacks(holdRunnable)
-                startDictation(held = false)
-            }
-            BubbleGesture.HoldStart -> {
-                bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                // Only THIS gesture's own request may be released or cancelled by this gesture. A hold
-                // on the dimmed bubble during an earlier take mints nothing, so its release cannot stop
-                // that take (Codex code review, round 2).
-                holdRequest = startDictation(held = true)
-                heldTake = holdRequest ?: heldTake
-            }
-            BubbleGesture.HoldRelease -> {
+    /** Applies what a gesture decided, in order; the only place a gesture reaches Android. */
+    private fun perform(commands: List<BubbleCommand>) {
+        for (command in commands) {
+            when (command) {
+                is BubbleCommand.StartDictation -> launch(command.request)
+                BubbleCommand.HoldHaptic -> bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                 // Sent at once, whatever the snapshot shows: the owner's ledger orders it against the
                 // start, so a release before capture began still finishes the take (#135 §3).
-                holdRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP, it.encode()) }
-                holdRequest = null
-            }
-            BubbleGesture.HoldCancelled -> {
-                holdRequest?.let { DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL, it.encode()) }
-                holdRequest = null
-            }
-            is BubbleGesture.DragMove -> {
-                root.removeCallbacks(holdRunnable)
-                val bounds = lastBounds ?: return
-                val origin = dragOrigin ?: (currentBubbleBox(bounds) ?: return).also {
-                    dragOrigin = it
-                    showHideTarget(bounds)
+                is BubbleCommand.Stop -> DictationSessionService.sendCommand(service, DictationSessionService.ACTION_STOP, command.request.encode())
+                is BubbleCommand.Cancel -> DictationSessionService.sendCommand(service, DictationSessionService.ACTION_CANCEL, command.request.encode())
+                BubbleCommand.ArmHoldTimer -> {
+                    root.removeCallbacks(holdRunnable)
+                    root.postDelayed(holdRunnable, ViewConfiguration.getLongPressTimeout().toLong())
                 }
-                val size = dp(BUBBLE_DP)
-                val left = (origin.left + gesture.dx.toInt()).coerceIn(bounds.usable.left, bounds.usable.right - size)
-                val top = (origin.top + gesture.dy.toInt()).coerceIn(bounds.usable.top, bounds.usable.bottom - size)
-                dragBox = Box(left, top, left + size, top + size)
-                hideTarget.alpha = if (overHideTarget(left, top)) 1f else 0.7f
-                render()
-            }
-            is BubbleGesture.DragEnd -> {
-                val bounds = lastBounds
-                val box = dragBox
-                dragBox = null
-                dragOrigin = null
-                removeHideTarget()
-                if (bounds == null || box == null || gesture.cancelled) {
-                    render()
-                    return
-                }
-                if (gesture.overHideTarget) {
+                BubbleCommand.DisarmHoldTimer -> root.removeCallbacks(holdRunnable)
+                is BubbleCommand.ShowHideTarget -> showHideTarget(command.bounds)
+                BubbleCommand.RemoveHideTarget -> removeHideTarget()
+                is BubbleCommand.HideTargetEmphasis -> hideTarget.alpha = if (overHideTarget(command.left, command.top)) 1f else 0.7f
+                BubbleCommand.HideForField -> {
                     hiddenForKey = fieldKey ?: HIDDEN_WITHOUT_KEY
                     Toast.makeText(service, "Hidden until your next text box", Toast.LENGTH_SHORT).show()
-                    render()
-                    return
                 }
-                val snapped = BubblePlacement.snap(box.left, box.top, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
-                position = snapped
-                onPositionChanged?.invoke(snapped)
-                render()
+                is BubbleCommand.Snap -> {
+                    position = command.position
+                    onPositionChanged?.invoke(command.position)
+                }
+                BubbleCommand.Render -> render()
             }
         }
     }
 
-    private fun cancelGesture() {
-        root.removeCallbacks(holdRunnable)
-        onGesture(classifier.cancel())
-    }
-
-    private fun currentBubbleBox(bounds: BubbleBounds): Box? =
-        dragBox ?: BubblePlacement.bubbleBox(position, bounds, dp(BUBBLE_DP), dp(MARGIN_DP))
+    private fun cancelGesture() = perform(gestures.cancel())
 
     /**
      * Start the take by asking the service to start the session owner directly, which leaves the
@@ -503,11 +399,7 @@ internal class RecordingAccessibilityOverlay(
      * as its context. On the emulator, launching the activity makes Chrome hide its keyboard, so the
      * direct route is tried first (measured 2026-09-12).
      */
-    /** Returns the request this gesture created, or null when the owner was not IDLE and nothing was sent. */
-    private fun startDictation(held: Boolean): BubbleRequestToken? {
-        // Only an IDLE owner takes a new request; a tap while starting or processing does nothing.
-        if (snapshot.phase != RecordingOverlayState.Phase.IDLE) return null
-        val request = BubbleRequests.mint(held)
+    private fun launch(request: BubbleRequestToken) {
         if (!service.startDictationFromBubble(request.encode())) {
             val intent = Intent(service, VoiceInputActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -519,185 +411,15 @@ internal class RecordingAccessibilityOverlay(
                     Toast.makeText(service, "Dictation could not start", Toast.LENGTH_SHORT).show()
                 }
         }
-        return request
     }
 
     private fun nowMs(): Long = android.os.SystemClock.uptimeMillis()
 
-    // ---- views ----
 
-    private fun buildRoot(): View {
-        // The root listens for configuration changes itself. A rotation must cancel any gesture in
-        // flight BEFORE relayout, and must not wait for a tick or an event to re-place the window.
-        return object : FrameLayout(service) {
-            override fun onConfigurationChanged(newConfig: Configuration?) {
-                super.onConfigurationChanged(newConfig)
-                if (!active) return
-                cancelGesture()
-                render()
-            }
-        }.apply {
-            addView(pillColumn, FrameLayout.LayoutParams(MATCH, WRAP))
-            addView(bubble, FrameLayout.LayoutParams(dp(BUBBLE_DP), dp(BUBBLE_DP)))
-        }
-    }
 
-    /**
-     * The idle lips on a 56 dp touch target. Ground, shadow, lips size and ink edge come from the
-     * chosen [BubbleLook] through [applyLook]; nothing here paints. The founder dropped the
-     * violet-ringed dark circle on 2026-09-14 for Wispr Flow's lighter shape and then chose to
-     * offer three looks rather than one.
-     */
-    private fun buildBubble(): View {
-        return FrameLayout(service).apply {
-            contentDescription = BUBBLE_LABEL
-            isClickable = true
-            isFocusable = false
-            addView(bubbleMark, FrameLayout.LayoutParams(MATCH, MATCH))
-            // The accessibility click action (a TalkBack double tap) arrives here, never through the
-            // touch listener below, which consumes every real touch and resolves taps itself. So the
-            // two routes cannot fire twice for one gesture (Codex review of the Play branch, round 3).
-            setOnClickListener { startDictation(held = false) }
-            setOnTouchListener { _, event ->
-                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                    downRawX = event.rawX
-                    downRawY = event.rawY
-                }
-                onTouch(event)
-            }
-        }
-    }
 
-    private fun buildPillColumn(): View {
-        val pill = buildPill()
 
-        // The notice sits BELOW the pill rather than inside it, so the pill keeps its shape and the
-        // line can wrap. Hidden by default: an empty slot must not change what the recorder looks like.
-        notice.apply {
-            gravity = Gravity.CENTER
-            setTextColor(BrandPalette.TEXT)
-            typeface = brandTypeface(R.font.plus_jakarta_sans_medium)
-            textSize = 12f
-            maxLines = 2
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            background = roundedBackground(BrandPalette.PILL_BACKGROUND, dp(12).toFloat())
-            visibility = View.GONE
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-        }
 
-        return LinearLayout(service).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            addView(pill, LinearLayout.LayoutParams(MATCH, WRAP))
-            addView(notice, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(6) })
-        }
-    }
-
-    /**
-     * The pill: elapsed time, level rail, cancel, accept, in that order from the far edge towards the
-     * dock, so the accept control is always the one nearest the thumb that docked the bubble.
-     *
-     * Layout from `docs/mockups/android-v2/06-floating-recorder.png` and that folder's README, minus the
-     * mark and the LISTENING word: the founder dropped both on 2026-09-13 after using build 114, so the
-     * bar is smaller and less in the way. The lips are on the bubble; the pill does not need them twice.
-     */
-    private fun buildPill(): View {
-        val container = LinearLayout(service).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            // Ground and shadow come from the chosen look through applyLook. The violet outline and
-            // violet glow of the first recorder are retired (founder 2026-09-14): none of the three
-            // looks carries a border.
-            contentDescription = "Recording controls"
-        }
-
-        timer.apply {
-            gravity = Gravity.CENTER
-            setTextColor(BrandPalette.TEXT)
-            textSize = 15f
-            // Plus Jakarta Sans, the brand typeface, which is already bundled and which every Compose
-            // screen uses. `minWidth` holds the column steady as the digits change, so the rail beside
-            // it does not shift every second.
-            typeface = brandTypeface(R.font.plus_jakarta_sans_semibold)
-            minWidth = dp(48)
-            // The clock reads left to right whichever way the pill is mirrored.
-            textDirection = View.TEXT_DIRECTION_LTR
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-        }
-
-        container.addView(
-            timer,
-            LinearLayout.LayoutParams(WRAP, dp(44)).apply { marginEnd = dp(10) },
-        )
-        // The rail takes the room the fixed parts leave, so the two pill widths share one layout.
-        container.addView(
-            meter,
-            LinearLayout.LayoutParams(0, dp(RAIL_HEIGHT_DP), 1f).apply { marginEnd = dp(10) },
-        )
-        container.addView(cancelButton, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(8) })
-        container.addView(acceptButton, LinearLayout.LayoutParams(dp(40), dp(40)))
-        // The hold pill's thumb end: the pill is anchored to the bubble, so this slot plus the end
-        // padding is exactly the bubble's footprint, under the finger that is holding it.
-        // As tall as the compact rail, so the compact pill's 16 dp paddings still make exactly
-        // PILL_HEIGHT_DP: a 40 dp child would grow the hold pill to 72 dp (Codex review, 2026-09-15).
-        container.addView(recordMark, LinearLayout.LayoutParams(dp(RECORD_MARK_DP), dp(COMPACT_RAIL_HEIGHT_DP)))
-        recordMark.visibility = View.GONE
-        pill = container
-        applyLook()
-        return container
-    }
-
-    private lateinit var pill: LinearLayout
-
-    /**
-     * Two layouts of the one pill, either of them mirrored. Full: time, rail, cancel, accept, at the
-     * bubble's edge. Compact, for a hold: the rail and a recording mark, because the finger is already
-     * the control and everything else was noise while it was down (founder 2026-09-13, from Wispr Flow's
-     * hold pill). The mark sits at the thumb end, under the finger, and the rail keeps the rest: build
-     * 130 ran the rail under the thumb and half of it was hidden (founder 2026-09-15). Same height
-     * either way, so the pill never jumps between the two.
-     *
-     * [mirrored] flips the row for a bubble docked on the LEFT, so accept sits at the left edge under
-     * the thumb that put the bubble there, rather than across the pill (founder 2026-09-13). The row's
-     * layout direction does the flipping, which keeps every margin between the same two neighbours.
-     */
-    private fun layOutPill(compact: Boolean, mirrored: Boolean) {
-        pill.layoutDirection = if (mirrored) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
-        if (pillCompact == compact) return
-        pillCompact = compact
-        val partsVisibility = if (compact) View.GONE else View.VISIBLE
-        timer.visibility = partsVisibility
-        cancelButton.visibility = partsVisibility
-        acceptButton.visibility = partsVisibility
-        recordMark.visibility = if (compact) View.VISIBLE else View.GONE
-        (meter.layoutParams as LinearLayout.LayoutParams).apply {
-            height = if (compact) dp(COMPACT_RAIL_HEIGHT_DP) else dp(RAIL_HEIGHT_DP)
-            marginEnd = dp(10)
-        }
-        meter.layoutParams = meter.layoutParams
-        meter.barCount = if (compact) RecordingLevelMeterView.BAR_COUNT else FULL_PILL_BARS
-        val vertical = if (compact) dp(COMPACT_PILL_PADDING_DP) else dp(8)
-        pill.setPadding(if (compact) dp(16) else dp(10), vertical, if (compact) dp(16) else dp(10), vertical)
-        pill.contentDescription = if (compact) "Recording. Let go to finish." else "Recording controls"
-    }
-
-    /** "Drop to hide", in its own untouchable window, shown only while a drag is in progress. */
-    private fun buildHideTarget(): TextView = TextView(service).apply {
-        text = "Drop to hide"
-        setTextColor(BrandPalette.TEXT)
-        typeface = brandTypeface(R.font.plus_jakarta_sans_medium)
-        textSize = 13f
-        gravity = Gravity.CENTER
-        setPadding(dp(18), dp(10), dp(18), dp(10))
-        background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(22).toFloat()
-            setColor(BrandPalette.PILL_BACKGROUND)
-            setStroke(dp(1).coerceAtLeast(1), BrandPalette.TEXT_MUTED)
-        }
-        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-    }
 
     /** The drawn "Drop to hide" rectangle while a drag is in progress; the ONLY place a drop hides. */
     private var hideTargetBox: Box? = null
@@ -730,34 +452,7 @@ internal class RecordingAccessibilityOverlay(
         hideTargetAttached = false
     }
 
-    /** A round control whose symbol is drawn, not typed: a text glyph sits where its font puts it, not at the centre. */
-    private fun actionButton(
-        glyph: ActionGlyph,
-        accessibilityLabel: String,
-        color: Int,
-        action: () -> Unit,
-    ) = ActionGlyphView(service, glyph).apply {
-        contentDescription = accessibilityLabel
-        isClickable = true
-        isFocusable = false
-        background = roundedBackground(color, dp(CONTROL_RADIUS_DP).toFloat())
-        setOnClickListener { action() }
-    }
 
-    /**
-     * The bundled brand font, or the platform default if it cannot be loaded.
-     *
-     * A missing font must never take the recorder down: it is the window the heart path draws in, and
-     * a typeface is the most cosmetic thing on it.
-     */
-    private fun brandTypeface(fontRes: Int): Typeface =
-        runCatching { ResourcesCompat.getFont(service, fontRes) }.getOrNull() ?: Typeface.DEFAULT
-
-    private fun roundedBackground(color: Int, radius: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = radius
-        setColor(color)
-    }
 
     private fun dp(value: Int): Int = (value * density).toInt()
 

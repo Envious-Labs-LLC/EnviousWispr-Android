@@ -21,6 +21,11 @@ class TriggerNameTest {
         "ui/SettingsComponents.kt",
         "ui/OnboardingScreen.kt",
         "ui/SettingsPages.kt",
+        // Split out of SettingsPages.kt in #347: still text a user reads.
+        "ui/MicrophonePage.kt",
+        "ui/PrivacyPage.kt",
+        "ui/StoragePage.kt",
+        "ui/LicensesPage.kt",
         "about/ReleaseNotes.kt",
     ).associateWith { File("src/main/java/com/envi/wispr/$it").readText() }
 

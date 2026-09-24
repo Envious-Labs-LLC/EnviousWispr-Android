@@ -217,6 +217,8 @@ class AudioServiceShapeTest {
             "warn: hold listener not registered: \${}",
             // #257: a failed report of an overdue silence writer.
             "warn: silence writer defect not reported: \${}",
+            // #333: the release defect's own send.
+            "warn: silent track release defect not reported: \${}",
             "warn: route forced=\${} after \${} ms",
             "warn: route refused=\${}: earbuds connected, phone would record; failing the take",
             "warn: route reset=\${} performed=\${} after \${} ms",

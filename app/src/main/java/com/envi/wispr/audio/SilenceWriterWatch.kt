@@ -45,6 +45,11 @@ internal class SilenceWriterThread(write: () -> Int, onFailed: () -> Unit) {
  * process against any further hold: the stuck thread holds a stopped, released track and no lock, and ending
  * the process could cut off a take that holds the handed-over route (deliberate audit deviation, the plan §3).
  *
+ * A stopped track whose platform release did not return (#333) is watched the same way: past the bound it is
+ * reported once, as its own content-free defect, and latches the process against further holds. The watch never
+ * retries the release itself, since a blocking platform call on its one worker would stall every check; the
+ * track's own stop owns the release.
+ *
  * The check and the report run on the watch's own worker, never main, a binder thread or under a caller's lock:
  * [admit] only queues the report. Process-scoped ([PROCESS]) so a replacement service instance sees it and no
  * service teardown can drop a pending sweep.
@@ -54,12 +59,16 @@ internal class SilenceWriterWatch(
     /** Runs a task on the watch's worker after a delay; never inline. */
     private val schedule: (Runnable, Long) -> Unit,
     private val report: () -> Unit,
+    /** A stopped track's release unconfirmed past the bound (#333); production raises its own defect. */
+    private val reportRelease: () -> Unit,
 ) {
     private class Stopped(val track: WarmHold.SilentTrack, val atMs: Long)
 
     private val pending = ArrayList<Stopped>()
     private var wedged = false
     private var reported = false
+    private var releaseWedged = false
+    private var releaseReported = false
 
     /** A hold's track has been stopped: watch its writer, and check it once the bound has passed. */
     fun stopped(track: WarmHold.SilentTrack) {
@@ -70,12 +79,12 @@ internal class SilenceWriterWatch(
 
     /** True only when every stopped writer has exited and no writer ever overran the bound in this process. */
     fun admit(): Boolean {
-        var claimed = false
+        var claimed = Claimed.NONE
         val admitted = synchronized(this) {
             claimed = check()
-            !wedged && pending.isEmpty()
+            !wedged && !releaseWedged && pending.isEmpty()
         }
-        if (claimed) schedule(Runnable { send() }, 0L)
+        if (claimed != Claimed.NONE) schedule(Runnable { send(claimed) }, 0L)
         return admitted
     }
 
@@ -85,31 +94,50 @@ internal class SilenceWriterWatch(
      * its own sweep.
      */
     private fun sweep(entry: Stopped) {
-        var claimed = false
+        var claimed = Claimed.NONE
         var wait: Long? = null
         synchronized(this) {
             claimed = check()
-            if (!wedged && entry in pending) wait = (EXIT_BOUND_MS - (clock() - entry.atMs)).takeIf { it > 0L }
+            if (!wedged && !releaseWedged && entry in pending) wait = (EXIT_BOUND_MS - (clock() - entry.atMs)).takeIf { it > 0L }
         }
-        if (claimed) send()
+        if (claimed != Claimed.NONE) send(claimed)
         wait?.let { schedule(Runnable { sweep(entry) }, it) }
     }
 
-    /** Under the monitor. Drops exited writers; latches on an overdue one; true when this call claimed the report. */
-    private fun check(): Boolean {
-        pending.removeAll { it.track.writerExited() }
+    /** Which reports one check claimed: each kind is reported once per process. */
+    private enum class Claimed { NONE, WRITER, RELEASE, BOTH }
+
+    /**
+     * Under the monitor. Drops settled tracks (writer exited and release returned); latches on an overdue one, by
+     * kind; returns the reports this call claimed.
+     */
+    private fun check(): Claimed {
+        pending.removeAll { it.track.writerExited() && it.track.released() }
         val now = clock()
-        if (!wedged && pending.any { now - it.atMs >= EXIT_BOUND_MS }) wedged = true
-        if (wedged && !reported) {
-            reported = true
-            return true
+        val overdue = pending.filter { now - it.atMs >= EXIT_BOUND_MS }
+        if (overdue.any { !it.track.writerExited() }) wedged = true
+        if (overdue.any { !it.track.released() }) releaseWedged = true
+        val writer = wedged && !reported
+        val release = releaseWedged && !releaseReported
+        if (writer) reported = true
+        if (release) releaseReported = true
+        return when {
+            writer && release -> Claimed.BOTH
+            writer -> Claimed.WRITER
+            release -> Claimed.RELEASE
+            else -> Claimed.NONE
         }
-        return false
     }
 
-    private fun send() {
-        runCatching { report() }
-            .onFailure { DebugLogger.warn(TAG, "silence writer defect not reported: ${it.javaClass.simpleName}") }
+    private fun send(claimed: Claimed) {
+        if (claimed == Claimed.WRITER || claimed == Claimed.BOTH) {
+            runCatching { report() }
+                .onFailure { DebugLogger.warn(TAG, "silence writer defect not reported: ${it.javaClass.simpleName}") }
+        }
+        if (claimed == Claimed.RELEASE || claimed == Claimed.BOTH) {
+            runCatching { reportRelease() }
+                .onFailure { DebugLogger.warn(TAG, "silent track release defect not reported: ${it.javaClass.simpleName}") }
+        }
     }
 
     companion object {
@@ -127,6 +155,7 @@ internal class SilenceWriterWatch(
             clock = { SystemClock.elapsedRealtime() },
             schedule = { task, delayMs -> worker.schedule(task, delayMs, TimeUnit.MILLISECONDS) },
             report = { Telemetry.defect(AppDefect.SilenceWriterExitWedged) },
+            reportRelease = { Telemetry.defect(AppDefect.SilentTrackReleaseUnconfirmed) },
         )
     }
 }

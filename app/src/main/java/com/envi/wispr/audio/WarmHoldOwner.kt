@@ -183,6 +183,8 @@ internal class WarmHoldOwner(
     private class AudioTrackSilence : WarmHold.SilentTrack {
         private var track: AudioTrack? = null
         @Volatile private var writer: SilenceWriterThread? = null
+        /** A release that did not return (#333): read by the watch's worker, so visible across threads. */
+        @Volatile private var releaseUnconfirmed = false
 
         override fun play(onFailed: () -> Unit) {
             val rate = PcmAudio.SAMPLE_RATE
@@ -205,7 +207,8 @@ internal class WarmHoldOwner(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
             if (built.state != AudioTrack.STATE_INITIALIZED) {
-                built.release()
+                // Kept when its release did not return, so the hold's stop retries it and the watch sees it (#333).
+                if (!release(built)) track = built
                 throw IllegalStateException("silent track not initialized")
             }
             track = built
@@ -218,14 +221,23 @@ internal class WarmHoldOwner(
 
         override fun writerExited(): Boolean = writer?.exited() ?: true
 
+        override fun released(): Boolean = !releaseUnconfirmed
+
         override fun stop() {
             // The writer first (#241): the platform stop below can fail the blocked write, which is not a failure.
             writer?.stop()
             track?.let { t ->
                 runCatching { t.stop() }
-                runCatching { t.release() }
+                // The handle is let go only once its release returned (#333); a release that threw is unconfirmed,
+                // not proven leaked, and `SilenceWriterWatch` reports it and refuses further holds.
+                if (release(t)) track = null
             }
-            track = null
+        }
+
+        private fun release(t: AudioTrack): Boolean {
+            val returned = runCatching { t.release() }.isSuccess
+            releaseUnconfirmed = !returned
+            return returned
         }
     }
 }

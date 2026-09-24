@@ -18,6 +18,7 @@ class WarmHoldTest {
         override fun play(onFailed: () -> Unit) { if (failPlay) throw IllegalStateException("no track"); plays++; this.onFailed = onFailed }
         override fun stop() { stops++ }
         override fun writerExited(): Boolean = true
+        override fun released(): Boolean = true
     }
 
     private class Fixture(failPlay: Boolean = false) {

@@ -25,17 +25,23 @@ class SilenceWriterWatchTest {
     }
 
     /** A track whose writer is running until the test releases it. */
-    private class HeldTrack(@Volatile var exited: Boolean = false, private val failPlay: Boolean = false) : WarmHold.SilentTrack {
+    private class HeldTrack(
+        @Volatile var exited: Boolean = false,
+        private val failPlay: Boolean = false,
+        @Volatile var releaseReturned: Boolean = true,
+    ) : WarmHold.SilentTrack {
         var onFailed: (() -> Unit)? = null
         override fun play(onFailed: () -> Unit) { if (failPlay) throw IllegalStateException("no track"); this.onFailed = onFailed }
         override fun stop() = Unit
         override fun writerExited(): Boolean = exited
+        override fun released(): Boolean = releaseReturned
     }
 
     private var now = 1_000L
     private val scheduler = QueueScheduler()
     private var reports = 0
-    private val watch = SilenceWriterWatch(clock = { now }, schedule = scheduler.schedule, report = { reports++ })
+    private var releaseReports = 0
+    private val watch = SilenceWriterWatch(clock = { now }, schedule = scheduler.schedule, report = { reports++ }, reportRelease = { releaseReports++ })
 
     // ---- the watch ---------------------------------------------------------------------------------------------
 
@@ -60,6 +66,41 @@ class SilenceWriterWatchTest {
         track.exited = true
         second.exited = true
         assertFalse("latched for the process, even after every writer exits", watch.admit())
+    }
+
+    /**
+     * Row 3c (#333): a stopped track whose writer exited but whose release did not return is reported once, as its
+     * own defect, and latches the process; a stuck writer is still its own report. MUTATION m1: the watch settles a
+     * track on its writer alone.
+     */
+    @Test fun anUnconfirmedReleaseIsReportedOnceAndLatchesTheProcess() {
+        val track = HeldTrack(exited = true, releaseReturned = false)
+        watch.stopped(track)
+        assertFalse("still watched before the bound", watch.admit())
+        now += SilenceWriterWatch.EXIT_BOUND_MS
+        scheduler.runAll()
+        assertEquals("reported once, as the release defect", 1, releaseReports)
+        assertEquals("not as a stuck writer", 0, reports)
+        val stuck = HeldTrack()
+        watch.stopped(stuck)
+        now += SilenceWriterWatch.EXIT_BOUND_MS
+        scheduler.runAll()
+        assertEquals("a stuck writer is still its own report", 1, reports)
+        assertEquals("the release is never reported again", 1, releaseReports)
+        track.releaseReturned = true
+        stuck.exited = true
+        assertFalse("latched for the process", watch.admit())
+    }
+
+    /** Row 3d (#333): a track whose writer exited and whose release returned settles with no report. */
+    @Test fun aSettledTrackIsNeverReported() {
+        watch.stopped(HeldTrack(exited = true))
+        now += SilenceWriterWatch.EXIT_BOUND_MS
+        scheduler.runAll()
+        assertTrue(watch.admit())
+        scheduler.runAll()
+        assertEquals(0, reports)
+        assertEquals(0, releaseReports)
     }
 
     /**
@@ -215,7 +256,7 @@ class SilenceWriterWatchTest {
         for ((name, end) in paths) {
             expiry.delayed.clear()
             deviceCallback = null
-            val watch = SilenceWriterWatch(clock = { now }, schedule = QueueScheduler().schedule, report = { reports++ })
+            val watch = SilenceWriterWatch(clock = { now }, schedule = QueueScheduler().schedule, report = { reports++ }, reportRelease = { releaseReports++ })
             val track = HeldTrack()
             val owner = owner(
                 watch,
@@ -232,7 +273,7 @@ class SilenceWriterWatchTest {
             assertTrue("$name: its exit admits the next hold", owner.admitsAHold())
         }
         // A failed start stops a track whose writer never ran, as production's is: it admits the next hold at once.
-        val watch = SilenceWriterWatch(clock = { now }, schedule = QueueScheduler().schedule, report = { reports++ })
+        val watch = SilenceWriterWatch(clock = { now }, schedule = QueueScheduler().schedule, report = { reports++ }, reportRelease = { releaseReports++ })
         val owner = owner(watch, { HeldTrack(exited = true, failPlay = true) })
         assertFalse("the failed start", owner.start(bluetoothRoute()))
         assertTrue("a writer that never ran holds nothing", owner.admitsAHold())
@@ -245,7 +286,7 @@ class SilenceWriterWatchTest {
      */
     @Test fun aNewOwnerInTheSameProcessSeesTheOldOwnersWriter() {
         val queue = QueueScheduler()
-        val shared = SilenceWriterWatch(clock = { now }, schedule = queue.schedule, report = { reports++ })
+        val shared = SilenceWriterWatch(clock = { now }, schedule = queue.schedule, report = { reports++ }, reportRelease = { releaseReports++ })
         val track = HeldTrack()
         val first = owner(shared, { track })
         assertTrue(first.start(bluetoothRoute()))

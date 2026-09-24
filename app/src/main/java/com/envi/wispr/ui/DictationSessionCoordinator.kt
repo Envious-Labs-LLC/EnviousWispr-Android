@@ -811,6 +811,9 @@ internal class DictationSessionCoordinator(
      * take is on the event (#115). Runs on the owner's scope; nothing here asks the capture process.
      */
     private fun continueAfterEnding(ending: TakeEnding) {
+        // Queued behind the draft insert, on main (#356 review round 2): a cancel, disconnect or destroy also runs on
+        // main, so its own History write always queues after this one. The id is resolved on the worker (#115).
+        take.history.markStatus(TranscriptEntity.STATUS_PROCESSING)
         scope.launch {
             // Whether the speech wait was armed: after that, only the side that closes the wait may clean up (#356).
             var requested = false
@@ -827,19 +830,14 @@ internal class DictationSessionCoordinator(
                 outcome.stopped(recordingDurationMs)
                 capture.finishTakeOrStop()
 
-                // Queued behind the draft insert; the id is resolved on the worker (#115). Nothing here
-                // waits on storage.
-                current.history.markStatus(TranscriptEntity.STATUS_PROCESSING)
                 if (audioFilePath.isNullOrBlank()) {
-                    current.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError(TerminalReason.AUDIO_FILE_MISSING)
+                    failFromWorker(TerminalReason.AUDIO_FILE_MISSING)
                     return@launch
                 }
                 val speechService = pipeline.speech
                 if (speechService == null) {
                     deleteCapturedAudio(audioFilePath)
-                    current.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                    showError(TerminalReason.ASR_NOT_READY)
+                    failFromWorker(TerminalReason.ASR_NOT_READY)
                     return@launch
                 }
                 // Armed BEFORE the request (#356), so no answer can arrive ahead of it. The length is the larger of
@@ -907,8 +905,7 @@ internal class DictationSessionCoordinator(
                 pipeline.stopAudioService()
                 deleteCapturedAudio(ending.audioFilePath)
                 log.error("Transcription failed", error)
-                take.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
-                showError(TerminalReason.ASR_CALLBACK_EXCEPTION)
+                failFromWorker(TerminalReason.ASR_CALLBACK_EXCEPTION)
             }
         }
     }
@@ -1175,6 +1172,20 @@ internal class DictationSessionCoordinator(
         if (!current.arbiter.commitNow(TerminalReason.ASR_PROCESS_UNRESPONSIVE)) return
         current.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
         endAsFailure(TerminalReason.ASR_PROCESS_UNRESPONSIVE)
+    }
+
+    /**
+     * A failure found on the owner's worker (#356 review round 2). The worker can run after a cancel, disconnect or
+     * destroy ended the take on main, so the claim comes BEFORE the History write: a take that already has an
+     * ending keeps its row, as every speech callback and main-thread ending already does.
+     */
+    private fun failFromWorker(reason: TerminalReason) {
+        if (!take.arbiter.commitNow(reason)) {
+            log.log("Ignoring $reason: the take already has an ending")
+            return
+        }
+        take.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
+        endAsFailure(reason)
     }
 
     private fun lateSpeechAnswer() {

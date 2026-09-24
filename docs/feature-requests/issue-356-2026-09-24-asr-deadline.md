@@ -67,3 +67,15 @@ Four findings, all adopted:
 - Tests: row 2 recreates the capture file as the next take would and shows the late answer leaves it; row 4 fires the base and then the scaled bound; row 6 pins the capture clock source; row 7 pins the refused arm; row 8 pins the late throw (the rig's speech link can hold a request and then throw).
 
 Mutations m1 to m8 are RED on fresh compiles.
+
+## 6. Code review round 2 (Codex) and the class sweep
+
+Two findings of one class, the second round of it, so the class was enumerated from the producer before fixing.
+
+**Class:** a History write for the take made on the owner's worker before that path holds the take's ending, so it can land after a cancel, disconnect or destroy already ended the take on main.
+
+**Members** (every `markStatus`, `discard` and `markInterrupted` in `DictationSessionCoordinator`): the speech callbacks, `onSpeechDisconnected`, `onSpeechUnresponsive` and `polishAndPublish` already claim first; the capture-phase discards and the cancel paths run on main, serialized with destroy. Four were on the worker with no claim: the PROCESSING status, `AUDIO_FILE_MISSING`, `ASR_NOT_READY` and the thrown request.
+
+**Fix at the source:** the PROCESSING status is queued on main in `continueAfterEnding` before the worker starts, so every main-thread ending queues after it; the three worker failures go through `failFromWorker`, which claims before it writes.
+
+**Untested, stated:** the destroy-then-throw gap is a window between two main-thread statements and a worker catch; it cannot be staged deterministically in the rig, and row 8 covers the reachable order (the bound first, then the throw). The existing `AUDIO_FILE_MISSING` and `ASR_NOT_READY` rows cover the claim-first path's outcome.

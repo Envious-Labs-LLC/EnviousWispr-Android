@@ -233,125 +233,72 @@ class AudioCaptureService : Service() {
         takeEvents = TakeEventPublisher(takeListener.listener, TAG).also { it.start() }
     }
 
-    private val binder = object : IAudioCaptureService.Stub() {
-        override fun startCapture(): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence = false, pauseSeconds = 0f, pick = InputDevicePick.Auto, takeId = "")
+    /**
+     * What the two binder interfaces may do here (#361): each operation is one call of a service function and each
+     * read one field, so the adapters in `CaptureBinderAdapters` never see the service's state.
+     */
+    private val operations = object : CaptureOperations {
+        override fun startLegacy(autoStopOnSilence: Boolean, pauseSeconds: Float, pick: InputDevicePick, keepEarbudsReady: Boolean): Boolean =
+            startRecording(autoStopOnSilence, pauseSeconds, pick, keepEarbudsReady, takeId = "")
 
-        override fun startCaptureWithSilenceStop(autoStopOnSilence: Boolean, pauseSeconds: Float): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.Auto, takeId = "")
-
-        override fun startCaptureWithInputDevice(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick), takeId = "")
-
-        override fun startCaptureWithInputDeviceHeld(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean): Boolean =
-            this@AudioCaptureService.startRecording(autoStopOnSilence, pauseSeconds, InputDevicePick.parse(inputDevicePick), keepEarbudsReady, takeId = "")
-
-        // The only start that may recover an abandoned recorder (#213): it comes from the session owner, which
-        // admits a take only after it finished with the earlier one. The four legacy starts above carry no
-        // such proof and only ever refuse.
-        override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean, takeId: String?): Boolean =
+        override fun startTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean, takeId: String?): Boolean =
             this@AudioCaptureService.startTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)
 
-        override fun getTakePeakAmplitude(): Float = this@AudioCaptureService.takePeakAmplitude
+        override fun finishTake(): Boolean = finishTakeHold()
+        override fun stopCapture() = stopRecording()
+        override val takePeakAmplitude: Float get() = this@AudioCaptureService.takePeakAmplitude
 
-        override fun getLiveState(): Int {
-            val active = this@AudioCaptureService.session ?: return LIVE_WAITING
-            if (!active.liveVisible) return LIVE_WAITING
-            return when (active.route.gate.state) {
-                LiveGate.State.WAITING -> LIVE_WAITING
-                LiveGate.State.READY -> LIVE_READY
-                LiveGate.State.FORCED -> LIVE_FORCED
+        override val liveState: Int
+            get() {
+                val active = session ?: return LIVE_WAITING
+                if (!active.liveVisible) return LIVE_WAITING
+                return when (active.route.gate.state) {
+                    LiveGate.State.WAITING -> LIVE_WAITING
+                    LiveGate.State.READY -> LIVE_READY
+                    LiveGate.State.FORCED -> LIVE_FORCED
+                }
             }
-        }
 
-        override fun getLiveAfterMs(): Long {
-            val active = this@AudioCaptureService.session ?: return 0L
-            val live = active.route.liveAtMs
-            return if (live > 0L) live - active.route.startedAtMs else 0L
-        }
+        override val liveAfterMs: Long
+            get() {
+                val active = session ?: return 0L
+                val live = active.route.liveAtMs
+                return if (live > 0L) live - active.route.startedAtMs else 0L
+            }
 
-        override fun finishTake(): Boolean = this@AudioCaptureService.finishTakeHold()
+        override val effectiveInputDevice: String get() = lastEffective?.label().orEmpty()
+        override val inputRouteKind: Int get() = lastEffective?.kind?.code ?: InputRouteKind.NONE.code
+        override val inputRouteReason: Int get() = lastEffective?.reasonCode() ?: InputRouteReason.AUTO.code
+        override val lastStartFailure: Int get() = this@AudioCaptureService.lastStartFailure
+        override val silenceStopStatus: Int get() = session?.detector?.status ?: lastSilenceStatus
+        override val isCapturing: Boolean get() = isRecording.get()
+        override val terminalReason: Int get() = this@AudioCaptureService.terminalReason
+        override val currentAmplitude: Float get() = this@AudioCaptureService.currentAmplitude
 
-        override fun getEffectiveInputDevice(): String = this@AudioCaptureService.lastEffective?.label().orEmpty()
-        override fun getInputRouteKind(): Int = this@AudioCaptureService.lastEffective?.kind?.code ?: InputRouteKind.NONE.code
-        override fun getInputRouteReason(): Int = this@AudioCaptureService.lastEffective?.reasonCode() ?: InputRouteReason.AUTO.code
-        override fun getLastStartFailure(): Int = this@AudioCaptureService.lastStartFailure
-
-        override fun getSilenceStopStatus(): Int =
-            this@AudioCaptureService.session?.detector?.status ?: this@AudioCaptureService.lastSilenceStatus
-        override fun stopCapture() = this@AudioCaptureService.stopRecording()
-        override fun isCapturing(): Boolean = this@AudioCaptureService.isRecording.get()
-        override fun getTerminalReason(): Int = this@AudioCaptureService.terminalReason
-        override fun getCurrentAmplitude(): Float = this@AudioCaptureService.currentAmplitude
-
-        override fun getSpectrumBands(): FloatArray {
-            // LEGACY since #187: no production caller; counted so the take-end line can prove it.
-            // Always BAND_COUNT long, never empty: the length is the contract. Zeros when no take is open.
-            val active = this@AudioCaptureService.session ?: return FloatArray(SpectrumAnalyzer.BAND_COUNT)
+        // LEGACY since #187: no production caller; counted so the take-end line can prove it.
+        // Always BAND_COUNT long, never empty: the length is the contract. Zeros when no take is open.
+        override fun spectrumBands(): FloatArray {
+            val active = session ?: return FloatArray(SpectrumAnalyzer.BAND_COUNT)
             return active.picture.snapshot()
         }
 
-        override fun registerSpectrumListener(listener: IAudioSpectrumListener?) {
-            this@AudioCaptureService.spectrumListener.register(SlotOrigin.Legacy, listener)
-        }
+        override val audioFilePath: String? get() = lastAudioFile?.absolutePath
 
-        override fun unregisterSpectrumListener(listener: IAudioSpectrumListener?) {
-            this@AudioCaptureService.spectrumListener.unregisterLegacy(listener)
-        }
+        override val elapsedMs: Long
+            get() {
+                val active = session
+                // From LIVE, not from the recorder's start: the wait for the earbuds is not the user's time.
+                val live = active?.route?.liveAtMs ?: 0L
+                return if (isRecording.get() && active != null && live > 0L) {
+                    SystemClock.elapsedRealtime() - live
+                } else 0L
+            }
 
-        override fun registerTakeListener(listener: ITakeListener?) {
-            this@AudioCaptureService.takeListener.register(SlotOrigin.Legacy, listener)
-        }
-
-        override fun unregisterTakeListener(listener: ITakeListener?) {
-            this@AudioCaptureService.takeListener.unregisterLegacy(listener)
-        }
-        override fun getAudioFilePath(): String? = this@AudioCaptureService.lastAudioFile?.absolutePath
-
-        override fun getElapsedMs(): Long {
-            val active = this@AudioCaptureService.session
-            // From LIVE, not from the recorder's start: the wait for the earbuds is not the user's time.
-            val live = active?.route?.liveAtMs ?: 0L
-            return if (this@AudioCaptureService.isRecording.get() && active != null && live > 0L) {
-                SystemClock.elapsedRealtime() - live
-            } else 0L
-        }
-
-        override fun getMaxDurationMs(): Long = RecordingLimits.MAX_DURATION_MS
-        override fun waitForFileReady(timeoutMs: Long): Boolean =
-            this@AudioCaptureService.waitForFileReady(timeoutMs)
-
-        // Legacy method retained for old clients. Audio is now file-backed.
-        override fun getAudioData(): ByteArray {
-            DebugLogger.warn(TAG, "getAudioData() called, use getAudioFilePath() instead")
-            return ByteArray(0)
-        }
+        override fun waitForFileReady(timeoutMs: Long): Boolean = this@AudioCaptureService.waitForFileReady(timeoutMs)
     }
 
-    /**
-     * The owner's take-sized interface (#220): the five operations a take uses. One binder per take
-     * binding, so a registration the owner's command lane issues after its unbind reaches a closed epoch
-     * and is refused rather than inherited by the next take. Each method is a one-line call of the same
-     * service function the legacy binder calls.
-     */
-    private fun newTakeBinder(epoch: Long): IBinder = object : IAudioTakeService.Stub() {
-        private val from = SlotOrigin.Take(epoch)
-
-        override fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String?, keepEarbudsReady: Boolean, takeId: String?): Boolean =
-            this@AudioCaptureService.startTake(autoStopOnSilence, pauseSeconds, inputDevicePick, keepEarbudsReady, takeId)
-
-        override fun stopCapture() = this@AudioCaptureService.stopRecording()
-
-        override fun finishTake(): Boolean = this@AudioCaptureService.finishTakeHold()
-
-        override fun registerSpectrumListener(listener: IAudioSpectrumListener?) {
-            if (!this@AudioCaptureService.spectrumListener.register(from, listener)) DebugLogger.warn(TAG, "Picture listener refused: its take binding already ended")
-        }
-
-        override fun registerTakeListener(listener: ITakeListener?) {
-            if (!this@AudioCaptureService.takeListener.register(from, listener)) DebugLogger.warn(TAG, "Take listener refused: its take binding already ended")
-        }
-    }
+    /** The two binder interfaces (#361), one legacy binder for this instance and one take binder per take binding (#220). */
+    private val binders = CaptureBinderAdapters(operations, spectrumListener, takeListener)
 
     /**
      * The only start that may recover an abandoned recorder (#213), for both interfaces' `startCaptureForTake`:
@@ -368,7 +315,7 @@ class AudioCaptureService : Service() {
      * every other bind, the device tests' actionless one included, gets the legacy binder (#220).
      */
     override fun onBind(intent: Intent?): IBinder =
-        if (intent?.action == ACTION_BIND_TAKE) newTakeBinder(listenerSlots.openTakeEpoch(intent.identifier)) else binder
+        if (intent?.action == ACTION_BIND_TAKE) binders.forTake(listenerSlots.openTakeEpoch(intent.identifier)) else binders.legacy
 
     /**
      * A binding is gone: clear the listener slots THAT binding set, so no future push reaches a client that

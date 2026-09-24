@@ -23,7 +23,8 @@ import java.io.File
  */
 class LiveAudioMeterWiringTest {
 
-    private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
+    /** The capture service and, since #361, its binders, read as one text. */
+    private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText() + "\n" + File("src/main/java/com/envi/wispr/audio/CaptureBinderAdapters.kt").readText()
     /** The picture's owner since #188: ring, analyser thread, published bands and the push. */
     private val picture = File("src/main/java/com/envi/wispr/audio/PicturePublisher.kt").readText()
     /** The owner since #186: the meter moved from the Service to the coordinator with its seams (`surface` over the overlay state). */
@@ -92,8 +93,8 @@ class LiveAudioMeterWiringTest {
             text.contains("spectrumBands") || text.contains("getSpectrumBands")
         }.map { it.path }
         assertTrue(
-            "only the audio service may mention the picture getter, found $readers",
-            readers == listOf("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt"),
+            "only the audio service and its binders may mention the picture getter, found $readers",
+            readers.sorted() == listOf("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt", "src/main/java/com/envi/wispr/audio/CaptureBinderAdapters.kt"),
         )
         val mentions = Regex("getSpectrumBands").findAll(capture).count()
         assertTrue("and there only its Stub override, found $mentions", mentions == 1)
@@ -226,7 +227,8 @@ class LiveAudioMeterWiringTest {
     @Test
     fun theCountersAndTheTakeEndLineAreWired() {
         // Observability Contract: the take-end line is the oracle the hardware pass reads for "no polling".
-        val getter = body(capture, "override fun getSpectrumBands(): FloatArray")
+        assertTrue("the legacy transaction is the operation's", capture.contains("override fun getSpectrumBands(): FloatArray = ops.spectrumBands()"))
+        val getter = body(capture, "override fun spectrumBands(): FloatArray")
         assertTrue("the legacy getter reads the owner's snapshot", getter.contains("return active.picture.snapshot()"))
         assertTrue("and every snapshot is counted as a poll", body(picture, "fun snapshot(): FloatArray").contains("polls.incrementAndGet()"))
         val push = body(picture, "private fun pushSpectrum(bands: FloatArray)")

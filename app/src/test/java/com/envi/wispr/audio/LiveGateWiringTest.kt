@@ -13,7 +13,8 @@ import java.io.File
  * Each assertion names the property that a plausible edit would silently remove.
  */
 class LiveGateWiringTest {
-    private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText()
+    /** The capture service and, since #361, its binders, read as one text. */
+    private val capture = File("src/main/java/com/envi/wispr/audio/AudioCaptureService.kt").readText() + "\n" + File("src/main/java/com/envi/wispr/audio/CaptureBinderAdapters.kt").readText()
     /** Since #188 the route (gate, deadline, sink watch) and the warm hold are owners of their own. */
     private val route = File("src/main/java/com/envi/wispr/audio/TakeRoute.kt").readText()
     private val hold = File("src/main/java/com/envi/wispr/audio/WarmHoldOwner.kt").readText()
@@ -52,9 +53,11 @@ class LiveGateWiringTest {
 
     @Test
     fun theBinderReportsReadyOnlyAfterTheFirstSavedByte() {
-        val getter = body(capture, "override fun getLiveState(): Int {")
+        assertTrue(capture.contains("override fun getLiveState(): Int = ops.liveState"))
+        val getter = body(capture, "override val liveState: Int")
         assertTrue(getter.contains("if (!active.liveVisible) return LIVE_WAITING"))
-        val elapsed = body(capture, "override fun getElapsedMs(): Long {")
+        assertTrue(capture.contains("override fun getElapsedMs(): Long = ops.elapsedMs"))
+        val elapsed = body(capture, "override val elapsedMs: Long")
         assertTrue("the timer counts from live", elapsed.contains("active?.route?.liveAtMs") && !elapsed.contains("startedAtMs"))
         val start = body(capture, "private fun startRecording(")
         assertTrue(
@@ -105,7 +108,8 @@ class LiveGateWiringTest {
         assertTrue("which is a started lifetime", capture.contains("keepAlive = { startService(Intent(this, AudioCaptureService::class.java)) }"))
         // #220: both interfaces call one helper, which takes the session lock.
         assertTrue("the helper calls it under the session lock", capture.contains("private fun finishTakeHold(): Boolean = synchronized(sessionLock) { warmHoldOwner.finishTake() }"))
-        assertEquals("and both binders call that helper", 2, Regex("override fun finishTake\\(\\): Boolean = this@AudioCaptureService\\.finishTakeHold\\(\\)").findAll(capture).count())
+        assertEquals("and both binders call that helper, through the one operation", 2, Regex("override fun finishTake\\(\\): Boolean = ops\\.finishTake\\(\\)").findAll(capture).count())
+        assertTrue(capture.contains("override fun finishTake(): Boolean = finishTakeHold()"))
         val start = body(capture, "override fun onStartCommand(")
         assertTrue(start.contains("return START_NOT_STICKY"))
         assertTrue(start.contains("if (!warmHoldOwner.isActive && session == null) stopSelf()"))

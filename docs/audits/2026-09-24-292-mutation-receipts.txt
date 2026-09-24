@@ -1,6 +1,7 @@
-# #292 mutation receipts (each applied alone, its named row run, the source restored)
+# #292 mutation receipts (each applied alone, its named row run, the source restored); final run after code review round 1
 RED: m1 never rejects -> aFullQueueRefusesOrdinaryWritesFirstAndReportsOnceAnEpisode
 RED: m2 overload on every refusal -> aFullQueueRefusesOrdinaryWritesFirstAndReportsOnceAnEpisode
 RED: m3 a refused draft leaves its deferred open -> aRefusedDraftNeverLeavesItsDeferredOpen
 RED: m4 a refused save is ignored -> aRefusedSaveAnswersItsSlotFailed
 RED: m5 terminal writes held to the ordinary limit -> aFullQueueRefusesOrdinaryWritesFirstAndReportsOnceAnEpisode
+RED: m6 a throwing log skips the count -> aThrowingLogNeverWedgesTheQueue (code review round 1)

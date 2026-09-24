@@ -44,8 +44,8 @@ import com.envi.wispr.providers.capabilities
  * or navigation state; nothing here reads a key draft's value. `PolishLadderTest` enumerates each.
  */
 
-/** The providers a fresh setup can pick; self-hosted is excluded by the catalog decision of 2026-09-01. */
-internal val CloudProviders: List<Provider> = Provider.entries - Provider.SELF_HOSTED_POLISH
+/** The providers a fresh setup can pick: those whose capabilities offer a setup tile (#310; self-hosted is not, 2026-09-01). */
+internal val CloudProviders: List<Provider> = Provider.entries.filter { it.capabilities().offeredAsSetupTile }
 
 /** The saved model for [provider], or blank when the saved provider is a different one. */
 internal fun savedModelFor(provider: Provider, settings: ProviderSettingsUiState): String =

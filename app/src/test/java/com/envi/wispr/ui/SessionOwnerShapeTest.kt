@@ -10,8 +10,8 @@ import java.io.File
  * Drift Guard (#186): the Service is the Android shell and nothing else. A state machine cannot exist
  * without a lock, a compare-and-set, an arbiter, a ledger or a terminal reason, so their absence from the
  * Service source is the property; the field set pins what the shell is allowed to hold. A token check on
- * one name alone is evaded by a rename, and a line ceiling fails on comments (Codex review G1, 2026-09-20),
- * so the line count below is REPORTED, never gated.
+ * one name alone is evaded by a rename, and a line ceiling fails on comments (Codex review G1, 2026-09-20).
+ * No line count is gated here; the generated audit inventory provides a dated size snapshot.
  *
  * REVERT: paste one `state.compareAndSet` or one `synchronized(` back into the Service, or add a field.
  */
@@ -262,13 +262,5 @@ class SessionOwnerShapeTest {
         assertEquals("one admission", 1, Regex("""SessionState\.STARTING\)""").findAll(owner).count { it.range.first > 0 && owner.substring(0, it.range.first).endsWith(", ") })
         assertFalse("nothing writes IDLE again", Regex("""(set|compareAndSet\([^,]+,|getAndSet)\s*\(?\s*SessionState\.IDLE\)""").containsMatchIn(owner))
         assertEquals("the initial IDLE is the only other one", 1, Regex("""AtomicReference\(SessionState\.IDLE\)""").findAll(owner).count())
-    }
-
-    @Test
-    fun serviceLineCountIsReported() {
-        // A metric for the reader of the test output, not a threshold: 1,937 lines before #186.
-        println("DictationSessionService.kt: ${service.lines().size} lines")
-        // 1,581 lines before #237 moved the take's polish out.
-        println("DictationSessionCoordinator.kt: ${SessionSources.coordinator.lines().size} lines")
     }
 }

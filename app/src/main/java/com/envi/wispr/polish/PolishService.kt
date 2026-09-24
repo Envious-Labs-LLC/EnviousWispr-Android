@@ -38,6 +38,9 @@ class PolishService : Service() {
          * first GPU load while its kernels compile (`polish-engines.md`).
          */
         private const val MODEL_LOAD_DEADLINE_MS = 60_000L
+
+        /** How long the orderly close may wait behind the worker before the process ends instead (#344). */
+        private const val ORDERLY_CLOSE_BOUND_MS = 5_000L
         private const val TAG = "PolishService"
         private const val EXIT_GRACE_MS = 300L
     }
@@ -475,6 +478,14 @@ class PolishService : Service() {
             modelReady = false
         }
         executor.shutdown()
+        // The orderly close waits behind whatever the worker is running (#344 review round 2): a vendor load, a
+        // language-detector acquisition or any other task with no deadline of its own. Rather than list each, the
+        // close itself is bounded: a worker not finished within ORDERLY_CLOSE_BOUND_MS holds something that never
+        // returns, and the process ends so nothing stays resident. The client has unbound; nothing is owed to it.
+        Thread({
+            val finished = runCatching { executor.awaitTermination(ORDERLY_CLOSE_BOUND_MS, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
+            if (!finished) endProcess("the worker did not finish within $ORDERLY_CLOSE_BOUND_MS ms of destruction")
+        }, "PolishCloseWatch").apply { isDaemon = true }.start()
         super.onDestroy()
     }
 

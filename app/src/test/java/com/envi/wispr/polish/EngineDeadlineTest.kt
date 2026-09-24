@@ -133,6 +133,21 @@ class EngineDeadlineTest {
         assertEquals("the flag is cleared only in that finally", 1, Regex("""modelLoading = false""").findAll(load).count())
     }
 
+    /**
+     * #344 review round 2, source shape: the orderly close is itself bounded. After queueing the close and shutting
+     * the worker down, `onDestroy` starts a watch that ends the process when the worker has not finished within
+     * ORDERLY_CLOSE_BOUND_MS, whatever it is stuck in. MUTATION m6: no watch.
+     */
+    @Test fun theOrderlyCloseIsBoundedWhateverTheWorkerHolds() {
+        val source = java.io.File("src/main/java/com/envi/wispr/polish/PolishService.kt").readText()
+        val destroy = source.substringAfter("override fun onDestroy()").substringBefore("\n    /**")
+        val shutdown = destroy.indexOf("executor.shutdown()")
+        val watch = destroy.indexOf("executor.awaitTermination(ORDERLY_CLOSE_BOUND_MS")
+        assertTrue("the watch waits on the worker after its shutdown", shutdown >= 0 && watch > shutdown)
+        assertTrue("an unfinished worker ends the process", destroy.substring(watch).contains("if (!finished) endProcess("))
+        assertTrue("the watch never runs on main", destroy.contains("\"PolishCloseWatch\").apply { isDaemon = true }.start()"))
+    }
+
     @Test fun overrideBoundsAreExact() {
         assertEquals(LocalPolishBudget.SHIPPED, LocalPolishBudget.fromOverride(null))
         assertEquals(LocalPolishBudget.SHIPPED, LocalPolishBudget.fromOverride(""))

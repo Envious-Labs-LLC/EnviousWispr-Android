@@ -23,8 +23,22 @@ internal interface TranscriptDao {
     @Delete
     suspend fun delete(transcript: TranscriptEntity)
 
+    /** The row a take wrote, if any (#288). */
+    @Query("SELECT * FROM transcripts WHERE takeId = :takeId LIMIT 1")
+    suspend fun findByTakeId(takeId: String): TranscriptEntity?
+
     @Query("DELETE FROM transcripts")
     suspend fun deleteAll()
+
+    /** Marks takes whose words the user deleted (#288); a take marked twice stays one mark. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertDeletedTakes(takes: List<DeletedTake>)
+
+    @Query("SELECT EXISTS(SELECT 1 FROM deleted_takes WHERE takeId = :takeId)")
+    suspend fun isTakeDeleted(takeId: String): Boolean
+
+    @Query("SELECT takeId FROM transcripts WHERE takeId IS NOT NULL")
+    suspend fun rowTakeIds(): List<String>
 
     @Query("DELETE FROM transcripts WHERE id = :id")
     suspend fun deleteById(id: Long): Int
@@ -150,6 +164,34 @@ internal interface TranscriptDao {
      * The ready rows recovered, BY ID, in the one transaction that recovers them: each is an insertion
      * outcome telemetry reports (issue #176, G2 D4), and a select after the update would find nothing.
      */
+    /**
+     * The user deletes one row (#288): the row and its take's mark go in one transaction, so a late save or a recovery
+     * for that take reads the mark, and a failed delete leaves neither.
+     */
+    @Transaction
+    suspend fun deleteForGood(transcript: TranscriptEntity) {
+        transcript.takeId?.let { insertDeletedTakes(listOf(DeletedTake(it))) }
+        delete(transcript)
+    }
+
+    /**
+     * The user deletes all History (#288): every row's take and every take in [liveTakes] (words written or still on
+     * their way, with no row yet) is marked, and every row deleted, in one transaction.
+     */
+    @Transaction
+    suspend fun deleteAllForGood(liveTakes: Collection<String>) {
+        insertDeletedTakes((rowTakeIds() + liveTakes).distinct().map(::DeletedTake))
+        deleteAll()
+    }
+
+    /** Inserts [transcript] unless the user deleted its take (#288), in one transaction; 0 when deleted. */
+    @Transaction
+    suspend fun insertUnlessDeleted(transcript: TranscriptEntity): Long {
+        val takeId = transcript.takeId
+        if (takeId != null && isTakeDeleted(takeId)) return 0L
+        return insert(transcript)
+    }
+
     @Transaction
     suspend fun recoverStaleReadyRowsReturningIds(cutoffMs: Long, nowMs: Long): List<Long> {
         val ids = staleReadyRowIds(cutoffMs)

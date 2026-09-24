@@ -7,7 +7,7 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "transcripts",
-    indices = [Index(value = ["createdAtMs"])],
+    indices = [Index(value = ["createdAtMs"]), Index(value = ["takeId"], unique = true)],
 )
 internal data class TranscriptEntity(
     @PrimaryKey(autoGenerate = true)
@@ -35,6 +35,9 @@ internal data class TranscriptEntity(
     // (#26). Empty means unknown: rows from older builds, or a take whose capture process died before
     // the label was read. Never rendered as "Phone" when empty.
     @ColumnInfo(defaultValue = "''") val captureDevice: String = "",
+    // The take this row records (#288): set by the session owner's draft and saved-row inserts, null on rows from
+    // older builds and on rows no take wrote. Unique, so a take's rescued words are written into History at most once.
+    val takeId: String? = null,
 ) {
     companion object {
         const val STATUS_DRAFT = "draft"

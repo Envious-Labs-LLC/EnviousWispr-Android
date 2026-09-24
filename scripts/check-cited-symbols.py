@@ -118,7 +118,9 @@ def added_lines(base: str) -> list[str]:
     # A verbatim audit archive (docs/audits/<run>/before, after) carries the superseded names on
     # purpose; reading it as new prose reports every corrected citation as unresolved. Excluded from
     # the tracked diff AND from the untracked walk, or staging the archive re-admits it.
-    diff = run("git", "diff", "--unified=0", merge_base, "--", ".", ":(exclude)docs/audits")
+    # Room's exported schemas are generated JSON, not prose: their backticked SQL names (an index Room names itself)
+    # are no citation (#288).
+    diff = run("git", "diff", "--unified=0", merge_base, "--", ".", ":(exclude)docs/audits", ":(exclude)app/schemas")
     untracked = run("git", "ls-files", "--others", "--exclude-standard").split()
     extra = []
     for path in untracked:

@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -83,5 +84,31 @@ class TranscriptRouteDaoTest {
         assertEquals(InsertionResults.DELIVERY_UNKNOWN, read(processing).insertionResult)
         assertEquals("not_attempted", read(draft).insertionResult)
         assertEquals(1, recovered.unknownCount)
+    }
+
+    /**
+     * #288 on the real SQL: the user's delete marks the take in the same transaction, a late insert for that take then
+     * inserts nothing, Delete all marks the rows' takes and the live ones, and a take that was never deleted still saves.
+     */
+    @Test fun aDeletedTakeIsNeverInsertedAgain() = runBlocking {
+        val take = "0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
+        val live = "1a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
+        val fresh = "2a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
+        fun saved(takeId: String) = TranscriptEntity(
+            originalText = "words", finalText = "Words.", createdAtMs = 1L, durationMs = 1L,
+            speechEngine = "Parakeet", polishEngine = "Deterministic fallback", polishLatencyMs = 0L,
+            insertionResult = "pending", status = TranscriptEntity.STATUS_SAVED_UNROUTED, takeId = takeId,
+        )
+        val id = dao.insertUnlessDeleted(saved(take))
+        dao.deleteForGood(read(id))
+        assertEquals("the late save inserts nothing", 0L, dao.insertUnlessDeleted(saved(take)))
+        val kept = dao.insertUnlessDeleted(saved(fresh))
+        assertTrue(kept > 0L)
+        dao.deleteAllForGood(listOf(live))
+        assertEquals(0L, dao.insertUnlessDeleted(saved(live)))
+        assertEquals(0L, dao.insertUnlessDeleted(saved(fresh)))
+        assertTrue(TranscriptRepository(dao).keepRescuedWords(live, "Words.", 1L))
+        assertEquals(emptyList<TranscriptEntity>(), dao.observeAll().first())
+        assertEquals("a take never deleted still saves", true, dao.insertUnlessDeleted(saved("3a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d")) > 0L)
     }
 }

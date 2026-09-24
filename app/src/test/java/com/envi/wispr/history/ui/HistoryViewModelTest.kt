@@ -38,10 +38,15 @@ class HistoryViewModelTest {
         Dispatchers.resetMain()
     }
 
+    /** The rescue store's directory for the view model under test (#288). */
+    private lateinit var rescueDir: java.io.File
+
     private fun build(vararg texts: String): HistoryViewModel {
         val dao = DictationSessionRig.FakeTranscriptDao()
         texts.forEachIndexed { index, text -> dao.rows[index + 1L] = row(index + 1L, text) }
-        return HistoryViewModel(TranscriptRepository(dao), clock = { 0L }).also { viewModel = it }
+        rescueDir = java.nio.file.Files.createTempDirectory("rescued-words").toFile()
+        val rescue = com.envi.wispr.ui.RescuedWords(rescueDir, kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO), wallClock = { 0L }, warn = {})
+        return HistoryViewModel(TranscriptRepository(dao), rescue, clock = { 0L }).also { viewModel = it }
     }
 
     private fun row(id: Long, text: String) = TranscriptEntity(
@@ -55,6 +60,37 @@ class HistoryViewModelTest {
         polishLatencyMs = 0L,
         insertionResult = "pasted",
     )
+
+    /**
+     * #288: opening History writes rescued words into it, deleting a row deletes its take's rescue, and Delete all
+     * deletes every rescue, so deleted words cannot come back. MUTATION m6: Delete all leaves the files.
+     */
+    @Test fun historyRecoversRescuedWordsAndDeletesThemWithTheRows() = runTest(dispatcher) {
+        val take = "0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
+        val other = "1a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
+        val dao = DictationSessionRig.FakeTranscriptDao()
+        rescueDir = java.nio.file.Files.createTempDirectory("rescued-words").toFile()
+        java.io.File(rescueDir, "$take.words").writeText("5\nKeep these words.")
+        val rescue = com.envi.wispr.ui.RescuedWords(rescueDir, backgroundScope, wallClock = { 0L }, warn = {})
+        val history = HistoryViewModel(TranscriptRepository(dao), rescue, clock = { 0L }).also { viewModel = it }
+        advanceUntilIdle()
+        val recovered = dao.rows.values.single()
+        assertEquals("Keep these words.", recovered.finalText)
+        assertEquals(take, recovered.takeId)
+        assertEquals(emptyList<String>(), rescueDir.list()!!.toList())
+
+        java.io.File(rescueDir, "$take.words").writeText("5\nKeep these words.")
+        history.deleteHistory(recovered)
+        advanceUntilIdle()
+        assertEquals("the row's rescue is deleted with it", emptyList<String>(), rescueDir.list()!!.toList())
+
+        java.io.File(rescueDir, "$other.words").writeText("5\nOther words.")
+        history.deleteAllHistory()
+        advanceUntilIdle()
+        assertEquals(emptyList<String>(), rescueDir.list()!!.toList())
+        rescueDir.deleteRecursively()
+        Unit
+    }
 
     @Test fun theFirstValueIsNotLoaded() {
         assertFalse(build().state.value.loaded)

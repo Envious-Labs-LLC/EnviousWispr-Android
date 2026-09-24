@@ -44,13 +44,15 @@ internal class FallbackAnnouncement private constructor(val line: String) {
             handoff: InsertionHandoff,
             clipboard: ClipboardOutcome,
             savedInHistory: Boolean,
+            /** Where the words are held when not saved (#288); read only when [savedInHistory] is false. */
+            kept: WordsKept = WordsKept.LOST,
         ): FallbackAnnouncement? {
             if (!autoPasteWasExpectedToWork(autoPaste, handoff) &&
                 !wordsMissedTheirDestination(clipboard, savedInHistory)
             ) {
                 return null
             }
-            return FallbackAnnouncement(destinationLine(clipboard, savedInHistory))
+            return FallbackAnnouncement(destinationLine(clipboard, savedInHistory, kept))
         }
 
         /**
@@ -69,16 +71,18 @@ internal class FallbackAnnouncement private constructor(val line: String) {
             reason: ServiceFallbackReason,
             clipboard: ClipboardOutcome,
             savedInHistory: Boolean,
+            /** Where the words are held when not saved (#288); read only when [savedInHistory] is false. */
+            kept: WordsKept = WordsKept.LOST,
         ): FallbackAnnouncement = FallbackAnnouncement(
             when (reason) {
                 ServiceFallbackReason.UNVERIFIED ->
-                    hedgedDestinationLine(clipboard, savedInHistory)
+                    hedgedDestinationLine(clipboard, savedInHistory, kept)
                 ServiceFallbackReason.SENSITIVE_FIELD,
                 ServiceFallbackReason.TARGET_NEVER_RETURNED,
                 ServiceFallbackReason.NO_INSERTION_ACTION,
                 ServiceFallbackReason.SERVICE_INTERRUPTED,
                 ServiceFallbackReason.SERVICE_DESTROYED,
-                -> destinationLine(clipboard, savedInHistory)
+                -> destinationLine(clipboard, savedInHistory, kept)
             },
         )
     }
@@ -251,15 +255,19 @@ private fun wordsMissedTheirDestination(
  * History row can genuinely be absent. A caller cannot pass its own wording in.
  *
  * The first two lines are the calm case and read like macOS's delivery pill: the destination, then
- * the gesture. The third is not a delivery at all. The words exist nowhere the user can reach, so
- * it is the one line here that reports a failure, and it must keep doing so.
+ * the gesture. With neither, the words' rescue decides (#288): kept on this phone, still being saved, or, only when the
+ * History save and the rescue have both failed, not saved at all. That last line reports a failure, and it must keep
+ * doing so; it is never said while either may still hold the words.
  */
 private fun destinationLine(
     clipboard: ClipboardOutcome,
     savedInHistory: Boolean,
+    kept: WordsKept,
 ): String = when {
     clipboard == ClipboardOutcome.COPIED -> "Copied. Press and hold, then tap Paste."
     savedInHistory -> "Saved in History. Open EnviousWispr to copy."
+    kept == WordsKept.KEPT -> "Kept on this phone. Open EnviousWispr to find them."
+    kept == WordsKept.UNCONFIRMED -> "Saving your words. Open EnviousWispr to check."
     else -> "Your words could not be saved. Please dictate again."
 }
 
@@ -267,9 +275,11 @@ private fun destinationLine(
 private fun hedgedDestinationLine(
     clipboard: ClipboardOutcome,
     savedInHistory: Boolean,
+    kept: WordsKept,
 ): String = when {
     clipboard == ClipboardOutcome.COPIED ->
         "Copied too, if it did not arrive. Press and hold, then tap Paste."
     savedInHistory -> "Saved in History too, if it did not arrive."
+    kept == WordsKept.KEPT -> "Kept on this phone too, if it did not arrive."
     else -> "Check your text field before dictating again."
 }

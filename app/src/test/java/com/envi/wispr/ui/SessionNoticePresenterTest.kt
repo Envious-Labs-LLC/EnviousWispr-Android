@@ -246,8 +246,10 @@ class SessionNoticePresenterTest {
         val begin = start.indexOf("notices.beginTake()")
         assertTrue(begin >= 0 && begin < start.indexOf("capture.start("))
         val silence = owner.substringAfter("private fun publishSilenceNoticeIfNeeded(").substringBefore("\n    }\n")
-        assertTrue(silence.contains("if (!sessionPreferences.autoStopOnSilence) return"))
-        assertTrue(silence.contains("if (state.get() != SessionState.RECORDING) return"))
+        val off = silence.indexOf("if (!sessionPreferences.autoStopOnSilence) return")
+        val recording = silence.indexOf("if (state.get() != SessionState.RECORDING) return")
+        val say = silence.indexOf("notices.saySilenceUnavailableIfDue(status)")
+        assertTrue("both of the owner's checks run before the presenter is asked", off >= 0 && recording > off && say > recording)
         for (gone in listOf("silenceNoticeShown", "forcedNoticeShown", "durationWarningShown", "tipGate", "fun recordTakeEnding")) {
             assertFalse("the owner no longer holds $gone", owner.contains(gone))
         }

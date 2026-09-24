@@ -67,7 +67,7 @@ import java.util.concurrent.atomic.AtomicReference
 internal class DictationSessionCoordinator(
     private val host: SessionHost,
     private val surface: RecorderSurface,
-    /** Where a recorder notice is said: the pill or a toast (#256). The owner only picks which notice. */
+    /** Says recorder notices on the pill or a toast (#256), and decides whether a once-per-take line is due (#309). */
     private val notices: SessionNoticePresenter,
     private val insertion: InsertionGateway,
     private val log: SessionLog,

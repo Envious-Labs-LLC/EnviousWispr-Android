@@ -78,7 +78,7 @@ internal class SessionNoticePresenter(
         forcedNoticeShown = false
     }
 
-    /** The take proceeds on earbuds that sent nothing. Said first, so neither the tip nor another line takes the slot. */
+    /** The take proceeds on earbuds that sent nothing. Said before the Bluetooth tip; the forced latch stops the tip replacing it. */
     fun sayEarbudsSilent() {
         forcedNoticeShown = true
         say(SessionNotice.EARBUDS_SILENT)

@@ -7,6 +7,7 @@ import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.audio.SpeechEvidence
 import com.envi.wispr.cleanup.LanguageDetector
+import com.envi.wispr.history.HistoryRecoveryCoordinator
 import com.envi.wispr.history.HistoryWriteQueue
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
@@ -74,8 +75,8 @@ internal class DictationSessionCoordinator(
     private val historySaves: HistorySaveObserver,
     /** The words' last resort (#288), application-owned: written ahead of delivery, recovered into History at start. */
     private val rescuedWords: RescuedWords,
-    /** For the start-up recovery ONLY, on the session scope: a stalled recovery must not sit ahead of a take's writes on the queue. */
-    private val transcripts: TranscriptRepository,
+    /** The start-up History recovery's one owner (#346), application-owned, never on the per-take queue. */
+    private val historyRecovery: HistoryRecoveryCoordinator,
     private val languageDetector: LanguageDetector,
     private val loadPolicy: suspend () -> PolicyRead,
     /** The process's last successful policy read, never waiting for a read in progress (#290): the fallback when the read misses its bound. */
@@ -226,30 +227,12 @@ internal class DictationSessionCoordinator(
     /** True while a take is in PROCESSING; the Service picks the processing notification on a foreground command. */
     val isProcessing: Boolean get() = state.get() == SessionState.PROCESSING
 
-    /** The Service's `onCreate` work that is the session's: stale-row recovery and the preference collectors. */
+    /** The Service's `onCreate` work that is the session's: asking for the start-up recovery, and the preference collectors. */
     fun onCreated() {
-        // On its own scope, never on the per-take queue (#115 review): a recovery stalled on the disk
-        // would otherwise sit ahead of every write of the take that follows. It closes rows an EARLIER
-        // process left open; the new take's rows are not among them.
-        scope.launch {
-            runCatching { transcripts.recoverStaleOpenRows(System.currentTimeMillis()) }
-                .onSuccess { recovered ->
-                    Telemetry.insertionsRecovered(recovered.readyRowIds)
-                    Telemetry.deliveryUnknownRecovered(recovered.unknownCount)
-                }
-                .onFailure { error ->
-                    // A command that finds the owner IDLE stops the Service within milliseconds of this
-                    // launch (`stopIfIdle`); that cancellation is the ordinary case, not a failure, and the
-                    // next instance runs the recovery again (measured on the emulator 2026-09-21).
-                    if (error !is kotlinx.coroutines.CancellationException) log.warn("Unable to recover stale history: ${error.javaClass.simpleName}")
-                }
-            // Words an earlier take could not get into History (#288); a take still tracked in this process is left alone.
-            runCatching { rescuedWords.recover(transcripts) }
-                .onSuccess { recovered -> if (recovered > 0) log.log("Rescued words written to History: $recovered") }
-                .onFailure { error ->
-                    if (error !is kotlinx.coroutines.CancellationException) log.warn("Unable to recover rescued words: ${error.javaClass.simpleName}")
-                }
-        }
+        // The application's recovery owner runs it, off the per-take queue (#115) and joined with the History screen's
+        // (#346): stale rows an EARLIER process left open, then words an earlier take could not get into History (#288).
+        // Nothing here waits on it; a take still tracked in this process is left alone by the rescue step.
+        historyRecovery.recover()
         preferences.start(scope)
     }
 

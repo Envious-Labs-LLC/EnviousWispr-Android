@@ -33,6 +33,14 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class PolishService : Service() {
     companion object {
+        /**
+         * A model load's hard deadline (#344): about six times the slowest load measured on the S26, 10.63 s for the
+         * first GPU load while its kernels compile (`polish-engines.md`).
+         */
+        private const val MODEL_LOAD_DEADLINE_MS = 60_000L
+
+        /** How long the orderly close may wait behind the worker before the process ends instead (#344). */
+        private const val ORDERLY_CLOSE_BOUND_MS = 5_000L
         private const val TAG = "PolishService"
         private const val EXIT_GRACE_MS = 300L
     }
@@ -88,6 +96,14 @@ class PolishService : Service() {
 
     @Volatile
     private var modelLoading = false
+
+    /**
+     * Guards a warm-up's admission against destruction (#344): `ensureModelLoaded` queues a load only while not
+     * [destroyed], and `onDestroy` reads [modelLoading] under the same lock, so no load can be queued behind the
+     * orderly close after destruction decided there was none.
+     */
+    private val loadLock = Any()
+    private var destroyed = false
 
     private val binder = object : IPolishService.Stub() {
         // ---- v1, kept declared for the separately installed instrumentation APK. No caller here.
@@ -433,10 +449,20 @@ class PolishService : Service() {
     override fun onDestroy() {
         // The kill condition FIRST (#291): that branch ends the process without closing the detector or waiting for
         // any fallback answer, so nothing a fallback task holds can delay it.
-        if (mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get())) {
+        // Under the load lock (#344): after this no warm-up can queue a load, and a load already queued or running
+        // is known here, so the orderly close is never queued behind it.
+        val loading = synchronized(loadLock) {
+            destroyed = true
+            modelLoading
+        }
+        if (mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get(), loading)) {
             // Orderly destruction would cancel the deadline timer and queue the runtime close behind a
             // worker that may be wedged (#75). The client has already unbound; nothing is owed to it.
-            val why = if (poisoned.get()) "destroyed after a local timeout" else "destroyed with ${activeLocalRequests.get()} local request(s) in flight"
+            val why = when {
+                poisoned.get() -> "destroyed after a local timeout"
+                activeLocalRequests.get() > 0 -> "destroyed with ${activeLocalRequests.get()} local request(s) in flight"
+                else -> "destroyed while the model was still loading"
+            }
             poisoned.set(true)
             super.onDestroy()
             endProcess(why)
@@ -452,6 +478,18 @@ class PolishService : Service() {
             modelReady = false
         }
         executor.shutdown()
+        // The orderly close waits behind whatever the workers are running (#344 review rounds 2 and 3): a vendor load,
+        // a language-detector acquisition or any other task with no deadline of its own, on the main worker or the
+        // fallback lane's (whose detector close is queued behind its answers). Rather than list each, the close itself
+        // is bounded: BOTH workers must finish within one ORDERLY_CLOSE_BOUND_MS, or one holds something that never
+        // returns and the process ends so nothing stays resident. The client has unbound; nothing is owed to it.
+        Thread({
+            val end = SystemClock.elapsedRealtime() + ORDERLY_CLOSE_BOUND_MS
+            val mainDone = runCatching { executor.awaitTermination(ORDERLY_CLOSE_BOUND_MS, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
+            val left = (end - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+            val fallbackDone = runCatching { fallbackLane.awaitTermination(left) }.getOrDefault(false)
+            if (!mainDone || !fallbackDone) endProcess("a worker did not finish within $ORDERLY_CLOSE_BOUND_MS ms of destruction")
+        }, "PolishCloseWatch").apply { isDaemon = true }.start()
         super.onDestroy()
     }
 
@@ -460,8 +498,8 @@ class PolishService : Service() {
      * under this method's lock or on the single worker, and read from binder threads (#236).
      */
     @Synchronized
-    private fun ensureModelLoaded() {
-        if (modelReady || modelLoading) return
+    private fun ensureModelLoaded() = synchronized(loadLock) {
+        if (destroyed || modelReady || modelLoading) return@synchronized
         modelLoading = true
         // A queue that refuses the load (the executor is shut down in onDestroy) must not leave loading set,
         // or no later warm-up could ever start one (#236).
@@ -473,30 +511,47 @@ class PolishService : Service() {
         }
     }
 
-    /** The single worker's model load, queued by [ensureModelLoaded]. */
+    /**
+     * The single worker's model load, queued by [ensureModelLoaded]. Its own hard deadline ([MODEL_LOAD_DEADLINE_MS],
+     * #344) ends the process if the vendor load never returns: a request queued behind it on this worker never
+     * starts, so never arms its own deadline, and the owner's fail-open handles the lost process. Every exit,
+     * including a throw from model selection, clears [modelLoading] and the deadline.
+     */
     private fun loadModel() {
-        val selection = S1ModelSelector.resolve(this)
-        if (selection == null) {
-            modelStatus = "${S1Config.MODEL_NAME} is not verified in app-private storage"
-            DebugLogger.warn(TAG, modelStatus)
-            modelLoading = false
-            return
-        }
-
-        modelStatus = "Loading ${S1Config.MODEL_NAME}"
-        val started = SystemClock.elapsedRealtime()
+        // The load and its deadline race once, atomically (`EngineDeadline`, review round 1): a load that returns after
+        // the timer won never publishes readiness, and a timer after a load that won never ends the process.
+        val stall = runCatching {
+            deadline.arm(MODEL_LOAD_DEADLINE_MS) {
+                poisoned.set(true)
+                endProcess("model load stalled past $MODEL_LOAD_DEADLINE_MS ms")
+            }
+        }.getOrNull()
         try {
-            val result = s1Runtime.load(selection.file.path, selection.computeUnits)
-            modelReady = true
-            val elapsed = SystemClock.elapsedRealtime() - started
-            val modelKind = if (selection.npuOptimized) "NPU model" else "compatibility model"
-            modelStatus = "Ready on ${s1Runtime.activeComputeUnit.uppercase()} in ${elapsed}ms ($modelKind)"
-            DebugLogger.log(TAG, "${S1Config.MODEL_NAME} loaded: $result; $modelStatus")
-        } catch (exception: Throwable) {
-            modelReady = false
-            modelStatus = "S1 unavailable; deterministic fallback active"
-            DebugLogger.error(TAG, modelStatus, exception)
+            val selection = S1ModelSelector.resolve(this)
+            if (selection == null) {
+                modelStatus = "${S1Config.MODEL_NAME} is not verified in app-private storage"
+                DebugLogger.warn(TAG, modelStatus)
+                return
+            }
+            if (stall?.current == EngineDeadline.State.EXPIRED) return
+
+            modelStatus = "Loading ${S1Config.MODEL_NAME}"
+            val started = SystemClock.elapsedRealtime()
+            try {
+                val result = s1Runtime.load(selection.file.path, selection.computeUnits)
+                if (stall != null && !stall.cancel()) return
+                modelReady = true
+                val elapsed = SystemClock.elapsedRealtime() - started
+                val modelKind = if (selection.npuOptimized) "NPU model" else "compatibility model"
+                modelStatus = "Ready on ${s1Runtime.activeComputeUnit.uppercase()} in ${elapsed}ms ($modelKind)"
+                DebugLogger.log(TAG, "${S1Config.MODEL_NAME} loaded: $result; $modelStatus")
+            } catch (exception: Throwable) {
+                modelReady = false
+                modelStatus = "S1 unavailable; deterministic fallback active"
+                DebugLogger.error(TAG, modelStatus, exception)
+            }
         } finally {
+            stall?.cancel()
             modelLoading = false
         }
     }

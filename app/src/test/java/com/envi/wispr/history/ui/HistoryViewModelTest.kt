@@ -46,8 +46,13 @@ class HistoryViewModelTest {
         texts.forEachIndexed { index, text -> dao.rows[index + 1L] = row(index + 1L, text) }
         rescueDir = java.nio.file.Files.createTempDirectory("rescued-words").toFile()
         val rescue = com.envi.wispr.ui.RescuedWords(rescueDir, kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO), wallClock = { 0L }, warn = {})
-        return HistoryViewModel(TranscriptRepository(dao), rescue, clock = { 0L }).also { viewModel = it }
+        val repository = TranscriptRepository(dao)
+        return HistoryViewModel(repository, rescue, recoveryOver(repository, rescue, kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO))).also { viewModel = it }
     }
+
+    /** The start-up recovery's owner (#346) over the test's store, on the given scope, with no telemetry. */
+    private fun recoveryOver(repository: TranscriptRepository, rescue: com.envi.wispr.ui.RescuedWords, scope: kotlinx.coroutines.CoroutineScope) =
+        com.envi.wispr.history.HistoryRecoveryCoordinator(repository, rescue, scope, clock = { 0L }, log = {}, warn = {}, recordRecovered = {})
 
     private fun row(id: Long, text: String) = TranscriptEntity(
         id = id,
@@ -62,6 +67,32 @@ class HistoryViewModelTest {
     )
 
     /**
+     * #346: a failed start-up recovery is shown and skips the wordless-row prune, as before the recovery had one owner;
+     * a clean one prunes. MUTATION m5: the prune runs after a failed recovery.
+     */
+    @Test fun aFailedRecoveryIsShownAndSkipsThePrune() = runTest(dispatcher) {
+        val dao = DictationSessionRig.FakeTranscriptDao()
+        rescueDir = java.nio.file.Files.createTempDirectory("rescued-words").toFile()
+        val rescue = com.envi.wispr.ui.RescuedWords(rescueDir, backgroundScope, wallClock = { 0L }, warn = {})
+        val repository = TranscriptRepository(dao)
+        val failing = com.envi.wispr.history.HistoryRecoveryCoordinator(
+            repository, rescue, backgroundScope, clock = { 0L }, log = {}, warn = {},
+            recordRecovered = { throw IllegalStateException("recovery broke") },
+        )
+        val history = HistoryViewModel(repository, rescue, failing).also { viewModel = it }
+        backgroundScope.launch { history.state.collect {} }
+        advanceUntilIdle()
+        assertEquals("recovery broke", history.state.value.error)
+        assertEquals("no prune after a failed recovery", 0, dao.wordlessPrunes.get())
+        val clean = HistoryViewModel(repository, rescue, recoveryOver(repository, rescue, backgroundScope)).also { viewModel = it }
+        advanceUntilIdle()
+        assertEquals("a clean recovery prunes", 1, dao.wordlessPrunes.get())
+        clean.hashCode()
+        rescueDir.deleteRecursively()
+        Unit
+    }
+
+    /**
      * #288: opening History writes rescued words into it, deleting a row deletes its take's rescue, and Delete all
      * deletes every rescue, so deleted words cannot come back. MUTATION m6: Delete all leaves the files.
      */
@@ -72,7 +103,8 @@ class HistoryViewModelTest {
         rescueDir = java.nio.file.Files.createTempDirectory("rescued-words").toFile()
         java.io.File(rescueDir, "$take.words").writeText("5\nKeep these words.")
         val rescue = com.envi.wispr.ui.RescuedWords(rescueDir, backgroundScope, wallClock = { 0L }, warn = {})
-        val history = HistoryViewModel(TranscriptRepository(dao), rescue, clock = { 0L }).also { viewModel = it }
+        val repository = TranscriptRepository(dao)
+        val history = HistoryViewModel(repository, rescue, recoveryOver(repository, rescue, backgroundScope)).also { viewModel = it }
         advanceUntilIdle()
         val recovered = dao.rows.values.single()
         assertEquals("Keep these words.", recovered.finalText)

@@ -95,9 +95,59 @@ class EngineDeadlineTest {
     }
 
     @Test fun activeLocalWorkKeepsOnDestroyFromCancellingItsOnlyHardDeadline() {
-        assertTrue(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 1))
-        assertTrue(mustKillEngineOnDestroy(poisoned = true, activeLocalRequests = 0))
-        assertFalse(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 0))
+        assertTrue(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 1, modelLoading = false))
+        assertTrue(mustKillEngineOnDestroy(poisoned = true, activeLocalRequests = 0, modelLoading = false))
+        assertFalse(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 0, modelLoading = false))
+    }
+
+    /** #344: a model load queued or running forces the kill on its own. MUTATION m1: the predicate ignores it. */
+    @Test fun aLoadingModelEndsTheProcessRatherThanQueueTheCloseBehindIt() {
+        assertTrue(mustKillEngineOnDestroy(poisoned = false, activeLocalRequests = 0, modelLoading = true))
+    }
+
+    /**
+     * #344, source shape (the engine service cannot be built in a JVM test): the load is admitted and destruction
+     * decides under one lock; the whole load body clears the flag and its deadline in one `finally`; the deadline
+     * is armed before model selection. MUTATIONS m2 (onDestroy passes `false`), m3 (the flag cleared only after
+     * selection) and m4 (no load deadline).
+     */
+    @Test fun theLoadIsBoundedAndDestructionSeesIt() {
+        val source = java.io.File("src/main/java/com/envi/wispr/polish/PolishService.kt").readText()
+        val destroy = source.substringAfter("override fun onDestroy()").substringBefore("\n    }\n")
+        assertTrue(destroy.contains("mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get(), loading)"))
+        assertTrue(destroy.contains("synchronized(loadLock)") && destroy.contains("destroyed = true"))
+        val ensure = source.substringAfter("private fun ensureModelLoaded()").substringBefore("\n    }\n")
+        assertTrue(ensure.contains("synchronized(loadLock)") && ensure.contains("if (destroyed || modelReady || modelLoading)"))
+        val load = source.substringAfter("private fun loadModel()").substringBefore("\n    /**")
+        // The constant is the armed budget, not only a word in the log line.
+        val deadline = load.indexOf("deadline.arm(MODEL_LOAD_DEADLINE_MS)")
+        val selection = load.indexOf("S1ModelSelector.resolve(this)")
+        assertTrue("the deadline is armed before selection", deadline in 0 until selection)
+        val finally = load.lastIndexOf("} finally {")
+        assertTrue("one finally after selection clears the flag and the deadline", finally > selection &&
+            load.substring(finally).contains("modelLoading = false") && load.substring(finally).contains("stall?.cancel()"))
+        // Review round 1: the load's return and the timer race once; readiness is published only by a load that won.
+        // MUTATION m5: readiness before the cancel.
+        val won = load.indexOf("if (stall != null && !stall.cancel()) return")
+        assertTrue("a load that lost the race never publishes readiness", won in 0 until load.indexOf("modelReady = true"))
+        assertEquals("the flag is cleared only in that finally", 1, Regex("""modelLoading = false""").findAll(load).count())
+    }
+
+    /**
+     * #344 review round 2, source shape: the orderly close is itself bounded. After queueing the close and shutting
+     * the worker down, `onDestroy` starts a watch that ends the process when the worker has not finished within
+     * ORDERLY_CLOSE_BOUND_MS, whatever it is stuck in. MUTATION m6: no watch.
+     */
+    @Test fun theOrderlyCloseIsBoundedWhateverTheWorkerHolds() {
+        val source = java.io.File("src/main/java/com/envi/wispr/polish/PolishService.kt").readText()
+        val destroy = source.substringAfter("override fun onDestroy()").substringBefore("\n    /**")
+        val shutdown = destroy.indexOf("executor.shutdown()")
+        val watch = destroy.indexOf("executor.awaitTermination(ORDERLY_CLOSE_BOUND_MS")
+        assertTrue("the watch waits on the worker after its shutdown", shutdown >= 0 && watch > shutdown)
+        // Review round 3: the fallback lane's worker too, within the same bound. MUTATION m7: the watch ignores it.
+        assertTrue("the fallback lane's worker is waited on too", destroy.substring(watch).contains("fallbackLane.awaitTermination(left)"))
+        assertTrue("either unfinished worker ends the process", destroy.substring(watch).contains("if (!mainDone || !fallbackDone) endProcess("))
+        assertTrue("the watch never runs on main", destroy.contains("\"PolishCloseWatch\").apply { isDaemon = true }.start()"))
     }
 
     @Test fun overrideBoundsAreExact() {

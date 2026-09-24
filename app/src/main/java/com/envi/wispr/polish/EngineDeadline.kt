@@ -92,7 +92,8 @@ internal fun expireOnce(
 /**
  * Whether the engine must end its process on destruction instead of closing the runtime in order (#75).
  * Orderly destruction cancels the deadline timer and queues the runtime close behind the worker, so with
- * a local request still in flight a wedged worker would outlive its only hard deadline.
+ * a local request still in flight a wedged worker would outlive its only hard deadline. A model load queued or
+ * running on that worker is the same case (#344): the close would wait behind a load that may never return.
  */
-internal fun mustKillEngineOnDestroy(poisoned: Boolean, activeLocalRequests: Int): Boolean =
-    poisoned || activeLocalRequests > 0
+internal fun mustKillEngineOnDestroy(poisoned: Boolean, activeLocalRequests: Int, modelLoading: Boolean): Boolean =
+    poisoned || activeLocalRequests > 0 || modelLoading

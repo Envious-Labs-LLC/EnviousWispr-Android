@@ -83,6 +83,14 @@ internal class PolishFallbackLane(
         }
     }
 
+    /**
+     * Waits up to [timeoutMs] for the lane's worker to finish after [close] (#344 review round 3): the engine's close
+     * watch bounds this worker too, since a fallback answer can stall in the detector's acquisition with the detector
+     * close queued behind it. True when the worker finished.
+     */
+    fun awaitTermination(timeoutMs: Long): Boolean =
+        worker.awaitTermination(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+
     private fun deliver(token: Token, sink: (PolishOutcome) -> Unit, outcome: () -> PolishOutcome) {
         try {
             if (token.settled.get()) return

@@ -125,6 +125,13 @@ internal class DictationSessionRig {
         beforeWrite = { if (rescueWriteDelayMs > 0L) kotlinx.coroutines.delay(rescueWriteDelayMs) },
     )
 
+    /** The start-up recovery's owner (#346), on the observer's scope like the rescue store; no telemetry in the rig. */
+    val historyRecovery by lazy {
+        com.envi.wispr.history.HistoryRecoveryCoordinator(
+            transcripts, rescuedWords, saveScope, clock = { 1_000L }, log = { line -> log.log(line) }, warn = { line -> log.warn(line) }, recordRecovered = {},
+        )
+    }
+
     /** When set, each rescue write starts this late (#288): well inside the owner's bound, so only its wait sees KEPT. */
     @Volatile var rescueWriteDelayMs = 0L
 
@@ -175,7 +182,7 @@ internal class DictationSessionRig {
             boundMs = historySaveBoundMs,
         ),
         rescuedWords = rescuedWords,
-        transcripts = transcripts,
+        historyRecovery = historyRecovery,
         languageDetector = languageDetector,
         loadPolicy = {
             try {
@@ -860,7 +867,9 @@ internal class DictationSessionRig {
         /** When set, runs as a take's draft insert is attempted, with its take id (#288): a recovery staged ahead of the save. */
         @Volatile var onDraftInsert: (suspend (String) -> Unit)? = null
         override suspend fun deleteById(id: Long): Int = if (rows.remove(id) != null) 1 else 0
-        override suspend fun deleteWordlessRows(): Int = 0
+        /** How many times History pruned wordless rows (#346). */
+        val wordlessPrunes = java.util.concurrent.atomic.AtomicInteger()
+        override suspend fun deleteWordlessRows(): Int { wordlessPrunes.incrementAndGet(); return 0 }
         override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int {
             if (statusWrites.getAndIncrement() == 0L && delayFirstStatusMs > 0L) kotlinx.coroutines.delay(delayFirstStatusMs)
             holdStatusWrites?.await()

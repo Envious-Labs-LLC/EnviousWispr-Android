@@ -74,7 +74,7 @@ Two findings of one class, the second round of it, so the class was enumerated f
 
 **Class:** a History write for the take made on the owner's worker before that path holds the take's ending, so it can land after a cancel, disconnect or destroy already ended the take on main.
 
-**Members** (every `markStatus`, `discard` and `markInterrupted` in `DictationSessionCoordinator`): the speech callbacks, `onSpeechDisconnected`, `onSpeechUnresponsive` and `polishAndPublish` already claim first; the capture-phase discards and the cancel paths run on main, serialized with destroy. Four were on the worker with no claim: the PROCESSING status, `AUDIO_FILE_MISSING`, `ASR_NOT_READY` and the thrown request.
+**Members** (every `markStatus`, `discard` and `markInterrupted` in `DictationSessionCoordinator`): the speech callbacks, `onSpeechDisconnected`, `onSpeechUnresponsive` and `polishAndPublish` already claim first; capture-phase discards run on main; worker cancel discards first commit their reserved ending; processing cancel commits before discarding (wording from review round 3, which checked all 17 sites and found no third unsafe member). Four were on the worker with no claim: the PROCESSING status, `AUDIO_FILE_MISSING`, `ASR_NOT_READY` and the thrown request.
 
 **Fix at the source:** the PROCESSING status is queued on main in `continueAfterEnding` before the worker starts, so every main-thread ending queues after it; the three worker failures go through `failFromWorker`, which claims before it writes.
 

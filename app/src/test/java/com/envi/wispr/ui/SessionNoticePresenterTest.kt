@@ -136,7 +136,8 @@ class SessionNoticePresenterTest {
         // Since #293 the polish failure and the take's failure sentence are the presenter's too. MUTATION m5.
         assertFalse(owner.contains("toastFromService("))
         assertFalse(owner.contains("showPolishNotice("))
-        assertEquals(1, Regex("""\bnotices\.sayPolishFailure\(notice\)""").findAll(owner).count())
+        // Since #329 the owner hands over the publication's facts and the presenter picks the notice.
+        assertEquals(1, Regex("""\bnotices\.sayPolishFailureIfAny\(payload\.polishFacts\)""").findAll(owner).count())
         assertEquals(1, Regex("""\bnotices\.sayFailure\(line\)""").findAll(owner).count())
         // Since #309 the owner says only the cap-reached line directly; the four once-per-take lines are said inside the
         // presenter's own methods. Together the two files say every notice.

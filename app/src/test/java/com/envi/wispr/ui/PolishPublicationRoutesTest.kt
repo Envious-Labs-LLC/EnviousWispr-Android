@@ -50,18 +50,25 @@ class PolishPublicationRoutesTest {
         assertEquals(1, Regex("""PolishPublicationFacts\.from\(""").findAll(SessionSources.all).count())
         val publication = section("private fun publishResult(", "private fun cancelRecording()")
         // Since #293 the notice is the presenter's, which still posts the toast then the notification.
-        val notice = publication.indexOf("notices.sayPolishFailure(notice)")
+        // Since #329 the owner hands the publication's facts to the presenter, which picks the notice.
+        val notice = publication.indexOf("notices.sayPolishFailureIfAny(payload.polishFacts)")
         val presenter = section("fun sayPolishFailure(", "\n    }\n", SessionSources.notices)
         assertTrue(presenter.indexOf("host.toastFromService(notice.toastLine)") in 0 until presenter.indexOf("host.showPolishNotice(notice)"))
-        // The polish facts, their breadcrumb and their defect keep their place before the payload and the reservation.
+        // The polish facts, their breadcrumb and their defect keep their place before the payload and the reservation:
+        // one recorder call on the owner's side (#329), and inside it the three in their order.
         val order = listOf(
-            "takeFacts.recordPolish(reason, latencyMs, statusCode, polishContext.encode())",
-            "Telemetry.breadcrumb(\"take\", \"polish_done\", polishRecord.breadcrumb)",
-            "reportDefect(it, polishRecord.defectData)",
+            "current.outcome.polishDone(reason, latencyMs, statusCode, polishContext.encode())",
             "val payload = Publication(",
             "synchronized(publishLock)",
         ).map { publication.indexOf(it) }
-        assertTrue("recordPolish < breadcrumb < defect < payload < reservation: $order", order.all { it >= 0 } && order == order.sorted())
+        assertTrue("polishDone < payload < reservation: $order", order.all { it >= 0 } && order == order.sorted())
+        val recorder = File("src/main/java/com/envi/wispr/telemetry/TakeOutcomeRecorder.kt").readText().substringAfter("fun polishDone(")
+        val inside = listOf(
+            "facts.recordPolish(reason, latencyMs, statusCode, contextToken)",
+            "breadcrumb(\"take\", \"polish_done\", record.breadcrumb)",
+            "record.defect?.let { defect(it, record.defectData) }",
+        ).map { recorder.indexOf(it) }
+        assertTrue("recordPolish < breadcrumb < defect: $inside", inside.all { it >= 0 } && inside == inside.sorted())
         // The host delegate must still reach the notification controller (Codex review C1, 2026-09-20).
         assertTrue(File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").readText().contains("DictationNotificationController.showPolishNotice(this@DictationSessionService, notice)"))
         // Since #115 the History write is ENQUEUED in the same operation as the reservation, under the

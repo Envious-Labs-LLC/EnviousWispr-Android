@@ -241,6 +241,10 @@ internal class DictationSessionRig {
 
     fun close() {
         saveScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        // The session's own scope too (#288): a polish timeout still waiting holds a shared IO thread in
+        // `runInterruptible`; left running, those threads pile up across a test run until the pool of 64 is exhausted
+        // and a later rig's take can never be scheduled. Cancelling interrupts the wait and frees the thread.
+        scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         mainExecutor.shutdownNow()
         capture.close()
         capture.audioFile?.delete()

@@ -333,7 +333,14 @@ internal class SessionFinalizer(
                             // Neutral until the route is recorded (#235): never ready before a handoff.
                             status = TranscriptEntity.STATUS_SAVED_UNROUTED,
                         )
-                        if (updated > 0) existingId else repository.insertSavedTranscript(publication, takeId)
+                        // The draft is gone: re-created unless the user deleted it, which is never undone (#288).
+                        when {
+                            updated > 0 -> existingId
+                            rescuedWords.deletedByUser(takeId) -> existingId
+                            else -> repository.insertSavedTranscript(publication, takeId)
+                        }
+                    } else if (rescuedWords.deletedByUser(takeId)) {
+                        0L
                     } else {
                         repository.insertSavedTranscript(publication, takeId)
                     }

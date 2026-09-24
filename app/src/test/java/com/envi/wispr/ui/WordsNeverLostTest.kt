@@ -120,6 +120,27 @@ class WordsNeverLostTest {
         awaitUntil("the settled file is gone") { rescued().isEmpty() }
     }
 
+    /**
+     * Row 3c (review round 2): the user deletes the take's row while its save is still queued; the late save does not
+     * bring it back, and no rescue is left. MUTATION m12: the save re-creates a row the user deleted.
+     */
+    @Test fun aLateSaveNeverUndoesTheUsersDelete() {
+        var take: String? = null
+        rig.dao.onDraftInsert = { id -> take = id }
+        rig.dao.holdFinalize = CompletableDeferred()
+        val coordinator = rig.coordinator(historySaveBoundMs = 5_000L)
+        takeWithPolishedWords(coordinator)
+        rig.dao.finalizeEntered.await(10, TimeUnit.SECONDS)
+        val draft = rig.dao.rows.values.single()
+        runBlocking { rig.rescuedWords.deleting(take) { rig.transcripts.delete(draft) } }
+        rig.dao.holdFinalize!!.complete(Unit)
+        rig.endings.awaitOne()
+        rig.host.awaitServiceStopped()
+        rig.awaitHistoryIdle()
+        assertEquals("the deleted row stays deleted", emptyList<TranscriptEntity>(), rig.dao.rows.values.toList())
+        assertEquals(emptyList<File>(), rescued())
+    }
+
     /** Row 4: with the rescue failed and the save still pending, the line never says the words are lost. */
     @Test fun aPendingSaveIsNeverToldItsWordsAreLost() {
         rig.rescueDir.deleteRecursively()

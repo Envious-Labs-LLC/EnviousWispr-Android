@@ -162,6 +162,26 @@ class RescuedWordsTest {
         executor.shutdown()
     }
 
+    /**
+     * Row 7c (review round 2): a History delete that stalls holds no other take's rescue write back, and the take being
+     * deleted is not recovered meanwhile. MUTATION m13: the History delete runs inside the store's lock.
+     */
+    @Test fun aStalledDeleteNeverHoldsAnotherTakesWrite() = runBlocking {
+        val other = "1a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
+        File(dir.apply { mkdirs() }, "$other.words").writeText("1000\nOther words.")
+        val stalled = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val deleting = scope.async { store.deleting(other) { stalled.await() } }
+        awaitUntil("the delete is pending") { store.deletedByUser(other) }
+        val written = kotlinx.coroutines.withTimeoutOrNull(5_000L) { store.keep(take, "Keep these words.", SaveSlot()).await() }
+        assertEquals("another take's write lands while the delete is stalled", RescueOutcome.KEPT, written)
+        // The written take is still tracked and the other is being deleted: a recovery now writes neither.
+        assertEquals("the take being deleted is not recovered", 0, store.recover(repository))
+        assertEquals(0, dao.rows.size)
+        stalled.complete(Unit)
+        deleting.await()
+        assertFalse(File(dir, "$other.words").exists())
+    }
+
     /** Row 8: a take id that is not a UUID never names a file. */
     @Test fun anUnexpectedTakeIdNamesNoFile() = runBlocking {
         assertEquals(RescueOutcome.FAILED, store.keep("../escape", "Keep these words.", SaveSlot()).await())

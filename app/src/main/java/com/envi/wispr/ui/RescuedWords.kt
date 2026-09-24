@@ -24,9 +24,11 @@ internal enum class RescueOutcome { KEPT, FAILED, PENDING }
  *
  * One per process, owned by the application beside the History write queue (#304), on a scope nothing cancels, so
  * settlement outlives the Service that published the words. Never the History queue, which may be the thing failing.
- * Every file operation holds [lock], and a user's delete runs its History delete and its file delete inside that lock
- * and marks the take (or bumps the clear generation), so a write still queued for a deleted take writes nothing and
- * deleted words cannot reappear. Files live under the app's private files directory; backup is disabled.
+ * Every file operation holds [lock]. A user's delete marks the take (or the whole store) PENDING under the lock, runs its
+ * History delete outside it (a stalled database never holds a rescue write past its bound), then deletes the files
+ * under the lock and records the take as deleted (or bumps the clear generation). A write, a recovery and the take's
+ * own History save ([deletedByUser]) all respect both marks, so deleted words cannot reappear by any of them. Files
+ * live under the app's private files directory; backup is disabled.
  *
  * A take is TRACKED from its write until its save answers or [trackingBoundMs] passes, whichever is first: recovery
  * never takes a tracked take's file, since its save may still land. A SAVED answer that comes later still settles the
@@ -50,9 +52,28 @@ internal class RescuedWords(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RescueOutcome>?): Boolean = size > OUTCOMES_KEPT
     }
 
-    /** Takes whose row the user deleted, and the Delete all count; both read and written under [lock]. */
-    private val deleted = HashSet<String>()
+    /** Takes whose row the user deleted, and those whose delete is in progress. */
+    private val deleted: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val pendingDeletes: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** How many Delete alls have completed, and whether one is in progress. */
     @Volatile private var generation = 0L
+    @Volatile private var clearPending = false
+
+    /** The generation each recent take began in; bounded like [outcomes]. */
+    private val startedIn = object : LinkedHashMap<String, Long>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > OUTCOMES_KEPT
+    }
+
+    /**
+     * Whether the user deleted [takeId]'s words, or is deleting them, since the take began (#288): its row, or all
+     * History. The take's own History save asks this before it would insert a row, so a delete is never undone.
+     */
+    fun deletedByUser(takeId: String): Boolean {
+        if (takeId in deleted || takeId in pendingDeletes || clearPending) return true
+        val began = synchronized(startedIn) { startedIn[takeId] } ?: return false
+        return began != generation
+    }
 
     private fun record(takeId: String, outcome: RescueOutcome) = synchronized(outcomes) { outcomes[takeId] = outcome }
 
@@ -67,12 +88,12 @@ internal class RescuedWords(
         }
         tracked += takeId
         record(takeId, RescueOutcome.PENDING)
-        val startedIn = generation
+        synchronized(startedIn) { startedIn[takeId] = generation }
         val write = scope.async {
             val outcome = lock.withLock {
                 beforeWrite()
-                // Deleted while this write was queued: the user's delete wins, and nothing is written.
-                if (takeId in deleted || generation != startedIn) RescueOutcome.FAILED else write(takeId, text)
+                // Deleted, or being deleted, while this write was queued: the user's delete wins, and nothing is written.
+                if (deletedByUser(takeId)) RescueOutcome.FAILED else write(takeId, text)
             }
             record(takeId, outcome)
             outcome
@@ -99,26 +120,46 @@ internal class RescuedWords(
         lock.withLock { File(dir, "$takeId$SUFFIX").delete() }
     }
 
-    /** The user deletes one History row: [delete] runs inside the lock, then the take's rescue goes with it. */
+    /**
+     * The user deletes one History row: the take is marked pending under the lock, [delete] runs outside it, and on
+     * success the take's rescue goes with it; a failed delete lifts the mark and leaves the rescue.
+     */
     suspend fun deleting(takeId: String?, delete: suspend () -> Unit) {
-        lock.withLock {
+        val take = takeId?.takeIf { TAKE_ID.matches(it) }
+        if (take != null) lock.withLock { pendingDeletes += take }
+        try {
             delete()
-            if (takeId != null && TAKE_ID.matches(takeId)) {
-                deleted += takeId
-                File(dir, "$takeId$SUFFIX").delete()
-                synchronized(outcomes) { outcomes -= takeId }
-            }
+        } catch (error: Throwable) {
+            if (take != null) pendingDeletes -= take
+            throw error
+        }
+        if (take == null) return
+        lock.withLock {
+            deleted += take
+            pendingDeletes -= take
+            File(dir, "$take$SUFFIX").delete()
+            synchronized(outcomes) { outcomes -= take }
         }
     }
 
-    /** The user deletes all History: [delete] runs inside the lock, then every rescue goes with it. */
+    /**
+     * The user deletes all History: the store is marked pending under the lock, [delete] runs outside it, and on success
+     * every rescue goes with it and every take begun before now counts as deleted; a failed delete lifts the mark.
+     */
     suspend fun clearing(delete: suspend () -> Unit) {
-        lock.withLock {
+        lock.withLock { clearPending = true }
+        try {
             delete()
+        } catch (error: Throwable) {
+            clearPending = false
+            throw error
+        }
+        lock.withLock {
             generation++
             deleted.clear()
             dir.listFiles()?.forEach { it.delete() }
             synchronized(outcomes) { outcomes.clear() }
+            clearPending = false
         }
     }
 
@@ -135,7 +176,7 @@ internal class RescuedWords(
                 continue
             }
             val takeId = file.name.removeSuffix(SUFFIX)
-            if (!file.name.endsWith(SUFFIX) || !TAKE_ID.matches(takeId) || takeId in tracked) continue
+            if (!file.name.endsWith(SUFFIX) || !TAKE_ID.matches(takeId) || takeId in tracked || deletedByUser(takeId)) continue
             val record = runCatching { file.readText() }.getOrNull() ?: continue
             val createdAtMs = record.substringBefore('\n').toLongOrNull() ?: continue
             val text = record.substringAfter('\n')
@@ -157,18 +198,20 @@ internal class RescuedWords(
     }
 
     /**
-     * Temp file, flushed to the disk, an atomic rename, then the directory flushed too, so the name survives a power
-     * loss: KEPT is reported only after all four. A crash leaves either nothing or the whole record.
+     * Temp file, flushed to the disk, an atomic rename, then the directory flushed too (and its parent when this write
+     * created it), so the name survives a power loss: KEPT is reported only after all of them. A crash leaves either
+     * nothing or the whole record.
      */
     private fun write(takeId: String, text: String): RescueOutcome = try {
-        dir.mkdirs()
+        // A directory this write creates is itself a name in its parent: flushed too, or a power loss can drop it.
+        if (!dir.isDirectory && dir.mkdirs()) syncDirectory(dir.parentFile ?: dir)
         val temp = File(dir, "$takeId$TEMP")
         FileOutputStream(temp).use { out ->
             out.write("${wallClock()}\n$text".toByteArray(Charsets.UTF_8))
             out.fd.sync()
         }
         if (temp.renameTo(File(dir, "$takeId$SUFFIX"))) {
-            syncDirectory()
+            syncDirectory(dir)
             RescueOutcome.KEPT
         } else {
             temp.delete()
@@ -180,8 +223,8 @@ internal class RescuedWords(
         RescueOutcome.FAILED
     }
 
-    private fun syncDirectory() {
-        val fd = Os.open(dir.path, OsConstants.O_RDONLY, 0)
+    private fun syncDirectory(directory: File) {
+        val fd = Os.open(directory.path, OsConstants.O_RDONLY, 0)
         try {
             Os.fsync(fd)
         } finally {

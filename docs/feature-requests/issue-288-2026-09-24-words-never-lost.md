@@ -60,13 +60,15 @@ Prior context: #277 (words never wait on History; the save may answer after deli
 
 ## Results (2026-09-24)
 
-- Mutations m1 to m11 RED (`288-mut.py`; m9 to m11 from code review round 1); row 1 of `WordsNeverLostTest` is RED on main (the line said "dictate again" and nothing held the words).
+- Mutations m1 to m13 RED (`288-mut.py`; m9 to m11 from code review round 1, m12 and m13 from round 2); row 1 of `WordsNeverLostTest` is RED on main (the line said "dictate again" and nothing held the words).
 - `WordsNeverLostTest` and `RescuedWordsTest` each 20 of 20.
-- Suite 1371, 0 failures; app and androidTest build; visibility and cited-symbol checks clean.
+- Suite 1373, 0 failures, twice; app and androidTest build; visibility and cited-symbol checks clean.
 - Device (emulator, `am instrument`): `EnviousWisprDatabaseMigrationTest` 6 of 6 including 8 to 9 and the whole chain to 9; `TranscriptRouteDaoTest` 4 of 4.
 - Emulator: the app installed over a version 8 database; History opens with every existing row; no rescue directory is left behind.
 - Test seams added: `RescuedWords.beforeWrite` (inside the lock; production passes nothing; the rig delays a write inside the owner's bound) and `RescuedWords.tracking` (the recovery rule's own question, read by its tests).
 - Code review round 1, all four adopted: a user's delete runs its History delete and its file delete inside the store's lock and marks the take (or bumps the clear generation), so a queued write writes nothing (row 7b, m9); the take's save looks up a row a recovery already wrote for the take and completes it instead of colliding with the unique index (row 3b, m10), and a recovered take reads KEPT for any line still to come; the directory is flushed after the rename before KEPT is reported (`Os.fsync`; a JVM stub on the unit tests, so no mutation witness); a late SAVED answer settles through `SaveSlot.onAnswered`, with no coroutine left waiting on a save that never answers (m11), and the outcomes map is bounded to the last 64 takes.
+- Code review round 2, the third round of one class ("words the user deleted come back", with disk durability and the lock's reach beside it), so the class was enumerated before fixing: the paths that can write a take's words after a delete are a queued rescue write (round 1 mark), a recovery (skips a deleted or pending take), the take's own late History save (new: it asks `deletedByUser` and never re-creates a deleted row, for a row delete or a Delete all begun after the take started; row 3c, m12), and insertion-outcome writes (update-only, harmless on a deleted row). Durability: the words file, the rename, and now the parent directory when the write creates the rescue directory. Lock reach: the History delete runs outside the lock under a pending mark that writes and recovery respect (row 7c, m13).
+- The rig's `close()` now cancels the session scope as well. Each rig's polish timeout wait held a shared IO thread in `runInterruptible`; main stayed under the pool's 64 threads, and this change's seven new rig rows pushed a later take past it, so it could never be scheduled.
 - `scripts/check-cited-symbols.py` no longer reads Room's generated schema JSON (`app/schemas`) as prose: its backticked SQL names are no citation.
 
 ## 3. Blast radius

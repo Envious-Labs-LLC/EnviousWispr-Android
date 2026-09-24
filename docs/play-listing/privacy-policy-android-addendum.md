@@ -25,8 +25,8 @@ EnviousWispr for Android is a mobile application for on-device voice-to-text dic
 ## Why the wording is safe
 
 Every sentence traces to code in the Android repo: the entry points and on-device transcription
-(`.claude/knowledge/current-state.md`), what leaves the phone and to whom (`privacy/PrivacyDisclosure.kt`,
-`docs/play-data-safety-answers.md`), the accessibility purpose and the field-contents promise
+(`.claude/knowledge/current-state.md`), what leaves the phone and to whom (`privacy/PrivacyDisclosure.kt` for the page's sentences,
+`providers/Provider.kt` `disclosure()` for cloud text per provider, `docs/play-data-safety-answers.md`), the accessibility purpose and the field-contents promise
 (`ui/AccessibilityGuideActivity.kt`, `.claude/rules/content-brand.md` RULE:
 the-accessibility-disclosure-is-policy-not-copy), the model download (`models/ModelManifest.kt`), the
 telemetry sentences (`privacy/PrivacyDisclosure.kt`, enforced by `telemetry/PayloadSanitizer.kt` and

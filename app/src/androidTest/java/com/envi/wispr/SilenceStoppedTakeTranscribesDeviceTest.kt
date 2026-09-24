@@ -15,8 +15,8 @@ import com.envi.wispr.audio.IAudioCaptureService
 import com.envi.wispr.debug.DebugLogger
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -74,16 +74,15 @@ class SilenceStoppedTakeTranscribesDeviceTest {
 
         val filePath: String
         try {
-            assumeTrue(
-                "the microphone must be available to this test",
-                capture.startCaptureWithSilenceStop(true, 1.5f),
-            )
+            DeviceNotRun.requireMicrophone(context, "aTakeThatEndedOnSilenceStillProducesWords")
+            val started = capture.startCaptureWithSilenceStop(true, 1.5f)
+            assertTrue("capture must start (last start failure ${capture.lastStartFailure})", started)
             var ready = false
             for (i in 0 until 40) {
                 if (capture.silenceStopStatus == AudioCaptureService.SILENCE_STATUS_READY) { ready = true; break }
                 Thread.sleep(100)
             }
-            assumeTrue("the detector must be ready before the audio starts", ready)
+            assertTrue("the detector must be ready before the audio starts", ready)
 
             context.startActivity(
                 Intent()
@@ -122,9 +121,10 @@ class SilenceStoppedTakeTranscribesDeviceTest {
                 // Never answered on the legacy request (#176): the legacy transaction keeps onError.
                 override fun onFailure(reason: Int, detail: String?) { error = "typed failure $reason on a legacy request"; done.countDown() }
             })
-            assumeTrue("the speech model must be installed on this phone", error.isBlank() || done.await(1, TimeUnit.SECONDS))
+            // Await the answer once, then fail for a missing model or for empty words (#305): a skip here was
+            // reported as a pass.
             assertTrue("the speech engine must answer", done.await(60, TimeUnit.SECONDS))
-            assumeTrue("the speech model must be installed on this phone", !error.contains("not ready", true))
+            assertFalse("the speech model must be installed on this phone: $error", error.contains("not ready", true))
 
             assertTrue(
                 "a take that ended on silence must still contain words. error was '$error', text was '$text'",

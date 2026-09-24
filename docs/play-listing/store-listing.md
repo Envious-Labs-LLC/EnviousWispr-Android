@@ -1,7 +1,8 @@
 # Google Play store listing, ready to paste
 
 Every field below is the exact text for the Play Console (Grow > Store presence > Main store listing).
-Grounded 2026-09-17 against the tree: `privacy/PrivacyDisclosure.kt` (what leaves the phone),
+Grounded 2026-09-17 against the tree: `privacy/PrivacyDisclosure.kt` (the Privacy page and telemetry sentences), `providers/Provider.kt` `disclosure()`
+(cloud text per provider),
 `app/build.gradle.kts` (`minSdk = 33`, arm64 only), `docs/device-support-decision.md` (Option A, 6 GB),
 `docs/play-data-safety-answers.md`. Rules: `.claude/rules/content-brand.md` (relief-centred, no dashes,
 claim only what ships). Every claim here has a code owner named in the "Why this is true" column of the
@@ -81,10 +82,10 @@ First release. Press, speak, and finished text lands in the app you were typing 
 
 | Claim | Why this is true today | Owner in code or docs |
 |---|---|---|
-| Your voice never leaves your phone | `INTERNET` reaches only model downloads and the user's own polish provider; audio is never sent on any path | `privacy/PrivacyDisclosure.kt`, `docs/play-data-safety-answers.md` |
+| Your voice never leaves your phone | `INTERNET` reaches only model downloads and the user's own polish provider; audio is never sent on any path | `privacy/PrivacyDisclosure.kt` (`ON_DEVICE_SUMMARY`), `providers/Provider.kt` (`disclosure()`), `docs/play-data-safety-answers.md` |
 | Text leaves the phone only for the user's own cloud polish key | Cloud polish is opt-in, straight to the provider | `providers/ProviderPolishClient.kt`, `providers/HttpProviderTransport.kt`, and the four provider adapter files |
 | On-device polish is built in | S1-mini on llama.cpp in `:polish`, CPU path, shipped | `.claude/knowledge/polish-engines.md` |
-| Providers: OpenAI, Anthropic, Google Gemini | The three a new install can connect; self-hosted exists only for a configuration an older build saved (`ui/PolishLadder.kt` excludes it from the pickable set) | `privacy/PrivacyDisclosure.kt`, `ui/PolishLadder.kt` |
+| Providers: OpenAI, Anthropic, Google Gemini | The three a new install can connect; self-hosted exists only for a configuration an older build saved (`ui/PolishLadder.kt` excludes it from the pickable set) | `Provider.capabilities().offeredAsSetupTile`, `CloudProviders` (`ui/PolishLadder.kt`) |
 | Earbuds are the microphone when connected | PR #165, Auto prefers connected earbuds | `audio/InputDeviceResolver.kt` |
 | Bubble, Quick Settings tile, notification start a dictation | Three of the five entry points into the session owner | `.claude/knowledge/current-state.md` |
 | Apps like Gmail, WhatsApp and Chrome | The three named are the ones insertion was proven in on the phone (Gmail and WhatsApp 2026-09-03, Chrome 2026-09-16); "like" because insertion works through the focused editable field, which some apps do not expose | `.claude/knowledge/device-testing.md` |

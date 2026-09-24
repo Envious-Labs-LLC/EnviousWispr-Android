@@ -1,0 +1,23 @@
+# #308 and #310 receipts, 2026-09-24, worktree head ae4c49b plus the change
+
+Mutations, one run:
+RED: m1 a provider sentence reworded -> ProviderDisclosureTest.eachDestinationSentenceIsTodays
+RED: m2 networkRequired false -> ProviderDisclosureTest.everyProviderSendsTextOffThePhone
+RED: m3 self-hosted offered as a tile -> ProviderDisclosureTest.theSetupTilesAreTheProvidersThatOfferOne
+RED: m4 the filter reverts to all entries -> ProviderDisclosureTest.theSetupTilesAreTheProvidersThatOfferOne
+RED: m5 an else branch in disclosure() -> ProviderDisclosureTest.bothProviderTablesHaveNoElse  (rerun after code review
+     round 1 widened the pattern to any `else ->`, not only one at a line start)
+RED: m6 a provider that keeps text on the phone -> ProviderDisclosureTest.everyProviderSendsTextOffThePhone
+RED: m7 the offline promise loses its audio sentence -> PrivacyPageSentencesTest.theOnDeviceSentenceIsTodays
+ALL RED
+
+Suite: scripts/measure-tests.sh tests=1321 suites=165 failures=0 errors=0 skipped=0 (1,318 before: PrivacyDisclosureTest's
+two rows deleted, five rows added). PolishLadderTest 26, PolishScreenProviderTilesTest 4, ProviderConfigurationValidatorTest 9
+green. Builds: :app:assembleDebug and :app:assembleDebugAndroidTest; scripts/check-visibility.py clean (one closed set fewer:
+the deleted PolishProvider); scripts/check-cited-symbols.py all citations resolve.
+
+Emulator (emulator-5554, debug build of this change): AI Polish, Cloud: "2 · PROVIDER" lists OpenAI, Gemini, Claude and no
+self-hosted tile. The rung's disclosure line was not opened: the harness refused to guess between two nodes named "Gemini";
+`Provider.disclosure()`'s sentences are unchanged by this change and pinned literally by eachDestinationSentenceIsTodays.
+Both "Gemini" nodes sit inside the same clickable tile, so the refusal guards nothing; filed as #315. The disclosure
+line on the phone is NOT OBSERVED in this change.

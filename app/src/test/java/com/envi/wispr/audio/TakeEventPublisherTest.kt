@@ -148,12 +148,12 @@ class TakeEventPublisherTest {
     }
 
     /**
-     * #327 review round 1: the route's announce runs on the WORKER when the Live is delivered, from the slot and from
-     * the queue fallback (the slot held by the worker's first poll), never on the publishing thread. MUTATION m5:
-     * the slot path drops its hook.
+     * #327 review round 1, #343: the route's announce runs on the WORKER when the Live is delivered, from either slot
+     * (the worker held at its first poll, so both are waiting), never on the publishing thread, in publish order.
+     * MUTATION m5: the delivery drops its hook.
      */
     @Test
-    fun theLiveHookRunsOnTheWorkerFromTheSlotAndTheFallback() {
+    fun theLiveHookRunsOnTheWorkerFromBothSlots() {
         val polling = CountDownLatch(1)
         val release = CountDownLatch(1)
         val held = object : java.util.concurrent.ConcurrentLinkedQueue<TakeEventPublisher.Event>() {
@@ -175,7 +175,7 @@ class TakeEventPublisherTest {
             assertTrue(polling.await(10, TimeUnit.SECONDS))
             recorder.expect(2)
             staged.publishLive("t1", false, 1, 2, 7L, onDelivered = hook)
-            // The slot still holds t1's Live, so t2's takes the queue fallback.
+            // The first slot still holds t1's Live, so t2's takes the second.
             staged.publishLive("t2", false, 1, 2, 8L, onDelivered = hook)
             release.countDown()
             recorder.await()
@@ -187,18 +187,67 @@ class TakeEventPublisherTest {
         }
     }
 
-    /** #327: many takes back to back while the worker runs; each take's Live still arrives before its ending. */
+    /**
+     * #343, staged: with the worker held at its first poll, take A's Live fills slot 0 and take B's slot 1; take C's then
+     * REPLACES the stale READY Live in slot 0. B and C arrive, in publish order, with C's hook run; A, superseded, is
+     * discarded by contract, hook and all. MUTATION m2: no replace, so C is lost. MUTATION m4: the worker delivers by
+     * slot, not by publish order.
+     */
+    @Test
+    fun theNewestLiveReplacesAStaleOneAndArrivesInOrder() {
+        val polling = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val held = object : java.util.concurrent.ConcurrentLinkedQueue<TakeEventPublisher.Event>() {
+            @Volatile var holdNext = true
+            override fun poll(): TakeEventPublisher.Event? {
+                if (holdNext) {
+                    holdNext = false
+                    polling.countDown()
+                    release.await(10, TimeUnit.SECONDS)
+                }
+                return super.poll()
+            }
+        }
+        val hooks = CopyOnWriteArrayList<String>()
+        val staged = TakeEventPublisher(slot, "test", nowNanos = { now.get() }, queue = held)
+        try {
+            staged.start()
+            assertTrue(polling.await(10, TimeUnit.SECONDS))
+            recorder.expect(2)
+            staged.publishLive("tA", false, 1, 2, 1L, onDelivered = Runnable { hooks += "A" })
+            staged.publishLive("tB", false, 1, 2, 2L, onDelivered = Runnable { hooks += "B" })
+            staged.publishLive("tC", false, 1, 2, 3L, onDelivered = Runnable { hooks += "C" })
+            release.countDown()
+            recorder.await()
+            assertEquals(listOf("tB:live(false,1,2,2)", "tC:live(false,1,2,3)"), recorder.events.toList())
+            assertEquals(listOf("B", "C"), hooks.toList())
+        } finally {
+            release.countDown()
+            staged.close()
+        }
+    }
+
+    /**
+     * #327, #343: many takes back to back while the worker runs. Every Live that arrives precedes its take's ending
+     * and arrives in publish order; a stale Live may be superseded, but the newest take's never is.
+     */
     @Test
     fun aTakesLiveAlwaysArrivesBeforeItsEnding() {
         val takes = 500
-        recorder.expect(takes * 2)
         repeat(takes) { n ->
             publisher.publishLive("t$n", false, 1, 2, n.toLong())
             publisher.publishEnded("t$n", AudioCaptureService.TERMINAL_REASON_MANUAL, AudioCaptureService.START_FAILURE_NONE, "/tmp/take.pcm", AudioCaptureService.SILENCE_STATUS_READY, 0.5f, "Phone microphone")
         }
-        recorder.await()
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (recorder.events.none { it.startsWith("t${takes - 1}:ended(") }) {
+            check(System.nanoTime() < deadline) { "the last ending never arrived" }
+            Thread.sleep(5)
+        }
         val events = recorder.events.toList()
-        repeat(takes) { n ->
+        val lives = events.filter { ":live(" in it }.map { it.substringBefore(":").removePrefix("t").toInt() }
+        assertEquals("delivered Lives arrive in publish order", lives.sorted(), lives)
+        assertTrue("the newest take's Live is never superseded", takes - 1 in lives)
+        lives.forEach { n ->
             val live = events.indexOf("t$n:live(false,1,2,$n)")
             val ended = events.indexOfFirst { it.startsWith("t$n:ended(") }
             assertTrue("take $n: live $live before ended $ended", live in 0 until ended)

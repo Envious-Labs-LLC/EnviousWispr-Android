@@ -60,6 +60,13 @@ Healthy phones: none (the queue drains in milliseconds; 64 is far above one take
 - [ ] Emulator: a normal take saves its row.
 - [ ] Codex code review ALL-CLEAR.
 
-## 6. Related
+## 6. As built (2026-09-24)
+
+- `HistoryWriteQueue`: `Channel(capacity)`; `enqueue(label, kind, body): Enqueued` checks the outstanding count against the kind's limit and sends under one lock; the worker decrements after each write and ends the episode at zero; `onOverload` runs outside the lock, once per episode, and cannot throw into a caller. `Enqueued`, `WriteKind` and `HistoryQueueFullException` live beside it. The default `kind` is ORDINARY, the stricter tier.
+- Callers: draft insert, `markStatus(STATUS_PROCESSING)` and the promotion are ORDINARY; finalize, the three insertion outcomes, discard, interrupted and any other status are TERMINAL. A refused draft completes its deferred with `HistoryQueueFullException`; a refused save answers its `SaveSlot` `Failed(HistoryQueueFullException)`; a refused runner outcome emits once. Production's queue raises `AppDefect.HistoryQueueOverloaded` (in `DefectIdentity.all()`, both `SentrySchema` lists and the snapshot).
+- Mutation receipts: `docs/audits/2026-09-24-292-mutation-receipts.txt`, 5 of 5 RED. Full unit suite: 1295 tests, 0 failures. `HistoryWriteQueueTest` 20 of 20. App and androidTest build; `check-visibility.py` clean.
+- Emulator: NOT RUN for a spoken take (the emulator's audio input is failing, #273). A healthy queue never refuses (64 is about eight takes of backlog), so the normal path's only change is the result type its callers now read.
+
+## 7. Related
 
 #115, #277, #235; REF-03 of the fourth 2026-09-23 audit.

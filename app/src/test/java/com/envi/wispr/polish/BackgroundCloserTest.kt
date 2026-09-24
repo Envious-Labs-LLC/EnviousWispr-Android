@@ -16,7 +16,8 @@ import kotlin.concurrent.thread
 
 /**
  * `BackgroundCloser` (#306): with PROCESS, close runs off the caller. Injected executors may run inline; rejection
- * uses a daemon thread if it starts. A close that throws never escapes. Every wait is a bounded latch or join.
+ * uses a daemon thread if it starts. A resource close that throws an `Exception` is caught; VM errors propagate.
+ * Every wait is a bounded latch or join.
  */
 class BackgroundCloserTest {
 
@@ -58,7 +59,7 @@ class BackgroundCloserTest {
         assertNotEquals("not on the caller", Thread.currentThread(), resource.closedOn.get())
     }
 
-    /** Row 4: a close that throws escapes nothing, and the next close still runs. A direct executor, so no worker replacement can mask it. MUTATION m4. */
+    /** Row 4: a close that throws an `Exception` does not escape, and the next close still runs. A direct executor, so no worker replacement can mask it. MUTATION m4. */
     @Test fun aThrowingCloseEscapesNothing() {
         val direct = BackgroundCloser(Executor { it.run() })
         val broken = Resource(throwOnClose = true)

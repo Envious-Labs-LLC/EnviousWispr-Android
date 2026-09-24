@@ -18,12 +18,13 @@ class SpeechWaitTest {
 
     @After fun tearDown() = rig.close()
 
-    private fun stopWithTheRequestOpen(audioBytes: Int? = null): DictationSessionCoordinator {
+    private fun stopWithTheRequestOpen(audioBytes: Int? = null, tickMs: Long? = null): DictationSessionCoordinator {
         val coordinator = rig.coordinator()
         coordinator.onCreated()
         rig.command(coordinator, DictationSessionService.ACTION_START)
         rig.surface.awaitShown()
         audioBytes?.let { rig.capture.audioFile!!.writeBytes(ByteArray(it)) }
+        tickMs?.let { rig.capture.tick(it); rig.capture.settle() }
         rig.command(coordinator, DictationSessionService.ACTION_STOP)
         rig.speech.awaitRequest()
         return coordinator
@@ -50,14 +51,22 @@ class SpeechWaitTest {
         assertTrue("the binding is released", rig.pipeline.events.contains("unbind"))
     }
 
-    /** Row 2: an answer after the bound publishes nothing and changes nothing. MUTATION m2: the late-answer guard removed. */
+    /**
+     * Row 2: an answer after the bound publishes nothing and changes nothing, not even the capture file, which the
+     * capture process reuses for the next take. MUTATION m2: the late-answer guard removed.
+     */
     @Test fun anAnswerAfterTheBoundIsIgnored() {
         stopWithTheRequestOpen()
+        val audio = rig.capture.audioFile!!
         rig.host.fireDelayed(20_500L)
         assertEquals(TerminalReason.ASR_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
+        assertFalse(audio.exists())
+        // The next take records into the same path.
+        audio.writeBytes(ByteArray(32_000))
 
         rig.speech.listener!!.onResult("hello world")
+        assertTrue("the next take's recording is untouched", audio.exists())
         assertNull("no polish request for a late answer", rig.polish.listener)
         assertTrue("no insertion", rig.insertion.pastes.isEmpty())
         assertEquals(listOf(TerminalReason.ASR_PROCESS_UNRESPONSIVE), rig.endings.reasons.toList())
@@ -77,11 +86,59 @@ class SpeechWaitTest {
         assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
     }
 
-    /** Row 4: the bound grows with the recording: two minutes of audio get 80 s, not the base. MUTATION m4: the base alone. */
+    /**
+     * Row 4: the bound grows with the recording: two minutes of audio get 80 s, not the base, and the take ends when
+     * 80 s pass. MUTATION m4: the base alone.
+     */
     @Test fun theBoundGrowsWithTheRecording() {
         stopWithTheRequestOpen(audioBytes = 32_000 * 120)
-        assertEquals(1, rig.host.postsWithDelay(80_000L))
-        assertEquals(0, rig.host.postsWithDelay(20_000L))
+        rig.host.fireDelayed(20_000L)
+        assertTrue("nothing ends at the base", rig.endings.reasons.isEmpty())
+        rig.host.fireDelayed(80_000L)
+        assertEquals(TerminalReason.ASR_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
+    }
+
+    /**
+     * Row 6: when the capture clock ran longer than the file says (a short or unreadable file), the clock sets the
+     * bound: one minute of ticks over one second of file gets 50 s. MUTATION m6: the file length alone.
+     */
+    @Test fun theCaptureClockSetsTheBoundWhenItRanLonger() {
+        stopWithTheRequestOpen(tickMs = 60_000L)
+        rig.host.fireDelayed(20_500L)
+        assertTrue("nothing ends at the file's bound", rig.endings.reasons.isEmpty())
+        rig.host.fireDelayed(50_000L)
+        assertEquals(TerminalReason.ASR_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
+    }
+
+    /**
+     * Row 8: a request that throws after the bound already ended the take cleans nothing up a second time: the row
+     * keeps its one ending and the next take's recording at the same path is untouched. MUTATION m8: the catch
+     * ignores who closed the wait.
+     */
+    @Test fun aRequestThatThrowsAfterTheBoundChangesNothing() {
+        val release = java.util.concurrent.CountDownLatch(1)
+        rig.speech.throwWhenReleased = release
+        stopWithTheRequestOpen()
+        val audio = rig.capture.audioFile!!
+        rig.host.fireDelayed(20_500L)
+        assertEquals(TerminalReason.ASR_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        audio.writeBytes(ByteArray(32_000))
+
+        release.countDown()
+        rig.log.awaitLine("Speech request threw after the take ended: RemoteException")
+        rig.awaitHistoryIdle()
+        assertTrue("the next take's recording is untouched", audio.exists())
+        assertEquals(listOf(TerminalReason.ASR_PROCESS_UNRESPONSIVE), rig.endings.reasons.toList())
+    }
+
+    /** Row 7: a close before the arm refuses it, so a cancel racing the request posts no bound. MUTATION m7: arm ignores an earlier close. */
+    @Test fun aCloseBeforeTheArmRefusesIt() {
+        val host = rig.host
+        val wait = SpeechWait(host)
+        assertFalse("nothing was open", wait.close())
+        assertFalse("the arm is refused", wait.arm(1_000L) { error("never") })
+        assertEquals(0, host.postsWithDelay(20_500L))
     }
 
     /** Row 5: a cancel while the request is open removes the bound and deletes the file; a later answer is ignored. MUTATION m5: no close on the ending. */

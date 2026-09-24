@@ -188,8 +188,9 @@ internal class DictationSessionCoordinator(
     @Volatile private var recordingDurationMs = 0L
     /** The capture clock's last reading, in milliseconds: the speech bound's second source for the take's length (#356). */
     @Volatile private var lastTickMs = 0L
-    /** The take's one speech request, bounded (#356); null before the request. */
-    @Volatile private var speechWait: SpeechWait? = null
+    /** The take's one speech request, bounded (#356). The owner admits one take, so it holds one wait. */
+    private val speechWait = SpeechWait(host)
+    /** Written before [speechWait] is armed and read after it is closed, both under its lock. */
     @Volatile private var speechAudioPath: String? = null
     /** Set by [destroy]; the owner's surface is never touched from the application queue after it. */
     private val destroyed = AtomicBoolean(false)
@@ -811,6 +812,8 @@ internal class DictationSessionCoordinator(
      */
     private fun continueAfterEnding(ending: TakeEnding) {
         scope.launch {
+            // Whether the speech wait was armed: after that, only the side that closes the wait may clean up (#356).
+            var requested = false
             try {
                 val audioFilePath = ending.audioFilePath
                 // The duration is the audio's own length, read from the finished file NOW, before
@@ -841,10 +844,16 @@ internal class DictationSessionCoordinator(
                 }
                 // Armed BEFORE the request (#356), so no answer can arrive ahead of it. The length is the larger of
                 // the file's and the capture clock's, so a failed file read never shrinks a long take's bound.
-                val wait = SpeechWait(host) { onSpeechUnresponsive(current, audioFilePath) }
+                // A take that ended before this point (a cancel, a destroy, a disconnect) closed the wait already:
+                // the arm is refused and the request is never sent (#356 review round 1).
+                val wait = speechWait
                 speechAudioPath = audioFilePath
-                speechWait = wait
-                wait.arm(maxOf(recordingDurationMs, lastTickMs))
+                if (!wait.arm(maxOf(recordingDurationMs, lastTickMs)) { onSpeechUnresponsive(current, audioFilePath) }) {
+                    deleteCapturedAudio(audioFilePath)
+                    log.log("The take ended before its speech request; not sent")
+                    return@launch
+                }
+                requested = true
                 log.mark("asr_request")
                 val asrRequestedAtMs = host.elapsedRealtimeMs()
                 speechService.transcribeFileForTake(audioFilePath, takeId, object : SpeechListener {
@@ -889,7 +898,12 @@ internal class DictationSessionCoordinator(
                     }
                 })
             } catch (error: Exception) {
-                speechWait?.close()
+                // A request that threw after its bound, a cancel or a destroy already ended the take: the side that
+                // closed the wait owns the file and the row (#356 review round 1).
+                if (requested && !speechWait.close()) {
+                    log.warn("Speech request threw after the take ended: ${error.javaClass.simpleName}")
+                    return@launch
+                }
                 pipeline.stopAudioService()
                 deleteCapturedAudio(ending.audioFilePath)
                 log.error("Transcription failed", error)
@@ -1169,7 +1183,7 @@ internal class DictationSessionCoordinator(
 
     /** Ends an open speech wait for anything but its answer; the file the request would have consumed goes with it. */
     private fun closeSpeechWait() {
-        if (speechWait?.close() == true) deleteCapturedAudio(speechAudioPath)
+        if (speechWait.close()) deleteCapturedAudio(speechAudioPath)
     }
 
     private fun finishSession() {

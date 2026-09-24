@@ -56,3 +56,14 @@ Persona: the founder after pressing stop. The recorder shows Processing until th
 Confirmed nothing else bounds the speech wait (the polish watchdog starts after the answer; `SpeechProxy` has no timeout). Four findings, all adopted: the owner is the place; 0.5 s per audio second with the larger of the file and tick lengths; the late-answer guard at the start of every callback; close on every ending including a thrown request, since a take-id-only post would let an old bound claim a take that is still polishing.
 
 Mutations m1 to m5 are RED on fresh compiles.
+
+## 5. Code review round 1 (Codex)
+
+Four findings, all adopted:
+
+- Registration raced a cancel, disconnect or destroy: a close that ran before the arm saw nothing, and the arm then posted a bound for an ended take. `SpeechWait` is now one per owner (the owner admits one take) with states NEW, OPEN and DONE under one lock; a close before the arm records DONE, so the arm is refused, the request is never sent and the file is deleted.
+- A request that threw after its bound deleted the file again and rewrote the row. The catch now cleans up only when it wins the close; otherwise it logs and returns.
+- The post and its removal are under the same lock as the state, so no post outlives a close.
+- Tests: row 2 recreates the capture file as the next take would and shows the late answer leaves it; row 4 fires the base and then the scaled bound; row 6 pins the capture clock source; row 7 pins the refused arm; row 8 pins the late throw (the rig's speech link can hold a request and then throw).
+
+Mutations m1 to m8 are RED on fresh compiles.

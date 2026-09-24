@@ -254,18 +254,28 @@ internal class TakeRoute(
         }
     }
 
-    /** Capture thread, on the read that opened the gate. */
+    /**
+     * The route thread's half of going live, built with the route (#327) so the capture thread only posts it: the
+     * deadline is cancelled and the line is logged there, never on the capture thread.
+     */
+    private val announceLive = Runnable {
+        deadline?.let { scheduler.removeCallbacks(it) }
+        deadline = null
+        DebugLogger.log(
+            tag,
+            "route live=${effective.label()} after ${liveAtMs - startedAtMs} ms " +
+                "resets=${gate.resetsUsed} state=${gate.state}",
+        )
+    }
+
+    /**
+     * Capture thread, on the read that opened the gate: one clock read and one post of the prebuilt [announceLive]
+     * (#327, `architecture-rules.md` RULE: protect-audio-asr-stability). The platform handler takes its message
+     * from its own pool.
+     */
     fun markLive() {
         liveAtMs = SystemClock.elapsedRealtime()
-        scheduler.post {
-            deadline?.let { scheduler.removeCallbacks(it) }
-            deadline = null
-            DebugLogger.log(
-                tag,
-                "route live=${effective.label()} after ${liveAtMs - startedAtMs} ms " +
-                    "resets=${gate.resetsUsed} state=${gate.state}",
-            )
-        }
+        scheduler.post(announceLive)
     }
 
     /**

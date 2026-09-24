@@ -54,4 +54,25 @@ class CaptureThreadPathTest {
         assertTrue("the detector offer hands whole blocks to its ring", offers.getValue("DetectorFeed.offer").contains("ring.offer("))
         assertTrue("the picture offer hands the chunk to its ring", offers.getValue("PicturePublisher.offer").contains("spectrumRing.offer("))
     }
+
+    /**
+     * #327: going live costs the capture thread no allocation. `TakeRoute.markLive` posts the route's prebuilt
+     * runnable (no lambda, no log), and `TakeEventPublisher.publishLive` writes the Live slot and builds an event
+     * only in the fallback after a failed claim. MUTATIONS m1 (a posted lambda again) and m2 (the event built
+     * before the claim).
+     */
+    @Test
+    fun goingLiveAllocatesNothingOnTheCaptureThread() {
+        val route = File("src/main/java/com/envi/wispr/audio/TakeRoute.kt").readText()
+        val markLive = member(route, "fun markLive()")
+        assertTrue(markLive.contains("scheduler.post(announceLive)"))
+        listOf("post {", "DebugLogger", "\"").forEach { token -> assertFalse("markLive must not contain $token", markLive.contains(token)) }
+        val publisher = File("src/main/java/com/envi/wispr/audio/TakeEventPublisher.kt").readText()
+        val publishLive = member(publisher, "fun publishLive(")
+        val claim = publishLive.indexOf("liveState.compareAndSet(TICK_IDLE, TICK_WRITING)")
+        assertTrue("the slot is claimed", claim >= 0)
+        val built = publishLive.indexOf("Event.Live(")
+        assertTrue("an event is built only in the fallback, after the claim", built > claim && publishLive.substring(built - 40, built).contains("if (!claimed)"))
+        assertFalse("no log on the Live path", publishLive.contains("DebugLogger"))
+    }
 }

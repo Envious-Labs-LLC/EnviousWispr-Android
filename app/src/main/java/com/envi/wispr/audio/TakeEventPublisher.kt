@@ -105,7 +105,7 @@ internal class TakeEventPublisher(
         runCatching { worker.start() }.onFailure { DebugLogger.warn(tag, "Take events unavailable: ${it.javaClass.simpleName}") }
     }
 
-    /** A new take: the next positive read sends a heartbeat at once. */
+    /** Resets the throttle for a new take; positive reads retry until the slot is free. */
     fun resetTicks() {
         lastTickNanos = Long.MIN_VALUE
     }

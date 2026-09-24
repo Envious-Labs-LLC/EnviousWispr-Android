@@ -255,19 +255,19 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
 
     companion object {
         private const val TAG = "ModelDelivery"
-        const val KEY_MODEL_ID = "model_id"
-        const val KEY_REMOVE = "remove"
-        const val KEY_REPAIR = "repair"
-        const val KEY_UPDATE = "update"
-        const val KEY_ADOPT_ONLY = "adopt_only"
-        const val KEY_STATE = "state"
-        const val KEY_BYTES = "bytes"
-        const val KEY_TOTAL = "total"
-        const val KEY_REASON = "reason"
-        const val KEY_NO_LEGACY = "no_legacy_model"
+        internal const val KEY_MODEL_ID = "model_id"
+        internal const val KEY_REMOVE = "remove"
+        internal const val KEY_REPAIR = "repair"
+        internal const val KEY_UPDATE = "update"
+        internal const val KEY_ADOPT_ONLY = "adopt_only"
+        internal const val KEY_STATE = "state"
+        internal const val KEY_BYTES = "bytes"
+        internal const val KEY_TOTAL = "total"
+        internal const val KEY_REASON = "reason"
+        internal const val KEY_NO_LEGACY = "no_legacy_model"
 
         /** Bytes moved this attempt, as a closed bucket token: enough to tell a stall from a near-miss. */
-        fun bytesBucket(bytes: Long): String = when {
+        internal fun bytesBucket(bytes: Long): String = when {
             bytes <= 0L -> BYTES_NONE
             bytes < 10L * 1024 * 1024 -> BYTES_LT_10MB
             bytes < 100L * 1024 * 1024 -> BYTES_LT_100MB
@@ -275,13 +275,13 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             bytes < 1024L * 1024 * 1024 -> BYTES_LT_1GB
             else -> BYTES_GE_1GB
         }
-        const val BYTES_NONE = "0"
-        const val BYTES_LT_10MB = "lt_10mb"
-        const val BYTES_LT_100MB = "lt_100mb"
-        const val BYTES_LT_500MB = "lt_500mb"
-        const val BYTES_LT_1GB = "lt_1gb"
-        const val BYTES_GE_1GB = "ge_1gb"
-        val BYTES_BUCKETS: Set<String> = setOf(BYTES_NONE, BYTES_LT_10MB, BYTES_LT_100MB, BYTES_LT_500MB, BYTES_LT_1GB, BYTES_GE_1GB)
+        internal const val BYTES_NONE = "0"
+        internal const val BYTES_LT_10MB = "lt_10mb"
+        internal const val BYTES_LT_100MB = "lt_100mb"
+        internal const val BYTES_LT_500MB = "lt_500mb"
+        internal const val BYTES_LT_1GB = "lt_1gb"
+        internal const val BYTES_GE_1GB = "ge_1gb"
+        internal val BYTES_BUCKETS: Set<String> = setOf(BYTES_NONE, BYTES_LT_10MB, BYTES_LT_100MB, BYTES_LT_500MB, BYTES_LT_1GB, BYTES_GE_1GB)
         private const val DOWNLOAD_PREFIX = "model-download-"
         private const val ADOPT_PREFIX = "model-adopt-"
 

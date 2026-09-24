@@ -45,20 +45,20 @@ import kotlinx.coroutines.SupervisorJob
  */
 class DictationSessionService : Service() {
     companion object {
-        const val ACTION_START = "com.envi.wispr.action.START_DICTATION"
-        const val ACTION_TOGGLE = "com.envi.wispr.action.TOGGLE_DICTATION"
-        const val ACTION_STOP = "com.envi.wispr.action.STOP_DICTATION"
-        const val ACTION_CANCEL = "com.envi.wispr.action.CANCEL_DICTATION"
+        internal const val ACTION_START = "com.envi.wispr.action.START_DICTATION"
+        internal const val ACTION_TOGGLE = "com.envi.wispr.action.TOGGLE_DICTATION"
+        internal const val ACTION_STOP = "com.envi.wispr.action.STOP_DICTATION"
+        internal const val ACTION_CANCEL = "com.envi.wispr.action.CANCEL_DICTATION"
         private const val EXTRA_FOREGROUND_COMMAND = "foreground_command"
 
         /** The floating bubble's request token (`BubbleRequestToken.encode`), on START, STOP and CANCEL. */
-        const val EXTRA_REQUEST = "bubble_request"
+        internal const val EXTRA_REQUEST = "bubble_request"
 
         /**
          * `TriggerSource.wire` on a START or TOGGLE: which surface asked (issue #176). A bubble request
          * carries its own answer in its token; every other surface names itself here or reads `unknown`.
          */
-        const val EXTRA_TRIGGER_SOURCE = "trigger_source"
+        internal const val EXTRA_TRIGGER_SOURCE = "trigger_source"
 
         internal fun sendCommand(context: Context, action: String, requestToken: String? = null, trigger: TriggerSource? = null) {
             val intent = Intent(context, DictationSessionService::class.java).setAction(action)

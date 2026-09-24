@@ -1,0 +1,510 @@
+{
+  "reader_guide": "Start with the overall grade, then read the nine dimensions. Letter grades judge code that can be checked from source. The three risk grades identify behavior that needs a phone test before anyone treats it as proven. Each dimension has one working pattern and one concern, with file lines and exact code so a reviewer can check the claim. Severity describes the likely effect on the founder’s phone today; confidence describes how strongly the evidence supports it. The refactor list ranks concrete code changes, while the roadmap shows their order. Do not count a refactor target and its matching dimension finding as two defects. The strongest current concern is that the History save watchdog belongs to a service scope that ends when the take ends, so a late failure can lose its defect report even though the words continue. The report does not mark stage 2 setup or model delivery work as stage 1 defects. It also does not treat required polish or the decided 30-second silent earbud hold as defects. This was a read-only static review. The scope limits and the phone tests needed to settle them are listed under not_assessed.",
+  "overall_grade": {
+    "letter": "B",
+    "score_out_of_100": 84,
+    "rationale": "This is production-grade senior engineering with real debt, grade B. The single session owner, isolated processes, first-wins terminal decisions, fail-open polish, guarded insertion, privacy filters, and real device outcome tests are deliberate engineering. The main weaknesses are a service-scoped History diagnostic, a device test that can skip a broken heart boundary, a central coordinator that remains large after the completed extraction, and a few privacy and lifecycle seams that need tightening. These findings do not support an 'AI slop' label.",
+    "confidence": "Medium",
+    "confidence_rationale": "The cited paths and contracts were read directly, including all AIDL declarations, the manifest, the principal session, audio, polish, insertion, telemetry, and model paths. No build or phone test was permitted, and some inventoried priority files received scoped inspection rather than a full file read."
+  },
+  "dimensions": [
+    {
+      "name": "Architecture integrity",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "The measured current mass is DictationSessionCoordinator.kt at 1,439 lines, AudioCaptureService.kt at 997, RecordingAccessibilityOverlay.kt at 817, SettingsPages.kt at 762, and AccessibilityInsertionRunner.kt at 715. AppShell.kt is 240 lines and DictationSessionService.kt is 254. The earlier shell and service extraction happened. Six surfaces reach one owner, and the process split follows the manifest. The remaining coordinator mixes session decisions with terminal telemetry formatting and other presentation work. That is maintainability debt in a heart-path owner.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/ui/AppShell.kt",
+        "line_range": "L143-L152",
+        "snippet": "            AnimatedContent(\n                targetState = settingsPage?.let(Screen::Page) ?: Screen.Tab(destination),\n                transitionSpec = { fadeIn() togetherWith fadeOut() },\n                label = \"destination\",\n                modifier = contentModifier,\n            ) { current ->\n                when (current) {\n                    is Screen.Tab -> when (current.destination) {\n                        AppDestination.History -> HistoryScreen(\n                            transcripts = state.history.transcripts,",
+        "why_exemplary": "The shell selects screens from state; it does not start a second dictation pipeline."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt",
+        "line_range": "L1429-L1439",
+        "snippet": "internal fun recordTakeEnding(takeFacts: TakeFacts, reason: TerminalReason) {\n    // The pre-capture chain (#258), in ms since the accepted start command, so a UAT reads it without PostHog.\n    val start = with(takeFacts) { \"settings=$settingsAnswerMs matcher=$matcherReadyMs policy=$policyLoadedMs admission=$admissionObservedMs bind=$bindRequestedMs live=$liveReceivedMs\" }\n    DebugSessionLog.log(\"Take terminal: ${reason.name} (${reason.result.wire}) start: $start\")\n    Telemetry.breadcrumb(\"take\", \"terminal\", mapOf(\"take_id\" to takeFacts.takeId, \"reason\" to reason.name, \"result\" to reason.result.wire))\n    TelemetryChannels.defectOf(reason, takeFacts.asrFailure)?.let { defect ->\n        Telemetry.defect(defect, mapOf(\"take_id\" to takeFacts.takeId, \"reason\" to reason.name, \"asr_failure_reason\" to takeFacts.asrFailure?.name))\n    }\n    Telemetry.journal?.terminal(takeFacts.terminal(reason))\n    Telemetry.takeEnded(takeFacts.takeId)\n}",
+        "rule_violated": ".claude/rules/architecture-rules.md RULE: keep-central-types-thin",
+        "severity": "LOW",
+        "confidence": "High",
+        "confidence_rationale": "This terminal telemetry implementation is in the 1,439-line session-owner file and does not decide a state transition.",
+        "counterfactual": "A change to telemetry or its formatting requires editing and reviewing the heart-path owner, increasing the chance of an unrelated session regression.",
+        "counterfactual_rationale": "The code is co-located with the owner’s admission, capture, cancellation, and publication logic.",
+        "falsifiability": "Move this function and the coordinator’s notice formatting into their existing domain owners without changing coordinator behavior; a source review showing that they require direct mutation of private session state would disprove the proposed boundary.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": ["REF-06", "REF-07"]
+    },
+    {
+      "name": "Concurrency discipline",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "Binder speech and polish callbacks post to main, capture commands use one ordered lane, and service coroutine scopes are cancelled. The insertion handoff has a deliberate first-wins claim, but after the main-thread body claims it, its caller waits without an application deadline while that body can perform accessibility calls into the target app. Whether Android bounds the supported phone’s worst target-app stall needs a device experiment.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/ui/PipelineBindings.kt",
+        "line_range": "L219-L230",
+        "snippet": "internal class PostingSpeechListener(private val post: (Runnable) -> Unit, private val listener: SpeechListener) : SpeechListener {\n    override fun onResult(text: String?) = post(Runnable { listener.onResult(text) })\n    override fun onError(message: String?) = post(Runnable { listener.onError(message) })\n    override fun onFailure(reason: Int, detail: String?) = post(Runnable { listener.onFailure(reason, detail) })\n}\n\n/** A polish callback's values, posted to main before the owner's listener sees them (#253). */\ninternal class PostingPolishListener(private val post: (Runnable) -> Unit, private val listener: PolishListener) : PolishListener {\n    override fun onOutcome(outcome: PolishOutcome?) = post(Runnable { listener.onOutcome(outcome) })\n    override fun onResult(text: String?, engine: String?, latencyMs: Long) = post(Runnable { listener.onResult(text, engine, latencyMs) })\n    override fun onError(message: String?) = post(Runnable { listener.onError(message) })\n}",
+        "why_exemplary": "Binder callbacks enqueue their values and return; the session decision runs on the owner’s main dispatcher."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/paste/MainThreadHandoff.kt",
+        "line_range": "L65-L73",
+        "snippet": "        // The body claimed it and is running now, so its answer is the only true one. No second\n        // deadline: a deadline here is exactly what let the caller report a failure the service\n        // did not have.\n        //\n        // The elvis is on the Answer, never on its value: `?.value ?: fallback` would substitute\n        // the caller's fallback for a body that legitimately returned null, which is the one\n        // distinction this wrapper exists to keep.\n        val answer = runCatching { task.get() }.getOrNull()\n        return if (answer == null) fallback else answer.value",
+        "rule_violated": ".claude/rules/kotlin-patterns.md RULE: never-block-a-binder-or-ui-thread",
+        "severity": "MEDIUM",
+        "confidence": "Medium",
+        "confidence_rationale": "The untimed wait is certain; whether a supported target app can keep the claimed accessibility body blocked beyond framework timeouts is unverified.",
+        "counterfactual": "If the target editor stops answering while the insertion body is running, the owner can remain in processing after committing the final text, delaying its cleanup and clipboard fallback.",
+        "counterfactual_rationale": "SessionFinalizer.deliver waits for this handoff result before the coordinator reaches finishSession.",
+        "falsifiability": "On the S26 Ultra, freeze a target editor during the first accessibility action, then verify that the owner completes within a measured bound, preserves the text, and inserts at most once.",
+        "concurrency_interleaving": "1. The session’s IO coroutine calls pasteWhenTargetReturns. 2. The accessibility main looper claims the posted FutureTask. 3. The task enters requestInsertion and a target-app accessibility operation stops answering. 4. The IO coroutine reaches task.get() after losing the claim and waits. 5. finishSession cannot run until that call returns."
+      },
+      "top_refactor_target_ids": []
+    },
+    {
+      "name": "Error handling and observability",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "Polish disconnects, invalid answers, exceptions, and watchdog expiry return deterministic text and raise defects. Typed terminal reasons prevent most swallowed heart failures. The History save monitor is launched in the session service scope even though its queue and save can outlive that service, leaving a late save failure or timeout unreported.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/ui/TakePolishController.kt",
+        "line_range": "L321-L330",
+        "snippet": "        override fun onOutcome(outcome: PolishOutcome?) {\n            // This callback belongs to ONE request and the engine answers it once, so an empty or misnamed\n            // outcome is the only answer this request will get: fail open now rather than leave the session\n            // in Processing forever.\n            if (outcome == null || outcome.requestId != requestId) {\n                if (claim(requestId)) {\n                    log.warn(\"Invalid polish outcome for request $requestId\")\n                    report(AppDefect.PolishProtocolViolation, mapOf(\"take_id\" to takeId, \"shape\" to if (outcome == null) \"null\" else \"mismatched\"))\n                    fallBack(rawText, takePreferences, PolishReason.CALL_FAILED)\n                }",
+        "why_exemplary": "A malformed response claims one outcome, reports the protocol defect, and keeps the user’s words."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt",
+        "line_range": "L1151-L1159",
+        "snippet": "    private fun watchSave(saved: SaveSlot, enqueuedAtMs: Long, takeId: String) {\n        scope.launch {\n            val answer = watchSaveBound(saved, enqueuedAtMs, historySaveBoundMs, host::elapsedRealtimeMs) {\n                log.warn(\"History save did not answer in $historySaveBoundMs ms; the words did not wait for it\")\n                reportDefect(AppDefect.HistorySaveTimedOut, mapOf(\"take_id\" to takeId))\n            }\n            val outcome = answer.outcome\n            if (outcome is SaveOutcome.Failed) {\n                val error = outcome.cause",
+        "rule_violated": ".claude/rules/architecture-rules.md FACT: heart-and-limbs; named principle: diagnostic work must live as long as the work it observes",
+        "severity": "MEDIUM",
+        "confidence": "High",
+        "confidence_rationale": "HistoryWriteQueue is application-owned, while DictationSessionCoordinator.destroy cancels this service job. The test rig waits for stop without invoking the Android onDestroy cancellation.",
+        "counterfactual": "The words can arrive while a slow or failed History save raises no defect, making the fault harder to find and repair.",
+        "counterfactual_rationale": "A normal completion stops the service promptly; its onDestroy cancels the watcher before a save that takes longer than the diagnostic bound answers.",
+        "falsifiability": "Extend HistoryNeverHoldsTheWordsTest so service stop invokes coordinator.destroy, hold the save beyond its bound, and show that one HistorySaveTimedOut defect still arrives.",
+        "concurrency_interleaving": "1. Publication queues a History save on the application-owned worker and launches watchSave on the service scope. 2. Delivery completes without waiting for the save and calls finishSession. 3. Android calls the service’s onDestroy, which calls coordinator.destroy and cancels serviceJob. 4. The History worker answers late or fails. 5. The cancelled watcher cannot report the timeout or failure."
+      },
+      "top_refactor_target_ids": ["REF-01"]
+    },
+    {
+      "name": "Testability",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "The coordinator has injected host, surface, pipeline, insertion, timeout, and defect seams. Product Outcome tests cover one-write insertion and polish failure, with some real device boundaries. An older real audio-to-ASR test turns a failed detector or model response into an assumption skip, which can make that named heart check appear green without checking its outcome.",
+      "best_example": {
+        "file": "app/src/androidTest/java/com/envi/wispr/VoicePipelineDeviceTest.kt",
+        "line_range": "L208-L218",
+        "snippet": "    @Test\n    fun aSideButtonTakeLandsInTheFocusedEditorExactlyOnce() {\n        val expected = expectedFinal()\n        val run = SideButtonRun()\n        startRig(twoFields = false)\n        run.recordOneTake(stage = {})\n        val row = run.awaitFinalRow()\n        val text = receipt(PasteTargetActivity.RECEIPT_NAME)\n        assertEquals(\"the editor's whole text is the literal expectation\", expected, text)\n        assertEquals(\"the words appear exactly once\", 1, occurrences(text, expected.trim()))\n        assertEquals(\"the owner recorded the commit route\", InsertionResults.COMMITTED, row.insertionResult)",
+        "why_exemplary": "The assertion reads the editor’s receipt and detects missing or duplicate text, rather than trusting an internal marker."
+      },
+      "worst_violation": {
+        "file": "app/src/androidTest/java/com/envi/wispr/SilenceStoppedTakeTranscribesDeviceTest.kt",
+        "line_range": "L77-L86",
+        "snippet": "            assumeTrue(\n                \"the microphone must be available to this test\",\n                capture.startCaptureWithSilenceStop(true, 1.5f),\n            )\n            var ready = false\n            for (i in 0 until 40) {\n                if (capture.silenceStopStatus == AudioCaptureService.SILENCE_STATUS_READY) { ready = true; break }\n                Thread.sleep(100)\n            }\n            assumeTrue(\"the detector must be ready before the audio starts\", ready)",
+        "rule_violated": ".claude/rules/testing-philosophy.md RULE: the-heart-crosses-a-real-boundary-at-least-once; RULE: never-guess-when-the-subject-is-finished",
+        "severity": "MEDIUM",
+        "confidence": "High",
+        "confidence_rationale": "The test’s production capture start and detector readiness are guarded by JUnit assumptions; either false condition skips rather than fails this named outcome row.",
+        "counterfactual": "A detector that never becomes ready can turn this real-boundary test into a skip, reducing visible coverage of a silence-stopped take.",
+        "counterfactual_rationale": "The skipped branch exits before the real audio and ASR assertions. A separate end-to-end device row mitigates, but does not repair, this row’s reporting.",
+        "falsifiability": "Run this test with the VAD service forced unavailable and show the test reports a failure rather than a skipped assumption.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": ["REF-02"]
+    },
+    {
+      "name": "Code hygiene and maintainability",
+      "scale_type": "letter",
+      "grade": "B",
+      "justification": "Ownership comments, sealed outcomes, bounded queues, and package splits are generally coherent. The privacy package retains a separate provider enum and per-provider function used by tests but not by the production UI. Production provider disclosure uses providers/Provider.kt instead. This duplicate can mislead a reviewer into treating the tested privacy table as the live one.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/history/HistoryWriteQueue.kt",
+        "line_range": "L93-L110",
+        "snippet": "    fun enqueue(label: String, kind: WriteKind = WriteKind.ORDINARY, body: suspend (TranscriptRepository) -> Unit): Enqueued {\n        var episodeStarted = false\n        val result = synchronized(lock) {\n            val limit = when (kind) {\n                WriteKind.ORDINARY -> ordinaryLimit\n                WriteKind.TERMINAL -> capacity\n            }\n            if (pending < limit && writes.trySend(Write(label, body)).isSuccess) {\n                pending += 1\n                Enqueued.ACCEPTED\n            } else {\n                if (!overloaded) {\n                    overloaded = true\n                    episodeStarted = true\n                }\n                Enqueued.REJECTED\n            }\n        }",
+        "why_exemplary": "The queue has one ordered writer, a cap, and reserved room for terminal updates."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/privacy/PrivacyDisclosure.kt",
+        "line_range": "L3-L5",
+        "snippet": "internal enum class PolishProvider { OFFLINE, OPENAI, GEMINI, CLAUDE, SELF_HOSTED }\n\ninternal data class PrivacyDisclosure(val provider: PolishProvider, val summary: String, val sendsText: Boolean)",
+        "rule_violated": ".claude/rules/architecture-rules.md RULE: own-state-locally; .claude/knowledge/architecture.md FACT: sources-of-truth",
+        "severity": "LOW",
+        "confidence": "High",
+        "confidence_rationale": "The live provider enum is providers.Provider; scoped production searches found no call to PrivacyDisclosures.forProvider, while PrivacyDisclosureTest does call it.",
+        "counterfactual": "A provider change can update the live disclosure while its separate privacy test remains green, or update this unused table while the UI remains unchanged.",
+        "counterfactual_rationale": "The two enums cannot force each other’s exhaustive when expressions to change.",
+        "falsifiability": "Search app/src/main for a production call to PrivacyDisclosures.forProvider or a conversion that makes every providers.Provider addition fail the privacy tests.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": ["REF-05", "REF-06"]
+    },
+    {
+      "name": "API surface",
+      "scale_type": "letter",
+      "grade": "A",
+      "justification": "The reviewed AIDL interfaces are append-only, the new take interface has five operations, and audio recordings cross processes by app-private path rather than whole-file byte arrays. Legacy transactions remain for the separately installed instrumentation APK. Kotlin internals are normally internal or private, with manifest-created components public. No current API-surface violation was confirmed.",
+      "best_example": {
+        "file": "app/src/main/aidl/com/envi/wispr/audio/IAudioTakeService.aidl",
+        "line_range": "L14-L23",
+        "snippet": "interface IAudioTakeService {\n    boolean startCaptureForTake(boolean autoStopOnSilence, float pauseSeconds, String inputDevicePick, boolean keepEarbudsReady, String takeId);\n\n    void stopCapture();\n\n    boolean finishTake();\n\n    void registerSpectrumListener(IAudioSpectrumListener listener);\n\n    void registerTakeListener(ITakeListener listener);",
+        "why_exemplary": "The session binds a narrow take-specific contract while older transactions remain compatible."
+      },
+      "worst_violation": {
+        "file": "NONE",
+        "line_range": "L0-L0",
+        "snippet": "No violation found in this dimension.",
+        "rule_violated": "No violation found in this dimension.",
+        "severity": "LOW",
+        "confidence": "High",
+        "confidence_rationale": "No violation found in this dimension.",
+        "counterfactual": "No violation found in this dimension.",
+        "counterfactual_rationale": "No violation found in this dimension.",
+        "falsifiability": "No violation found in this dimension.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": []
+    },
+    {
+      "name": "Performance and latency",
+      "scale_type": "risk",
+      "grade": "Medium Risk",
+      "justification": "The capture path is event-driven, with no idle amplitude poll. The recorder and bubble use Android views rather than Compose, removing the cited recomposition hazard there. At take start, the owner can spend up to two seconds waiting for settings, then one second on matcher and policy preparation, then 300 ms on journal admission before binding capture. Normal values may be much faster; static code cannot establish the phone’s trigger-to-first-frame distribution.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/ui/CaptureSessionController.kt",
+        "line_range": "L292-L301",
+        "snippet": "    private fun armSilenceBound() {\n        if (silenceBoundArmed.compareAndSet(false, true)) host.postToMainDelayed(TAKE_SILENT_BOUND_MS, silenceBound)\n    }\n\n    /** Main thread. Every event from the capture process pushes the bound out; nothing else does. */\n    private fun rearmSilenceBound() {\n        if (!silenceBoundArmed.get()) return\n        host.cancelMainDelayed(silenceBound)\n        host.postToMainDelayed(TAKE_SILENT_BOUND_MS, silenceBound)\n    }",
+        "why_exemplary": "The liveness timer exists during a take and is rearmed by pushed events."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt",
+        "line_range": "L445-L460",
+        "snippet": "            val matcherJob = scope.async(Dispatchers.Default) { Timed(preparing { compileMatcher(termsSnapshot) }, host.elapsedRealtimeMs()) }\n            val policyJob = scope.async(Dispatchers.IO) { Timed(preparing { loadPolicy() }, host.elapsedRealtimeMs()) }\n            // Take-owned (#290 review): a cancel of the starting take cancels both. Registered, then the state is\n            // rechecked, so a cancel that landed between the launch and the registration still cancels them.\n            preparationJobs = listOf(matcherJob, policyJob)\n            if (state.get() != SessionState.STARTING) preparationJobs.forEach { it.cancel() }\n            val matcherPrepared = awaitBy(matcherJob, deadlineMs)\n            takeFacts.matcherReadyMs = sinceAccepted()\n            val policyPrepared = awaitBy(policyJob, deadlineMs)\n            takeFacts.policyLoadedMs = sinceAccepted()\n            // Admission is written before capture starts, under a deadline that never gates the take:\n            // the queued write still lands in order if this stops waiting (issue #176, plan §3.3). A failed\n            // admission never gates it either (#290).\n            if (admission != null) {\n                val landed = try {\n                    withTimeoutOrNull(JOURNAL_ADMISSION_DEADLINE_MS) { admission.await() }",
+        "rule_violated": "Named principle: measure and budget trigger-to-first-frame latency across the whole pre-capture chain",
+        "severity": "MEDIUM",
+        "confidence": "Medium",
+        "confidence_rationale": "The sequential deadline structure is visible, but the normal S26 Ultra latency and frequency of deadline exhaustion require traces.",
+        "counterfactual": "If stores or preparation stall together, the lips can show starting for roughly three seconds before audio capture is even bound.",
+        "counterfactual_rationale": "The two-second settings answer bound precedes the one-second shared preparation bound, and admission can add 300 ms before bindPipelineServices.",
+        "falsifiability": "On the S26 Ultra, force each reader and the journal to miss its bound while tracing accepted command, bind request, live event, and first written frame; show that capture begins within the product’s accepted latency.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": []
+    },
+    {
+      "name": "Resource lifecycle",
+      "scale_type": "risk",
+      "grade": "Medium Risk",
+      "justification": "The 30-second earbud hold is bounded, plays zero-filled PCM, and releases track and route through a first-wins end. The service stop path unbinds connections and cancels its scope. One teardown ordering remains risky: the session service calls the synchronous vendor detector close before invalidating the coordinator and stopping foreground state. The detector’s own documentation says vendor close has no bound.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/audio/WarmHold.kt",
+        "line_range": "L58-L75",
+        "snippet": "    fun handOver(): RouteHold? {\n        if (!ended.compareAndSet(null, END_NEW_TAKE)) return null\n        runCatching { track.stop() }\n        onEnded(END_NEW_TAKE)\n        return route\n    }\n\n    /** End for any reason but a new take: stop the track and release the route. */\n    fun end(reason: String) {\n        if (!ended.compareAndSet(null, reason)) return\n        runCatching { track.stop() }\n        route.release()\n        onEnded(reason)\n    }\n\n    companion object {\n        const val HOLD_MS = 30_000L",
+        "why_exemplary": "The decided hold ends once, stops silent playback, releases the route, and has a fixed expiry."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt",
+        "line_range": "L247-L252",
+        "snippet": "    override fun onDestroy() {\n        if (::languageDetector.isInitialized) languageDetector.close()\n        if (::coordinator.isInitialized) coordinator.destroy()\n        stopForeground(STOP_FOREGROUND_REMOVE)\n        DictationNotificationController.dismiss(this)\n        super.onDestroy()",
+        "rule_violated": ".claude/rules/kotlin-patterns.md RULE: never-block-a-binder-or-ui-thread; RULE: structured-concurrency-with-a-real-scope",
+        "severity": "MEDIUM",
+        "confidence": "Medium",
+        "confidence_rationale": "The call order is certain; a slow or stuck ML Kit close on the supported phone has not been observed in this audit.",
+        "counterfactual": "If detector close stalls, coordinator teardown and foreground cleanup wait behind it on the service main thread.",
+        "counterfactual_rationale": "MlKitLanguageDetector.close synchronously invokes the vendor close and explicitly documents that it has no bound.",
+        "falsifiability": "Instrument a detector close that blocks during service destruction and show coordinator.destroy and foreground removal complete promptly despite it.",
+        "concurrency_interleaving": "1. A detection finishes or a service stop requests onDestroy on main. 2. onDestroy calls languageDetector.close. 3. The synchronous vendor close stalls. 4. The main thread has not reached coordinator.destroy or stopForeground. 5. Capture and UI teardown remain pending until close returns."
+      },
+      "top_refactor_target_ids": ["REF-03"]
+    },
+    {
+      "name": "Security and privacy",
+      "scale_type": "risk",
+      "grade": "Low Risk",
+      "justification": "Model files have pinned revisions, byte counts and SHA-256 checks in app-private storage. Provider keys use Android Keystore AES-GCM. GenieX logging is disabled before inference; PostHog has an allowlist and Sentry strips message and exception text. One PostHog gap is a generic token regex used for every allowed key without a dedicated shape. A short word such as 'hello' passes under the allowed 'reason' key. No current producer was found placing dictated text there, so the present-phone severity is low.",
+      "best_example": {
+        "file": "app/src/main/java/com/envi/wispr/telemetry/SentryBootstrap.kt",
+        "line_range": "L141-L160",
+        "snippet": "    fun sanitize(event: SentryEvent): SentryEvent {\n        event.serverName = null\n        event.request = null\n        event.user = null\n        event.transaction = null\n        event.setModules(null)\n        event.setUnknown(null)\n        event.platform = event.platform?.let(SentrySchema::identifier)\n        event.logger = event.logger?.let(SentrySchema::identifier)\n        event.message?.let { message ->\n            val formatted = message.formatted ?: message.message\n            // Only a defect's own semantic id passes; any other message becomes the marker, never the words.\n            event.message = Message().apply { this.formatted = formatted?.let(SentrySchema::eventMessage) }\n        }\n        // An absent fingerprint stays absent; ours stay; any other is removed, never replaced with a shared one.\n        event.fingerprints = event.fingerprints?.filter { it in SentrySchema.fingerprints }?.ifEmpty { null }\n        event.exceptions?.forEach { exception ->\n            // Exception MESSAGES are always dropped, approved types included (G2 D7); the type and the\n            // frames are what group and diagnose.\n            exception.value = null",
+        "why_exemplary": "The Sentry send seam removes free-form user-bearing fields and judges retained values by declared shapes."
+      },
+      "worst_violation": {
+        "file": "app/src/main/java/com/envi/wispr/telemetry/PayloadSanitizer.kt",
+        "line_range": "L109-L117",
+        "snippet": "    private fun sanitizeString(key: String, value: String): String? {\n        // A key with its own shape is judged by that shape alone: \"chrome\" is a fine token but not a\n        // package name, so under `target_app` it is a bug or a word, and either way it stays.\n        val shape = boundedStringKeys[key]\n        if (shape != null) {\n            if (value.length > MAX_STRING || !shape.matches(value)) return null\n            return redactPatterns(value)\n        }\n        return if (TOKEN.matches(value)) value else null",
+        "rule_violated": ".claude/rules/kotlin-patterns.md RULE: no-content-in-diagnostics; named principle: fail-closed telemetry schemas",
+        "severity": "LOW",
+        "confidence": "High",
+        "confidence_rationale": "The pure sanitizer accepts an arbitrary short token under an allowed key; a current production path from transcript to that key was not established.",
+        "counterfactual": "A future producer mistake that puts a one-word dictation into 'reason' would pass this final PostHog filter.",
+        "counterfactual_rationale": "TOKEN checks character shape, not membership in that field’s finite values.",
+        "falsifiability": "Evaluate PayloadSanitizer.sanitizeProperties(mapOf(\"reason\" to \"hello\")); an empty result would disprove this finding.",
+        "concurrency_interleaving": "N/A"
+      },
+      "top_refactor_target_ids": ["REF-04", "REF-05"]
+    }
+  ],
+  "refactor_targets": [
+    {
+      "id": "REF-01",
+      "title": "Keep History save diagnostics alive with the History write",
+      "dimension": "Error handling and observability",
+      "tier": "MEDIUM",
+      "estimated_loc_delta": 45,
+      "rule_violated": ".claude/rules/architecture-rules.md FACT: heart-and-limbs",
+      "severity": "MEDIUM",
+      "confidence": "High",
+      "fix_shape": "Move watchSaveBound invocation and its defect reporting from DictationSessionCoordinator.scope into an application-owned History save observer beside HistoryWriteQueue. Pass the SaveSlot, enqueue timestamp, bound and take id when enqueueSave runs. Keep insertion independent of the observer and make the observer report once after the service stops.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:L1151-L1165",
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:L1396-L1404",
+        "app/src/main/java/com/envi/wispr/history/HistoryWriteQueue.kt:L31-L39"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-02",
+      "title": "Make the silence-to-words device row fail when its real boundary fails",
+      "dimension": "Testability",
+      "tier": "SMALL",
+      "estimated_loc_delta": 12,
+      "rule_violated": ".claude/rules/testing-philosophy.md RULE: the-heart-crosses-a-real-boundary-at-least-once",
+      "severity": "MEDIUM",
+      "confidence": "High",
+      "fix_shape": "Replace assumption exits for capture start, detector readiness, and the ASR model response in SilenceStoppedTakeTranscribesDeviceTest with explicit assertions. Keep skips only for a prerequisite the harness cannot stage, and make that prerequisite visible as NOT RUN in the device runner.",
+      "evidence_files": [
+        "app/src/androidTest/java/com/envi/wispr/SilenceStoppedTakeTranscribesDeviceTest.kt:L77-L86",
+        "app/src/androidTest/java/com/envi/wispr/SilenceStoppedTakeTranscribesDeviceTest.kt:L119-L130"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-03",
+      "title": "Invalidate the session before closing the detector",
+      "dimension": "Resource lifecycle",
+      "tier": "MEDIUM",
+      "estimated_loc_delta": 25,
+      "rule_violated": ".claude/rules/kotlin-patterns.md RULE: never-block-a-binder-or-ui-thread",
+      "severity": "MEDIUM",
+      "confidence": "Medium",
+      "fix_shape": "Call coordinator.destroy before detector cleanup in DictationSessionService.onDestroy. Transfer the detector to a single application-owned IO close worker so its synchronous vendor close cannot hold the service main thread; preserve MlKitLanguageDetector’s atomic in-flight detection protection.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt:L247-L252",
+        "app/src/main/java/com/envi/wispr/polish/MlKitLanguageDetector.kt:L181-L210"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-04",
+      "title": "Close PostHog token values by field",
+      "dimension": "Security and privacy",
+      "tier": "MEDIUM",
+      "estimated_loc_delta": 40,
+      "rule_violated": ".claude/rules/kotlin-patterns.md RULE: no-content-in-diagnostics",
+      "severity": "LOW",
+      "confidence": "High",
+      "fix_shape": "Replace the generic TOKEN acceptance for allowed PostHog string keys with key-specific finite value sets derived from AnalyticsEvent wire enums. Retain the existing shaped validators for UUIDs, packages and build labels. Add a negative test that 'hello' under 'reason' is dropped.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/telemetry/PayloadSanitizer.kt:L95-L117",
+        "app/src/main/java/com/envi/wispr/telemetry/PayloadSanitizer.kt:L132-L132"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-05",
+      "title": "Use the live provider type for privacy disclosure",
+      "dimension": "Code hygiene and maintainability",
+      "tier": "SMALL",
+      "estimated_loc_delta": -25,
+      "rule_violated": ".claude/knowledge/architecture.md FACT: sources-of-truth",
+      "severity": "LOW",
+      "confidence": "High",
+      "fix_shape": "Delete privacy.PolishProvider and PrivacyDisclosures.forProvider, which have no production caller. Keep the shared privacy-page constants in privacy/PrivacyDisclosure.kt. Make providers.Provider.disclosure the sole per-provider table and move its tests to assert the production disclosure used by PolishCloudRungs.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/privacy/PrivacyDisclosure.kt:L3-L5",
+        "app/src/main/java/com/envi/wispr/privacy/PrivacyDisclosure.kt:L29-L33",
+        "app/src/main/java/com/envi/wispr/providers/Provider.kt:L27-L45",
+        "app/src/main/java/com/envi/wispr/ui/PolishCloudRungs.kt:L336-L336"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-06",
+      "title": "Move terminal reporting and notice formatting out of the session owner",
+      "dimension": "Architecture integrity",
+      "tier": "LARGE",
+      "estimated_loc_delta": -55,
+      "rule_violated": ".claude/rules/architecture-rules.md RULE: keep-central-types-thin",
+      "severity": "LOW",
+      "confidence": "High",
+      "fix_shape": "Move recordTakeEnding and its formatting from DictationSessionCoordinator.kt into telemetry/TakeFacts.kt or a narrowly scoped telemetry file. Move Bluetooth, silence and duration notice selection into the existing SessionNoticePresenter. Leave take admission, state transitions, arbitration and publication in DictationSessionCoordinator; introduce no second session owner.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:L1423-L1439",
+        "app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:L867-L915",
+        "docs/audits/senior-audit-inventory.md:L130-L130"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "REF-07",
+      "title": "Select provider setup tiles by capability",
+      "dimension": "Architecture integrity",
+      "tier": "SMALL",
+      "estimated_loc_delta": 1,
+      "rule_violated": ".claude/rules/architecture-rules.md RULE: gate-on-capability-not-identity-literal",
+      "severity": "LOW",
+      "confidence": "High",
+      "fix_shape": "Replace Provider.entries minus SELF_HOSTED_POLISH in PolishLadder.CloudProviders with a filter on the existing requiresApiKey or a named setup-tile capability. Keep identity-specific key portal URLs in their exhaustive when.",
+      "evidence_files": [
+        "app/src/main/java/com/envi/wispr/ui/PolishLadder.kt:L47-L48",
+        "app/src/main/java/com/envi/wispr/providers/Provider.kt:L11-L25"
+      ],
+      "depends_on": ["REF-05"]
+    }
+  ],
+  "phased_roadmap": [
+    {
+      "phase": 1,
+      "title": "Protect outcome evidence and service teardown",
+      "refactor_ids": ["REF-01", "REF-02", "REF-03"],
+      "rationale": "These changes address a diagnostic that can disappear, a real-boundary test that can skip, and cleanup ordering. None depends on another refactor."
+    },
+    {
+      "phase": 2,
+      "title": "Make privacy facts have one live owner",
+      "refactor_ids": ["REF-04", "REF-05"],
+      "rationale": "Close the PostHog value gate and remove the disconnected provider disclosure table before changing provider selection."
+    },
+    {
+      "phase": 3,
+      "title": "Reduce central ownership debt",
+      "refactor_ids": ["REF-06", "REF-07"],
+      "rationale": "Move reporting out of the session owner while retaining one owner, then express setup eligibility through the canonical provider capability."
+    }
+  ],
+  "strengths": [
+    {
+      "file": "app/src/main/java/com/envi/wispr/ui/TakePolishController.kt",
+      "line_range": "L320-L345",
+      "pattern_name": "One polish answer with deterministic fallback",
+      "why_preserve": "Invalid or blank answers cannot hold the take or erase its words."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/ui/PipelineBindings.kt",
+      "line_range": "L214-L230",
+      "pattern_name": "Binder callback handoff",
+      "why_preserve": "The binder thread posts values to the owner’s main dispatcher before decisions run."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/audio/WarmHold.kt",
+      "line_range": "L58-L75",
+      "pattern_name": "Bounded, first-wins earbud hold",
+      "why_preserve": "The decided hold has one winning end, route release, and a 30-second limit."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/models/ModelDelivery.kt",
+      "line_range": "L81-L88",
+      "pattern_name": "Verified model admission",
+      "why_preserve": "Readiness checks the receipt, exact file set, byte counts and SHA-256 before model use."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/telemetry/SentryBootstrap.kt",
+      "line_range": "L141-L160",
+      "pattern_name": "Sentry send-time content filtering",
+      "why_preserve": "The network seam removes free-form message and exception text."
+    },
+    {
+      "file": "app/src/androidTest/java/com/envi/wispr/VoicePipelineDeviceTest.kt",
+      "line_range": "L208-L218",
+      "pattern_name": "Editor-owned insertion oracle",
+      "why_preserve": "A device outcome test checks the text in the target editor and catches duplicate writes."
+    },
+    {
+      "file": "app/src/main/java/com/envi/wispr/history/HistoryWriteQueue.kt",
+      "line_range": "L93-L116",
+      "pattern_name": "Ordered, bounded History writes",
+      "why_preserve": "It preserves per-take write order without blocking delivery and reserves room for terminal writes."
+    }
+  ],
+  "meta_recommendations": [
+    {
+      "recommendation": "Have the device runner report assertion failures, assumption skips and prerequisites as separate counts; require the named heart-boundary rows to execute on the founder’s phone.",
+      "triggered_by": "REF-02: SilenceStoppedTakeTranscribesDeviceTest can skip a failed detector or ASR response."
+    },
+    {
+      "recommendation": "Add a lifecycle test in which the fake service actually calls coordinator.destroy at stop while the application-owned History save remains held.",
+      "triggered_by": "REF-01: the current held-save rig does not model Android onDestroy cancellation."
+    },
+    {
+      "recommendation": "Keep literal negative payload witnesses for every telemetry key that can carry a string, including a short dictated word under a declared key.",
+      "triggered_by": "REF-04: the generic PostHog token regex accepts 'hello' as a 'reason' value."
+    }
+  ],
+  "not_assessed": [
+    {
+      "area": "CLAUDE.md",
+      "reason": "not in inventory; the named repository-root file is absent from this worktree",
+      "how_to_cover": "Restore the project file to the review checkout and compare its product and compatibility rules with this report."
+    },
+    {
+      "area": "Remaining inventoried priority sources",
+      "reason": "This bounded pass deeply read the principal heart, insertion, polish, model, telemetry and service paths and used scoped searches elsewhere; it did not complete a full-file read of every priority source.",
+      "how_to_cover": "Read the remaining inventory entries file by file before treating absence-of-defect claims as exhaustive."
+    },
+    {
+      "area": "Phone latency and stalled target-app behavior",
+      "reason": "Static source cannot establish first-frame percentiles or the accessibility framework’s timeout against a frozen editor.",
+      "how_to_cover": "Trace accepted command, first audio frame, stop, text, handoff and editor receipt on the S26 Ultra; repeat with a frozen target app."
+    },
+    {
+      "area": "Process death, rebinding and actual resource release",
+      "reason": "No Android runtime or memory measurement was run in the read-only audit.",
+      "how_to_cover": "Kill each isolated process and the accessibility service during each take phase; verify one outcome, clipboard fallback, binder cleanup, wake state and post-take process PSS."
+    },
+    {
+      "area": "Network payloads and vendor logging on device",
+      "reason": "The PostHog and Sentry filters and GenieX silencer were read, but no live outbound payload or vendor-upgrade test was run.",
+      "how_to_cover": "Use a controlled device run with sentinel transcript, prompt and key values; inspect outbound PostHog, Sentry and selected-provider requests and local logcat."
+    },
+    {
+      "area": "Stage 2 clean-install delivery and recovery",
+      "reason": "Explicitly outside the stage 1 grading contract, including empty-phone download, telemetry completeness and reinstall recovery.",
+      "how_to_cover": "Run the planned stage 2 clean-install, download and reinstall acceptance tests when that stage begins."
+    },
+    {
+      "area": ":accelerator-benchmark",
+      "reason": "Explicitly excluded experiment; it does not gate the app.",
+      "how_to_cover": "Assess separately if the experiment becomes part of product delivery."
+    },
+    {
+      "area": "Build and test execution",
+      "reason": "The audit contract forbade Gradle, adb and builds.",
+      "how_to_cover": "Run the repository’s normal CI and the cited device tests in an authorized execution environment."
+    }
+  ],
+  "severity_confidence_distribution": {
+    "critical_high": 0,
+    "critical_medium": 0,
+    "critical_low": 0,
+    "high_high": 0,
+    "high_medium": 0,
+    "high_low": 0,
+    "medium_high": 2,
+    "medium_medium": 3,
+    "medium_low": 0,
+    "low_high": 4,
+    "low_medium": 0,
+    "low_low": 0
+  },
+  "internal_red_team": {
+    "least_confident_finding": {
+      "refactor_id_or_description": "Concurrency risk in MainThreadHandoff’s claimed, untimed wait",
+      "why_low_confidence": "The code waits without an application deadline, but Android’s accessibility framework may reliably time out the target-app operation on the supported phone. This audit could not measure that boundary.",
+      "what_would_resolve_it": "Freeze a target editor during the first insertion action on the S26 Ultra and record whether the session finishes with exactly one destination and a bounded delay."
+    },
+    "top_not_assessed_gap": {
+      "gap": "One complete spoken take into a real third-party editor while polish or an isolated process fails",
+      "runtime_test_required": "On the founder’s phone, speak through each trigger, fail polish before bind, after bind and during a request, and kill audio or ASR at controlled phases. Check the actual editor text, clipboard, notice, History row and one terminal defect.",
+      "why_this_matters_for_heart_limbs": "Static control flow and fake seams cannot prove that the user receives the last successful words exactly once after Android routing, binder, service and editor behavior combine."
+    }
+  }
+}

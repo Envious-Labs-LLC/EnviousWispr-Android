@@ -156,19 +156,20 @@ class TakePreparationBoundTest {
     @Test fun aCancelDuringThePreparationWaitReportsNothingAndStopsBothJobs() {
         val entered = CountDownLatch(1)
         rig.policyHold = CompletableDeferred()
-        val coordinator = rig.coordinator(preferences = withTerm, preparationBoundMs = 300L, compileMatcher = { terms -> entered.countDown(); released.await(); StructuredTermRestorer.compile(terms) })
+        // A long bound, so the cancel alone (never the bound's own clean-up) can stop the held read in time.
+        val coordinator = rig.coordinator(preferences = withTerm, preparationBoundMs = 3_000L, compileMatcher = { terms -> entered.countDown(); released.await(); StructuredTermRestorer.compile(terms) })
         coordinator.onCreated()
         rig.command(coordinator, DictationSessionService.ACTION_START)
         assertTrue(entered.await(10, TimeUnit.SECONDS))
         rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
         // The cancel waits for the capture's own ending, which the rig's bound-from-the-start capture never sends
         // (as the #258 rows note), so the take's terminal is not awaited here; the cancel reaching the jobs is.
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1_500L)
         while (!rig.policyCancelled) {
-            check(System.nanoTime() < deadline) { "the held policy read was never cancelled" }
+            check(System.nanoTime() < deadline) { "the held policy read was not cancelled by the cancel, well before the 3 s bound" }
             Thread.sleep(5)
         }
-        Thread.sleep(600) // past the preparation bound: a surviving start coroutine would have decided by now
+        Thread.sleep(3_500) // past the preparation bound: a surviving start coroutine would have decided by now
         assertTrue("no preparation defect for a cancelled take", preparationDefects().isEmpty())
         assertTrue("no policy defect for a cancelled take", policyDefects().isEmpty())
         assertTrue("no bind", "bind" !in rig.pipeline.events)

@@ -1,14 +1,24 @@
-# #293 mutation receipts, 2026-09-24, worktree head af8c4ce plus the change
+# #293 mutation receipts, 2026-09-24, worktree head af8c4ce plus the change (code review round 1 fixes included)
 
 RED: m1 the polish notification is dropped -> aPolishFailureIsTheToastThenTheNotificationOnMain
 RED: m2 the failure toast is dropped -> aFailureSentenceIsOneToast
 RED: m3 polishStatus is not written -> recordPolishWritesTheFourFactsAndAnswersTheBreadcrumbAndTheDefect
 RED: m4 the breadcrumb omits the provider -> recordPolishWritesTheFourFactsAndAnswersTheBreadcrumbAndTheDefect
+RED: m6 the failure toast said directly, not posted -> aFailureSentenceIsOneToast
+RED: m7 the polish notice said directly, not posted -> aPolishFailureIsTheToastThenTheNotificationOnMain
 RED: m5 a direct toast back in the owner -> theOwnerPicksTheNoticeAndThePresenterPicksTheSurface
 ALL RED
 
-Suite: scripts/measure-tests.sh tests=1299 suites=161 failures=0 errors=0 skipped=0
+Suite: scripts/measure-tests.sh tests=1299 suites=161 failures=0 errors=0 skipped=0 (before the round 1 test fix; the
+fix rewrote two rows in place, SessionNoticePresenterTest 8 of 8 green after it).
 Builds: :app:assembleDebug and :app:assembleDebugAndroidTest; scripts/check-visibility.py clean.
-Emulator (emulator-5554, debug build of this change): "and I will send the deck tomorrow" spoken into a Gmail
-draft; route=COMMIT, outcome=VERIFIED; the editor holds "And I will send the deck tomorrow." followed by the
-insertion's trailing space.
+
+Emulator (emulator-5554, debug build of this change):
+- "and I will send the deck tomorrow" spoken into a Gmail draft; route=COMMIT, outcome=VERIFIED; the editor holds
+  "And I will send the deck tomorrow." followed by the insertion's trailing space.
+- Polish failure notice: the emulator cannot run on-phone polish, so the same take with polish on "This phone"
+  fell back (PolishService "Polish fell back: reason=LOCAL_NOT_READY"); the owner logged "Polish notice shown:
+  LOCAL_NOT_READY" and the notification service holds id 1003 on channel polish_problems for com.envi.wispr; the
+  words still landed (COMMIT, VERIFIED, the editor's whole text equal). The planned no-key cloud case was not
+  staged: after tapping Cloud (no provider picked) the take still ran the on-phone policy and the page read
+  "On this phone" when reopened, so the LOCAL_NOT_READY skip exercised the same notice path instead.

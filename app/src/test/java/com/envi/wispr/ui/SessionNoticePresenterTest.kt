@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -91,20 +92,34 @@ class SessionNoticePresenterTest {
      * MUTATION m1: drop the notification.
      */
     @Test fun aPolishFailureIsTheToastThenTheNotificationOnMain() {
-        val notice = PolishFailureNotice.notice(PolishFailure.KEY_REJECTED, null)
-        presenter.sayPolishFailure(notice)
-        rig.onMain { }
-        assertEquals(
-            listOf("toast:${PolishFailureNotice.LOCKED_SENTENCE}", "polish-notice"),
-            rig.host.events.filter { it.startsWith("toast:") || it == "polish-notice" },
-        )
+        val held = HeldPosts()
+        SessionNoticePresenter(rig.surface, rig.insertion, held, rig.scope, rig.mainDispatcher)
+            .sayPolishFailure(PolishFailureNotice.notice(PolishFailure.KEY_REJECTED, null))
+        assertEquals("nothing is said before the one post runs", emptyList<String>(), held.said)
+        assertEquals("one post", 1, held.posts.size)
+        rig.onMain { held.posts.single().run() }
+        assertEquals(listOf("toast:${PolishFailureNotice.LOCKED_SENTENCE}@main", "polish-notice@main"), held.said)
     }
 
     /** Row 8 (#293): a take's failure sentence is one toast from the service, on main. MUTATION m2: drop the toast. */
     @Test fun aFailureSentenceIsOneToast() {
-        presenter.sayFailure("Microphone service stopped unexpectedly")
-        rig.onMain { }
-        assertEquals(listOf("toast:Microphone service stopped unexpectedly"), rig.host.events.filter { it.startsWith("toast:") })
+        val held = HeldPosts()
+        SessionNoticePresenter(rig.surface, rig.insertion, held, rig.scope, rig.mainDispatcher)
+            .sayFailure("Microphone service stopped unexpectedly")
+        assertEquals("nothing is said before the one post runs", emptyList<String>(), held.said)
+        assertEquals("one post", 1, held.posts.size)
+        rig.onMain { held.posts.single().run() }
+        assertEquals(listOf("toast:Microphone service stopped unexpectedly@main"), held.said)
+    }
+
+    /** The rig's host with `postToMain` held rather than run, and each delivery stamped with whether it ran on main. */
+    private inner class HeldPosts : SessionHost by rig.host {
+        val posts = CopyOnWriteArrayList<Runnable>()
+        val said = CopyOnWriteArrayList<String>()
+        private fun where() = if (rig.host.onMainThread()) "main" else "off-main"
+        override fun postToMain(runnable: Runnable) { posts += runnable }
+        override fun toastFromService(line: String) { said += "toast:$line@${where()}" }
+        override fun showPolishNotice(notice: PolishFailureNotice) { said += "polish-notice@${where()}" }
     }
 
     /**

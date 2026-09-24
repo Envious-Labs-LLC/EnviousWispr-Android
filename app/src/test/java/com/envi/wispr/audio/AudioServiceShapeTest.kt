@@ -86,8 +86,8 @@ class AudioServiceShapeTest {
             "sweepEarlierTakeFiles",
             // #213: a production start that finds a recorder never released ends the process.
             "endCaptureProcess",
-            // #220: the take-sized binder per binding, and the two operations both interfaces share.
-            "newTakeBinder", "startTake", "finishTakeHold",
+            // #220: the two operations both interfaces share; the binders themselves left with #361.
+            "startTake", "finishTakeHold",
         )
         val actualFunctions = Regex("^ {4}(?:(?:private|internal|public|protected|inline|suspend|operator|tailrec|infix)\\s+)*fun\\s+(\\w+)\\s*\\(", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
@@ -96,7 +96,8 @@ class AudioServiceShapeTest {
             "sessionLock", "session", "lastEffective", "lastStartFailure", "warmHoldOwner", "destroyed",
             "routeThread", "routeHandler", "routeScheduler", "isRecording", "captureThread", "lastAudioFile",
             "currentAmplitude", "spectrumListener", "takePeakAmplitude", "lastSilenceStatus", "terminalReason",
-            "tokens", "binder",
+            // #361: what the binders may call, and the adapters that hold both binders.
+            "tokens", "operations", "binders",
             // #115: the take-event listener slot and its publisher.
             "takeListener", "takeEvents",
             // #213: the note-then-kill that endCaptureProcess runs.
@@ -231,7 +232,8 @@ class AudioServiceShapeTest {
         val interpolation = Regex("\\$\\{[^}]*\\}|\\$\\w+")
         val placeholder = Regex.escapeReplacement("\${}")
         // #257: the warm hold's writer thread and its exit watch moved to SilenceWriterWatch.kt.
-        val now = (listOf(service) + owners.values + File("$audio/SilenceWriterWatch.kt").readText()).flatMap { text ->
+        // #361: the binders' lines moved to CaptureBinderAdapters.kt, under the service's tag.
+        val now = (listOf(service) + owners.values + File("$audio/SilenceWriterWatch.kt").readText() + File("$audio/CaptureBinderAdapters.kt").readText()).flatMap { text ->
             log.findAll(text).map { "${it.groupValues[1]}: ${interpolation.replace(it.groupValues[2], placeholder)}" }.toList() +
                 thread.findAll(text).map { "thread: ${it.groupValues[1]}" }.toList()
         }.sorted()
@@ -250,6 +252,8 @@ class AudioServiceShapeTest {
         assertTrue("every helper is private: ${helpers.map { "${it.name} ${java.lang.reflect.Modifier.toString(it.modifiers)}" }}",
             helpers.all { java.lang.reflect.Modifier.isPrivate(it.modifiers) })
         assertTrue(File("src/main/aidl/com/envi/wispr/audio/IAudioCaptureService.aidl").readText().contains("boolean waitForFileReady(long timeoutMs);"))
-        assertTrue(service.contains("override fun waitForFileReady(timeoutMs: Long): Boolean =\n            this@AudioCaptureService.waitForFileReady(timeoutMs)"))
+        // #361: the transaction is the adapter's, one call of the operation the service implements with its helper.
+        assertTrue(File("$audio/CaptureBinderAdapters.kt").readText().contains("override fun waitForFileReady(timeoutMs: Long): Boolean = ops.waitForFileReady(timeoutMs)"))
+        assertTrue(service.contains("override fun waitForFileReady(timeoutMs: Long): Boolean = this@AudioCaptureService.waitForFileReady(timeoutMs)"))
     }
 }

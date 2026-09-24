@@ -44,6 +44,6 @@ class ProviderDisclosureTest {
     /** MUTATION m5: both per-provider tables stay exhaustive, so a new provider breaks the build instead of inheriting a row. */
     @Test fun bothProviderTablesHaveNoElse() {
         val source = File("src/main/java/com/envi/wispr/providers/Provider.kt").readText()
-        assertFalse("no else branch in Provider.kt's per-provider tables", Regex("""(?m)^\s*else\s*->""").containsMatchIn(source))
+        assertFalse("no else branch in Provider.kt's per-provider tables", Regex("""\belse\s*->""").containsMatchIn(source))
     }
 }

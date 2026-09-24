@@ -110,8 +110,6 @@ internal class DictationSessionCoordinator(
     private val audioCleanup: (Runnable) -> Unit = CapturedAudioCleanup::execute,
 ) : PipelineController.Listener {
     companion object {
-        /** The History save's diagnostic bound (#235, #277): past it one defect, never a wait for the words. */
-
         /**
          * How long the matcher compile and the policy read may take together (#290). Both are milliseconds on a
          * normal day (#258); past this the take starts on their fallbacks, so neither can hold it in STARTING.

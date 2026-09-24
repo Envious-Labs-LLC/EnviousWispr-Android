@@ -91,8 +91,9 @@ class HistoryNeverHoldsTheWordsTest {
         // A scripted clock that moves past the bound only AFTER the owner is destroyed, so the row cannot pass by the
         // bound expiring first (#304 coverage). MUTATION m1: the observer on the owner's scope.
         val bound = 1_000L
-        var now = 50_000L
-        rig.host.clock = { now }
+        // Shared across the test and observer threads, so an atomic (#304 review).
+        val now = java.util.concurrent.atomic.AtomicLong(50_000L)
+        rig.host.clock = now::get
         rig.dao.holdFinalize = CompletableDeferred()
         val coordinator = rig.coordinator(historySaveBoundMs = bound)
         takeWithPolishedWords(coordinator)
@@ -100,7 +101,7 @@ class HistoryNeverHoldsTheWordsTest {
         rig.host.awaitServiceStopped()
         coordinator.destroy()
         assertTrue("nothing reported before the clock moves", rig.defects.none { it.first == "history_save_timed_out" })
-        now += bound + 1
+        now.addAndGet(bound + 1)
         awaitUntil("the bound's defect after the Service is gone") { rig.defects.any { it.first == "history_save_timed_out" } }
         rig.dao.holdFinalize!!.complete(Unit)
     }
@@ -456,9 +457,10 @@ class HistoryNeverHoldsTheWordsTest {
      */
     @Test fun aSaveAnsweredPastTheBoundIsReportedEvenIfTheObserverSawItInTime() {
         val bound = 1_000L
-        var now = 50_000L
-        rig.host.clock = { now }
-        rig.dao.afterFinalize = { now += bound + 1 }
+        // Shared across the test, History and observer threads, so an atomic (#304 review).
+        val now = java.util.concurrent.atomic.AtomicLong(50_000L)
+        rig.host.clock = now::get
+        rig.dao.afterFinalize = { now.addAndGet(bound + 1) }
         // Held until the take has ended, so the observer (launched at publication, before the commit) is already
         // inside its real wait when the save lands and the clock jumps.
         rig.dao.holdFinalize = CompletableDeferred()

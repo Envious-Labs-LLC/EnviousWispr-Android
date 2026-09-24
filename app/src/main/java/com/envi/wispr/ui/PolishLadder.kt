@@ -99,10 +99,13 @@ internal object PolishLadder {
         PolishMode.OFFLINE_S1 -> if (cloudSetup) RungOne.CLOUD else RungOne.THIS_PHONE
     }
 
-    /** Cloud may be activated only with something the session can actually use: a key, or a self-hosted server. */
+    /**
+     * Cloud may be activated only with something the session can actually use: a key, or a provider that needs none
+     * (a self-hosted server). The gate reads the declared capability, never the provider's identity (#332).
+     */
     fun cloudTap(settings: ProviderSettingsUiState): CloudTap = when {
         !settings.configured -> CloudTap.SETUP
-        settings.provider == Provider.SELF_HOSTED_POLISH -> CloudTap.ACTIVATE
+        !settings.provider.capabilities().requiresApiKey -> CloudTap.ACTIVATE
         settings.credentialStored -> CloudTap.ACTIVATE
         else -> CloudTap.SETUP
     }

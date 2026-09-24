@@ -23,13 +23,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * and rewrote the same row to completed. The words landed while three surfaces said they had not.
  *
  * That untimed wait is bounded by the body's own work rather than by a clock. It cannot DEADLOCK:
- * the body is already running, and it never waits on anything this caller holds. It is not instant
- * either, because `requestInsertion` makes its first insertion attempt inline and an accessibility
- * action is a binder call into another process, bounded by the framework's own timeouts rather than
- * by ours. Waiting through that is the right trade here: the caller is a background publication
- * step whose only other option is to tell the user their words did not arrive while they are
- * arriving. Anything that could block indefinitely, a file read, a database call, a network call,
- * or a lock this caller holds, must not be posted through here.
+ * the body is already running, and it never waits on anything this caller holds. Since #362 the
+ * insertion body is short: `requestInsertion` admits the words and schedules its first attempt on the
+ * looper rather than making it inline, so no accessibility action (a binder call into the editor's
+ * process) runs inside the wait. Anything that could block indefinitely, a file read, a database
+ * call, a network call, or a lock this caller holds, must not be posted through here.
  *
  * Kept free of Android types so the claim can be RACED from the fast gate: a single-threaded test
  * cannot tell an atomic claim from a check-then-act (`validation-discipline.md`

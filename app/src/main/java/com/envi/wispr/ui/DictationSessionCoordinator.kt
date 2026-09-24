@@ -3,7 +3,6 @@ package com.envi.wispr.ui
 import com.envi.wispr.asr.AsrFailureReason
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.CaptureEnding
-import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.audio.SpeechEvidence
 import com.envi.wispr.cleanup.LanguageDetector
@@ -41,7 +40,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -103,10 +101,10 @@ internal class DictationSessionCoordinator(
     /** Queues the take's journal admission (#176); a test controls its completion (#258). */
     private val admitTake: (String, TriggerSource) -> Deferred<Boolean>? = { takeId, trigger -> Telemetry.journal?.admit(takeId, trigger) },
     /**
-     * Where a take's captured-audio delete runs (#253): a process-owned worker, never the session scope, so a
-     * Service teardown right after a take's ending cannot cancel the delete. A test holds it.
+     * The take's captured-audio file (#358): its length and its delete, which runs on a process-owned worker, never
+     * the session scope, so a Service teardown right after a take's ending cannot cancel it (#253). A test holds it.
      */
-    private val audioCleanup: (Runnable) -> Unit = CapturedAudioCleanup::execute,
+    private val capturedAudio: CapturedAudioFiles = CapturedAudioFiles.PROCESS,
 ) : PipelineController.Listener {
     companion object {
         /**
@@ -724,7 +722,7 @@ internal class DictationSessionCoordinator(
                 scope.launch {
                     if (!take.arbiter.commit(cancel, cancelled)) return@launch
                     take.history.discard()
-                    deleteCapturedAudio(ending.audioFilePath)
+                    capturedAudio.delete(ending.audioFilePath)
                     capture.finishTakeOrStop()
                     finishSession()
                 }
@@ -821,9 +819,7 @@ internal class DictationSessionCoordinator(
                 val audioFilePath = ending.audioFilePath
                 // The duration is the audio's own length, read from the finished file NOW, before
                 // transcription deletes it: the wall clock counted the wait for the earbuds.
-                recordingDurationMs = runCatching {
-                    audioFilePath?.let { (PcmAudio.durationSeconds(File(it).length()) * 1000f).toLong() }
-                }.getOrNull()?.coerceAtLeast(0L) ?: 0L
+                recordingDurationMs = capturedAudio.durationMs(audioFilePath)
                 val current = take
                 val takeId = current.takeId
                 val outcome = current.outcome
@@ -836,7 +832,7 @@ internal class DictationSessionCoordinator(
                 }
                 val speechService = pipeline.speech
                 if (speechService == null) {
-                    deleteCapturedAudio(audioFilePath)
+                    capturedAudio.delete(audioFilePath)
                     failFromWorker(TerminalReason.ASR_NOT_READY)
                     return@launch
                 }
@@ -847,7 +843,7 @@ internal class DictationSessionCoordinator(
                 val wait = speechWait
                 speechAudioPath = audioFilePath
                 if (!wait.arm(maxOf(recordingDurationMs, lastTickMs)) { onSpeechUnresponsive(current, audioFilePath) }) {
-                    deleteCapturedAudio(audioFilePath)
+                    capturedAudio.delete(audioFilePath)
                     log.log("The take ended before its speech request; not sent")
                     return@launch
                 }
@@ -860,7 +856,7 @@ internal class DictationSessionCoordinator(
                         // which whatever closed the wait already deleted, and not the take's facts.
                         if (!wait.answer()) return lateSpeechAnswer()
                         // Posted to main by the speech proxy (#253); the file delete runs on its own worker.
-                        deleteCapturedAudio(audioFilePath)
+                        capturedAudio.delete(audioFilePath)
                         outcome.asrResult(host.elapsedRealtimeMs() - asrRequestedAtMs, text?.length ?: 0)
                         log.log("Transcription result received (chars=${text?.length ?: 0})")
                         log.mark("result_received")
@@ -871,7 +867,7 @@ internal class DictationSessionCoordinator(
                     /** The versioned request never answers this; a legacy sentence here is a service defect. */
                     override fun onError(message: String?) {
                         if (!wait.answer()) return lateSpeechAnswer()
-                        deleteCapturedAudio(audioFilePath)
+                        capturedAudio.delete(audioFilePath)
                         log.error("Legacy onError on a versioned request")
                         // The fact is written before the claim so the ending's row carries it; a claim
                         // that loses leaves an unread fact, never a rewritten row (G1 D2).
@@ -883,7 +879,7 @@ internal class DictationSessionCoordinator(
 
                     override fun onFailure(reason: Int, detail: String?) {
                         if (!wait.answer()) return lateSpeechAnswer()
-                        deleteCapturedAudio(audioFilePath)
+                        capturedAudio.delete(audioFilePath)
                         val failure = AsrFailureReason.fromCode(reason)
                         outcome.asrFailed(failure) { host.elapsedRealtimeMs() - asrRequestedAtMs }
                         // Claim FIRST: a cancel that already owns the take must not see its History row
@@ -903,7 +899,7 @@ internal class DictationSessionCoordinator(
                     return@launch
                 }
                 pipeline.stopAudioService()
-                deleteCapturedAudio(ending.audioFilePath)
+                capturedAudio.delete(ending.audioFilePath)
                 log.error("Transcription failed", error)
                 failFromWorker(TerminalReason.ASR_CALLBACK_EXCEPTION)
             }
@@ -1167,7 +1163,7 @@ internal class DictationSessionCoordinator(
      * file goes whoever owns the ending, since the wait that would have consumed it is over.
      */
     private fun onSpeechUnresponsive(current: TakeContext, audioFilePath: String) {
-        deleteCapturedAudio(audioFilePath)
+        capturedAudio.delete(audioFilePath)
         log.error("Speech service did not answer within its bound; ending the take")
         if (!current.arbiter.commitNow(TerminalReason.ASR_PROCESS_UNRESPONSIVE)) return
         current.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
@@ -1194,7 +1190,7 @@ internal class DictationSessionCoordinator(
 
     /** Ends an open speech wait for anything but its answer; the file the request would have consumed goes with it. */
     private fun closeSpeechWait() {
-        if (speechWait.close()) deleteCapturedAudio(speechAudioPath)
+        if (speechWait.close()) capturedAudio.delete(speechAudioPath)
     }
 
     private fun finishSession() {
@@ -1225,19 +1221,6 @@ internal class DictationSessionCoordinator(
 
     private fun stopIfIdle() {
         if (state.get() == SessionState.IDLE) host.stopSelfNow()
-    }
-
-    /** Queues the delete on [audioCleanup] and returns: never on main's time, never cancelled by teardown (#253). */
-    private fun deleteCapturedAudio(path: String?) {
-        if (path.isNullOrBlank()) return
-        audioCleanup(Runnable {
-            runCatching {
-                val file = File(path)
-                if (file.exists() && !file.delete()) {
-                    log.warn("Unable to delete captured audio after terminal processing")
-                }
-            }.onFailure { error -> log.warn("Unable to delete captured audio: ${error.javaClass.simpleName}") }
-        })
     }
 
     /**

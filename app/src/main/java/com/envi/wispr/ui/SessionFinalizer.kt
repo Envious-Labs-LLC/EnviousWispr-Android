@@ -18,6 +18,7 @@ import com.envi.wispr.telemetry.InsertionResultKind
 import com.envi.wispr.telemetry.InsertionRouteKind
 import com.envi.wispr.telemetry.Telemetry
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -190,6 +191,54 @@ internal sealed interface SaveOutcome {
 internal class SaveAnswer(val outcome: SaveOutcome, val answeredAtMs: Long)
 
 /**
+ * One take's save answer (#277). The History worker stamps and publishes it in ONE step under [lock], so a reader
+ * that finds no answer under the same lock knows any stamp still to come is later than that moment. That is what
+ * lets [watchSaveBound] decide "late" exactly, whichever of the timer and the save wins a race.
+ */
+internal class SaveSlot {
+    private val lock = Any()
+    private var answer: SaveAnswer? = null
+    private val done = CompletableDeferred<SaveAnswer>()
+
+    fun answer(outcome: SaveOutcome, clock: () -> Long) {
+        val stamped = synchronized(lock) { SaveAnswer(outcome, clock()).also { answer = it } }
+        done.complete(stamped)
+    }
+
+    /** The answer if it has been stamped by now; null means any stamp to come is taken after this call. */
+    fun answeredNow(): SaveAnswer? = synchronized(lock) { answer }
+
+    suspend fun await(): SaveAnswer = done.await()
+}
+
+/**
+ * The save's diagnostic bound (#277), exact whichever of the timer and the save wins: [clock] is read BEFORE
+ * [SaveSlot.answeredNow], so an answer not stamped yet will be stamped later than that reading. [onTimeout] runs at
+ * most once: when the bound has certainly passed with no answer, or when the answer's own stamp is past it. Waiting
+ * uses the real timer only to wake up; no decision reads when this function happened to run. Returns the answer.
+ */
+internal suspend fun watchSaveBound(slot: SaveSlot, enqueuedAtMs: Long, boundMs: Long, clock: () -> Long, onTimeout: () -> Unit): SaveAnswer {
+    var timedOut = false
+    fun timeout() {
+        if (!timedOut) {
+            timedOut = true
+            onTimeout()
+        }
+    }
+    var seen: SaveAnswer? = null
+    while (true) {
+        val now = clock()
+        seen = slot.answeredNow()
+        if (seen != null || now - enqueuedAtMs > boundMs) break
+        withTimeoutOrNull(boundMs - (now - enqueuedAtMs) + 1L) { slot.await() }
+    }
+    if (saveMissedBound(enqueuedAtMs, seen?.answeredAtMs, boundMs)) timeout()
+    val answer = seen ?: slot.await()
+    if (saveMissedBound(enqueuedAtMs, answer.answeredAtMs, boundMs)) timeout()
+    return answer
+}
+
+/**
  * Whether a History save missed its diagnostic bound (#277): measured from the enqueue to the answer as the History
  * worker produced it; null means it had not answered when the deadline passed. Nobody's observation time enters it.
  */
@@ -216,7 +265,7 @@ internal class SessionFinalizer(
     fun enqueueSave(
         history: TakeHistory,
         publication: Publication,
-        saved: CompletableDeferred<SaveAnswer>,
+        saved: SaveSlot,
     ) {
         historyWrites.enqueue("finalize") { repository ->
             val answer = runCatching {
@@ -245,7 +294,7 @@ internal class SessionFinalizer(
                     history.remember(persistedId)
                     persistedId
                 }.fold({ SaveOutcome.Saved(it) }, { SaveOutcome.Failed(it) })
-            saved.complete(SaveAnswer(answer, host.elapsedRealtimeMs()))
+            saved.answer(answer, host::elapsedRealtimeMs)
         }
     }
 

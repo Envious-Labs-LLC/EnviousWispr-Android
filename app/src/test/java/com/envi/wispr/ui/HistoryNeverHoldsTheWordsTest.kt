@@ -6,6 +6,7 @@ import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.paste.InsertionHandoff
 import com.envi.wispr.paste.recordInsertionOutcome
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -343,20 +344,49 @@ class HistoryNeverHoldsTheWordsTest {
     }
 
     /**
-     * Code review round 2: late is the save's OWN answer time against its enqueue, in both directions, so an observer
-     * that starts or wakes late cannot invent a timeout and one that looks early cannot hide one. MUTATION m7: the
-     * rule compares `>=` against the bound, or the watcher passes the time it observed the answer.
+     * Code review rounds 2 and 3: late is the save's OWN stamp against its enqueue, never when anyone looked. MUTATION
+     * m7: the rule counts an answer exactly at the bound as late.
      */
     @Test fun lateIsTheSavesOwnAnswerTimeNeverTheObservers() {
-        assertFalse("answered within the bound, however late anyone looked", saveMissedBound(enqueuedAtMs = 1_000L, answeredAtMs = 2_000L, boundMs = 1_000L))
-        assertTrue("answered past the bound, however early anyone looked", saveMissedBound(enqueuedAtMs = 1_000L, answeredAtMs = 2_001L, boundMs = 1_000L))
-        assertTrue("no answer when the deadline passed", saveMissedBound(enqueuedAtMs = 1_000L, answeredAtMs = null, boundMs = 1_000L))
-        val watcher = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
-            .substringAfter("private fun watchSave(").substringBefore("\n    }\n")
-        assertEquals("both checks read the save's own answer time", 2, Regex("""saveMissedBound\(enqueuedAtMs, (seen\?|answer)\.answeredAtMs, historySaveBoundMs\)""").findAll(watcher).count())
-        assertFalse("no decision reads when the observer looked", watcher.contains("host.elapsedRealtimeMs() - enqueuedAtMs >"))
-        val finalizer = java.io.File("src/main/java/com/envi/wispr/ui/SessionFinalizer.kt").readText()
-        assertTrue("the History worker stamps the answer", finalizer.contains("saved.complete(SaveAnswer(answer, host.elapsedRealtimeMs()))"))
+        assertFalse("answered at the bound is in time", saveMissedBound(enqueuedAtMs = 1_000L, answeredAtMs = 2_000L, boundMs = 1_000L))
+        assertTrue("answered past the bound is late", saveMissedBound(enqueuedAtMs = 1_000L, answeredAtMs = 2_001L, boundMs = 1_000L))
+        assertTrue("no answer when the bound had certainly passed", saveMissedBound(enqueuedAtMs = 1_000L, answeredAtMs = null, boundMs = 1_000L))
+    }
+
+    /**
+     * Code review round 3: the real timer fires first, but the save's own clock has not passed the bound; the save then
+     * answers stamped exactly at the bound. No timeout. MUTATION m8: `watchSaveBound` reports whenever the real wait
+     * times out with no answer (the race the round found).
+     */
+    @Test fun aTimerThatWinsTheRaceNeverInventsATimeout() = runBlocking {
+        var now = 0L
+        val slot = SaveSlot()
+        var timeouts = 0
+        val watch = async(kotlinx.coroutines.Dispatchers.Default) { watchSaveBound(slot, 0L, 50L, { now }) { timeouts += 1 } }
+        Thread.sleep(200) // the real timer has fired at least once; the save's clock still reads 0
+        now = 50L
+        slot.answer(SaveOutcome.Saved(1L)) { now }
+        now = 500L
+        assertEquals(SaveOutcome.Saved(1L), watch.await().outcome)
+        assertEquals(0, timeouts)
+    }
+
+    /** Round 3: no answer once the save's clock is past the bound reports once, and a late answer later adds nothing. */
+    @Test fun anUnansweredSaveTimesOutOnceEvenWhenItAnswersLater() = runBlocking {
+        var now = 0L
+        val slot = SaveSlot()
+        var timeouts = 0
+        val watch = async(kotlinx.coroutines.Dispatchers.Default) { watchSaveBound(slot, 0L, 50L, { now }) { timeouts += 1 } }
+        now = 51L
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+        while (timeouts == 0) {
+            check(System.nanoTime() < deadline) { "never timed out" }
+            Thread.sleep(5)
+        }
+        now = 300L
+        slot.answer(SaveOutcome.Saved(1L)) { now }
+        watch.await()
+        assertEquals(1, timeouts)
     }
 
     /**

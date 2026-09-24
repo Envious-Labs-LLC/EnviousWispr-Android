@@ -51,10 +51,19 @@ internal class PolishFallbackLane(
         }
     }
 
-    /** Marks every answer for [requestId] cancelled; one not yet delivered is never delivered. */
+    /**
+     * Marks every answer for [requestId] cancelled and forgets it at once (#291 review): one not yet delivered is never
+     * delivered, and a cleanup stalled behind it cannot make cancelled answers pile up.
+     */
     fun cancel(requestId: Long) {
-        tokens.filter { it.requestId == requestId }.forEach { it.settled.set(true) }
+        tokens.filter { it.requestId == requestId }.forEach {
+            it.settled.set(true)
+            tokens.remove(it)
+        }
     }
+
+    /** Answers admitted and neither delivered nor cancelled yet (for the leak row). */
+    internal fun pending(): Int = tokens.size
 
     /**
      * Stops admission, queues [then] behind every admitted answer and shuts the worker down, without waiting. A later
@@ -64,7 +73,12 @@ internal class PolishFallbackLane(
         synchronized(lock) {
             if (closed) return
             closed = true
-            runCatching { worker.execute(then) }
+            // A worker that refuses the final step must not leave it undone (#291 review): it runs on its own thread.
+            try {
+                worker.execute(then)
+            } catch (refused: RejectedExecutionException) {
+                startRefusal(Runnable(then))
+            }
             worker.shutdown()
         }
     }

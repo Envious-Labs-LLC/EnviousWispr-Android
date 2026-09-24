@@ -77,8 +77,10 @@ class PolishFallbackLaneTest {
         lane.answer(1L, "one", options, PolishReason.UNEXPECTED) { delivered += it.requestId }
         lane.answer(2L, "two", options, PolishReason.UNEXPECTED) { delivered += it.requestId }
         lane.cancel(1L)
+        assertEquals("the cancelled answer is forgotten at once, before its task runs", 1, lane.pending())
         worker.runAll()
         assertEquals(listOf(2L), delivered.toList())
+        assertEquals(0, lane.pending())
 
         val held = CopyOnWriteArrayList<Runnable>()
         val refusing = PolishFallbackLane(QueueWorker().apply { shutdown() }, prepare, startRefusal = { held += it })
@@ -106,6 +108,16 @@ class PolishFallbackLaneTest {
         assertEquals("a closed lane refuses, off the caller", 1, refused.size)
         refused.single().run()
         assertEquals(listOf("answer 4", "then", "raw five"), order.toList())
+    }
+
+    /** A worker that refuses the final step still runs it, off the caller (#291 review). MUTATION m7: the refusal swallowed. */
+    @Test fun aRefusedFinalStepStillRuns() {
+        val started = CopyOnWriteArrayList<Runnable>()
+        val lane = PolishFallbackLane(QueueWorker().apply { shutdown() }, prepare, startRefusal = { started += it })
+        var ran = false
+        lane.close { ran = true }
+        started.single().run()
+        assertTrue(ran)
     }
 
     /** A cleanup that throws still answers, with the raw words. */

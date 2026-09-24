@@ -27,7 +27,7 @@ New `telemetry/TakeOutcomeRecorder.kt` (proposed), one per take, built in `begin
 | `onTakeEnded`: `peakAmplitude`, `silenceStopStatus`; RECORDING: `captureTerminal` | `captureEnded(peak, silenceStatus)`, `captureTerminal(terminalReason)` |
 | `publishLive`: five route and live facts, journal RECORDING, the `live` breadcrumb | `live(routeKind, routeReason, liveAfterMs, receivedMs, forced)` |
 | `stopAndTranscribe`: `recordingSeconds`, the manual default, journal PROCESSING, the `stopped` breadcrumb | `stopped(recordingDurationMs)` |
-| ASR result: `asrMs`, `asrChars`, the `asr_done` breadcrumb; ASR failure: `asrFailure`, `asrMs` (no breadcrumb, as before) | `asrDone(ms, chars)`, `asrFailed(failure, ms)` |
+| ASR result: `asrMs`, `asrChars`, the `asr_done` breadcrumb; ASR failure: `asrFailure`, `asrMs` (no breadcrumb, as before) | `asrResult(ms, chars)` then, after the two result log lines of the owner, `asrDone()`; `asrFailed(failure, ms)` |
 | `polishAndPublish`: `recordPolish`, the `polish_done` breadcrumb, the defect | `polishDone(reason, latencyMs, statusCode, contextToken)`, which raises the defect through the owner's `reportDefect` sink |
 | the publication's `historySave` from the save's answer | `historySaved(outcome)` |
 
@@ -59,3 +59,4 @@ The coordinator keeps admission, state transitions, arbiter reservation and comm
   - The source-shape rows that named moved lines now read the recorder: `PostHogSchemaTest`, `PolishPublicationRoutesTest`, `SessionNoticePresenterTest`, `AutoPasteWiringTest`, and the `TakeContext` property count.
 - MUTATIONS m1 to m4 RED (`329-mut.py`); suite 1386, 0 failures; visibility and citation checks clean.
 - Emulator (`329-uat.py`): one spoken take into Gmail landed by COMMIT with exactly the expected text. The polish notice went through the presenter ("Polish notice shown: LOCAL_NOT_READY").
+- Code review round 1 (`329-r1`): finding 1 (the branch looked like it reverted #327 and #331) came from the branch predating those merges; it was rebased onto `origin/main`. Finding 2 adopted: the speech result's facts (`asrResult`) and its breadcrumb (`asrDone`) are split, so the breadcrumb follows the owner's two result log lines, as on main.

@@ -853,9 +853,10 @@ internal class DictationSessionCoordinator(
                     override fun onResult(text: String?) {
                         // Posted to main by the speech proxy (#253); the file delete runs on its own worker.
                         deleteCapturedAudio(audioFilePath)
-                        outcome.asrDone(host.elapsedRealtimeMs() - asrRequestedAtMs, text?.length ?: 0)
+                        outcome.asrResult(host.elapsedRealtimeMs() - asrRequestedAtMs, text?.length ?: 0)
                         log.log("Transcription result received (chars=${text?.length ?: 0})")
                         log.mark("result_received")
+                        outcome.asrDone()
                         polishAndPublish(text.orEmpty())
                     }
 

@@ -80,9 +80,14 @@ internal class TakeOutcomeRecorder(
         )
     }
 
-    fun asrDone(asrMs: Long, chars: Int) {
+    /** The speech result's two facts, stamped first, as before. */
+    fun asrResult(asrMs: Long, chars: Int) {
         facts.asrMs = asrMs
         facts.asrChars = chars
+    }
+
+    /** The `asr_done` breadcrumb, after the owner's own result log lines, as before (#329 review round 1). */
+    fun asrDone() {
         breadcrumb("take", "asr_done", mapOf("take_id" to takeId, "asr_ms" to facts.asrMs, "asr_chars" to facts.asrChars))
     }
 

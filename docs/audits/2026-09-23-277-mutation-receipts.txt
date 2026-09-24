@@ -1,7 +1,8 @@
-# #277 mutation receipts (each applied alone, its named row run, the source restored)
+# #277 mutation receipts (each applied alone, its named row run, the source restored); final run after code review round 2
 RED: m1 the owner awaits the save before deliver -> aHeldSaveNeverHoldsTheWords
 RED: m2 no saved row emits nothing -> anOutcomeWithNoSavedRowEmitsOnceAndWritesNothing
 RED: m3 the row id captured at the handoff -> theOutcomeResolvesToARowSavedAfterTheHandoff
 RED: m4 the copy reads only the setting -> aFailedHandoffBeforeTheSaveAnswersCopiesEvenWithAutoCopyOff
-RED: m5 no elapsed-since-enqueue check after the answer -> aSaveAnsweredPastTheBoundIsReportedEvenIfTheObserverSawItInTime (code review round 1)
-RED: m6 recovery skips the processing scan -> recoveryReadsAProcessingRowAsDeliveryUnknownAndADraftAsNotAttempted (code review round 1)
+RED: m5 an answer seen in time is never judged late -> aSaveAnsweredPastTheBoundIsReportedEvenIfTheObserverSawItInTime
+RED: m6 recovery skips the processing scan -> recoveryReadsAProcessingRowAsDeliveryUnknownAndADraftAsNotAttempted
+RED: m7 the rule counts an answer exactly at the bound as late -> lateIsTheSavesOwnAnswerTimeNeverTheObservers

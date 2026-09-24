@@ -325,13 +325,11 @@ class PasteAccessibilityService : AccessibilityService() {
      * Hands work to this service's main thread. The claim, the single deadline and the reason
      * there is no second one all live in [MainThreadHandoff], where they can be raced by a test.
      *
-     * The actions are the tracker's pin and pin release and the runner's `requestInsertion`, and only
-     * the first two are in-memory work. `requestInsertion` attempts the insertion inline, so it makes
-     * accessibility calls into another process and can reach the runner's `recordAndAnnounce`, which
-     * writes the clipboard, shows a Toast and posts a notification. That is why the wait after the body
-     * has claimed the work is bounded BY THE BODY rather than by a clock: against a frozen target app it
-     * lasts as long as the framework's own node timeouts. Read [MainThreadHandoff] for why waiting through
-     * that is the right trade.
+     * The actions are the tracker's pin and pin release and the runner's `requestInsertion`. Since #362
+     * `requestInsertion` admits the text and posts its first attempt, so none of them makes an
+     * accessibility call into another process. Once the main-thread body claims the handoff, the caller
+     * waits for its admission answer with no second deadline, so it cannot report a fallback while the
+     * accepted work continues; read [MainThreadHandoff] for why.
      *
      * The bound on a new action is therefore "cannot block indefinitely", not "returns instantly":
      * no file read, no database call, no network call, and no lock a caller of this may hold.

@@ -235,4 +235,19 @@ class AudioServiceShapeTest {
         }.sorted()
         assertEquals("every template and thread name must survive the move, unchanged and exactly as often", baseline.sorted(), now)
     }
+
+    /**
+     * Drift Guard (#283): the legacy file wait is reached only through the append-only AIDL method, whose binder
+     * delegation the separately installed instrumentation client uses; the service's own helper is private. Read from
+     * the compiled class, where an `internal` helper is a public method with a module-tagged name. MUTATION: `internal`.
+     */
+    @Test
+    fun theLegacyFileWaitHelperIsPrivateAndTheAidlMethodStays() {
+        val helpers = AudioCaptureService::class.java.declaredMethods.filter { it.name.startsWith("waitForFileReady") && !it.isSynthetic }
+        assertTrue("the helper exists", helpers.isNotEmpty())
+        assertTrue("every helper is private: ${helpers.map { "${it.name} ${java.lang.reflect.Modifier.toString(it.modifiers)}" }}",
+            helpers.all { java.lang.reflect.Modifier.isPrivate(it.modifiers) })
+        assertTrue(File("src/main/aidl/com/envi/wispr/audio/IAudioCaptureService.aidl").readText().contains("boolean waitForFileReady(long timeoutMs);"))
+        assertTrue(service.contains("override fun waitForFileReady(timeoutMs: Long): Boolean =\n            this@AudioCaptureService.waitForFileReady(timeoutMs)"))
+    }
 }

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.envi.wispr.history.TranscriptEntity
+import com.envi.wispr.history.HistoryRecoveryCoordinator
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.ui.RescuedWords
 import com.envi.wispr.telemetry.Telemetry
@@ -28,9 +29,10 @@ internal data class HistoryUiState(
 /** Owns the History tab (#218): the transcripts, the search, the error, and the startup recovery. */
 internal class HistoryViewModel(
     private val repository: TranscriptRepository,
-    /** The words' last resort (#288): recovered into History here, and deleted with the rows they became. */
+    /** The words' last resort (#288): deleted with the rows they became. */
     private val rescuedWords: RescuedWords,
-    private val clock: () -> Long = System::currentTimeMillis,
+    /** The start-up History recovery's one owner (#346), shared with the session owner. */
+    private val recovery: HistoryRecoveryCoordinator,
 ) : ViewModel() {
     private val historySearch = MutableStateFlow("")
     private val historyError = MutableStateFlow<String?>(null)
@@ -59,18 +61,19 @@ internal class HistoryViewModel(
     init {
         viewModelScope.launch {
             runCatching {
-                val recovered = repository.recoverStaleOpenRows(clock())
-                Telemetry.insertionsRecovered(recovered.readyRowIds)
-                Telemetry.deliveryUnknownRecovered(recovered.unknownCount)
-                // Words an earlier take could not get into History (#288); a take still tracked in this process is left alone.
-                rescuedWords.recover(repository)
+                // The application's one recovery (#346): stale rows, then rescued words (#288), each under its own
+                // guard. The first failure is shown, as before, and the prune below runs only after both succeeded.
+                recovery.recover().await().failure?.let { throw it }
                 // Rows an older build saved for a dictation with no words in them. Swept here rather
                 // than left for the user to delete, because they are the reason History could not be
                 // scanned. Nothing writes them any more, so on a phone that has run this once it
                 // deletes nothing.
                 repository.pruneWordlessRows()
             }
-                .onFailure { error -> historyError.value = error.message ?: error::class.simpleName }
+                .onFailure { error ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    historyError.value = error.message ?: error::class.simpleName
+                }
         }
     }
 
@@ -103,11 +106,12 @@ internal class HistoryViewModel(
     class Factory(
         private val repository: TranscriptRepository,
         private val rescuedWords: RescuedWords,
+        private val recovery: HistoryRecoveryCoordinator,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             require(modelClass.isAssignableFrom(HistoryViewModel::class.java))
-            return HistoryViewModel(repository, rescuedWords) as T
+            return HistoryViewModel(repository, rescuedWords, recovery) as T
         }
     }
 }

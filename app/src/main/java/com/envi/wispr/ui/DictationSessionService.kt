@@ -224,7 +224,7 @@ class DictationSessionService : Service() {
             historyWrites = ModelBootstrapApplication.historyWrites(applicationContext),
             historySaves = ModelBootstrapApplication.historySaves(applicationContext),
             rescuedWords = ModelBootstrapApplication.rescuedWords(applicationContext),
-            transcripts = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()),
+            historyRecovery = ModelBootstrapApplication.historyRecovery(applicationContext),
             languageDetector = languageDetector,
             loadPolicy = { providerConfiguration.loadPolicy() },
             lastReadPolicy = { ProviderConfigurationRepository.lastProcessRead() },

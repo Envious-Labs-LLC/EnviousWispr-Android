@@ -59,17 +59,21 @@ class AsrWatchdogTest {
     }
 
     /**
-     * Row 4, Drift Guard: the load, the release and each whole transcription task (the read, the conversion and the
-     * decode, on both entry points) run inside the watchdog, and readiness drops once it fires. MUTATION m4: the file
-     * path's task unguarded.
+     * Row 4, Drift Guard: every task on the only worker runs whole inside the watchdog, by construction. The model
+     * owner wraps each submitted task (its admission, work, delivery or refusal) and the release; the service hands
+     * it the watchdog and a bound for the load and for each transcription, sized before the task runs. MUTATION m4:
+     * the owner's submit unbounded.
      */
-    @Test fun everyNativeTaskIsGuarded() {
+    @Test fun everyWorkerTaskIsBoundedByTheOwner() {
+        val owner = java.io.File("src/main/java/com/envi/wispr/asr/RecognizerOwner.kt").readText()
+        assertTrue(owner.contains("worker.execute { bounded(boundMs, what) { if (closed.get()) refused() else task() } }"))
+        assertTrue(owner.contains("bounded(releaseBoundMs, \"the recognizer release\") {"))
+        assertEquals("the owner's only worker submissions: the bounded task and the bounded release", 2, Regex("""worker\.execute \{""").findAll(owner).count())
         val service = java.io.File("src/main/java/com/envi/wispr/asr/AsrService.kt").readText()
-        assertTrue(service.contains("owner.load { watchdog.guard(AsrBounds.LOAD_BOUND_MS, \"the model load\") { initRecognizer() } }"))
-        assertTrue(service.contains("watchdog.guard(AsrBounds.RELEASE_BOUND_MS, \"the recognizer release\") { recognizer.release() }"))
-        val uses = Regex("""owner\.use\(refused = \{[^}]*\}\) \{ rec ->\s*\n\s*(\S+)""").findAll(service).map { it.groupValues[1] }.toList()
-        assertEquals("both entry points run their whole task bounded: $uses", listOf("bounded(audioData.size.toLong())", "bounded(file.length())"), uses)
-        assertTrue(service.contains("return watchdog.guard(boundMs, \"a transcription\") { work() }"))
+        assertTrue(service.contains("if (watchdog.guard(boundMs, what, task) == null) {"))
+        assertTrue(service.contains("releaseBoundMs = AsrBounds.RELEASE_BOUND_MS,"))
+        assertTrue(service.contains("owner.load(AsrBounds.LOAD_BOUND_MS) { initRecognizer() }"))
+        assertEquals("both entry points pass a sized bound", 2, Regex("""owner\.use\(transcriptionBoundMs\(""").findAll(service).count())
         assertTrue(service.contains("override fun isReady(): Boolean = owner.isReady && !watchdog.wedged"))
     }
 

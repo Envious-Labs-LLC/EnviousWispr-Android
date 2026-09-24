@@ -66,3 +66,13 @@ Three findings, all adopted:
 A wedged release ends the process while the service is being destroyed. If Android started a replacement service in the same process meanwhile, its take sees a disconnect and ends `ASR_PROCESS_DIED`: bounded, and only after a native release that never returned.
 
 Mutations m1 to m6 are RED on fresh compiles.
+
+## 6. Code review round 2 (Codex) and the class, closed at the producer
+
+Two findings of the class round 1 opened: work on `:asr`'s only worker that runs outside the bound (the file length read before the task's bound; the delivery and an in-worker refusal after it). Second round of the class, so it was closed where tasks are produced rather than patched per site.
+
+**Producer:** `RecognizerOwner` is the only submitter to the worker (`worker.execute` in `submit` and in `close`, nothing else in `asr/`). It now takes `bounded(boundMs, what, task)` and `releaseBoundMs`: `submit` runs the admission, the work, the delivery or discard and the refusal inside one bound; `close` runs the release inside its bound and only `after` (the scheduler's `shutdown`, which cannot block) outside. `load` and `use` take their bound; `AsrService` passes `LOAD_BOUND_MS` and `transcriptionBoundMs(audioBytes)`, the file's length read once on the binder thread before `owner.use`. The per-caller helper and the release's own guard are gone.
+
+Tests: `RecognizerOwnerTest.everyWorkerTaskRunsWholeInsideTheBound` records the load, a use with its delivery and the release each inside with its bound (m7: the release outside); `AsrWatchdogTest.everyWorkerTaskIsBoundedByTheOwner` pins the two submissions and both production bounds (m4: the owner's submit unbounded).
+
+Mutations m1 to m7 are RED on fresh compiles.

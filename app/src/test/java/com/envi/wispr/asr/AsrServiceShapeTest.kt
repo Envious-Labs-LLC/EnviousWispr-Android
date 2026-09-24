@@ -48,7 +48,7 @@ class AsrServiceShapeTest {
     // REVERT R10 (one refusal reports AsrFailureReason.UNKNOWN) turns this red.
     @Test
     fun closedRequestsAreWiredToModelNotLoaded() {
-        val calls = Regex("""owner\.use\(refused = \{ ([^}]*) \}\)""").findAll(service).map { it.groupValues[1] }.toList()
+        val calls = Regex("""owner\.use\([^,]*, refused = \{ ([^}]*) \}\)""").findAll(service).map { it.groupValues[1] }.toList()
         assertEquals("the file path and the legacy byte path", 2, calls.size)
         calls.forEach { refusal ->
             assertEquals("failure.report(AsrFailureReason.MODEL_NOT_LOADED, \"\")", refusal)

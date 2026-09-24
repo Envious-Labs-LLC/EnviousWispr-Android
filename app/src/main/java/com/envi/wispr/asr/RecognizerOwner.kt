@@ -14,11 +14,17 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The `closed` read at the head of a worker task is that task's admission point. A task that reads false
  * may finish even if [close] flips right after; the release is queued behind it. A task that reads true
  * calls its refusal once and never reads [recognizer]; such a wrapper may run after the release.
+ *
+ * Every task on [worker] runs WHOLE inside [bounded] (#357): its admission, its work, its delivery or discard, its
+ * refusal, and the release. The worker is the process's only one and a native call on it ignores interrupts, so
+ * this is the one place a task can be bounded completely; no caller wraps a part of one.
  */
 internal class RecognizerOwner<R : Any>(
     private val worker: ExecutorService,
     private val free: (R) -> Unit,
     private val discarded: () -> Unit,
+    private val releaseBoundMs: Long = 0L,
+    private val bounded: (boundMs: Long, what: String, task: () -> Unit) -> Unit = { _, _, task -> task() },
 ) {
     private val closed = AtomicBoolean(false)
 
@@ -32,7 +38,7 @@ internal class RecognizerOwner<R : Any>(
     val isReady: Boolean
         get() = !closed.get() && ready
 
-    fun load(open: () -> R?) = submit(refused = {}) {
+    fun load(boundMs: Long = 0L, open: () -> R?) = submit(boundMs, "the model load", refused = {}) {
         val opened = open()
         recognizer = opened
         ready = opened != null
@@ -44,7 +50,7 @@ internal class RecognizerOwner<R : Any>(
      * [discarded] runs. The check is best-effort: a synchronous callback already in flight when [close]
      * flips still arrives. After close, [refused] runs instead, exactly once.
      */
-    fun use(refused: () -> Unit, work: (R?) -> () -> Unit) = submit(refused) {
+    fun use(boundMs: Long = 0L, refused: () -> Unit, work: (R?) -> () -> Unit) = submit(boundMs, "a transcription", refused) {
         val deliver = work(recognizer)
         if (closed.get()) discarded() else deliver()
     }
@@ -59,10 +65,12 @@ internal class RecognizerOwner<R : Any>(
         try {
             worker.execute {
                 try {
-                    val current = recognizer
-                    recognizer = null
-                    ready = false
-                    if (current != null) free(current)
+                    bounded(releaseBoundMs, "the recognizer release") {
+                        val current = recognizer
+                        recognizer = null
+                        ready = false
+                        if (current != null) free(current)
+                    }
                 } finally {
                     after()
                 }
@@ -74,9 +82,9 @@ internal class RecognizerOwner<R : Any>(
         worker.shutdown()
     }
 
-    private fun submit(refused: () -> Unit, task: () -> Unit) {
+    private fun submit(boundMs: Long, what: String, refused: () -> Unit, task: () -> Unit) {
         try {
-            worker.execute { if (closed.get()) refused() else task() }
+            worker.execute { bounded(boundMs, what) { if (closed.get()) refused() else task() } }
         } catch (_: RejectedExecutionException) {
             refused()
         }

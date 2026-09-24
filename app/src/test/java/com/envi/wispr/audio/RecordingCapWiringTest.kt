@@ -54,7 +54,7 @@ class RecordingCapWiringTest {
         )
         assertTrue(
             "the speech engine must refuse against the owner's ceiling",
-            asr.contains("if (file.length() > RecordingLimits.MAX_AUDIO_BYTES) {"),
+            asr.contains("if (audioBytes > RecordingLimits.MAX_AUDIO_BYTES) {"),
         )
     }
 

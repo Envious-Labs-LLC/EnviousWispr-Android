@@ -291,4 +291,40 @@ class RecognizerOwnerTest {
         emptyWorker.awaitTerminatedOrFail()
         assertEquals(listOf("after"), events.toList())
     }
+
+    /**
+     * #357 review round 2: every worker task runs whole inside the owner's bound, named, with its bound: the load,
+     * a use (its delivery included) and the release. MUTATION m7: the release outside the bound.
+     */
+    @Test
+    fun everyWorkerTaskRunsWholeInsideTheBound() {
+        val worker = worker()
+        val inside = Collections.synchronizedList(mutableListOf<String>())
+        val owner = RecognizerOwner<Recognizer>(
+            worker,
+            free = { events += "free" },
+            discarded = { events += "discarded" },
+            releaseBoundMs = 7L,
+            bounded = { boundMs, what, task ->
+                inside += "enter $what $boundMs"
+                task()
+                inside += "exit $what"
+            },
+        )
+        owner.load(5L) { Recognizer("parakeet") }
+        val delivered = CountDownLatch(1)
+        owner.use(6L, refused = { events += "refused" }) { _ -> { events += "delivered"; inside += "delivery"; delivered.countDown() } }
+        delivered.awaitOrFail("the delivery")
+        owner.close()
+        worker.awaitTerminatedOrFail()
+        assertEquals(
+            listOf(
+                "enter the model load 5", "exit the model load",
+                "enter a transcription 6", "delivery", "exit a transcription",
+                "enter the recognizer release 7", "exit the recognizer release",
+            ),
+            inside.toList(),
+        )
+        assertEquals(listOf("delivered", "free"), events.toList())
+    }
 }

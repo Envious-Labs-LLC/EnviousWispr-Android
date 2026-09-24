@@ -16,7 +16,7 @@ Persona: the founder. No visible change today. A future provider that needs no k
 
 ## 0. TL;DR
 
-`architecture-rules.md` RULE: gate-on-capability-not-identity-literal. The enumeration of identity comparisons on `Provider` in `app/src/main` finds two key gates and three legitimate identity uses:
+`architecture-rules.md` RULE: gate-on-capability-not-identity-literal. The sweep found two identity-based missing-key gates, both changed here. Remaining identity branches select provider-specific text, links, artwork, models, adapters, disclosures, or match state to its provider; they do not decide whether a key is required (code review round 1). The gates and the closest identity uses:
 
 - Gate: `polishStatusChip`, where the red dot for a missing key named OpenAI, Gemini and Claude. It now reads `capabilities().requiresApiKey`. The label stays an exhaustive identity `when` (`labelFor`), because what the badge names IS identity.
 - Gate: `PolishLadder.cloudTap`, which activated Cloud for `SELF_HOSTED_POLISH` by name. It now activates a provider whose capability needs no key.

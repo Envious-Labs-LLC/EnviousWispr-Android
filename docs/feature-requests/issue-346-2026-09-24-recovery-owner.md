@@ -58,3 +58,5 @@ Behaviour change, declared: on the History side, a failed stale-row recovery no 
   - The stale-row step is bounded (`STALE_RECOVERY_BOUND_MS`, 5 s, a named `StaleRecoveryTimeout`), so a stalled scan never holds the rescue step, History or a later recovery (m7).
   - A follow-up is shared only while it is active. A cancelled one is cleared, and `current` names the run in flight until the follow-up begins (m6).
   - The real-Room timeout the round suggests is not run: the cut-off relies on Room suspend queries being cancellable, and on the idempotence of both steps (the stale scan is an update, and the rescue write is idempotent by take id since #288).
+- Code review round 2: ALL-CLEAR.
+- Final: rebased onto origin/main. Emulator (`346-uat.py`): a spoken take landed by COMMIT with exactly the expected text. History then opened with its rows and no error, and no recovery warning was logged. m1 to m7 RED.

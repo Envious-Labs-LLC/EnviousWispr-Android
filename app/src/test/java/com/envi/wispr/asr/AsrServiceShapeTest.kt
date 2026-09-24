@@ -38,6 +38,7 @@ class AsrServiceShapeTest {
         assertEquals(
             listOf(
                 "owner.close()",
+                "watchdogScheduler.shutdown()",
                 "super.onDestroy()",
                 "DebugLogger.log(TAG, \"AsrService destroyed; recognizer release queued\")",
             ),

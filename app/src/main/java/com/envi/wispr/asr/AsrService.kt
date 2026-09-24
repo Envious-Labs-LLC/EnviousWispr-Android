@@ -9,6 +9,7 @@ import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
+import com.envi.wispr.process.EngineDeadline
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
@@ -42,6 +43,16 @@ class AsrService : Service() {
 
     private val transcriptionExecutor: ExecutorService = Executors.newSingleThreadExecutor {
         Thread(it, "AsrTranscriptionThread").apply { isDaemon = true }
+    }
+
+    /** The watchdog's own thread (#357): never the worker it bounds. */
+    private val watchdogScheduler = Executors.newSingleThreadScheduledExecutor {
+        Thread(it, "AsrWatchdog").apply { isDaemon = true }
+    }
+
+    private val watchdog = AsrWatchdog(EngineDeadline(watchdogScheduler)) { why ->
+        DebugLogger.warn(TAG, "Ending the speech process: $why")
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     /** Load, every decode and the release run on [transcriptionExecutor], in that order (#212). */
@@ -111,7 +122,7 @@ class AsrService : Service() {
             }
         }
 
-        override fun isReady(): Boolean = owner.isReady
+        override fun isReady(): Boolean = owner.isReady && !watchdog.wedged
     }
 
     private fun transcribeFromFile(audioFilePath: String, takeId: String, callback: IAsrCallback?, failure: FailureReporter) {
@@ -176,14 +187,18 @@ class AsrService : Service() {
 
             val t0 = SystemClock.elapsedRealtime()
 
-            val stream = rec.createStream()
-            val result = try {
-                stream.acceptWaveform(samples, SAMPLE_RATE)
-                rec.decode(stream)
-                rec.getResult(stream)
-            } finally {
-                stream.release()
-            }
+            // Bounded past the owner's own request bound (#357): a decode that never returns ends this process.
+            val decodeBoundMs = AsrBounds.requestBoundMs((durationSec * 1000f).toLong()) + AsrBounds.DECODE_GRACE_MS
+            val result = watchdog.guard(decodeBoundMs, "a decode") {
+                val stream = rec.createStream()
+                try {
+                    stream.acceptWaveform(samples, SAMPLE_RATE)
+                    rec.decode(stream)
+                    rec.getResult(stream)
+                } finally {
+                    stream.release()
+                }
+            } ?: return { DebugLogger.warn(TAG, "A decode returned after its bound; the process is ending") }
 
             val decodeMs = SystemClock.elapsedRealtime() - t0
             val text = result.text.trim()
@@ -213,12 +228,14 @@ class AsrService : Service() {
         super.onCreate()
         DebugLogger.log(TAG, "AsrService created (PID: ${android.os.Process.myPid()})")
         // Receipt verification and native model loading are deliberately off the service main thread.
-        owner.load { initRecognizer() }
+        owner.load { watchdog.guard(AsrBounds.LOAD_BOUND_MS, "the model load") { initRecognizer() } }
     }
 
     override fun onDestroy() {
         // Never waits and never frees here: the release is queued behind the decode in flight (#212).
         owner.close()
+        // An armed bound survives `shutdown` (never `shutdownNow`), so a decode still wedged here still ends the process.
+        watchdogScheduler.shutdown()
         super.onDestroy()
         DebugLogger.log(TAG, "AsrService destroyed; recognizer release queued")
     }

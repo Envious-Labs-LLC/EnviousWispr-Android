@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.asr.AsrBounds
 /**
  * The take's one speech request, bounded (#356). A `:asr` process that dies is seen by its connection; one that
  * stays alive and never answers (a native decode that never returns) was seen by nothing, and the take stayed in
@@ -31,7 +32,7 @@ internal class SpeechWait(private val host: SessionHost) {
         if (state != State.NEW) return false
         state = State.OPEN
         this.onExpired = onExpired
-        host.postToMainDelayed(boundMs(audioMs), expiry)
+        host.postToMainDelayed(AsrBounds.requestBoundMs(audioMs), expiry)
         true
     }
 
@@ -46,18 +47,5 @@ internal class SpeechWait(private val host: SessionHost) {
         state = State.DONE
         if (wasOpen) host.cancelMainDelayed(expiry)
         wasOpen
-    }
-
-    internal companion object {
-        /** Covers a cold model load queued ahead of the decode, and a short take on a slow phone. */
-        const val BASE_MS = 20_000L
-
-        /**
-         * Per second of audio. The S26 decodes at a real-time factor of 0.05 to 0.12 (session log), so a healthy
-         * decode uses at most a quarter of this; a ten-minute take is bounded at 320 s.
-         */
-        const val PER_AUDIO_SECOND_MS = 500L
-
-        fun boundMs(audioMs: Long): Long = BASE_MS + audioMs.coerceAtLeast(0L) * PER_AUDIO_SECOND_MS / 1_000L
     }
 }

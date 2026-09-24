@@ -99,7 +99,7 @@ internal class DictationSessionRig {
      */
     fun awaitHistoryIdle() {
         val landed = CountDownLatch(1)
-        check(historyWrites.enqueue("test marker") { landed.countDown() }) { "the History queue refused a write" }
+        check(historyWrites.enqueue("test marker", com.envi.wispr.history.WriteKind.TERMINAL) { landed.countDown() } == com.envi.wispr.history.Enqueued.ACCEPTED) { "the History queue refused a write" }
         check(landed.await(10, TimeUnit.SECONDS)) { "the History queue never drained; log: ${log.lines}" }
     }
     val polishTimeout = FakePolishTimeout()

@@ -83,3 +83,7 @@ The class is closed: both worker submitters enter the bound; outside it only the
 
 - Adopted: the `boundMs`, `releaseBoundMs` and `bounded` parameters had defaults that would let a future production call run unbounded. They are required now; the ordering rows pass a named placeholder with a direct `bounded`.
 - Rejected: a decode that returns just after its expiry can deliver before `guard` learns it lost. The expiry ends the process at once, so the window is the kill's own latency. The words delivered in it are the real transcript: an owner that already ended the take drops them (`SpeechWait.answer`, `SpeechWaitTest` row 2), and an owner still waiting takes correct words. A test for that window cannot be staged deterministically.
+
+## 8. Code review round 4 (Codex)
+
+One finding, rejected here and routed: a transcript delivered in the kill's latency window is accepted and sent to polish; the disconnect that follows takes the #234 speech-loss fallback, which cancels a still-running polish and publishes the deterministic text with the polish notice. The words are never lost. The proposed fix (take the fallback only while the speech request is open) removes that fallback for every speech death after an answer, since words arrive only through the answer, so it reverses #234's decision rather than fixing #357. Filed as #365 with the question and the evidence to gather.

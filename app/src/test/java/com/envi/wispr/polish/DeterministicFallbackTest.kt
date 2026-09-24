@@ -129,8 +129,31 @@ class DeterministicFallbackTest {
         val guard = source.indexOf("if (policy == null) {")
         assertTrue("the null guard exists", guard >= 0)
         val body = source.substring(guard, source.indexOf("return", guard))
-        assertTrue(body.contains("PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.UNEXPECTED, 0, 0)"))
+        // Since #291 the answer comes from the fallback lane, off the binder thread.
+        assertTrue(body.contains("fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it) }"))
         assertTrue("before the request is registered", guard < source.indexOf("registry.register(requestId)"))
         assertTrue("before any pipeline work", guard < source.indexOf("PolishPipeline.run("))
+    }
+
+    /**
+     * #291: the AIDL request entry prepares nothing on its binder thread. Inside `accept` there is no cleanup and no
+     * budget file read; each of the three failure answers goes through the fallback lane with its reason, and `cancel`
+     * reaches the lane. Source shape: the service needs its own process. MUTATION m5: one branch reverts to the inline
+     * `deliver(callback, PolishOutcome(requestId, fallbackText(raw, options), ...))`.
+     */
+    @Test fun theRequestEntryPreparesNothingOnItsBinderThread() {
+        val source = java.io.File("src/main/java/com/envi/wispr/polish/PolishService.kt").readText()
+        val accept = source.substringAfter("private fun accept(").substringBefore("\n        override fun warmUpWithPolicy(")
+        assertFalse("no cleanup on the binder thread", accept.contains("fallbackText("))
+        assertEquals("one budget read", 1, accept.split("localBudget(").size - 1)
+        val queued = accept.substringAfter("executor.execute {").substringBefore("\n")
+        assertTrue("the budget is read inside the queued work, never on the binder thread", queued.contains("localBudget()"))
+        assertEquals(
+            "the three failure answers, each through the lane with its reason",
+            listOf("UNEXPECTED", "LOCAL_FAILED", "UNEXPECTED"),
+            Regex("""fallbackLane\.answer\(requestId, raw, options, PolishReason\.(\w+)\) \{ deliver\(callback, it\) \}""").findAll(accept).map { it.groupValues[1] }.toList(),
+        )
+        val cancel = source.substringAfter("override fun cancel(requestId: Long) {").substringBefore("\n        }")
+        assertTrue(cancel.contains("fallbackLane.cancel(requestId)"))
     }
 }

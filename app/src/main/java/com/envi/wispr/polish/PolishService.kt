@@ -40,6 +40,15 @@ class PolishService : Service() {
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "S1PolishThread")
     }
+
+    /**
+     * The failure answers' own worker (#291): never the binder thread, never [executor], which may be wedged (#75).
+     * A daemon, so it never holds the process open.
+     */
+    private val fallbackLane = PolishFallbackLane(
+        worker = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "PolishFallbackThread").apply { isDaemon = true } },
+        prepare = { raw, options -> fallbackText(raw, options) },
+    )
     private lateinit var secrets: SecretStore
     private val providerClient = ProviderPolishClient()
     private val registry = PolishRequestRegistry()
@@ -155,36 +164,27 @@ class PolishService : Service() {
             // user's Off (#278). Answer the deterministic text as UNEXPECTED, which raises its defect.
             if (policy == null) {
                 DebugLogger.warn(TAG, "Polish request $requestId carried no policy")
-                deliver(
-                    callback,
-                    PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.UNEXPECTED, 0, 0),
-                )
+                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it) }
                 return
             }
             val effectivePolicy: PolishPolicy = policy
             if (poisoned.get()) {
                 // This process is ending after a timeout; a request queued behind the wedged worker would only
-                // learn that when the process died. Answer now.
-                deliver(
-                    callback,
-                    PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.LOCAL_FAILED, 0, 0),
-                )
+                // learn that when the process died. Answer now, from the fallback lane (#291).
+                fallbackLane.answer(requestId, raw, options, PolishReason.LOCAL_FAILED) { deliver(callback, it) }
                 return
             }
             val entry = registry.register(requestId)?.also { it.takeId = takeId }
             if (entry == null) {
                 DebugLogger.warn(TAG, "Refusing polish request $requestId: id already registered")
-                deliver(
-                    callback,
-                    PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.UNEXPECTED, 0, 0),
-                )
+                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it) }
                 return
             }
-            val budget = localBudget()
             val tracksLocal = effectivePolicy is PolishPolicy.LocalS1
             if (tracksLocal) activeLocalRequests.incrementAndGet()
             try {
-                executor.execute { work(entry, callback, requestId, raw, options, effectivePolicy, budget, tracksLocal) }
+                // The budget's debug override is a file read (#291): it happens on the worker, never on this binder thread.
+                executor.execute { work(entry, callback, requestId, raw, options, effectivePolicy, localBudget(), tracksLocal) }
             } catch (failure: RuntimeException) {
                 if (tracksLocal) activeLocalRequests.decrementAndGet()
                 registry.release(entry)
@@ -200,6 +200,7 @@ class PolishService : Service() {
 
         override fun cancel(requestId: Long) {
             registry.cancel(requestId)
+            fallbackLane.cancel(requestId)
         }
 
         override fun isLocalModelReady(): Boolean = modelReady
@@ -430,10 +431,8 @@ class PolishService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
-        // Before the kill branch: that branch ends the process without returning here, and a released
-        // model costs nothing on a path that was about to die anyway. `close` is a no-op when no
-        // detection ever loaded a model.
-        if (::languageDetector.isInitialized) languageDetector.close()
+        // The kill condition FIRST (#291): that branch ends the process without closing the detector or waiting for
+        // any fallback answer, so nothing a fallback task holds can delay it.
         if (mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get())) {
             // Orderly destruction would cancel the deadline timer and queue the runtime close behind a
             // worker that may be wedged (#75). The client has already unbound; nothing is owed to it.
@@ -443,6 +442,9 @@ class PolishService : Service() {
             endProcess(why)
             return
         }
+        // Orderly: the detector closes behind every admitted fallback answer, so each detects with a live detector
+        // (#291); `close` is a no-op when no detection ever loaded a model.
+        fallbackLane.close { if (::languageDetector.isInitialized) languageDetector.close() }
         registry.cancelAll()
         deadlineScheduler.shutdownNow()
         executor.execute {

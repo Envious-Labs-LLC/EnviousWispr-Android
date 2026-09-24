@@ -82,8 +82,8 @@ internal object TelemetryChannels {
         PolishReason.CANCELLED, PolishReason.HTTP_ERROR, PolishReason.HTTP_KEY_REJECTED,
         PolishReason.HTTP_OUT_OF_CREDITS, PolishReason.HTTP_INPUT_TOO_LONG, PolishReason.HTTP_CONTENT_BLOCKED,
         PolishReason.INVALID_CONFIGURATION, PolishReason.MALFORMED_RESPONSE, PolishReason.RESPONSE_TOO_LARGE,
-        PolishReason.REDIRECT_REJECTED, PolishReason.SERVICE_UNAVAILABLE, PolishReason.SERVICE_DIED,
-        PolishReason.CALL_FAILED,
+        PolishReason.REDIRECT_REJECTED, PolishReason.SERVICE_UNAVAILABLE, PolishReason.SETTINGS_UNREADABLE,
+        PolishReason.SERVICE_DIED, PolishReason.CALL_FAILED,
         -> Channel.BREADCRUMB
 
         PolishReason.CLEANUP_RECOVERED, PolishReason.LOCAL_FAILED, PolishReason.LOCAL_TIMEOUT,
@@ -104,8 +104,8 @@ internal object TelemetryChannels {
         PolishReason.CANCELLED, PolishReason.HTTP_ERROR, PolishReason.HTTP_KEY_REJECTED,
         PolishReason.HTTP_OUT_OF_CREDITS, PolishReason.HTTP_INPUT_TOO_LONG, PolishReason.HTTP_CONTENT_BLOCKED,
         PolishReason.INVALID_CONFIGURATION, PolishReason.MALFORMED_RESPONSE, PolishReason.RESPONSE_TOO_LARGE,
-        PolishReason.REDIRECT_REJECTED, PolishReason.SERVICE_UNAVAILABLE, PolishReason.SERVICE_DIED,
-        PolishReason.CALL_FAILED,
+        PolishReason.REDIRECT_REJECTED, PolishReason.SERVICE_UNAVAILABLE, PolishReason.SETTINGS_UNREADABLE,
+        PolishReason.SERVICE_DIED, PolishReason.CALL_FAILED,
         -> null
     }
 

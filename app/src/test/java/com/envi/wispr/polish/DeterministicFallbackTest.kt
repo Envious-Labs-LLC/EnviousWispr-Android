@@ -117,4 +117,20 @@ class DeterministicFallbackTest {
         assertEquals("hello world", PolishFallback.deterministic("uh hello world", CleanupOptions(removeFillers = true), silent))
         assertEquals("uh hello world", PolishFallback.deterministic("uh hello world", CleanupOptions(removeFillers = false), silent))
     }
+
+    /**
+     * #278: a request with no policy is a protocol fault, never the user's Off. The engine answers the
+     * deterministic text as UNEXPECTED (a defect-channel reason) before it registers the request or runs any
+     * pipeline. Source shape: the service needs its own process. MUTATION m6: restore `policy ?: PolishPolicy.Off`.
+     */
+    @Test fun aRequestWithNoPolicyAnswersTheDeterministicTextAsUnexpected() {
+        val source = java.io.File("src/main/java/com/envi/wispr/polish/PolishService.kt").readText()
+        assertFalse("a null policy never reads as Off", source.contains("policy ?: PolishPolicy.Off"))
+        val guard = source.indexOf("if (policy == null) {")
+        assertTrue("the null guard exists", guard >= 0)
+        val body = source.substring(guard, source.indexOf("return", guard))
+        assertTrue(body.contains("PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.UNEXPECTED, 0, 0)"))
+        assertTrue("before the request is registered", guard < source.indexOf("registry.register(requestId)"))
+        assertTrue("before any pipeline work", guard < source.indexOf("PolishPipeline.run("))
+    }
 }

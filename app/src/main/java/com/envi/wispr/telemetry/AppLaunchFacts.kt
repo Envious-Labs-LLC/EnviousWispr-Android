@@ -27,7 +27,7 @@ internal object AppLaunchFacts {
 
     suspend fun read(context: Context, freshInstall: Boolean): AnalyticsEvent.AppLaunched {
         val preferences = runCatching { AppPreferences(context).authoritativeState.first() }.getOrNull()
-        val policy = runCatching { PolishContext.from(ProviderConfigurationRepository(context).loadPolicy()).encode() }.getOrDefault(UNKNOWN)
+        val policy = runCatching { ProviderConfigurationRepository(context).loadPolicy().freshPolicy?.let { PolishContext.from(it).encode() } }.getOrNull() ?: UNKNOWN
         val customWords = runCatching { CustomTermRepository(context).list().size }.getOrNull()
         return AnalyticsEvent.AppLaunched(
             deviceModel = Build.MODEL.orEmpty(),

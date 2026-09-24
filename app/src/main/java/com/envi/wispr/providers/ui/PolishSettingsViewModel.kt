@@ -126,7 +126,7 @@ internal class PolishSettingsViewModel(
 
     /** The polish policy as the `polish_policy` token, read from the repository inside the write lock. */
     private fun polishPolicyToken(): String =
-        runCatching { PolishContext.from(providerRepository.loadPolicy()).encode() }.getOrDefault(AppLaunchFacts.UNKNOWN)
+        providerRepository.loadPolicy().freshPolicy?.let { PolishContext.from(it).encode() } ?: AppLaunchFacts.UNKNOWN
 
     /** A mode tap on the tab. Returns the request sequence of the write it queued. */
     fun setPolishMode(mode: PolishMode): Int {

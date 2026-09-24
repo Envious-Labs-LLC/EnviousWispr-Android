@@ -46,6 +46,7 @@ class PolishFailureTest {
             PolishReason.LOCAL_NOT_READY to PolishFailure.LOCAL_NOT_READY,
             PolishReason.LOCAL_FAILED to PolishFailure.UNEXPECTED,
             PolishReason.SERVICE_UNAVAILABLE to PolishFailure.UNEXPECTED,
+            PolishReason.SETTINGS_UNREADABLE to PolishFailure.UNEXPECTED,
             PolishReason.SERVICE_DIED to PolishFailure.UNEXPECTED,
             PolishReason.CALL_FAILED to PolishFailure.UNEXPECTED,
             PolishReason.UNEXPECTED to PolishFailure.UNEXPECTED,

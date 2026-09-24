@@ -96,6 +96,8 @@ class TelemetryContractsTest {
             "polish_service_unavailable" to "polish.service_unavailable",
             "polish_service_died" to "polish.service_died",
             "polish_call_failed" to "polish.call_failed",
+            // #278: the stored polish policy could not be read at take start.
+            "polish_policy_unreadable" to "polish.policy_unreadable",
             // #235: the History save did not answer within the owner's bound.
             "history_save_timed_out" to "history.save_timed_out",
             "history_contract_violation" to "history.contract_violation",

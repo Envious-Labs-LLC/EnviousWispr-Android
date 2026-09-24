@@ -49,6 +49,9 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
     /** The polish service refused its bind, or was bound and never connected before speech answered; the take published the deterministic text (#234). */
     object PolishServiceUnavailable : AppDefect("polish_service_unavailable", "polish.service_unavailable")
 
+    /** The stored polish policy could not be read at take start; the take ran on the last read policy or published the deterministic text (#278). */
+    object PolishPolicyUnreadable : AppDefect("polish_policy_unreadable", "polish.policy_unreadable")
+
     /** The polish process died while a take was live; the take published the deterministic text (#234). */
     object PolishServiceDied : AppDefect("polish_service_died", "polish.service_died")
 
@@ -78,7 +81,7 @@ internal sealed class AppDefect(val fingerprint: String, val semanticId: String,
         fun all(): List<AppDefect> = listOf(
             VadCallWedged("test"), LocalPolishDeadline, PolishProtocolViolation, CaptureStillRunningAfterStop,
             CaptureReleaseWedged, AsrDecodeFailed(null), AsrOverLimit, CleanupRecovered, LocalPolishFailed, PolishUnexpected,
-            PolishWatchdogTimeout, PolishServiceUnavailable, PolishServiceDied, PolishCallFailed,
+            PolishWatchdogTimeout, PolishServiceUnavailable, PolishPolicyUnreadable, PolishServiceDied, PolishCallFailed,
             HistorySaveTimedOut, HistoryContractViolation(null), PolishPreparationFailed, SilenceWriterExitWedged, DebugProbe,
         )
     }

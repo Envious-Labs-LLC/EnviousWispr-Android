@@ -73,8 +73,8 @@ internal object SentrySchema {
         is AppDefect.VadCallWedged, AppDefect.LocalPolishDeadline, AppDefect.PolishProtocolViolation,
         AppDefect.CaptureStillRunningAfterStop, AppDefect.CaptureReleaseWedged, is AppDefect.AsrDecodeFailed,
         AppDefect.AsrOverLimit, AppDefect.CleanupRecovered, AppDefect.LocalPolishFailed, AppDefect.PolishUnexpected,
-        AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishServiceDied,
-        AppDefect.PolishCallFailed, AppDefect.HistorySaveTimedOut, is AppDefect.HistoryContractViolation,
+        AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishPolicyUnreadable,
+        AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.HistorySaveTimedOut, is AppDefect.HistoryContractViolation,
         AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.DebugProbe,
         -> defect.semanticId
     }
@@ -84,8 +84,8 @@ internal object SentrySchema {
         AppDefect.VadCallWedged("start"), AppDefect.LocalPolishDeadline, AppDefect.PolishProtocolViolation,
         AppDefect.CaptureStillRunningAfterStop, AppDefect.CaptureReleaseWedged, AppDefect.AsrDecodeFailed(null),
         AppDefect.AsrOverLimit, AppDefect.CleanupRecovered, AppDefect.LocalPolishFailed, AppDefect.PolishUnexpected,
-        AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishServiceDied,
-        AppDefect.PolishCallFailed, AppDefect.HistorySaveTimedOut, AppDefect.HistoryContractViolation(null),
+        AppDefect.PolishWatchdogTimeout, AppDefect.PolishServiceUnavailable, AppDefect.PolishPolicyUnreadable,
+        AppDefect.PolishServiceDied, AppDefect.PolishCallFailed, AppDefect.HistorySaveTimedOut, AppDefect.HistoryContractViolation(null),
         AppDefect.PolishPreparationFailed, AppDefect.SilenceWriterExitWedged, AppDefect.DebugProbe,
     )
 

@@ -53,6 +53,18 @@ class TakePreparationBoundTest {
         rig.surface.awaitShown()
     }
 
+    /**
+     * The subject's own start timings: the bind came at least [boundMs] and well under a second past it after the
+     * settings answered, so the take waited for the bound and no longer.
+     */
+    private fun assertBoundHeld(boundMs: Long) {
+        rig.polish.awaitRequest().onOutcome(rig.polish.outcome("Hello envious."))
+        rig.endings.awaitOne()
+        val facts = rig.endings.facts.single()
+        val waited = checkNotNull(facts.bindRequestedMs) - checkNotNull(facts.settingsAnswerMs)
+        assertTrue("waited $waited ms for a $boundMs ms bound", waited in boundMs until boundMs + 1_000L)
+    }
+
     /** The raw text the polish request carried: the vocabulary restoration shows whether the matcher was used. */
     private fun rawSentToPolish(coordinator: DictationSessionCoordinator): String? {
         rig.command(coordinator, DictationSessionService.ACTION_STOP)
@@ -75,6 +87,7 @@ class TakePreparationBoundTest {
         goLive(coordinator)
         assertEquals("no custom word was restored", "hello envious", rawSentToPolish(coordinator))
         assertEquals(listOf("timeout"), preparationDefects().map { it.second["kind"] })
+        assertBoundHeld(100L)
     }
 
     /** A healthy matcher still restores the custom words (the control for rows 1 and 3). */
@@ -99,6 +112,7 @@ class TakePreparationBoundTest {
         assertEquals(lastRead, rig.polish.lastPolicy)
         assertEquals(listOf("polish_policy_unreadable"), policyDefects())
         assertTrue(preparationDefects().isEmpty())
+        assertBoundHeld(100L)
     }
 
     /**
@@ -135,28 +149,48 @@ class TakePreparationBoundTest {
     }
 
     /**
-     * Row 7. A take torn down during the preparation wait (the service destroyed while STARTING; a cancel command in
-     * STARTING is held until live, so it cannot end the take here) reports nothing and binds nothing. MUTATION m7: the
-     * fallbacks taken before the STARTING check (the matcher defect is then reported for a take that is gone).
+     * Row 7. A cancel while the take is starting and its preparation is held: the take leaves STARTING, both
+     * jobs are cancelled (the held policy read sees it), and nothing is reported or bound. MUTATION m7: the fallbacks
+     * taken before the STARTING check; MUTATION m8: the cancel does not cancel the jobs.
      */
-    @Test fun aTakeEndedDuringThePreparationWaitReportsNothing() {
+    @Test fun aCancelDuringThePreparationWaitReportsNothingAndStopsBothJobs() {
         val entered = CountDownLatch(1)
-        val coordinator = rig.coordinator(preferences = withTerm, preparationBoundMs = 200L, compileMatcher = { terms -> entered.countDown(); released.await(); StructuredTermRestorer.compile(terms) })
+        rig.policyHold = CompletableDeferred()
+        val coordinator = rig.coordinator(preferences = withTerm, preparationBoundMs = 300L, compileMatcher = { terms -> entered.countDown(); released.await(); StructuredTermRestorer.compile(terms) })
         coordinator.onCreated()
         rig.command(coordinator, DictationSessionService.ACTION_START)
         assertTrue(entered.await(10, TimeUnit.SECONDS))
-        rig.onMain { coordinator.destroy() }
-        Thread.sleep(500) // past the preparation bound: a start coroutine that survived would have decided by now
-        assertTrue("no preparation defect for a take that is gone", preparationDefects().isEmpty())
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        // The cancel waits for the capture's own ending, which the rig's bound-from-the-start capture never sends
+        // (as the #258 rows note), so the take's terminal is not awaited here; the cancel reaching the jobs is.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (!rig.policyCancelled) {
+            check(System.nanoTime() < deadline) { "the held policy read was never cancelled" }
+            Thread.sleep(5)
+        }
+        Thread.sleep(600) // past the preparation bound: a surviving start coroutine would have decided by now
+        assertTrue("no preparation defect for a cancelled take", preparationDefects().isEmpty())
+        assertTrue("no policy defect for a cancelled take", policyDefects().isEmpty())
         assertTrue("no bind", "bind" !in rig.pipeline.events)
     }
 
-    /** `freeze` takes the effective terms it is given (#290): the fallback's empty list is what the take carries. */
-    @Test fun theFreezeCarriesTheEffectiveTerms() {
-        val start = kotlinx.coroutines.runBlocking { withTerm.awaitAnswers(1_000L) }
-        val matcher = StructuredTermRestorer.compile(emptyList())
-        assertEquals(emptyList<CustomTerm>(), withTerm.freeze(start, matcher, emptyList(), PolishPolicy.Off).terms)
-        assertEquals(start.terms.structuredTerms, withTerm.freeze(start, matcher, start.terms.structuredTerms, PolishPolicy.Off).terms)
-        assertTrue(TimeUnit.SECONDS.toMillis(1) > 0)
+    /**
+     * Row 8. A policy read whose answer is stamped past the deadline is late even when it is already there when the
+     * owner looks: the take uses the last read policy. MUTATION m9: `awaitBy` ignores the finish stamp.
+     */
+    @Test fun anAnswerStampedPastTheDeadlineIsLate() {
+        val lastRead = PolishPolicy.Cloud(Provider.SELF_HOSTED_POLISH, "last", "http://localhost:8080/v1", SelfHostedProtocol.OLLAMA)
+        rig.lastReadPolicy = lastRead
+        rig.policyRead = PolicyRead.Fresh(PolishPolicy.Cloud(Provider.SELF_HOSTED_POLISH, "fresh", "http://localhost:8080/v1", SelfHostedProtocol.OLLAMA))
+        val now = java.util.concurrent.atomic.AtomicLong(10_000L)
+        rig.host.clock = { now.get() }
+        // The read answers at once, but its clock reads far past the deadline as it does.
+        rig.policyAnswering = { now.addAndGet(60_000L) }
+        val coordinator = rig.coordinator(preparationBoundMs = 1_000L)
+        goLive(coordinator)
+        rawSentToPolish(coordinator)
+        assertEquals(lastRead, rig.polish.lastPolicy)
+        assertEquals(listOf("polish_policy_unreadable"), policyDefects())
     }
+
 }

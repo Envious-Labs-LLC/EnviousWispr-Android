@@ -439,8 +439,12 @@ internal class DictationSessionCoordinator(
             // the owner's scope (never inside a scope that would wait for a blocked loser), each result is taken by the
             // deadline or replaced by its fallback, and a job that answers late is ignored.
             val deadlineMs = host.elapsedRealtimeMs() + preparationBoundMs
-            val matcherJob = scope.async(Dispatchers.Default) { preparing { compileMatcher(termsSnapshot) } }
-            val policyJob = scope.async(Dispatchers.IO) { preparing { loadPolicy() } }
+            val matcherJob = scope.async(Dispatchers.Default) { Timed(preparing { compileMatcher(termsSnapshot) }, host.elapsedRealtimeMs()) }
+            val policyJob = scope.async(Dispatchers.IO) { Timed(preparing { loadPolicy() }, host.elapsedRealtimeMs()) }
+            // Take-owned (#290 review): a cancel of the starting take cancels both. Registered, then the state is
+            // rechecked, so a cancel that landed between the launch and the registration still cancels them.
+            preparationJobs = listOf(matcherJob, policyJob)
+            if (state.get() != SessionState.STARTING) preparationJobs.forEach { it.cancel() }
             val matcherPrepared = awaitBy(matcherJob, deadlineMs)
             takeFacts.matcherReadyMs = sinceAccepted()
             val policyPrepared = awaitBy(policyJob, deadlineMs)
@@ -467,12 +471,13 @@ internal class DictationSessionCoordinator(
                     policyJob.cancel()
                     return@withContext
                 }
-                val (matcher, effectiveTerms) = when (matcherPrepared) {
-                    is Prepared.Ready -> matcherPrepared.value to termsSnapshot
+                preparationJobs = emptyList()
+                val matcher = when (matcherPrepared) {
+                    is Prepared.Ready -> matcherPrepared.value
                     is Prepared.Failed -> {
                         log.warn("Vocabulary matcher ${matcherPrepared.kind}; this take restores no custom words")
                         reportDefect(AppDefect.TakePreparationFailed, mapOf("take_id" to takeId, "step" to STEP_MATCHER, "kind" to matcherPrepared.kind))
-                        StructuredTermRestorer.compile(emptyList()) to emptyList()
+                        StructuredTermRestorer.compile(emptyList())
                     }
                 }
                 val read = when (policyPrepared) {
@@ -483,12 +488,18 @@ internal class DictationSessionCoordinator(
                     }
                 }
                 val policy = takePolicy(read)
-                sessionPreferences = preferences.freeze(start, matcher, effectiveTerms, policy)
+                sessionPreferences = preferences.freeze(start, matcher, policy)
                 takeFacts.bindRequestedMs = sinceAccepted()
                 bindPipelineServices()
             }
         }
     }
+
+    /** A start preparation's answer and the host time its job finished (#290 review): late means stamped past the deadline. */
+    private data class Timed<T>(val result: Prepared<T>, val finishedAtMs: Long)
+
+    /** The starting take's two preparation jobs (#290 review), cancelled by a cancel of that take; empty otherwise. */
+    @Volatile private var preparationJobs: List<Job> = emptyList()
 
     /** A start preparation's answer by its deadline (#290): the value, or why there is none (`timeout` or `error`). */
     private sealed interface Prepared<out T> {
@@ -506,13 +517,15 @@ internal class DictationSessionCoordinator(
     }
 
     /**
-     * [job]'s answer by [deadlineMs] on the host clock (#290), or `timeout`. A job already finished is taken even when
-     * the deadline has passed; one still running is left to finish unread.
+     * [job]'s answer by [deadlineMs] on the host clock (#290), or `timeout`. Late is the job's OWN finish stamp past the
+     * deadline, never when this looked: an answer stamped in time is taken even if the wait timed out first, and one
+     * stamped late is refused even if it was already there. A job still running is left to finish unread.
      */
-    private suspend fun <T> awaitBy(job: Deferred<Prepared<T>>, deadlineMs: Long): Prepared<T> {
+    private suspend fun <T> awaitBy(job: Deferred<Timed<T>>, deadlineMs: Long): Prepared<T> {
         val leftMs = deadlineMs - host.elapsedRealtimeMs()
         val answered = if (leftMs > 0L) withTimeoutOrNull(leftMs) { job.await() } else null
-        return answered ?: job.takeIf { it.isCompleted }?.getCompleted() ?: Prepared.Failed(KIND_TIMEOUT)
+        val seen = answered ?: job.takeIf { it.isCompleted && !it.isCancelled }?.getCompleted()
+        return seen?.takeIf { it.finishedAtMs <= deadlineMs }?.result ?: Prepared.Failed(KIND_TIMEOUT)
     }
 
     /**
@@ -1237,6 +1250,8 @@ internal class DictationSessionCoordinator(
     private fun cancelStarting() {
         val cancel = synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.STARTING, SessionState.CANCELLING)) return
+            // The take's preparation stops with it (#290 review): nothing it would answer is read any more.
+            preparationJobs.forEach { it.cancel() }
             surface.showProcessing()
             take.arbiter.reserve(Claimants.CANCEL)
         } ?: return

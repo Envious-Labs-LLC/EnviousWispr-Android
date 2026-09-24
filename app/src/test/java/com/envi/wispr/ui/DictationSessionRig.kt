@@ -142,7 +142,16 @@ internal class DictationSessionRig {
         historyWrites = historyWrites,
         transcripts = transcripts,
         languageDetector = languageDetector,
-        loadPolicy = { policyHold?.await(); policyRead ?: PolicyRead.Fresh(polishPolicy) },
+        loadPolicy = {
+            try {
+                policyHold?.await()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                policyCancelled = true
+                throw cancelled
+            }
+            policyAnswering?.invoke()
+            policyRead ?: PolicyRead.Fresh(polishPolicy)
+        },
         lastReadPolicy = { lastReadPolicy },
         pipeline = pipeline,
         scope = scope,
@@ -167,6 +176,10 @@ internal class DictationSessionRig {
     @Volatile var polishPolicy: PolishPolicy = PolishPolicy.Off
     /** When set, the policy read suspends on it before answering (#290: a read that never answers). */
     @Volatile var policyHold: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    /** Set when a held policy read was cancelled (#290 review: a cancel of the starting take stops it). */
+    @Volatile var policyCancelled = false
+    /** Runs as the policy read answers, on its thread (#290 review: a row moves the clock past the deadline there). */
+    @Volatile var policyAnswering: (() -> Unit)? = null
     /** The process's last read policy the owner falls back to when the read misses its bound (#290). */
     @Volatile var lastReadPolicy: PolishPolicy? = null
     /** When set, the read the owner gets instead of `Fresh(polishPolicy)` (#278). */

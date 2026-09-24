@@ -26,7 +26,6 @@ import java.util.concurrent.atomic.AtomicReference
  */
 internal data class SessionPreferences(
     val cleanup: CleanupOptions = CleanupOptions(),
-    val terms: List<CustomTerm> = emptyList(),
     val matcher: StructuredTermRestorer.Matcher = StructuredTermRestorer.compile(emptyList()),
     val clipboard: ClipboardInsertionPolicy = ClipboardInsertionPolicy(),
     /** Latched once per session; a settings change applies from the next session (issue #69). */
@@ -239,11 +238,9 @@ internal class SessionPreferencesSource(
      * The take's snapshot, built from [start] alone. The matcher is an argument because `beginSession`
      * compiles it off the main thread from `start.terms`; the policy is the latched polish policy.
      */
-    /** [effectiveTerms] are the terms this take uses: the snapshot's, or none when its matcher fell back (#290). */
-    fun freeze(start: PreferenceStart, matcher: StructuredTermRestorer.Matcher, effectiveTerms: List<CustomTerm>, policy: PolishPolicy): SessionPreferences =
+    fun freeze(start: PreferenceStart, matcher: StructuredTermRestorer.Matcher, policy: PolishPolicy): SessionPreferences =
         SessionPreferences(
             cleanup = start.settings.cleanupOptions,
-            terms = effectiveTerms,
             matcher = matcher,
             // The stand-in for a read that never answered: today's null branch, kept on purpose (#193 plan
             // §14 weighs auto-copy on against off for this one case).

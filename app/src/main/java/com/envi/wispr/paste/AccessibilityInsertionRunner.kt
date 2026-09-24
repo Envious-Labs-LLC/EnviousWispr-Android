@@ -1,8 +1,6 @@
 package com.envi.wispr.paste
 
-import com.envi.wispr.history.Enqueued
 import com.envi.wispr.history.HistoryRow
-import com.envi.wispr.history.WriteKind
 import android.accessibilityservice.AccessibilityService
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -23,11 +21,6 @@ import com.envi.wispr.insertion.ClipboardOutcome
 import com.envi.wispr.insertion.FallbackAnnouncement
 import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.insertion.ServiceFallbackReason
-import com.envi.wispr.models.ModelBootstrapApplication
-import com.envi.wispr.telemetry.AnalyticsEvent
-import com.envi.wispr.telemetry.InsertionResultKind
-import com.envi.wispr.telemetry.InsertionRouteKind
-import com.envi.wispr.telemetry.Telemetry
 import java.util.UUID
 
 /**
@@ -44,6 +37,12 @@ internal class AccessibilityInsertionRunner(
     private val setContentChanges: (Boolean) -> Unit,
     /** The service's input-method pipe, when the framework created it. */
     private val inputSession: () -> EditorInputSession?,
+    /**
+     * Where an accepted insertion's ending is recorded (#359): its History outcome and its terminal event. Built
+     * from the service itself, never its application context: the runner is built in a field initializer, before
+     * Android attaches the context, and the recorder reads it only when an ending is recorded (review round 1).
+     */
+    private val outcomes: InsertionOutcomeRecorder = InsertionOutcomeRecorder.forProcess(service),
 ) {
     private companion object {
         const val TAG = "PasteService"
@@ -581,9 +580,8 @@ internal class AccessibilityInsertionRunner(
     }
 
     /**
-     * The accepted-insertion writer (issue #176, G1 D3): every outcome of a text this runner ACCEPTED
-     * ends here, so this is where its `insertion.terminal` row leaves, with the same value the History
-     * row receives. The target is its package name, never a label; a debug probe has no take and no row.
+     * Every outcome of a text this runner ACCEPTED ends here (issue #176, G1 D3): the ending is frozen from the
+     * pending attempt and handed to [outcomes], which records the History outcome and the terminal event (#359).
      */
     private fun finalizeInsertion(
         pending: PendingInsertion,
@@ -592,42 +590,18 @@ internal class AccessibilityInsertionRunner(
         interrupted: Boolean = false,
         clipboard: ClipboardOutcome? = null,
     ) {
-        val kind = InsertionResultKind.fromStored(result)
-        val latencyMs = SystemClock.elapsedRealtime() - pending.startedAtMs
-        fun emit() {
-            Telemetry.breadcrumb("insertion", "outcome", mapOf("take_id" to pending.takeId, "result" to result, "target_app" to pending.targetPackage))
-            if (pending.takeId == null) return
-            Telemetry.capture(
-                AnalyticsEvent.InsertionTerminal(
-                    takeId = pending.takeId,
-                    handoff = InsertionHandoff.SCHEDULED,
-                    result = kind,
-                    route = InsertionRouteKind.of(kind),
-                    targetApp = pending.targetPackage,
-                    latencyMs = latencyMs,
-                    clipboard = clipboard?.name?.lowercase(),
-                    recovered = false,
-                ),
-            )
-        }
-        // On the application's History queue (#115), behind the owner's writes of the same row, so the
-        // outcome cannot land before the finalization it belongs to, and the row is resolved THERE (#277): the
-        // words were handed over before the save answered. No saved row (the save failed, or a debug probe)
-        // emits once without a write. Otherwise the update is first-wins; the row leaves only when THIS writer
-        // won it, so a recovery or a second finalizer that got there first is the one that reports (round 1, F5).
-        val admitted = ModelBootstrapApplication.historyWrites(service.applicationContext).enqueue("insertion outcome", WriteKind.TERMINAL) { repository ->
-            recordInsertionOutcome(
-                id = pending.row.resolveOnQueue(),
-                write = { id ->
-                    runCatching { repository.finalizeInsertionOutcome(id, status, result, interrupted) }
-                        .onFailure { error -> DebugLogger.warn(TAG, "Unable to update transcript insertion result: ${error.javaClass.simpleName}") }
-                        .getOrNull()
-                },
-                emit = ::emit,
-            )
-        }
-        // A refused outcome write still reports the insertion once (#292), as a take with no saved row does.
-        if (admitted == Enqueued.REJECTED) emit()
+        outcomes.record(
+            InsertionEnding(
+                row = pending.row,
+                takeId = pending.takeId,
+                targetPackage = pending.targetPackage,
+                status = status,
+                result = result,
+                interrupted = interrupted,
+                clipboard = clipboard,
+                latencyMs = SystemClock.elapsedRealtime() - pending.startedAtMs,
+            ),
+        )
     }
 
     /**
@@ -699,18 +673,4 @@ internal class AccessibilityInsertionRunner(
             vibrator.vibrate(VibrationEffect.createPredefined(effect))
         }.onFailure { error -> DebugLogger.warn(TAG, "Result haptic unavailable: ${error.javaClass.simpleName}") }
     }
-}
-
-/**
- * The insertion outcome's write and its one terminal event, on the History queue (#277). [id] is the take's saved
- * row resolved there: 0 (the save failed, or a debug probe) emits once without a write; otherwise the write is
- * first-wins and the event is emitted only when THIS writer won the row, so a recovery that got there first is
- * the one that reports.
- */
-internal suspend fun recordInsertionOutcome(id: Long, write: suspend (Long) -> Int?, emit: () -> Unit) {
-    if (id <= 0L) {
-        emit()
-        return
-    }
-    if (write(id) == 1) emit()
 }

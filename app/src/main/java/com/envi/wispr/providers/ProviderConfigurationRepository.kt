@@ -8,6 +8,40 @@ import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.polish.S1Structure
 import com.envi.wispr.polish.S1Styling
 
+/**
+ * One read of the stored polish policy (#278). A store that cannot be read is [Failed], never the
+ * user's own Off: it carries the last policy this process read successfully, or null when there is none.
+ */
+internal sealed interface PolicyRead {
+    data class Fresh(val policy: PolishPolicy) : PolicyRead
+    data class Failed(val lastRead: PolishPolicy?) : PolicyRead
+
+    /** The policy this read produced, or null when the store could not be read. */
+    val freshPolicy: PolishPolicy?
+        get() = when (this) {
+            is Fresh -> policy
+            is Failed -> null
+        }
+}
+
+/**
+ * Reads the policy and remembers the last successful read (#278). The process owns one
+ * ([ProviderConfigurationRepository.loadPolicyWith]): the session owner and its service end with every
+ * take, so the memory cannot live there.
+ */
+internal class PolicyReader {
+    @Volatile var lastRead: PolishPolicy? = null
+        private set
+
+    /** One read at a time, so an older snapshot can never overwrite a newer [lastRead] (#278 review). */
+    @Synchronized
+    fun read(readSnapshot: () -> Map<String, *>): PolicyRead =
+        runCatching { ProviderConfigurationRepository.decodePolicy(readSnapshot()) }.fold(
+            onSuccess = { policy -> lastRead = policy; PolicyRead.Fresh(policy) },
+            onFailure = { PolicyRead.Failed(lastRead) },
+        )
+}
+
 /** Explicit polish policy persisted independently from the selected provider credentials. */
 internal enum class PolishMode {
     OFF,
@@ -102,9 +136,9 @@ internal class ProviderConfigurationRepository internal constructor(
     /**
      * The policy snapshot a dictation session carries to the engine (`PolishPolicy`). ONE read of the
      * preference map, so a commit landing between two reads cannot assemble a policy from two states,
-     * and the credential is never read here. A store that cannot be read yields [PolishPolicy.Off].
+     * and the credential is never read here. A store that cannot be read is [PolicyRead.Failed] (#278).
      */
-    fun loadPolicy(): PolishPolicy = readPolicy { preferences.all }
+    fun loadPolicy(): PolicyRead = loadPolicyWith { preferences.all }
 
     /** The persisted S1-mini picks for the screen (#152). The engine never calls this; it reads [loadPolicy]. */
     fun loadS1Control(): S1ControlSettings = decodeS1Control(preferences.all)
@@ -243,9 +277,18 @@ internal class ProviderConfigurationRepository internal constructor(
     }
 
     companion object {
-        /** The failure branch of [loadPolicy], separated so the JVM can stage a store that cannot be read. */
-        internal fun readPolicy(readSnapshot: () -> Map<String, *>): PolishPolicy =
-            runCatching { decodePolicy(readSnapshot()) }.getOrDefault(PolishPolicy.Off)
+        /** The process's one reader (#278); reset only by [resetProcessReaderForTest]. */
+        @Volatile private var processReader = PolicyReader()
+
+        /** [loadPolicy] through the process's one reader, separated so the JVM can stage a store that cannot be read. */
+        internal fun loadPolicyWith(readSnapshot: () -> Map<String, *>): PolicyRead = processReader.read(readSnapshot)
+
+        internal fun resetProcessReaderForTest() {
+            processReader = PolicyReader()
+        }
+
+        /** What a fresh install reads: the shipped default for every key (#278). */
+        val DECLARED_DEFAULT_POLICY: PolishPolicy get() = decodePolicy(emptyMap<String, Any?>())
 
         /**
          * Pure decoding of one preference snapshot into the policy. Mirrors [decodeMode] and

@@ -44,6 +44,9 @@ internal enum class PolishReason {
     /** Session-owner side only: the engine never answered within the policy's budget. */
     WATCHDOG_TIMEOUT,
 
+    /** Session-owner side only: the stored policy could not be read and none was read before (#278). */
+    SETTINGS_UNREADABLE,
+
     // Body-signalled HTTP failures (#77): the provider's error body named a cause the status alone does
     // not. Produced by `ProviderErrorSignal` inside the cloud client; the body itself never leaves it.
     HTTP_KEY_REJECTED,

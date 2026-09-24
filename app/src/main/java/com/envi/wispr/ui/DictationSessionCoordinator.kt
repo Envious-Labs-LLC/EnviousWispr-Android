@@ -18,6 +18,8 @@ import com.envi.wispr.polish.PolishEngineLabels
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.PolishPublicationFacts
 import com.envi.wispr.polish.PolishReason
+import com.envi.wispr.providers.PolicyRead
+import com.envi.wispr.providers.ProviderConfigurationRepository
 import com.envi.wispr.shortcuts.BubbleRequestLedger
 import com.envi.wispr.shortcuts.BubbleRequestToken
 import com.envi.wispr.shortcuts.BubbleRequests
@@ -72,7 +74,7 @@ internal class DictationSessionCoordinator(
     /** For the start-up recovery ONLY, on the session scope: a stalled recovery must not sit ahead of a take's writes on the queue. */
     private val transcripts: TranscriptRepository,
     private val languageDetector: LanguageDetector,
-    private val loadPolicy: suspend () -> PolishPolicy,
+    private val loadPolicy: suspend () -> PolicyRead,
     private val pipeline: PipelineController,
     /** The one session scope; the Service's `SupervisorJob() + Dispatchers.IO`. Its job is cancelled on destroy, never joined (#115). */
     private val scope: CoroutineScope,
@@ -411,7 +413,7 @@ internal class DictationSessionCoordinator(
                 StructuredTermRestorer.compile(termsSnapshot)
             }
             takeFacts.matcherReadyMs = sinceAccepted()
-            val policy = withContext(Dispatchers.IO) { loadPolicy() }
+            val policy = takePolicy(withContext(Dispatchers.IO) { loadPolicy() })
             takeFacts.policyLoadedMs = sinceAccepted()
             // Admission is written before capture starts, under a deadline that never gates the take:
             // the queued write still lands in order if this stops waiting (issue #176, plan §3.3).
@@ -424,6 +426,21 @@ internal class DictationSessionCoordinator(
                 takeFacts.bindRequestedMs = sinceAccepted()
                 bindPipelineServices()
             }
+        }
+    }
+
+    /**
+     * The policy this take runs on (#278). A store that cannot be read is never the user's Off: the take
+     * runs on the last policy this process read, or, with none, on the shipped default with polish lost, so
+     * it publishes the deterministic text with the polish notice. Either way the controller raises one defect.
+     */
+    private fun takePolicy(read: PolicyRead): PolishPolicy = when (read) {
+        is PolicyRead.Fresh -> read.policy
+        is PolicyRead.Failed -> {
+            val lastRead = read.lastRead
+            log.warn(if (lastRead != null) "Polish policy unreadable; this take runs on the last read policy" else "Polish policy unreadable and never read; this take publishes the deterministic text")
+            polish?.policyReadFailed(usedLastRead = lastRead != null)
+            lastRead ?: ProviderConfigurationRepository.DECLARED_DEFAULT_POLICY
         }
     }
 

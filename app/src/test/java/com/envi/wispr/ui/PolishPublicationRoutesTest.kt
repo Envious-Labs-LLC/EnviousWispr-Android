@@ -2,6 +2,7 @@ package com.envi.wispr.ui
 
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -73,9 +74,13 @@ class PolishPublicationRoutesTest {
         assertTrue(
             "the reservation and the save are one operation under the lock",
             locked.contains("current.arbiter.reserve(Claimants.PUBLICATION)") &&
-                locked.contains("finalizer.enqueueSave(current.history, payload, saved)"),
+                locked.contains("finalizer.enqueueSave(current.history, payload, saved, takeId)"),
         )
-        val reservation = publication.indexOf("finalizer.enqueueSave(current.history, payload, saved)")
+        // Since #304 the save's diagnostics are the application's observer, asked for by the finalizer; the owner
+        // no longer watches the save itself.
+        assertFalse("the owner does not watch the save", SessionSources.coordinator.contains("watchSaveBound("))
+        assertTrue(section("fun enqueueSave(", "\n    }\n", finalizer).contains("historySaves.observe(saved, enqueuedAtMs, takeId)"))
+        val reservation = publication.indexOf("finalizer.enqueueSave(current.history, payload, saved, takeId)")
         assertTrue(
             "the finalizer's save is the finalize write",
             section("fun enqueueSave(", "\n    }\n", finalizer).contains("historyWrites.enqueue(\"finalize\", WriteKind.TERMINAL)"),

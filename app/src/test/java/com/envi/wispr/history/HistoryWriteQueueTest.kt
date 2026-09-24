@@ -189,27 +189,58 @@ class HistoryWriteQueueTest {
         held.release.countDown()
     }
 
-    /** Row 3. A refused save answers its slot `Failed(HistoryQueueFullException)` at once. MUTATION m4. */
+    /**
+     * Row 3. A refused save answers its slot `Failed(HistoryQueueFullException)` at once, and (#304) the application's
+     * observer reports it once as a failed save: a warning and a `history_save_failed` breadcrumb. MUTATION m4.
+     */
     @Test fun aRefusedSaveAnswersItsSlotFailed() {
         val held = HeldQueue(capacity = 2, ordinaryLimit = 1)
         held.hold("held")
         check(held.write("terminal fill", WriteKind.TERMINAL) == Enqueued.ACCEPTED)
+        val warnings = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val breadcrumbs = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val observerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val finalizer = com.envi.wispr.ui.SessionFinalizer(
             host = com.envi.wispr.ui.DictationSessionRig().host,
             insertion = com.envi.wispr.ui.DictationSessionRig.FakeInsertion(),
             log = com.envi.wispr.ui.DictationSessionRig().log,
             historyWrites = held.queue,
+            historySaves = com.envi.wispr.ui.HistorySaveObserver(
+                scope = observerScope,
+                clock = { System.nanoTime() / 1_000_000L },
+                warn = { warnings += it },
+                defectSink = { _, _ -> },
+                breadcrumb = { _, message, _ -> breadcrumbs += message },
+            ),
         )
         val slot = com.envi.wispr.ui.SaveSlot()
         val publication = com.envi.wispr.ui.Publication(
             finalText = "Words.", engine = "Fake", originalText = "words", latencyMs = 0L, durationMs = 1L, captureDevice = "",
             polishFacts = com.envi.wispr.polish.PolishPublicationFacts.from(com.envi.wispr.polish.PolishReason.POLISHED, 0, com.envi.wispr.polish.PolishContext.Off),
         )
-        finalizer.enqueueSave(com.envi.wispr.ui.TakeHistory(held.queue), publication, slot)
+        finalizer.enqueueSave(com.envi.wispr.ui.TakeHistory(held.queue), publication, slot, "take-1")
         val answer = kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(2_000L) { slot.await() } }
         val outcome = answer.outcome
         assertTrue("a failed save, not any outcome: $outcome", outcome is com.envi.wispr.ui.SaveOutcome.Failed)
         assertTrue((outcome as com.envi.wispr.ui.SaveOutcome.Failed).cause is HistoryQueueFullException)
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (breadcrumbs.isEmpty()) {
+            check(System.nanoTime() < deadline) { "the observer never reported the refused save" }
+            Thread.sleep(2)
+        }
+        assertEquals(listOf("history_save_failed"), breadcrumbs.toList())
+        assertEquals(listOf("Unable to save transcript history: HistoryQueueFullException"), warnings.toList())
         held.release.countDown()
+        observerScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+    }
+
+    /**
+     * #304: a refusal is overload, not a broken contract. The queue raises one `HistoryQueueOverloaded` per episode
+     * (#292), so the save's own classifier names no defect for it, while an ordinary illegal state still names one.
+     * MUTATION m4 (the decisive check).
+     */
+    @Test fun aRefusedSaveNamesNoDefectOfItsOwn() {
+        assertEquals(null, com.envi.wispr.telemetry.TelemetryChannels.historySaveDefect(HistoryQueueFullException()))
+        assertTrue(com.envi.wispr.telemetry.TelemetryChannels.historySaveDefect(IllegalStateException()) is com.envi.wispr.telemetry.AppDefect.HistoryContractViolation)
     }
 }

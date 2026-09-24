@@ -63,9 +63,6 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     /** After a scheduled handoff, never awaited by the owner (#235). */
     suspend fun promoteUnroutedToReady(id: Long) = dao.promoteUnroutedToReady(id, clock())
 
-    /** A timed-out take's measured copy, onto its neutral row or one recovery already read as unknown (#235). */
-    suspend fun reconcileTimedOutCopy(id: Long, result: String) = dao.reconcileTimedOutCopy(id, result, clock())
-
     suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, interrupted: Boolean = false) =
         dao.finalizeInsertionOutcome(id, status, result, clock(), interrupted)
 

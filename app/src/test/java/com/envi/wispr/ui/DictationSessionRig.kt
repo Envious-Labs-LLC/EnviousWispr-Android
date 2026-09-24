@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.history.HistoryRow
 import com.envi.wispr.providers.PolicyRead
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.cleanup.LanguageDetector
@@ -348,7 +349,12 @@ internal class DictationSessionRig {
         @Volatile var pin = DictationTargetPin.PINNED
         @Volatile var handoff = InsertionHandoff.SCHEDULED
         @Volatile var bound = true
-        val pastes = CopyOnWriteArrayList<Pair<Long, String>>()
+        /** Every handoff, with the take's History handle as the owner passed it (#277). */
+        val requests = CopyOnWriteArrayList<Pair<HistoryRow, String>>()
+        /** Each handoff's saved row id, resolved when read (as the paste service resolves it on the queue), and its text. */
+        val pastes: List<Pair<Long, String>> get() = requests.map { (row, text) -> row.resolveOnQueue() to text }
+        /** Whether the save had answered SAVED at the moment of each handoff (#277: the owner no longer waits for it). */
+        val savedAtHandoff = CopyOnWriteArrayList<Boolean>()
         val releases = AtomicLong(0L)
         /** Every pin the owner takes; the owner's contract is exactly one per admitted take (#192). */
         val pins = AtomicLong(0L)
@@ -358,8 +364,26 @@ internal class DictationSessionRig {
         }
         override fun pinnedFieldId(): String? = "field-1"
         override fun releasePinnedTarget() { releases.incrementAndGet() }
-        override fun pasteWhenTargetReturns(transcriptId: Long, text: String, policy: ClipboardInsertionPolicy, takeId: String): InsertionHandoff {
-            pastes += transcriptId to text
+        /**
+         * When set, a scheduled handoff writes its PASTED outcome through the row handle on this queue, as the paste
+         * service does (#277): at the handoff, or when [releaseOutcome] is called if [deferOutcome] is set.
+         */
+        @Volatile var outcomeQueue: com.envi.wispr.history.HistoryWriteQueue? = null
+        @Volatile var deferOutcome = false
+        private val deferred = CopyOnWriteArrayList<HistoryRow>()
+        private fun enqueueOutcome(row: HistoryRow) {
+            outcomeQueue?.enqueue("fake insertion outcome") { repository ->
+                val id = row.resolveOnQueue()
+                if (id > 0L) repository.finalizeInsertionOutcome(id, TranscriptEntity.STATUS_COMPLETED, com.envi.wispr.insertion.InsertionResults.PASTED)
+            }
+        }
+        fun releaseOutcome() = deferred.forEach(::enqueueOutcome).also { deferred.clear() }
+        override fun pasteWhenTargetReturns(row: HistoryRow, text: String, policy: ClipboardInsertionPolicy, takeId: String): InsertionHandoff {
+            requests += row to text
+            savedAtHandoff += row.savedNow
+            if (handoff == InsertionHandoff.SCHEDULED && outcomeQueue != null) {
+                if (deferOutcome) deferred += row else enqueueOutcome(row)
+            }
             return handoff
         }
         override fun isBound(): Boolean = bound
@@ -733,9 +757,14 @@ internal class DictationSessionRig {
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(rows.values.toList())
         /** When set, only the take's draft insert fails, so the publication inserts its own row (#235 row 9c). */
         @Volatile var failDraftInsert = false
+        /** When set, the publication's own saved-row insert (the no-draft path) is held until completed (#277 row 3). */
+        @Volatile var holdSavedInsert: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        /** The order the promotion and the insertion outcome landed in, by write (#277 row 5). */
+        val routeWrites = java.util.concurrent.CopyOnWriteArrayList<String>()
         override suspend fun insert(transcript: TranscriptEntity): Long {
             if (failInserts) throw IllegalStateException("disk full")
             if (failDraftInsert && transcript.status == TranscriptEntity.STATUS_DRAFT) throw IllegalStateException("draft insert failed")
+            if (transcript.status == TranscriptEntity.STATUS_SAVED_UNROUTED) holdSavedInsert?.await()
             val id = nextId.getAndIncrement()
             rows[id] = transcript.copy(id = id)
             return id
@@ -770,6 +799,7 @@ internal class DictationSessionRig {
         /** Mirrors `TranscriptDao.finalizeInsertionOutcome`: ready or neutral, and still pending (#235). */
         override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean): Int {
             if (failOutcome) throw IllegalStateException("outcome write failed")
+            routeWrites += "outcome"
             var updated = 0
             rows.computeIfPresent(id) { _, row ->
                 if (row.status !in OPEN_ROUTE || row.insertionResult != "pending") {
@@ -823,25 +853,12 @@ internal class DictationSessionRig {
         @Volatile var holdPromotion: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         override suspend fun promoteUnroutedToReady(id: Long, nowMs: Long): Int {
             holdPromotion?.await()
+            routeWrites += "promotion"
             var updated = 0
             rows.computeIfPresent(id) { _, row ->
                 if (row.status == TranscriptEntity.STATUS_SAVED_UNROUTED && row.insertionResult == "pending") {
                     updated = 1
                     row.copy(status = TranscriptEntity.STATUS_READY_FOR_INSERTION, stateChangedAtMs = nowMs)
-                } else row
-            }
-            return updated
-        }
-
-        /** Mirrors `TranscriptDao.reconcileTimedOutCopy`: the neutral row, or the same row read as delivery unknown. */
-        override suspend fun reconcileTimedOutCopy(id: Long, result: String, nowMs: Long): Int {
-            var updated = 0
-            rows.computeIfPresent(id) { _, row ->
-                val neutral = row.status == TranscriptEntity.STATUS_SAVED_UNROUTED && row.insertionResult == "pending"
-                val unknown = row.status == TranscriptEntity.STATUS_COMPLETED && row.insertionResult == com.envi.wispr.insertion.InsertionResults.DELIVERY_UNKNOWN
-                if (neutral || unknown) {
-                    updated = 1
-                    row.copy(status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED, insertionResult = result, stateChangedAtMs = nowMs, interrupted = true)
                 } else row
             }
             return updated

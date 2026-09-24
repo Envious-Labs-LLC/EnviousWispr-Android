@@ -44,8 +44,11 @@ internal fun interface NanoClock {
  * are handled by the worker before it exits (a heartbeat whose slot claim fails is skipped, and an event with
  * no listener registered is discarded); an offer that finds the bit set is dropped by contract, never lost by
  * a race (the worker leaves only once the bit is set, no call has entered without finishing publishing or
- * skipping, the heartbeat slot is empty and the queue is empty). After the service's destroy nothing about any
- * take can change, and the owner's silence bound covers a take whose ending was never published.
+ * skipping, the heartbeat slot is empty and the queue is empty). The worker's exit decision reads [lifecycle]
+ * before the heartbeat slot and never reuses an earlier slot read: a heartbeat sets READY before it leaves the
+ * lifecycle, so seeing no entered call means an entered heartbeat's READY is visible. After the service's
+ * destroy nothing about any take can change, and the owner's silence bound covers a take whose ending was
+ * never published.
  *
  * Every event is a limb. The take does not know this class exists.
  */
@@ -61,7 +64,7 @@ internal class TakeEventPublisher(
         /** Heartbeats are throttled by WALL-CLOCK second: elapsed is 0 before live and would send one. */
         const val TICK_INTERVAL_NANOS = 1_000_000_000L
 
-        /** The closed bit of [lifecycle]; the low bits count calls that entered and have not finished publishing or skipping. */
+        /** The closed bit of [lifecycle]; see the class doc. */
         private const val CLOSED = 1L shl 62
         private const val ENTERED_MASK = CLOSED - 1
 
@@ -87,7 +90,7 @@ internal class TakeEventPublisher(
         ) : Event
     }
 
-    /** CLOSED bit plus calls that entered and have not finished publishing or skipping. */
+    /** The [CLOSED] bit and the entered count; see the class doc. */
     private val lifecycle = AtomicLong(0L)
     @Volatile private var lastTickNanos = Long.MIN_VALUE
 
@@ -110,8 +113,8 @@ internal class TakeEventPublisher(
     /**
      * Capture thread, after each positive read; at most one heartbeat a second, assuming one capture loop at a
      * time (overlapping callers could exceed the rate, never corrupt a heartbeat). **Nothing here allocates,
-     * logs, locks, waits or calls across a process** (#280): a clock read, two CAS, three field writes, one
-     * decrement and one unpark. A heartbeat is skipped while the previous one is still in the slot, and then
+     * logs, locks, waits or calls across a process** (#280): a clock read, the lifecycle entry, one claim, three
+     * field writes, one decrement and one unpark. A heartbeat is skipped while the previous one is still in the slot, and then
      * the throttle is NOT advanced, so the next positive read tries again.
      */
     fun offerTick(takeId: String, elapsedMs: Long) {
@@ -154,14 +157,14 @@ internal class TakeEventPublisher(
         offer(Event.Ended(takeId, terminalReason, startFailure, audioFilePath.orEmpty(), silenceStatus, takePeakAmplitude, effectiveInputDevice.orEmpty()))
     }
 
-    /** Refuses new entries; the worker handles accepted ticks and queued events before exiting. Idempotent; never joined. */
+    /** Ends delivery; see the class doc. Idempotent; never joined. */
     fun close() {
         val before = lifecycle.getAndUpdate { it or CLOSED }
         if (before and CLOSED != 0L) return
         LockSupport.unpark(worker)
     }
 
-    /** Reserves one lifecycle entry; the caller releases it in finally. One compare-and-set that fails once closed. */
+    /** A lifecycle entry, released by the caller in finally; see the class doc. */
     private fun enter(): Boolean {
         while (true) {
             val current = lifecycle.get()
@@ -171,7 +174,6 @@ internal class TakeEventPublisher(
     }
 
     private fun offer(event: Event) {
-        // Entered by the CAS, or dropped by contract (see the class KDoc); no check-then-act in between.
         if (!enter()) return
         try {
             queue.offer(event)
@@ -184,9 +186,8 @@ internal class TakeEventPublisher(
     }
 
     /**
-     * Parked between events: no timer, no wake at idle (`architecture-rules.md` RULE: no-idle-cost). The
-     * unpark from an offer or from [close] is the only thing that wakes it; after close, it handles the
-     * queued events and an accepted heartbeat, waits out any call still publishing or skipping, then leaves.
+     * Parked between events: no timer, no wake at idle (`architecture-rules.md` RULE: no-idle-cost). When it
+     * leaves: see the class doc.
      */
     private fun drain() {
         while (true) {
@@ -194,8 +195,7 @@ internal class TakeEventPublisher(
             if (tickState.get() == TICK_READY) deliverTick()
             val event = queue.poll()
             if (event == null) {
-                // Lifecycle FIRST: a heartbeat sets READY before its decrement, so seeing no entered offer here
-                // means a READY set by an entered heartbeat is visible below. Never reuse the read above.
+                // The exit decision's read order: see the class doc.
                 val state = lifecycle.get()
                 if (state and CLOSED != 0L && state and ENTERED_MASK == 0L && tickState.get() == TICK_IDLE && queue.isEmpty()) return
                 if (tickState.get() == TICK_READY) continue

@@ -42,3 +42,4 @@ AOSP `AudioTrack.release()` catches the `IllegalStateException` of its own inter
   5. The watch never retries the release. The failed-build branch in `play()` keeps its handle when that release throws.
 - MUTATION m1 RED (`anUnconfirmedReleaseIsReportedOnceAndLatchesTheProcess`; `333-mut.py`). `AudioServiceShapeTest`'s log-template baseline gains the release defect's own send warning.
 - Suite 1379, 0 failures; visibility and citation checks clean.
+- Code review round 1, adopted: an early sweep is rescheduled whatever is latched, so a latch of one kind never drops the other kind's report (row 3e, m2 RED; m1 still RED).

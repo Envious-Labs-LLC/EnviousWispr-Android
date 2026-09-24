@@ -92,6 +92,27 @@ class SilenceWriterWatchTest {
         assertFalse("latched for the process", watch.admit())
     }
 
+    /**
+     * Row 3e (#333 review round 1): with the writer kind already latched, a later track whose release did not return
+     * and whose sweep fires early is still rescheduled and reported at its bound. MUTATION m2: an early sweep is not
+     * rescheduled once either kind is latched.
+     */
+    @Test fun aLatchOfOneKindNeverDropsTheOtherKindsReport() {
+        watch.stopped(HeldTrack())
+        now += SilenceWriterWatch.EXIT_BOUND_MS
+        scheduler.runAll()
+        assertEquals("the writer kind is latched and reported", 1, reports)
+        watch.stopped(HeldTrack(exited = true, releaseReturned = false))
+        now += SilenceWriterWatch.EXIT_BOUND_MS - 500
+        scheduler.runAll()
+        assertEquals("early: nothing yet", 0, releaseReports)
+        assertEquals("the remainder is rescheduled", listOf(500L), scheduler.queued.map { it.second })
+        now += 500
+        scheduler.runAll()
+        assertEquals("reported at its bound", 1, releaseReports)
+        assertEquals(1, reports)
+    }
+
     /** Row 3d (#333): a track whose writer exited and whose release returned settles with no report. */
     @Test fun aSettledTrackIsNeverReported() {
         watch.stopped(HeldTrack(exited = true))

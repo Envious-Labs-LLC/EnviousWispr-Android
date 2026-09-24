@@ -98,7 +98,8 @@ internal class SilenceWriterWatch(
         var wait: Long? = null
         synchronized(this) {
             claimed = check()
-            if (!wedged && !releaseWedged && entry in pending) wait = (EXIT_BOUND_MS - (clock() - entry.atMs)).takeIf { it > 0L }
+            // Rescheduled whatever is latched (#333 review): a latch of one kind must not drop the other kind's report.
+            if (entry in pending) wait = (EXIT_BOUND_MS - (clock() - entry.atMs)).takeIf { it > 0L }
         }
         if (claimed != Claimed.NONE) send(claimed)
         wait?.let { schedule(Runnable { sweep(entry) }, it) }

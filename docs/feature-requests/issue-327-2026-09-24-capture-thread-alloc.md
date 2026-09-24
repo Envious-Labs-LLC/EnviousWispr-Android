@@ -16,9 +16,10 @@ Persona: the founder dictating. `architecture-rules.md` RULE: protect-audio-asr-
 
 ## 0. TL;DR
 
-- `TakeRoute.markLive` posts a prebuilt `announceLive` runnable, built with the route. The route thread still cancels the deadline and logs the line. The platform handler takes its message from its own pool.
+- `TakeRoute.markLive` writes the clock and nothing else. The route's prebuilt `announceFromWorker` travels with the Live event, and the take-event WORKER posts it (review round 1: a `Handler.post` takes the message queue's lock and may allocate its message). The route thread still cancels the deadline and logs "route live=". A deadline that fires first finds the gate open and does nothing. A forced gate announces itself, as before.
+- `EffectiveDevice`'s three capture-thread reads (`kind`, `currentKind`, `reasonCode`) are volatile and lock-free (review round 1). Its history label stays synchronized, and the route thread reads it.
 - `TakeEventPublisher.publishLive` writes a preallocated Live slot (claim IDLE to WRITING, five fields, READY), like the heartbeat slot (#280). It falls back to the queue, which allocates, only when the slot still holds an earlier take's undelivered Live.
-- The worker delivers a waiting Live before any queued event it polls after it, so a take's Live still precedes its silence status and ending. Its exit waits for the Live slot too.
+- The worker delivers a waiting Live before any queued event it polls after it, so a take's Live precedes every event of that take offered after it. A silence status published as capture starts was offered earlier, and it still arrives first, as before (review round 1's second finding, answered by this narrower claim with no code change). The fallback stays inside the same lifecycle entry, so a close cannot drop an accepted Live (round 1). The exit waits for the Live slot too.
 
 ## 1. Tests
 
@@ -29,3 +30,6 @@ Persona: the founder dictating. `architecture-rules.md` RULE: protect-audio-asr-
 
 - MUTATIONS m1, m2 and m3 RED (`327-mut.py`). The first m3 run showed the 500-take soak cannot catch the race, so m3 has a staged row.
 - Suite 1384, 0 failures; `TakeEventPublisherTest` 20 of 20; visibility and citation checks clean.
+- Code review round 1 (`327-r1`): finding 1 (the fallback left its lifecycle entry before `offer`) adopted as given. Finding 2 (a status can precede Live) answered by narrowing the order claim to events offered after Live: the order of events offered before Live is unchanged by #327, and each event names its take. Finding 3 adopted: the worker posts the announce, and the device reads are lock-free (m4, m5 added).
+- After round 1: MUTATIONS m1 to m5 RED; suite 1385, 0 failures; `TakeEventPublisherTest` 20 of 20; visibility and citation checks clean.
+- Emulator after round 1 (`327-uat.py`), on the build where the worker posts the announce: the first take recorded silence, with 102 `pcm_readi failed` lines (the #273 microphone race). The next take went live ("route live=Phone after 87 ms", logged on the route thread from the worker's post), and its words landed by COMMIT with exactly the expected text. Before round 1 one take also landed (`route live=Phone after 1 ms`). The S26 allocation trace the audit asks for is not run: the phone is excluded from agent UAT, so it is the founder's follow-up.

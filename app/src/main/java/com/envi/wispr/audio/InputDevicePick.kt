@@ -131,13 +131,15 @@ internal enum class InputRouteReason(val code: Int) {
  * What ACTUALLY captured one take, in order. This is the record the macOS bug lacked: the absence of a
  * per-take device record is what made "the earbuds were never used" take a day to find.
  *
- * Every write and read goes through [synchronized] on this object, and no platform call is ever made
- * while it is held: the lock guards the record, the calls happen outside it.
+ * Every write, and every read of the [label] history, goes through [synchronized] on this object, and no
+ * platform call is ever made while it is held: the lock guards the record, the calls happen outside it. The three
+ * single values the capture thread reads ([kind], [currentKind], [reasonCode]) are volatile and read without the
+ * lock (#327 review round 1): the capture thread takes no lock another thread can hold.
  */
 internal class EffectiveDevice(startReason: InputRouteReason) {
     private val history = ArrayList<String>(3)
-    private var reason: InputRouteReason = startReason
-    private var startKind: InputRouteKind = InputRouteKind.NONE
+    @Volatile private var reason: InputRouteReason = startReason
+    @Volatile private var startKind: InputRouteKind = InputRouteKind.NONE
 
     /**
      * The kind of device the take STARTED on, latched from the first OBSERVED device, never from the
@@ -145,13 +147,13 @@ internal class EffectiveDevice(startReason: InputRouteReason) {
      * Bluetooth tip must not spend itself on it (Codex, 2026-09-17). NONE until the first observation.
      */
     val kind: InputRouteKind
-        @Synchronized get() = startKind
+        get() = startKind
 
     /** The kind of the device observed most recently: what Android is routing to RIGHT NOW. */
     val currentKind: InputRouteKind
-        @Synchronized get() = latestKind
+        get() = latestKind
 
-    private var latestKind: InputRouteKind = InputRouteKind.NONE
+    @Volatile private var latestKind: InputRouteKind = InputRouteKind.NONE
 
     /** The device the recorder reports at start, on every route change, and once more before it stops. */
     @Synchronized
@@ -169,7 +171,6 @@ internal class EffectiveDevice(startReason: InputRouteReason) {
         reason = latest
     }
 
-    @Synchronized
     fun reasonCode(): Int = reason.code
 
     /** "AirPods Pro 3" or "AirPods Pro 3, then Phone". Empty until the first observation. */

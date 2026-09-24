@@ -32,9 +32,10 @@ internal fun interface NanoClock {
  * Order: the queued events arrive in the order their offers linearised in, which for one producer is the order
  * it offered. A Live in its slot is delivered before any queued event the worker polls after it: the worker
  * re-reads the slot after each poll and delivers a waiting Live first, and a producer marks the slot ready
- * before it offers anything later. So a take's Live always precedes that take's later events. Events of two
- * DIFFERENT takes can interleave when a Live took the queue fallback; each names its take, and the owner discards
- * another take's. A heartbeat is NOT ordered against them (#280): the worker delivers a waiting
+ * before it offers anything later. So a take's Live precedes every event of that take offered AFTER it; an event
+ * offered earlier (a silence status published as capture starts) still arrives first, as before #327. Events of
+ * two DIFFERENT takes can interleave when a Live took the queue fallback; each names its take, and the owner
+ * discards another take's. A heartbeat is NOT ordered against them (#280): the worker delivers a waiting
  * heartbeat, then one queued event, per pass. The owner reads a heartbeat only while recording, so one that
  * arrives before Live or after the ending changes nothing but its silence bound; the cost is that the
  * recorder's elapsed timer can skip one second at the start of a take when the worker is a second behind.
@@ -84,7 +85,14 @@ internal class TakeEventPublisher(
     internal sealed interface Event {
         val takeId: String
 
-        data class Live(override val takeId: String, val forced: Boolean, val routeKind: Int, val routeReason: Int, val liveAfterMs: Long) : Event
+        data class Live(
+            override val takeId: String,
+            val forced: Boolean,
+            val routeKind: Int,
+            val routeReason: Int,
+            val liveAfterMs: Long,
+            val onDelivered: Runnable? = null,
+        ) : Event
         data class SilenceStatus(override val takeId: String, val status: Int) : Event
         data class Ended(
             override val takeId: String,
@@ -112,6 +120,7 @@ internal class TakeEventPublisher(
     private var liveRouteKind = 0
     private var liveRouteReason = 0
     private var liveAfterMsSlot = 0L
+    private var liveOnDelivered: Runnable? = null
     private val liveState = AtomicInteger(TICK_IDLE)
     private val worker = Thread({ drain() }, "TakeEventPublisher").apply { isDaemon = true }
 
@@ -153,26 +162,29 @@ internal class TakeEventPublisher(
 
     /**
      * Capture thread, on the first admitted block (#327): into the Live slot, allocating nothing, like [offerTick].
-     * Only when the slot still holds an earlier take's undelivered Live does it take the queue, which allocates.
+     * Only when the slot still holds an earlier take's undelivered Live does it take the queue, which allocates,
+     * and that fallback stays inside the same lifecycle entry, so a close can never drop an accepted Live (review
+     * round 1). [onDelivered] is a prebuilt runnable the WORKER runs when it delivers this Live, whether or not a
+     * listener is registered: the capture thread passes a reference and never posts it itself.
      */
-    fun publishLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) {
+    fun publishLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long, onDelivered: Runnable? = null) {
         if (!enter()) return
-        var claimed = false
         try {
             if (liveState.compareAndSet(TICK_IDLE, TICK_WRITING)) {
-                claimed = true
                 liveTakeId = takeId
                 liveForced = forced
                 liveRouteKind = routeKind
                 liveRouteReason = routeReason
                 liveAfterMsSlot = liveAfterMs
+                liveOnDelivered = onDelivered
                 liveState.set(TICK_READY)
+            } else {
+                queue.offer(Event.Live(takeId, forced, routeKind, routeReason, liveAfterMs, onDelivered))
             }
         } finally {
             lifecycle.decrementAndGet()
             LockSupport.unpark(worker)
         }
-        if (!claimed) offer(Event.Live(takeId, forced, routeKind, routeReason, liveAfterMs))
     }
 
     fun publishSilenceStatus(takeId: String, status: Int) {
@@ -245,6 +257,7 @@ internal class TakeEventPublisher(
             }
             // A Live marked ready before this event was offered is delivered first (#327).
             if (liveState.get() == TICK_READY) deliverLive()
+            if (event is Event.Live) runHook(event.onDelivered)
             val target = listener.get() ?: continue
             runCatching {
                 when (event) {
@@ -263,11 +276,20 @@ internal class TakeEventPublisher(
         val routeKind = liveRouteKind
         val routeReason = liveRouteReason
         val liveAfterMs = liveAfterMsSlot
+        val onDelivered = liveOnDelivered
+        liveOnDelivered = null
         liveState.set(TICK_IDLE)
+        runHook(onDelivered)
         val target = listener.get() ?: return
         if (takeId == null) return
         runCatching { target.onLive(takeId, forced, routeKind, routeReason, liveAfterMs) }
             .onFailure { DebugLogger.warn(tag, "Take event not delivered: Live ${it.javaClass.simpleName}") }
+    }
+
+    /** A Live's delivery hook, on the worker; a throw costs the hook and nothing else. */
+    private fun runHook(hook: Runnable?) {
+        if (hook == null) return
+        runCatching { hook.run() }.onFailure { DebugLogger.warn(tag, "Live hook failed: ${it.javaClass.simpleName}") }
     }
 
     /** The worker's side of the slot: copy both fields, free the slot, then make the one binder call. */

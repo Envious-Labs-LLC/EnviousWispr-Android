@@ -285,7 +285,7 @@ internal class DictationSessionCoordinator(
             DictationSessionService.ACTION_START -> if (state.get() == SessionState.IDLE) {
                 beginSession()
             } else {
-                Telemetry.capture(AnalyticsEvent.DictationRefused("busy", pendingTrigger))
+                Telemetry.capture(AnalyticsEvent.DictationRefused(AnalyticsEvent.DictationRefused.BUSY, pendingTrigger))
             }
         }
     }
@@ -303,12 +303,12 @@ internal class DictationSessionCoordinator(
             DictationSessionService.ACTION_START -> when (val decision = BubbleRequests.resolveStart(request, ownerIdle = state.get() == SessionState.IDLE)) {
                 BubbleRequestLedger.StartDecision.Stale -> {
                     log.log("Bubble start refused as stale")
-                    Telemetry.capture(AnalyticsEvent.DictationRefused("stale", bubbleTrigger(request)))
+                    Telemetry.capture(AnalyticsEvent.DictationRefused(AnalyticsEvent.DictationRefused.STALE, bubbleTrigger(request)))
                     false
                 }
                 BubbleRequestLedger.StartDecision.RefusedBusy -> {
                     log.log("Bubble start refused: a take is active")
-                    Telemetry.capture(AnalyticsEvent.DictationRefused("busy", bubbleTrigger(request)))
+                    Telemetry.capture(AnalyticsEvent.DictationRefused(AnalyticsEvent.DictationRefused.BUSY, bubbleTrigger(request)))
                     false
                 }
                 is BubbleRequestLedger.StartDecision.Admitted -> {
@@ -818,7 +818,7 @@ internal class DictationSessionCoordinator(
             takeFacts.routeReason = runCatching { InputRouteReason.fromCode(routeReason) }.getOrNull()
             takeFacts.liveAfterMs = liveAfterMs
             takeFacts.liveReceivedMs = host.elapsedRealtimeMs() - current.acceptedAtMs
-            takeFacts.liveState = if (forced) "forced" else "ready"
+            takeFacts.liveState = if (forced) TakeFacts.LIVE_FORCED else TakeFacts.LIVE_READY
             Telemetry.journal?.advance(takeId, TakeStage.RECORDING)
             Telemetry.breadcrumb(
                 "take", "live",
@@ -1117,9 +1117,9 @@ internal class DictationSessionCoordinator(
             // recorded if it is already in, else `pending`; the committed facts are never changed afterwards, and
             // a slow or failed save is reported by the application's [HistorySaveObserver] alone (#304).
             takeFacts.historySave = when (saved.answeredNow()?.outcome) {
-                is SaveOutcome.Saved -> "ok"
-                is SaveOutcome.Failed -> "failed"
-                null -> "pending"
+                is SaveOutcome.Saved -> TakeFacts.HISTORY_OK
+                is SaveOutcome.Failed -> TakeFacts.HISTORY_FAILED
+                null -> TakeFacts.HISTORY_PENDING
             }
             // COMMIT BEFORE the insertion handoff: completed means the text finalised, never that insertion
             // succeeded. A revoked reservation (the owner was destroyed) stops here: no handoff, no announcement,

@@ -1,6 +1,7 @@
 package com.envi.wispr.telemetry
 
 import android.content.Context
+import com.envi.wispr.BuildConfig
 import com.envi.wispr.debug.DebugLogger
 import com.posthog.PostHog
 import com.posthog.PostHogBeforeSend
@@ -73,8 +74,17 @@ internal object PostHogBootstrap {
         return Outcome.Enabled
     }
 
-    /** The EXACT body the PostHog `beforeSend` runs; SDK-free in its inputs so a test drives the bytes. */
-    fun processProperties(name: String, properties: Map<String, Any?>, config: TelemetryConfig): Map<String, Any>? {
+    /**
+     * The EXACT body the PostHog `beforeSend` runs; SDK-free in its inputs so a test drives the bytes. [debugLog], set
+     * in debug builds only, hears each key whose string the sanitizer refused and the kept row's keys (#307): keys
+     * only, sorted, under an event name from [AnalyticsEvent.NAMES] or `unknown`. Never a value, never a raw name.
+     */
+    fun processProperties(
+        name: String,
+        properties: Map<String, Any?>,
+        config: TelemetryConfig,
+        debugLog: ((String) -> Unit)? = null,
+    ): Map<String, Any>? {
         val stamped = LinkedHashMap<String, Any?>(properties)
         stamped["app"] = APP_TAG
         stamped["environment"] = config.environment
@@ -85,11 +95,17 @@ internal object PostHogBootstrap {
             TelemetryVolumePolicy.Decision.Drop -> return null
             is TelemetryVolumePolicy.Decision.Keep -> decision.properties
         }
-        return PayloadSanitizer.sanitizeProperties(kept)
+        if (debugLog == null) return PayloadSanitizer.sanitizeProperties(kept)
+        val sanitized = PayloadSanitizer.sanitizeProperties(kept) { key -> debugLog("PostHog value dropped: $key") }
+        val shownName = if (name in AnalyticsEvent.NAMES) name else "unknown"
+        debugLog("PostHog row $shownName kept: ${sanitized.keys.sorted().joinToString(",")}")
+        return sanitized
     }
 
+    private val debugLog: ((String) -> Unit)? = if (BuildConfig.DEBUG) { message -> DebugLogger.log(TAG, message) } else null
+
     private fun process(event: PostHogEvent, config: TelemetryConfig): PostHogEvent? {
-        val properties = processProperties(event.event, event.properties ?: emptyMap(), config) ?: return null
+        val properties = processProperties(event.event, event.properties ?: emptyMap(), config, debugLog) ?: return null
         return event.copy(properties = properties.toMutableMap())
     }
 

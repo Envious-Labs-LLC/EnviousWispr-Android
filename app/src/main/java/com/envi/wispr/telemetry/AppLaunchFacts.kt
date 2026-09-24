@@ -45,31 +45,56 @@ internal object AppLaunchFacts {
     /** Pure, so the projection is testable against a literal without a phone. */
     fun settingsProjection(state: AppPreferencesState?, polishPolicy: String): Map<String, Any> {
         if (state == null) {
-            return SETTING_KEYS.associateWith { UNKNOWN } + ("polish_policy" to polishPolicy)
+            return SETTING_KEYS.associateWith { UNKNOWN } + (POLISH_POLICY to polishPolicy)
         }
         return mapOf(
-            "filler_removal" to onOff(state.fillerRemovalEnabled),
-            "emoji_formatter" to onOff(state.emojiFormatterEnabled),
-            "spoken_punctuation" to onOff(state.spokenPunctuationEnabled),
-            "auto_copy_to_clipboard" to onOff(state.autoCopyToClipboard),
-            "restore_clipboard_after_paste" to onOff(state.restoreClipboardAfterPaste),
-            "smart_insertion" to onOff(state.smartInsertionEnabled),
-            "auto_stop_on_silence" to onOff(state.autoStopOnSilenceEnabled),
-            "silence_pause_seconds" to state.silencePauseSeconds,
-            "input_device" to TakeFacts.inputDeviceToken(state.inputDevicePick),
-            "show_bluetooth_tips" to onOff(state.showBluetoothTips),
-            "keep_earbuds_ready" to onOff(state.keepEarbudsReady),
-            "dynamic_color" to onOff(state.dynamicColorEnabled),
-            "bubble_look" to state.bubbleLook.name.lowercase(),
-            "polish_policy" to polishPolicy,
+            FILLER_REMOVAL to onOff(state.fillerRemovalEnabled),
+            EMOJI_FORMATTER to onOff(state.emojiFormatterEnabled),
+            SPOKEN_PUNCTUATION to onOff(state.spokenPunctuationEnabled),
+            AUTO_COPY_TO_CLIPBOARD to onOff(state.autoCopyToClipboard),
+            RESTORE_CLIPBOARD_AFTER_PASTE to onOff(state.restoreClipboardAfterPaste),
+            SMART_INSERTION to onOff(state.smartInsertionEnabled),
+            AUTO_STOP_ON_SILENCE to onOff(state.autoStopOnSilenceEnabled),
+            SILENCE_PAUSE_SECONDS to state.silencePauseSeconds,
+            INPUT_DEVICE to TakeFacts.inputDeviceToken(state.inputDevicePick),
+            SHOW_BLUETOOTH_TIPS to onOff(state.showBluetoothTips),
+            KEEP_EARBUDS_READY to onOff(state.keepEarbudsReady),
+            DYNAMIC_COLOR to onOff(state.dynamicColorEnabled),
+            BUBBLE_LOOK to state.bubbleLook.name.lowercase(),
+            POLISH_POLICY to polishPolicy,
         )
     }
 
-    fun onOff(value: Boolean): String = if (value) "on" else "off"
+    const val ON = "on"
+    const val OFF = "off"
 
-    private val SETTING_KEYS = listOf(
-        "filler_removal", "emoji_formatter", "spoken_punctuation", "auto_copy_to_clipboard",
-        "restore_clipboard_after_paste", "smart_insertion", "auto_stop_on_silence", "silence_pause_seconds",
-        "input_device", "show_bluetooth_tips", "keep_earbuds_ready", "dynamic_color", "bubble_look",
+    fun onOff(value: Boolean): String = if (value) ON else OFF
+
+    // The setting names: the `app.launched` keys AND the `settings.changed` row's `setting` values (#307).
+    const val FILLER_REMOVAL = "filler_removal"
+    const val EMOJI_FORMATTER = "emoji_formatter"
+    const val SPOKEN_PUNCTUATION = "spoken_punctuation"
+    const val AUTO_COPY_TO_CLIPBOARD = "auto_copy_to_clipboard"
+    const val RESTORE_CLIPBOARD_AFTER_PASTE = "restore_clipboard_after_paste"
+    const val SMART_INSERTION = "smart_insertion"
+    const val AUTO_STOP_ON_SILENCE = "auto_stop_on_silence"
+    const val SILENCE_PAUSE_SECONDS = "silence_pause_seconds"
+    const val INPUT_DEVICE = "input_device"
+    const val SHOW_BLUETOOTH_TIPS = "show_bluetooth_tips"
+    const val KEEP_EARBUDS_READY = "keep_earbuds_ready"
+    const val DYNAMIC_COLOR = "dynamic_color"
+    const val BUBBLE_LOOK = "bubble_look"
+    const val POLISH_POLICY = "polish_policy"
+
+    /** The ten settings projected as [ON] or [OFF]. */
+    val ON_OFF_SETTINGS: List<String> = listOf(
+        FILLER_REMOVAL, EMOJI_FORMATTER, SPOKEN_PUNCTUATION, AUTO_COPY_TO_CLIPBOARD, RESTORE_CLIPBOARD_AFTER_PASTE,
+        SMART_INSERTION, AUTO_STOP_ON_SILENCE, SHOW_BLUETOOTH_TIPS, KEEP_EARBUDS_READY, DYNAMIC_COLOR,
     )
+
+    /** Every persisted setting the projection reports; [POLISH_POLICY] is the repository's, read separately. */
+    private val SETTING_KEYS: List<String> = ON_OFF_SETTINGS + listOf(SILENCE_PAUSE_SECONDS, INPUT_DEVICE, BUBBLE_LOOK)
+
+    /** Every name a `settings.changed` row can carry. */
+    val SETTING_NAMES: List<String> = SETTING_KEYS + POLISH_POLICY
 }

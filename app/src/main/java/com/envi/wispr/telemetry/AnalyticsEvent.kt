@@ -23,6 +23,18 @@ internal sealed class AnalyticsEvent(val name: String) {
     /** The properties as they enter the volume policy and the sanitizer; nulls are dropped there. */
     abstract fun properties(): Map<String, Any?>
 
+    companion object {
+        /**
+         * Every name a subclass passes (#307): the only event names a debug log may print. `TelemetryContractsTest` pins
+         * it against the subclasses' literals.
+         */
+        val NAMES: Set<String> = setOf(
+            "app.launched", "dictation.terminal", "insertion.terminal", "dictation.interrupted", "dictation.refused",
+            "onboarding.stage_reached", "onboarding.completed", "onboarding.practice", "model_delivery.terminal",
+            "settings.changed", "api_key.changed", "api_key.validation_completed",
+        )
+    }
+
     /** Take-keyed rows carry the take id; the rest do not. */
     open val takeId: String? get() = null
 
@@ -152,6 +164,14 @@ internal sealed class AnalyticsEvent(val name: String) {
 
     class DictationRefused(val reason: String, val trigger: TriggerSource) : AnalyticsEvent("dictation.refused") {
         override fun properties(): Map<String, Any?> = mapOf("reason" to reason, "trigger_source" to trigger.wire)
+
+        companion object {
+            /** A take is already running. */
+            const val BUSY = "busy"
+            /** A bubble start the request ledger had already retired. */
+            const val STALE = "stale"
+            val REASONS: Set<String> = setOf(BUSY, STALE)
+        }
     }
 
     class OnboardingStageReached(val stage: String, val elapsedSeconds: Double) : AnalyticsEvent("onboarding.stage_reached") {

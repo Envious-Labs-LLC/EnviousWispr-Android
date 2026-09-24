@@ -6,8 +6,9 @@ package com.envi.wispr.telemetry
  *
  * Today every declared event is kept unsampled, and no hash bucket, sampling stamps or sampled fixture
  * ship until an approved event is actually sampled (G2 proportionality); when that day comes the
- * contract is PostHog's own vocabulary (`$sample_type`, `$sample_threshold`, `$sampled_events`) so
- * `sum(1 / $sample_threshold)` reads both platforms. What it DOES do now: stamp `telemetry_policy_version`
+ * contract is PostHog's own vocabulary (`$sample_type`, `$sample_threshold`, `$sampled_events`, the first and
+ * last joining the sanitizer's allowlist with their rules that day) so `sum(1 / $sample_threshold)` reads both
+ * platforms. What it DOES do now: stamp `telemetry_policy_version`
  * on every kept row so a reader can floor by policy, and reduce the SDK-added context to the keys the
  * sanitizer's allowlist names, so `$user_agent`, `$network_carrier`, `$device_name` and the screen
  * geometry never leave.

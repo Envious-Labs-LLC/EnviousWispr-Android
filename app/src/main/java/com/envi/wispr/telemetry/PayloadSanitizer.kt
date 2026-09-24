@@ -6,8 +6,9 @@ package com.envi.wispr.telemetry
  * enforcer beside `privacy/PrivacyDisclosure.kt` and `cpp/geniex_log_silencer.cpp`.
  *
  * Allowlist first, patterns second. A property leaves only if its NAME is one the schema declares
- * ([allowedKeys]) and its VALUE has an allowed kind: a number, a boolean, a closed token, or one of
- * the bounded dynamic strings. Every other string is DROPPED whatever its length, and URLs get no
+ * ([allowedKeys]) and its VALUE has an allowed kind: a number, a boolean, or a string its key's rule in
+ * `PostHogSchema` admits (#307): a member of the key's closed value set, or a value in the key's shape.
+ * A string under a key with no rule, or outside its rule, is DROPPED whatever its length, and URLs get no
  * exemption. Then the pattern rules run on what survived, as defence in depth: key prefixes, hex runs,
  * emails, Android private and shared storage paths, `content://` URIs, credentials inside URLs, and
  * anything over [MAX_STRING] characters.
@@ -33,8 +34,8 @@ internal object PayloadSanitizer {
         "take_id", "distinct_id",
         // dictation.terminal and friends
         "result", "reason", "asr_failure_reason", "trigger_source", "route_kind", "route_reason",
-        "live_after_ms", "live_state", "start_failure", "capture_terminal", "silence_stop_status",
-        "recording_s", "input_device", "asr_ms", "asr_chars", "asr_cold_start", "peak_amplitude",
+        "live_after_ms", "live_state", "capture_terminal", "silence_stop_status",
+        "recording_s", "input_device", "asr_ms", "asr_chars", "peak_amplitude",
         "polish_provider", "polish_reason", "polish_ms", "polish_status", "history_save", "stage",
         "settings_fallback",
         // #258: the pre-capture chain, ms since the owner accepted the start command.
@@ -57,64 +58,45 @@ internal object PayloadSanitizer {
         "\$app_build", "\$app_version", "\$device_manufacturer", "\$device_model", "\$is_emulator",
         "\$lib", "\$lib_version", "\$locale", "\$os_name", "\$os_version",
         // PostHog SDK bookkeeping the SDK itself reads
-        "\$session_id", "\$process_person_profile", "\$sample_type", "\$sample_threshold", "\$sampled_events",
+        "\$session_id", "\$process_person_profile", "\$sample_threshold",
     )
 
     /**
-     * Keys whose value may be a bounded, externally supplied string rather than a closed token, each with
-     * the SHAPE it must have. A value that does not fit its shape is dropped, so a short sentence can
-     * never ride under `target_app` or `device_model` (G3 refutation: a length rule alone admits prose).
+     * Filters a PostHog property bag: unknown keys dropped, values judged, patterns applied. [dropped] hears the KEY,
+     * never the value, of each string its key's rule refused: the debug build's signal that a producer and its set
+     * drifted apart (#307).
      */
-    private val UUID_SHAPE = Regex("\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z")
-    private val PACKAGE_SHAPE = Regex("\\A[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+\\z")
-    /** Printable ASCII, no spaces: a model number, a version, a locale, a timezone id. */
-    private val LABEL_SHAPE = Regex("\\A[\\x21-\\x7E]{1,64}\\z")
-    /** Printable ASCII with single spaces: a manufacturer's model name ("Galaxy S26 Ultra"). */
-    private val NAME_SHAPE = Regex("\\A[\\x21-\\x7E]+( [\\x21-\\x7E]+){0,4}\\z")
-    private val boundedStringKeys: Map<String, Regex> = mapOf(
-        "take_id" to UUID_SHAPE, "distinct_id" to UUID_SHAPE, "process_run_id" to UUID_SHAPE, "\$session_id" to UUID_SHAPE,
-        "target_app" to PACKAGE_SHAPE,
-        "device_model" to NAME_SHAPE, "\$device_model" to NAME_SHAPE, "\$device_manufacturer" to NAME_SHAPE,
-        "os_version" to LABEL_SHAPE, "\$os_version" to LABEL_SHAPE, "\$os_name" to LABEL_SHAPE,
-        "\$app_version" to LABEL_SHAPE, "\$app_build" to LABEL_SHAPE, "\$locale" to LABEL_SHAPE,
-        "\$lib" to LABEL_SHAPE, "\$lib_version" to LABEL_SHAPE,
-        "app_version" to LABEL_SHAPE, "app" to LABEL_SHAPE, "environment" to LABEL_SHAPE,
-    )
-
-    /** Filters a PostHog property bag: unknown keys dropped, values judged, patterns applied. */
-    fun sanitizeProperties(properties: Map<String, Any?>): Map<String, Any> {
+    fun sanitizeProperties(properties: Map<String, Any?>, dropped: (String) -> Unit = {}): Map<String, Any> {
         val out = LinkedHashMap<String, Any>()
         for ((key, value) in properties) {
             if (key !in allowedKeys) continue
-            val kept = sanitizeValue(key, value) ?: continue
+            val kept = sanitizeValue(key, value, dropped) ?: continue
             out[key] = kept
         }
         return out
     }
 
     /**
-     * A single value under a known key. Numbers and booleans pass. A string passes only as a closed token
-     * (`[a-z0-9_.:-]{1,64}`, the shape of every enum name, wire result and version we emit) or, under a
-     * bounded key, as a scrubbed string of at most [MAX_STRING] characters. Lists of strings are filtered
-     * element-wise. Anything else is dropped.
+     * A single value under a known key. Numbers and booleans pass. A string passes only when its key's
+     * `PostHogSchema` rule admits it, is at most [MAX_STRING] characters, and then survives the pattern pass.
+     * Lists of strings are filtered element-wise. Anything else is dropped.
      */
-    fun sanitizeValue(key: String, value: Any?): Any? = when (value) {
+    fun sanitizeValue(key: String, value: Any?, dropped: (String) -> Unit = {}): Any? = when (value) {
         null -> null
         is Boolean, is Int, is Long, is Float, is Double -> value
-        is String -> sanitizeString(key, value)
-        is List<*> -> value.mapNotNull { element -> (element as? String)?.let { sanitizeString(key, it) } }
+        is String -> sanitizeString(key, value, dropped)
+        is List<*> -> value.mapNotNull { element -> (element as? String)?.let { sanitizeString(key, it, dropped) } }
         else -> null
     }
 
-    private fun sanitizeString(key: String, value: String): String? {
-        // A key with its own shape is judged by that shape alone: "chrome" is a fine token but not a
-        // package name, so under `target_app` it is a bug or a word, and either way it stays.
-        val shape = boundedStringKeys[key]
-        if (shape != null) {
-            if (value.length > MAX_STRING || !shape.matches(value)) return null
-            return redactPatterns(value)
+    private fun sanitizeString(key: String, value: String, dropped: (String) -> Unit): String? {
+        // Fail closed: a key with no rule carries numbers and booleans only.
+        val rule = PostHogSchema.values[key] ?: return null
+        if (value.length > MAX_STRING || !rule.admits(value)) {
+            dropped(key)
+            return null
         }
-        return if (TOKEN.matches(value)) value else null
+        return redactPatterns(value)
     }
 
     /**
@@ -128,8 +110,6 @@ internal object PayloadSanitizer {
         if (DENY_RULES.any { it.containsMatchIn(s) }) return REDACTED
         return s
     }
-
-    private val TOKEN = Regex("\\A[A-Za-z0-9_.:-]{1,64}\\z")
 
     private val PATH_RULES = listOf(
         Regex("/data/user/\\d+/[^\\s]*"),

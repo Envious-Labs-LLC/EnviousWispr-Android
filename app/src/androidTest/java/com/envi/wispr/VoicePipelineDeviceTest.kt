@@ -51,6 +51,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -84,6 +85,8 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class VoicePipelineDeviceTest {
     companion object {
+        /** The no-field host window, as the system focus log names it (#331). */
+        const val NO_FIELD_HOST_WINDOW = "com.envi.wispr.test/com.envi.wispr.PasteTargetActivity"
         const val SURFACE_STATE_PREFERENCES = "dictation_surface_state"
         const val SURFACE_STATE_PHASE = "phase"
         const val ARG_AUDIO = "audio"
@@ -316,12 +319,13 @@ class VoicePipelineDeviceTest {
      * RULE: a-test-seam-on-a-GUARD-is-a-bypass forbids. The announcement is the adb recipe in
      * `.claude/knowledge/device-testing.md`, whose step 6 dictates with the service unbound.
      *
-     * The precondition is CONFIRMED after the run rather than assumed, per `validation-discipline.md`
-     * RULE: verify-the-feature-not-the-crash. `pinTarget` falls back to scanning every window, so a
-     * third-party editable field still focused behind our 1x1 launcher pins successfully and the
-     * dictation reaches the editor. Reporting that as a red row would accuse working code, so it
-     * reports SKIPPED with the observed handoff named. [observedHandoff] is a log read and stays a
-     * PRECONDITION read (it classifies the staging); it never judges the outcome.
+     * The state is STAGED, not hoped for (#331): `pinTarget` falls back to scanning every window for a FOCUSED
+     * editable node, so a third-party field still focused behind our 1x1 launcher would pin. The row first opens
+     * the rig's no-field host and waits for that host's own window focus, so no other app's editor holds input
+     * focus. The system's own input-focus log for the take must name no window but the host: the 1x1 launcher's
+     * start and stop move focus to NO window for a moment (measured on the emulator, 2026-09-24), which pins
+     * nothing, while any other window taking focus is a staging failure. The handoff is then ASSERTED: anything
+     * but NO_PINNED_TARGET is a red row, never a skip.
      */
     @Test
     fun aDictationWithNoFieldToInsertIntoIsNotReportedToTheUserAsAFailure() {
@@ -342,20 +346,25 @@ class VoicePipelineDeviceTest {
         // The ring buffer wraps, so observedHandoff() must read THIS run
         // (`android-tooling.md` RULE: clear-logcat-before-you-measure).
         shell("logcat -c")
+        // Staged before the take (#331): the no-field host fills the screen and holds window focus.
+        startRig(twoFields = false, noField = true)
+        // The system's focus log from here on is this take's (`input_focus` lives in the events buffer).
+        shell("logcat -b events -c")
 
         val run = SideButtonRun()
         run.recordOneTake(stage = {})
         assertTrue("The session never returned to IDLE; phase was ${run.phaseNow()}", run.awaitIdle())
 
-        // The session owner names its own handoff, so the staged precondition is READ rather than
-        // assumed. Anything but NO_PINNED_TARGET means the phone was not in the state this row is
-        // about.
-        val handoff = observedHandoff()
-        assumeTrue(
-            "Nothing could be staged: the dictation reported handoff=$handoff, so an editable " +
-                "field was focused behind the launcher and the words went where they should",
-            handoff == "NO_PINNED_TARGET",
+        // The session owner names its own handoff. With the host staged, anything but NO_PINNED_TARGET is a
+        // failure of this row, not a staging miss.
+        val focused = focusedWindowsSinceClear()
+        assertTrue(
+            "staging failure: a window other than the no-field host took input focus during the take ($focused), " +
+                "so a field there could have been pinned",
+            focused.all { it == NO_FIELD_HOST_WINDOW },
         )
+        val handoff = observedHandoff()
+        assertEquals("the staged no-field host must leave nothing to pin", "NO_PINNED_TARGET", handoff)
 
         // NOT a check for one id. The durable fallback notification was DELETED in the messaging
         // rework, so asserting its absence would be a green row about nothing
@@ -696,7 +705,7 @@ class VoicePipelineDeviceTest {
 
     // ---- the rig ------------------------------------------------------------------------------------------
 
-    private fun startRig(twoFields: Boolean) {
+    private fun startRig(twoFields: Boolean, noField: Boolean = false) {
         // Stale receipts from an earlier run are removed BEFORE the launch, so nothing already on disk can
         // answer for this run (code review round 1).
         for (name in listOf(PasteTargetActivity.RECEIPT_NAME, PasteTargetActivity.RECEIPT_B_NAME, PasteTargetActivity.READY_NAME)) {
@@ -707,6 +716,7 @@ class VoicePipelineDeviceTest {
             Intent()
                 .setClassName(TEST_PACKAGE, "com.envi.wispr.PasteTargetActivity")
                 .putExtra(PasteTargetActivity.EXTRA_TWO_FIELDS, twoFields)
+                .putExtra(PasteTargetActivity.EXTRA_NO_FIELD, noField)
                 .putExtra(PasteTargetActivity.EXTRA_RIG_TOKEN, rigToken)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
         )
@@ -723,7 +733,10 @@ class VoicePipelineDeviceTest {
             }
             Thread.sleep(100)
         }
-        throw AssertionError("the paste-target rig did not come up with editor A focused (no ready receipt carrying this run's token after 15 s)")
+        throw AssertionError(
+            if (noField) "the no-field host did not take window focus (no ready receipt carrying this run's token after 15 s)"
+            else "the paste-target rig did not come up with editor A focused (no ready receipt carrying this run's token after 15 s)",
+        )
     }
 
     /** The rig answers 1 only once editor B holds focus; anything else is a staging failure. */
@@ -764,6 +777,16 @@ class VoicePipelineDeviceTest {
         if (needle.isEmpty()) 0 else Regex(Regex.escape(needle)).findAll(text).count()
 
     /** The handoff the session owner logged for the run that just finished, or `"none"`. */
+    /**
+     * Every window the system gave input focus since the events buffer was cleared, by component, from its own
+     * `input_focus` log ("Focus entering <hash> <component>,reason=..."). A focus request to no window is not
+     * an entry, so it is never counted (#331).
+     */
+    private fun focusedWindowsSinceClear(): List<String> {
+        val events = shell("logcat -d -b events -s input_focus")
+        return Regex("Focus entering \\S+ ([^,\\]]+)").findAll(events).map { it.groupValues[1].trim() }.toList()
+    }
+
     private fun observedHandoff(): String {
         val logs = shell("logcat -d -v brief -s DictationSession:I '*:S'")
         return Regex("\\(handoff=([A-Z_]+)\\)").findAll(logs).lastOrNull()?.groupValues?.get(1)

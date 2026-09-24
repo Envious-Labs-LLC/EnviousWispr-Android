@@ -33,3 +33,10 @@ Persona: the founder at the end of a take. The session's publication step hands 
 
 - `InsertionAdmissionShapeTest` (Drift Guard): admission makes no attempt inline, schedules the first after the pending insertion is in place, and the retry runs the attempt (m1: the first attempt made inline again).
 - `MainThreadHandoffTest` keeps racing the claim in both orders.
+
+## 3. Combined coverage and review round (Codex)
+
+Every `Tick` still reaches the same handler; terminal results, the pin release and the History recording can now land after the handoff returns, which no caller read before (the answer was always `SCHEDULED`). The untimed wait stays necessary for a claimed handoff. Two findings, both adopted:
+
+- An interrupt before the first attempt cancelled it but left the content-change mode on, which a quick `Verified` used to turn off inline in `finish`. The gap also existed between retries. `abandon` now turns the mode off when it ended a pending insertion (drift row 2, m2).
+- `PasteAccessibilityService.callOnMain`'s KDoc still described the inline attempt; it now says admission posts its first attempt.

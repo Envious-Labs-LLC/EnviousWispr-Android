@@ -35,4 +35,17 @@ class InsertionAdmissionShapeTest {
         assertTrue("scheduled only after the pending insertion is in place", request.indexOf("pendingInsertion = pending") < request.indexOf("scheduleRetry(delayMs = 0L)"))
         assertTrue("and the retry runs the attempt", runner.contains("private val retryRunnable = Runnable {\n        retryScheduled = false\n        tryPendingInsertion()"))
     }
+
+    /**
+     * An interrupt before the first attempt (#362 review round 1): the pending insertion is finalized and the
+     * content-change mode it turned on is turned off, as a finished attempt's `finish` does. MUTATION m2: the mode
+     * left on.
+     */
+    @Test fun anInterruptEndsTheContentChangeModeOfAPendingInsertion() {
+        val abandon = body("fun abandon(")
+        val had = abandon.indexOf("val hadPending = isPending")
+        val finalize = abandon.indexOf("finalizePending(reason, outcome)")
+        val off = abandon.indexOf("if (hadPending) setContentChanges(false)")
+        assertTrue("read before finalizing clears it, then turned off: $abandon", had in 0 until finalize && finalize < off)
+    }
 }

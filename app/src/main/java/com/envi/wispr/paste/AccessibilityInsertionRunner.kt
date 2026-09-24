@@ -163,12 +163,16 @@ internal class AccessibilityInsertionRunner(
     /**
      * The service was interrupted: the words were accepted against a pinned field and are not going to
      * reach it. The outcome is written and announced, then the retry goes; the service clears the pin
-     * afterwards, so the outcome names the pinned package.
+     * afterwards, so the outcome names the pinned package. An insertion that was still pending also ends
+     * the content-change mode it turned on, as a finished attempt does (#362 review round 1): the service
+     * may stay bound after an interrupt, and the mode is not idle-free.
      */
     fun abandon(reason: ServiceFallbackReason, outcome: InsertionOutcomeLine.Outcome) {
+        val hadPending = isPending
         finalizePending(reason, outcome)
         mainHandler.removeCallbacks(retryRunnable)
         retryScheduled = false
+        if (hadPending) setContentChanges(false)
     }
 
     /**

@@ -126,7 +126,7 @@ class TakeEventPublisherTest {
                 if (holdNext) {
                     holdNext = false
                     polling.countDown()
-                    release.await(10, TimeUnit.SECONDS)
+                    check(release.await(10, TimeUnit.SECONDS)) { "worker poll was not released" }
                 }
                 return super.poll()
             }
@@ -162,7 +162,7 @@ class TakeEventPublisherTest {
                 if (holdNext) {
                     holdNext = false
                     polling.countDown()
-                    release.await(10, TimeUnit.SECONDS)
+                    check(release.await(10, TimeUnit.SECONDS)) { "worker poll was not released" }
                 }
                 return super.poll()
             }
@@ -203,7 +203,7 @@ class TakeEventPublisherTest {
                 if (holdNext) {
                     holdNext = false
                     polling.countDown()
-                    release.await(10, TimeUnit.SECONDS)
+                    check(release.await(10, TimeUnit.SECONDS)) { "worker poll was not released" }
                 }
                 return super.poll()
             }
@@ -243,7 +243,7 @@ class TakeEventPublisherTest {
                 if (holdNext) {
                     holdNext = false
                     polling.countDown()
-                    release.await(10, TimeUnit.SECONDS)
+                    check(release.await(10, TimeUnit.SECONDS)) { "worker poll was not released" }
                 }
                 return super.poll()
             }
@@ -252,17 +252,15 @@ class TakeEventPublisherTest {
         val staged = TakeEventPublisher(slot, "test", nowNanos = { now.get() }, queue = held, afterFreePass = {
             if (armed.getAndSet(false)) {
                 release.countDown()
-                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-                while (recorder.events.size < 2) {
-                    check(System.nanoTime() < deadline) { "the worker never emptied both slots" }
-                    Thread.sleep(1)
-                }
+                // Both waiting Lives delivered (review round 2: the recorder's own signal, never a sleep), then C's.
+                recorder.await()
+                recorder.expect(1)
             }
         })
         try {
             staged.start()
             assertTrue(polling.await(10, TimeUnit.SECONDS))
-            recorder.expect(3)
+            recorder.expect(2)
             staged.publishLive("tA", false, 1, 2, 1L)
             staged.publishLive("tB", false, 1, 2, 2L)
             armed.set(true)

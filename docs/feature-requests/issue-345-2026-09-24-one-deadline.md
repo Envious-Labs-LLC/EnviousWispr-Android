@@ -32,4 +32,13 @@ The worst case falls from about 3.3 s to about 3 s: the settings, then the match
 
 - `TakeStartPreparerTest` row 7: the policy read starts before the settings answer. MUTATION m6: the policy is launched after the settings wait.
 - Row 8: an admission that never lands adds no wait once its window passed during the settings. MUTATION m7: the window counts from after the matcher.
+- Row 9 (review round 1): a take that stops starting during the settings wait ends there, with only the policy job published and cancelled, and no settings stamp. MUTATION m8: no recheck after the wait.
+
+## 2. Review
+
+Round 1 (Codex, coverage and code together) had three findings:
+
+- Adopted: a take cancelled during the settings wait still stamped the settings and launched the matcher. It now ends right after the wait.
+- Rejected: stamp `policyLoadedMs` at the policy read's own finish. The field has always been the step's completion stamp in step order, taken after the matcher; the policy could finish before the matcher before this change too. Changing its meaning is #267's call, from real timings.
+- Rejected: treat a cancelled admission as a failure. The only producer, `TakeJournalWriter.admit`, completes its deferred true or false in a `finally` and never cancels it.
 - The existing rows stay green: the stamp order, the jobs cancelled after publication, the prior policy before the launch, the admission deadline and its logs, and the owner shape.

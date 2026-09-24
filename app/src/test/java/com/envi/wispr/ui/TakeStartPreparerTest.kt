@@ -68,14 +68,15 @@ class TakeStartPreparerTest {
     @Test fun jobsPublishedAfterTheTakeStoppedStartingAreCancelled() = runBlocking {
         val facts = facts()
         var published: List<Job> = emptyList()
-        // Still starting until the jobs are published: only a recheck AFTER publication can see the cancel.
+        // Still starting until the matcher and the policy are published together (the policy alone is published
+        // first since #345): only a recheck AFTER that publication can see the cancel.
         var starting = true
         val outcome = runCatching {
             preparer(
                 compileMatcher = { held.await(10, TimeUnit.SECONDS); StructuredTermRestorer.compile(emptyList()) },
                 loadPolicy = { CompletableDeferred<PolicyRead>().await() },
             )
-                .prepare(facts.takeId, facts, null, { 0L }, jobs = { published = it; starting = false }, stillStarting = { starting })
+                .prepare(facts.takeId, facts, null, { 0L }, jobs = { published = it; if (it.size == 2) starting = false }, stillStarting = { starting })
         }
         assertEquals(2, published.size)
         assertTrue("both jobs were cancelled: $published", published.all { it.isCancelled })
@@ -159,5 +160,23 @@ class TakeStartPreparerTest {
         assertTrue(rig.log.lines.any { it.contains("Journal admission did not land within ${DictationSessionCoordinator.JOURNAL_ADMISSION_DEADLINE_MS} ms; starting anyway") })
         // The settings wait is 50 ms here; waiting the admission's whole 300 ms window again would take well over 250.
         assertTrue("no admission wait after the window passed, took $tookMs ms", tookMs < 250)
+    }
+
+    /**
+     * Row 9 (#345 review): a take that stops starting during the settings wait ends there: only the policy job was
+     * published, it is cancelled, and the settings answer is never stamped. MUTATION m8: no recheck after the wait.
+     */
+    @Test fun aTakeThatStopsDuringTheSettingsWaitEndsThere() = runBlocking {
+        val facts = facts()
+        val published = mutableListOf<List<Job>>()
+        val checks = AtomicLong()
+        val outcome = runCatching {
+            preparer(loadPolicy = { CompletableDeferred<PolicyRead>().await() })
+                .prepare(facts.takeId, facts, null, { 0L }, jobs = { published += it }, stillStarting = { checks.incrementAndGet() == 1L })
+        }
+        assertTrue("the preparation ends: $outcome", outcome.exceptionOrNull() is CancellationException)
+        assertEquals("only the policy job was ever published: $published", listOf(1), published.map { it.size })
+        assertTrue("the policy job was cancelled", published.single().single().isCancelled)
+        assertEquals(null, facts.settingsAnswerMs)
     }
 }

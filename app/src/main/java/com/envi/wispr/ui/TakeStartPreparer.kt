@@ -86,6 +86,12 @@ internal class TakeStartPreparer(
         // both outcomes and the values that came with them, taken by one atomic read each, and the
         // take is built from it alone; nothing below rereads the live source after suspending.
         val start = preferences.awaitAnswers(answerBoundMs)
+        // A take that stopped starting during the settings wait ends here (#345 review): no stamp, no fallback line,
+        // and no matcher launched only to be cancelled.
+        if (!stillStarting()) {
+            policyJob.cancel()
+            throw CancellationException("The take stopped starting during the settings wait")
+        }
         facts.settingsAnswerMs = sinceAccepted()
         start.fallbackToken()?.let { token ->
             facts.settingsFallback = token

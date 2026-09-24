@@ -18,7 +18,7 @@ User Rubric: N/A — internal-only deletions; no code path the app runs changes.
 
 ## 0. TL;DR
 
-- #282: `app/src/main/java/com/envi/wispr/model/ModelLifecyclePolicy.kt` (the `ModelUnloadPolicy` (removed) enum and the `ModelLifecyclePolicy.shouldUnload` object) has no production caller. Delete the file and its only test, `ModelLifecyclePolicyTest` (removed) (2 rows). An idle-unload schedule stays #37's job and will be designed against the real service lifetimes when it is built.
+- #282: `app/src/main/java/com/envi/wispr/model/ModelLifecyclePolicy.kt` (the `ModelUnloadPolicy` (removed) enum and the `ModelLifecyclePolicy.shouldUnload` function) has no production caller. Delete the file and its only test, `ModelLifecyclePolicyTest` (removed) (2 rows). An idle-unload schedule stays #37's job and will be designed against the real service lifetimes when it is built.
 - #285: `SessionOwnerShapeTest.serviceLineCountIsReported` (removed) only prints two line counts and cannot fail. Delete it; the class doc's sentence that the line count "below is REPORTED, never gated" goes with it. Sizes are read from the generated `docs/audits/senior-audit-inventory.md` (regenerated at each regrade by `.claude/knowledge/senior-audit-inventory.py`).
 
 Consolidation: none; two deletions.

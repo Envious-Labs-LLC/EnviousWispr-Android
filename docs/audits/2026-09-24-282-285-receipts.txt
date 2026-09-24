@@ -1,4 +1,4 @@
-# #282 and #285 receipts, 2026-09-24, worktree head a96566f plus the deletions
+# #282 and #285 receipts, 2026-09-24, commit cbf67c6 based on a96566f
 
 Suite: scripts/measure-tests.sh (--rerun-tasks) tests=1309 suites=161 failures=0 errors=0 skipped=0, against the
 1,312-test baseline on a96566f (the #280 merge): exactly 3 fewer (ModelLifecyclePolicyTest's two rows and
@@ -7,12 +7,11 @@ Builds: :app:assembleDebug and :app:assembleDebugAndroidTest.
 scripts/check-visibility.py: clean, 223 files, 107 closed sets (one file and one enum fewer).
 scripts/check-cited-symbols.py: all citations resolve (the plan marks the deleted names "(removed)").
 
-Tracked sweep, after the deletions:
-  /usr/bin/grep -rn "ModelLifecyclePolicy\|ModelUnloadPolicy\|shouldUnload\|serviceLineCountIsReported" \
-    app llama-android accelerator-benchmark scripts docs   (docs/audits excluded)
-  Hits, classified: this plan (docs/feature-requests/issue-282-2026-09-24-dead-surfaces.md); historical plans
-  issue-72-2026-09-01-model-residency-decision.md:152 and issue-186-2026-09-20-session-coordinator.md:705.
-  No code caller in any module.
+Tracked sweep, after the deletions (commit cbf67c6, based on a96566f):
+  git grep -n -E 'ModelLifecyclePolicy|ModelUnloadPolicy|shouldUnload|serviceLineCountIsReported' \
+    -- app llama-android accelerator-benchmark scripts docs ':!docs/audits/**'
+  Hits: this plan and two historical plans (issue-72-2026-09-01-model-residency-decision.md:152,
+  issue-186-2026-09-20-session-coordinator.md:705); no code caller. Audit records were excluded.
 The dated inventory (docs/audits/senior-audit-inventory.md) and the review transcripts in docs/audits/ still name
 the files as records; the inventory drops them at its next regeneration.
 

@@ -303,4 +303,12 @@ class SessionOwnerShapeTest {
         assertTrue(owner.contains("historyRecovery.recover()"))
         assertTrue(history.contains("recovery.recover().await()"))
     }
+
+    /** #358: the recording file has one owner; the session owner never reads or deletes it itself. MUTATION m3. */
+    @Test fun theOwnerNeverTouchesTheRecordingFile() {
+        val owner = SessionSources.coordinator
+        assertTrue("no file import", !owner.contains("import java.io.File"))
+        assertTrue("no file of its own", !Regex("""\bFile\(""").containsMatchIn(owner))
+        assertTrue(owner.contains("capturedAudio.durationMs(audioFilePath)"))
+    }
 }

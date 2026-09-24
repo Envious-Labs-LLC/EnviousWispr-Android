@@ -503,12 +503,13 @@ class PolishService : Service() {
      * including a throw from model selection, clears [modelLoading] and the deadline.
      */
     private fun loadModel() {
+        // The load and its deadline race once, atomically (`EngineDeadline`, review round 1): a load that returns after
+        // the timer won never publishes readiness, and a timer after a load that won never ends the process.
         val stall = runCatching {
-            deadlineScheduler.schedule(
-                { if (modelLoading) { poisoned.set(true); endProcess("model load stalled past $MODEL_LOAD_DEADLINE_MS ms") } },
-                MODEL_LOAD_DEADLINE_MS,
-                java.util.concurrent.TimeUnit.MILLISECONDS,
-            )
+            deadline.arm(MODEL_LOAD_DEADLINE_MS) {
+                poisoned.set(true)
+                endProcess("model load stalled past $MODEL_LOAD_DEADLINE_MS ms")
+            }
         }.getOrNull()
         try {
             val selection = S1ModelSelector.resolve(this)
@@ -517,11 +518,13 @@ class PolishService : Service() {
                 DebugLogger.warn(TAG, modelStatus)
                 return
             }
+            if (stall?.current == EngineDeadline.State.EXPIRED) return
 
             modelStatus = "Loading ${S1Config.MODEL_NAME}"
             val started = SystemClock.elapsedRealtime()
             try {
                 val result = s1Runtime.load(selection.file.path, selection.computeUnits)
+                if (stall != null && !stall.cancel()) return
                 modelReady = true
                 val elapsed = SystemClock.elapsedRealtime() - started
                 val modelKind = if (selection.npuOptimized) "NPU model" else "compatibility model"
@@ -533,8 +536,8 @@ class PolishService : Service() {
                 DebugLogger.error(TAG, modelStatus, exception)
             }
         } finally {
+            stall?.cancel()
             modelLoading = false
-            stall?.cancel(false)
         }
     }
 

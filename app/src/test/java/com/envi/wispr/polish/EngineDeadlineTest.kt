@@ -119,13 +119,17 @@ class EngineDeadlineTest {
         val ensure = source.substringAfter("private fun ensureModelLoaded()").substringBefore("\n    }\n")
         assertTrue(ensure.contains("synchronized(loadLock)") && ensure.contains("if (destroyed || modelReady || modelLoading)"))
         val load = source.substringAfter("private fun loadModel()").substringBefore("\n    /**")
-        // The constant is the scheduled DELAY, not only a word in the log line.
-        val deadline = load.indexOf("MODEL_LOAD_DEADLINE_MS,\n                java.util.concurrent.TimeUnit.MILLISECONDS")
+        // The constant is the armed budget, not only a word in the log line.
+        val deadline = load.indexOf("deadline.arm(MODEL_LOAD_DEADLINE_MS)")
         val selection = load.indexOf("S1ModelSelector.resolve(this)")
         assertTrue("the deadline is armed before selection", deadline in 0 until selection)
         val finally = load.lastIndexOf("} finally {")
         assertTrue("one finally after selection clears the flag and the deadline", finally > selection &&
-            load.substring(finally).contains("modelLoading = false") && load.substring(finally).contains("stall?.cancel(false)"))
+            load.substring(finally).contains("modelLoading = false") && load.substring(finally).contains("stall?.cancel()"))
+        // Review round 1: the load's return and the timer race once; readiness is published only by a load that won.
+        // MUTATION m5: readiness before the cancel.
+        val won = load.indexOf("if (stall != null && !stall.cancel()) return")
+        assertTrue("a load that lost the race never publishes readiness", won in 0 until load.indexOf("modelReady = true"))
         assertEquals("the flag is cleared only in that finally", 1, Regex("""modelLoading = false""").findAll(load).count())
     }
 

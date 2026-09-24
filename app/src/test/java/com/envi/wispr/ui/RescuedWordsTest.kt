@@ -5,6 +5,8 @@ import com.envi.wispr.history.TranscriptRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -122,14 +124,42 @@ class RescuedWordsTest {
 
     /** Row 7: deleting a row or all History deletes the words too. MUTATION m6: Delete all leaves the files. */
     @Test fun deletedWordsStayDeleted() = runBlocking {
+        val deletes = mutableListOf<String>()
         store.keep(take, "Keep these words.", SaveSlot()).await()
-        store.forget(take)
+        store.deleting(take) { deletes += "row" }
         assertFalse(file().exists())
         val other = "1a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
-        store.keep(take, "Keep these words.", SaveSlot()).await()
         store.keep(other, "Other words.", SaveSlot()).await()
-        store.clear()
+        store.clearing { deletes += "all" }
         assertEquals(emptyList<String>(), dir.list()?.toList().orEmpty())
+        assertEquals("each History delete ran inside the store's delete", listOf("row", "all"), deletes)
+    }
+
+    /**
+     * Row 7b (review round 1): a write still queued when the user deletes writes nothing, whether the row or all
+     * History was deleted. One thread runs the store, so the lock queues its waiters in the order they are started.
+     * MUTATION m9: the write ignores the delete.
+     */
+    @Test fun aWriteQueuedBehindADeleteWritesNothing() = runBlocking {
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val one = CoroutineScope(SupervisorJob() + executor.asCoroutineDispatcher())
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val slow = RescuedWords(dir, one, wallClock = { 1_000L }, warn = { warnings += it }, trackingBoundMs = 5_000L, beforeWrite = { gate.await() })
+        val other = "1a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d"
+        // The first write holds the lock at its gate; everything after queues behind it, in this order.
+        val holder = slow.keep("2a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d", "Held.", SaveSlot())
+        val deleting = one.async { slow.deleting(take) {} }
+        val queued = slow.keep(take, "Keep these words.", SaveSlot())
+        val clearing = one.async { slow.clearing {} }
+        val otherWrite = slow.keep(other, "Other words.", SaveSlot())
+        gate.complete(Unit)
+        holder.await(); deleting.await(); clearing.await()
+        assertEquals("the row was deleted before its write ran", RescueOutcome.FAILED, queued.await())
+        assertEquals("all History was deleted after this take began", RescueOutcome.FAILED, otherWrite.await())
+        assertFalse(file().exists())
+        assertFalse(File(dir, "$other.words").exists())
+        one.cancel()
+        executor.shutdown()
     }
 
     /** Row 8: a take id that is not a UUID never names a file. */

@@ -1,5 +1,7 @@
 package com.envi.wispr.ui
 
+import android.system.Os
+import android.system.OsConstants
 import com.envi.wispr.history.TranscriptRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -22,12 +24,13 @@ internal enum class RescueOutcome { KEPT, FAILED, PENDING }
  *
  * One per process, owned by the application beside the History write queue (#304), on a scope nothing cancels, so
  * settlement outlives the Service that published the words. Never the History queue, which may be the thing failing.
- * Every file operation (write, settle, forget, clear, recover) holds [lock], so a delete cannot race a pending write
- * and deleted words cannot reappear. Files live under the app's private files directory; backup is disabled.
+ * Every file operation holds [lock], and a user's delete runs its History delete and its file delete inside that lock
+ * and marks the take (or bumps the clear generation), so a write still queued for a deleted take writes nothing and
+ * deleted words cannot reappear. Files live under the app's private files directory; backup is disabled.
  *
  * A take is TRACKED from its write until its save answers or [trackingBoundMs] passes, whichever is first: recovery
- * never takes a tracked take's file, since its save may still land. After that a still-present file is an unsettled
- * rescue, and the next recovery in this process or the next takes it.
+ * never takes a tracked take's file, since its save may still land. A SAVED answer that comes later still settles the
+ * file, through the slot's own completion, with no waiting coroutine left behind.
  */
 internal class RescuedWords(
     private val dir: File,
@@ -36,16 +39,26 @@ internal class RescuedWords(
     private val wallClock: () -> Long,
     private val warn: (String) -> Unit,
     private val trackingBoundMs: Long = HistorySaveObserver.HISTORY_SAVE_BOUND_MS,
-    /** Runs before each write; production passes nothing. The rig slows a write with it to show the owner waits. */
+    /** Runs before each write, inside the lock; production passes nothing. The rig slows a write to show the owner waits. */
     private val beforeWrite: suspend () -> Unit = {},
 ) {
     private val lock = Mutex()
-    private val outcomes = ConcurrentHashMap<String, RescueOutcome>()
     private val tracked: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    /** The most recent takes' outcomes, for the fallback line; bounded, since a line is spoken within a take's life. */
+    private val outcomes = object : LinkedHashMap<String, RescueOutcome>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RescueOutcome>?): Boolean = size > OUTCOMES_KEPT
+    }
+
+    /** Takes whose row the user deleted, and the Delete all count; both read and written under [lock]. */
+    private val deleted = HashSet<String>()
+    @Volatile private var generation = 0L
+
+    private fun record(takeId: String, outcome: RescueOutcome) = synchronized(outcomes) { outcomes[takeId] = outcome }
+
     /**
-     * Writes [text] ahead of delivery for [takeId], then watches [save]: a SAVED answer deletes the file once the write
-     * has completed, so a late write cannot recreate a settled record. Returns the write's outcome; never blocks.
+     * Writes [text] ahead of delivery for [takeId] and settles it on [save]'s SAVED answer, after the write, so a late
+     * write cannot recreate a settled record. Returns the write's outcome; never blocks.
      */
     fun keep(takeId: String, text: String, save: SaveSlot): Deferred<RescueOutcome> {
         if (!TAKE_ID.matches(takeId)) {
@@ -53,19 +66,24 @@ internal class RescuedWords(
             return scope.async { RescueOutcome.FAILED }
         }
         tracked += takeId
-        outcomes[takeId] = RescueOutcome.PENDING
+        record(takeId, RescueOutcome.PENDING)
+        val startedIn = generation
         val write = scope.async {
-            beforeWrite()
-            val outcome = lock.withLock { write(takeId, text) }
-            outcomes[takeId] = outcome
+            val outcome = lock.withLock {
+                beforeWrite()
+                // Deleted while this write was queued: the user's delete wins, and nothing is written.
+                if (takeId in deleted || generation != startedIn) RescueOutcome.FAILED else write(takeId, text)
+            }
+            record(takeId, outcome)
             outcome
         }
+        save.onAnswered { answer ->
+            if (answer.outcome is SaveOutcome.Saved) scope.launch { write.await(); settle(takeId) }
+        }
         scope.launch {
-            val early = withTimeoutOrNull(trackingBoundMs) { save.await() }
+            withTimeoutOrNull(trackingBoundMs) { save.await() }
             write.await()
             tracked -= takeId
-            val answer = early ?: save.await()
-            if (answer.outcome is SaveOutcome.Saved) forget(takeId)
         }
         return write
     }
@@ -74,22 +92,33 @@ internal class RescuedWords(
     fun tracking(takeId: String): Boolean = takeId in tracked
 
     /** The rescue write's state for [takeId] now; a take never rescued in this process reads FAILED. */
-    fun outcome(takeId: String): RescueOutcome = outcomes[takeId] ?: RescueOutcome.FAILED
+    fun outcome(takeId: String): RescueOutcome = synchronized(outcomes) { outcomes[takeId] } ?: RescueOutcome.FAILED
 
-    /** Deletes [takeId]'s file: its words are in History, or the user deleted its row. */
-    suspend fun forget(takeId: String) {
-        if (!TAKE_ID.matches(takeId)) return
+    /** The take's words are in History: its file is no longer needed. The outcome stays, since they are not lost. */
+    private suspend fun settle(takeId: String) {
+        lock.withLock { File(dir, "$takeId$SUFFIX").delete() }
+    }
+
+    /** The user deletes one History row: [delete] runs inside the lock, then the take's rescue goes with it. */
+    suspend fun deleting(takeId: String?, delete: suspend () -> Unit) {
         lock.withLock {
-            File(dir, "$takeId$SUFFIX").delete()
-            outcomes -= takeId
+            delete()
+            if (takeId != null && TAKE_ID.matches(takeId)) {
+                deleted += takeId
+                File(dir, "$takeId$SUFFIX").delete()
+                synchronized(outcomes) { outcomes -= takeId }
+            }
         }
     }
 
-    /** Deletes every rescue file: the user deleted all History. */
-    suspend fun clear() {
+    /** The user deletes all History: [delete] runs inside the lock, then every rescue goes with it. */
+    suspend fun clearing(delete: suspend () -> Unit) {
         lock.withLock {
+            delete()
+            generation++
+            deleted.clear()
             dir.listFiles()?.forEach { it.delete() }
-            outcomes.clear()
+            synchronized(outcomes) { outcomes.clear() }
         }
     }
 
@@ -119,14 +148,18 @@ internal class RescuedWords(
             }
             if (written) {
                 file.delete()
-                outcomes -= takeId
+                // In History now: a line still to be spoken for this take must not call the words lost.
+                record(takeId, RescueOutcome.KEPT)
                 recovered++
             }
         }
         recovered
     }
 
-    /** Temp file, flushed to the disk, then an atomic rename: a crash leaves either nothing or the whole record. */
+    /**
+     * Temp file, flushed to the disk, an atomic rename, then the directory flushed too, so the name survives a power
+     * loss: KEPT is reported only after all four. A crash leaves either nothing or the whole record.
+     */
     private fun write(takeId: String, text: String): RescueOutcome = try {
         dir.mkdirs()
         val temp = File(dir, "$takeId$TEMP")
@@ -134,16 +167,32 @@ internal class RescuedWords(
             out.write("${wallClock()}\n$text".toByteArray(Charsets.UTF_8))
             out.fd.sync()
         }
-        if (temp.renameTo(File(dir, "$takeId$SUFFIX"))) RescueOutcome.KEPT else RescueOutcome.FAILED.also { temp.delete() }
+        if (temp.renameTo(File(dir, "$takeId$SUFFIX"))) {
+            syncDirectory()
+            RescueOutcome.KEPT
+        } else {
+            temp.delete()
+            RescueOutcome.FAILED
+        }
     } catch (error: Exception) {
         // The type only: the words never enter a log (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
         warn("Rescue write failed: ${error.javaClass.simpleName}")
         RescueOutcome.FAILED
     }
 
+    private fun syncDirectory() {
+        val fd = Os.open(dir.path, OsConstants.O_RDONLY, 0)
+        try {
+            Os.fsync(fd)
+        } finally {
+            Os.close(fd)
+        }
+    }
+
     companion object {
         /** How long the owner waits for the rescue write before the handoff (#288): the words are the heart. */
         const val RESCUE_WRITE_BOUND_MS = 250L
+        private const val OUTCOMES_KEPT = 64
         private const val SUFFIX = ".words"
         private const val TEMP = ".tmp"
         private val TAKE_ID = Regex("\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z")

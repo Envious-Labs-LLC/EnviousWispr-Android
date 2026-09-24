@@ -81,18 +81,13 @@ internal class HistoryViewModel(
     }
 
     fun deleteHistory(transcript: TranscriptEntity) {
-        updateHistory {
-            repository.delete(transcript)
-            // Deleted words stay deleted (#288): a rescue of the same take cannot bring them back.
-            transcript.takeId?.let { rescuedWords.forget(it) }
-        }
+        // Deleted words stay deleted (#288): the row and the take's rescue go under one lock, so neither a queued
+        // rescue write nor a recovery can bring them back.
+        updateHistory { rescuedWords.deleting(transcript.takeId) { repository.delete(transcript) } }
     }
 
     fun deleteAllHistory() {
-        updateHistory {
-            repository.deleteAll()
-            rescuedWords.clear()
-        }
+        updateHistory { rescuedWords.clearing { repository.deleteAll() } }
     }
 
     private fun updateHistory(operation: suspend () -> Unit) {

@@ -101,6 +101,25 @@ class WordsNeverLostTest {
         assertEquals("Keep these words.", rig.dao.rows.values.single().finalText)
     }
 
+    /**
+     * Row 3b (review round 1): a recovery that wrote the take's row before the take's own late save leaves one row, and
+     * the save completes it instead of colliding with it. MUTATION m10: the save ignores a row the take already has.
+     */
+    @Test fun aLateSaveCompletesTheRowARecoveryWroteFirst() {
+        // No draft, and a recovery writes the take's row before its save is even queued.
+        rig.dao.failDraftInsert = true
+        rig.dao.onDraftInsert = { takeId -> rig.transcripts.keepRescuedWords(takeId, "Keep these words.", 1_000L) }
+        val coordinator = rig.coordinator(historySaveBoundMs = 5_000L)
+        takeWithPolishedWords(coordinator)
+        rig.endings.awaitOne()
+        rig.host.awaitServiceStopped()
+        val row = rig.awaitHistoryIdle().let { rig.dao.rows.values.single() }
+        // Saved by the take itself, then promoted by its handoff, as an ordinary take's row is; never the recovery's status.
+        assertEquals("the take's own save completed the row", TranscriptEntity.STATUS_READY_FOR_INSERTION, row.status)
+        assertEquals("Keep these words.", row.finalText)
+        awaitUntil("the settled file is gone") { rescued().isEmpty() }
+    }
+
     /** Row 4: with the rescue failed and the save still pending, the line never says the words are lost. */
     @Test fun aPendingSaveIsNeverToldItsWordsAreLost() {
         rig.rescueDir.deleteRecursively()

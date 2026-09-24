@@ -831,6 +831,7 @@ internal class DictationSessionRig {
             if (failInserts) throw IllegalStateException("disk full")
             // The unique take id index (#288).
             if (transcript.takeId != null && rows.values.any { it.takeId == transcript.takeId }) throw IllegalStateException("UNIQUE constraint failed: transcripts.takeId")
+            if (transcript.status == TranscriptEntity.STATUS_DRAFT) transcript.takeId?.let { onDraftInsert?.invoke(it) }
             if (failDraftInsert && transcript.status == TranscriptEntity.STATUS_DRAFT) throw IllegalStateException("draft insert failed")
             if (transcript.status == TranscriptEntity.STATUS_SAVED_UNROUTED) holdSavedInsert?.await()
             val id = nextId.getAndIncrement()
@@ -841,6 +842,8 @@ internal class DictationSessionRig {
         override suspend fun delete(transcript: TranscriptEntity) { rows.remove(transcript.id) }
         override suspend fun deleteAll() = rows.clear()
         override suspend fun findByTakeId(takeId: String): TranscriptEntity? = rows.values.firstOrNull { it.takeId == takeId }
+        /** When set, runs as a take's draft insert is attempted, with its take id (#288): a recovery staged ahead of the save. */
+        @Volatile var onDraftInsert: (suspend (String) -> Unit)? = null
         override suspend fun deleteById(id: Long): Int = if (rows.remove(id) != null) 1 else 0
         override suspend fun deleteWordlessRows(): Int = 0
         override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int {

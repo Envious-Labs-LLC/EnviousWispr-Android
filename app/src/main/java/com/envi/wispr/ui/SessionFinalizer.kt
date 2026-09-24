@@ -239,6 +239,11 @@ internal class SaveSlot {
     fun answeredNow(): SaveAnswer? = synchronized(lock) { answer }
 
     suspend fun await(): SaveAnswer = done.await()
+
+    /** Runs [callback] once, with the answer, when it is stamped (#288); nothing waits for it meanwhile. */
+    fun onAnswered(callback: (SaveAnswer) -> Unit) {
+        done.invokeOnCompletion { cause -> if (cause == null) synchronized(lock) { answer }?.let(callback) }
+    }
 }
 
 /**
@@ -309,7 +314,8 @@ internal class SessionFinalizer(
         val enqueuedAtMs = host.elapsedRealtimeMs()
         val admitted = historyWrites.enqueue("finalize", WriteKind.TERMINAL) { repository ->
             val answer = runCatching {
-                    val existingId = history.resolvedId()
+                    // The take's own draft, or a row a recovery already wrote for this take (#288): one row per take.
+                    val existingId = history.resolvedId().takeIf { it > 0L } ?: repository.rowIdForTake(takeId)
                     val persistedId = if (existingId > 0L) {
                         val updated = repository.finalize(
                             id = existingId,

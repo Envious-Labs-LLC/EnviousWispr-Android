@@ -60,6 +60,9 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
         status = status,
     )
 
+    /** The id of the row [takeId] wrote, or 0 (#288). */
+    suspend fun rowIdForTake(takeId: String): Long = dao.findByTakeId(takeId)?.id ?: 0L
+
     /**
      * Writes a take's rescued words into History (#288), once per take: a row the take already wrote keeps its words
      * when it has any and receives the rescued ones when it has none (a draft that never saved); with no row, one is

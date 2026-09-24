@@ -28,7 +28,9 @@ interface ISilenceVadService {
     /** Release state for the take, if the token still matches the active one. */
     void finish(long captureToken);
 
-    // APPENDED (issue #176). Never reorder or rename anything above this line.
+    // APPENDED (issue #176). Never reorder or rename anything above this line (architecture-rules.md RULE:
+    // aidl-is-append-only): an older installed test APK calls these methods through the app's own
+    // generated classes (#330), so a removed or renamed one fails when that test invokes it.
 
     /**
      * start plus the take's id: same return codes, same token ordering and stale-call rejection, same

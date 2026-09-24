@@ -8,8 +8,9 @@ interface IAsrService {
     void transcribe(in byte[] audioData, IAsrCallback callback);
     boolean isReady();
 
-    // APPENDED (issue #176). Never reorder or rename anything above this line: the instrumentation APK is
-    // a separately installed client that binds by transaction number.
+    // APPENDED (issue #176). Never reorder or rename anything above this line (architecture-rules.md RULE:
+    // aidl-is-append-only): an older installed test APK calls these methods through the app's own
+    // generated classes (#330), so a removed or renamed one fails when that test invokes it.
 
     /**
      * transcribeFile plus the take's id, and the ONLY request that answers a failure with

@@ -4,8 +4,9 @@ interface IAsrCallback {
     void onResult(String text);
     void onError(String message);
 
-    // APPENDED (issue #176). Never reorder or rename anything above this line: the instrumentation APK is
-    // a separately installed client that binds by transaction number.
+    // APPENDED (issue #176). Never reorder or rename anything above this line (architecture-rules.md RULE:
+    // aidl-is-append-only): an older installed test APK calls these methods through the app's own
+    // generated classes (#330), so a removed or renamed one fails when that test invokes it.
 
     /**
      * A typed failure, emitted ONLY for a request made through IAsrService.transcribeFileForTake.

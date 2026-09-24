@@ -43,6 +43,7 @@ interface ITakeListener {
      */
     oneway void onEnded(String takeId, int terminalReason, int startFailure, String audioFilePath, int silenceStatus, float takePeakAmplitude, String effectiveInputDevice);
 
-    // APPENDED. Never reorder or rename anything above this line: a separately installed client binds
-    // by transaction number, and renumbering breaks it at runtime with no compile error.
+    // APPENDED. Never reorder or rename anything above this line (architecture-rules.md RULE:
+    // aidl-is-append-only): an older installed test APK calls these methods through the app's own
+    // generated classes (#330), so a removed or renamed one fails when that test invokes it.
 }

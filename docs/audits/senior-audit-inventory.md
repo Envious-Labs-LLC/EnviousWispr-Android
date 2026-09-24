@@ -1,4 +1,4 @@
-# Source inventory (generated 2026-09-23, commit 9646863)
+# Source inventory (generated 2026-09-23, commit b179219)
 
 ## app/src/main
    147 app/src/main/AndroidManifest.xml
@@ -34,12 +34,13 @@
     79 app/src/main/java/com/envi/wispr/audio/RecorderLease.kt
     74 app/src/main/java/com/envi/wispr/audio/RecordingLimits.kt
     45 app/src/main/java/com/envi/wispr/audio/SilenceWriter.kt
+   132 app/src/main/java/com/envi/wispr/audio/SilenceWriterWatch.kt
    293 app/src/main/java/com/envi/wispr/audio/SpectrumAnalyzer.kt
     26 app/src/main/java/com/envi/wispr/audio/SpeechEvidence.kt
    173 app/src/main/java/com/envi/wispr/audio/TakeEventPublisher.kt
    356 app/src/main/java/com/envi/wispr/audio/TakeRoute.kt
-    81 app/src/main/java/com/envi/wispr/audio/WarmHold.kt
-   221 app/src/main/java/com/envi/wispr/audio/WarmHoldOwner.kt
+    83 app/src/main/java/com/envi/wispr/audio/WarmHold.kt
+   231 app/src/main/java/com/envi/wispr/audio/WarmHoldOwner.kt
    135 app/src/main/java/com/envi/wispr/cleanup/CleanupLanguage.kt
    653 app/src/main/java/com/envi/wispr/cleanup/DeterministicCleanup.kt
     86 app/src/main/java/com/envi/wispr/cleanup/PolishPipeline.kt
@@ -147,18 +148,18 @@
    139 app/src/main/java/com/envi/wispr/shortcuts/BubbleRequests.kt
    179 app/src/main/java/com/envi/wispr/shortcuts/DictationNotificationController.kt
     33 app/src/main/java/com/envi/wispr/shortcuts/DictationSurfaceState.kt
-    67 app/src/main/java/com/envi/wispr/shortcuts/DictationTileService.kt
+    65 app/src/main/java/com/envi/wispr/shortcuts/DictationTileService.kt
    198 app/src/main/java/com/envi/wispr/shortcuts/RecordingOverlayState.kt
-   187 app/src/main/java/com/envi/wispr/telemetry/AnalyticsEvent.kt
+   200 app/src/main/java/com/envi/wispr/telemetry/AnalyticsEvent.kt
     75 app/src/main/java/com/envi/wispr/telemetry/AppLaunchFacts.kt
-    76 app/src/main/java/com/envi/wispr/telemetry/DefectIdentity.kt
+    85 app/src/main/java/com/envi/wispr/telemetry/DefectIdentity.kt
     97 app/src/main/java/com/envi/wispr/telemetry/InstallIdentity.kt
-   149 app/src/main/java/com/envi/wispr/telemetry/PayloadSanitizer.kt
+   152 app/src/main/java/com/envi/wispr/telemetry/PayloadSanitizer.kt
    112 app/src/main/java/com/envi/wispr/telemetry/PendingDefects.kt
    101 app/src/main/java/com/envi/wispr/telemetry/PostHogBootstrap.kt
    317 app/src/main/java/com/envi/wispr/telemetry/SentryBootstrap.kt
-   236 app/src/main/java/com/envi/wispr/telemetry/SentrySchema.kt
-   102 app/src/main/java/com/envi/wispr/telemetry/TakeFacts.kt
+   238 app/src/main/java/com/envi/wispr/telemetry/SentrySchema.kt
+   123 app/src/main/java/com/envi/wispr/telemetry/TakeFacts.kt
    112 app/src/main/java/com/envi/wispr/telemetry/TakeJournal.kt
    130 app/src/main/java/com/envi/wispr/telemetry/TakeJournalWriter.kt
    276 app/src/main/java/com/envi/wispr/telemetry/Telemetry.kt
@@ -166,15 +167,16 @@
     46 app/src/main/java/com/envi/wispr/telemetry/TelemetryConfig.kt
     39 app/src/main/java/com/envi/wispr/telemetry/TelemetryVolumePolicy.kt
    151 app/src/main/java/com/envi/wispr/ui/AccessibilityGuideActivity.kt
-   106 app/src/main/java/com/envi/wispr/ui/AppActions.kt
+   108 app/src/main/java/com/envi/wispr/ui/AppActions.kt
    407 app/src/main/java/com/envi/wispr/ui/AppNavigation.kt
-   255 app/src/main/java/com/envi/wispr/ui/AppShell.kt
-    30 app/src/main/java/com/envi/wispr/ui/AppUiState.kt
+   240 app/src/main/java/com/envi/wispr/ui/AppShell.kt
+    32 app/src/main/java/com/envi/wispr/ui/AppUiState.kt
    144 app/src/main/java/com/envi/wispr/ui/AppViewModel.kt
     54 app/src/main/java/com/envi/wispr/ui/CaptureNotices.kt
    312 app/src/main/java/com/envi/wispr/ui/CaptureSessionController.kt
-  1322 app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt
-   258 app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt
+    16 app/src/main/java/com/envi/wispr/ui/CapturedAudioCleanup.kt
+  1323 app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt
+   253 app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt
    770 app/src/main/java/com/envi/wispr/ui/DictionaryScreen.kt
     95 app/src/main/java/com/envi/wispr/ui/EngineWarmUp.kt
     29 app/src/main/java/com/envi/wispr/ui/HapticCue.kt
@@ -182,10 +184,11 @@
     41 app/src/main/java/com/envi/wispr/ui/InputDeviceRows.kt
     30 app/src/main/java/com/envi/wispr/ui/InsertionGateway.kt
     45 app/src/main/java/com/envi/wispr/ui/KeyCheckCopy.kt
-   259 app/src/main/java/com/envi/wispr/ui/ModelCards.kt
+   234 app/src/main/java/com/envi/wispr/ui/ModelCards.kt
    230 app/src/main/java/com/envi/wispr/ui/ModelListPresentation.kt
    156 app/src/main/java/com/envi/wispr/ui/ModelNotes.kt
     35 app/src/main/java/com/envi/wispr/ui/ModelSetupProgress.kt
+   143 app/src/main/java/com/envi/wispr/ui/ModelWorkViewModel.kt
    583 app/src/main/java/com/envi/wispr/ui/OnboardingDemo.kt
     62 app/src/main/java/com/envi/wispr/ui/OnboardingDemoScript.kt
     72 app/src/main/java/com/envi/wispr/ui/OnboardingLips.kt
@@ -194,33 +197,36 @@
    257 app/src/main/java/com/envi/wispr/ui/OnboardingScreen.kt
    289 app/src/main/java/com/envi/wispr/ui/OnboardingViewModel.kt
    158 app/src/main/java/com/envi/wispr/ui/OnboardingWelcomeStory.kt
-   204 app/src/main/java/com/envi/wispr/ui/PipelineBindings.kt
+   230 app/src/main/java/com/envi/wispr/ui/PipelineBindings.kt
    140 app/src/main/java/com/envi/wispr/ui/PipelineLinks.kt
+   450 app/src/main/java/com/envi/wispr/ui/PolishCloudRungs.kt
    490 app/src/main/java/com/envi/wispr/ui/PolishLadder.kt
+   234 app/src/main/java/com/envi/wispr/ui/PolishLocalControls.kt
     43 app/src/main/java/com/envi/wispr/ui/PolishRequestLedger.kt
-   892 app/src/main/java/com/envi/wispr/ui/PolishScreen.kt
+   257 app/src/main/java/com/envi/wispr/ui/PolishScreen.kt
    163 app/src/main/java/com/envi/wispr/ui/PolishStatusChip.kt
     17 app/src/main/java/com/envi/wispr/ui/PolishTimeout.kt
     19 app/src/main/java/com/envi/wispr/ui/PolishWatchdogBudget.kt
     43 app/src/main/java/com/envi/wispr/ui/ProviderDiscoveryApplyPolicy.kt
-   122 app/src/main/java/com/envi/wispr/ui/ReadinessViewModel.kt
+   121 app/src/main/java/com/envi/wispr/ui/ReadinessViewModel.kt
     38 app/src/main/java/com/envi/wispr/ui/RecorderSurface.kt
    484 app/src/main/java/com/envi/wispr/ui/SessionFinalizer.kt
     57 app/src/main/java/com/envi/wispr/ui/SessionHost.kt
     27 app/src/main/java/com/envi/wispr/ui/SessionLog.kt
+    69 app/src/main/java/com/envi/wispr/ui/SessionNotice.kt
    257 app/src/main/java/com/envi/wispr/ui/SessionPreferencesSource.kt
-   193 app/src/main/java/com/envi/wispr/ui/SettingsActivity.kt
+   205 app/src/main/java/com/envi/wispr/ui/SettingsActivity.kt
    318 app/src/main/java/com/envi/wispr/ui/SettingsComponents.kt
-   776 app/src/main/java/com/envi/wispr/ui/SettingsPages.kt
+   762 app/src/main/java/com/envi/wispr/ui/SettingsPages.kt
    109 app/src/main/java/com/envi/wispr/ui/TakeArbiter.kt
-    35 app/src/main/java/com/envi/wispr/ui/TakeContext.kt
+    40 app/src/main/java/com/envi/wispr/ui/TakeContext.kt
     85 app/src/main/java/com/envi/wispr/ui/TakeNotices.kt
-   401 app/src/main/java/com/envi/wispr/ui/TakePolishController.kt
+   481 app/src/main/java/com/envi/wispr/ui/TakePolishController.kt
     96 app/src/main/java/com/envi/wispr/ui/TerminalReason.kt
-   155 app/src/main/java/com/envi/wispr/ui/TranscriptionScreen.kt
+   153 app/src/main/java/com/envi/wispr/ui/TranscriptionScreen.kt
     29 app/src/main/java/com/envi/wispr/ui/TriggerSource.kt
     99 app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt
-   294 app/src/main/java/com/envi/wispr/ui/theme/EnviousWisprTheme.kt
+   293 app/src/main/java/com/envi/wispr/ui/theme/EnviousWisprTheme.kt
    145 app/src/main/java/com/envi/wispr/vad/SilenceStopDetector.kt
    243 app/src/main/java/com/envi/wispr/vad/SilenceVadService.kt
    162 app/src/main/java/com/envi/wispr/vad/SileroVadSession.kt
@@ -247,14 +253,15 @@
     11 app/src/main/res/xml/accessibility_service_config.xml
 
 ## app/src/test
+    70 app/src/test/java/com/envi/wispr/MinSdkBranchesTest.kt
    108 app/src/test/java/com/envi/wispr/VisibilityCheckTest.kt
    325 app/src/test/java/com/envi/wispr/VoicePipelineDeviceShapeTest.kt
     56 app/src/test/java/com/envi/wispr/about/ReleaseNotesTest.kt
     43 app/src/test/java/com/envi/wispr/asr/AsrFailureReasonTest.kt
     70 app/src/test/java/com/envi/wispr/asr/AsrServiceShapeTest.kt
    276 app/src/test/java/com/envi/wispr/asr/RecognizerOwnerTest.kt
-   236 app/src/test/java/com/envi/wispr/audio/AudioLimbCloseTest.kt
-   233 app/src/test/java/com/envi/wispr/audio/AudioServiceShapeTest.kt
+   237 app/src/test/java/com/envi/wispr/audio/AudioLimbCloseTest.kt
+   238 app/src/test/java/com/envi/wispr/audio/AudioServiceShapeTest.kt
    153 app/src/test/java/com/envi/wispr/audio/BlockRingTest.kt
    122 app/src/test/java/com/envi/wispr/audio/CaptureBufferOwnershipTest.kt
    161 app/src/test/java/com/envi/wispr/audio/CaptureEndingTest.kt
@@ -271,13 +278,14 @@
     18 app/src/test/java/com/envi/wispr/audio/PcmAudioTest.kt
     82 app/src/test/java/com/envi/wispr/audio/ProcessEndTest.kt
    216 app/src/test/java/com/envi/wispr/audio/RecorderLeaseTest.kt
-   192 app/src/test/java/com/envi/wispr/audio/RecordingCapWiringTest.kt
+   194 app/src/test/java/com/envi/wispr/audio/RecordingCapWiringTest.kt
     79 app/src/test/java/com/envi/wispr/audio/RecordingLimitsTest.kt
    293 app/src/test/java/com/envi/wispr/audio/SilenceStopWiringTest.kt
-    86 app/src/test/java/com/envi/wispr/audio/SilenceWriterTest.kt
+    91 app/src/test/java/com/envi/wispr/audio/SilenceWriterTest.kt
+   262 app/src/test/java/com/envi/wispr/audio/SilenceWriterWatchTest.kt
    274 app/src/test/java/com/envi/wispr/audio/SpectrumAnalyzerTest.kt
    170 app/src/test/java/com/envi/wispr/audio/TakeEventPublisherTest.kt
-   118 app/src/test/java/com/envi/wispr/audio/WarmHoldTest.kt
+   119 app/src/test/java/com/envi/wispr/audio/WarmHoldTest.kt
     87 app/src/test/java/com/envi/wispr/cleanup/CleanupLanguagePolicyTest.kt
    141 app/src/test/java/com/envi/wispr/cleanup/DeterministicCleanupLanguageTest.kt
    202 app/src/test/java/com/envi/wispr/cleanup/DeterministicCleanupTest.kt
@@ -311,6 +319,7 @@
    102 app/src/test/java/com/envi/wispr/paste/BubbleGestureClassifierTest.kt
     40 app/src/test/java/com/envi/wispr/paste/BubbleLookTest.kt
    140 app/src/test/java/com/envi/wispr/paste/BubblePlacementTest.kt
+    39 app/src/test/java/com/envi/wispr/paste/ComponentMemberVisibilityTest.kt
    601 app/src/test/java/com/envi/wispr/paste/InsertionAttemptTest.kt
    128 app/src/test/java/com/envi/wispr/paste/InsertionJudgementTest.kt
     46 app/src/test/java/com/envi/wispr/paste/InsertionOutcomeLineTest.kt
@@ -324,8 +333,8 @@
    229 app/src/test/java/com/envi/wispr/paste/RecorderBrandTest.kt
     69 app/src/test/java/com/envi/wispr/paste/RecordingLevelMeterViewTest.kt
     98 app/src/test/java/com/envi/wispr/paste/WindowTreeXmlTest.kt
-   118 app/src/test/java/com/envi/wispr/polish/DeterministicFallbackTest.kt
-   196 app/src/test/java/com/envi/wispr/polish/DevelopmentPolishModelFactsTest.kt
+   120 app/src/test/java/com/envi/wispr/polish/DeterministicFallbackTest.kt
+   197 app/src/test/java/com/envi/wispr/polish/DevelopmentPolishModelFactsTest.kt
    121 app/src/test/java/com/envi/wispr/polish/EngineDeadlineTest.kt
     40 app/src/test/java/com/envi/wispr/polish/PolishContextTest.kt
    126 app/src/test/java/com/envi/wispr/polish/PolishEngineLabelsTest.kt
@@ -351,46 +360,52 @@
    206 app/src/test/java/com/envi/wispr/providers/ProviderTestServer.kt
    408 app/src/test/java/com/envi/wispr/providers/ui/PolishSettingsViewModelTest.kt
     51 app/src/test/java/com/envi/wispr/settings/AppPreferencesStateTest.kt
-   160 app/src/test/java/com/envi/wispr/settings/SilenceStopSettingsTest.kt
+   153 app/src/test/java/com/envi/wispr/settings/SilenceStopSettingsTest.kt
    128 app/src/test/java/com/envi/wispr/shortcuts/BubbleRequestsTest.kt
+    21 app/src/test/java/com/envi/wispr/telemetry/DefectListCompletenessTest.kt
    123 app/src/test/java/com/envi/wispr/telemetry/PayloadSanitizerTest.kt
     91 app/src/test/java/com/envi/wispr/telemetry/SentryPayloadTest.kt
-   457 app/src/test/java/com/envi/wispr/telemetry/SentrySchemaTest.kt
-    97 app/src/test/java/com/envi/wispr/telemetry/TakeFactsTest.kt
-   125 app/src/test/java/com/envi/wispr/telemetry/TakeJournalWriterTest.kt
-   271 app/src/test/java/com/envi/wispr/telemetry/TelemetryContractsTest.kt
+   467 app/src/test/java/com/envi/wispr/telemetry/SentrySchemaTest.kt
+   101 app/src/test/java/com/envi/wispr/telemetry/TakeFactsTest.kt
+   155 app/src/test/java/com/envi/wispr/telemetry/TakeJournalWriterTest.kt
+   284 app/src/test/java/com/envi/wispr/telemetry/TelemetryContractsTest.kt
     27 app/src/test/java/com/envi/wispr/ui/AppNavigationShapeTest.kt
     41 app/src/test/java/com/envi/wispr/ui/AppRoutesTest.kt
     58 app/src/test/java/com/envi/wispr/ui/AppShellShapeTest.kt
    108 app/src/test/java/com/envi/wispr/ui/AppStateOwnershipShapeTest.kt
     58 app/src/test/java/com/envi/wispr/ui/AppUiStateTest.kt
    283 app/src/test/java/com/envi/wispr/ui/BoundedHistorySaveTest.kt
-    88 app/src/test/java/com/envi/wispr/ui/CaptureNoticesTest.kt
+    89 app/src/test/java/com/envi/wispr/ui/CaptureNoticesTest.kt
     51 app/src/test/java/com/envi/wispr/ui/CodeOnly.kt
-  1056 app/src/test/java/com/envi/wispr/ui/DictationSessionCoordinatorTest.kt
-   831 app/src/test/java/com/envi/wispr/ui/DictationSessionRig.kt
+  1187 app/src/test/java/com/envi/wispr/ui/DictationSessionCoordinatorTest.kt
+   848 app/src/test/java/com/envi/wispr/ui/DictationSessionRig.kt
    120 app/src/test/java/com/envi/wispr/ui/InputDeviceRowsTest.kt
     54 app/src/test/java/com/envi/wispr/ui/KeyCheckCopyTest.kt
    163 app/src/test/java/com/envi/wispr/ui/ModelListPresentationTest.kt
     55 app/src/test/java/com/envi/wispr/ui/ModelNotesTest.kt
     67 app/src/test/java/com/envi/wispr/ui/ModelSetupProgressTest.kt
+    44 app/src/test/java/com/envi/wispr/ui/ModelWorkOwnershipTest.kt
+   276 app/src/test/java/com/envi/wispr/ui/ModelWorkViewModelTest.kt
     55 app/src/test/java/com/envi/wispr/ui/OnboardingDemoScriptTest.kt
     92 app/src/test/java/com/envi/wispr/ui/OnboardingPolicyTest.kt
     61 app/src/test/java/com/envi/wispr/ui/OnboardingWiringTest.kt
-   300 app/src/test/java/com/envi/wispr/ui/PolishFailsOpenTest.kt
+    52 app/src/test/java/com/envi/wispr/ui/PipelineProxyTest.kt
+   336 app/src/test/java/com/envi/wispr/ui/PolishFailsOpenTest.kt
    536 app/src/test/java/com/envi/wispr/ui/PolishLadderTest.kt
-    87 app/src/test/java/com/envi/wispr/ui/PolishPublicationRoutesTest.kt
+    89 app/src/test/java/com/envi/wispr/ui/PolishPublicationRoutesTest.kt
     69 app/src/test/java/com/envi/wispr/ui/PolishRequestLedgerTest.kt
+    41 app/src/test/java/com/envi/wispr/ui/PolishScreenLayoutTest.kt
     34 app/src/test/java/com/envi/wispr/ui/PolishScreenProviderTilesTest.kt
    127 app/src/test/java/com/envi/wispr/ui/PolishStatusChipTest.kt
     32 app/src/test/java/com/envi/wispr/ui/PolishWatchdogBudgetTest.kt
     47 app/src/test/java/com/envi/wispr/ui/ProviderDiscoveryApplyPolicyTest.kt
     43 app/src/test/java/com/envi/wispr/ui/S1ControlCopyTest.kt
-   273 app/src/test/java/com/envi/wispr/ui/SessionOwnerShapeTest.kt
-    27 app/src/test/java/com/envi/wispr/ui/SessionSources.kt
+    98 app/src/test/java/com/envi/wispr/ui/SessionNoticePresenterTest.kt
+   274 app/src/test/java/com/envi/wispr/ui/SessionOwnerShapeTest.kt
+    29 app/src/test/java/com/envi/wispr/ui/SessionSources.kt
    137 app/src/test/java/com/envi/wispr/ui/TakeArbiterTest.kt
     93 app/src/test/java/com/envi/wispr/ui/TakeNoticesTest.kt
-   366 app/src/test/java/com/envi/wispr/ui/TakePolishControllerTest.kt
+   592 app/src/test/java/com/envi/wispr/ui/TakePolishControllerTest.kt
     49 app/src/test/java/com/envi/wispr/ui/TriggerNameTest.kt
     55 app/src/test/java/com/envi/wispr/ui/TriggerSourceTest.kt
    104 app/src/test/java/com/envi/wispr/ui/WarmUpOffMainTest.kt
@@ -405,6 +420,7 @@
    208 app/src/test/java/com/envi/wispr/vocabulary/VocabularyExportTest.kt
 
 ## app/src/androidTest
+    37 app/src/androidTest/AndroidManifest.xml
     65 app/src/androidTest/java/com/envi/wispr/CaptureBindingDeviceTest.kt
    361 app/src/androidTest/java/com/envi/wispr/CaptureWithSilenceStopDeviceTest.kt
    165 app/src/androidTest/java/com/envi/wispr/ClipboardPasteTargetActivity.java
@@ -412,6 +428,7 @@
    176 app/src/androidTest/java/com/envi/wispr/SilenceDetectorDeviceTest.kt
    138 app/src/androidTest/java/com/envi/wispr/SilenceStoppedTakeTranscribesDeviceTest.kt
    184 app/src/androidTest/java/com/envi/wispr/SpeakerPlaybackActivity.java
+    89 app/src/androidTest/java/com/envi/wispr/SpeechCallbackDeviceTest.kt
    802 app/src/androidTest/java/com/envi/wispr/VoicePipelineDeviceTest.kt
    167 app/src/androidTest/java/com/envi/wispr/history/EnviousWisprDatabaseMigrationTest.kt
     89 app/src/androidTest/java/com/envi/wispr/history/TranscriptOutcomePersistenceTest.kt

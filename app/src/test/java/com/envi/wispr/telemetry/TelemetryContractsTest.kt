@@ -282,14 +282,16 @@ class TelemetryContractsTest {
      * Drift Guard (#193): the Sentry breadcrumb a fallback take leaves has one shape, category `take`,
      * message `settings_fallback`, data `take_id` and `settings_fallback`, sent only on a fallback take
      * (inside the `fallbackToken()?.let` block). The facade has no test seam, so the shape is read from
-     * the owner's source. REVERT: rename the message or drop a data key in `beginSession`.
+     * the preparer's source (since #281). REVERT: rename the message or drop a data key in `TakeStartPreparer.prepare`.
      */
     @Test
     fun theSettingsFallbackBreadcrumbHasOneShapeAndIsSentOnlyOnAFallbackTake() {
-        val owner = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
-        val block = owner.substringAfter("start.fallbackToken()?.let { token ->").substringBefore("\n            }\n")
+        val preparer = java.io.File("src/main/java/com/envi/wispr/ui/TakeStartPreparer.kt").readText()
+        val block = preparer.substringAfter("start.fallbackToken()?.let { token ->").substringBefore("\n        }\n")
         assertTrue(block.contains("""Telemetry.breadcrumb("take", "settings_fallback", mapOf("take_id" to takeId, "settings_fallback" to token))"""))
-        assertEquals("one breadcrumb, inside the fallback block only", 1, owner.split("\"settings_fallback\", mapOf(").size - 1)
+        assertEquals("one breadcrumb, inside the fallback block only", 1, preparer.split("\"settings_fallback\", mapOf(").size - 1)
+        val owner = java.io.File("src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt").readText()
+        assertEquals("and none in the owner", 1, owner.split("\"settings_fallback\", mapOf(").size)
     }
 
     @Test

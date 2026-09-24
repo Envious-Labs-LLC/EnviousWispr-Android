@@ -23,7 +23,9 @@ internal object SessionSources {
     val polish: String get() = read("TakePolishController.kt")
     /** The recorder notices and where they are said, since #256. */
     val notices: String get() = read("SessionNotice.kt")
+    /** The steps before the bind since #281. */
+    val preparer: String get() = read("TakeStartPreparer.kt")
 
     /** Every file of the session owner, for a scan that says something is absent. */
-    val all: String get() = listOf(coordinator, capture, finalizer, context, polish, notices).joinToString("\n")
+    val all: String get() = listOf(coordinator, capture, finalizer, context, polish, notices, preparer).joinToString("\n")
 }

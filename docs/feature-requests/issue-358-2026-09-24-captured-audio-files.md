@@ -17,7 +17,7 @@ No user-visible change. The session owner (`DictationSessionCoordinator`, about 
 ## 0. TL;DR
 
 - `ui/CapturedAudioCleanup` is replaced, in the same change, by `ui/CapturedAudioFiles`: a class holding the executor and a warn sink, with `delete(path)` (queued on the process worker, never on main's time, never cancelled by teardown, #253; the existence check, the delete and both failure lines inside) and `durationMs(path)` (the finished file's audio length, 0 when unreadable).
-- `CapturedAudioFiles.PROCESS` is the production instance: the process-owned daemon worker and `DebugLogger`.
+- `CapturedAudioFiles.PROCESS` is the production instance: the process-owned daemon worker and `DebugSessionLog`, so the failure lines keep the session's log tag the UAT collectors read (review round 1).
 - The owner takes `capturedAudio: CapturedAudioFiles` in place of `audioCleanup: (Runnable) -> Unit`, calls `capturedAudio.delete(...)` at every site that called the removed deleteCapturedAudio, and reads the duration through `capturedAudio.durationMs(...)`. Its `java.io.File` import goes.
 - The rig keeps its `audioCleanup` parameter and builds a `CapturedAudioFiles` from it, so the #253 teardown row is unchanged.
 

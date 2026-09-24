@@ -1,7 +1,6 @@
 package com.envi.wispr.ui
 
 import com.envi.wispr.audio.PcmAudio
-import com.envi.wispr.debug.DebugLogger
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -34,13 +33,11 @@ internal class CapturedAudioFiles(
     }.getOrNull()?.coerceAtLeast(0L) ?: 0L
 
     companion object {
-        private const val TAG = "CapturedAudio"
-
         private val worker = Executors.newSingleThreadExecutor { task ->
             Thread(task, "captured-audio-cleanup").apply { isDaemon = true }
         }
 
-        /** The process's instance: the one delete worker and the debug log. */
-        val PROCESS = CapturedAudioFiles(execute = worker::execute, warn = { DebugLogger.warn(TAG, it) })
+        /** The process's instance: the one delete worker, and the session's log tag the UAT collectors read (review round 1). */
+        val PROCESS = CapturedAudioFiles(execute = worker::execute, warn = DebugSessionLog::warn)
     }
 }

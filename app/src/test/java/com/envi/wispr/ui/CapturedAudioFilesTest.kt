@@ -42,7 +42,7 @@ class CapturedAudioFilesTest {
         assertEquals(listOf("Unable to delete captured audio after terminal processing"), warnings.toList())
     }
 
-    /** Row 3: a blank or missing path queues nothing. */
+    /** Row 3: a null or empty path queues nothing. */
     @Test fun aBlankPathQueuesNothing() {
         files.delete(null)
         files.delete("")

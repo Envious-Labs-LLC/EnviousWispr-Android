@@ -45,7 +45,11 @@ class HistoryRecoveryCoordinatorTest {
     private fun coordinator(
         recordRecovered: (TranscriptRepository.RecoveredRows) -> Unit = { runs.incrementAndGet() },
         rescueBoundMs: Long = 5_000L,
-    ) = HistoryRecoveryCoordinator(repository, store, scope, clock = { 100_000L }, log = {}, warn = {}, recordRecovered = recordRecovered, rescueBoundMs = rescueBoundMs)
+        staleBoundMs: Long = 5_000L,
+    ) = HistoryRecoveryCoordinator(
+        repository, store, scope, clock = { 100_000L }, log = {}, warn = {},
+        recordRecovered = recordRecovered, rescueBoundMs = rescueBoundMs, staleBoundMs = staleBoundMs,
+    )
 
     /**
      * Callers that ask while a run is in flight share ONE follow-up that begins after it; a caller after both starts
@@ -64,6 +68,37 @@ class HistoryRecoveryCoordinatorTest {
         assertEquals("the first run and one follow-up", 2, runs.get())
         withTimeout(10_000L) { recovery.recover().await() }
         assertEquals("a later caller runs again, for rows and rescues that became eligible since", 3, runs.get())
+    }
+
+    /**
+     * Review round 1: a follow-up cancelled before it began is never handed out again; the next caller gets a live run.
+     * MUTATION m6: the cancelled follow-up stays shared.
+     */
+    @Test fun aCancelledFollowUpIsNeverHandedOutAgain() = runBlocking {
+        dao.holdRecovery = CompletableDeferred()
+        val recovery = coordinator()
+        recovery.recover()
+        val followUp = recovery.recover()
+        followUp.cancel()
+        val next = recovery.recover()
+        assertNotSame(followUp, next)
+        dao.holdRecovery!!.complete(Unit)
+        withTimeout(10_000L) { next.await() }
+        assertEquals(2, runs.get())
+    }
+
+    /**
+     * Review round 1: a stale-row scan stalled on the database is cut off at its bound; the rescue step still runs,
+     * and the run completes. MUTATION m7: no bound on the stale-row step.
+     */
+    @Test fun aStalledStaleRowScanIsCutOffAndTheRescueStillRuns() = runBlocking {
+        File(dir.apply { mkdirs() }, "$take.words").writeText("1000\nKeep these words.")
+        dao.holdRecovery = CompletableDeferred()
+        val outcome = withTimeout(10_000L) { coordinator(staleBoundMs = 100L).recover().await() }
+        assertTrue(outcome.staleFailure is HistoryRecoveryCoordinator.StaleRecoveryTimeout)
+        assertEquals(1, outcome.rescued)
+        dao.holdRecovery!!.complete(Unit)
+        Unit
     }
 
     /** A failed stale-row step still runs the rescue step, and says which failed. MUTATION m2: one guard for both. */

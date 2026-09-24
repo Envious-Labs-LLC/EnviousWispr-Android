@@ -54,3 +54,7 @@ Behaviour change, declared: on the History side, a failed stale-row recovery no 
 - `DictationSessionCoordinator` loses its `transcripts` parameter, which was used only for this recovery (GR-MIGRATION-COMPLETE).
 - MUTATIONS m1 to m5 RED on fresh compiles (`346-mut.py`). m5 (the prune after a failed recovery) first passed, because no row tested the prune condition before this change. `HistoryViewModelTest.aFailedRecoveryIsShownAndSkipsThePrune` now does.
 - Suite 1397, 0 failures; visibility and citation checks clean.
+- Code review round 1 (`346-r1`), both adopted:
+  - The stale-row step is bounded (`STALE_RECOVERY_BOUND_MS`, 5 s, a named `StaleRecoveryTimeout`), so a stalled scan never holds the rescue step, History or a later recovery (m7).
+  - A follow-up is shared only while it is active. A cancelled one is cleared, and `current` names the run in flight until the follow-up begins (m6).
+  - The real-Room timeout the round suggests is not run: the cut-off relies on Room suspend queries being cancellable, and on the idempotence of both steps (the stale scan is an update, and the rescue write is idempotent by take id since #288).

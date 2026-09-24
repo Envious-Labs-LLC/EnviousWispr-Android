@@ -19,10 +19,11 @@ import kotlinx.coroutines.withTimeoutOrNull
  * is in flight gets ONE follow-up run that begins after it, shared by every caller that asks meanwhile; every
  * caller's recovery therefore begins after it asked, and concurrent callers share at most two runs.
  *
- * Each step has its own guard, so one failing never skips the other. The rescue step is bounded
- * ([rescueBoundMs]): it holds the rescue store's lock while it writes to Room, the lock a new take's rescue write also
- * takes, and on the application's scope nothing else would release a stalled pass. A pass cut off leaves its files for
- * the next recovery, which is idempotent by take id.
+ * Each step has its own guard and its own bound, so one failing or stalling never skips the other and never holds a
+ * later recovery: on the application's scope nothing else would release a stalled step. The stale-row step is bounded
+ * by [staleBoundMs] (#346 review round 1). The rescue step, by [rescueBoundMs], also because it holds the rescue
+ * store's lock while it writes to Room, the lock a new take's rescue write takes. A step cut off is retried by the next
+ * recovery: the stale scan is an idempotent update, and the rescue write is idempotent by take id.
  */
 internal class HistoryRecoveryCoordinator(
     private val repository: TranscriptRepository,
@@ -37,6 +38,7 @@ internal class HistoryRecoveryCoordinator(
         Telemetry.deliveryUnknownRecovered(recovered.unknownCount)
     },
     private val rescueBoundMs: Long = RESCUE_RECOVERY_BOUND_MS,
+    private val staleBoundMs: Long = STALE_RECOVERY_BOUND_MS,
 ) {
     /** What one run did: each step's failure, if any, and how many takes' rescued words reached History. */
     class Outcome(val staleFailure: Throwable?, val rescued: Int, val rescueFailure: Throwable?) {
@@ -46,32 +48,48 @@ internal class HistoryRecoveryCoordinator(
     /** A rescue step cut off at its bound; its files wait for the next recovery. */
     class RescueRecoveryTimeout : IllegalStateException("Rescued-word recovery timed out")
 
+    /** A stale-row step cut off at its bound; the next recovery scans again. */
+    class StaleRecoveryTimeout : IllegalStateException("Stale history recovery timed out")
+
     private val lock = Any()
 
     /** The run most recently started (it may be done), and the follow-up not yet begun. Guarded by [lock]. */
     private var current: Deferred<Outcome>? = null
     private var pending: Deferred<Outcome>? = null
 
-    /** A recovery that begins after this call: the run just started, or the one follow-up after the run in flight. */
+    /**
+     * A recovery that begins after this call: the run just started, or the one follow-up after the run in flight. A
+     * follow-up is shared only while it is still active, so a cancelled one is never handed out again (#346 review round
+     * 1); [current] names the run in flight until the follow-up begins, then the follow-up.
+     */
     fun recover(): Deferred<Outcome> = synchronized(lock) {
-        pending?.let { return@synchronized it }
+        pending?.takeIf { it.isActive }?.let { return@synchronized it }
+        pending = null
         val before = current?.takeIf { it.isActive }
         lateinit var run: Deferred<Outcome>
         run = scope.async(start = CoroutineStart.LAZY) {
             before?.join()
-            synchronized(lock) { if (pending === run) pending = null }
+            synchronized(lock) {
+                if (pending === run) pending = null
+                current = run
+            }
             runOnce()
         }
-        if (before != null) pending = run
-        current = run
+        if (before != null) pending = run else current = run
         run.start()
         run
     }
 
     private suspend fun runOnce(): Outcome {
         val staleFailure = try {
-            recordRecovered(repository.recoverStaleOpenRows(clock()))
-            null
+            val recovered = withTimeoutOrNull(staleBoundMs) { repository.recoverStaleOpenRows(clock()) }
+            if (recovered == null) {
+                warn("Stale history recovery passed its $staleBoundMs ms bound; the next recovery scans again")
+                StaleRecoveryTimeout()
+            } else {
+                recordRecovered(recovered)
+                null
+            }
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
@@ -101,5 +119,8 @@ internal class HistoryRecoveryCoordinator(
     companion object {
         /** The rescue step's bound (#346): generous for a healthy disk, short enough that a new take is never held. */
         const val RESCUE_RECOVERY_BOUND_MS = 5_000L
+
+        /** The stale-row step's bound (#346 review round 1): a stalled scan never holds the rescue step or a later recovery. */
+        const val STALE_RECOVERY_BOUND_MS = 5_000L
     }
 }

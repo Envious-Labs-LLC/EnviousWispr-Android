@@ -4,4 +4,4 @@ RED: m2 the failed branch freezes Off without the latch -> anUnreadablePolicyWit
 RED: m3 the owner ignores lastRead -> anUnreadablePolicyRunsOnTheLastReadPolicy
 RED: m4 a fresh read is not remembered -> aFailedReadCarriesTheLastRead
 RED: m5 a new reader per load -> theProcessReaderIsSharedAcrossLoads
-RED: m6 a null policy reads as Off again -> aRequestWithNoPolicyAnswersTheDeterministicTextAsUnexpected
+RED: m6 the null guard removed and Off restored -> aRequestWithNoPolicyAnswersTheDeterministicTextAsUnexpected (rewritten after code review round 1)

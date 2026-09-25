@@ -16,7 +16,12 @@ import java.nio.file.Files
 class CapturedAudioFilesTest {
     private val queued = mutableListOf<Runnable>()
     private val warnings = mutableListOf<String>()
-    private val files = CapturedAudioFiles(execute = { queued += it }, warn = { warnings += it })
+    private val kept = mutableListOf<String>()
+    private var archiveThrows = false
+    private val files = CapturedAudioFiles(execute = { queued += it }, warn = { warnings += it }, archive = { file ->
+        if (archiveThrows) throw java.io.IOException("disk full")
+        if (file.isFile) kept += file.readText()
+    })
     private val dir = Files.createTempDirectory("captured").toFile()
 
     @After fun tearDown() {
@@ -55,5 +60,49 @@ class CapturedAudioFilesTest {
         assertEquals(1_000L, files.durationMs(audio.path))
         assertEquals(0L, files.durationMs(File(dir, "missing.pcm").path))
         assertEquals(0L, files.durationMs(null))
+    }
+
+    /** Row 5 (#373): the copy is made from the file before the delete removes it. MUTATION m5: archive after delete. */
+    @Test fun theArchiveCopiesTheFileBeforeTheDelete() {
+        val audio = File(dir, "take.pcm").apply { writeText("voice") }
+        files.delete(audio.path)
+        queued.single().run()
+        assertEquals(listOf("voice"), kept.toList())
+        assertFalse(audio.exists())
+    }
+
+    /** Row 6 (#373): a copy that fails says so and the delete still runs. MUTATION m6: the archive outside its own catch. */
+    @Test fun aFailedCopyStillDeletesAndSaysSo() {
+        archiveThrows = true
+        val audio = File(dir, "take.pcm").apply { writeText("voice") }
+        files.delete(audio.path)
+        queued.single().run()
+        assertFalse(audio.exists())
+        assertEquals(listOf("Unable to keep captured audio: IOException"), warnings.toList())
+    }
+
+    /** Row 8 (#373): a failed copy whose warning itself throws still deletes. MUTATION m9: the warning outside its catch. */
+    @Test fun aThrowingWarningNeverStopsTheDelete() {
+        val files = CapturedAudioFiles(
+            execute = { queued += it },
+            warn = { throw IllegalStateException("log down") },
+            archive = { throw RecordingArchive.NotKept("recordings storage unavailable") },
+        )
+        val audio = File(dir, "take.pcm").apply { writeText("voice") }
+        files.delete(audio.path)
+        queued.single().run()
+        assertFalse(audio.exists())
+    }
+
+    /** Row 7 (#373): a take the archive could not keep is logged by its reason, and the delete still runs. MUTATION m7: class name only. */
+    @Test fun aNotKeptReasonReachesTheWarning() {
+        val files = CapturedAudioFiles(execute = { queued += it }, warn = { warnings += it }, archive = {
+            throw RecordingArchive.NotKept("recording was gone before it could be kept")
+        })
+        val audio = File(dir, "take.pcm").apply { writeText("voice") }
+        files.delete(audio.path)
+        queued.single().run()
+        assertFalse(audio.exists())
+        assertEquals(listOf("Unable to keep captured audio: recording was gone before it could be kept"), warnings.toList())
     }
 }

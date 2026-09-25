@@ -1,0 +1,7 @@
+Keep recordings — DONE
+
+The round 3 fix works for cache deletion: the archive-failure warning is caught at [CapturedAudioFiles.kt:31](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/keep-recordings/app/src/main/java/com/envi/wispr/ui/CapturedAudioFiles.kt:31), so a throwing warning cannot skip the delete. The new test covers that path.
+
+1. **LOW | [RecordingArchive.kt:37](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/keep-recordings/app/src/main/java/com/envi/wispr/ui/RecordingArchive.kt:37).** A warning can still stop the *copy*. With a stuck old `.part` and a throwing warning callback, `keep` exits here before opening the source. The outer catch preserves cache deletion, but an otherwise writable recording is lost. The same callback can mask an earlier write failure at [RecordingArchive.kt:51](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/keep-recordings/app/src/main/java/com/envi/wispr/ui/RecordingArchive.kt:51). **Fix:** contain both archive-side warning calls so they cannot abort copying or replace an earlier failure. Extend the stuck-part test with a throwing warning callback and assert that the WAV is still kept.
+
+VERDICT: PROCEED-WITH-REVISIONS

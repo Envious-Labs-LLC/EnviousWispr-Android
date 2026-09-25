@@ -11,15 +11,25 @@ import java.util.concurrent.Executors
  * Every delete is queued on [execute], never run on the caller's time. In production that is the process's one
  * delete worker, which outlives every Service instance as the History queue does (#115), so a take's file is
  * deleted even when the Service is destroyed right after its ending (#253).
+ *
+ * Before the delete, [archive] keeps a copy (#373, the newest ten takes in production); a copy that fails says so
+ * and never stops the delete.
  */
 internal class CapturedAudioFiles(
     private val execute: (Runnable) -> Unit,
     private val warn: (String) -> Unit,
+    private val archive: (File) -> Unit,
 ) {
-    /** Queues the delete of [path] and returns; a blank path queues nothing. A failure says so, never throws. */
+    /** Queues the copy and delete of [path] and returns; a blank path queues nothing. A failure says so, never throws. */
     fun delete(path: String?) {
         if (path.isNullOrBlank()) return
         execute(Runnable {
+            runCatching { archive(File(path)) }
+                .onFailure { error ->
+                    val reason = (error as? RecordingArchive.NotKept)?.message ?: error.javaClass.simpleName
+                    // A log that throws must never stop the delete below (#373 review round 3).
+                    runCatching { warn("Unable to keep captured audio: $reason") }
+                }
             runCatching {
                 val file = File(path)
                 if (file.exists() && !file.delete()) warn("Unable to delete captured audio after terminal processing")
@@ -37,7 +47,11 @@ internal class CapturedAudioFiles(
             Thread(task, "captured-audio-cleanup").apply { isDaemon = true }
         }
 
-        /** The process's instance: the one delete worker, and the session's log tag the UAT collectors read (review round 1). */
-        val PROCESS = CapturedAudioFiles(execute = worker::execute, warn = DebugSessionLog::warn)
+        /**
+         * The process's instance: the one delete worker, and the session's log tag the UAT collectors read (review
+         * round 1). Every instance shares the worker, so copies and deletes run in order.
+         */
+        fun forProcess(archive: RecordingArchive) =
+            CapturedAudioFiles(execute = worker::execute, warn = DebugSessionLog::warn, archive = archive::keep)
     }
 }

@@ -229,6 +229,9 @@ class DictationSessionService : Service() {
             loadPolicy = { providerConfiguration.loadPolicy() },
             lastReadPolicy = { ProviderConfigurationRepository.lastProcessRead() },
             pipeline = bindings,
+            capturedAudio = CapturedAudioFiles.forProcess(
+                RecordingArchive(dir = { getExternalFilesDir(RecordingArchive.FOLDER) }, warn = DebugSessionLog::warn),
+            ),
             scope = scope,
             mainDispatcher = mainDispatcher,
         )

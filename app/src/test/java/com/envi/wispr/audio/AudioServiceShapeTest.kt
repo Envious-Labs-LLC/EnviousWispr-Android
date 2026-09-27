@@ -227,14 +227,19 @@ class AudioServiceShapeTest {
             "warn: setPreferredDevice refused for \${}",
             "warn: sink watch not registered: \${}",
         )
-        val log = Regex("DebugLogger\\.(\\w+)\\(\\s*(?:TAG|tag),\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+        // #378: the take's lines go through its `TakeLog` (`log.` in `TakeRoute`, `takeLog.` in the service), with
+        // the same levels and the same templates, so both spellings are one population here.
+        val log = Regex("(?:DebugLogger\\.(\\w+)\\(\\s*(?:TAG|tag),|\\b(?:log|takeLog)\\.(log|warn|error|debug|mark)\\()\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
         val thread = Regex("(?:Thread\\([^\"\\n]*?|HandlerThread\\()\"([^\"]+)\"")
         val interpolation = Regex("\\$\\{[^}]*\\}|\\$\\w+")
         val placeholder = Regex.escapeReplacement("\${}")
         // #257: the warm hold's writer thread and its exit watch moved to SilenceWriterWatch.kt.
         // #361: the binders' lines moved to CaptureBinderAdapters.kt, under the service's tag.
         val now = (listOf(service) + owners.values + File("$audio/SilenceWriterWatch.kt").readText() + File("$audio/CaptureBinderAdapters.kt").readText()).flatMap { text ->
-            log.findAll(text).map { "${it.groupValues[1]}: ${interpolation.replace(it.groupValues[2], placeholder)}" }.toList() +
+            log.findAll(text).map {
+                val level = it.groupValues[1].ifEmpty { it.groupValues[2] }
+                "$level: ${interpolation.replace(it.groupValues[3], placeholder)}"
+            }.toList() +
                 thread.findAll(text).map { "thread: ${it.groupValues[1]}" }.toList()
         }.sorted()
         assertEquals("every template and thread name must survive the move, unchanged and exactly as often", baseline.sorted(), now)

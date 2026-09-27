@@ -338,6 +338,9 @@ internal class DictationSessionCoordinator(
         // The pre-capture chain's origin (#258): the accepted start command, right after IDLE -> STARTING.
         val acceptedAtMs = host.elapsedRealtimeMs()
         val takeId = UUID.randomUUID().toString().lowercase()
+        // The take's own log (#378), before any of its lines: it carries the id to the local log file and starts
+        // this process's timing of the take.
+        val takeLog = log.admitTake(takeId)
         takePeakAmplitude = null
         val trigger = admittedRequest?.let(::bubbleTrigger) ?: pendingTrigger
         pendingTrigger = TriggerSource.UNKNOWN
@@ -358,7 +361,7 @@ internal class DictationSessionCoordinator(
         val admission = try {
             admitTake(takeId, trigger)
         } catch (error: Exception) {
-            log.warn("Journal admission failed to queue: ${error.javaClass.simpleName}; starting anyway")
+            takeLog.warn("Journal admission failed to queue: ${error.javaClass.simpleName}; starting anyway")
             null
         }
         // Where the admission is observed to have landed, not where the wait below returns (#258).
@@ -378,7 +381,7 @@ internal class DictationSessionCoordinator(
         surface.nameTarget(if (targetPin == DictationTargetPin.PINNED) insertion.pinnedFieldId() else null)
         // The take, published once (#216). `beginSession` is one uninterrupted main-thread call, and nothing
         // is bound and no coroutine launched before this line, so nothing reads half of one take.
-        take = TakeContext(takeId, trigger, takeFacts, outcome, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs)
+        take = TakeContext(takeId, trigger, takeFacts, outcome, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs, takeLog)
         // After the take, in the same main-thread call, and before anything is bound (#237).
         polish = TakePolishController(
             lock = polishSubmissionLock,
@@ -387,7 +390,7 @@ internal class DictationSessionCoordinator(
             scope = scope,
             link = { pipeline.polish },
             languageDetector = languageDetector,
-            log = log,
+            log = takeLog,
             takeId = takeId,
             defectSink = ::reportDefect,
             preferences = { sessionPreferences },
@@ -426,7 +429,7 @@ internal class DictationSessionCoordinator(
                 val matcher = when (val step = prepared.matcher) {
                     is Prepared.Ready -> step.value
                     is Prepared.Failed -> {
-                        log.warn("Vocabulary matcher ${step.kind}; this take restores no custom words")
+                        takeLog.warn("Vocabulary matcher ${step.kind}; this take restores no custom words")
                         reportDefect(AppDefect.TakePreparationFailed, mapOf("take_id" to takeId, "step" to STEP_MATCHER, "kind" to step.kind))
                         StructuredTermRestorer.compile(emptyList())
                     }
@@ -434,7 +437,7 @@ internal class DictationSessionCoordinator(
                 val read = when (val step = prepared.policy) {
                     is Prepared.Ready -> step.value
                     is Prepared.Failed -> {
-                        log.warn("Polish policy read ${step.kind}; this take uses the last read policy")
+                        takeLog.warn("Polish policy read ${step.kind}; this take uses the last read policy")
                         PolicyRead.Failed(prepared.priorPolicy)
                     }
                 }
@@ -463,7 +466,7 @@ internal class DictationSessionCoordinator(
         is PolicyRead.Fresh -> read.policy
         is PolicyRead.Failed -> {
             val lastRead = read.lastRead
-            log.warn(if (lastRead != null) "Polish policy unreadable; this take runs on the last read policy" else "Polish policy unreadable and never read; this take publishes the deterministic text")
+            take.log.warn(if (lastRead != null) "Polish policy unreadable; this take runs on the last read policy" else "Polish policy unreadable and never read; this take publishes the deterministic text")
             polish?.policyReadFailed(usedLastRead = lastRead != null)
             lastRead ?: ProviderConfigurationRepository.DECLARED_DEFAULT_POLICY
         }
@@ -475,7 +478,7 @@ internal class DictationSessionCoordinator(
             PipelineController.BindResult.BOUND -> if (!outcome.polishBound) {
                 // Polish is a limb (#234): the take records and transcribes, and publishes the deterministic
                 // text with the polish notice. The refusal is a defect, so it gets fixed rather than counted.
-                log.warn("Polish service did not bind; this take publishes the deterministic text")
+                take.log.warn("Polish service did not bind; this take publishes the deterministic text")
                 polish?.bindRefused()
             }
             PipelineController.BindResult.AUDIO_BIND_FAILED -> {
@@ -576,7 +579,7 @@ internal class DictationSessionCoordinator(
                 capture.stop("stop after a failed start")
                 pipeline.stopAudioService()
             }
-            log.error("Failed to start recording", error)
+            take.log.error("Failed to start recording", error)
             showError(TerminalReason.START_EXCEPTION)
         }
     }
@@ -631,7 +634,7 @@ internal class DictationSessionCoordinator(
     private fun onLiveDeadline() {
         if (state.get() != SessionState.STARTING) return
         if (!failWhileStarting(TerminalReason.LIVE_WAIT_DEADLINE)) return
-        log.error("The route never went live within ${CaptureSessionController.LIVE_WAIT_BOUND_MS} ms")
+        take.log.error("The route never went live within ${CaptureSessionController.LIVE_WAIT_BOUND_MS} ms")
         capture.stop("stop at the live deadline")
     }
 
@@ -671,7 +674,7 @@ internal class DictationSessionCoordinator(
                     else -> TerminalReason.CAPTURE_ENDED_BEFORE_LIVE
                 }
                 if (!failWhileStarting(reason)) return
-                log.warn("Capture ended while waiting for the route to go live (failure=${ending.startFailure})")
+                take.log.warn("Capture ended while waiting for the route to go live (failure=${ending.startFailure})")
             }
             SessionState.RECORDING -> {
                 // The ending as a fact for the take's row, stamped here at the ONE place it is
@@ -686,13 +689,13 @@ internal class DictationSessionCoordinator(
                     // StillRunning.transcribes is false. Grouping it with the successes would
                     // send partial audio on as though it were a finished take.
                     CaptureEnding.Failure -> {
-                        log.error("Audio capture ended without a successful reason")
+                        take.log.error("Audio capture ended without a successful reason")
                         take.history.discard()
                         showError(TerminalReason.CAPTURE_FAILED_MID_TAKE)
                     }
 
                     CaptureEnding.StillRunning -> {
-                        log.error("Audio capture stopped without publishing a reason")
+                        take.log.error("Audio capture stopped without publishing a reason")
                         take.history.discard()
                         showError(TerminalReason.CAPTURE_STILL_RUNNING_AFTER_STOP)
                     }
@@ -706,7 +709,7 @@ internal class DictationSessionCoordinator(
                     CaptureEnding.MaxDuration -> {
                         if (enterProcessing()) {
                             continueAfterEnding(ending)
-                            log.log("Take ended at the duration cap")
+                            take.log.log("Take ended at the duration cap")
                             notices.say(SessionNotice.DURATION_REACHED)
                         }
                     }
@@ -756,7 +759,7 @@ internal class DictationSessionCoordinator(
             host.updateSurfacePhase(DictationSurfaceState.Phase.LISTENING)
             surface.show()
             host.vibrate(HapticCue.SESSION_TRANSITION)
-            log.log("Recording started (live after $liveAfterMs ms, forced=$forced)")
+            current.log.log("Recording started (live after $liveAfterMs ms, forced=$forced)")
             if (forced) notices.sayEarbudsSilent()
             // Once, at live, from the pushed route kind (#115): the tip needs nothing more.
             notices.sayBluetoothTipIfDue(routeKind, sessionPreferences.showBluetoothTips)
@@ -766,7 +769,7 @@ internal class DictationSessionCoordinator(
                 // The bubble's hold was already released. Consumed here, at the one transition the
                 // early release waits for, so a short hold keeps its words instead of losing them.
                 stopAfterRecording = false
-                log.log("Early release applied: stopping as soon as capture started")
+                current.log.log("Early release applied: stopping as soon as capture started")
                 stopAndTranscribe()
             }
         }
@@ -800,7 +803,7 @@ internal class DictationSessionCoordinator(
         host.updateSurfacePhase(DictationSurfaceState.Phase.PROCESSING)
         host.promoteToForeground(processing = true)
         host.vibrate(HapticCue.SESSION_TRANSITION)
-        log.log("Stopping recording and starting transcription")
+        take.log.log("Stopping recording and starting transcription")
         return true
     }
 
@@ -844,11 +847,11 @@ internal class DictationSessionCoordinator(
                 speechAudioPath = audioFilePath
                 if (!wait.arm(maxOf(recordingDurationMs, lastTickMs)) { onSpeechUnresponsive(current, audioFilePath) }) {
                     capturedAudio.delete(audioFilePath)
-                    log.log("The take ended before its speech request; not sent")
+                    current.log.log("The take ended before its speech request; not sent")
                     return@launch
                 }
                 requested = true
-                log.mark("asr_request")
+                current.log.mark("asr_request")
                 val asrRequestedAtMs = host.elapsedRealtimeMs()
                 speechService.transcribeFileForTake(audioFilePath, takeId, object : SpeechListener {
                     override fun onResult(text: String?) {
@@ -858,8 +861,9 @@ internal class DictationSessionCoordinator(
                         // Posted to main by the speech proxy (#253); the file delete runs on its own worker.
                         capturedAudio.delete(audioFilePath)
                         outcome.asrResult(host.elapsedRealtimeMs() - asrRequestedAtMs, text?.length ?: 0)
-                        log.log("Transcription result received (chars=${text?.length ?: 0})")
-                        log.mark("result_received")
+                        current.log.log("Transcription result received (chars=${text?.length ?: 0})")
+                        current.log.words("raw_arrived") { text.orEmpty() }
+                        current.log.mark("result_received")
                         outcome.asrDone()
                         polishAndPublish(text.orEmpty())
                     }
@@ -868,7 +872,7 @@ internal class DictationSessionCoordinator(
                     override fun onError(message: String?) {
                         if (!wait.answer()) return lateSpeechAnswer()
                         capturedAudio.delete(audioFilePath)
-                        log.error("Legacy onError on a versioned request")
+                        current.log.error("Legacy onError on a versioned request")
                         // The fact is written before the claim so the ending's row carries it; a claim
                         // that loses leaves an unread fact, never a rewritten row (G1 D2).
                         outcome.asrFailed(AsrFailureReason.UNKNOWN) { host.elapsedRealtimeMs() - asrRequestedAtMs }
@@ -887,7 +891,7 @@ internal class DictationSessionCoordinator(
                         if (!current.arbiter.commitNow(TerminalReason.ASR_FAILED)) return
                         current.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
                         // The detail is local diagnostics and stops here: never a toast, never the wire.
-                        log.error("ASR failed: ${failure.name} (code $reason) ${detail.orEmpty()}")
+                        current.log.error("ASR failed: ${failure.name} (code $reason) ${detail.orEmpty()}")
                         endAsFailure(TerminalReason.ASR_FAILED)
                     }
                 })
@@ -895,12 +899,12 @@ internal class DictationSessionCoordinator(
                 // A request that threw after its bound, a cancel or a destroy already ended the take: the side that
                 // closed the wait owns the file and the row (#356 review round 1).
                 if (requested && !speechWait.close()) {
-                    log.warn("Speech request threw after the take ended: ${error.javaClass.simpleName}")
+                    take.log.warn("Speech request threw after the take ended: ${error.javaClass.simpleName}")
                     return@launch
                 }
                 pipeline.stopAudioService()
                 capturedAudio.delete(ending.audioFilePath)
-                log.error("Transcription failed", error)
+                take.log.error("Transcription failed", error)
                 failFromWorker(TerminalReason.ASR_CALLBACK_EXCEPTION)
             }
         }
@@ -975,10 +979,11 @@ internal class DictationSessionCoordinator(
             reserved
         }
         if (publication == null) {
-            log.warn("Ignoring a final transcript that arrived after the take was claimed")
+            current.log.warn("Ignoring a final transcript that arrived after the take was claimed")
             return
         }
-        log.log("Polish result received (${payload.engine}, ${latencyMs}ms, chars=${finalText.length})")
+        current.log.log("Polish result received (${payload.engine}, ${latencyMs}ms, chars=${finalText.length})")
+        current.log.words("final") { finalText }
         if (finalText.isBlank()) {
             if (current.arbiter.commit(publication, TerminalReason.FINAL_TEXT_EMPTY)) finishSession()
             return
@@ -1000,13 +1005,13 @@ internal class DictationSessionCoordinator(
             // succeeded. A revoked reservation (the owner was destroyed) stops here: no handoff, no announcement,
             // no terminal; the teardown's own History write is the last word on that row (G2 D2).
             if (!current.arbiter.commit(publication, TerminalReason.COMPLETED)) {
-                log.warn("Publication revoked before the handoff; not inserting")
+                current.log.warn("Publication revoked before the handoff; not inserting")
                 return@launch
             }
             // The words are on this phone before they are handed anywhere (#288), bounded so a slow disk never holds them.
             finalizer.awaitRescue(current.history)
             finalizer.deliver(takeId, current.targetPin, payload, current.history, sessionPreferences.clipboard)
-            log.log(log.pipelineSummary())
+            current.log.log(current.log.pipelineSummary())
             finishSession()
         }
     }
@@ -1073,7 +1078,7 @@ internal class DictationSessionCoordinator(
             if (state.get() != SessionState.PROCESSING) return
             val reserved = take.arbiter.reserve(Claimants.CANCEL) ?: return
             state.set(SessionState.CANCELLING)
-            log.log("Cancelled while processing; open polish request: ${polish?.openRequest == true}")
+            take.log.log("Cancelled while processing; open polish request: ${polish?.openRequest == true}")
             closed = polish?.closeOpen()
             reserved
         }
@@ -1107,7 +1112,7 @@ internal class DictationSessionCoordinator(
      */
     private fun showError(reason: TerminalReason) {
         if (!take.arbiter.commitNow(reason)) {
-            log.log("Ignoring $reason: the take already has an ending")
+            take.log.log("Ignoring $reason: the take already has an ending")
             return
         }
         endAsFailure(reason)
@@ -1120,7 +1125,7 @@ internal class DictationSessionCoordinator(
 
     private fun endAsFailure(reason: TerminalReason, line: String?) {
         state.set(SessionState.ERROR)
-        log.warn("Take ended: $reason")
+        take.log.warn("Take ended: $reason")
         announceError(line)
     }
 
@@ -1136,7 +1141,7 @@ internal class DictationSessionCoordinator(
             // a cancel that owns the take already moved the state, and a destruction already committed.
             if (!take.arbiter.commitNow(reason)) return false
         }
-        log.warn("Take ended while starting: $reason")
+        take.log.warn("Take ended while starting: $reason")
         announceError(TakeNotices.line(reason))
         return true
     }
@@ -1164,7 +1169,7 @@ internal class DictationSessionCoordinator(
      */
     private fun onSpeechUnresponsive(current: TakeContext, audioFilePath: String) {
         capturedAudio.delete(audioFilePath)
-        log.error("Speech service did not answer within its bound; ending the take")
+        current.log.error("Speech service did not answer within its bound; ending the take")
         if (!current.arbiter.commitNow(TerminalReason.ASR_PROCESS_UNRESPONSIVE)) return
         current.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")
         endAsFailure(TerminalReason.ASR_PROCESS_UNRESPONSIVE)
@@ -1177,7 +1182,7 @@ internal class DictationSessionCoordinator(
      */
     private fun failFromWorker(reason: TerminalReason) {
         if (!take.arbiter.commitNow(reason)) {
-            log.log("Ignoring $reason: the take already has an ending")
+            take.log.log("Ignoring $reason: the take already has an ending")
             return
         }
         take.history.markStatus(TranscriptEntity.STATUS_ASR_ERROR, insertionResult = "asr_error")

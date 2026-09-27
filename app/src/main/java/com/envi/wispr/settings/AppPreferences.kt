@@ -53,6 +53,9 @@ internal data class AppPreferencesState(
     val keepEarbudsReady: Boolean = true,
 )
 
+/** The Developer page's stored values (#378); a null switch was never set. */
+internal data class DeveloperStored(val unlocked: Boolean, val detailedLog: Boolean?, val keepRecordings: Boolean?)
+
 internal fun AppPreferencesState.cleanupOptions(): CleanupOptions = CleanupOptions(
     removeFillers = fillerRemovalEnabled,
     spokenEmoji = emojiFormatterEnabled,
@@ -194,6 +197,33 @@ internal class AppPreferences(context: Context) {
         dataStore.edit { preferences -> preferences[Keys.KEEP_EARBUDS_READY] = enabled }
     }
 
+    /**
+     * The hidden Developer page's stored values (#378), kept OUT of [AppPreferencesState] on purpose: that
+     * state feeds `app.launched` and the settings telemetry, and neither the unlock nor the two switches may
+     * ever reach PostHog or Sentry. A switch never set reads null; `DeveloperSwitches` owns its default (on in
+     * a debuggable build, off otherwise) and is the only writer of these keys.
+     */
+    val developerStored: Flow<DeveloperStored> = dataStore.data
+        .map { preferences ->
+            DeveloperStored(
+                unlocked = preferences[Keys.DEVELOPER_UNLOCKED] ?: false,
+                detailedLog = preferences[Keys.DETAILED_LOG],
+                keepRecordings = preferences[Keys.KEEP_RECORDINGS],
+            )
+        }
+
+    suspend fun setDeveloperUnlocked() {
+        dataStore.edit { it[Keys.DEVELOPER_UNLOCKED] = true }
+    }
+
+    suspend fun setDetailedLog(on: Boolean) {
+        dataStore.edit { it[Keys.DETAILED_LOG] = on }
+    }
+
+    suspend fun setKeepRecordings(on: Boolean) {
+        dataStore.edit { it[Keys.KEEP_RECORDINGS] = on }
+    }
+
     /** Clamped on the way in as well as on the way out, so a bad value never reaches storage. */
     suspend fun setSilencePauseSeconds(seconds: Float) {
         val safe = SilenceStopDetector.sanitisePauseSeconds(seconds)
@@ -219,5 +249,8 @@ internal class AppPreferences(context: Context) {
         val INPUT_DEVICE_PICK = stringPreferencesKey("input_device_pick")
         val SHOW_BLUETOOTH_TIPS = booleanPreferencesKey("show_bluetooth_tips")
         val KEEP_EARBUDS_READY = booleanPreferencesKey("keep_earbuds_ready")
+        val DEVELOPER_UNLOCKED = booleanPreferencesKey("developer_unlocked")
+        val DETAILED_LOG = booleanPreferencesKey("developer_detailed_log")
+        val KEEP_RECORDINGS = booleanPreferencesKey("developer_keep_recordings")
     }
 }

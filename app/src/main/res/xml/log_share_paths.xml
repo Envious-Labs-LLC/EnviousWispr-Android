@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- #378 D6: the Share log FileProvider exposes ONLY the export folder, never the live log folder. -->
+<paths>
+    <cache-path name="share" path="share/" />
+</paths>

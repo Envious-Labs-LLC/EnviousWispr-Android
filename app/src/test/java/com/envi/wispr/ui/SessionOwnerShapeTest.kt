@@ -225,7 +225,8 @@ class SessionOwnerShapeTest {
         val declared = parameters.lines().map { it.trim() }.filter { it.isNotEmpty() }
         // Seven since #258: the accepted command's clock reading, the origin of the take's pre-capture timings.
         // Eight since #329: the take's outcome recorder, which only records.
-        assertEquals("eight properties", 8, declared.size)
+        // Nine since #378: the take-bound log, which carries the id to the local log file.
+        assertEquals("nine properties", 9, declared.size)
         declared.forEach { assertTrue("a fixed property: $it", it.startsWith("val ")) }
         assertEquals("no var in TakeContext", 0, count(context, """\bvar\b"""))
     }

@@ -13,6 +13,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.SystemClock
 import com.envi.wispr.debug.DebugLogger
+import com.envi.wispr.debug.TakeLog
 import com.envi.wispr.telemetry.AppDefect
 import com.envi.wispr.telemetry.Telemetry
 import com.envi.wispr.vad.SilenceStopDetector
@@ -30,6 +31,9 @@ class AudioCaptureService : Service() {
 
     companion object {
         private const val TAG = "AudioCapture"
+
+        /** The take id a take-less start (`startRecording` from the legacy interface) carries in the local log (#378). */
+        private const val UNTRACKED_TAKE = "untracked"
 
         /**
          * The session owner's bind (#220): with this action and a fresh identifier per bind, `onBind` returns
@@ -405,8 +409,10 @@ class AudioCaptureService : Service() {
                 // A warm hold hands its route to this take (the link stays up; V13: live at ~120 ms). Any hold
                 // that does not match the resolved target is ended by resolveRoute before it sets anything.
                 val handedOver = warmHoldOwner.handOver()
-                val route = TakeRoute.resolve(audioManager, pick, hold, handedOver, TAG) ?: run {
-                    DebugLogger.error(TAG, "No input device at all; refusing to start")
+                // This process's log for the take (#378), before its first route line.
+                val takeLog = TakeLog(takeId.ifEmpty { UNTRACKED_TAKE }, TAG)
+                val route = TakeRoute.resolve(audioManager, pick, hold, handedOver, takeLog) ?: run {
+                    takeLog.error("No input device at all; refusing to start")
                     failSetup(START_FAILURE_NO_INPUT_DEVICE, threadStarted, record, output, routeHold, takeId, token)
                     return false
                 }
@@ -451,7 +457,7 @@ class AudioCaptureService : Service() {
                     listenerSlot = routingListener,
                     scheduler = routeScheduler,
                     unregisterDeviceCallback = { audioManager.unregisterAudioDeviceCallback(it) },
-                    tag = TAG,
+                    log = takeLog,
                 )
                 takeRoute.applyPreferred(record)
 
@@ -502,10 +508,9 @@ class AudioCaptureService : Service() {
                 terminalReason = TERMINAL_REASON_NONE
                 currentAmplitude = 0f
                 takePeakAmplitude = 0f
-                DebugLogger.startPipeline()
-                DebugLogger.mark(TAG, "recording_start")
-                DebugLogger.log(
-                    TAG,
+                takeLog.startPipeline()
+                takeLog.mark("recording_start")
+                takeLog.log(
                     "Recording started (PID: ${android.os.Process.myPid()}, " +
                         "max: ${RecordingLimits.MAX_DURATION_MS}ms, " +
                         "nativeFrames: ${runCatching { record.bufferSizeInFrames }.getOrDefault(-1)})",

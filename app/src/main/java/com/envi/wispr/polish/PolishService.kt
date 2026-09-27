@@ -18,6 +18,7 @@ import com.envi.wispr.providers.ProviderPolishRequest
 import com.envi.wispr.providers.ProviderPolishResult
 import com.envi.wispr.providers.SecretStore
 import com.envi.wispr.providers.capabilities
+import com.envi.wispr.debug.TakeLog
 import java.io.Closeable
 import java.io.File
 import java.util.concurrent.Executors
@@ -43,6 +44,9 @@ class PolishService : Service() {
         /** How long the orderly close may wait behind the worker before the process ends instead (#344). */
         private const val ORDERLY_CLOSE_BOUND_MS = 5_000L
         private const val TAG = "PolishService"
+
+        /** The take id a request from the legacy, take-less `polishRequest` carries in the local log (#378). */
+        private const val LEGACY_TAKE = "untracked"
         private const val EXIT_GRACE_MS = 300L
     }
 
@@ -173,35 +177,38 @@ class PolishService : Service() {
         ) {
             val raw = rawText.orEmpty().trim()
             val options = CleanupOptions(removeFillers, spokenEmoji, spokenPunctuation)
+            // The request's own take id (#378), never only the registry's: polish can answer before registration.
+            val log = TakeLog(takeId.ifEmpty { LEGACY_TAKE }, TAG).also { it.startPipeline() }
+            log.words("polish_input") { raw }
             if (raw.isBlank()) {
-                deliver(callback, PolishOutcome(requestId, raw, PolishEngineLabels.NO_SPEECH, PolishReason.NO_SPEECH, 0, 0))
+                deliver(callback, PolishOutcome(requestId, raw, PolishEngineLabels.NO_SPEECH, PolishReason.NO_SPEECH, 0, 0), log)
                 return
             }
             // Our own client always sends the take's frozen policy; a null one is a protocol fault, never the
             // user's Off (#278). Answer the deterministic text as UNEXPECTED, which raises its defect.
             if (policy == null) {
-                DebugLogger.warn(TAG, "Polish request $requestId carried no policy")
-                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it) }
+                log.warn("Polish request $requestId carried no policy")
+                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it, log) }
                 return
             }
             val effectivePolicy: PolishPolicy = policy
             if (poisoned.get()) {
                 // This process is ending after a timeout; a request queued behind the wedged worker would only
                 // learn that when the process died. Answer now, from the fallback lane (#291).
-                fallbackLane.answer(requestId, raw, options, PolishReason.LOCAL_FAILED) { deliver(callback, it) }
+                fallbackLane.answer(requestId, raw, options, PolishReason.LOCAL_FAILED) { deliver(callback, it, log) }
                 return
             }
             val entry = registry.register(requestId)?.also { it.takeId = takeId }
             if (entry == null) {
-                DebugLogger.warn(TAG, "Refusing polish request $requestId: id already registered")
-                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it) }
+                log.warn("Refusing polish request $requestId: id already registered")
+                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it, log) }
                 return
             }
             val tracksLocal = effectivePolicy is PolishPolicy.LocalS1
             if (tracksLocal) activeLocalRequests.incrementAndGet()
             try {
                 // The budget's debug override is a file read (#291): it happens on the worker, never on this binder thread.
-                executor.execute { work(entry, callback, requestId, raw, options, effectivePolicy, localBudget(), tracksLocal) }
+                executor.execute { work(entry, callback, requestId, raw, options, effectivePolicy, localBudget(), tracksLocal, log) }
             } catch (failure: RuntimeException) {
                 if (tracksLocal) activeLocalRequests.decrementAndGet()
                 registry.release(entry)
@@ -235,11 +242,12 @@ class PolishService : Service() {
         effectivePolicy: PolishPolicy,
         budget: LocalPolishBudget,
         tracksLocal: Boolean,
+        log: TakeLog,
     ) {
         val started = SystemClock.elapsedRealtime()
         // Armed only for a local generation: the cloud client bounds itself and honours cancel.
         val armed = if (effectivePolicy is PolishPolicy.LocalS1 && !poisoned.get()) {
-            deadline.arm(budget.hardMs) { expireLocal(entry, callback, requestId, raw, options, started) }
+            deadline.arm(budget.hardMs) { expireLocal(entry, callback, requestId, raw, options, started, log) }
         } else null
         // The count guards a WEDGED generation. It is released before a healthy delivery: the client may
         // publish and unbind before this worker's finally, and destroy must not read that as work in flight.
@@ -255,19 +263,19 @@ class PolishService : Service() {
             } else if (poisoned.get()) {
                 PolishOutcome(requestId, fallbackText(raw, options), PolishEngineLabels.DETERMINISTIC, PolishReason.LOCAL_FAILED, 0, 0)
             } else {
-                run(requestId, raw, options, effectivePolicy, entry, started, budget)
+                run(requestId, raw, options, effectivePolicy, entry, started, budget, log)
             }
             if (outcome.reason == PolishReason.LOCAL_TIMEOUT) {
                 // The cooperative timeout returned: same winning path as the hard timer.
                 armed?.cancel()
-                expireLocal(entry, callback, requestId, raw, options, started)
+                expireLocal(entry, callback, requestId, raw, options, started, log)
             } else if (armed == null || armed.cancel()) {
                 releaseLocal()
-                entry.deliverOnce { deliver(callback, outcome) }
+                entry.deliverOnce { deliver(callback, outcome, log) }
             }
             // else: the hard deadline already expired and owns the delivery and the exit.
         } catch (exception: Exception) {
-            DebugLogger.error(TAG, "Polish failed", exception)
+            log.error("Polish failed", exception)
             val fallback = PolishOutcome(
                 requestId,
                 fallbackText(raw, options),
@@ -278,7 +286,7 @@ class PolishService : Service() {
             )
             if (armed == null || armed.cancel()) {
                 releaseLocal()
-                entry.deliverOnce { deliver(callback, fallback) }
+                entry.deliverOnce { deliver(callback, fallback, log) }
             }
         } finally {
             releaseLocal()
@@ -300,12 +308,13 @@ class PolishService : Service() {
         raw: String,
         options: CleanupOptions,
         started: Long,
+        log: TakeLog,
     ) {
         expireOnce(
             entry,
             poison = {
                 poisoned.set(true)
-                DebugLogger.warn(TAG, "Local polish deadline expired for request $requestId; engine process will end")
+                log.warn("Local polish deadline expired for request $requestId; engine process will end")
             },
             deliver = {
                 deliver(
@@ -318,6 +327,7 @@ class PolishService : Service() {
                         0,
                         SystemClock.elapsedRealtime() - started,
                     ),
+                    log,
                 )
             },
             scheduleExit = { deadline.after(EXIT_GRACE_MS) { endProcess("local timeout") } },
@@ -373,11 +383,12 @@ class PolishService : Service() {
         PolishFallback.deterministicOrWords(raw, options, languageDetector, warn = { DebugLogger.warn(TAG, it) })
 
     /** The single delivery site. A dead client throws here; the throw is logged and goes no further. */
-    private fun deliver(callback: IPolishCallback?, outcome: PolishOutcome) {
-        DebugLogger.log(TAG, "polish_done")
-        DebugLogger.log(TAG, "$outcome")
+    private fun deliver(callback: IPolishCallback?, outcome: PolishOutcome, log: TakeLog) {
+        log.log("polish_done")
+        log.log("$outcome")
+        log.words("polish_answer") { outcome.text }
         runCatching { callback?.onOutcome(outcome) }
-            .onFailure { error -> DebugLogger.warn(TAG, "Outcome for request ${outcome.requestId} not delivered: ${error.javaClass.simpleName}") }
+            .onFailure { error -> log.warn("Outcome for request ${outcome.requestId} not delivered: ${error.javaClass.simpleName}") }
     }
 
     private fun run(
@@ -388,23 +399,27 @@ class PolishService : Service() {
         entry: PolishRequestRegistry.Entry,
         started: Long,
         budget: LocalPolishBudget,
+        log: TakeLog,
     ): PolishOutcome {
         // What the model adapter learned about its own failure, recorded before it hands null back
         // to the pipeline, which cannot tell a thrown adapter from a blank answer.
         var attempt: PolishReason? = null
         var statusCode = 0
         val language = detectLanguage(raw)
+        // The words after each cleanup family (#378), into the local log file only.
+        val trace: (String, String) -> Unit = { family, text -> log.words("cleanup_$family") { text } }
         val pipeline = when (policy) {
-            PolishPolicy.Off, PolishPolicy.CloudUnconfigured -> PolishPipeline.run(raw, options, language)
-            is PolishPolicy.LocalS1 -> PolishPipeline.run(raw, options, language) { cleaned ->
+            PolishPolicy.Off, PolishPolicy.CloudUnconfigured -> PolishPipeline.run(raw, options, language, trace = trace)
+            is PolishPolicy.LocalS1 -> PolishPipeline.run(raw, options, language, trace = trace) { cleaned ->
                 if (!modelReady) {
                     attempt = PolishReason.LOCAL_NOT_READY
                     null
                 } else {
-                    polishWithS1(cleaned, policy.control, budget.cooperativeMs) { reason -> attempt = reason }
+                    polishWithS1(cleaned, policy.control, budget.cooperativeMs, log) { reason -> attempt = reason }
                 }
             }
-            is PolishPolicy.Cloud -> PolishPipeline.run(raw, options, language) { cleaned ->
+            is PolishPolicy.Cloud -> PolishPipeline.run(raw, options, language, trace = trace) { cleaned ->
+                log.words("cloud_prompt") { cleaned }
                 val request = ProviderPolishRequest(
                     provider = policy.provider,
                     model = policy.model,
@@ -414,7 +429,7 @@ class PolishService : Service() {
                     selfHostedProtocol = policy.protocol,
                 )
                 when (val result = providerClient.polish(request, entry.cancellation)) {
-                    is ProviderPolishResult.Success -> result.text
+                    is ProviderPolishResult.Success -> result.text.also { answer -> log.words("cloud_answer") { answer } }
                     is ProviderPolishResult.Failure -> {
                         attempt = PolishReason.from(result.kind, result.signal)
                         statusCode = result.statusCode ?: 0
@@ -430,12 +445,13 @@ class PolishService : Service() {
             pipeline.usedModel -> "${S1Config.MODEL_NAME} by ${S1Config.MODEL_CREATOR} (${s1Runtime.activeComputeUnit.uppercase()})"
             else -> PolishEngineLabels.DETERMINISTIC
         }
-        if (pipeline.refusal != null) DebugLogger.warn(TAG, "Polish guard refused: ${pipeline.refusal}")
+        if (pipeline.refusal != null) log.warn("Polish guard refused: ${pipeline.refusal}")
         if (reason == PolishReason.TOO_SHORT) {
-            DebugLogger.log(TAG, "Polish bypassed: too short")
+            log.log("Polish bypassed: too short")
         } else if (reason != PolishReason.POLISHED && reason != PolishReason.OFF) {
-            DebugLogger.warn(TAG, "Polish fell back: reason=$reason status=$statusCode")
+            log.warn("Polish fell back: reason=$reason status=$statusCode")
         }
+        log.words("pipeline_result") { pipeline.text }
         return PolishOutcome(requestId, pipeline.text, engine, reason, statusCode, SystemClock.elapsedRealtime() - started)
     }
 
@@ -566,14 +582,17 @@ class PolishService : Service() {
         rawText: String,
         control: S1ControlSettings,
         cooperativeMs: Long,
+        log: TakeLog,
         record: (PolishReason) -> Unit,
     ): String? {
         debugStall()
-        DebugLogger.log(TAG, "S1 control line: ${control.controlLine()}")
+        log.log("S1 control line: ${control.controlLine()}")
+        val userPrompt = S1PromptBuilder.buildUserPrompt(rawText, control)
+        log.words("local_prompt") { userPrompt }
         val output = try {
             val generated = s1Runtime.generate(
                 S1Config.SYSTEM_PROMPT,
-                S1PromptBuilder.buildUserPrompt(rawText, control),
+                userPrompt,
                 S1PromptBuilder.maxOutputTokens(rawText),
                 cooperativeMs,
             )
@@ -583,24 +602,25 @@ class PolishService : Service() {
             }
             generated.trim()
         } catch (exception: Exception) {
-            DebugLogger.error(TAG, "S1 generation threw", exception)
+            log.error("S1 generation threw", exception)
             record(PolishReason.LOCAL_FAILED)
             return null
         }
 
         if (output.startsWith("ERROR:")) {
-            DebugLogger.warn(TAG, "S1 generation failed")
+            log.warn("S1 generation failed")
             record(PolishReason.LOCAL_FAILED)
             return null
         }
 
         val cleaned = output.substringAfterLast("</think>").trim()
+        log.words("local_output") { cleaned }
         if (cleaned.isBlank()) {
             record(PolishReason.OUTPUT_REJECTED)
             return null
         }
         if (!TextSafety.isSafe(rawText, cleaned)) {
-            DebugLogger.warn(TAG, "Rejected unsafe S1 output")
+            log.warn("Rejected unsafe S1 output")
             record(PolishReason.OUTPUT_REJECTED)
             return null
         }

@@ -13,9 +13,9 @@ import java.util.concurrent.atomic.AtomicInteger
  *   and never its full stack trace: an exception message carries whatever the failing call was holding
  *   (a transcript, a prompt, a URL with a key on it), and Android's own three-argument `Log.e`
  *   prints the message and the whole trace. The cause chain contributes class names only.
- * - There is no file sink. The log this object once wrote to shared external storage
- *   (`/sdcard/EnviousWispr/debug.log`) had no caller and needed an all-files access the app never held;
- *   app-private storage is where anything of ours belongs.
+ * - It opens no file itself. Every line is also handed, already rendered, to [LocalLog] (#378), which
+ *   writes this process's app-private log file only while the hidden Detailed log switch is on. The
+ *   shared-storage log this object once wrote (`/sdcard/EnviousWispr/debug.log`) stays deleted.
  * - Pipeline profiling: mark events, get a timing summary. Thread-safe (AtomicInteger, ConcurrentLinkedQueue).
  *
  * `DiagnosticsShapeTest` covers `:app`'s main, debug and androidTest sources plus the llama.cpp JNI bridge:
@@ -40,25 +40,28 @@ internal object DebugLogger {
     private val markerCount = AtomicInteger(0)
 
     /**
-     * Start a new pipeline timing session. Clears all previous markers.
+     * Start this process's timing of a take: every later [mark] in THIS process measures from here. Each
+     * process calls it where it first meets the take (#378: main at admission, `:audio` at capture start,
+     * `:asr` and `:polish` at request start); before, only `:audio` did, so the other processes measured
+     * from device uptime.
      */
-    fun startPipeline() {
+    fun startPipeline(takeId: String? = null) {
         pipelineStartTime = SystemClock.elapsedRealtime()
         markers.clear()
         markerCount.set(0)
-        log("Pipeline", "START")
+        log("Pipeline", "START", takeId)
     }
 
     /**
      * Record a named timing marker relative to pipeline start.
      * Capped at [MAX_MARKERS] to prevent unbounded growth.
      */
-    fun mark(tag: String, event: String) {
+    fun mark(tag: String, event: String, takeId: String? = null) {
         val elapsed = SystemClock.elapsedRealtime() - pipelineStartTime
         if (markerCount.getAndIncrement() < MAX_MARKERS) {
             markers.add(event to elapsed)
         }
-        log(tag, "$event [+${elapsed}ms]")
+        log(tag, "$event [+${elapsed}ms]", takeId)
     }
 
     /**
@@ -73,24 +76,47 @@ internal object DebugLogger {
         return sb.toString()
     }
 
-    fun debug(tag: String, message: String) {
-        Log.d(tag, message)
-    }
+    fun debug(tag: String, message: String) = debug(tag, message, null as String?)
 
-    fun log(tag: String, message: String) {
-        Log.i(tag, message)
-    }
+    fun log(tag: String, message: String) = log(tag, message, null as String?)
 
-    fun warn(tag: String, message: String) {
-        Log.w(tag, message)
-    }
+    fun warn(tag: String, message: String) = warn(tag, message, null as String?)
 
     /**
      * The throwable is rendered by [render]; it is never handed to `Log.e` itself, which would print its
      * message and full trace.
      */
-    fun error(tag: String, message: String, throwable: Throwable? = null) {
-        Log.e(tag, render(message, throwable))
+    fun error(tag: String, message: String, throwable: Throwable? = null) = error(tag, message, throwable, null)
+
+    /**
+     * The take-scoped forms (#378): [takeId] travels to the local log file as a FIELD, never inside the
+     * message and never read from process state. Logcat output is identical to the plain forms. Only
+     * `TakeLog` calls these; a take-scoped owner never calls the plain forms (`DiagnosticsShapeTest`).
+     */
+    fun debug(tag: String, message: String, takeId: String?) {
+        Log.d(tag, message)
+        LocalLog.line('D', tag, takeId, message)
+    }
+
+    fun log(tag: String, message: String, takeId: String?) {
+        Log.i(tag, message)
+        LocalLog.line('I', tag, takeId, message)
+    }
+
+    fun warn(tag: String, message: String, takeId: String?) {
+        Log.w(tag, message)
+        LocalLog.line('W', tag, takeId, message)
+    }
+
+    fun error(tag: String, message: String, throwable: Throwable?, takeId: String?) {
+        val rendered = render(message, throwable)
+        Log.e(tag, rendered)
+        LocalLog.line('E', tag, takeId, rendered)
+    }
+
+    /** For the local log's own failures only: logcat, never back into the file that just failed. */
+    internal fun logcatOnly(tag: String, message: String) {
+        Log.w(tag, message)
     }
 
     /**

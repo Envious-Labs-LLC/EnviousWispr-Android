@@ -32,9 +32,10 @@ internal object PolishPipeline {
         rawText: String,
         options: CleanupOptions = CleanupOptions(),
         language: CleanupLanguage = CleanupLanguage.Unknown,
+        trace: (family: String, text: String) -> Unit = DeterministicCleanup.NO_TRACE,
         model: ((cleanedText: String) -> String?)? = null,
     ): PolishPipelineResult {
-        val cleanup = DeterministicCleanup.apply(rawText, options, language)
+        val cleanup = DeterministicCleanup.apply(rawText, options, language, trace)
         val cleaned = cleanup.text
         val fallback = cleaned
         if (cleanup.recovered) {

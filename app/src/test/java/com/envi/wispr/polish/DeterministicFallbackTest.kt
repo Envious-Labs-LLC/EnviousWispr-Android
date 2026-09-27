@@ -154,7 +154,7 @@ class DeterministicFallbackTest {
         assertTrue("the null guard exists", guard >= 0)
         val body = source.substring(guard, source.indexOf("return", guard))
         // Since #291 the answer comes from the fallback lane, off the binder thread.
-        assertTrue(body.contains("fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it) }"))
+        assertTrue(body.contains("fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it, log) }"))
         assertTrue("before the request is registered", guard < source.indexOf("registry.register(requestId)"))
         assertTrue("before any pipeline work", guard < source.indexOf("PolishPipeline.run("))
     }
@@ -175,7 +175,8 @@ class DeterministicFallbackTest {
         assertEquals(
             "the three failure answers, each through the lane with its reason",
             listOf("UNEXPECTED", "LOCAL_FAILED", "UNEXPECTED"),
-            Regex("""fallbackLane\.answer\(requestId, raw, options, PolishReason\.(\w+)\) \{ deliver\(callback, it\) \}""").findAll(accept).map { it.groupValues[1] }.toList(),
+            // #378: each delivery also carries the request's take log.
+            Regex("""fallbackLane\.answer\(requestId, raw, options, PolishReason\.(\w+)\) \{ deliver\(callback, it, log\) \}""").findAll(accept).map { it.groupValues[1] }.toList(),
         )
         val cancel = source.substringAfter("override fun cancel(requestId: Long) {").substringBefore("\n        }")
         assertTrue(cancel.contains("fallbackLane.cancel(requestId)"))

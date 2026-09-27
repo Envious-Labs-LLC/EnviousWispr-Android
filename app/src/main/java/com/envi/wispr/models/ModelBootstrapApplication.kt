@@ -1,6 +1,9 @@
 package com.envi.wispr.models
 
 import com.envi.wispr.telemetry.AppDefect
+import com.envi.wispr.debug.DeveloperLogs
+import com.envi.wispr.debug.DeveloperSwitches
+import com.envi.wispr.debug.LocalLog
 import android.app.Application
 import android.content.Context
 import com.envi.wispr.history.EnviousWisprDatabase
@@ -88,11 +91,21 @@ class ModelBootstrapApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        val processName = Application.getProcessName()
+        val isMain = processName == packageName
+        // Every process's local log (#378), before anything logs: it writes only while the hidden Detailed
+        // log switch's flag file exists, and costs no idle wake when it does not.
+        LocalLog.start(this, if (isMain) "main" else processName.substringAfterLast(':'))
         // ABOVE the process gate on purpose (#176): every process, including `:audio`, `:asr`, `:vad`
         // and `:polish`, boots its own crash reporting here; only main goes on to PostHog. A limb: it
         // never throws and never blocks on the network.
         Telemetry.bootstrap(this)
-        if (Application.getProcessName() != packageName) return
+        // After Sentry's handler exists, so the local log's crash flush wraps it and calls it exactly once.
+        LocalLog.installCrashHook()
+        if (!isMain) return
+        // Main owns the switches: repair the flag files from DataStore before the adb door serves a call.
+        DeveloperSwitches.of(this).coldStartRepair()
+        DeveloperLogs.of(this).startup()
         ModelDeliveryWorker.enqueueBootstrap(this, ModelManifest.parakeet)
         ModelDeliveryWorker.enqueueBootstrap(this, ModelManifest.s1)
     }

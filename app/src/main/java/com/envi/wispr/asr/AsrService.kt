@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.SystemClock
 import com.envi.wispr.debug.DebugLogger
+import com.envi.wispr.debug.TakeLog
 import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.models.ModelManifest
@@ -29,6 +30,9 @@ class AsrService : Service() {
 
     companion object {
         private const val TAG = "AsrService"
+
+        /** The take id a take-less legacy byte-array request carries in the local log (#378). */
+        private const val LEGACY_TAKE = "untracked"
         private const val SAMPLE_RATE = 16000
 
         /**
@@ -127,7 +131,7 @@ class AsrService : Service() {
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
             val failure = legacyReporter(callback)
             owner.use(transcriptionBoundMs(audioData.size.toLong()), refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
-                doTranscribe(rec, audioData, durationSec, callback, failure)
+                doTranscribe(rec, audioData, durationSec, callback, failure, TakeLog(LEGACY_TAKE, TAG))
             }
         }
 
@@ -135,9 +139,11 @@ class AsrService : Service() {
     }
 
     private fun transcribeFromFile(audioFilePath: String, takeId: String, callback: IAsrCallback?, failure: FailureReporter) {
+        // This process's start of the take (#378): the take id travels to the local log as a field.
+        val log = TakeLog(takeId, TAG).also { it.startPipeline() }
         val file = File(audioFilePath)
         if (!file.exists()) {
-            DebugLogger.error(TAG, "Audio file not found (take=$takeId)")
+            log.error("Audio file not found (take=$takeId)")
             failure.report(AsrFailureReason.AUDIO_MISSING, "Audio file not found: $audioFilePath")
             return
         }
@@ -147,8 +153,7 @@ class AsrService : Service() {
         // Read once, on the binder thread, never on the worker (#357 review round 2): it sizes the task's bound too.
         val audioBytes = file.length()
         if (audioBytes > RecordingLimits.MAX_AUDIO_BYTES) {
-            DebugLogger.warn(
-                TAG,
+            log.warn(
                 "Audio file is $audioBytes bytes, over the " +
                     "${RecordingLimits.MAX_AUDIO_BYTES} byte ceiling",
             )
@@ -161,14 +166,14 @@ class AsrService : Service() {
             val audioData = try {
                 file.readBytes()
             } catch (e: Exception) {
-                DebugLogger.error(TAG, "Failed to read audio file", e)
+                log.error("Failed to read audio file", e)
                 val detail = e.javaClass.simpleName
                 return@use { failure.report(AsrFailureReason.AUDIO_UNREADABLE, detail) }
             }
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
-            DebugLogger.log(TAG, "Read ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) for take $takeId")
-            DebugLogger.mark(TAG, "asr_file_read")
-            doTranscribe(rec, audioData, durationSec, callback, failure)
+            log.log("Read ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) for take $takeId")
+            log.mark("asr_file_read")
+            doTranscribe(rec, audioData, durationSec, callback, failure, log)
         }
     }
 
@@ -186,11 +191,12 @@ class AsrService : Service() {
         durationSec: Float,
         callback: IAsrCallback?,
         failure: FailureReporter,
+        log: TakeLog,
     ): () -> Unit {
-        DebugLogger.log(TAG, "Transcribing ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) (PID: ${android.os.Process.myPid()})")
+        log.log("Transcribing ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) (PID: ${android.os.Process.myPid()})")
 
         if (rec == null) {
-            DebugLogger.error(TAG, "Recognizer not initialized")
+            log.error("Recognizer not initialized")
             return { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }
         }
 
@@ -198,7 +204,7 @@ class AsrService : Service() {
         // a throwing DELIVERY below can never be reported as a decode failure or produce a second callback.
         val rawText = try {
             val samples = PcmAudio.toFloatSamples(audioData)
-            DebugLogger.mark(TAG, "pcm_to_float")
+            log.mark("pcm_to_float")
 
             val t0 = SystemClock.elapsedRealtime()
 
@@ -215,21 +221,22 @@ class AsrService : Service() {
             val text = result.text.trim()
             val rtf = if (durationSec > 0) decodeMs / (durationSec * 1000) else 0f
 
-            DebugLogger.mark(TAG, "asr_decode")
-            // Transcript text is user content and must never enter logs. Keep only the
-            // aggregate needed to diagnose decode latency and empty-result behavior.
-            DebugLogger.log(TAG, "Decode: ${decodeMs}ms, RTF=${String.format("%.2f", rtf)}, textChars=${text.length}")
+            log.mark("asr_decode")
+            // Transcript text is user content and never enters logcat: logcat keeps only the aggregate. The
+            // words go to the local log file alone, and only while Detailed log is on (#378).
+            log.log("Decode: ${decodeMs}ms, RTF=${String.format("%.2f", rtf)}, textChars=${text.length}")
+            log.words("raw_speech") { text }
             text
         } catch (e: Exception) {
-            DebugLogger.error(TAG, "Transcription failed", e)
+            log.error("Transcription failed", e)
             val detail = e.javaClass.simpleName
             return { failure.report(AsrFailureReason.DECODE_FAILED, detail) }
         }
 
-        DebugLogger.log(TAG, DebugLogger.pipelineSummary())
+        log.log(DebugLogger.pipelineSummary())
         return {
             runCatching { callback?.onResult(rawText) }
-                .onFailure { DebugLogger.warn(TAG, "Result delivery threw: ${it.javaClass.simpleName}; not reported as a decode failure") }
+                .onFailure { log.warn("Result delivery threw: ${it.javaClass.simpleName}; not reported as a decode failure") }
         }
     }
 

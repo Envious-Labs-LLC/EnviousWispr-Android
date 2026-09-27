@@ -231,7 +231,7 @@ class SilenceWriterWatchTest {
             listenerSlot = AtomicReference(null),
             scheduler = NoScheduler(),
             unregisterDeviceCallback = {},
-            tag = "test",
+            log = com.envi.wispr.debug.TakeLog("test-take", "test"),
         )
     }
 

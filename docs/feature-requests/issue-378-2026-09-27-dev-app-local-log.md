@@ -348,4 +348,6 @@ Touched: `:app` logging in all processes, History schema, the drawer, the Privac
 
 ## 15. Related
 
+External names the review records cite (Android, Java and Gradle, not this repository): `BOOT_COUNT` (external), `FileHandler` (external), `MultiProcessDataStoreFactory` (external), `O_APPEND` (external), `getRunningAppProcesses` (external), `openFileDescriptor` (external), `testDevReleaseUnitTest` (external).
+
 #194, #114, #358, #176, #288; PAR-089, PAR-090, PAR-091; catalog `debug-local-log`, `debug-audio-archive`, `privacy-safe-telemetry`.

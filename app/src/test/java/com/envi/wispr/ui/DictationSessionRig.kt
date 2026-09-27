@@ -454,8 +454,11 @@ internal class DictationSessionRig {
         fun releaseOutcome() = deferred.forEach(::enqueueOutcome).also { deferred.clear() }
         /** When set, runs at the start of each handoff, on the owner's worker (#288): a row stages an answer first. */
         @Volatile var beforeHandoff: (() -> Unit)? = null
-        override fun pasteWhenTargetReturns(row: HistoryRow, text: String, policy: ClipboardInsertionPolicy, takeId: String): InsertionHandoff {
+        /** The take acceptance time each handoff carried (#378 D8). */
+        val acceptedAtHandoff = java.util.concurrent.CopyOnWriteArrayList<Long>()
+        override fun pasteWhenTargetReturns(row: HistoryRow, text: String, policy: ClipboardInsertionPolicy, takeId: String, acceptedAtMs: Long): InsertionHandoff {
             beforeHandoff?.invoke()
+            acceptedAtHandoff += acceptedAtMs
             requests += row to text
             savedAtHandoff += row.savedNow
             if (handoff == InsertionHandoff.SCHEDULED && outcomeQueue != null) {
@@ -889,17 +892,17 @@ internal class DictationSessionRig {
         @Volatile var holdFinalize: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         /** Counted down when a held publication write has been entered. */
         val finalizeEntered = CountDownLatch(1)
-        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int {
+        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean, liveAfterMs: Long?, asrMs: Long?): Int {
             holdFinalize?.let { held -> finalizeEntered.countDown(); held.await() }
             if (failInserts || failFinalize) throw IllegalStateException("disk full")
-            val written = if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted) } != null) 1 else 0
+            val written = if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted, liveAfterMs = liveAfterMs ?: row.liveAfterMs, asrMs = asrMs ?: row.asrMs) } != null) 1 else 0
             afterFinalize?.invoke()
             return written
         }
         /** When set, an insertion-outcome write throws, as a failed Room update would (#235 row 13). */
         @Volatile var failOutcome = false
         /** Mirrors `TranscriptDao.finalizeInsertionOutcome`: ready or neutral, and still pending (#235). */
-        override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean): Int {
+        override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean, insertionMs: Long?, endToEndMs: Long?): Int {
             if (failOutcome) throw IllegalStateException("outcome write failed")
             routeWrites += "outcome"
             var updated = 0
@@ -908,7 +911,7 @@ internal class DictationSessionRig {
                     row
                 } else {
                     updated = 1
-                    row.copy(status = status, insertionResult = result, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted)
+                    row.copy(status = status, insertionResult = result, stateChangedAtMs = stateChangedAtMs, interrupted = interrupted, insertionMs = insertionMs ?: row.insertionMs, endToEndMs = endToEndMs ?: row.endToEndMs)
                 }
             }
             return updated

@@ -34,8 +34,8 @@ class HistoryWriteQueueTest {
         override suspend fun deleteById(id: Long): Int { landed += "discard"; return 1 }
         override suspend fun deleteWordlessRows(): Int = 0
         override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int { landed += "status:$status"; return 1 }
-        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int { landed += "finalize"; return 1 }
-        override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean): Int { landed += "outcome:$result"; return 1 }
+        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean, liveAfterMs: Long?, asrMs: Long?): Int { landed += "finalize"; return 1 }
+        override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean, insertionMs: Long?, endToEndMs: Long?): Int { landed += "outcome:$result"; return 1 }
         override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int = 0
         override suspend fun recoverStaleProcessingRows(cutoffMs: Long, nowMs: Long): Int = 0
         override suspend fun recoverStaleReadyRows(cutoffMs: Long, nowMs: Long): Int = 0

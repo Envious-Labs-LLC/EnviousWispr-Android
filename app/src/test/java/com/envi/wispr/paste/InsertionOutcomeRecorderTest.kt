@@ -29,6 +29,8 @@ import org.junit.Test
 class InsertionOutcomeRecorderTest {
     private class OutcomeDao(private val answer: Int) : TranscriptDao {
         val outcomes = mutableListOf<String>()
+        /** The timings each outcome write carried (#378 D8): insertion, then end to end. */
+        val timings = mutableListOf<Pair<Long?, Long?>>()
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(emptyList())
         override suspend fun insert(transcript: TranscriptEntity): Long = 1L
         override suspend fun findByTakeId(takeId: String): TranscriptEntity? = null
@@ -41,9 +43,10 @@ class InsertionOutcomeRecorderTest {
         override suspend fun deleteById(id: Long): Int = 1
         override suspend fun deleteWordlessRows(): Int = 0
         override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int = 1
-        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean): Int = 1
-        override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean): Int {
+        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean, liveAfterMs: Long?, asrMs: Long?): Int = 1
+        override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean, insertionMs: Long?, endToEndMs: Long?): Int {
             outcomes += "$id:$status:$result:$interrupted"
+            timings += insertionMs to endToEndMs
             return answer
         }
         override suspend fun recoverStaleDrafts(cutoffMs: Long, nowMs: Long): Int = 0
@@ -74,7 +77,7 @@ class InsertionOutcomeRecorderTest {
         warn = {},
     )
 
-    private fun ending(row: HistoryRow, takeId: String? = "take-1") = InsertionEnding(
+    private fun ending(row: HistoryRow, takeId: String? = "take-1", endToEndMs: Long? = null) = InsertionEnding(
         row = row,
         takeId = takeId,
         targetPackage = "com.google.android.gm",
@@ -83,7 +86,15 @@ class InsertionOutcomeRecorderTest {
         interrupted = true,
         clipboard = ClipboardOutcome.COPIED,
         latencyMs = 420L,
+        endToEndMs = endToEndMs,
     )
+
+    /** #378 D8. MUTATION: drop the timings from the outcome write. The row keeps the insertion's and the take's times. */
+    @Test fun theOutcomeWriteCarriesTheInsertionAndEndToEndTimes() {
+        val dao = OutcomeDao(answer = 1)
+        recorder(dao).record(ending(SavedRow(7L), endToEndMs = 4_400L))
+        assertEquals(listOf<Pair<Long?, Long?>>(420L to 4_400L), dao.timings)
+    }
 
     /** Row 1: the writer that wins the row writes the outcome and reports it once, with the same value. */
     @Test fun theWinningWriterRecordsAndReportsOnce() {

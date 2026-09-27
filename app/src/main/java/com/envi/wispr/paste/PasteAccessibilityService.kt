@@ -80,13 +80,14 @@ class PasteAccessibilityService : AccessibilityService() {
             previousClipboard: ClipData? = null,
             policy: ClipboardInsertionPolicy = ClipboardInsertionPolicy(),
             takeId: String? = null,
+            acceptedAtMs: Long = 0L,
         ): InsertionHandoff {
             val service = instance ?: run {
                 DebugLogger.warn(TAG, "Accessibility service is not running; clipboard only")
                 return InsertionHandoff.SERVICE_NOT_RUNNING
             }
             return service.callOnMain(InsertionHandoff.SERVICE_DID_NOT_ANSWER) {
-                service.runner.requestInsertion(row, text, previousClipboard, policy, takeId)
+                service.runner.requestInsertion(row, text, previousClipboard, policy, takeId, acceptedAtMs)
             }
         }
 

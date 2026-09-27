@@ -60,7 +60,7 @@ class PolishService : Service() {
      */
     private val fallbackLane = PolishFallbackLane(
         worker = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "PolishFallbackThread").apply { isDaemon = true } },
-        prepare = { raw, options -> fallbackText(raw, options, null) },
+        prepare = { raw, options, log -> fallbackText(raw, options, log) },
     )
     private lateinit var secrets: SecretStore
     private val providerClient = ProviderPolishClient()
@@ -188,20 +188,20 @@ class PolishService : Service() {
             // user's Off (#278). Answer the deterministic text as UNEXPECTED, which raises its defect.
             if (policy == null) {
                 log.warn("Polish request $requestId carried no policy")
-                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it, log) }
+                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED, log) { deliver(callback, it, log) }
                 return
             }
             val effectivePolicy: PolishPolicy = policy
             if (poisoned.get()) {
                 // This process is ending after a timeout; a request queued behind the wedged worker would only
                 // learn that when the process died. Answer now, from the fallback lane (#291).
-                fallbackLane.answer(requestId, raw, options, PolishReason.LOCAL_FAILED) { deliver(callback, it, log) }
+                fallbackLane.answer(requestId, raw, options, PolishReason.LOCAL_FAILED, log) { deliver(callback, it, log) }
                 return
             }
             val entry = registry.register(requestId)?.also { it.takeId = takeId }
             if (entry == null) {
                 log.warn("Refusing polish request $requestId: id already registered")
-                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED) { deliver(callback, it, log) }
+                fallbackLane.answer(requestId, raw, options, PolishReason.UNEXPECTED, log) { deliver(callback, it, log) }
                 return
             }
             val tracksLocal = effectivePolicy is PolishPolicy.LocalS1

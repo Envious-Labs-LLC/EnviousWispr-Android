@@ -41,8 +41,9 @@ internal class DeveloperLogProvider : ContentProvider() {
         return when (uri.lastPathSegment) {
             LOG_ZIP -> {
                 val logs = DeveloperLogs.of(app)
-                val built = runCatching { logs.doorZip().get(DOOR_TIMEOUT_MS, TimeUnit.MILLISECONDS) }.getOrElse {
-                    logs.cleanupDoorFiles()
+                val pending = logs.doorZip()
+                val built = runCatching { pending.get(DOOR_TIMEOUT_MS, TimeUnit.MILLISECONDS) }.getOrElse {
+                    logs.cleanupDoorFiles(pending)
                     throw FileNotFoundException("The log could not be built in time: ${it.javaClass.simpleName}")
                 }
                 val descriptor = ParcelFileDescriptor.open(built.zip, ParcelFileDescriptor.MODE_READ_ONLY)

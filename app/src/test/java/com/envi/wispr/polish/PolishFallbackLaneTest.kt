@@ -37,14 +37,14 @@ class PolishFallbackLaneTest {
 
     private val options = CleanupOptions()
     private val prepared = CopyOnWriteArrayList<String>()
-    private val prepare: (String, CleanupOptions) -> String = { raw, _ -> prepared += Thread.currentThread().name; "Cleaned: $raw" }
+    private val prepare: (String, CleanupOptions, com.envi.wispr.debug.TakeLog?) -> String = { raw, _, _ -> prepared += Thread.currentThread().name; "Cleaned: $raw" }
 
     /** Row 1. `answer` returns without preparing; the worker prepares and delivers once. MUTATION m1: prepare inline before submitting. */
     @Test fun anAnswerIsPreparedOnTheWorkerNeverOnTheCaller() {
         val worker = QueueWorker()
         val lane = PolishFallbackLane(worker, prepare)
         val delivered = CopyOnWriteArrayList<PolishOutcome>()
-        lane.answer(7L, "raw words", options, PolishReason.UNEXPECTED) { delivered += it }
+        lane.answer(7L, "raw words", options, PolishReason.UNEXPECTED, null) { delivered += it }
         assertTrue("nothing prepared on the caller", prepared.isEmpty())
         assertTrue(delivered.isEmpty())
         worker.runAll()
@@ -57,7 +57,7 @@ class PolishFallbackLaneTest {
         val lane = PolishFallbackLane(worker, prepare)
         val arrived = CountDownLatch(1)
         val delivered = CopyOnWriteArrayList<Pair<PolishOutcome, String>>()
-        lane.answer(8L, "raw words", options, PolishReason.LOCAL_FAILED) { delivered += it to Thread.currentThread().name; arrived.countDown() }
+        lane.answer(8L, "raw words", options, PolishReason.LOCAL_FAILED, null) { delivered += it to Thread.currentThread().name; arrived.countDown() }
         assertTrue(arrived.await(10, TimeUnit.SECONDS))
         val (outcome, thread) = delivered.single()
         assertEquals(PolishOutcome(8L, "raw words", PolishEngineLabels.DETERMINISTIC, PolishReason.LOCAL_FAILED, 0, 0), outcome)
@@ -74,8 +74,8 @@ class PolishFallbackLaneTest {
         val worker = QueueWorker()
         val lane = PolishFallbackLane(worker, prepare)
         val delivered = CopyOnWriteArrayList<Long>()
-        lane.answer(1L, "one", options, PolishReason.UNEXPECTED) { delivered += it.requestId }
-        lane.answer(2L, "two", options, PolishReason.UNEXPECTED) { delivered += it.requestId }
+        lane.answer(1L, "one", options, PolishReason.UNEXPECTED, null) { delivered += it.requestId }
+        lane.answer(2L, "two", options, PolishReason.UNEXPECTED, null) { delivered += it.requestId }
         lane.cancel(1L)
         assertEquals("the cancelled answer is forgotten at once, before its task runs", 1, lane.pending())
         worker.runAll()
@@ -84,7 +84,7 @@ class PolishFallbackLaneTest {
 
         val held = CopyOnWriteArrayList<Runnable>()
         val refusing = PolishFallbackLane(QueueWorker().apply { shutdown() }, prepare, startRefusal = { held += it })
-        refusing.answer(3L, "three", options, PolishReason.UNEXPECTED) { delivered += it.requestId }
+        refusing.answer(3L, "three", options, PolishReason.UNEXPECTED, null) { delivered += it.requestId }
         refusing.cancel(3L)
         held.single().run()
         assertEquals("the cancelled refusal delivered nothing", listOf(2L), delivered.toList())
@@ -99,12 +99,12 @@ class PolishFallbackLaneTest {
         val order = CopyOnWriteArrayList<String>()
         val refused = CopyOnWriteArrayList<Runnable>()
         val lane = PolishFallbackLane(worker, prepare, startRefusal = { refused += it })
-        lane.answer(4L, "four", options, PolishReason.UNEXPECTED) { order += "answer ${it.requestId}" }
+        lane.answer(4L, "four", options, PolishReason.UNEXPECTED, null) { order += "answer ${it.requestId}" }
         lane.close { order += "then" }
         assertTrue("nothing ran before the worker", order.isEmpty())
         worker.runAll()
         assertEquals(listOf("answer 4", "then"), order.toList())
-        lane.answer(5L, "five", options, PolishReason.UNEXPECTED) { order += "raw ${it.text}" }
+        lane.answer(5L, "five", options, PolishReason.UNEXPECTED, null) { order += "raw ${it.text}" }
         assertEquals("a closed lane refuses, off the caller", 1, refused.size)
         refused.single().run()
         assertEquals(listOf("answer 4", "then", "raw five"), order.toList())
@@ -123,10 +123,20 @@ class PolishFallbackLaneTest {
     /** A cleanup that throws still answers, with the raw words. */
     @Test fun aCleanupThatThrowsAnswersTheRawWords() {
         val worker = QueueWorker()
-        val lane = PolishFallbackLane(worker, { _, _ -> error("detector broke") })
+        val lane = PolishFallbackLane(worker, { _, _, _ -> error("detector broke") })
         val delivered = CopyOnWriteArrayList<String>()
-        lane.answer(6L, "six", options, PolishReason.UNEXPECTED) { delivered += it.text }
+        lane.answer(6L, "six", options, PolishReason.UNEXPECTED, null) { delivered += it.text }
         worker.runAll()
         assertEquals(listOf("six"), delivered.toList())
+    }
+
+    /** #378. REVERT: pass `null` instead of `log` to `prepare` in the lane, and the request's take is lost. */
+    @Test fun thePreparationReceivesTheRequestsTakeLog() {
+        val worker = QueueWorker()
+        val seen = CopyOnWriteArrayList<String?>()
+        val lane = PolishFallbackLane(worker, { raw, _, log -> seen += log?.takeId; raw })
+        lane.answer(8L, "eight", options, PolishReason.UNEXPECTED, com.envi.wispr.debug.TakeLog("take-8", "Test")) { }
+        worker.runAll()
+        assertEquals(listOf<String?>("take-8"), seen.toList())
     }
 }

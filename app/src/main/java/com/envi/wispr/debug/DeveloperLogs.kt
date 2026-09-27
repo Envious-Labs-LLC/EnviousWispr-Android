@@ -49,9 +49,15 @@ internal class DeveloperLogs private constructor(private val app: Context) {
         export.build(files.doorLogDir)
     }
 
-    /** After a door timeout: queued behind the build that timed out, so it never deletes a file being written. */
-    fun cleanupDoorFiles() {
-        worker.execute { removeAbandonedDoorFiles() }
+    /**
+     * After a door timeout: queued behind the build that timed out, so it never deletes a file being written, and it
+     * deletes THAT build's finished ZIP (code review round 2), which no reader will ever open.
+     */
+    fun cleanupDoorFiles(timedOut: Future<LogExport.Result>) {
+        worker.execute {
+            runCatching { if (timedOut.isDone) timedOut.get().zip.delete() }
+            removeAbandonedDoorFiles()
+        }
     }
 
     /** Door files older than [DOOR_FILE_ABANDONED_MS]: a pull opens its ZIP within its own 30 s bound or not at all. */

@@ -13,7 +13,7 @@ import com.envi.wispr.vocabulary.CustomTermEntity
 
 @Database(
     entities = [TranscriptEntity::class, CustomTermEntity::class, TakeJournalEntry::class, DeletedTake::class],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 internal abstract class EnviousWisprDatabase : RoomDatabase() {
@@ -31,7 +31,7 @@ internal abstract class EnviousWisprDatabase : RoomDatabase() {
                     context.applicationContext,
                     EnviousWisprDatabase::class.java,
                     "enviouswispr.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build().also { database -> instance = database }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).build().also { database -> instance = database }
             }
         }
 
@@ -110,6 +110,19 @@ internal abstract class EnviousWisprDatabase : RoomDatabase() {
                 database.execSQL("ALTER TABLE transcripts ADD COLUMN takeId TEXT")
                 database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_transcripts_takeId ON transcripts (takeId)")
                 database.execSQL("CREATE TABLE IF NOT EXISTS deleted_takes (takeId TEXT NOT NULL, PRIMARY KEY(takeId))")
+            }
+        }
+
+        /**
+         * #378 D8: a take's timings. Four nullable columns; every existing row reads null (not measured) and no
+         * existing value changes, so a rollback build keeps version 10 rather than ever downgrading.
+         */
+        internal val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE transcripts ADD COLUMN liveAfterMs INTEGER")
+                database.execSQL("ALTER TABLE transcripts ADD COLUMN asrMs INTEGER")
+                database.execSQL("ALTER TABLE transcripts ADD COLUMN insertionMs INTEGER")
+                database.execSQL("ALTER TABLE transcripts ADD COLUMN endToEndMs INTEGER")
             }
         }
 

@@ -38,6 +38,16 @@ internal data class TranscriptEntity(
     // The take this row records (#288): set by the session owner's draft and saved-row inserts, null on rows from
     // older builds and on rows no take wrote. Unique, so a take's rescued words are written into History at most once.
     val takeId: String? = null,
+    // The take's timings in milliseconds (#378 D8), numbers only. Null means not measured: rows from older builds, a
+    // stage that never ran, or an ending no writer measured. Shown only on the Developer-unlocked History card.
+    /** Accepted to live: the start command to the first frame the owner saw. */
+    val liveAfterMs: Long? = null,
+    /** Speech to text, as the speech process reported it. */
+    val asrMs: Long? = null,
+    /** The accepted insertion's request to its ending; null when nothing was handed to insertion. */
+    val insertionMs: Long? = null,
+    /** Accepted to the insertion's ending, or to the delivery when no insertion ran. */
+    val endToEndMs: Long? = null,
 ) {
     companion object {
         const val STATUS_DRAFT = "draft"

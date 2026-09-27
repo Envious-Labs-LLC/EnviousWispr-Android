@@ -191,15 +191,52 @@ class EnviousWisprDatabaseMigrationTest {
         }
     }
 
-    /** The whole supported chain, 1 through 9, against the exported schemas: what an old install walks. */
+    /**
+     * #378 D8: four nullable timing columns. Every existing value survives, an existing row reads null for each
+     * (not measured, never zero), and a new row can record them.
+     */
     @Test
-    fun theWholeMigrationChainReachesVersion9() {
+    fun migration9To10AddsTheTimingsAndPreservesEveryExistingValue() {
+        helper.createDatabase(TEST_DATABASE, 9).use { database ->
+            database.execSQL(
+                "INSERT INTO transcripts (id, originalText, finalText, createdAtMs, durationMs, speechEngine, polishEngine, " +
+                    "polishLatencyMs, insertionResult, kept, recovered, interrupted, status, stateChangedAtMs, " +
+                    "polishReason, polishStatus, polishContext, captureDevice, takeId) " +
+                    "VALUES (12, 'canary raw', 'canary final', 1000, 2000, 'Parakeet', 'S1-mini', 410, 'committed', 1, 0, 0, 'completed', 3000, " +
+                    "'POLISHED', 0, 'general', 'AirPods Pro 3', '0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d')",
+            )
+        }
+
+        helper.runMigrationsAndValidate(TEST_DATABASE, 10, true, EnviousWisprDatabase.MIGRATION_9_10).use { database ->
+            database.query(
+                "SELECT originalText, finalText, polishLatencyMs, takeId, liveAfterMs, asrMs, insertionMs, endToEndMs FROM transcripts WHERE id = 12",
+            ).use { cursor ->
+                cursor.moveToFirst()
+                assertEquals("canary raw", cursor.getString(0))
+                assertEquals("canary final", cursor.getString(1))
+                assertEquals(410L, cursor.getLong(2))
+                assertEquals("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d", cursor.getString(3))
+                for (column in 4..7) assertTrue("an existing row's timing is not measured", cursor.isNull(column))
+            }
+            database.execSQL(
+                "UPDATE transcripts SET liveAfterMs = 120, asrMs = 702, insertionMs = 140, endToEndMs = 4400 WHERE id = 12",
+            )
+            database.query("SELECT liveAfterMs, asrMs, insertionMs, endToEndMs FROM transcripts WHERE id = 12").use { cursor ->
+                cursor.moveToFirst()
+                assertEquals(listOf(120L, 702L, 140L, 4400L), (0..3).map { cursor.getLong(it) })
+            }
+        }
+    }
+
+    /** The whole supported chain, 1 through 10, against the exported schemas: what an old install walks. */
+    @Test
+    fun theWholeMigrationChainReachesVersion10() {
         helper.createDatabase(TEST_DATABASE, 1).close()
         helper.runMigrationsAndValidate(
-            TEST_DATABASE, 9, true,
+            TEST_DATABASE, 10, true,
             EnviousWisprDatabase.MIGRATION_1_2, EnviousWisprDatabase.MIGRATION_2_3, EnviousWisprDatabase.MIGRATION_3_4,
             EnviousWisprDatabase.MIGRATION_4_5, EnviousWisprDatabase.MIGRATION_5_6, EnviousWisprDatabase.MIGRATION_6_7,
-            EnviousWisprDatabase.MIGRATION_7_8, EnviousWisprDatabase.MIGRATION_8_9,
+            EnviousWisprDatabase.MIGRATION_7_8, EnviousWisprDatabase.MIGRATION_8_9, EnviousWisprDatabase.MIGRATION_9_10,
         ).close()
     }
 

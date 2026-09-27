@@ -14,7 +14,8 @@ internal interface InsertionGateway {
     fun pinTargetForDictation(): DictationTargetPin
     fun pinnedFieldId(): String?
     fun releasePinnedTarget()
-    fun pasteWhenTargetReturns(row: HistoryRow, text: String, policy: ClipboardInsertionPolicy, takeId: String): InsertionHandoff
+    /** [acceptedAtMs] is the take's acceptance on `elapsedRealtime`, for its end-to-end time (#378 D8); 0 is unknown. */
+    fun pasteWhenTargetReturns(row: HistoryRow, text: String, policy: ClipboardInsertionPolicy, takeId: String, acceptedAtMs: Long): InsertionHandoff
 
     /** `PasteAccessibilityService.isBound.value`: liveness, never the setting string. */
     fun isBound(): Boolean
@@ -25,7 +26,7 @@ internal object AccessibilityInsertionGateway : InsertionGateway {
     override fun pinTargetForDictation(): DictationTargetPin = PasteAccessibilityService.pinTargetForDictation()
     override fun pinnedFieldId(): String? = PasteAccessibilityService.pinnedFieldId()
     override fun releasePinnedTarget() = PasteAccessibilityService.releasePinnedTarget()
-    override fun pasteWhenTargetReturns(row: HistoryRow, text: String, policy: ClipboardInsertionPolicy, takeId: String): InsertionHandoff =
-        PasteAccessibilityService.pasteWhenTargetReturns(row, text, policy = policy, takeId = takeId)
+    override fun pasteWhenTargetReturns(row: HistoryRow, text: String, policy: ClipboardInsertionPolicy, takeId: String, acceptedAtMs: Long): InsertionHandoff =
+        PasteAccessibilityService.pasteWhenTargetReturns(row, text, policy = policy, takeId = takeId, acceptedAtMs = acceptedAtMs)
     override fun isBound(): Boolean = PasteAccessibilityService.isBound.value
 }

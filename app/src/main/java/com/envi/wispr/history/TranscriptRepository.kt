@@ -49,6 +49,8 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
         captureDevice: String,
         status: String,
         stateChangedAtMs: Long = clock(),
+        liveAfterMs: Long? = null,
+        asrMs: Long? = null,
     ) = dao.finalize(
         id = id,
         originalText = originalText,
@@ -64,6 +66,8 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
         polishContext = polishContext,
         captureDevice = captureDevice,
         status = status,
+        liveAfterMs = liveAfterMs,
+        asrMs = asrMs,
     )
 
     /** The id of the row [takeId] wrote, or 0 (#288). */
@@ -120,8 +124,14 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     /** After a scheduled handoff, never awaited by the owner (#235). */
     suspend fun promoteUnroutedToReady(id: Long) = dao.promoteUnroutedToReady(id, clock())
 
-    suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, interrupted: Boolean = false) =
-        dao.finalizeInsertionOutcome(id, status, result, clock(), interrupted)
+    suspend fun finalizeInsertionOutcome(
+        id: Long,
+        status: String,
+        result: String,
+        interrupted: Boolean = false,
+        insertionMs: Long? = null,
+        endToEndMs: Long? = null,
+    ) = dao.finalizeInsertionOutcome(id, status, result, clock(), interrupted, insertionMs, endToEndMs)
 
     /**
      * What one recovery pass closed: the ready rows by id, because each is an insertion outcome to report, and

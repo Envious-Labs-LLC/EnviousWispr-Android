@@ -72,6 +72,8 @@ internal fun HistoryScreen(
     onKeep: (TranscriptEntity) -> Unit,
     onDelete: (TranscriptEntity) -> Unit,
     onDeleteAll: () -> Unit,
+    /** The Developer page is unlocked (#378 D8): the open card also shows the take's timings. */
+    showTimings: Boolean = false,
 ) {
     var confirmDeleteAll by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<TranscriptEntity?>(null) }
@@ -143,6 +145,7 @@ internal fun HistoryScreen(
                     },
                     onKeep = { onKeep(transcript) },
                     onDelete = { confirmDelete = transcript },
+                    showTimings = showTimings,
                 )
             }
         }
@@ -188,6 +191,7 @@ private fun HistoryCard(
     onToggle: () -> Unit,
     onKeep: () -> Unit,
     onDelete: () -> Unit,
+    showTimings: Boolean,
 ) {
     val context = LocalContext.current
     // Empty for every delivery outcome, because where one dictation's words went is a fact about one
@@ -276,6 +280,14 @@ private fun HistoryCard(
                     if (expanded && transcript.captureDevice.isNotEmpty()) {
                         Text(
                             "Microphone: ${transcript.captureDevice}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    val timings = if (expanded && showTimings) HistoryTimings.line(transcript) else ""
+                    if (timings.isNotEmpty()) {
+                        Text(
+                            timings,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

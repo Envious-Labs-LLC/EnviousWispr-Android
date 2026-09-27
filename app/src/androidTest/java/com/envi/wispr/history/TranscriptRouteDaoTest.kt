@@ -51,6 +51,28 @@ class TranscriptRouteDaoTest {
         assertEquals(InsertionResults.COMMITTED, read(id).insertionResult)
     }
 
+    /** #378 D8: the take's timings land with the save and the outcome, and a write that measured nothing erases none. */
+    @Test fun theTimingsLandAndAnUnmeasuredWriteKeepsThem() = runBlocking {
+        val id = row(TranscriptEntity.STATUS_DRAFT, "pending", 1_000L)
+        assertEquals(1, dao.finalize(
+            id = id, originalText = "words", finalText = "Words.", speechEngine = "Parakeet", polishEngine = "Off",
+            polishLatencyMs = 0L, insertionResult = "pending", durationMs = 1L, stateChangedAtMs = 2_000L,
+            polishReason = "", polishStatus = 0, polishContext = "", captureDevice = "",
+            status = TranscriptEntity.STATUS_SAVED_UNROUTED, liveAfterMs = 120L, asrMs = 702L,
+        ))
+        assertEquals(1, dao.finalizeInsertionOutcome(
+            id, TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, 3_000L, insertionMs = 140L, endToEndMs = 4_400L,
+        ))
+        // A later re-finalize that measured nothing (the rescue's) keeps every timing.
+        dao.finalize(
+            id = id, originalText = "words", finalText = "Words.", speechEngine = "Parakeet", polishEngine = "Off",
+            polishLatencyMs = 0L, insertionResult = InsertionResults.COMMITTED, durationMs = 1L, stateChangedAtMs = 4_000L,
+            polishReason = "", polishStatus = 0, polishContext = "", captureDevice = "", status = TranscriptEntity.STATUS_COMPLETED,
+        )
+        val saved = read(id)
+        assertEquals(listOf(120L, 702L, 140L, 4_400L), listOf(saved.liveAfterMs, saved.asrMs, saved.insertionMs, saved.endToEndMs))
+    }
+
     @Test fun thePromotionLandsFirstAndTheOutcomeStillLands() = runBlocking {
         val id = row(TranscriptEntity.STATUS_SAVED_UNROUTED, "pending", 1_000L)
         assertEquals(1, dao.promoteUnroutedToReady(id, 2_000L))

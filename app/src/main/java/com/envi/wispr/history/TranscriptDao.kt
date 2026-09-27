@@ -70,6 +70,7 @@ internal interface TranscriptDao {
             "polishLatencyMs = :polishLatencyMs, insertionResult = :insertionResult, " +
             "polishReason = :polishReason, polishStatus = :polishStatus, polishContext = :polishContext, " +
             "captureDevice = :captureDevice, " +
+            "liveAfterMs = COALESCE(:liveAfterMs, liveAfterMs), asrMs = COALESCE(:asrMs, asrMs), " +
             "durationMs = :durationMs, status = :status, stateChangedAtMs = :stateChangedAtMs, interrupted = :interrupted " +
             "WHERE id = :id",
     )
@@ -89,10 +90,14 @@ internal interface TranscriptDao {
         captureDevice: String,
         status: String = TranscriptEntity.STATUS_READY_FOR_INSERTION,
         interrupted: Boolean = false,
+        /** Null keeps the row's value (#378 D8): a writer that did not measure a timing never erases one. */
+        liveAfterMs: Long? = null,
+        asrMs: Long? = null,
     ): Int
 
     @Query(
-            "UPDATE transcripts SET status = :status, insertionResult = :result, stateChangedAtMs = :stateChangedAtMs, interrupted = :interrupted " +
+            "UPDATE transcripts SET status = :status, insertionResult = :result, stateChangedAtMs = :stateChangedAtMs, interrupted = :interrupted, " +
+            "insertionMs = COALESCE(:insertionMs, insertionMs), endToEndMs = COALESCE(:endToEndMs, endToEndMs) " +
             "WHERE id = :id AND status IN ('${TranscriptEntity.STATUS_READY_FOR_INSERTION}', " +
             "'${TranscriptEntity.STATUS_SAVED_UNROUTED}') AND insertionResult = 'pending'",
     )
@@ -102,6 +107,10 @@ internal interface TranscriptDao {
         result: String,
         stateChangedAtMs: Long,
         interrupted: Boolean = false,
+        /** The accepted insertion's request to its ending (#378 D8); null when nothing was handed to insertion. */
+        insertionMs: Long? = null,
+        /** Accepted to this ending (#378 D8); null when not measured. */
+        endToEndMs: Long? = null,
     ): Int
 
     /** A take that died while recording never reached insertion: nothing was attempted. */

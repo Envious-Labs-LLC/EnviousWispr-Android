@@ -965,6 +965,9 @@ internal class DictationSessionCoordinator(
             durationMs = recordingDurationMs,
             captureDevice = captureDeviceLabel,
             polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext),
+            liveAfterMs = current.facts.liveAfterMs,
+            asrMs = current.facts.asrMs,
+            acceptedAtMs = current.acceptedAtMs,
         )
         val finalText = payload.finalText
         // RESERVE, then commit and deliver without waiting for the History save (#277): a cancel that already

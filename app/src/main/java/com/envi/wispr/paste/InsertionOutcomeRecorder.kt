@@ -26,6 +26,8 @@ internal data class InsertionEnding(
     val interrupted: Boolean,
     val clipboard: ClipboardOutcome?,
     val latencyMs: Long,
+    /** The take's acceptance to this ending (#378 D8); null from a debug probe or when acceptance is unknown. */
+    val endToEndMs: Long? = null,
 )
 
 /**
@@ -67,7 +69,10 @@ internal class InsertionOutcomeRecorder(
             recordInsertionOutcome(
                 id = ending.row.resolveOnQueue(),
                 write = { id ->
-                    runCatching { repository.finalizeInsertionOutcome(id, ending.status, ending.result, ending.interrupted) }
+                    runCatching { repository.finalizeInsertionOutcome(
+                        id, ending.status, ending.result, ending.interrupted,
+                        insertionMs = ending.latencyMs, endToEndMs = ending.endToEndMs,
+                    ) }
                         .onFailure { error -> warn("Unable to update transcript insertion result: ${error.javaClass.simpleName}") }
                         .getOrNull()
                 },

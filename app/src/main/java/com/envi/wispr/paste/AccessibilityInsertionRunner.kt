@@ -69,6 +69,8 @@ internal class AccessibilityInsertionRunner(
         val deadlineMs: Long,
         /** The dictation this text belongs to, for its `insertion.terminal` row; null from a debug probe. */
         val takeId: String?,
+        /** The take's acceptance on `elapsedRealtime`, for its end-to-end time (#378 D8); 0 is unknown. */
+        val takeAcceptedAtMs: Long,
         val clipboardOwnershipToken: String = UUID.randomUUID().toString(),
     ) {
         lateinit var attempt: InsertionAttempt
@@ -112,6 +114,7 @@ internal class AccessibilityInsertionRunner(
         previousClipboard: ClipData?,
         policy: ClipboardInsertionPolicy,
         takeId: String?,
+        acceptedAtMs: Long = 0L,
     ): InsertionHandoff {
         // Three separate refusals. Merging them into one answer is what made a crashed service and
         // a back-to-back dictation indistinguishable from the log and from the History row.
@@ -137,6 +140,7 @@ internal class AccessibilityInsertionRunner(
             startedAtMs = now,
             deadlineMs = now + INSERTION_TIMEOUT_MS,
             takeId = takeId,
+            takeAcceptedAtMs = acceptedAtMs,
         )
         // A caller-supplied snapshot is honoured; otherwise the paste route takes its own immediately
         // before the first staging (#141, review round 3).
@@ -599,6 +603,7 @@ internal class AccessibilityInsertionRunner(
         interrupted: Boolean = false,
         clipboard: ClipboardOutcome? = null,
     ) {
+        val endedAtMs = SystemClock.elapsedRealtime()
         outcomes.record(
             InsertionEnding(
                 row = pending.row,
@@ -608,7 +613,8 @@ internal class AccessibilityInsertionRunner(
                 result = result,
                 interrupted = interrupted,
                 clipboard = clipboard,
-                latencyMs = SystemClock.elapsedRealtime() - pending.startedAtMs,
+                latencyMs = endedAtMs - pending.startedAtMs,
+                endToEndMs = pending.takeAcceptedAtMs.takeIf { it > 0L }?.let { endedAtMs - it },
             ),
         )
     }

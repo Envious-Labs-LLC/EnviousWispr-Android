@@ -179,6 +179,7 @@ internal fun EnviousWisprApp(
                             onKeep = actions.history.onKeep,
                             onDelete = actions.history.onDelete,
                             onDeleteAll = actions.history.onDeleteAll,
+                            showTimings = developerState.unlocked,
                         )
                         AppDestination.Dictionary -> DictionaryScreen(
                             terms = state.dictionary.terms,

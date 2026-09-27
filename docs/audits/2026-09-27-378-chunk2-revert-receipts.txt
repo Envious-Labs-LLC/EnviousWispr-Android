@@ -1,0 +1,8 @@
+#378 chunk 2 revert receipts, 2026-09-27. Each mutation applied alone, its test run, the file restored.
+print a missing step as 0 ms: com.envi.wispr.ui.HistoryTimingsTest.theLineNamesOnlyTheMeasuredSteps -> RED (test failed, as it must)
+drop the live and speech times from the publication: com.envi.wispr.ui.HistoryTimingsTest.theSavedRowKeepsTheTakesLiveAndSpeechTimes -> RED (test failed, as it must)
+hand insertion a zero acceptance time: com.envi.wispr.ui.HistoryTimingsTest.aScheduledHandoffCarriesTheTakesAcceptanceTime -> RED (test failed, as it must)
+skip the end to end on a route with no insertion: com.envi.wispr.ui.HistoryTimingsTest.aTakeWithNoInsertionEndsAtItsDelivery -> RED (test failed, as it must)
+drop the timings from the outcome write: com.envi.wispr.paste.InsertionOutcomeRecorderTest.theOutcomeWriteCarriesTheInsertionAndEndToEndTimes -> RED (test failed, as it must)
+overwrite a timing with null on an unmeasured save (drop the COALESCE): TranscriptRouteDaoTest#theTimingsLandAndAnUnmeasuredWriteKeepsThem on emulator-5554 -> RED (test failed, as it must)
+stamp the end to end before the clipboard copy (Codex round 1): HistoryTimingsTest.aClipboardTakeEndsAfterItsCopy -> RED (test failed, as it must)

@@ -81,14 +81,21 @@ class DeveloperSwitchesTest {
         assertFalse(files.detailedLogFlag.exists())
     }
 
-    /** REVERT: publish every request's result, and the delayed On overwrites the later Off on the page. */
-    @Test fun aDelayedOnFollowedByOffEndsOff() = runBlocking {
+    /**
+     * REVERT: remove `serial.withLock` from `requestDetailedLog`. The On request then suspends in the store, the
+     * Off request runs to completion in that gap, and On resumes to recreate the flag after Off reported Off.
+     */
+    @Test fun aDelayedOnCannotRecreateTheFlagAfterALaterOff() = runBlocking {
         val store = FakeStore()
         val (files, s) = switches(store)
         s.coldStartRepair()
+        s.ready.await()
         store.gate = CompletableDeferred()
         val on = s.requestDetailedLog(true)
         val off = s.requestDetailedLog(false)
+        // Off must not be able to finish while the earlier On is still inside its request.
+        val offFinishedEarly = kotlinx.coroutines.withTimeoutOrNull(300) { off.await() }
+        assertEquals("Off waits behind the earlier On", null, offFinishedEarly)
         store.gate!!.complete(Unit)
         on.await()
         off.await()

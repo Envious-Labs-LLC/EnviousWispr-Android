@@ -154,12 +154,13 @@ class RecorderLeaseTest {
         }
         assertTrue(
             "the no-device refusal keeps its own failure code",
-            afterAcquire.contains("failSetup(START_FAILURE_NO_INPUT_DEVICE, threadStarted, record, output, routeHold, takeId, token)"),
+            // #378: failSetup also carries the take's log.
+            afterAcquire.contains("failSetup(START_FAILURE_NO_INPUT_DEVICE, threadStarted, record, output, routeHold, takeId, token, takeLog)"),
         )
         assertEquals(
             "the buffer-size refusal and both catches pass the token",
             3,
-            Regex("""failSetup\(START_FAILURE_OTHER, threadStarted, record, output, routeHold, takeId, token\)""").findAll(afterAcquire).count(),
+            Regex("""failSetup\(START_FAILURE_OTHER, threadStarted, record, output, routeHold, takeId, token, takeLog\)""").findAll(afterAcquire).count(),
         )
         val threadStart = afterAcquire.substring(afterAcquire.indexOf("thread.start()"))
         assertTrue("the thread-start failure releases through the session's token", threadStart.contains("closeResources(newSession, keepRoute = false)"))
@@ -170,14 +171,14 @@ class RecorderLeaseTest {
     // Row 11.
     @Test
     fun theRecorderReleaseReleasesOrMarksTheLeaseByToken() {
-        val close = service.substringAfter("private fun closeResources(record: AudioRecord?, output: FileOutputStream?, token: Long)").substringBefore("\n    }\n")
+        val close = service.substringAfter("private fun closeResources(record: AudioRecord?, output: FileOutputStream?, token: Long, log: TakeLog)").substringBefore("\n    }\n")
         assertTrue("released after the recorder is", close.indexOf("RecorderLease.PROCESS.release(token)") > close.indexOf("record.release()"))
         assertTrue(close.contains("if (released) {\n            RecorderLease.PROCESS.release(token)"))
         assertTrue("a failed release is marked so a later start can recover", close.contains("RecorderLease.PROCESS.releaseFailed(token)"))
         assertEquals("and only there", 1, Regex("""RecorderLease\.PROCESS\.release\(""").findAll(service).count())
         assertTrue(
             "the session path passes the session's token",
-            service.contains("closeResources(active.record, active.output, active.token)"),
+            service.contains("closeResources(active.record, active.output, active.token, active.log)"),
         )
     }
 

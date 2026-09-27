@@ -2,6 +2,7 @@ package com.envi.wispr.debug
 
 import android.content.ContentProvider
 import android.content.ContentValues
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
 import android.os.Binder
@@ -33,7 +34,7 @@ internal class DeveloperLogProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
-        requireShell()
+        requireShellAndDump()
         if (mode != "r") throw SecurityException("read only")
         val app = context ?: throw FileNotFoundException("no context")
         awaitReady(app)
@@ -54,7 +55,7 @@ internal class DeveloperLogProvider : ContentProvider() {
     }
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
-        requireShell()
+        requireShellAndDump()
         val app = context ?: throw IllegalStateException("no context")
         awaitReady(app)
         val switches = DeveloperSwitches.of(app)
@@ -76,7 +77,15 @@ internal class DeveloperLogProvider : ContentProvider() {
         }
     }
 
-    private fun requireShell() {
+    /**
+     * Every entry, first: the caller holds DUMP (the manifest gate, checked here too because `call` and `getType`
+     * are not covered by it) AND is the adb shell's user id (DUMP can be granted to another app through adb).
+     */
+    private fun requireShellAndDump() {
+        val app = context ?: throw SecurityException("no context")
+        if (app.checkCallingPermission(android.Manifest.permission.DUMP) != PackageManager.PERMISSION_GRANTED) {
+            throw SecurityException("DUMP required")
+        }
         if (Binder.getCallingUid() != Process.SHELL_UID) throw SecurityException("adb shell only")
     }
 
@@ -93,11 +102,14 @@ internal class DeveloperLogProvider : ContentProvider() {
     }
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): Cursor? {
-        requireShell()
+        requireShellAndDump()
         return null
     }
 
-    override fun getType(uri: Uri): String? = if (uri.lastPathSegment == LOG_ZIP) "application/zip" else null
+    override fun getType(uri: Uri): String? {
+        requireShellAndDump()
+        return if (uri.lastPathSegment == LOG_ZIP) "application/zip" else null
+    }
     override fun insert(uri: Uri, values: ContentValues?): Uri? = throw SecurityException("read only")
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = throw SecurityException("read only")
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int =

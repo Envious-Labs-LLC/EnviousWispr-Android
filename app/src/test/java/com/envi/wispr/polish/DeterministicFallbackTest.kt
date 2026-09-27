@@ -91,7 +91,8 @@ class DeterministicFallbackTest {
             ),
             Triple(
                 "src/main/java/com/envi/wispr/polish/PolishService.kt",
-                "PolishFallback.deterministicOrWords(raw, options, languageDetector, warn = { DebugLogger.warn(TAG, it) })",
+                // #378: the warning goes to the request's take log when there is one.
+                "PolishFallback.deterministicOrWords(raw, options, languageDetector, warn = { message ->",
                 "src/main/java/com/envi/wispr/polish/PolishService.kt",
             ),
         )

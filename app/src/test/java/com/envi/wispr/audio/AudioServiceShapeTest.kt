@@ -108,7 +108,7 @@ class AudioServiceShapeTest {
         val actualFields = Regex("^ {4}(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:(?:private|internal|public|protected|lateinit|const)\\s+)*(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
         assertEquals("the service holds only its own fields", expectedFields, actualFields)
-        val expectedSessionFields = setOf("record", "file", "output", "readBuffer", "token", "detector", "picture", "route", "keepEarbudsReady", "takeId", "liveVisible", "bytesWritten", "endingClaim", "stopRequested")
+        val expectedSessionFields = setOf("record", "file", "output", "readBuffer", "token", "detector", "picture", "route", "keepEarbudsReady", "takeId", "log", "liveVisible", "bytesWritten", "endingClaim", "stopRequested")
         val actualSessionFields = Regex("^ {8}(?:@\\w+\\s+)*(?:(?:private|internal)\\s+)?(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
             .findAll(service.substringAfter("private class CaptureSession(").substringBefore("\n    }\n")).map { it.groupValues[1] }.toSet()
         assertEquals("the session carries the recorder, the file, the token and three owners, nothing of the owners' insides", expectedSessionFields, actualSessionFields)

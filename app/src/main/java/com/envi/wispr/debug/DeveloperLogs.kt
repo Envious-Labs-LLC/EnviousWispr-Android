@@ -44,13 +44,20 @@ internal class DeveloperLogs private constructor(private val app: Context) {
 
     /** The adb door's pull: a ZIP under `cacheDir/devlog-pulls/log/`, unlinked by the door once opened. */
     fun doorZip(): Future<LogExport.Result> = worker.submit<LogExport.Result> {
-        files.doorLogDir.listFiles()?.forEach { it.delete() }
+        // Only ABANDONED door files go: a ZIP another pull built moments ago may not be open yet (code review round 1).
+        removeAbandonedDoorFiles()
         export.build(files.doorLogDir)
     }
 
     /** After a door timeout: queued behind the build that timed out, so it never deletes a file being written. */
     fun cleanupDoorFiles() {
-        worker.execute { files.doorLogDir.listFiles()?.forEach { it.delete() } }
+        worker.execute { removeAbandonedDoorFiles() }
+    }
+
+    /** Door files older than [DOOR_FILE_ABANDONED_MS]: a pull opens its ZIP within its own 30 s bound or not at all. */
+    private fun removeAbandonedDoorFiles() {
+        val cutoff = System.currentTimeMillis() - DOOR_FILE_ABANDONED_MS
+        files.doorLogDir.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
     }
 
     /** Total size of the live log files, for the Developer page. */
@@ -73,6 +80,7 @@ internal class DeveloperLogs private constructor(private val app: Context) {
 
     companion object {
         private const val TAG = "DeveloperLogs"
+        private const val DOOR_FILE_ABANDONED_MS = 5 * 60 * 1000L
         @Volatile private var instance: DeveloperLogs? = null
 
         fun of(context: Context): DeveloperLogs = instance ?: synchronized(this) {

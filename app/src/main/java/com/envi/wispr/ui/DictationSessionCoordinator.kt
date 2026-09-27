@@ -815,6 +815,9 @@ internal class DictationSessionCoordinator(
         // Queued behind the draft insert, on main (#356 review round 2): a cancel, disconnect or destroy also runs on
         // main, so its own History write always queues after this one. The id is resolved on the worker (#115).
         take.history.markStatus(TranscriptEntity.STATUS_PROCESSING)
+        // Captured before the launch (#378 code review round 1): a late throw below is logged under THIS take, never
+        // under whichever take `take` names by then.
+        val current = take
         scope.launch {
             // Whether the speech wait was armed: after that, only the side that closes the wait may clean up (#356).
             var requested = false
@@ -823,7 +826,6 @@ internal class DictationSessionCoordinator(
                 // The duration is the audio's own length, read from the finished file NOW, before
                 // transcription deletes it: the wall clock counted the wait for the earbuds.
                 recordingDurationMs = capturedAudio.durationMs(audioFilePath)
-                val current = take
                 val takeId = current.takeId
                 val outcome = current.outcome
                 outcome.stopped(recordingDurationMs)
@@ -899,12 +901,12 @@ internal class DictationSessionCoordinator(
                 // A request that threw after its bound, a cancel or a destroy already ended the take: the side that
                 // closed the wait owns the file and the row (#356 review round 1).
                 if (requested && !speechWait.close()) {
-                    take.log.warn("Speech request threw after the take ended: ${error.javaClass.simpleName}")
+                    current.log.warn("Speech request threw after the take ended: ${error.javaClass.simpleName}")
                     return@launch
                 }
                 pipeline.stopAudioService()
                 capturedAudio.delete(ending.audioFilePath)
-                take.log.error("Transcription failed", error)
+                current.log.error("Transcription failed", error)
                 failFromWorker(TerminalReason.ASR_CALLBACK_EXCEPTION)
             }
         }

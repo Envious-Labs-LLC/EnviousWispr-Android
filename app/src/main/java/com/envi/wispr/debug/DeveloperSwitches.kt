@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
@@ -58,6 +60,13 @@ internal class DeveloperSwitches(
     data class State(val unlocked: Boolean, val detailedLog: Switch, val keepRecordings: Switch)
 
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
+
+    /**
+     * One request at a time, WHOLE: a request suspends in DataStore, and without this a later request could run
+     * to completion in that gap and the earlier one would then change the flag after it (code review round 1).
+     * `Mutex` is fair, and requests are launched in user-action order on one thread, so they run in that order.
+     */
+    private val serial = Mutex()
     private val detailedSeq = AtomicLong(0)
     private val keepSeq = AtomicLong(0)
     private val mutableState = MutableStateFlow(State(unlocked = debuggable, Switch.Pending, Switch.Pending))
@@ -70,20 +79,27 @@ internal class DeveloperSwitches(
     fun coldStartRepair() {
         scope.launch {
             try {
-                val stored = store.read()
-                val detailed = if (stored.detailedLog ?: debuggable) turnOn(files.detailedLogFlag) else offBarrier()
-                val keep = setFlag(files.keepRecordingsFlag, stored.keepRecordings ?: debuggable)
-                mutableState.value = State(stored.unlocked || debuggable, detailed, keep)
+                serial.withLock { repair() }
             } finally {
                 ready.complete(Unit)
             }
         }
     }
 
+    /** Makes each flag match DataStore (or the build's default); Off only through the barrier. */
+    private suspend fun repair() {
+        val stored = store.read()
+        val detailed = if (stored.detailedLog ?: debuggable) turnOn(files.detailedLogFlag) else offBarrier()
+        val keep = setFlag(files.keepRecordingsFlag, stored.keepRecordings ?: debuggable)
+        mutableState.value = State(stored.unlocked || debuggable, detailed, keep)
+    }
+
     fun unlock() {
         scope.launch {
-            store.setUnlocked()
-            mutableState.value = mutableState.value.copy(unlocked = true)
+            serial.withLock {
+                store.setUnlocked()
+                mutableState.value = mutableState.value.copy(unlocked = true)
+            }
         }
     }
 
@@ -91,12 +107,14 @@ internal class DeveloperSwitches(
         val seq = detailedSeq.incrementAndGet()
         mutableState.value = mutableState.value.copy(detailedLog = Switch.Pending)
         return scope.async {
-            val result = runCatching {
-                store.setDetailedLog(on)
-                if (on) turnOn(files.detailedLogFlag) else offBarrier()
-            }.getOrElse { Switch.Error("Detailed log could not be saved: ${it.javaClass.simpleName}") }
-            if (seq == detailedSeq.get()) mutableState.value = mutableState.value.copy(detailedLog = result)
-            result
+            serial.withLock {
+                val result = runCatching {
+                    store.setDetailedLog(on)
+                    if (on) turnOn(files.detailedLogFlag) else offBarrier()
+                }.getOrElse { Switch.Error("Detailed log could not be saved: ${it.javaClass.simpleName}") }
+                if (seq == detailedSeq.get()) mutableState.value = mutableState.value.copy(detailedLog = result)
+                result
+            }
         }
     }
 
@@ -104,12 +122,14 @@ internal class DeveloperSwitches(
         val seq = keepSeq.incrementAndGet()
         mutableState.value = mutableState.value.copy(keepRecordings = Switch.Pending)
         return scope.async {
-            val result = runCatching {
-                store.setKeepRecordings(on)
-                setFlag(files.keepRecordingsFlag, on)
-            }.getOrElse { Switch.Error("Keep recordings could not be saved: ${it.javaClass.simpleName}") }
-            if (seq == keepSeq.get()) mutableState.value = mutableState.value.copy(keepRecordings = result)
-            result
+            serial.withLock {
+                val result = runCatching {
+                    store.setKeepRecordings(on)
+                    setFlag(files.keepRecordingsFlag, on)
+                }.getOrElse { Switch.Error("Keep recordings could not be saved: ${it.javaClass.simpleName}") }
+                if (seq == keepSeq.get()) mutableState.value = mutableState.value.copy(keepRecordings = result)
+                result
+            }
         }
     }
 

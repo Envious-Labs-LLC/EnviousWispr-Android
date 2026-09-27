@@ -55,9 +55,10 @@ class LocalLogShapeTest {
     @Test fun theAdbDoorOpensOnlyForTheShell() {
         val provider = File(main, "debug/DeveloperLogProvider.kt").readText()
         assertTrue(provider.contains("Binder.getCallingUid() != Process.SHELL_UID"))
-        for (entry in listOf("override fun openFile(", "override fun call(", "override fun query(")) {
+        assertTrue(provider.contains("checkCallingPermission(android.Manifest.permission.DUMP)"))
+        for (entry in listOf("override fun openFile(", "override fun call(", "override fun query(", "override fun getType(")) {
             val body = provider.substringAfter(entry).substringBefore("\n    }")
-            assertTrue("$entry checks the caller first", body.contains("requireShell()"))
+            assertTrue("$entry checks the caller first", body.contains("requireShellAndDump()"))
         }
         val manifest = File("src/main/AndroidManifest.xml").readText()
         val entry = manifest.substringAfter("android:name=\".debug.DeveloperLogProvider\"").substringBefore("/>")

@@ -3919,6 +3919,9 @@ def pull_log(dest):
         with zipfile.ZipFile(partial) as archive:
             if "device.txt" not in archive.namelist():
                 raise Blocked("the log ZIP has no device.txt, so its per-process status is unknown")
+            bad = archive.testzip()
+            if bad is not None:
+                raise Blocked(f"the log ZIP has a corrupt entry: {bad}")
             device_txt = archive.read("device.txt").decode(errors="replace")
         os.replace(partial, dest)
     finally:

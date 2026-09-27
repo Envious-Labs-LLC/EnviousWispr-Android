@@ -27,7 +27,11 @@ class DeveloperSwitchesTest {
         override suspend fun read() = stored
         override suspend fun setUnlocked() { stored = stored.copy(unlocked = true) }
         override suspend fun setDetailedLog(on: Boolean) {
-            gate?.let { it.await(); gate = null }
+            // Holds ONLY the first call that finds the gate: a later request passes straight through, which is
+            // what lets it overtake the held one when nothing serialises them.
+            val held = gate
+            gate = null
+            held?.await()
             stored = stored.copy(detailedLog = on)
         }
         override suspend fun setKeepRecordings(on: Boolean) { stored = stored.copy(keepRecordings = on) }
@@ -90,13 +94,14 @@ class DeveloperSwitchesTest {
         val (files, s) = switches(store)
         s.coldStartRepair()
         s.ready.await()
-        store.gate = CompletableDeferred()
+        val gate = CompletableDeferred<Unit>()
+        store.gate = gate
         val on = s.requestDetailedLog(true)
         val off = s.requestDetailedLog(false)
         // Off must not be able to finish while the earlier On is still inside its request.
         val offFinishedEarly = kotlinx.coroutines.withTimeoutOrNull(300) { off.await() }
         assertEquals("Off waits behind the earlier On", null, offFinishedEarly)
-        store.gate!!.complete(Unit)
+        gate.complete(Unit)
         on.await()
         off.await()
         assertEquals(DeveloperSwitches.Switch.Off, s.state.value.detailedLog)

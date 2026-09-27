@@ -3946,7 +3946,8 @@ def unlock_developer():
     """Unlock the hidden Developer page (#378 D1) the way a person does: seven presses on the drawer's version
     line within three seconds. The line is found by its words once, then pressed seven times in ONE shell call,
     because seven separate `tap` calls read the screen between presses and outlast the window on a release build.
-    Nothing is written; the drawer then lists `Developer`, which is the proof."""
+    It SAVES a setting on the phone: the unlock persists (DataStore `developer_unlocked`) and `restore()` does not
+    undo it. The drawer then lists `Developer`, which is the proof."""
     open_settings()
     tap("Open settings menu")
     # The line sits below the drawer's last row on a phone screen.
@@ -3961,7 +3962,7 @@ def unlock_developer():
     _STATE["tree"] = None
     if "Developer" not in {n["text"] for n in tree()}:
         raise Blocked("seven presses on the version line did not list Developer in the drawer")
-    return "Developer is unlocked and listed in the drawer"
+    return "Developer is unlocked (saved on the phone; restore() does not undo it) and listed in the drawer"
 
 
 _INSERTION_FIELDS = ("api", "route", "written", "returned", "evidence", "outcome", "attempts", "ms",

@@ -24,6 +24,14 @@ internal object PrivacyDisclosures {
         "A crash report can include the technical location in the code where it failed. " +
         "A random id tells one install from another; it is not tied to you or an account."
 
+    /**
+     * #378: shown while the hidden Detailed log switch is on, AND while a local log file or shared log export
+     * remains after it is off, so the page never goes quiet while the words are still on the phone.
+     */
+    const val DETAILED_LOG = "Detailed log keeps what you dictate in a file on this phone. Turning it off stops new logging; " +
+        "earlier logs stay on this phone until later logging overwrites them or the app is uninstalled. " +
+        "A copy you shared stays in the app you shared it to."
+
     const val TELEMETRY_VENDORS = "These reports go to PostHog (usage) and Sentry (crashes), stored in the United States. " +
         "PostHog may work out an approximate city or region from the connection; EnviousWispr never reads your phone's location."
 }

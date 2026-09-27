@@ -1,0 +1,8 @@
+Issue #378 review — DONE
+
+- **LANDED:** The fallback worker now receives the request’s `TakeLog` in [PolishFallbackLane.kt:39](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/polish/PolishFallbackLane.kt:39). All three take-scoped calls pass it in [PolishService.kt:191](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/polish/PolishService.kt:191), and the new test checks that preparation receives the ID.
+- **LANDED:** On a timed-out pull, [DeveloperLogProvider.kt:44](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/debug/DeveloperLogProvider.kt:44) passes that build’s future to [DeveloperLogs.kt:56](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/debug/DeveloperLogs.kt:56). Cleanup runs on the export worker after the build and deletes only its ZIP.
+
+**Axes searched:** the two fixes **found correct**; new defects from them **not found**; privacy gate, take IDs, writer and fence handling, provider access, heart-path blocking, and idle wake in the chunk 1 diff: **no blocking defect found**. This was a source review; tests and phone behavior were not rerun.
+
+VERDICT: ALL CLEAR

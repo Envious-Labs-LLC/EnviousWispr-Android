@@ -1,0 +1,13 @@
+Issue #378 plan review — DONE
+
+**Both changes LANDED.** D6 reports acknowledgment status and drop count, warns that rotation can evict a line, and removes pins in `finally` ([line 129](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/docs/feature-requests/issue-378-2026-09-27-dev-app-local-log.md:129)). §5.1 and §11 reflect that contract (lines 176–181, 251). I found no current positive claim that a ZIP is complete; D6’s “never present that ZIP as complete” is consistent. The positive claims in §14b describe earlier rounds.
+
+**BLOCKING: orphan cleanup still races pin creation.** A writer checks fence A under its lock. Main starts Share B, replaces the fence and scans A’s directory without that lock. The writer then creates an A pin after the scan, leaving it behind. After a main crash, A can also remain the *current* fence at startup, so “remove every non-current fence” skips its orphan pins. The one log worker does prevent cleanup of B’s pins while B’s Share reads them.
+
+Add verbatim: “Before startup cleanup or a new Share, atomically replace the previous fence with a cancellation ID that writers do not acknowledge. Acquire all five log locks in fixed order, including main’s in-process mutex, then remove older snapshot directories. Release every lock in `finally`. Each writer rechecks the fence under its own lock immediately before pinning. If a lock times out, defer cleanup and the new Share and retry later. Never remove the active Share’s pins before its ZIP read ends.” Add a §11 race test that pauses a writer after its fence check and resumes it while cleanup starts.
+
+**NON-BLOCKING: stale §5.1 claim.** Line 176 says every queued line reaches the pin, although Off can discard one. Replace its outcome verbatim: “The writer drains to the fence before pinning; Off and overflow may discard entries, and its acknowledgment reports the result.”
+
+Axes searched: label **not found**; pin-creation race **found**; active-Share deletion **not found**; other blocking defect **not found**.
+
+VERDICT: PROCEED-WITH-REVISIONS

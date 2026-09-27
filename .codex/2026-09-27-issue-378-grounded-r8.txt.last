@@ -1,0 +1,16 @@
+Issue #378 review — DONE
+
+**Round 7 change: LANDED in the plan.** D9 (line 145) restores the cache PCM lifecycle, adds a Dev-only pending hard link, and moves retirement and stale cleanup to the audio worker. §5 (183), §5.1 (201–205), and §11 (269) reflect that design.
+
+**The file concurrency class is not closed. BLOCKING.** D9 and §5.1 explicitly accept retirement running before link creation: with Keep recordings on, that retirement deletes the cache name; `:audio` then cannot link it, and the completed take is silently lost. That is not an acceptable routine outcome for the Dev app’s recording feature or §11’s five-recording oracle. In the normal path, [AudioCaptureService.kt:833](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt:833) closes the file before publishing the ending at line 853, but an earlier main-side retirement still needs ordering.
+
+**Replace D9’s accepted-race sentence with this prose:** “In Dev, a retirement requested before `:audio` finishes records the keep-or-delete intent but does not delete the cache name. After `:audio` closes the PCM and attempts the hard link, its ended callback releases that retirement on the `CapturedAudioFiles` worker. A completed take with Keep recordings on and a successful link must be kept regardless of callback order. If capture dies before close, report archive unavailable and let the existing cache lifecycle recover it.” Make §11 race retirement ahead of link and require the recording to survive.
+
+**Hard-link support on Android 13–16: NOT VERIFIED on this device.** [`Os.link`](https://developer.android.com/reference/android/system/Os) is a public API, and Android’s internal app storage is outside external-storage FUSE, but [`link(2)`](https://man7.org/linux/man-pages/man2/link.2.html) can fail for filesystem or permission reasons. The planned S26 probe in premise line 110 is necessary. **Add:** “Do not mark Keep recordings or PAR-091 complete unless the S26 probe creates the link and reads identical bytes after the cache name is deleted. If it fails, choose a working archive path before shipment; a log line and no saved takes is not acceptance.”
+
+**NON-BLOCKING clarity:** Clear recordings can run before an in-flight take creates its pending link, so that take may appear afterward. **Add to D7:** “Clear recordings removes saved recordings present when its worker task runs; an active take can be saved afterward. Label the action ‘Clear saved recordings’.”
+
+Axes searched: link versus retirement **found defect**; link versus stale cleanup **no new defect found under the one-hour rule**; Share versus Clear recordings **ordered on one worker**; worker folders **disjoint**; S26 hard-link permission **NOT VERIFIED**. No other blocking finding arose from the changed text.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

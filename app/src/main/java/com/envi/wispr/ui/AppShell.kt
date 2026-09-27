@@ -1,6 +1,12 @@
 package com.envi.wispr.ui
 
+import android.os.SystemClock
 import android.view.HapticFeedbackConstants
+import android.widget.Toast
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -78,7 +84,14 @@ internal fun EnviousWisprApp(
     // out of the list, or leaving History for another tab, does not close it. Null is "all closed",
     // and holding ONE id is what makes "only one open at a time" true by construction.
     var expandedTranscriptId by rememberSaveable { mutableStateOf<Long?>(null) }
-    val settingsPage = AppRoutes.settingsPage(settingsPageName)
+    // The hidden Developer page (#378 D1): the switches' owner says whether it is unlocked; seven taps on the
+    // drawer's version line within three seconds unlock it. A saved Developer route resolves to nothing while
+    // locked, so the tab beneath shows.
+    val context = LocalContext.current
+    val developerSwitches = remember { com.envi.wispr.debug.DeveloperSwitches.of(context) }
+    val developerState by developerSwitches.state.collectAsState()
+    val versionTaps = remember { VersionTapCounter(SystemClock::elapsedRealtime) }
+    val settingsPage = AppRoutes.settingsPage(settingsPageName, developerState.unlocked)
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val view = LocalView.current
@@ -113,6 +126,13 @@ internal fun EnviousWisprApp(
         drawerContent = {
             SettingsDrawerSheet(
                 current = settingsPage,
+                developerUnlocked = developerState.unlocked,
+                onVersionTap = {
+                    if (!developerState.unlocked && versionTaps.tap()) {
+                        developerSwitches.unlock()
+                        Toast.makeText(context, "Developer options unlocked", Toast.LENGTH_SHORT).show()
+                    }
+                },
                 onPick = { page ->
                     settingsPageName = page.name
                     scope.launch { drawerState.close() }
@@ -229,9 +249,21 @@ internal fun EnviousWisprApp(
                             onRequestNotifications = actions.permissions.onRequestNotifications,
                             onOpenAccessibility = actions.permissions.onOpenAccessibility,
                         )
-                        SettingsPage.Privacy -> PrivacyPage()
+                        SettingsPage.Privacy -> {
+                            var retained by remember { mutableStateOf(false) }
+                            LaunchedEffect(developerState) {
+                                retained = withContext(Dispatchers.IO) { com.envi.wispr.debug.DeveloperLogs.of(context).retainedFilesExist() }
+                            }
+                            PrivacyPage(
+                                showDetailedLog = detailedLogSentenceShown(
+                                    detailedLogOn = developerState.detailedLog == com.envi.wispr.debug.DeveloperSwitches.Switch.On,
+                                    retainedFilesExist = retained,
+                                ),
+                            )
+                        }
                         SettingsPage.Storage -> StoragePage()
                         SettingsPage.Licenses -> LicensesPage(notices = licenseNotices)
+                        SettingsPage.Developer -> DeveloperPage()
                     }
                 }
             }

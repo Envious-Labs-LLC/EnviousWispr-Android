@@ -116,6 +116,26 @@
             android:name=".models.ModelDeliveryCancelReceiver"
             android:exported="false" />
 
+        <!-- The adb door (#378 D10): DUMP is signature|privileged|development, and the provider also refuses
+             every caller that is not the adb shell's user id, because DUMP can be granted to an app by adb. -->
+        <provider
+            android:name=".debug.DeveloperLogProvider"
+            android:authorities="${applicationId}.devlog"
+            android:exported="true"
+            android:readPermission="android.permission.DUMP"
+            android:writePermission="android.permission.DUMP" />
+
+        <!-- The Developer page's Share log (#378 D6): exposes only cacheDir/share/, by temporary grant. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.logs"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/log_share_paths" />
+        </provider>
+
         <!-- Accessibility service for auto-paste -->
         <service
             android:name=".paste.PasteAccessibilityService"

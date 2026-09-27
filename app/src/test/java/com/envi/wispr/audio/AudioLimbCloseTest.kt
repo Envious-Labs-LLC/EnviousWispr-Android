@@ -62,7 +62,7 @@ class AudioLimbCloseTest {
             listenerSlot = AtomicReference(null),
             scheduler = scheduler,
             unregisterDeviceCallback = unregister,
-            tag = "test",
+            log = com.envi.wispr.debug.TakeLog("test-take", "test"),
         )
     }
 

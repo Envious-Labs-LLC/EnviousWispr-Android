@@ -1,0 +1,12 @@
+Issue #378 review — DONE
+
+**The ordering claim holds for every retirement call inspected.** In [AudioCaptureService.kt:833](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt:833), `:audio` closes the PCM; it publishes the ending last at line 853. D9 (line 145) places the hard link between those operations. Every `capturedAudio.delete(` call in [DictationSessionCoordinator.kt:725](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:725) through line 1193 uses `ending.audioFilePath`, a local value copied from that ending, or `speechAudioPath`, which is assigned from it at line 844. The legacy binder property at `AudioCaptureService.kt:285` supplies no retirement path in this file.
+
+**Round 8 items: LANDED.** D9 and §5.1 (lines 145, 201) state the close, link, ending, retirement order. The S26 link-and-read probe gates Keep recordings and PAR-091 in D9. “Clear saved recordings” and its in-progress-take meaning appear in D7 (139).
+
+**File concurrency class: CLOSED at plan level.** I found no further interleaving among the enumerated writers, held log descriptors, archive link, retirement, stale cleanup, Share, or Clear saved recordings that defeats the stated ordering. The two main workers touch separate file sets (§5.1, line 188). The Android 13–16 hard-link result and actual latency remain **NOT VERIFIED** until the planned S26 probe and hardware run; the plan makes archive acceptance depend on that probe. No other blocking finding arose.
+
+Axes searched: all coordinator retirement calls **found, all ending-derived**; legacy binder path **not found in retirement**; round 8 edits **found**; file actor pairs **no new defect found**; device hard-link support **NOT VERIFIED**.
+
+VERDICT: PROCEED-AS-PLANNED
+

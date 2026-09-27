@@ -1,6 +1,7 @@
 package com.envi.wispr.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -70,6 +71,8 @@ internal enum class SettingsPage(
     val group: SettingsPageGroup,
     val title: String,
     val subtitle: String,
+    /** A page the drawer and a saved route show only once the Developer options are unlocked (#378). */
+    val hiddenUntilUnlocked: Boolean = false,
 ) {
     WhatsNew(SettingsPageGroup.APP, "What's New", "The latest improvements and fixes in this release."),
     Appearance(SettingsPageGroup.APP, "Appearance", "How EnviousWispr looks on this phone."),
@@ -100,6 +103,16 @@ internal enum class SettingsPage(
         "Open Source Licenses",
         "EnviousWispr is built on open source. The third-party notices.",
     ),
+    Developer(
+        SettingsPageGroup.SYSTEM,
+        "Developer",
+        "Detailed log and saved recordings, for finding problems.",
+        hiddenUntilUnlocked = true,
+    ),
+    ;
+
+    /** Whether this page may show: always, or once the Developer options are unlocked. */
+    fun visible(developerUnlocked: Boolean): Boolean = !hiddenUntilUnlocked || developerUnlocked
 }
 
 
@@ -216,6 +229,8 @@ internal fun AppScaffold(
 @Composable
 internal fun SettingsDrawerSheet(
     current: SettingsPage?,
+    developerUnlocked: Boolean,
+    onVersionTap: () -> Unit,
     onPick: (SettingsPage) -> Unit,
 ) {
     ModalDrawerSheet {
@@ -242,7 +257,7 @@ internal fun SettingsDrawerSheet(
                 )
             }
             SettingsPageGroup.entries.forEach { group ->
-                val pages = SettingsPage.entries.filter { it.group == group }
+                val pages = SettingsPage.entries.filter { it.group == group && it.visible(developerUnlocked) }
                 if (pages.isEmpty()) return@forEach
                 Text(
                     group.heading,
@@ -260,11 +275,14 @@ internal fun SettingsDrawerSheet(
                 }
             }
             HorizontalDivider(Modifier.padding(horizontal = 28.dp, vertical = 14.dp))
+            // Seven taps within three seconds unlock the Developer page (#378 D1); the count lives in the shell.
             Text(
                 "Version ${BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 28.dp),
+                modifier = Modifier
+                    .padding(horizontal = 28.dp)
+                    .clickable(onClick = onVersionTap),
             )
         }
     }
@@ -402,6 +420,7 @@ internal object AppRoutes {
     fun destination(savedName: String): AppDestination =
         AppDestination.entries.firstOrNull { it.name == savedName } ?: AppDestination.History
 
-    fun settingsPage(savedName: String?): SettingsPage? =
+    fun settingsPage(savedName: String?, developerUnlocked: Boolean): SettingsPage? =
         savedName?.let { saved -> SettingsPage.entries.firstOrNull { it.name == saved } }
+            ?.takeIf { it.visible(developerUnlocked) }
 }

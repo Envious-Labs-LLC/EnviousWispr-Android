@@ -1,0 +1,19 @@
+Issue #378 revision 2 review — DONE
+
+**Fixes landed in the plan:** the lazy, writer-gated logging path at D2–D3 (lines 109–111); under-lock crash flush at D4 (119); retained-file Privacy copy and deliberate telemetry absence at D5 (127); corrected retention copy at D7/Q2 (131, 275); and the Off and hot-path oracles in §11 (242–244).
+
+**Off is true after the stated five-lock barrier completes, but the barrier is not yet safe as a whole. BLOCKING.** I found no lock-order cycle: each writer holds only its own process lock, main takes locks in fixed order, and a dying helper releases its lock. A writer starting during the barrier may open a file, but its next batch must take its lock and check the now-absent flag before writing. The crash flush uses that same check. The process-local hint may briefly enqueue a lazy entry after Off, but cannot evaluate its words or persist them.
+
+Two execution paths remain unspecified:
+
+- D2 never assigns the barrier to a thread. Its five waits can take up to two seconds each; running it in a UI toggle handler can freeze the app.
+- D2’s cold-start “repair” can remove an existing On flag without taking the barrier. Concrete interleaving: an Off request persists DataStore false, fails to obtain a helper lock, leaves the flag On and shows an error. Main restarts; repair deletes the flag while that helper is mid-batch, then the page reads DataStore false and shows Off before the batch finishes writing.
+
+**Replace D2’s toggle and repair sequence with this verbatim prose:** “Run the Detailed log Off barrier on a dedicated background switch worker, never the UI, log export, or audio worker. Acquire all five log locks in fixed order; while holding them, remove the flag, persist DataStore Off, and verify both states. Release every lock in `finally`, then show Off. A timeout or failed write leaves the page Pending or Error, never settled. At cold start, if DataStore says Off but the flag still exists, use the same barrier before showing a settled switch; never delete that flag through unbarriered repair. The page derives its settled state from both values, not DataStore alone.” **Add to §11:** “Hold a helper lock through an Off request and verify the UI remains responsive; then restart main after a failed Off barrier with the flag still On and verify repair cannot show Off or write after confirmation while that helper is mid-batch.”
+
+The one-second hint refresh makes an already-running helper notice a later On request eventually; the plan accepts missing lines during that interval. `:audio` may see an old Keep recordings value for a take already closing, which D9 discloses and resolves at retirement. Actual latency and Android behavior remain **NOT VERIFIED** until implementation and the S26 run.
+
+Axes searched: prior fixes **found**; lock-order deadlock **not found**; helper death and writer startup **no post-confirmation write path found**; UI-thread placement **found gap**; cold-start repair **found race**; crash flush **covered by the same lock check**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

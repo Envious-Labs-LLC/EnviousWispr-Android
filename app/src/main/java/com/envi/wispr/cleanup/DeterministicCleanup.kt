@@ -106,10 +106,16 @@ internal object DeterministicCleanup {
     )
     private val agePeriods = setOf("year", "years", "month", "months", "week", "weeks", "day", "days")
 
+    /**
+     * [trace] receives the text after each enabled family (#378: the local log's words per cleanup step). It is
+     * a diagnostic observer only: it never changes the result, and a throw from it is the caller's problem,
+     * caught below like any other family failure.
+     */
     fun apply(
         raw: String,
         options: CleanupOptions = CleanupOptions(),
         language: CleanupLanguage = CleanupLanguage.Unknown,
+        trace: (family: String, text: String) -> Unit = NO_TRACE,
     ): CleanupResult {
         if (raw.isBlank()) return CleanupResult(raw, false, false)
         val original = raw.trim()
@@ -122,6 +128,7 @@ internal object DeterministicCleanup {
             var value = original
             if (options.removeFillers) {
                 value = fillerMatcher(language).replace(value, "")
+                trace("fillers", value)
             }
             if (options.spokenEmoji && !skipEnglishRewrites) emoji.forEach { (phrase, symbol) ->
                 val discussion = "category|categories|feature|features|name|names|symbol|symbols|" +
@@ -137,6 +144,7 @@ internal object DeterministicCleanup {
                     symbol,
                 )
             }
+            if (options.spokenEmoji && !skipEnglishRewrites) trace("emoji", value)
             // The placeholder insert and its restore are one unit and are skipped together; leaving the
             // insert reachable without the restore would ship private-use characters into the editor.
             var structuredChanged = false
@@ -156,6 +164,7 @@ internal object DeterministicCleanup {
                 value = normalizeStructured(value)
                 structuredChanged = value != beforeStructured
                 protected.forEachIndexed { index, phrase -> value = value.replace("\uE000$index\uE001", phrase) }
+                trace("structured", value)
             }
             if (options.spokenPunctuation && !skipEnglishRewrites) punctuation.forEach { (phrase, mark) ->
                 val command = if ('\n' in mark) {
@@ -166,7 +175,9 @@ internal object DeterministicCleanup {
                 val replacement = if ('\n' in mark) mark else "$mark "
                 value = value.replace(command, replacement)
             }
+            if (options.spokenPunctuation && !skipEnglishRewrites) trace("punctuation", value)
             value = formatText(value)
+            trace("format", value)
             if (!TextSafety.isDeterministicSafe(original, value, structuredChanged)) CleanupResult(original, false, true)
             else CleanupResult(value, value != original, false)
         } catch (_: RuntimeException) {
@@ -188,6 +199,9 @@ internal object DeterministicCleanup {
             CleanupResult(original, false, true)
         }
     }
+
+    /** The default [apply] observer: nothing. */
+    val NO_TRACE: (String, String) -> Unit = { _, _ -> }
 
     private fun normalizeStructured(input: String): String {
         var hyphenated = input

@@ -367,6 +367,8 @@ class HistoryNeverHoldsTheWordsTest {
         takeWithPolishedWords(coordinator)
         rig.endings.awaitOne()
         rig.host.awaitServiceStopped()
+        // The save outlives the Service (#304), so the row is awaited, never assumed written by the stop.
+        awaitUntil("the take's saved row") { dao.rows.values.any { it.finalText == "Keep these words." } }
         assertEquals(TranscriptEntity.STATUS_SAVED_UNROUTED, dao.rows.values.first { it.finalText == "Keep these words." }.status)
     }
 

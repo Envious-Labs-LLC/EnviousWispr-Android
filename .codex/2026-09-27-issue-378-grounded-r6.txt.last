@@ -1,0 +1,12 @@
+Issue #378 review — DONE
+
+**Round 5 fixes:** All three **LANDED**. The stray Clear log wording is gone from rubric item 9 (line 28), D4 (125), and §5.1’s active design (188). D6 (137) puts log Share, export sweep and Delete shared exports on one worker. D9 (145) orders recording Share and Clear recordings on that worker. §11 (263) adds ordering checks.
+
+**The log-file portion of §5.1 is CLOSED, but the full file concurrency class is not. BLOCKING.** The single main worker also retires a take’s PCM for optional archiving. A log Share can occupy it while waiting up to two seconds for each process lock and building a zip. The next take can then start before the previous PCM is retired. The `:audio` process deletes earlier take files at that start ([AudioCaptureService.kt:573](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt:573), [AudioCaptureService.kt:690](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt:690)). When the main worker reaches the archive task, its source is gone. Capture and insertion need not block, but **Keep recordings can silently lose the exact bad take the founder wanted to inspect**.
+
+**Add this plan prose to D9 and §5.1:** “In Dev builds, `:audio` does not sweep an earlier production-take PCM when a new take starts. The `CapturedAudioFiles` worker owns retirement and later cleanup of abandoned cache PCM; it never deletes a file with a pending retirement task. Consumer keeps the existing next-take sweep. A log Share may delay retirement, but cannot make its source disappear.” **Add to §11:** “Hold the main file worker in a two-second log-lock wait, finish take A, start take B before A’s retirement runs, then release the worker; assert A’s PCM and metadata are archived and B still dictates.”
+
+Axes searched: three revised fixes **found**; log append, rotation, snapshot and export ordering **no new defect found**; main worker versus `:audio` PCM sweep **found defect**; capture-thread blocking **not found in the plan**; device timing and implementation **NOT VERIFIED**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

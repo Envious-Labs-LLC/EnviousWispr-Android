@@ -1,0 +1,15 @@
+Issue #378 plan review — DONE
+
+The event-driven direction is sound, but its startup contract is incomplete. Android’s [`FileObserver` documentation](https://developer.android.com/reference/android/os/FileObserver) says a watched directory must exist when `startWatching()` runs, and warns that an unreferenced observer stops reporting. `CREATE` and `DELETE` cover flag files; `MOVED_TO` covers the fence renamed into place. The `File` and `List<File>` constructors are available from API 29. Linux [inotify documentation](https://man7.org/linux/man-pages/man7/inotify.7.html) also warns about watch limits and lost events after queue overflow; watching these two directories needs no recursive watch.
+
+**BLOCKING, fresh-install and lost-event paths ([D2, line 110](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/docs/feature-requests/issue-378-2026-09-27-dev-app-local-log.md:110), D6 line 130).** The plan does not create `flags/` and `logs/` before registering the observer. On a fresh Off install, a helper can start with neither directory present. Its watch then receives no later On or fence event, leaving its hint Off indefinitely. The stated startup read covers flags but not a fence written before registration. Add verbatim:
+
+> “At each process start, create `filesDir/flags/` and `filesDir/logs/` before starting one strongly held `FileObserver(List<File>, CREATE|MOVED_TO|DELETE|DELETE_SELF|MOVE_SELF)` on those directories. Start watching, then re-read both flags and the current fence id. Wake the writer for an unacknowledged, non-cancellation fence. Filter events by the exact flag and fence names; after a watched directory is deleted or moved, recreate its watch and rescan. At each take admission, enqueue a nonblocking flag-and-fence refresh ahead of lazy take lines and allow those lines to queue until it resolves; the writer still checks the flag under its lock before evaluating them. This gives a lost observer event a recovery path without an idle timer or caller disk I/O. Test absent directories on a fresh install, changes immediately before and after watch registration, a lost event, and no idle wakeups.”
+
+The existing 2-second Share timeout does **report a missed fence as not confirmed**, so it does not falsely certify a ZIP. Off remains protected by its lock barrier and the writer’s under-lock flag check; crash flush uses that same check. “Starting detailed log” can remain visible while main’s hint awaits an event.
+
+No other planned idle timer found: export sweeps run at startup or Share, pending-recording cleanup at startup, and the Developer page specifies no background poll. Actual observer delivery and watch-limit behavior on the S26 are **NOT VERIFIED**.
+
+Axes searched: rename mask **found**; GC protection **found**; missing-directory/startup race **found**; overflow risk **found**; new Off or crash privacy race **not found**; other idle polling **not found**.
+
+VERDICT: PROCEED-WITH-REVISIONS

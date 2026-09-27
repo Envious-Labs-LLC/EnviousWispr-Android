@@ -1,0 +1,44 @@
+Issue #378 review — DONE
+
+## 1. Direction
+
+**Keep the two-app direction.** Distinct application IDs let both apps install on one phone and have separate Play listings. A `dev` build type is supported by the pinned AGP 8.7.3 setup and preserves the existing task names. I found no reason to pivot.
+
+## Web check before code review
+
+| Axis | Result, canonical fix, and plan status |
+|---|---|
+| Two Play listings | **FOUND.** [Android build variants](https://developer.android.com/build/build-variants) prescribe distinct application IDs, usually through flavors. D1 uses distinct IDs through a build type. **Covered.** |
+| Multi-process rotating log | **FOUND** process-unique rotating files in [Java FileHandler](https://docs.oracle.com/javase/8/docs/api/java/util/logging/FileHandler.html); **NOT FOUND** a canonical five-process Android recipe. D4 separates files by process. **Covered in shape; snapshot safety remains open.** |
+| File sharing | **FOUND.** [Android FileProvider](https://developer.android.com/reference/androidx/core/content/FileProvider) requires a content URI and temporary read grant. D6 names FileProvider but omits the share intent contract. **Incomplete.** |
+| Room column migration | **FOUND.** [Room migration guidance](https://developer.android.com/training/data-storage/room/migrating-db-versions) supports additive nullable columns with a migration and schema test. D8 plans both. **Covered in schema; timing sources remain open.** |
+| Draft Play app | **FOUND.** [Google’s Edits guide](https://developers.google.com/android-publisher/edits) says the API can change an app only after its first artifact is uploaded through Play Console. D11–D12 expect the API to make that first upload. **Contradicted.** |
+
+## 2. Grounding
+
+**BLOCKING — D8 overstates the available timing facts.** [TakeFacts.kt:27](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/telemetry/TakeFacts.kt:27) through line 71 has `liveAfterMs` and `asrMs`, but no ASR initialization, polish model load, insertion, or end-to-end field. ASR initialization is measured inside [AsrService.kt:255](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/asr/AsrService.kt:255); insertion finishes later in [AccessibilityInsertionRunner.kt:600](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/paste/AccessibilityInsertionRunner.kt:600). The current History outcome update writes status and result only ([TranscriptDao.kt:94](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/history/TranscriptDao.kt:94)). **Replace D8’s “Values come from…” sentence with:** “Persist existing coordinator measurements when the row is saved. Add explicit measured results across the ASR and polish service boundary for model-load fields; leave a field null when a model was loaded before the take. Update `insertionMs` through the later insertion-outcome write and calculate `endToEndMs` at the defined terminal event.”
+
+The other inspected load-bearing boundaries agree with the plan: five declared processes, logcat-only `DebugLogger`, single-process preferences, Room version 9, and the one-package release publisher. The “200+” call-site count, Mac comparison, and absence of a WAV writer are **NOT VERIFIED** here.
+
+## 3. Design defects
+
+**BLOCKING — D11–D12 cannot bootstrap the new Play app as written.** The first API edit will precede the Console upload Google requires. **Replace D12’s first two steps with:** “Create EnviousWispr Dev in Play Console, enroll it in Play App Signing, and upload the first signed Dev bundle through Play Console. Complete the required Console setup and internal-test rollout there. Only after that first upload succeeds may `publish.py` open an edit for subsequent Dev bundles.” D11’s draft-status branch may remain for a later draft release.
+
+**BLOCKING — D4 does not say how existing lines acquire a take ID.** [DebugLogger.kt:76](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/debug/DebugLogger.kt:76) accepts tag and message only. Handing its rendered line to the sink cannot supply the promised `take=` field; parsing incidental text is unreliable. **Add to D4:** “Every take-scoped logging call passes the take ID as structured metadata through `DebugLogger` to `LocalLog`; never infer it from message text or process-global state. Pre-take work uses `take=-`.”
+
+**BLOCKING — the uncaught-exception hook can displace Sentry or hold the dying thread indefinitely.** Sentry starts in every process through [ModelBootstrapApplication.kt:89](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/models/ModelBootstrapApplication.kt:89) and [SentryBootstrap.kt:43](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/telemetry/SentryBootstrap.kt:43). D4 specifies neither hook order nor a drain bound. **Replace D4’s hook sentence with:** “After `Telemetry.bootstrap` returns in each process, install the log crash hook around the current default handler. Request a best-effort writer flush with a finite deadline; never perform file I/O on the crashing thread. In `finally`, invoke the captured handler exactly once, including when logging fails. Verify a forced Dev crash still reaches Sentry and Android’s normal crash handling.”
+
+**BLOCKING — D6’s live-file snapshot is not stable during rotation or Clear.** A length sampled before copying does not protect a file from being renamed or replaced midway. **Replace D6’s snapshot sentence with:** “On a background worker, coordinate with each live process’s writer to seal an immutable snapshot of its files before zipping; read dead processes’ closed files. Never zip an active file while it can rotate or be cleared. Report any process whose snapshot could not be completed.” Also add: “Share the finished zip using a FileProvider `content://` URI in `ACTION_SEND`, MIME type `application/zip`, `EXTRA_STREAM`, and `FLAG_GRANT_READ_URI_PERMISSION`.”
+
+**BLOCKING — D7’s Clear can leave old words on disk indefinitely** when a process never writes again. **Replace its Clear sentence with:** “Clear advances the log generation, has each live writer switch on its worker, deletes prior-generation files including files of dead processes, and excludes prior generations from every export immediately. Show Clear as pending until deletion finishes; never report success while old files remain.”
+
+**NON-BLOCKING — D6 assumes 50 MB compresses below Gmail’s limit.** Text compression has no fixed ratio. **Replace its final sentence with:** “Measure the finished zip; do not promise Gmail delivery below 25 MB from the uncompressed cap. If the chosen target rejects it, retain the zip for another share target and show its actual size.”
+
+## 4. Tests
+
+**BLOCKING — §11 can pass with both Clear actions removed.** It tests writing, sharing, and keeping recordings, but gives neither Clear action an outcome oracle. **Add to §11:** “Write sentinel words and archive one recording; tap Clear log and Clear recordings; wait for their completion signals; assert a fresh share has no pre-clear sentinel and storage has no pre-clear recording or metadata. Repeat after killing one helper process before Clear.” For D8, name all six timing columns in the completed-row assertion so dropping one measurement turns the test red.
+
+No implementation or device run was performed in this read-only review. Dev task execution, Samsung side-button selection, and Play Console setup remain **NOT VERIFIED**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

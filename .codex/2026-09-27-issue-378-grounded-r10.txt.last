@@ -1,0 +1,30 @@
+Issue #378 revision 2 review — DONE
+
+**Known pattern:** A production Android app can offer an on-device debug log. [Signal’s Android bug-report guide](https://github.com/signalapp/Signal-Android/wiki/Submitting-useful-bug-reports) documents one, but says its submitted logs strip personal information. This plan deliberately keeps dictated words, so Signal does not establish its privacy safety. [Android guidance](https://developer.android.com/privacy-and-security/risks/log-info-disclosure) supports app-private files for detailed diagnostics and warns against sensitive logcat output. The plan handles private storage and separate logcat output; the off transition and retained-file disclosure remain open.
+
+## 1. Direction
+
+**No pivot.** One application ID and one Release bundle fit “dogfood the exact file, then promote.” [Google’s track guidance](https://developers.google.com/android-publisher/tracks) supports promoting an existing version. A runtime switch is sound if its production default and off behavior are enforced.
+
+## 2. New parts
+
+**BLOCKING — Off is only eventually true, and mirror failure can leave it false indefinitely.** D2 (line 109) polls on the writer thread once per second. If that thread is blocked, its volatile gate stays on and callers can keep building and enqueueing words. L4 (line 203) explicitly lets the UI show DataStore Off while a failed mirror deletion leaves helpers On until another cold start. That contradicts G2 and D3. **Replace D2’s off contract with:** “For both switches, the page shows a transitional state until the DataStore write and mirror update succeed. For Detailed log Off, each live process must also acknowledge a disabled in-memory gate and discard queued file lines before the page shows Off; a stopped process starts from the absent flag. A mirror failure shows an error, never a settled Off state. Polling is a recovery path, not the privacy guarantee.” Add a blocked-writer and failed-delete outcome to §11.
+
+**BLOCKING — the Privacy sentence disappears while old words remain.** D3 (line 111) says prior files remain when switched off. With writing stopped, rotation cannot age them out. D5 (127) shows the extra sentence only while On; the actual [PrivacyPage.kt:22](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/ui/PrivacyPage.kt:22) has no switch or retained-file input. **Replace D5’s final sentence with:** “Show the detailed-log Privacy sentence whenever Detailed log is on **or** a prior local log or shared export remains, including after the switch is off. Say explicitly: ‘Turning Detailed log off stops new logging after confirmation; earlier logs remain on this phone until later logging overwrites them or the app is uninstalled. A shared copy can remain in its receiving app.’ Pass retained-file state into `PrivacyPage`, and test the on, off-with-files, and fresh-off cases.” Update [PrivacyPageSentencesTest.kt:11](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/test/java/com/envi/wispr/privacy/PrivacyPageSentencesTest.kt:11).
+
+**NON-BLOCKING — Keep recordings reads two moments.** D9 (135) checks the helper flag at close but main checks DataStore at retirement. §5.1’s “one take follows the old state” is plausible, but the rule for that take is unstated. **Add to D9:** “A take is eligible for archive only when the helper observes Keep recordings On at close; a missing pending link is never presented as a successful keep. A later Off may discard that pending link. Explain on the page that a toggle can affect a take already in progress.” The S26 `Os.link` probe remains a required acceptance gate.
+
+## 3. Carried parts
+
+D4’s per-process files, D6’s FileProvider share, D7’s bounded rotation and D9’s hard-link ordering do not require a Dev build type or `locallog` source set. The revised main-source locations are coherent. **§5.1’s mirror row is not closed** until the off acknowledgment above replaces its unconditional one-second claim.
+
+## 4–5. Coverage and tests
+
+**BLOCKING — the release default lacks a binding test.** §11 tests Debug default On and an already installed internal build toggled Off. Either can pass if a fresh Release install creates a mirror flag or file before the founder unlocks Developer. **Add to §11:** “On a clean install of the signed Release bundle, before seven taps, assert both DataStore switches Off, both mirror flags absent, no local log file or pending recording link after a real take, and the Developer page absent. This receipt is separate from Debug-default and toggle tests.” Also inspect the merged Release FileProvider manifest.
+
+**NON-BLOCKING — hidden UI behavior lacks outcome checks.** [AppRoutes.kt:405](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/ui/AppNavigation.kt:405) resolves a page name without an unlock check, and §11 asserts History values but not the “timings line only while unlocked” display. The plan names `AppNavigationShapeTest` and `AppRoutesTest`, but needs these cases. **Add to §11:** “A saved `Developer` route while locked resolves to the ordinary tab; unlocking makes the page reachable. Assert the History timings line is absent while locked and present after unlock.” State explicitly that the two switch values are absent from PostHog and Sentry; [PayloadSanitizer.kt:30](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/telemetry/PayloadSanitizer.kt:30) currently has no dedicated keys for them. The settings-event builder is **UNCHECKED**.
+
+Axes searched: production debug-log pattern **found**; exact-file promotion **found**; hidden page and routes **found gap**; mirror and Off **found blocking gap**; retained-log Privacy copy **found blocking gap**; carried file design **no build-type dependency found**; Release-default and History UI tests **found gaps**. Runtime timing is **NOT VERIFIED**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

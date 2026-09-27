@@ -2,6 +2,7 @@ package com.envi.wispr.polish
 
 import com.envi.wispr.cleanup.CleanupOptions
 import java.util.concurrent.ConcurrentHashMap
+import com.envi.wispr.debug.TakeLog
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -18,7 +19,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 internal class PolishFallbackLane(
     private val worker: ExecutorService,
-    private val prepare: (String, CleanupOptions) -> String,
+    /** The deterministic text; its warnings go to the request's take log when there is one (#378). */
+    private val prepare: (String, CleanupOptions, TakeLog?) -> String,
     /** Starts the refusal's deliverer; a daemon thread in production, a held thread in a test. */
     private val startRefusal: (Runnable) -> Unit = { runnable -> Thread(runnable, "PolishFallbackRefusal").apply { isDaemon = true }.start() },
 ) {
@@ -34,12 +36,12 @@ internal class PolishFallbackLane(
     private val tokens = ConcurrentHashMap.newKeySet<Token>()
 
     /** Queues the deterministic answer for [requestId]; returns at once. [sink] receives it at most once. */
-    fun answer(requestId: Long, raw: String, options: CleanupOptions, reason: PolishReason, sink: (PolishOutcome) -> Unit) {
+    fun answer(requestId: Long, raw: String, options: CleanupOptions, reason: PolishReason, log: TakeLog?, sink: (PolishOutcome) -> Unit) {
         val token = Token(requestId).also(tokens::add)
         val admitted = synchronized(lock) {
             !closed && try {
                 // A cleanup that throws answers the raw words: an answer with less cleanup beats none.
-                worker.execute { deliver(token, sink) { PolishOutcome(requestId, runCatching { prepare(raw, options) }.getOrDefault(raw), PolishEngineLabels.DETERMINISTIC, reason, 0, 0) } }
+                worker.execute { deliver(token, sink) { PolishOutcome(requestId, runCatching { prepare(raw, options, log) }.getOrDefault(raw), PolishEngineLabels.DETERMINISTIC, reason, 0, 0) } }
                 true
             } catch (refused: RejectedExecutionException) {
                 false

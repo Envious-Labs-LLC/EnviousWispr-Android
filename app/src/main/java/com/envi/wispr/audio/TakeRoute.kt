@@ -6,7 +6,7 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioRouting
 import android.os.SystemClock
-import com.envi.wispr.debug.DebugLogger
+import com.envi.wispr.debug.TakeLog
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -52,7 +52,8 @@ internal class TakeRoute(
     private val listenerSlot: AtomicReference<Pair<AudioRecord, AudioRouting.OnRoutingChangedListener>?>,
     private val scheduler: RouteScheduler,
     private val unregisterDeviceCallback: (AudioDeviceCallback) -> Unit,
-    private val tag: String,
+    /** The take's logger (#378): every route line carries the take id to the local log file. */
+    private val log: TakeLog,
 ) {
     companion object {
         /**
@@ -85,7 +86,7 @@ internal class TakeRoute(
             pick: InputDevicePick,
             hold: RouteHold,
             handedOver: HandedRoute?,
-            tag: String,
+            log: TakeLog,
         ): ResolvedRoute? {
             val infos = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
             val candidates = infos.map(InputDeviceCandidate::from)
@@ -103,18 +104,18 @@ internal class TakeRoute(
                     val held = handedOver != null && handedOver.sinkType == sink.type && handedOver.sinkName == sink.name
                     if (held) {
                         hold.adoptCommunicationFrom(handedOver!!.route)
-                        DebugLogger.log(tag, "route adopt=${target.label} from the warm hold")
+                        log.log("route adopt=${target.label} from the warm hold")
                         true
                     } else {
                         handedOver?.route?.release()
                         audioManager.setCommunicationDevice(sinkInfo!!).also { if (it) hold.markCommunicationSet() }
                     }
                 }.getOrElse { e ->
-                    DebugLogger.warn(tag, "setCommunicationDevice threw: ${e.javaClass.simpleName}")
+                    log.warn("setCommunicationDevice threw: ${e.javaClass.simpleName}")
                     false
                 }
                 if (!opened) {
-                    DebugLogger.warn(tag, "Bluetooth link refused for ${target.label}; staying on the earbuds")
+                    log.warn("Bluetooth link refused for ${target.label}; staying on the earbuds")
                     handedOver?.route?.release()
                     hold.releaseCommunicationDevice()
                     reason = InputRouteReason.LINK_REFUSED
@@ -177,7 +178,7 @@ internal class TakeRoute(
         if (!resolved.needsBluetooth && resolved.reason != InputRouteReason.PICKED) return
         val accepted = runCatching { record.setPreferredDevice(resolved.info) }.getOrDefault(false)
         if (!accepted) {
-            DebugLogger.warn(tag, "setPreferredDevice refused for ${resolved.target.label}")
+            log.warn("setPreferredDevice refused for ${resolved.target.label}")
             effective.markReason(InputRouteReason.PREFERRED_REFUSED)
             // The link is given back; listener ownership stays with the take so its route changes are recorded.
             hold.releaseCommunicationDevice()
@@ -194,14 +195,14 @@ internal class TakeRoute(
             if (hold.isReleased) return@OnRoutingChangedListener
             val device = runCatching { router.routedDevice }.getOrNull() ?: return@OnRoutingChangedListener
             effective.observe(device.type, device.productName?.toString().orEmpty())
-            DebugLogger.log(tag, "route change=${effective.label()} at ${bytesWritten()} bytes")
+            log.log("route change=${effective.label()} at ${bytesWritten()} bytes")
         }
         runCatching {
             record.addOnRoutingChangedListener(listener, handler)
         }.onSuccess {
             hold.markListenerSet()
             listenerSlot.set(record to listener)
-        }.onFailure { DebugLogger.warn(tag, "Routing listener not registered: ${it.javaClass.simpleName}") }
+        }.onFailure { log.warn("Routing listener not registered: ${it.javaClass.simpleName}") }
     }
 
     /** Read the final route while the recorder is still active. Null preserves the history as it stands. */
@@ -236,13 +237,13 @@ internal class TakeRoute(
             override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) {
                 if (removed.any { it.type == type && it.productName?.toString().orEmpty() == name }) {
                     sinkGone = true
-                    DebugLogger.log(tag, "route earbuds removed while ${gate.state}; the phone may record")
+                    log.log("route earbuds removed while ${gate.state}; the phone may record")
                 }
             }
         }
         sinkWatch = callback
         runCatching { audioManager.registerAudioDeviceCallback(callback, handler) }
-            .onFailure { DebugLogger.warn(tag, "sink watch not registered: ${it.javaClass.simpleName}") }
+            .onFailure { log.warn("sink watch not registered: ${it.javaClass.simpleName}") }
         // Reconcile once: a removal between route resolution and this registration is not replayed by
         // the callback (Codex review 5). The list is read AFTER registering, so nothing can fall between.
         val stillOffered = runCatching {
@@ -250,7 +251,7 @@ internal class TakeRoute(
         }.getOrDefault(true)
         if (!stillOffered) {
             sinkGone = true
-            DebugLogger.log(tag, "route earbuds already gone at start; the phone may record")
+            log.log("route earbuds already gone at start; the phone may record")
         }
     }
 
@@ -261,9 +262,7 @@ internal class TakeRoute(
     private val announceLive = Runnable {
         deadline?.let { scheduler.removeCallbacks(it) }
         deadline = null
-        DebugLogger.log(
-            tag,
-            "route live=${effective.label()} after ${liveAtMs - startedAtMs} ms " +
+        log.log("route live=${effective.label()} after ${liveAtMs - startedAtMs} ms " +
                 "resets=${gate.resetsUsed} state=${gate.state}",
         )
     }
@@ -308,7 +307,7 @@ internal class TakeRoute(
                         LiveGate.DeadlineAction.NONE -> return@locked
                         LiveGate.DeadlineAction.RESET -> {
                             val reset = reset(audioManager)
-                            DebugLogger.warn(tag, "route reset=${effective.label()} performed=$reset after ${LiveGate.DEADLINE_MS} ms")
+                            log.warn("route reset=${effective.label()} performed=$reset after ${LiveGate.DEADLINE_MS} ms")
                             deadline = this
                             scheduler.postDelayed(this, LiveGate.DEADLINE_MS)
                         }
@@ -317,9 +316,9 @@ internal class TakeRoute(
                             if (admissible()) {
                                 gate.force()
                                 liveAtMs = SystemClock.elapsedRealtime()
-                                DebugLogger.warn(tag, "route forced=${effective.label()} after ${liveAtMs - startedAtMs} ms")
+                                log.warn("route forced=${effective.label()} after ${liveAtMs - startedAtMs} ms")
                             } else {
-                                DebugLogger.warn(tag, "route refused=${effective.label()}: earbuds connected, phone would record; failing the take")
+                                log.warn("route refused=${effective.label()}: earbuds connected, phone would record; failing the take")
                                 onRefused()
                             }
                         }
@@ -342,7 +341,7 @@ internal class TakeRoute(
             audioManager.clearCommunicationDevice()
             audioManager.setCommunicationDevice(sink).also { if (it) hold.markCommunicationSet() }
         }.getOrElse { e ->
-            DebugLogger.warn(tag, "communication device reset threw: ${e.javaClass.simpleName}")
+            log.warn("communication device reset threw: ${e.javaClass.simpleName}")
             false
         }
     }

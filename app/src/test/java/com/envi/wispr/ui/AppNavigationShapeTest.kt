@@ -20,8 +20,9 @@ class AppNavigationShapeTest {
             source.contains("SettingsPageGroup.entries.forEach { group ->"),
         )
         assertTrue(
-            "the drawer no longer takes every page of a group unfiltered, so a page can vanish from the menu",
-            source.contains("SettingsPage.entries.filter { it.group == group }"),
+            // #378: the one filter is the page's own visibility (the hidden Developer page until unlocked).
+            "the drawer no longer takes every visible page of a group, so a page can vanish from the menu",
+            source.contains("SettingsPage.entries.filter { it.group == group && it.visible(developerUnlocked) }"),
         )
     }
 }

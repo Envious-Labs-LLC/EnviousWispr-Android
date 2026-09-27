@@ -13,6 +13,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.SystemClock
 import com.envi.wispr.debug.DebugLogger
+import com.envi.wispr.debug.TakeLog
 import com.envi.wispr.telemetry.AppDefect
 import com.envi.wispr.telemetry.Telemetry
 import com.envi.wispr.vad.SilenceStopDetector
@@ -30,6 +31,9 @@ class AudioCaptureService : Service() {
 
     companion object {
         private const val TAG = "AudioCapture"
+
+        /** The take id a take-less start (`startRecording` from the legacy interface) carries in the local log (#378). */
+        private const val UNTRACKED_TAKE = "untracked"
 
         /**
          * The session owner's bind (#220): with this action and a fresh identifier per bind, `onBind` returns
@@ -105,6 +109,8 @@ class AudioCaptureService : Service() {
         val keepEarbudsReady: Boolean,
         /** The owner's per-take UUID, request context only; empty for a legacy start. Forwarded to the detector. */
         val takeId: String,
+        /** The take's logger (#378): every take-scoped capture line carries its id to the local log file. */
+        val log: TakeLog,
     ) {
         /** True once the first admitted block is on disk: only then does the binder report READY or FORCED. */
         @Volatile var liveVisible: Boolean = false
@@ -375,6 +381,8 @@ class AudioCaptureService : Service() {
             val routingListener = AtomicReference<Pair<AudioRecord, AudioRouting.OnRoutingChangedListener>?>(null)
             // Minted once: it names the lease, the file and the session (#212, #213).
             val token = nextCaptureToken()
+            // This process's log for the take (#378), before its first line.
+            val takeLog = TakeLog(takeId.ifEmpty { UNTRACKED_TAKE }, TAG)
 
             // The process's one recorder (#115 review, F3): a previous Service instance's capture thread may
             // still hold it, and `session` cannot see across instances. Acquired BEFORE the route hold and the
@@ -383,10 +391,10 @@ class AudioCaptureService : Service() {
                 // A holder that was told to end, or whose release failed, will never give the recorder back;
                 // only the production start may decide so (#213).
                 if (mayRecover && RecorderLease.PROCESS.condemnAbandoned()) {
-                    DebugLogger.error(TAG, "A recorder was never released; ending the capture process")
+                    takeLog.error("A recorder was never released; ending the capture process")
                     endCaptureProcess()
                 }
-                DebugLogger.error(TAG, "A recorder is still held in this process; refusing to start")
+                takeLog.error("A recorder is still held in this process; refusing to start")
                 lastStartFailure = START_FAILURE_OTHER
                 stopSelf()
                 publishStartRefused(takeId, lastStartFailure)
@@ -405,9 +413,9 @@ class AudioCaptureService : Service() {
                 // A warm hold hands its route to this take (the link stays up; V13: live at ~120 ms). Any hold
                 // that does not match the resolved target is ended by resolveRoute before it sets anything.
                 val handedOver = warmHoldOwner.handOver()
-                val route = TakeRoute.resolve(audioManager, pick, hold, handedOver, TAG) ?: run {
-                    DebugLogger.error(TAG, "No input device at all; refusing to start")
-                    failSetup(START_FAILURE_NO_INPUT_DEVICE, threadStarted, record, output, routeHold, takeId, token)
+                val route = TakeRoute.resolve(audioManager, pick, hold, handedOver, takeLog) ?: run {
+                    takeLog.error("No input device at all; refusing to start")
+                    failSetup(START_FAILURE_NO_INPUT_DEVICE, threadStarted, record, output, routeHold, takeId, token, takeLog)
                     return false
                 }
 
@@ -420,14 +428,13 @@ class AudioCaptureService : Service() {
                     // the platform from the device's own frame count. Log both so the answer comes from the
                     // phone rather than from an assumption. Android may also enlarge what it actually
                     // allocates, which getBufferSizeInFrames reports once the recorder exists.
-                    DebugLogger.log(
-                        TAG,
+                    takeLog.log(
                         "Buffer sizes: minimum=$minimum coerced=$coerced read=${PcmAudio.READ_CHUNK_BYTES} block=${DetectorFeed.READ_BLOCK_BYTES}",
                     )
                     coerced
                 } catch (e: Exception) {
-                    DebugLogger.error(TAG, "Failed to determine audio buffer size", e)
-                    failSetup(START_FAILURE_OTHER, threadStarted, record, output, routeHold, takeId, token)
+                    takeLog.error("Failed to determine audio buffer size", e)
+                    failSetup(START_FAILURE_OTHER, threadStarted, record, output, routeHold, takeId, token, takeLog)
                     return false
                 }
 
@@ -451,7 +458,7 @@ class AudioCaptureService : Service() {
                     listenerSlot = routingListener,
                     scheduler = routeScheduler,
                     unregisterDeviceCallback = { audioManager.unregisterAudioDeviceCallback(it) },
-                    tag = TAG,
+                    log = takeLog,
                 )
                 takeRoute.applyPreferred(record)
 
@@ -493,6 +500,7 @@ class AudioCaptureService : Service() {
                     route = takeRoute,
                     keepEarbudsReady = keepEarbudsReady,
                     takeId = takeId,
+                    log = takeLog,
                 )
                 takeRoute.registerListener(record, routeHandler) { newSession.bytesWritten }
                 session = newSession
@@ -502,16 +510,14 @@ class AudioCaptureService : Service() {
                 terminalReason = TERMINAL_REASON_NONE
                 currentAmplitude = 0f
                 takePeakAmplitude = 0f
-                DebugLogger.startPipeline()
-                DebugLogger.mark(TAG, "recording_start")
-                DebugLogger.log(
-                    TAG,
+                takeLog.startPipeline()
+                takeLog.mark("recording_start")
+                takeLog.log(
                     "Recording started (PID: ${android.os.Process.myPid()}, " +
                         "max: ${RecordingLimits.MAX_DURATION_MS}ms, " +
                         "nativeFrames: ${runCatching { record.bufferSizeInFrames }.getOrDefault(-1)})",
                 )
-                DebugLogger.log(
-                    TAG,
+                takeLog.log(
                     "route start=${effective.label()} kind=${effective.kind} reason=${route.reason} " +
                         "target=${route.target.label}",
                 )
@@ -520,7 +526,7 @@ class AudioCaptureService : Service() {
                     // The caller asked for auto-stop and cannot have it, which is exactly the state the
                     // notice exists for. Recording itself is unaffected.
                     newSession.detector.markRequestedButRefused()
-                    DebugLogger.warn(TAG, "Auto-stop refused: pause $pauseSeconds is out of range")
+                    takeLog.warn("Auto-stop refused: pause $pauseSeconds is out of range")
                 }
                 if (detectorEnabled) {
                     newSession.detector.start(
@@ -548,7 +554,7 @@ class AudioCaptureService : Service() {
                     newSession.picture.close()
                     captureThread = null
                     stopSelf()
-                    DebugLogger.error(TAG, "Failed to start capture thread", e)
+                    takeLog.error("Failed to start capture thread", e)
                     lastStartFailure = START_FAILURE_OTHER
                     publishStartRefused(takeId, lastStartFailure)
                     return false
@@ -573,12 +579,12 @@ class AudioCaptureService : Service() {
                 if (CaptureFiles.isProductionTake(takeId)) sweepEarlierTakeFiles(keep = file.name)
                 return thread.isAlive && session === newSession && isRecording.get()
             } catch (e: SecurityException) {
-                DebugLogger.error(TAG, "RECORD_AUDIO permission not granted", e)
-                failSetup(START_FAILURE_OTHER, threadStarted, record, output, routeHold, takeId, token)
+                takeLog.error("RECORD_AUDIO permission not granted", e)
+                failSetup(START_FAILURE_OTHER, threadStarted, record, output, routeHold, takeId, token, takeLog)
                 return false
             } catch (e: Exception) {
-                DebugLogger.error(TAG, "Failed to start recording", e)
-                failSetup(START_FAILURE_OTHER, threadStarted, record, output, routeHold, takeId, token)
+                takeLog.error("Failed to start recording", e)
+                failSetup(START_FAILURE_OTHER, threadStarted, record, output, routeHold, takeId, token, takeLog)
                 return false
             }
         }
@@ -595,7 +601,7 @@ class AudioCaptureService : Service() {
                     // The reason is the whole signal. The session owner reads it back through
                     // getTerminalReason and is what tells the user why their take ended.
                     claimEnding(active, TERMINAL_REASON_MAX_DURATION)
-                    DebugLogger.log(TAG, "Max duration reached (${elapsed}ms), auto-stopping")
+                    active.log.log("Max duration reached (${elapsed}ms), auto-stopping")
                     break
                 }
 
@@ -610,7 +616,7 @@ class AudioCaptureService : Service() {
                 val remaining = RecordingLimits.MAX_AUDIO_BYTES - active.bytesWritten
                 if (remaining <= 0L) {
                     claimEnding(active, TERMINAL_REASON_MAX_DURATION)
-                    DebugLogger.log(TAG, "Byte ceiling reached (${active.bytesWritten} bytes), auto-stopping")
+                    active.log.log("Byte ceiling reached (${active.bytesWritten} bytes), auto-stopping")
                     break
                 }
 
@@ -675,7 +681,7 @@ class AudioCaptureService : Service() {
             synchronized(sessionLock) {
                 if (session === active) claimEnding(active, TERMINAL_REASON_ERROR)
             }
-            DebugLogger.error(TAG, "Capture thread error", e)
+            active.log.error("Capture thread error", e)
         } finally {
             releaseSession(active)
         }
@@ -722,6 +728,7 @@ class AudioCaptureService : Service() {
         routeHold: RouteHold?,
         takeId: String,
         token: Long,
+        log: TakeLog,
     ) {
         lastStartFailure = failure
         val active = session
@@ -737,7 +744,7 @@ class AudioCaptureService : Service() {
             active.picture.close()
         }
         routeHold?.release()
-        closeResources(record, output, token)
+        closeResources(record, output, token, log)
         stopSelf()
         publishStartRefused(takeId, lastStartFailure)
     }
@@ -800,9 +807,9 @@ class AudioCaptureService : Service() {
         } catch (e: Exception) {
             // The reader's finally block still owns and releases the resources if stop
             // itself fails, so a vendor-specific AudioRecord error cannot leak a session.
-            DebugLogger.warn(TAG, "AudioRecord stop failed: ${e.javaClass.simpleName}")
+            active.log.warn("AudioRecord stop failed: ${e.javaClass.simpleName}")
         }
-        DebugLogger.mark(TAG, "recording_stop")
+        active.log.mark("recording_stop")
         // The ending is read back from the CLAIM rather than from this function's parameter, because the
         // claim is the owner of the answer and the parameter is only what this caller proposed.
         //
@@ -812,8 +819,7 @@ class AudioCaptureService : Service() {
         // `claimEnding` clears `isRecording` before this log runs, so the session's polling thread can log
         // its own promotion first. Measured on the S26 and recorded in issue #114: a silence-ended take
         // did exactly that, by 11 ms.
-        DebugLogger.log(
-            TAG,
+        active.log.log(
             "Stopped by ${active.endingClaim.ending.label}. ${active.bytesWritten} bytes " +
                 "(${String.format("%.1f", PcmAudio.durationSeconds(active.bytesWritten))}s) -> ${active.file.absolutePath}",
         )
@@ -845,7 +851,7 @@ class AudioCaptureService : Service() {
         // Once per take, on EVERY ending (a stop, a silence stop, a cap, a capture error, teardown):
         // release is the one point they all reach. Shape only; `polled` is the proof that no production
         // code polls the picture any more (#187).
-        DebugLogger.log(TAG, "Live picture: pushed=${active.picture.pushes.get()} polled=${active.picture.polls.get()}")
+        active.log.log("Live picture: pushed=${active.picture.pushes.get()} polled=${active.picture.polls.get()}")
         // A hold keeps the service alive; its end calls stopSelf (RULE: the service owns its own end).
         if (!holding) stopSelf()
         // LAST, once per take, after every close and the service-lifetime work: the owner acts on this
@@ -871,20 +877,20 @@ class AudioCaptureService : Service() {
      */
     private fun closeResources(active: CaptureSession, keepRoute: Boolean) {
         active.route.close(keepRoute)
-        closeResources(active.record, active.output, active.token)
+        closeResources(active.record, active.output, active.token, active.log)
     }
 
-    private fun closeResources(record: AudioRecord?, output: FileOutputStream?, token: Long) {
+    private fun closeResources(record: AudioRecord?, output: FileOutputStream?, token: Long, log: TakeLog) {
         runCatching { output?.flush() }
-            .onFailure { DebugLogger.warn(TAG, "Failed to flush audio file: ${it.javaClass.simpleName}") }
+            .onFailure { log.warn("Failed to flush audio file: ${it.javaClass.simpleName}") }
         runCatching { output?.close() }
-            .onFailure { DebugLogger.warn(TAG, "Failed to close audio file: ${it.javaClass.simpleName}") }
+            .onFailure { log.warn("Failed to close audio file: ${it.javaClass.simpleName}") }
         runCatching { record?.stop() }
             .onFailure {
-                if (it !is IllegalStateException) DebugLogger.warn(TAG, "Failed to stop AudioRecord: ${it.javaClass.simpleName}")
+                if (it !is IllegalStateException) log.warn("Failed to stop AudioRecord: ${it.javaClass.simpleName}")
             }
         val released = record == null || runCatching { record.release() }
-            .onFailure { DebugLogger.warn(TAG, "Failed to release AudioRecord: ${it.javaClass.simpleName}") }
+            .onFailure { log.warn("Failed to release AudioRecord: ${it.javaClass.simpleName}") }
             .isSuccess
         // Every caller acquired the lease before creating the recorder (or failing to); released only
         // AFTER the recorder was, so the next start in this process cannot open a second one first. A
@@ -895,7 +901,7 @@ class AudioCaptureService : Service() {
         } else {
             // Held, and marked so: the next production start ends this process rather than refusing (#213).
             RecorderLease.PROCESS.releaseFailed(token)
-            DebugLogger.warn(TAG, "Recorder release failed; the process's recorder lease stays held")
+            log.warn("Recorder release failed; the process's recorder lease stays held")
         }
     }
 

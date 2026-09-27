@@ -1,0 +1,13 @@
+Issue #378 plan review — DONE
+
+**The four fixes LANDED:** shell UID check ([D10, line 142](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/docs/feature-requests/issue-378-2026-09-27-dev-app-local-log.md:142)); completed-file descriptor and 30-second bound (line 143); cold-start repair wait (line 144); binary Mac pull and integrity check (line 145). Their access and cold-start tests appear at lines 268–270.
+
+**BLOCKING: door ZIP lifetime is undefined.** D10 creates unique cache files but does not place them under D6’s 24-hour export sweep or D9’s recording sweep. Repeated Mac pulls can retain ZIPs indefinitely. On timeout, its instruction to remove partial output can also race a worker still writing that file.
+
+Add verbatim: “Door ZIPs use `cacheDir/devlog-pulls/log/` and `cacheDir/devlog-pulls/recordings/`, owned by the log and `CapturedAudioFiles` workers respectively, separate from UI Share exports. Each worker builds a UUID `.partial` file and publishes a completed ZIP only on success. After `openFile` opens the completed file read-only, unlink its pathname; the returned descriptor keeps its bytes available to the reader. On timeout, signal cancellation and arrange cleanup on the owning worker, never delete a file while that worker writes it. Each worker removes abandoned door files at startup and before its next door build. Test a timeout during writing, process death, repeated pulls, and a held read descriptor during another pull; no door pathname remains after completion.”
+
+**NON-BLOCKING wording:** Line 138 still falsely says an ordinary app cannot be granted DUMP, although the new UID check protects the door. Line 140 says “streamed,” line 143 mentions the replaced pipe, and line 269 uses “pipe buffer” as a test size. Replace verbatim: “DUMP can be granted to another app through adb; the shell UID check is the door’s additional restriction. The recording ZIP is built to a cache file and returned through a read-only descriptor. Test a ZIP larger than 64 KiB.” Delete line 143’s parenthetical about the pipe.
+
+Axes searched: four fixes **found**; operational pipe **not found**; residual pipe wording **found**; door-file cleanup **not found**; other blocking defect **not found**.
+
+VERDICT: PROCEED-WITH-REVISIONS

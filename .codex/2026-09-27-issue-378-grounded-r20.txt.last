@@ -1,0 +1,11 @@
+Issue #378 plan review — DONE
+
+**Both revisions LANDED.** The Share and startup cleanup rules are in [D6, line 129](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/docs/feature-requests/issue-378-2026-09-27-dev-app-local-log.md:129). The §5.1 wording is adopted at lines 176 and 178, with a cleanup test at line 251.
+
+**BLOCKING: the one-orphan-set bound is false.** Writer 1 checks fence A and pauses before pinning. Share A times out. Writer 2 checks fence B and pauses; Share B times out. Share C writes fence C and cleans both old directories. Writers 1 and 2 then create A and B pins. Two orphan sets remain. Share C still reads only C’s pins, so I found no ZIP pollution. With one paused writer per process, the stated 50 MB *extra storage* bound appears to hold, but §5.1 and §11 assert the false one-set limit.
+
+Replace the bound and test verbatim: “Each of the five serial writers can create one stale snapshot after a cleanup scan, so up to five orphan fence directories can coexist. Each contains at most that writer’s 10 MB log set, for at most 50 MB extra storage. A startup or Share whose cleanup begins after an orphan was created removes it. Share reads only pins bearing its own fence id.” “Pause two writers on different fence ids, let a third Share clean up, then release both. Assert that two orphan directories can exist, stay within the per-process storage bound, do not enter the third ZIP, and are removed by the next Share.”
+
+Axes searched: landing **found**; more than one orphan **found**; orphan ZIP pollution **not found**; other blocking defect **not found**.
+
+VERDICT: PROCEED-WITH-REVISIONS

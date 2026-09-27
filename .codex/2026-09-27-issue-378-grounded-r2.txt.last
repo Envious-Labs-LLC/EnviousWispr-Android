@@ -1,0 +1,34 @@
+Issue #378 review — DONE
+
+## 1. Round 1 fixes
+
+| Fix | Result | Plan line |
+|---|---|---|
+| History timings limited to measurements the app can supply | LANDED | D8, line 142 |
+| First Dev upload through Play Console | NOT complete: the fallback signed bundle is not assured | D11–D12, lines 148–150 |
+| Structured take ID | NOT complete: omission can still become `take=-` | D4, line 127 |
+| Bounded crash hook after Sentry | LANDED | D4, line 125 |
+| Stable log snapshot | NOT: open descriptors can still change | D4/D6, lines 122, 136 |
+| FileProvider share intent and grant | LANDED | D6, line 136 |
+| Clear removes old content | NOT complete across concurrent writes, shares, and reboot | D7, line 140 |
+| Measured zip size | LANDED | D6, line 136 |
+| Clear and named timing tests | LANDED; crash test needs a narrower oracle | §11, lines 242–243 |
+
+## 2. New defects and remaining blockers
+
+**BLOCKING — the lock does not protect a snapshot from writes.** D4 locks rotation only. D6 opens a descriptor under that lock, then calls it immutable after release. A descriptor remains valid across [rename](https://man7.org/linux/man-pages/man2/rename.2.html) or [unlink](https://man7.org/linux/man-pages/man2/unlink.2.html), but it can still see appends; later rotation may also alter files before they are opened. Android says a second overlapping `FileChannel.lock()` in the same process throws `OverlappingFileLockException`, rather than waiting. The stated two-second bound therefore needs `tryLock` and same-process coordination. [Android FileChannel](https://developer.android.com/reference/java/nio/channels/FileChannel). **Replace D4’s lock sentence and D6’s snapshot sentences with:** “Each process has one lock coordinator shared by its writer and any local Share or Clear worker. Use an in-process mutex before taking the file lock; acquire other processes’ locks with `tryLock`, handling `OverlappingFileLockException` and a two-second deadline. The writer holds its lock for every append batch and rename-only rotation. While holding it, Share opens each file and records its byte length; after release it reads exactly those recorded bytes from the held descriptors. Never truncate or rewrite a log inode that a snapshot may hold.”
+
+**BLOCKING — Clear can lose new lines and later suppress logging after reboot.** D7 deletes files while writers lock only rotation. Its existence check before a batch does not stop a writer appending to an unlinked descriptor during Clear. The persisted `cleared-at` uses [`elapsedRealtime()` milliseconds since boot](https://developer.android.com/reference/android/os/SystemClock): two events can share a millisecond, and the value resets on reboot. A Share already holding descriptors can finish a new zip containing pre-clear words after Clear deletes earlier zips. **Replace D7’s Clear paragraph with:** “Serialize Share and Clear on one main-process worker. Record the cutoff with the current boot count and `elapsedRealtimeNanos`; compare queued entries only within that boot, treating an earlier boot’s cutoff as passed. Clear advances a log generation and removes only older-generation files. Each writer, under its per-process lock, checks the generation before every append batch, closes an old descriptor, drops entries at or before the cutoff, and writes later entries to the new generation. Do not report ‘Cleared’ until old files are removed and any in-flight Share has finished or been cancelled. Test same-millisecond enqueue, a live writer during deletion, a concurrent Share, and a reboot.” Android documents a readable [`BOOT_COUNT`](https://developer.android.com/reference/android/provider/Settings.Global) on the supported API levels.
+
+**BLOCKING — take-ID omission does not fail closed.** D4 line 127 says calls outside a take “pass nothing,” implying a default argument. A newly added take-scoped call can silently produce `take=-`; the shape test covers named owners, while the current `DebugSessionLog` is a singleton with no ID ([SessionLog.kt:19](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/ui/SessionLog.kt:19)). **Replace D4’s structured-ID sentence with:** “Give `DebugLogger` no default take-ID argument: every call explicitly passes an ID or null. Replace the singleton session logger used by a take with a logger created at admission from that take’s ID. Take-scoped components require that logger or ID in their constructor; forbid direct unscoped `DebugLogger` calls there. Exercise the real take path in all five processes and fail if an active take emits `take=-`.”
+
+**BLOCKING — the first-run Dev artifact may not exist.** D12 requires the signed Dev bundle from the failed first pipeline run. Today [publish.py:108](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/scripts/release/publish.py:108) opens the Play edit before signing at line 117. The new app’s edit can fail before a signed artifact exists. **Add to D11:** “Sign and verify both bundles, persist their hashes and upload both signed artifacts before opening either Play edit. A Dev edit failure must leave its signed bundle and a partial receipt available for the first Console upload.” This ordering is required by [Google’s first-upload rule](https://developers.google.com/android-publisher/edits).
+
+**NON-BLOCKING — the crash test promises durability the design does not.** A 200 ms best-effort flush can time out; D4 correctly chains to Sentry, but §11 line 242 demands every just-logged line in the file. **Replace that crash oracle with:** “Verify that a forced crash delegates to Sentry and Android’s handler even when the writer is stalled, and that the hook waits no more than 200 ms. Verify pre-crash lines are present when the writer acknowledges its flush; report timed-out queued lines as best effort.”
+
+## Axes searched
+
+Lock semantics **FOUND defect**; held-descriptor behavior **FOUND defect**; Clear ordering and reboot **FOUND defect**; crash chaining **no defect found**, test oracle **FOUND defect**; take-ID enforcement **FOUND defect**; first Play artifact **FOUND defect**; Room migration **no new defect found**. Exact behavior on the S26 filesystems and live Sentry delivery: **NOT VERIFIED**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

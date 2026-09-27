@@ -1,0 +1,22 @@
+Issue #378 review — DONE
+
+Four fixes are complete. Two need follow-up. This was a code review; I did not run the app or tests.
+
+| Round 1 fix | Result |
+|---|---|
+| Switch ordering | **LANDED.** The mutex covers the full requests and cold-start repair in [DeveloperSwitches.kt:69](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/debug/DeveloperSwitches.kt:69). The new test holds On while Off waits. The lock waits run on the switch worker, so they do not block the UI. |
+| Take IDs | **NOT fully.** Capture lines now use `CaptureSession.log`; the remaining plain capture line is a process-wide file sweep. The polish fallback lane still loses the request ID, detailed below. |
+| Late speech throw | **LANDED** in [DictationSessionCoordinator.kt:820](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/ui/DictationSessionCoordinator.kt:820). Capturing `current` before the launch changes logging attribution, not the speech handoff. |
+| Door ZIP lifetime | **NOT fully.** Concurrent pulls no longer delete each other’s fresh ZIPs, but timeout cleanup misses fresh abandoned ZIPs, detailed below. |
+| Provider gate | **LANDED** for `openFile`, `call`, `query`, and `getType` in [DeveloperLogProvider.kt:36](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/debug/DeveloperLogProvider.kt:36). Android assigns DUMP to shell, and `checkCallingPermission` checks an IPC caller. That supports the adb path, though I did not run it on the phone. [AOSP shell permissions](https://android.googlesource.com/platform/frameworks/base/+/HEAD/data/etc/platform.xml), [Android Context reference](https://developer.android.com/reference/android/content/Context). |
+| Pulled ZIP integrity | **LANDED** in [wispr_eyes.py:3922](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/scripts/uat/wispr_eyes.py:3922); `testzip()` checks every entry before publication. |
+
+**Findings**
+
+1. **NON-BLOCKING · HYPOTHETICAL** — [PolishService.kt:63](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/polish/PolishService.kt:63): The fallback lane’s shared `prepare` calls `fallbackText(..., null)`. A take with a missing policy, poisoned engine, or duplicate request ID can enter that lane; if deterministic cleanup throws, its warning is logged with `take=-`. Pass a per-request preparation closure to `fallbackLane.answer`, capturing that request’s `TakeLog`, and test the warning with a throwing detector.
+
+2. **NON-BLOCKING · HYPOTHETICAL** — [DeveloperLogs.kt:53](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/debug/DeveloperLogs.kt:53): If a door export exceeds the provider’s 30-second bound, timeout cleanup runs after the build but retains its new ZIP because it is under five minutes old. With no later pull or restart, that abandoned copy remains. Pass the timed-out future to cleanup and, on the export worker, delete *that future’s* finished ZIP. Keep the age sweep for files abandoned by process death.
+
+**Axes searched:** privacy **found** abandoned door-copy retention; Off-state word construction or a new logcat or telemetry content path **not found**. Heart-path blocking or a new idle wake **not found**. Switch ordering, capture IDs, coordinator catch attribution, provider access, and pull integrity **found fixed**. Polish fallback attribution and timeout cleanup **found incomplete**. No other blocking defect found in the chunk 1 diff.
+
+VERDICT: CHANGES REQUESTED

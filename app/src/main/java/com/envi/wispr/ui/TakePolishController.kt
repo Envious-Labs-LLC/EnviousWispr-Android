@@ -449,13 +449,17 @@ internal class TakePolishController(
         // that failed (#107); the alternative was a new AIDL transaction to carry it across, which
         // `workflow-process.md` RULE: tier-routing classifies as REFACTOR for a limb feature.
         val cleaned = guarded(STEP_CLEANUP) { cleanup(prepared, takePreferences.cleanup, languageDetector) } ?: return prepared
+        log.words(STEP_CLEANUP) { cleaned }
         return restoreVocabulary(cleaned, takePreferences, STEP_RESTORE_CLEANED) ?: cleaned
     }
 
     /** The vocabulary restore, or null when it threw ([step] names it in the one preparation defect). */
     private fun restoreVocabulary(text: String, takePreferences: SessionPreferences, step: String): String? = guarded(step) {
         val restored = restore(text, takePreferences.matcher)
-        if (TextSafety.isSafe(text, restored)) restored else text
+        val kept = if (TextSafety.isSafe(text, restored)) restored else text
+        // The take's words after this restore step (#378), into the local log file only.
+        log.words(step) { kept }
+        kept
     }
 
     /**

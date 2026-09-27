@@ -1,0 +1,14 @@
+Issue #378 revision 2 review — DONE
+
+**Both round 15 fixes LANDED in the plan.** D6 (line 129) adds fence IDs, writer acknowledgments and an incomplete result on timeout. The action is now “Delete shared log ZIPs” in D6 and §11 (246), with recording WAVs explicitly outside its scope.
+
+**BLOCKING — the `.alive` probe misclassifies main or a starting writer.** A Share that calls `tryLock` on main’s `.alive` file while main’s writer holds it gets `OverlappingFileLockException`, not “lock unavailable.” Android documents that [same-JVM behavior](https://developer.android.com/reference/java/nio/channels/FileChannel). Opening and closing a second descriptor for that file can also release a process-associated record lock under [Linux locking rules](https://man7.org/linux/man-pages/man2/fcntl_locking.2.html). Separately, a helper can enqueue a line before its new writer acquires `.alive`; Share can obtain that lock, call it dead, and snapshot before the queued line is written. Either path defeats §5.1’s complete-ZIP claim.
+
+**Add to D6 and §5.1 verbatim:** “For main, Share reads `LocalLog`’s in-process writer state and never opens a second descriptor to main’s `.alive` file. Each process’s writer acquires its lifetime `.alive` lock before accepting its first queued entry and holds its channel open until that writer stops. For a helper, `tryLock` success means no writer can hold a queued entry; failure means wait for the matching fence acknowledgment. Never infer writer death from a missing acknowledgment alone.” **Add to §11:** “Share while main’s writer holds `.alive`, and race a helper’s first enqueue against its lifetime-lock acquisition; neither case may produce an unmarked incomplete ZIP.”
+
+The other requested interleavings did not refute the mechanism: two Shares run serially and use distinct fence IDs; a writer dying after acknowledgment has already written its queued bytes; `.alive` and per-process log locks cover different files. An Off barrier can cause a fenced writer to discard queued lines rather than acknowledge a full flush; Share’s timeout must mark that process incomplete. **No separate blocking finding** arises if that result is shown as D6 requires.
+
+Axes searched: two edits **found**; same-process `.alive` probe **found defect**; writer startup versus liveness probe **found defect**; consecutive Shares, death after acknowledgment, distinct lock files and Off versus fence **no further unmarked-complete path found**. Runtime behavior is **NOT VERIFIED**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

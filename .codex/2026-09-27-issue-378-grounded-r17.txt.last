@@ -1,0 +1,17 @@
+Issue #378 revision 2 review — DONE
+
+**The revision landed.** D6 (line 129) and §5.1 (176) no longer use a liveness probe: Share waits for five fence acknowledgments and labels any missing process incomplete. §11 (247) adds the stopped-helper and first-enqueue cases. `.alive` remains only in the historical review notes at §14b (lines 296–298), not in the active design.
+
+**Share completeness is NOT CLOSED. BLOCKING.** Two concrete interleavings can produce five acknowledgments but a missing pre-tap line:
+
+- A line is queued, Share writes its fence, then Detailed log Off wins its lock barrier. The writer discards that queued line as D2 requires and acknowledges the fence as D6 currently directs. Share receives all five acknowledgments and calls the ZIP complete.
+- Writer A drains and acknowledges. While Share waits for the other writers, A continues logging and rotates away a file containing a pre-tap line. Share opens A’s files only *after* all acknowledgments and cannot recover that line.
+
+**Replace D6’s acknowledgment and snapshot contract with this verbatim prose:** “For a fence ID, each writer drains entries queued before that fence and, under its log lock, pins an immutable snapshot of its current rotated files and the active file’s byte length before acknowledging. Use distinct per-fence snapshot paths; later rotation must not remove their bytes. The acknowledgment records `written`, `discarded-by-Off`, or `dropped`, including any queue-overflow count. Share reads the pinned snapshots, not the later live filenames. It presents the ZIP as complete only when all five writers acknowledge `written` with no dropped entries; every other status is named as incomplete. Remove snapshot references after the ZIP is finished.” **Add to §11:** “Race Off against a pending fence, and rotate a process’s full file set after its acknowledgment while another process is delayed; neither ZIP may be falsely marked complete.”
+
+Two serial Shares with distinct fence IDs, a writer dying after a completed snapshot, and the separate Off and export workers show no further completion path in the plan. Runtime behavior is **NOT VERIFIED**.
+
+Axes searched: probe removal **found**; `.alive` in active design **not found**; Off versus fence **found defect**; rotation after acknowledgment **found defect**; serial Shares and writer death **no additional defect found**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

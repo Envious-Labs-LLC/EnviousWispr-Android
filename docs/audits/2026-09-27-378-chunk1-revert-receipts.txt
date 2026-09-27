@@ -1,0 +1,9 @@
+R1 switch requests not serialised: RED > Task :app:testDebugUnitTest FAILED; DeveloperSwitchesTest > aDelayedOnCannotRecreateTheFlagAfterALaterOff FAILED
+R2 writer ignores the flag: RED > Task :app:testDebugUnitTest FAILED; LogWriterTest > aFenceUnderOffIsReportedAsDiscarded FAILED; LogWriterTest > offWritesNothingAndBuildsNoString FAILED
+R3 Off barrier deletes without the locks: RED > Task :app:testDebugUnitTest FAILED; DeveloperSwitchesTest > offIsNeverReportedWhileAWriterHoldsItsLock FAILED
+R4 a locked Developer route resolves: RED > Task :app:testDebugUnitTest FAILED; AppRoutesTest > aSavedDeveloperRouteShowsTheTabUntilUnlocked FAILED
+R5 Privacy sentence reads only the switch: RED > Task :app:testDebugUnitTest FAILED; VersionTapCounterTest > theDetailedLogSentenceShowsWhileOnOrWhileFilesRemain FAILED
+R6 export ignores the recorded length: RED > Task :app:testDebugUnitTest FAILED; LogExportTest > theZipReadsOnlyPinnedBytesAndNamesEveryStatus FAILED
+R7 fallback lane drops the take log: RED > Task :app:testDebugUnitTest FAILED; PolishFallbackLaneTest > thePreparationReceivesTheRequestsTakeLog FAILED
+R8 the door skips its caller check in call(): RED > Task :app:testDebugUnitTest FAILED; LocalLogShapeTest > theAdbDoorOpensOnlyForTheShell FAILED
+tree restored: yes

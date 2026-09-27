@@ -29,6 +29,8 @@ internal class TakeContext(
     val targetPin: DictationTargetPin,
     val history: TakeHistory,
     val acceptedAtMs: Long,
+    /** The take-bound log (#378): every line of this take carries its id to the local log file. */
+    val log: SessionLog,
 ) {
     companion object {
         /** Before any admission: an empty id, an arbiter that refuses everything, no target, no History. */
@@ -41,6 +43,7 @@ internal class TakeContext(
             targetPin = DictationTargetPin.NO_TARGET,
             history = TakeHistory(null),
             acceptedAtMs = 0L,
+            log = DebugSessionLog,
         ) }
     }
 }

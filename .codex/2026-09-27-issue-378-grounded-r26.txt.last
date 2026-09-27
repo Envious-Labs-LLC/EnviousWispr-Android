@@ -1,0 +1,11 @@
+Issue #378 plan review — DONE
+
+**LANDED.** [D2, line 110](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/docs/feature-requests/issue-378-2026-09-27-dev-app-local-log.md:110) creates both directories before the watch, specifies the event mask, starts watching before rescanning flags and fence, handles watch loss, and queues a take-admission refresh ahead of lazy lines. [§11, line 271](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/docs/feature-requests/issue-378-2026-09-27-dev-app-local-log.md:271) adds the requested cases.
+
+**BLOCKING, untestable idle oracle.** §11 requires “no thread in any process runs” for a quiet minute. Android and unrelated app threads can run while this change has no idle timer. D2 makes the same overbroad claim. The test can fail with logging correctly asleep, so it cannot gate the stated rule.
+
+Replace those claims with this verbatim prose: “With Detailed log Off and no fence, this change schedules no periodic wake: the log writer waits for queue work and the observer waits for filesystem events. Other app and Android threads may run.” “Observer idle oracle: after startup settles, record callback and log-writer wake counts separately in each of the five processes. With Detailed log Off, no take and no fence, assert those counts stay unchanged over a quiet minute. Then create a flag and a fence and assert the relevant counts advance. Do not assert that every process thread remains asleep.”
+
+Axes searched: observer startup and lost-event fix **found**; Off barrier or crash-flush regression **not found**; idle timer **not found**; untestable idle assertion **found**; other blocking defect **not found**. Runtime behavior on the S26 is **NOT VERIFIED**.
+
+VERDICT: PROCEED-WITH-REVISIONS

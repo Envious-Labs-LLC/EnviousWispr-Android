@@ -1,0 +1,16 @@
+Issue #378 revision 2 review — DONE
+
+**Round 12 fix: LANDED.** D2 (line 109) places the Off barrier on a dedicated background worker, persists DataStore Off while holding all five locks, forbids unbarriered cold-start removal, and derives the settled UI state from DataStore and the flag. §11 (243) tests UI responsiveness and failed-barrier repair.
+
+**The Off barrier itself has no lock-order deadlock in the stated design.** Each log writer holds only its own lock; main acquires the five in fixed order. Its own writer can wait on the in-process mutex without a cycle. A dying helper releases its lock. A writer starting during the barrier cannot write until it obtains its lock and checks the flag. The separate log export and audio workers do not need locks from the switch worker while holding a resource it needs.
+
+**BLOCKING — On and Off requests are not serialized with each other.** D2 gives Off a dedicated worker but lets On update DataStore and create the flag without that barrier. Concrete interleaving: an On request pauses after starting its DataStore write; the user requests Off, whose barrier removes the flag, persists Off, verifies both, and shows Off. The earlier On request resumes and creates the flag. Logging can restart after the last user request was Off. The reverse order can also let a delayed Off overwrite a newer On.
+
+**Add to D2 and §5.1 verbatim:** “Serialize Detailed log On, Off, and cold-start mirror repair on the same dedicated switch worker. Process toggle requests in user-action order; only the latest request may publish a settled UI state. An On operation cannot create the flag after a later Off has completed. Off still takes the five-lock barrier. Test a delayed On followed by Off, and a delayed Off followed by On, asserting that the final DataStore value, flag, page state, and actual file writes match the last request.”
+
+**NON-BLOCKING — On can show settled before an existing helper’s hint refreshes.** D2 explicitly accepts missing lines for up to a second after On, so an immediate first take may lack its admission or early model lines. A blocked writer can extend that gap. **Add to D2/§11:** “Show ‘Starting detailed log’ until active writers have observed the On flag, or state plainly that the first second may be incomplete. Run one take immediately after On and report which process lines were actually captured; do not call that take a full-log receipt if stages are missing.”
+
+Axes searched: round 12 fix **found**; five-lock order, helper death, writer startup and worker interaction **no deadlock found**; On versus Off **found race**; On readiness **found coverage gap**. Runtime latency and device behavior remain **NOT VERIFIED**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

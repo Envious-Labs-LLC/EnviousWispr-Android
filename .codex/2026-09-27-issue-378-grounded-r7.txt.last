@@ -1,0 +1,14 @@
+Issue #378 review — DONE
+
+**Round 6 fix: LANDED in the plan.** D6 (line 137) moves log Share and its exports to a separate worker and folder. D9 (145) disables the Dev next-take sweep and moves abandoned PCM cleanup to the audio worker. §5.1 (183, 188–202) records the split, and §11 (266) adds a rapid-next-take test.
+
+**The whole file concurrency class is NOT CLOSED. BLOCKING.** D9 excludes the *new* take’s ID and runs cleanup after earlier queued retirements. That does not cover an earlier take whose retirement was **never queued** because main died. The `:audio` capture thread can still write that earlier PCM while main restarts; even `AudioCaptureService.onDestroy` does not join it ([AudioCaptureService.kt:913](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/audio/AudioCaptureService.kt:913)). Main admits a new take and the cleanup unlinks the old, still-open file. §5.1 omits the `:audio` PCM writer versus abandoned cleanup pair. With no further admission, a retirement missed by process death also has no planned cleanup trigger.
+
+**Add this verbatim to D9 and §5.1:** “While writing a take’s PCM, `:audio` holds an exclusive lock on that PCM’s channel until its output is closed. Abandoned cleanup on the `CapturedAudioFiles` worker uses `tryLock` and unlinks only a candidate whose lock it obtains; a locked candidate is skipped, never waited on. Queue cleanup at main startup as well as admission, after earlier retirement tasks. Retry skipped files at a later startup or admission. Measure the lock’s capture-start cost on the S26 before accepting it.” **Add to §11:** “Kill main during capture, immediately restart and admit another take, and assert cleanup does not unlink the still-written PCM; after `:audio` closes it, assert cleanup eventually removes it. Repeat a main restart with no new admission.”
+
+The two main worker folder sets in D6/D9 are disjoint. The two-second log lock wait cannot delay audio retirement after the split. Those axes are **found safe in the plan; runtime NOT VERIFIED**. No other blocking finding arose from the changed text.
+
+Axes searched: round 6 edits **found**; log worker versus audio worker **no shared file found**; live `:audio` PCM versus abandoned cleanup **found defect**; missed retirement without later admission **found gap**; Play, Room and Consumer compile-out **no new finding**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

@@ -1,0 +1,14 @@
+Issue #378 revision 2 review — DONE
+
+**Both round 13 fixes LANDED.** D2 (line 109) serializes Detailed log On, Off and cold-start repair on its background switch worker. It also shows “Starting detailed log” during the hint refresh gap. §5.1 (183) records the ordering, and §11 (245) tests rapid toggles and an immediate take.
+
+**Yes, Keep recordings needs the same toggle serialization. BLOCKING.** D2 currently excludes it. Concrete interleaving: Keep On persists DataStore On, then pauses before creating its flag. The user selects Off; that request persists Off, removes the absent flag and shows Off. The older On request resumes and creates the flag. `:audio` now makes pending links after the last user action was Off. D9 (135) normally discards one at retirement because DataStore is Off, but a main-process death can leave the pending audio on disk until stale cleanup. Reversing the requests can show On with no flag and no saved takes.
+
+**Add this verbatim to D2 and §5.1:** “Serialize Keep recordings On, Off and cold-start mirror repair on the dedicated switch worker in user-action order, alongside Detailed log requests. Only the latest request may publish a settled state; its DataStore value and flag must match. Keep recordings needs no five-log-lock barrier, but an older request may never change its flag after a newer request completes.” **Add to §11:** “Delay Keep recordings On before flag creation, then request Off; repeat with delayed Off followed by On. After each pair, assert DataStore, flag, page state, a completed take’s archive result, and pending-link cleanup all follow the last request.”
+
+I found no other blocking issue in the changed plan text. The Detail log Off barrier, worker separation, hard-link ordering and Release-default gate remain plan-level claims; device behavior is **NOT VERIFIED**.
+
+Axes searched: round 13 edits **found**; Detailed log request ordering **no gap found**; Keep rapid toggles **found race**; Keep close versus retirement **D9 handles a single settled toggle**; other carried file paths **no new finding**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

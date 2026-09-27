@@ -1,0 +1,14 @@
+Issue #378 revision 2 review — DONE
+
+**Round 14 fix: LANDED.** D2 (line 109) orders Keep recordings On, Off and cold-start repair on the switch worker. §5.1 (183) covers both switches, and §11 (245) tests both rapid-toggle orders.
+
+**BLOCKING — Share log can omit the latest queued lines.** D4 (118) queues lines on each process’s writer. D6 (129) locks and snapshots the *files*, but does not wait for those queues. Concrete interleaving: the final insertion line is enqueued; the founder taps Share; the export worker obtains that process’s lock before its writer drains the queue and records the old file length. The writer appends afterward. The ZIP looks complete but misses the line needed to diagnose the take. §11’s sentinel test can pass when it reads after a drain; its hardware recipe does not require an immediate Share.
+
+**Add to D6 and §5.1 verbatim:** “Before recording file lengths, Share requests a fence from each live process’s writer. A fence is acknowledged only after that writer has processed every line queued before the Share request. Wait on the export worker, never a capture or insertion thread. If a process cannot acknowledge within a bound, mark it incomplete in `device.txt` and visibly on the Developer page; never present that ZIP as complete.” **Add to §11:** “Share immediately after a take’s insertion outcome while one helper writer is held before draining; require either that final line in the ZIP or an explicit incomplete-process result.”
+
+**NON-BLOCKING — “Delete shared exports” has ambiguous scope.** D6 deletes log ZIPs in `cacheDir/share/`; D9’s shared WAVs live in `cacheDir/share-recordings/` and expire separately. **Replace the button label and copy with:** “Delete shared log ZIPs removes only log exports. Shared recording WAVs remain for their stated 24-hour lifetime.” Test that deletion leaves WAVs available and labels the distinction.
+
+Other request pairs searched: unlock versus switches **no shared state conflict found**; both switches and repair **serialized**; Share versus log-export deletion **serialized**; recording Share, Clear and stale cleanup **serialized**; Keep toggle versus capture close **D9 defines the in-progress outcome**; Share versus queued log writers **found gap**. Implementation and device behavior remain **NOT VERIFIED**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

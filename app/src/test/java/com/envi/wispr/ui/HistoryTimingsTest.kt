@@ -48,11 +48,16 @@ class HistoryTimingsTest {
         assertEquals("an older row shows no timings line", "", HistoryTimings.line(row()))
     }
 
-    /** MUTATION: read the timings from anywhere but the take's facts, or drop them from the save. */
+    /**
+     * MUTATION: save the capture route's live-after (S26 build 228 showed `live 0 ms` on the phone's microphone) instead
+     * of accepted to live, or drop the timings from the save.
+     */
     @Test fun theSavedRowKeepsTheTakesLiveAndSpeechTimes() {
+        // A clock that stands still: accepted to live is then exactly 0, while the capture route reports its own 120.
+        rig.host.clock = { 1_000_000L }
         completedTake(rig.coordinator(historySaveBoundMs = 5_000L))
         val saved = rig.awaitHistoryIdle().let { rig.dao.rows.values.single() }
-        assertEquals("the capture's live-after, as the take's facts recorded it", 120L, saved.liveAfterMs)
+        assertEquals("accepted to live as the owner saw it, never the capture route's live-after", 0L, saved.liveAfterMs)
         assertNotNull("the speech time the take recorded", saved.asrMs)
     }
 

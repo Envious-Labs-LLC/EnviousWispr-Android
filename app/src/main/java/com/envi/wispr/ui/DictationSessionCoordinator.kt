@@ -965,7 +965,8 @@ internal class DictationSessionCoordinator(
             durationMs = recordingDurationMs,
             captureDevice = captureDeviceLabel,
             polishFacts = PolishPublicationFacts.from(reason, statusCode, polishContext),
-            liveAfterMs = current.facts.liveAfterMs,
+            // Accepted to live as the owner saw it, not the capture route's own live-after (0 on the phone's microphone).
+            liveAfterMs = current.facts.liveReceivedMs,
             asrMs = current.facts.asrMs,
             acceptedAtMs = current.acceptedAtMs,
         )

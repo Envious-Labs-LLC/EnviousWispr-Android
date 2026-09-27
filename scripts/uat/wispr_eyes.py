@@ -3942,6 +3942,28 @@ def devlog_status():
     return out.strip()
 
 
+def unlock_developer():
+    """Unlock the hidden Developer page (#378 D1) the way a person does: seven presses on the drawer's version
+    line within three seconds. The line is found by its words once, then pressed seven times in ONE shell call,
+    because seven separate `tap` calls read the screen between presses and outlast the window on a release build.
+    Nothing is written; the drawer then lists `Developer`, which is the proof."""
+    open_settings()
+    tap("Open settings menu")
+    # The line sits below the drawer's last row on a phone screen.
+    version = f"Version {_adb('dumpsys package com.envi.wispr')[1].split('versionName=')[1].split()[0]}"
+    if not reveal(version):
+        raise Blocked(f"{version!r} is not in the drawer")
+    node = find(version, stable=True)
+    x, y = node["centre"]
+    _STATE["tree"] = None
+    _adb("; ".join([f"input tap {x} {y}"] * 7))
+    time.sleep(1.5)
+    _STATE["tree"] = None
+    if "Developer" not in {n["text"] for n in tree()}:
+        raise Blocked("seven presses on the version line did not list Developer in the drawer")
+    return "Developer is unlocked and listed in the drawer"
+
+
 _INSERTION_FIELDS = ("api", "route", "written", "returned", "evidence", "outcome", "attempts", "ms",
                      "overrun", "target")
 

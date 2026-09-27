@@ -144,7 +144,8 @@ Grounding sweep (read-only agent, 2026-09-27; `grep -rnE -i "sherpa|k2fsa|loadLi
 - `encoder-model.int8.onnx` 649,524,002 B, sha `019f798a…`;
 - `decoder_joint-model.int8.onnx` 18,203,490 B, sha `63a6cd89…`;
 - `vocab.txt` 93,939 B, sha `d5854467…`;
-- `nemo128.onnx` from onnx-asr 0.12.0, 139,764 B, sha `5b4a84c5…`, hosted by us.
+- `nemo128.onnx` from onnx-asr 0.12.0, 139,764 B, sha `5b4a84c5…`, shipped as an APK asset like `silero_vad.onnx` (build deviation, 2026-09-27). Every public model repo carries the older `a9fde148…` instead, and `validateModelSource` admits only our host and the Hugging Face resolve path, so there is no admissible fallback for it. As an asset it cannot drift, and it adds 140 KB to the APK.
+- Fallbacks (build deviation): Hugging Face serves the two model files from an `int8/` folder, a six-segment path `validateModelSource` rejects, so only `vocab.txt` carries a Hugging Face fallback; the encoder and decoder_joint come from our host only (uploaded 2026-09-27, public ranged GETs 206).
 
 No blank penalty: the SmoothQuant port scores 6.28% at 0, against 6.80% at 1.0, and at 1.0 it writes "It was" on background noise.
 

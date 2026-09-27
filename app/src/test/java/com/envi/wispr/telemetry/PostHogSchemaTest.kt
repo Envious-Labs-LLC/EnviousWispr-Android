@@ -21,6 +21,7 @@ import com.envi.wispr.ui.TermsSnapshot
 import java.io.File
 import java.io.IOException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -96,6 +97,17 @@ class PostHogSchemaTest {
             ),
             lines,
         )
+    }
+
+    /**
+     * #374 chunk 1: the staged speech model's download row keeps its model id. MUTATION: derive the `model` rule from
+     * `ModelManifest.all` instead of `ModelManifest.deliverable` (the id is then dropped).
+     */
+    @Test
+    fun theStagedSpeechModelIdLeaves() {
+        assertKept("model", "parakeet-sq")
+        assertKept("model", "parakeet")
+        assertFalse("an unknown model id is dropped", kept("model", "parakeet-sq-x"))
     }
 
     // ---- every producer's output leaves

@@ -94,9 +94,8 @@ internal object ModelFootprint {
      * total THROWS rather than returning a smaller number, because a storage figure that silently omits
      * what it could not read is worse than no figure. **Never call this on the main thread.**
      */
-    fun measureFolder(root: File, models: List<ModelDescriptor>): ModelFolderFootprint {
+    fun measureFolder(root: File, models: List<ModelDescriptor>, staged: Set<ModelDescriptor> = emptySet()): ModelFolderFootprint {
         val rootPath = root.toPath()
-        val owners = models.associateWith { File(root, it.id).toPath() }
         val perModel = models.associateWith { 0L }.toMutableMap()
         var total = 0L
 
@@ -115,9 +114,12 @@ internal object ModelFootprint {
                     if (!attrs.isRegularFile) return FileVisitResult.CONTINUE
                     val size = attrs.size()
                     total = Math.addExact(total, size)
-                    val owner = owners.entries.firstOrNull { (_, directory) -> file.startsWith(directory) }
+                    // A model owns its own directory; a staged model (#374) also owns its in-progress download, so the
+                    // Storage page shows it as the upcoming model rather than as files no model claims.
+                    val top = rootPath.relativize(file).getName(0).toString()
+                    val owner = models.firstOrNull { model -> top == model.id || (model in staged && top == ".${model.id}.download") }
                     if (owner != null) {
-                        perModel[owner.key] = Math.addExact(perModel.getValue(owner.key), size)
+                        perModel[owner] = Math.addExact(perModel.getValue(owner), size)
                     }
                     return FileVisitResult.CONTINUE
                 }

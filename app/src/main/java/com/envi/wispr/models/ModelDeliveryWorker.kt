@@ -24,7 +24,7 @@ import kotlinx.coroutines.withContext
 
 class ModelDeliveryWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val model = ModelManifest.all.firstOrNull { it.id == inputData.getString(KEY_MODEL_ID) }
+        val model = ModelManifest.deliverable.firstOrNull { it.id == inputData.getString(KEY_MODEL_ID) }
             ?: return@withContext failure("unknown model")
         val store = ModelDeliveryStore(ModelStorage.root(applicationContext))
         val root = ModelStorage.root(applicationContext)

@@ -13,6 +13,23 @@ class ModelManifestTest {
         assertEquals("34add00a48a2e5d24e5a4ee5405a99620a3a240c", ModelManifest.s1.pinnedRevision)
     }
 
+    /**
+     * #374 chunk 1: the staged SmoothQuant model is pinned, admissible, and never listed as a model in use. MUTATIONS:
+     * put it in `all` (the Storage page would show it); leave it out of `deliverable` (the worker would refuse it).
+     */
+    @Test fun theStagedSpeechModelIsPinnedAndDeliverableButNotInUse() {
+        val sq = ModelManifest.parakeetSq
+        assertTrue(sq.isAvailable)
+        assertEquals("parakeet-sq", sq.id)
+        assertEquals("9d104194420cfe48c3374385bb42b42a788b9225", sq.pinnedRevision)
+        assertEquals(listOf("encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "vocab.txt"), sq.files.map { it.name })
+        assertEquals(667_821_431L, sq.files.sumOf { it.expectedBytes })
+        assertTrue(sq.files.all { it.sourceUrl.startsWith("https://models.enviouslabs.co/parakeet-sq/9d104194420cfe48c3374385bb42b42a788b9225/") })
+        assertFalse(sq in ModelManifest.all)
+        assertTrue(sq in ModelManifest.deliverable)
+        assertEquals(ModelManifest.all + ModelManifest.staged, ModelManifest.deliverable)
+    }
+
     private val rev = "2bda32ec70b097a55adaa07d9a7173915b43cc78"
     private val own = "https://models.enviouslabs.co/parakeet-onnx/$rev/encoder.int8.onnx"
     private val hf = "https://huggingface.co/csukuangfj/parakeet/resolve/$rev/encoder.int8.onnx?download=true"

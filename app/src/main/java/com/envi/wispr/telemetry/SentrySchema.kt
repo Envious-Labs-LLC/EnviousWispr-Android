@@ -153,7 +153,7 @@ internal object SentrySchema {
         "result" to Shape.OneOf(TerminalResult.entries.map { it.wire }.toSet() + InsertionResultKind.entries.map { it.stored }),
         "asr_failure_reason" to Shape.OneOf(AsrFailureReason.entries.map { it.name }.toSet()),
         "target_app" to PACKAGE,
-        "model" to Shape.OneOf(ModelManifest.all.map { it.id }.toSet()),
+        "model" to Shape.OneOf(ModelManifest.deliverable.map { it.id }.toSet()),
         "outcome" to Shape.OneOf(DownloadState.entries.map { it.name.lowercase() }.toSet()),
         "source_host" to Shape.OneOf(ModelSourceHost.entries.map { it.wire }.toSet()),
         "shape" to Shape.OneOf(setOf("null", "mismatched", "blank", "v1_result", "v1_error")),

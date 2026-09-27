@@ -1,0 +1,33 @@
+Issue #378 review — DONE
+
+## 1. Round 2 fixes
+
+| Fix | Result | Plan line |
+|---|---|---|
+| Lock every append batch; coordinate locks within a process | LANDED | D4, 122–125 |
+| Record descriptor lengths; serialize Share and Clear | LANDED | D6, 137 |
+| Remove the timestamp cutoff and make Clear safe | **NOT**: §5.1 misses the receiving app | D7, 141; §5.1, 186–205 |
+| Create a non-null `TakeLog` where each process receives the ID | LANDED in the plan | D4, 128 |
+| Sign and preserve both bundles before a Play edit | LANDED in the plan | D11, 149 |
+| Narrow the crash test to an acknowledged flush | LANDED | §11, 264 |
+
+## 2. Concurrency class: not closed
+
+**BLOCKING.** §5.1 lists five writers and the main log worker, but omits the app receiving a shared zip. Concrete interleaving: Share finishes its worker task and hands Gmail a FileProvider URI; Clear then deletes the zip, or a second Share replaces it; Gmail calls `openFileDescriptor` afterward and gets no file. Handing off a URI does not copy its bytes. [Android FileProvider](https://developer.android.com/reference/androidx/core/content/FileProvider). The “recipient opens zip / Clear or next Share unlinks zip” pair is absent from §5.1. D7’s statement that an already handed-off zip is the other app’s copy is false.
+
+The pre-committed consequence applies: **delete live Clear**. I am not proposing a repair to it. **Replace D7’s Clear paragraph with this plan prose:** “Clear log marks deletion pending. On the next full cold start, after the old app processes have exited and before `Telemetry.bootstrap`, any log writer, or helper binding, delete all five processes’ log files. Show ‘Clear pending’ until deletion succeeds. Clear log does not delete shared ZIP exports.”
+
+**Add to D6:** “Each Share uses a unique zip path. A later Share never deletes an earlier export. Retain exports for 24 hours, show their storage use, and provide a separately labeled Delete shared exports action that warns it may break a recipient still opening the file.” **Replace §5.1’s actor sentence with:** “Actors include the five writers, main’s log worker, and external apps that may open a shared FileProvider URI after Share returns. Export ZIP lifetime is reviewed separately from log-file lifetime.” The export lifetime still needs device verification.
+
+## 3. Other axes
+
+Existing AIDL methods already carry the take ID into `:audio`, `:vad`, `:asr`, and `:polish`; main creates it at admission. Passing `TakeLog` locally to `TakeRoute` and the request paths needs no AIDL change. The existing singleton injection in [DictationSessionService.kt:217](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt:217) must change as D4 says. **No new blocker found; implementation NOT VERIFIED.**
+
+Batch locking occurs on the separate writer thread in D4. Its intended path does not put `FileChannel.lock` on capture or insertion callers. Actual enqueue latency under contention is **NOT VERIFIED** until code and a device run exist.
+
+D11 now requires signing before edits. Current [publish.py:108](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/scripts/release/publish.py:108) still opens an edit before signing at line 117; this is planned work, not an implemented fix. **NON-BLOCKING finding:** D11 does not specify how the GitHub artifact upload occurs before the edit. **Add:** “Run `publish.py --prepare` to sign, verify, and write both artifacts and the partial receipt; run the workflow’s artifact upload step; only then run `publish.py --publish` to open Play edits.”
+
+Axes searched: §5.1 actor pairs **FOUND gap**; descriptor snapshot **no new gap found**; take-ID routing **no new gap found**; caller blocking **NOT VERIFIED**; Play signing order **FOUND workflow detail gap**; crash oracle **no new gap found**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

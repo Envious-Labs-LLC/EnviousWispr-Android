@@ -1,0 +1,16 @@
+Issue #378 review — DONE
+
+**Round 4 fixes:** Removing Clear log from the feature **LANDED** in G5 (line 54), D7 (141), §5.1 (188–203), and §11 (262). UUID export names with create-new semantics **LANDED** in D6 (137).
+
+The requested literal Clear log sweep is **NOT complete**. Negative mentions remain in rubric item 9 (line 28), D4 (125), and §5.1’s current actor paragraph (188), outside the four allowed locations. **NON-BLOCKING. Replace those clauses verbatim with:** “The log is bounded by rotation (§14 Q3).” / “No other actor deletes or rewrites a log file.” / “Nothing else deletes a log file.”
+
+**The log-file Share and export concurrency class is NOT CLOSED. BLOCKING.** §5.1 serializes Shares, but D6 does not put **Delete shared exports** on that worker. Concrete interleaving: Share creates its UUID zip; Delete runs on another thread and unlinks it; Share hands its URI to the chooser, and the receiving app opens it later and fails. A FileProvider URI grants access to a file; it is not a copy. [Android FileProvider](https://developer.android.com/reference/androidx/core/content/FileProvider).
+
+**Add to D6 verbatim:** “Run Delete shared exports and the 24-hour export sweep on the same single log worker as Share. Sweep expired exports before creating a new zip. Delete shared exports processes only completed log ZIPs after any active Share job finishes; its warning still applies to recipients opening an earlier export.” Add a Share-versus-Delete ordering case to §11.
+
+**Recording sharing has a separate BLOCKING race.** D7 (141) correctly puts archiving and Clear recordings on the `CapturedAudioFiles` worker, but D9 (145) does not put Share recent recordings’ file selection and open there. Share can list a PCM, Clear can delete it, then Share fails to open it. The existing [CapturedAudioFiles.kt:20](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/app/src/main/java/com/envi/wispr/ui/CapturedAudioFiles.kt:20) already queues deletion on that worker. **Add to D9 verbatim:** “Share recent recordings selects and opens its PCM sources on the `CapturedAudioFiles` worker, in order with archive and Clear recordings. Convert the held descriptors on a separate worker. If Clear wins first, Share finds no recordings; if Share opens first, Clear may unlink the paths without changing the held audio. Close every descriptor after conversion.” Test both orderings in §11.
+
+Axes searched: Clear log removal **found stray negative mentions**; UUID naming **found correct**; writer, rotation and held log descriptors **no new defect found**; Share versus export deletion **found defect**; archive versus Clear recordings **no defect found**; recording Share versus Clear **found defect**. Implementation and device behavior remain **NOT VERIFIED**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

@@ -1,0 +1,29 @@
+Issue #378 review — DONE
+
+**The §5.1 concurrency class is NOT CLOSED.** The live Clear was removed, but the cold-start Clear still assumes that sending a kill signal means every helper has stopped.
+
+## Round 3 fixes
+
+| Fix | Result | Plan line |
+|---|---|---|
+| Writer no longer checks for live deletion | LANDED | D4, 125 |
+| Separate export lifetime and Delete shared exports | LANDED | D6, 137 |
+| Unique export paths | **NOT** guaranteed by a wall-time filename | D6, 137 |
+| Cold-start Clear replaces live Clear | **NOT** safe as written | D7, 141 |
+| Prepare, upload artifact, then publish | LANDED in the plan; execution NOT VERIFIED | D11, 149 |
+| Revised actor list and Clear oracle | **NOT** complete | §5.1, 189–203; §11, 264 |
+
+## Findings
+
+**BLOCKING — Clear can race a surviving helper.** Concrete interleaving: `:audio` remains alive with a log descriptor after main dies. Main restarts, calls `killProcess(:audio)`, immediately unlinks its log and removes `clear-pending`. The signal has been sent, but `:audio` has not yet exited and can still hold or write through that descriptor. Android’s implementation sends `SIGKILL`; [Linux `kill()`](https://man7.org/linux/man-pages/man2/kill.2.html) reports signal delivery, not completed termination. `getRunningAppProcesses()` is a point-in-time list, not an atomic barrier against another process starting. Its completeness for this exact use on Android 13–16 is **NOT VERIFIED**. §5.1’s “Clear / any writer” row therefore fails.
+
+**Replace D7’s Clear design with this plan prose:** “Remove Clear log, Restart now and `clear-pending` from this change. The working log remains bounded by rotation at 50 MB; Delete shared exports remains. Remove Clear log claims and tests from G5, D5, §5, §5.1, §7 and §11. Add Clear log later only with a proven process-wide stop barrier.” This removes the blocking Clear path without changing the two-app direction.
+
+**BLOCKING — a wall-time filename does not make exports unique.** D6 names each zip `log-<wall time>.zip`. Two sequential Shares can receive the same timestamp, or the wall clock can move backward. Share B can replace A’s file before A’s recipient opens its URI. Android documents that [wall time can jump](https://developer.android.com/reference/android/os/SystemClock); §5.1’s “Share / later Share” row assumes distinct paths without enforcing them. **Replace D6’s filename sentence with:** “Give every export a random UUID filename and create it with an operation that fails if the path already exists; retry a collision, and never overwrite an earlier export.” Add a two-Share, same-clock-value oracle to §11.
+
+The main accessibility service cannot start before `Application.onCreate` finishes: Android calls it before service objects are created. Content providers are the documented exception; whether a merged provider opens this logger is **UNCHECKED**. [Application lifecycle](https://developer.android.com/reference/android/app/Application).
+
+Axes searched: helper termination **FOUND defect**; process-list barrier **NOT VERIFIED**; main service startup **no defect found**; export filename collision **FOUND defect**; artifact ordering **no new defect found in plan**; unchanged logging, Room and Play design **no new blocker found**.
+
+VERDICT: PROCEED-WITH-REVISIONS
+

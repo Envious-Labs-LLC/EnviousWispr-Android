@@ -1,0 +1,11 @@
+Issue #378 plan review — DONE
+
+**LANDED.** [D10, line 143](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/docs/feature-requests/issue-378-2026-09-27-dev-app-local-log.md:143) gives door ZIPs separate worker-owned folders, unique partial files, read-only descriptors, cancellation cleanup, and startup and pre-build cleanup. The DUMP correction and binary Mac pull are at lines 138–145; the tests are at lines 268–270.
+
+No sentence still directs ZIP delivery through a pipe. The remaining pipe references describe the replaced approach, other pipelines, or the explicit rule against waiting for a pipe writer.
+
+**No BLOCKING plan defect found.** Door files are separate from D6’s 24-hour Share exports and D9’s shared recordings. An active request’s file is not an abandoned file for pre-build cleanup; unlinking follows descriptor opening. Implementation of that distinction and the S26 pull remain **NOT VERIFIED**.
+
+Axes searched: four fixes **found**; active ZIP pipe **not found**; undefined door-file lifetime **not found**; conflict with D6/D9 sweeps **not found**; other blocking defect **not found**.
+
+VERDICT: PROCEED-AS-PLANNED

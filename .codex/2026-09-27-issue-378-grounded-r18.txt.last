@@ -1,0 +1,11 @@
+**Contract: LANDED.** D4 limits cross-process locking to the Off barrier ([line 115](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/docs/feature-requests/issue-378-2026-09-27-dev-app-local-log.md:115)). D6 specifies draining, pinned snapshots, recorded lengths and acknowledgment statuses ([line 129](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/378-dev-app-local-log/docs/feature-requests/issue-378-2026-09-27-dev-app-local-log.md:129)); §5.1 and §11 reflect them (lines 173–179, 249).
+
+**Share-completeness class: OPEN — BLOCKING.** At the tap, a pre-tap line is in the oldest rotated file. Before its writer notices the fence, one append rotates the full set and unlinks that file. The writer then pins what remains and acknowledges `written` with zero queue drops. All five can do likewise, producing a ZIP labelled complete without that line. Apply §14b’s pre-committed consequence; do not patch the label. Add this verbatim plan prose: “The ZIP and Developer page report only each process’s fence acknowledgment status and drop count. They never call a ZIP complete. Rotation can evict a line between the Share tap and that process’s snapshot.”
+
+**Orphan snapshots — BLOCKING.** D6 removes links only “after the ZIP is finished.” A crash or timeout can leave links to files subsequently rotated out, so retained storage can exceed D4’s 50 MB claim. A hard link keeps the inode alive after its other name is removed ([Linux `unlink(2)`](https://www.man7.org/linux/man-pages/man2/unlink.2.html)). Add verbatim: “The 50 MB limit applies to live logs; snapshot pins use additional temporary storage. On every Share exit, remove that fence’s pins in `finally`. At main startup, invalidate the inherited fence, acquire all five log locks before removing orphan pins, and defer new Shares if cleanup cannot finish. Each writer rechecks the current fence under its lock before pinning.”
+
+**Off-barrier contention: no defect found.** A writer pins under its own lock; the barrier waits and may report Pending or Error under D2’s stated bound.
+
+Axes searched: contract **found**; false-complete interleaving **found**; orphan-pin storage **found**; Off-barrier conflict **not found**.
+
+VERDICT: PROCEED-WITH-REVISIONS

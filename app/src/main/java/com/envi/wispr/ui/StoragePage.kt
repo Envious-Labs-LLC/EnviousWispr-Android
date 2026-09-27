@@ -48,7 +48,7 @@ internal fun StoragePage() {
             value = withContext(Dispatchers.IO) {
                 try {
                     StorageReading.Measured(
-                        ModelFootprint.measureFolder(ModelStorage.root(context), ModelManifest.all),
+                        ModelFootprint.measureFolder(ModelStorage.root(context), ModelManifest.deliverable, ModelManifest.staged.toSet()),
                     )
                 } catch (cancellation: CancellationException) {
                     // Cancellation is the page going away, not a measurement failure. Rethrowing keeps
@@ -85,6 +85,14 @@ internal fun StoragePage() {
                             title = model.displayName,
                             value = if (bytes > 0L) formatModelBytes(bytes) else "Not on this phone",
                         )
+                    }
+                    // A model downloading ahead of an engine swap (#374) is its own row, never "Files no model claims".
+                    ModelManifest.staged.forEach { model ->
+                        val bytes = footprint.perModel[model] ?: 0L
+                        if (bytes > 0L) {
+                            HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+                            StorageRow(title = "Upcoming speech model", value = formatModelBytes(bytes))
+                        }
                     }
                     if (footprint.unclaimed > 0L) {
                         HorizontalDivider(Modifier.padding(horizontal = 18.dp))

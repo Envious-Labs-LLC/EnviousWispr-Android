@@ -158,6 +158,17 @@ class SentrySchemaTest {
         assertNull(out.data["free"])
     }
 
+    /**
+     * #374 chunk 1: a model-delivery breadcrumb naming the staged speech model keeps its id. MUTATION: derive the
+     * `model` shape from `ModelManifest.all` (the id is then redacted).
+     */
+    @Test fun aStagedModelDeliveryBreadcrumbKeepsItsModel() {
+        val crumb = Breadcrumb("terminal").apply { category = "model_delivery"; setData("model", "parakeet-sq") }
+        assertEquals("parakeet-sq", SentryBootstrap.sanitize(crumb).data["model"])
+        val bad = Breadcrumb("terminal").apply { category = "model_delivery"; setData("model", "parakeet-sq-x") }
+        assertEquals("[REDACTED]", SentryBootstrap.sanitize(bad).data["model"])
+    }
+
     /** Row 2c: code locations survive per language. MUTATION: drop the `<init>` form from the method validator. */
     @Test fun codeLocationsSurviveForKotlinJavaAndNativeFrames() {
         val jvm = SentryStackFrame().apply {

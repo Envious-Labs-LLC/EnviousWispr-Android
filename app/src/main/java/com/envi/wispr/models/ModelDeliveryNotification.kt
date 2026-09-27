@@ -23,6 +23,7 @@ internal object ModelDeliveryNotification {
     fun notificationId(model: ModelDescriptor): Int = NOTIFICATION_BASE + when (model.id) {
         "parakeet" -> 1
         "s1-mini" -> 2
+        "parakeet-sq" -> 3
         else -> (model.id.hashCode() and 0x7fff)
     }
 
@@ -119,7 +120,7 @@ internal object ModelDeliveryNotification {
 class ModelDeliveryCancelReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val modelId = intent.getStringExtra(ModelDeliveryNotification.EXTRA_MODEL_ID)
-        val model = ModelManifest.all.firstOrNull { it.id == modelId } ?: return
+        val model = ModelManifest.deliverable.firstOrNull { it.id == modelId } ?: return
         when (intent.action) {
             ModelDeliveryNotification.ACTION_PAUSE -> ModelDeliveryWorker.pause(context, model)
             ModelDeliveryNotification.ACTION_RESUME -> ModelDeliveryWorker.resume(context, model)

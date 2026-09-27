@@ -392,21 +392,19 @@ internal class SessionFinalizer(
         val saved = row.savedNow
         if (handoff != InsertionHandoff.SCHEDULED) {
             insertion.releasePinnedTarget()
-            // No insertion runs, so the take ends at this delivery (#378 D8).
-            val endToEndMs = publication.acceptedAtMs.takeIf { it > 0L }?.let { host.elapsedRealtimeMs() - it }
             // Three outcomes, not two. A copy that was never attempted is the user's own auto-copy setting
             // with History already holding the words; until the save has answered SAVED the copy is forced,
             // so the words are never only in a write that may still fail (#277). A copy that was attempted
             // and failed is a fault whatever else was true.
             val clipboard =
                 if (clipboardPolicy.autoCopyToClipboard || !saved) {
-                    if (keepOnClipboard(row, finalText, endToEndMs)) {
+                    if (keepOnClipboard(row, finalText, publication.acceptedAtMs)) {
                         ClipboardOutcome.COPIED
                     } else {
                         ClipboardOutcome.WRITE_FAILED
                     }
                 } else {
-                    keepInHistoryOnly(row, endToEndMs)
+                    keepInHistoryOnly(row, publication.acceptedAtMs)
                     ClipboardOutcome.NOT_ATTEMPTED
                 }
             measuredCopy = clipboard
@@ -494,9 +492,11 @@ internal class SessionFinalizer(
     private fun keepOnClipboard(
         row: HistoryRow,
         text: String,
-        endToEndMs: Long?,
+        acceptedAtMs: Long,
     ): Boolean {
         val copied = host.copyToClipboard(text)
+        // No insertion runs, so the take ends when this copy ends (#378 D8), stamped after it, never before.
+        val endToEndMs = sinceAccepted(acceptedAtMs)
         historyWrites.enqueue("clipboard-only outcome", WriteKind.TERMINAL) { repository ->
             val id = row.resolveOnQueue()
             if (id <= 0L) return@enqueue
@@ -538,8 +538,13 @@ internal class SessionFinalizer(
         }
     }
 
+    /** Milliseconds since the owner accepted the take, or null when the acceptance is unknown (#378 D8). */
+    private fun sinceAccepted(acceptedAtMs: Long): Long? = acceptedAtMs.takeIf { it > 0L }?.let { host.elapsedRealtimeMs() - it }
+
     /** History is the destination by the user's own auto-copy setting: the row records it. */
-    private fun keepInHistoryOnly(row: HistoryRow, endToEndMs: Long?) {
+    private fun keepInHistoryOnly(row: HistoryRow, acceptedAtMs: Long) {
+        // No insertion and no copy: the take ends at this delivery (#378 D8).
+        val endToEndMs = sinceAccepted(acceptedAtMs)
         historyWrites.enqueue("history-only outcome", WriteKind.TERMINAL) { repository ->
             val id = row.resolveOnQueue()
             if (id <= 0L) return@enqueue

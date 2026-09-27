@@ -332,7 +332,10 @@ internal class DictationSessionRig {
             check(applicationToast.await(10, TimeUnit.SECONDS)) { "the application toast never fired; events: $events" }
         }
         override fun showPolishNotice(notice: PolishFailureNotice) { events += "polish-notice" }
+        /** When set, runs inside each clipboard copy, as a slow copy would (#378 D8). */
+        @Volatile var duringCopy: (() -> Unit)? = null
         override fun copyToClipboard(text: String): Boolean {
+            duringCopy?.invoke()
             events += "clipboard:$text"
             return clipboardWorks
         }

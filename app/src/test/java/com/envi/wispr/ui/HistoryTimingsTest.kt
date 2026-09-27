@@ -62,6 +62,17 @@ class HistoryTimingsTest {
         assertTrue("the handoff carries when the take was accepted", rig.insertion.acceptedAtHandoff.single() > 0L)
     }
 
+    /** Codex round 1. MUTATION: stamp the end to end before the copy. A slow copy is inside the take's total. */
+    @Test fun aClipboardTakeEndsAfterItsCopy() {
+        val now = java.util.concurrent.atomic.AtomicLong(1_000_000L)
+        rig.host.clock = { now.get() }
+        rig.host.duringCopy = { now.addAndGet(10_000L) }
+        rig.insertion.handoff = InsertionHandoff.SERVICE_NOT_RUNNING
+        completedTake(rig.coordinator(historySaveBoundMs = 5_000L))
+        val saved = rig.awaitHistoryIdle().let { rig.dao.rows.values.single() }
+        assertTrue("the total includes the copy: ${saved.endToEndMs}", saved.endToEndMs!! >= 10_000L)
+    }
+
     /** MUTATION: skip the end-to-end on a route with no insertion. It ends at the delivery, with no insertion time. */
     @Test fun aTakeWithNoInsertionEndsAtItsDelivery() {
         rig.insertion.handoff = InsertionHandoff.SERVICE_NOT_RUNNING

@@ -5,3 +5,4 @@ hand insertion a zero acceptance time: com.envi.wispr.ui.HistoryTimingsTest.aSch
 skip the end to end on a route with no insertion: com.envi.wispr.ui.HistoryTimingsTest.aTakeWithNoInsertionEndsAtItsDelivery -> RED (test failed, as it must)
 drop the timings from the outcome write: com.envi.wispr.paste.InsertionOutcomeRecorderTest.theOutcomeWriteCarriesTheInsertionAndEndToEndTimes -> RED (test failed, as it must)
 overwrite a timing with null on an unmeasured save (drop the COALESCE): TranscriptRouteDaoTest#theTimingsLandAndAnUnmeasuredWriteKeepsThem on emulator-5554 -> RED (test failed, as it must)
+stamp the end to end before the clipboard copy (Codex round 1): HistoryTimingsTest.aClipboardTakeEndsAfterItsCopy -> RED (test failed, as it must)

@@ -28,7 +28,6 @@ internal class LogWriter(
     private val process: String,
     private val lock: ProcessLogLock,
     private val wallClock: () -> Long,
-    private val link: (from: File, to: File) -> Unit,
     private val capacity: Int = DEFAULT_CAPACITY,
     private val lockTimeoutMs: Long = LOCK_TIMEOUT_MS,
     private val onWriteFailure: (String) -> Unit = {},
@@ -201,14 +200,21 @@ internal class LogWriter(
             if (runCatching { files.fence.readText().trim() }.getOrNull() != id) return@withLock
             val dir = files.snapshot(id, process).apply { mkdirs() }
             val lengths = StringBuilder()
+            var pinFailed = false
+            // A COPY of exactly the bytes present now, never a hard link: Android's SELinux policy denies
+            // `link` on app data files for an ordinary app (measured on the emulator 2026-09-27, `avc: denied
+            // { link }` for every process). Under the lock no batch or rotation can change these bytes mid-copy.
             for (file in files.setOf(process)) {
                 if (!file.exists()) continue
                 val length = file.length()
                 val pinned = File(dir, file.name)
-                runCatching { link(file, pinned) }.onSuccess { lengths.append(file.name).append(' ').append(length).append('\n') }
+                runCatching { copyPrefix(file, pinned, length) }
+                    .onSuccess { lengths.append(file.name).append(' ').append(length).append('\n') }
+                    .onFailure { pinFailed = true }
             }
             File(dir, LENGTHS).writeText(lengths.toString())
             val status = when {
+                pinFailed -> "pin-failed"
                 droppedSinceAck > 0 -> "dropped"
                 discardedByOff > 0 -> "discarded-by-Off"
                 else -> "written"
@@ -217,6 +223,22 @@ internal class LogWriter(
             lastAckedFence = id
             droppedSinceAck = 0
             discardedByOff = 0
+        }
+    }
+
+    /** The first [length] bytes of [from] into a new [to]; the pin is never appended to afterwards. */
+    private fun copyPrefix(from: File, to: File, length: Long) {
+        from.inputStream().use { input ->
+            to.outputStream().use { output ->
+                val buffer = ByteArray(64 * 1024)
+                var left = length
+                while (left > 0) {
+                    val read = input.read(buffer, 0, minOf(buffer.size.toLong(), left).toInt())
+                    if (read < 0) break
+                    output.write(buffer, 0, read)
+                    left -= read
+                }
+            }
         }
     }
 

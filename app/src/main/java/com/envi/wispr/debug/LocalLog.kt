@@ -3,7 +3,6 @@ package com.envi.wispr.debug
 import android.content.Context
 import android.os.FileObserver
 import android.os.SystemClock
-import android.system.Os
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -54,7 +53,6 @@ internal object LocalLog {
                 process = process,
                 lock = lock,
                 wallClock = System::currentTimeMillis,
-                link = { from, to -> Os.link(from.absolutePath, to.absolutePath) },
                 onWriteFailure = { DebugLogger.logcatOnly(TAG, it) },
                 onRefreshed = { admissionWindow = false },
             )

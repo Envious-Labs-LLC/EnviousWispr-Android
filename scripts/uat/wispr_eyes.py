@@ -52,6 +52,7 @@ import sys
 import threading
 import uuid
 import time
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -3890,6 +3891,54 @@ def logs(pattern=None, lines=200):
     return "\n".join(selected).strip()
 
 
+DEVLOG_URI = f"content://{PACKAGE}.devlog"
+
+
+def pull_log(dest):
+    """The app's local log (#378) as a ZIP at `dest`, pulled through the adb door with no tap on the phone.
+
+    Binary bytes go through their own `adb exec-out` path into a temporary file, never through `_run`/`_adb`,
+    which decode text. The ZIP is checked (a real ZIP holding `device.txt`) before it is renamed into place;
+    a failed pull leaves nothing at `dest`. Returns the ZIP's per-process status lines. The ZIP never claims
+    to be complete: rotation can evict the oldest lines, and a part of the app that did not confirm is named.
+    """
+    target = device()
+    partial = f"{dest}.partial"
+    try:
+        with open(partial, "wb") as out:
+            done = subprocess.run(
+                [ADB, "-s", target, "exec-out", "content", "read", "--uri", f"{DEVLOG_URI}/log.zip"],
+                stdout=out, stderr=subprocess.PIPE, timeout=120,
+            )
+        if done.returncode != 0:
+            raise Blocked(f"adb could not read the log: {done.stderr.decode(errors='replace').strip() or 'no message'}")
+        if not zipfile.is_zipfile(partial):
+            with open(partial, "rb") as head:
+                sample = head.read(200).decode(errors="replace").strip()
+            raise Blocked(f"the phone did not return a log ZIP: {sample or 'empty'}")
+        with zipfile.ZipFile(partial) as archive:
+            if "device.txt" not in archive.namelist():
+                raise Blocked("the log ZIP has no device.txt, so its per-process status is unknown")
+            device_txt = archive.read("device.txt").decode(errors="replace")
+        os.replace(partial, dest)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
+    return "\n".join(line for line in device_txt.splitlines() if line.startswith("  ") or "Detailed log" in line)
+
+
+def set_detailed_log(on):
+    """Turns the hidden Detailed log switch on or off through the adb door (#378); returns the settled state."""
+    _, out = _adb(f"content call --uri {DEVLOG_URI} --method setDetailedLog --arg {'true' if on else 'false'}", timeout=60)
+    return out.strip()
+
+
+def devlog_status():
+    """Both Developer switches as the app states them, through the adb door (#378)."""
+    _, out = _adb(f"content call --uri {DEVLOG_URI} --method status", timeout=60)
+    return out.strip()
+
+
 _INSERTION_FIELDS = ("api", "route", "written", "returned", "evidence", "outcome", "attempts", "ms",
                      "overrun", "target")
 
@@ -4671,6 +4720,18 @@ def _main(argv):
             return _print_report(command, report, verbose)
         elif command == "logs":
             print(logs(rest[0] if rest else None))
+        elif command == "pull-log":
+            if not rest:
+                print("usage: pull-log <dest.zip>", file=sys.stderr)
+                return 2
+            print(pull_log(rest[0]))
+        elif command == "detailed-log":
+            if not rest or rest[0] not in ("on", "off"):
+                print("usage: detailed-log on|off", file=sys.stderr)
+                return 2
+            print(set_detailed_log(rest[0] == "on"))
+        elif command == "devlog-status":
+            print(devlog_status())
         elif command == "take":
             print(json.dumps(last_take(), indent=2))
         elif command == "shot":

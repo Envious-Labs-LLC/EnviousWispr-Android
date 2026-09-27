@@ -272,6 +272,7 @@ internal class AccessibilityInsertionRunner(
 
     private fun logOutcome(pending: PendingInsertion, outcome: InsertionOutcomeLine.Outcome, target: String?) {
         val attempt = pending.attempt
+        // #378: the take id travels to the local log file as a field; logcat's line is unchanged.
         DebugLogger.log(
             TAG,
             InsertionOutcomeLine.format(
@@ -286,6 +287,7 @@ internal class AccessibilityInsertionRunner(
                 overrun = attempt.overrun,
                 targetPackage = target,
             ),
+            pending.takeId,
         )
     }
 

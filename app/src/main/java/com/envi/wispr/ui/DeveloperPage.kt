@@ -59,17 +59,9 @@ internal fun DeveloperPage() {
                 enabled = state.detailedLog != DeveloperSwitches.Switch.Pending,
                 onCheckedChange = { switches.requestDetailedLog(it) },
             )
-            SettingsToggleRow(
-                title = "Keep recordings",
-                subtitle = switchSubtitle(
-                    state.keepRecordings,
-                    on = "On. The audio of your last 200 dictations is kept on this phone. A take already in progress follows the switch as it was.",
-                    off = "Off. No audio is kept after a dictation.",
-                ),
-                checked = state.keepRecordings == DeveloperSwitches.Switch.On,
-                enabled = state.keepRecordings != DeveloperSwitches.Switch.Pending,
-                onCheckedChange = { switches.requestKeepRecordings(it) },
-            )
+            // No Keep recordings row yet: the recording archive is #373 (PR #376), and whether it sits behind this
+            // page's switch is #375. `DeveloperSwitches` already owns that switch and its flag file; the row
+            // appears when something reads it, never before (a switch nothing reads looks like it worked).
         }
         SettingsGroup("Log files") {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -17,7 +17,6 @@ import android.os.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 
 /** Enqueues idempotent model bootstrap before any launcher or side-button activity can run. */
 class ModelBootstrapApplication : Application() {
@@ -109,11 +108,5 @@ class ModelBootstrapApplication : Application() {
         DeveloperLogs.of(this).startup()
         ModelDeliveryWorker.enqueueBootstrap(this, ModelManifest.parakeet)
         ModelDeliveryWorker.enqueueBootstrap(this, ModelManifest.s1)
-        // #374 chunk 1: download the next speech model in the background while the current one dictates. Off the main
-        // thread, because readiness hashes the model files; a limb, so a failure here never touches start-up.
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            runCatching { StagedModelTrigger.run(this@ModelBootstrapApplication) }
-                .onFailure { DebugSessionLog.warn("Staged model trigger failed: ${it.javaClass.simpleName}") }
-        }
     }
 }

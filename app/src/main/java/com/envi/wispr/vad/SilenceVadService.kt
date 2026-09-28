@@ -16,11 +16,11 @@ import java.util.concurrent.locks.LockSupport
 /**
  * Hosts the silence detector, alone, in the `:vad` process.
  *
- * **This process exists to be killable.** sherpa-onnx calls `exit(-1)` on a model or input contract
- * violation, 21 times in its VAD loader alone, and that is not catchable from Kotlin. A detector sharing
- * a process with audio capture could therefore take a live recording down with it. Here its death is
- * ordinary binder death, which the caller already handles by turning auto-stop off for that take and
- * carrying on recording.
+ * **This process exists to be killable.** It was built for sherpa-onnx, which called `exit(-1)` on a model or
+ * input contract violation; since #374 the detector runs on ONNX Runtime, which throws instead, but a native
+ * crash in any runtime is still not catchable from Kotlin. A detector sharing a process with audio capture could
+ * take a live recording down with it. Here its death is ordinary binder death, which the caller already handles
+ * by turning auto-stop off for that take and carrying on recording.
  *
  * It holds no capture file, no file path and no `AudioRecord`. It receives copied PCM and returns an
  * integer, which is why a wrong answer cannot touch what was recorded.

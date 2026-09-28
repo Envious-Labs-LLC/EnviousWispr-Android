@@ -99,15 +99,12 @@ class PostHogSchemaTest {
         )
     }
 
-    /**
-     * #374 chunk 1: the staged speech model's download row keeps its model id. MUTATION: derive the `model` rule from
-     * `ModelManifest.all` instead of `ModelManifest.deliverable` (the id is then dropped).
-     */
+    /** #374: the speech model's download row keeps its model id. MUTATION: an allowlist that is not the manifest's. */
     @Test
-    fun theStagedSpeechModelIdLeaves() {
+    fun theSpeechModelIdLeaves() {
         assertKept("model", "parakeet-sq")
-        assertKept("model", "parakeet")
-        assertFalse("an unknown model id is dropped", kept("model", "parakeet-sq-x"))
+        assertKept("model", "s1-mini")
+        assertFalse("the retired id is dropped", kept("model", "parakeet"))
     }
 
     // ---- every producer's output leaves

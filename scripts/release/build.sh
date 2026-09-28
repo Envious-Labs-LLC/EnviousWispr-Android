@@ -2,7 +2,7 @@
 set -euo pipefail
 : "${ANDROID_HOME:?Android SDK required}"
 : "${PLAY_VERSION_CODE:?Release version code required}"
-# Install the shared, pinned dependencies: the sherpa-onnx AAR, the SDK toolchain
+# Install the shared, pinned dependencies: the SDK toolchain
 # (platform, build-tools, NDK, CMake) and local.properties. Shared with the PR
 # check (pr-check.yml) via scripts/ci/setup-android-deps.sh so a PR builds against
 # exactly the toolchain that ships.

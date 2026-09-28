@@ -11,7 +11,7 @@ Every licence name this writes comes from the publisher's own declaration:
   * a Maven dependency's licence comes from its POM, which is the file the publisher uploaded beside
     the artifact. The Gradle cache is consulted first; a dependency Gradle fetched without its POM is
     downloaded from the same repository Gradle would have used, and cached under CACHE_DIR;
-  * a component with no Maven coordinate (the local sherpa-onnx AAR, the llama.cpp submodule) is
+  * a component with no Maven coordinate (the onnx-asr audio front end, the llama.cpp submodule) is
     declared in BUNDLED below, naming the file or URL its licence was read from, with the version
     MEASURED from the artifact we actually ship.
 
@@ -85,27 +85,18 @@ COMPLETE = re.compile(r"^NOTICES-DEP-COMPLETE (\d+)$")
 # evidence behind its claim, so a reader can re-check it without trusting this file.
 BUNDLED = [
     {
-        "name": "sherpa-onnx",
-        "version": "1.12.29",
-        "license": "Apache-2.0",
-        "source": "https://github.com/k2-fsa/sherpa-onnx",
-        "note": "Runs the speech model. Bundled as the local app/libs/sherpa-onnx.aar, not resolved from Maven.",
-        "evidence": (
-            "Version measured with `strings` on jni/arm64-v8a/libsherpa-onnx-jni.so inside that AAR. "
-            "Licence read from https://github.com/k2-fsa/sherpa-onnx/blob/v1.12.29/LICENSE, the tag "
-            "matching that version. The AAR carries no licence file of its own."
-        ),
-    },
-    {
-        "name": "ONNX Runtime",
-        "version": "1.17.1",
+        "name": "onnx-asr audio front end",
+        "version": "0.12.0",
         "license": "MIT License",
-        "source": "https://github.com/microsoft/onnxruntime",
-        "note": "Redistributed inside the sherpa-onnx AAR. Not a declared dependency of this project.",
+        "source": "https://github.com/istupakov/onnx-asr",
+        "note": (
+            "The file app/src/main/assets/nemo128.onnx (NeMo 128-bin log-mel features), taken unmodified from "
+            "the onnx-asr 0.12.0 package. Feeds the speech model."
+        ),
         "evidence": (
-            "Version measured with `strings` on jni/arm64-v8a/libonnxruntime.so inside "
-            "app/libs/sherpa-onnx.aar. Licence read from "
-            "https://github.com/microsoft/onnxruntime/blob/v1.17.1/LICENSE."
+            "Its SHA-256 (prefix 5b4a84c52eeaa615) matches "
+            "onnx_asr/preprocessors/data/nemo128.onnx in the onnx-asr 0.12.0 wheel on PyPI. Licence read from "
+            "that wheel's dist-info licenses/LICENSE."
         ),
     },
     {
@@ -127,8 +118,7 @@ BUNDLED = [
 SHARED_TEXT = (
     "Apache License 2.0",
     "Apache-2.0.txt",
-    "Every component above marked Apache-2.0, including sherpa-onnx and the AndroidX, Kotlin and "
-    "Compose libraries.",
+    "Every component above marked Apache-2.0, including the AndroidX, Kotlin and Compose libraries.",
 )
 
 # MIT and BSD-3-Clause each carry the component's OWN copyright line, so one shared text cannot
@@ -137,7 +127,8 @@ SHARED_TEXT = (
 # or the `name` of a BUNDLED entry.
 COMPONENT_TEXTS = {
     "llama.cpp": ("MIT License - llama.cpp", "MIT-llama.cpp.txt"),
-    "ONNX Runtime": ("MIT License - ONNX Runtime", "MIT-onnxruntime.txt"),
+    "com.microsoft.onnxruntime:onnxruntime-android": ("MIT License - ONNX Runtime", "MIT-onnxruntime.txt"),
+    "onnx-asr audio front end": ("MIT License - onnx-asr", "MIT-onnx-asr.txt"),
     "com.qualcomm.qti:geniex-android": (
         "BSD 3-Clause License - Qualcomm GenieX",
         "BSD-3-Clause-geniex.txt",

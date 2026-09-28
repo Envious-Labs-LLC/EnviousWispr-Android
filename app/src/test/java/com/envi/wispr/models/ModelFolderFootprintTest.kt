@@ -48,22 +48,6 @@ class ModelFolderFootprintTest {
         assertEquals(footprint.total, footprint.perModel.values.sum() + footprint.unclaimed)
     }
 
-    /**
-     * #374: a staged model's half-finished download belongs to it, not to "Files no model claims"; a model in use keeps
-     * today's accounting, where its partial download is unclaimed. MUTATION: drop the staged download-folder rule.
-     */
-    @Test
-    fun aStagedModelOwnsItsInProgressDownload() {
-        val sq = ModelManifest.parakeetSq
-        write(".${sq.id}.download/encoder-model.int8.onnx.part", 700)
-        write("${sq.id}/vocab.txt", 30)
-        write(".${parakeet.id}.download/encoder.int8.onnx.part", 90)
-        val footprint = ModelFootprint.measureFolder(temporaryFolder.root, models + sq, setOf(sq))
-        assertEquals(730L, footprint.perModel[sq])
-        assertEquals("the in-use model's partial download stays unclaimed, as today", 90L, footprint.unclaimed)
-        assertEquals(footprint.total, footprint.perModel.values.sum() + footprint.unclaimed)
-    }
-
     @Test
     fun aNestedFileStillBelongsToItsModel() {
         // A model directory is not flat forever. A file one level down must not fall out of its model

@@ -203,10 +203,10 @@ class ThirdPartyNoticesTest {
 
     @Test
     fun theRootNoticesNameEveryComponentThatHasNoMavenCoordinate() {
-        // These three ship inside the APK without a Maven coordinate, so nothing in the dependency
-        // listing can account for them and only a named entry can.
+        // These ship inside the APK without a Maven coordinate, so nothing in the dependency listing can
+        // account for them and only a named entry can. ONNX Runtime has been a Maven dependency since #374.
         val text = rootFile.readText()
-        listOf("sherpa-onnx", "ONNX Runtime", "llama.cpp").forEach { component ->
+        listOf("onnx-asr audio front end", "llama.cpp").forEach { component ->
             assertTrue("the root notices must name $component", text.contains(component))
         }
         assertTrue(

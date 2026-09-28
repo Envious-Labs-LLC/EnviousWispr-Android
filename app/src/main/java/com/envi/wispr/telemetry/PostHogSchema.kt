@@ -130,7 +130,7 @@ internal object PostHogSchema {
         "lesson" to ValueRule.Closed(lower(PracticeLesson.entries)),
         // A practice verdict is reported only once the take ended, never while it is still WORKING.
         "outcome" to ValueRule.Closed(lower(PracticeOutcome.entries.filter { it != PracticeOutcome.WORKING }) + lower(DownloadState.entries)),
-        "model" to ValueRule.Closed(ModelManifest.deliverable.map { it.id }.toSet()),
+        "model" to ValueRule.Closed(ModelManifest.all.map { it.id }.toSet()),
         "source_host" to ValueRule.Closed(ModelSourceHost.entries.map { it.wire }.toSet()),
         "bytes_bucket" to ValueRule.Closed(ModelDeliveryWorker.BYTES_BUCKETS),
 

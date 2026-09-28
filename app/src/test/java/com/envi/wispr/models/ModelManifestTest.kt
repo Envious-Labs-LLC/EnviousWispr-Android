@@ -9,25 +9,22 @@ class ModelManifestTest {
     @Test fun productionDescriptorsCarryPinnedVerifiedReceipts() {
         assertTrue(ModelManifest.parakeet.isAvailable)
         assertTrue(ModelManifest.s1.isAvailable)
-        assertEquals("2bda32ec70b097a55adaa07d9a7173915b43cc78", ModelManifest.parakeet.pinnedRevision)
+        assertEquals("9d104194420cfe48c3374385bb42b42a788b9225", ModelManifest.parakeet.pinnedRevision)
         assertEquals("34add00a48a2e5d24e5a4ee5405a99620a3a240c", ModelManifest.s1.pinnedRevision)
     }
 
     /**
-     * #374 chunk 1: the staged SmoothQuant model is pinned, admissible, and never listed as a model in use. MUTATIONS:
-     * put it in `all` (the Storage page would show it); leave it out of `deliverable` (the worker would refuse it).
+     * #374: the speech model is the SmoothQuant set in the onnx-asr layout, under its own storage id, from our host.
+     * MUTATIONS: reuse the retired `parakeet` id (it would share the sherpa model's folder); drop a file.
      */
-    @Test fun theStagedSpeechModelIsPinnedAndDeliverableButNotInUse() {
-        val sq = ModelManifest.parakeetSq
-        assertTrue(sq.isAvailable)
-        assertEquals("parakeet-sq", sq.id)
-        assertEquals("9d104194420cfe48c3374385bb42b42a788b9225", sq.pinnedRevision)
-        assertEquals(listOf("encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "vocab.txt"), sq.files.map { it.name })
-        assertEquals(667_821_431L, sq.files.sumOf { it.expectedBytes })
-        assertTrue(sq.files.all { it.sourceUrl.startsWith("https://models.enviouslabs.co/parakeet-sq/9d104194420cfe48c3374385bb42b42a788b9225/") })
-        assertFalse(sq in ModelManifest.all)
-        assertTrue(sq in ModelManifest.deliverable)
-        assertEquals(ModelManifest.all + ModelManifest.staged, ModelManifest.deliverable)
+    @Test fun theSpeechModelIsTheSmoothQuantSetUnderItsOwnId() {
+        val speech = ModelManifest.parakeet
+        assertEquals("parakeet-sq", speech.id)
+        assertEquals("Parakeet", speech.displayName)
+        assertEquals(listOf("encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "vocab.txt"), speech.files.map { it.name })
+        assertEquals(667_821_431L, speech.files.sumOf { it.expectedBytes })
+        assertTrue(speech.files.all { it.sourceUrl.startsWith("https://models.enviouslabs.co/parakeet-sq/9d104194420cfe48c3374385bb42b42a788b9225/") })
+        assertFalse(ModelManifest.all.any { it.id in LegacyModelSweep.LEGACY })
     }
 
     private val rev = "2bda32ec70b097a55adaa07d9a7173915b43cc78"
@@ -82,15 +79,24 @@ class ModelManifestTest {
     }
 
     /** Every shipped file has our host first, Hugging Face second, and the pinned revision in both paths. */
+    /**
+     * Our host first for every file; a Hugging Face fallback wherever one is admissible. The speech model's encoder and
+     * decoder sit in an `int8/` folder on Hugging Face, a shape `validateModelSource` rejects, so those two have our
+     * host alone (#374). MUTATION: give them a Hugging Face fallback (the model then becomes unavailable).
+     */
     @Test fun everyShippedFileHasOurHostFirstAndHuggingFaceAsTheFallback() {
         ModelManifest.all.forEach { model ->
             model.files.forEach { file ->
                 assertTrue(file.name, file.sourceUrl.startsWith("https://models.enviouslabs.co/"))
-                assertTrue(file.name, file.fallbackUrl!!.startsWith("https://huggingface.co/"))
                 assertTrue(file.name, validateModelSource(file.sourceUrl, model.pinnedRevision, file.name))
-                assertTrue(file.name, validateModelSource(file.fallbackUrl!!, model.pinnedRevision, file.name))
+                file.fallbackUrl?.let { fallback ->
+                    assertTrue(file.name, fallback.startsWith("https://huggingface.co/"))
+                    assertTrue(file.name, validateModelSource(fallback, model.pinnedRevision, file.name))
+                }
             }
         }
+        val withoutFallback = ModelManifest.all.flatMap { m -> m.files.filter { it.fallbackUrl == null }.map { "${m.id}/${it.name}" } }
+        assertEquals(listOf("parakeet-sq/encoder-model.int8.onnx", "parakeet-sq/decoder_joint-model.int8.onnx"), withoutFallback)
     }
 
     /** #284: a source that carries the revision in the wrong place, or a revision that is not a full hash, makes the model unavailable. */

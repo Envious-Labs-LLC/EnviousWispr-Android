@@ -9,7 +9,7 @@ Sister project to EnviousWispr for macOS, which is shipping.
 ## What works today
 
 - Dictation from the Samsung side button, a Quick Settings tile, a notification, or the app.
-- Offline transcription with NVIDIA Parakeet running on sherpa-onnx.
+- Offline transcription with NVIDIA Parakeet running on ONNX Runtime.
 - On-device AI polish with S1-mini on the Qualcomm GenieX runtime.
 - Deterministic cleanup, plus a custom vocabulary with aliases and fuzzy matching.
 - Transcript history, stored locally.
@@ -38,11 +38,8 @@ key. There is no Envious Labs server in that path. Envious Labs receives no dict
 ./gradlew :app:assembleDebug          # debug APK
 ```
 
-Two things a fresh clone needs first:
-
-1. `local.properties` with your `sdk.dir` and `cmake.dir`.
-2. `app/libs/sherpa-onnx.aar`. This 38 MB binary is not in the repository yet, so a fresh clone will not
-   build until it is supplied. Fixing that is tracked as an open issue.
+A fresh clone needs `local.properties` with your `sdk.dir` and `cmake.dir`
+(`scripts/ci/setup-android-deps.sh` writes it and installs the pinned toolchain).
 
 `./gradlew build` currently fails: three experimental accelerator-benchmark flavors do not compile. That
 module is a research sandbox, not part of the app. Build the `:app` targets instead.
@@ -68,8 +65,8 @@ their source available.
 Copyright (C) 2026 Envious Labs LLC.
 
 The app depends on third-party components under their own licenses, including the Qualcomm GenieX runtime,
-NVIDIA Parakeet (CC-BY-4.0), S1-mini (Apache 2.0), sherpa-onnx, and llama.cpp. A full third-party notice
-file is still outstanding.
+NVIDIA Parakeet (CC-BY-4.0), S1-mini (Apache 2.0), ONNX Runtime, onnx-asr, and llama.cpp. The full list is in
+`THIRD-PARTY-NOTICES.txt`.
 
 ## Status
 

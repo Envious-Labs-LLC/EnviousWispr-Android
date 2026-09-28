@@ -1,5 +1,10 @@
 # 16 KB page-size check on the signed bundle, 2026-09-17
 
+**Update 2026-09-27 (#374):** sherpa-onnx left the app; speech now runs on the ONNX Runtime 1.30 Maven AAR.
+Its `libonnxruntime.so` and `libonnxruntime4j_jni.so` have every LOAD segment at `0x4000` (measured on
+the debug APK of commit 1a49e84). Native libraries are packaged with `useLegacyPackaging = true`, so zip
+offset alignment does not apply. The body below is the 2026-09-17 measurement as taken.
+
 Play requires every native library the Android linker loads to be built with 16 KB-aligned segments for
 apps targeting Android 15+ devices with 16 KB pages. This is the measurement on the bundle that went to
 internal testing as version 136 (`published-play-bundle` artifact of GitHub run 35182761958, commit

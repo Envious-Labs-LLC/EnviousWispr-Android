@@ -9,7 +9,7 @@ Android Go excluded, arm64 only, no chipset restriction. The same day he decided
 internal testing goes straight to a public release.
 
 ## FACT: the-shipped-path-is-CPU-only-and-not-Snapdragon-locked
-The speech model (Parakeet on sherpa-onnx) and the local polish model (S1-mini on llama.cpp) both run on
+The speech model (Parakeet on ONNX Runtime since #374) and the local polish model (S1-mini on llama.cpp) both run on
 the CPU with arm64 binaries. The Qualcomm GenieX NPU path is a development override, never shipped
 (`.claude/knowledge/polish-engines.md` FACT: the-npu-path-is-a-development-override). So nothing in the
 shipped path needs a Snapdragon or a Samsung phone. The manifest already restricts to `arm64-v8a` and

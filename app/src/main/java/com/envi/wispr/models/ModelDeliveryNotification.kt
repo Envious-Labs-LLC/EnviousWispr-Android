@@ -21,7 +21,7 @@ internal object ModelDeliveryNotification {
     private const val NOTIFICATION_BASE = 43_000
 
     fun notificationId(model: ModelDescriptor): Int = NOTIFICATION_BASE + when (model.id) {
-        "parakeet" -> 1
+        "parakeet-sq" -> 1
         "s1-mini" -> 2
         else -> (model.id.hashCode() and 0x7fff)
     }

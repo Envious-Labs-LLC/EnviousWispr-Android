@@ -21,21 +21,12 @@ PART 1 - COMPONENTS BUNDLED WITHOUT A MAVEN COORDINATE
 ======================================================
 
 --------------------------------------------------------------------------------
-sherpa-onnx
-  Version: 1.12.29
-  License: Apache-2.0
-  Source:  https://github.com/k2-fsa/sherpa-onnx
-  Note:    Runs the speech model. Bundled as the local app/libs/sherpa-onnx.aar, not resolved from Maven.
-  Read from: Version measured with `strings` on jni/arm64-v8a/libsherpa-onnx-jni.so inside that AAR. Licence read from https://github.com/k2-fsa/sherpa-onnx/blob/v1.12.29/LICENSE, the tag matching that version. The AAR carries no licence file of its own.
---------------------------------------------------------------------------------
-
---------------------------------------------------------------------------------
-ONNX Runtime
-  Version: 1.17.1
+onnx-asr audio front end
+  Version: 0.12.0
   License: MIT License
-  Source:  https://github.com/microsoft/onnxruntime
-  Note:    Redistributed inside the sherpa-onnx AAR. Not a declared dependency of this project.
-  Read from: Version measured with `strings` on jni/arm64-v8a/libonnxruntime.so inside app/libs/sherpa-onnx.aar. Licence read from https://github.com/microsoft/onnxruntime/blob/v1.17.1/LICENSE.
+  Source:  https://github.com/istupakov/onnx-asr
+  Note:    The file app/src/main/assets/nemo128.onnx (NeMo 128-bin log-mel features), taken unmodified from the onnx-asr 0.12.0 package. Feeds the speech model.
+  Read from: Its SHA-256 (prefix 5b4a84c52eeaa615) matches onnx_asr/preprocessors/data/nemo128.onnx in the onnx-asr 0.12.0 wheel on PyPI. Licence read from that wheel's dist-info licenses/LICENSE.
 --------------------------------------------------------------------------------
 
 --------------------------------------------------------------------------------
@@ -51,7 +42,7 @@ llama.cpp
 PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
 ===========================================================
 
-176 components, each with the licence its own POM declares.
+177 components, each with the licence its own POM declares.
 
   androidx.activity:activity:1.10.1                                 Apache-2.0
   androidx.activity:activity-compose:1.10.1                         Apache-2.0
@@ -200,6 +191,7 @@ PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
   com.google.mlkit:common:18.11.0                                   ML Kit Terms of Service
   com.google.mlkit:language-id:17.0.6                               ML Kit Terms of Service
   com.google.mlkit:language-id-common:16.1.0                        ML Kit Terms of Service
+  com.microsoft.onnxruntime:onnxruntime-android:1.30.0              MIT
   com.posthog:posthog:6.40.0                                        MIT
   com.posthog:posthog-android:3.67.0                                MIT
   com.qualcomm.qti:geniex-android:0.4.0                             BSD-3-Clause AND Qualcomm Terms of Use
@@ -260,7 +252,7 @@ PART 4 - FULL LICENCE TEXTS
 
 ================================================================================
 Apache License 2.0
-Covers: Every component above marked Apache-2.0, including sherpa-onnx and the AndroidX, Kotlin and Compose libraries.
+Covers: Every component above marked Apache-2.0, including the AndroidX, Kotlin and Compose libraries.
 ================================================================================
 
                                  Apache License
@@ -467,34 +459,6 @@ Covers: Every component above marked Apache-2.0, including sherpa-onnx and the A
 
 
 ================================================================================
-MIT License - ONNX Runtime
-Covers: ONNX Runtime (bundled).
-================================================================================
-
-MIT License
-
-Copyright (c) Microsoft Corporation
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
-================================================================================
 BSD 3-Clause License - Protocol Buffers
 Covers: androidx.datastore:datastore-preferences-external-protobuf:1.2.1.
 ================================================================================
@@ -541,6 +505,34 @@ Covers: com.abovevacant:epitaph:0.1.1.
 MIT License
 
 Copyright (c) 2026 Above Vacant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License - ONNX Runtime
+Covers: com.microsoft.onnxruntime:onnxruntime-android:1.30.0.
+================================================================================
+
+MIT License
+
+Copyright (c) Microsoft Corporation
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -887,6 +879,34 @@ Covers: llama.cpp (bundled).
 MIT License
 
 Copyright (c) 2023-2026 The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License - onnx-asr
+Covers: onnx-asr audio front end (bundled).
+================================================================================
+
+MIT License
+
+Copyright (c) 2025 Ilya Stupakov
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

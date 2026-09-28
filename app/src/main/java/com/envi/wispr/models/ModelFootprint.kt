@@ -96,7 +96,6 @@ internal object ModelFootprint {
      */
     fun measureFolder(root: File, models: List<ModelDescriptor>): ModelFolderFootprint {
         val rootPath = root.toPath()
-        val owners = models.associateWith { File(root, it.id).toPath() }
         val perModel = models.associateWith { 0L }.toMutableMap()
         var total = 0L
 
@@ -115,9 +114,10 @@ internal object ModelFootprint {
                     if (!attrs.isRegularFile) return FileVisitResult.CONTINUE
                     val size = attrs.size()
                     total = Math.addExact(total, size)
-                    val owner = owners.entries.firstOrNull { (_, directory) -> file.startsWith(directory) }
+                    val top = rootPath.relativize(file).getName(0).toString()
+                    val owner = models.firstOrNull { model -> top == model.id }
                     if (owner != null) {
-                        perModel[owner.key] = Math.addExact(perModel.getValue(owner.key), size)
+                        perModel[owner] = Math.addExact(perModel.getValue(owner), size)
                     }
                     return FileVisitResult.CONTINUE
                 }

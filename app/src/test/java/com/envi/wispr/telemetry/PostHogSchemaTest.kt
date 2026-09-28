@@ -21,6 +21,7 @@ import com.envi.wispr.ui.TermsSnapshot
 import java.io.File
 import java.io.IOException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -96,6 +97,14 @@ class PostHogSchemaTest {
             ),
             lines,
         )
+    }
+
+    /** #374: the speech model's download row keeps its model id. MUTATION: an allowlist that is not the manifest's. */
+    @Test
+    fun theSpeechModelIdLeaves() {
+        assertKept("model", "parakeet-sq")
+        assertKept("model", "s1-mini")
+        assertFalse("the retired id is dropped", kept("model", "parakeet"))
     }
 
     // ---- every producer's output leaves

@@ -2,26 +2,30 @@ package com.envi.wispr.vad
 
 import android.content.res.AssetManager
 import com.envi.wispr.debug.DebugLogger
-import com.k2fsa.sherpa.onnx.SileroVadModelConfig
-import com.k2fsa.sherpa.onnx.Vad
-import com.k2fsa.sherpa.onnx.VadModelConfig
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import java.nio.FloatBuffer
 import java.security.MessageDigest
 
 /**
  * One take's detector: the model handle, the framing, and the decision.
  *
- * The only file in this app that touches the sherpa VAD API. Everything above it sees a block of PCM go
- * in and a verdict come out.
+ * The only file in this app that runs the Silero model. Everything above it sees a block of PCM go in
+ * and a verdict come out.
  *
- * **The model is verified before the library is allowed near it.** sherpa-onnx does not throw on a model
- * or input contract violation, it calls `exit(-1)`, which is not catchable from Kotlin. Verification does
- * not make that safe on its own, which is why this whole class lives in its own process; it makes the
- * failure rare rather than survivable. Both, not either.
+ * Since #374 it runs on ONNX Runtime directly, with the recurrent contract sherpa-onnx 1.12.29 used for this
+ * v4 export (`silero-vad-model.cc` RunV4 and ResetV4): one 512-sample window `x` per call, the returned `new_h`
+ * and `new_c` carried into the next call in order, both zeroed at every take start. **The model is still verified
+ * before the runtime is allowed near it**, and the class still lives in its own process.
  */
 internal class SileroVadSession private constructor(
-    private val vad: Vad,
+    private val environment: OrtEnvironment,
+    private val session: OrtSession,
     private val detector: SilenceStopDetector,
 ) {
+    private var h = FloatArray(STATE_SIZE)
+    private var c = FloatArray(STATE_SIZE)
 
     private val samples = FloatArray(SilenceStopDetector.SAMPLES_PER_BLOCK)
     private val window = FloatArray(SilenceStopDetector.WINDOW_SAMPLES)
@@ -38,10 +42,8 @@ internal class SileroVadSession private constructor(
             produced < windowProbabilities.size
         ) {
             System.arraycopy(samples, offset, window, 0, SilenceStopDetector.WINDOW_SAMPLES)
-            // compute() advances the model's own recurrent state, so calling it in order IS the
-            // streaming contract. acceptWaveform must never also be called on this handle: each
-            // advances that state, and both would advance it twice for the same audio.
-            val probability = vad.compute(window)
+            // Each call advances the recurrent state, so calling it in window order IS the streaming contract.
+            val probability = compute(window)
             check(probability.isFinite() && probability in 0f..1f) {
                 "Silero returned an invalid speech probability"
             }
@@ -55,8 +57,27 @@ internal class SileroVadSession private constructor(
         return detector.onBlock(block)
     }
 
+    /** One window through the model, carrying `h` and `c` to the next call. Closes every tensor and result. */
+    private fun compute(window: FloatArray): Float {
+        // Registered one by one inside the try, so a creation that throws still closes the ones made before it.
+        val inputs = LinkedHashMap<String, OnnxTensor>()
+        try {
+            inputs["x"] = OnnxTensor.createTensor(environment, FloatBuffer.wrap(window), longArrayOf(1, window.size.toLong()))
+            inputs["h"] = OnnxTensor.createTensor(environment, FloatBuffer.wrap(h), STATE_SHAPE)
+            inputs["c"] = OnnxTensor.createTensor(environment, FloatBuffer.wrap(c), STATE_SHAPE)
+            session.run(inputs).use { result ->
+                val probability = (result.get("prob").get() as OnnxTensor).floatBuffer.get(0)
+                h = FloatArray(STATE_SIZE).also { (result.get("new_h").get() as OnnxTensor).floatBuffer.get(it) }
+                c = FloatArray(STATE_SIZE).also { (result.get("new_c").get() as OnnxTensor).floatBuffer.get(it) }
+                return probability
+            }
+        } finally {
+            inputs.values.forEach { it.close() }
+        }
+    }
+
     fun release() {
-        runCatching { vad.release() }
+        runCatching { session.close() }
             .onFailure { DebugLogger.warn(TAG, "Detector release failed: ${it.javaClass.simpleName}") }
     }
 
@@ -74,14 +95,9 @@ internal class SileroVadSession private constructor(
         const val EXPECTED_BYTES = 643_854L
         const val EXPECTED_SHA256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
 
-        /**
-         * Segmentation values sherpa validates at construction but which this path never uses: the
-         * decision comes from compute()'s raw probability through our own state machine, not from
-         * sherpa's segment queue. They are set to values sherpa accepts and nothing more.
-         */
-        private const val UNUSED_MIN_SILENCE_SECONDS = 0.5f
-        private const val UNUSED_MIN_SPEECH_SECONDS = 0.25f
-        private const val UNUSED_MAX_SPEECH_SECONDS = 20f
+        /** The v4 export's recurrent state: 2 layers x batch 1 x 64 (SileroVadSessionTest pins the names). */
+        private val STATE_SHAPE = longArrayOf(2, 1, 64)
+        private const val STATE_SIZE = 2 * 1 * 64
 
         /**
          * Open a detector for one take, or null if the model is not exactly the file we shipped.
@@ -92,27 +108,18 @@ internal class SileroVadSession private constructor(
         fun open(assets: AssetManager, pauseSeconds: Float): SileroVadSession? {
             if (!modelIsExactlyOurs(assets)) return null
 
-            val config = VadModelConfig(
-                sileroVadModelConfig = SileroVadModelConfig(
-                    model = ASSET_NAME,
-                    threshold = SilenceStopDetector.SENSITIVITY,
-                    minSilenceDuration = UNUSED_MIN_SILENCE_SECONDS,
-                    minSpeechDuration = UNUSED_MIN_SPEECH_SECONDS,
-                    windowSize = SilenceStopDetector.WINDOW_SAMPLES,
-                    maxSpeechDuration = UNUSED_MAX_SPEECH_SECONDS,
-                ),
-                sampleRate = 16000,
-                numThreads = 1,
-                provider = "cpu",
-                debug = false,
-            )
-
-            val vad = runCatching { Vad(assets, config) }
-                .onFailure { DebugLogger.error(TAG, "Detector could not be created", it) }
+            val environment = OrtEnvironment.getEnvironment()
+            val session = runCatching {
+                val bytes = assets.open(ASSET_NAME).use { it.readBytes() }
+                OrtSession.SessionOptions().use { options ->
+                    options.setIntraOpNumThreads(1)
+                    environment.createSession(bytes, options)
+                }
+            }
+                .onFailure { DebugLogger.warn(TAG, "Detector could not be created: ${it.javaClass.simpleName}") }
                 .getOrNull() ?: return null
 
-            runCatching { vad.reset() }
-            return SileroVadSession(vad, SilenceStopDetector(pauseSeconds))
+            return SileroVadSession(environment, session, SilenceStopDetector(pauseSeconds))
         }
 
         /**

@@ -112,7 +112,9 @@ tasks.withType<Test>().configureEach {
 
 dependencies {
     implementation("com.qualcomm.qti:geniex-android:0.4.0")
-    implementation(files("libs/sherpa-onnx.aar"))
+    // Speech (Parakeet) and silence detection (Silero) on one ONNX Runtime (#374). Replaced the sherpa-onnx AAR,
+    // whose bundled ORT 1.17.1 cannot run the SmoothQuant model (8-bit MatMulNBits).
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.30.0")
     implementation(platform("androidx.compose:compose-bom:2026.02.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")

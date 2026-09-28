@@ -8,13 +8,10 @@ import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.debug.TakeLog
 import com.envi.wispr.audio.PcmAudio
 import com.envi.wispr.audio.RecordingLimits
+import com.envi.wispr.models.LegacyModelSweep
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.process.EngineDeadline
-import com.k2fsa.sherpa.onnx.OfflineModelConfig
-import com.k2fsa.sherpa.onnx.OfflineRecognizer
-import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
-import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -23,7 +20,7 @@ import java.util.concurrent.Executors
  * ASR service running in a separate process (:asr).
  *
  * Accepts audio via file path (not byte array) to avoid AIDL size limits.
- * Runs sherpa-onnx OfflineRecognizer (Parakeet nemo_transducer, int8 quantized).
+ * Runs [ParakeetEngine]: Parakeet TDT (SmoothQuant int8) on ONNX Runtime through the macOS batch recipe (#374).
  * Returns raw text so the isolated polish service can run S1-mini or a safe fallback.
  */
 class AsrService : Service() {
@@ -31,9 +28,17 @@ class AsrService : Service() {
     companion object {
         private const val TAG = "AsrService"
 
+        /**
+         * Hands the text over; [onDelivered] runs only when a callback existed and did not throw. The legacy model
+         * sweep (#374) hangs off it, so a phone never loses the old model for a result nobody received.
+         */
+        internal fun deliverResult(callback: IAsrCallback?, text: String, onDelivered: () -> Unit, onThrew: (Throwable) -> Unit) {
+            if (callback == null) return
+            runCatching { callback.onResult(text) }.onSuccess { onDelivered() }.onFailure(onThrew)
+        }
+
         /** The take id a take-less legacy byte-array request carries in the local log (#378). */
         private const val LEGACY_TAKE = "untracked"
-        private const val SAMPLE_RATE = 16000
 
         /**
          * The refusal the user reads if a file somehow arrives longer than the cap.
@@ -63,11 +68,11 @@ class AsrService : Service() {
      * Load, every decode and the release run on [transcriptionExecutor], in that order (#212), and each runs whole
      * under the watchdog (#357): a task that outlives its bound ends this process and its late result delivers nothing.
      */
-    private val owner = RecognizerOwner<OfflineRecognizer>(
+    private val owner = RecognizerOwner<ParakeetEngine>(
         transcriptionExecutor,
-        free = { recognizer ->
-            recognizer.release()
-            DebugLogger.log(TAG, "Recognizer released")
+        free = { engine ->
+            engine.close()
+            DebugLogger.log(TAG, "Speech engine closed")
         },
         discarded = { DebugLogger.log(TAG, "ASR answer discarded: the service closed during the decode") },
         releaseBoundMs = AsrBounds.RELEASE_BOUND_MS,
@@ -186,7 +191,7 @@ class AsrService : Service() {
      * discard an answer that finished after the service closed (#212). Every path returns exactly one.
      */
     private fun doTranscribe(
-        rec: OfflineRecognizer?,
+        rec: ParakeetEngine?,
         audioData: ByteArray,
         durationSec: Float,
         callback: IAsrCallback?,
@@ -208,14 +213,7 @@ class AsrService : Service() {
 
             val t0 = SystemClock.elapsedRealtime()
 
-            val stream = rec.createStream()
-            val result = try {
-                stream.acceptWaveform(samples, SAMPLE_RATE)
-                rec.decode(stream)
-                rec.getResult(stream)
-            } finally {
-                stream.release()
-            }
+            val result = rec.transcribe(samples)
 
             val decodeMs = SystemClock.elapsedRealtime() - t0
             val text = result.text.trim()
@@ -224,7 +222,7 @@ class AsrService : Service() {
             log.mark("asr_decode")
             // Transcript text is user content and never enters logcat: logcat keeps only the aggregate. The
             // words go to the local log file alone, and only while Detailed log is on (#378).
-            log.log("Decode: ${decodeMs}ms, RTF=${String.format("%.2f", rtf)}, textChars=${text.length}")
+            log.log("Decode: ${decodeMs}ms, RTF=${String.format("%.2f", rtf)}, textChars=${text.length}, windows=${result.windows}, repairs=${result.repairs}")
             log.words("raw_speech") { text }
             text
         } catch (e: Exception) {
@@ -235,9 +233,24 @@ class AsrService : Service() {
 
         log.log(DebugLogger.pipelineSummary())
         return {
-            runCatching { callback?.onResult(rawText) }
-                .onFailure { log.warn("Result delivery threw: ${it.javaClass.simpleName}; not reported as a decode failure") }
+            deliverResult(callback, rawText, onDelivered = ::sweepLegacyModelOnce) {
+                log.warn("Result delivery threw: ${it.javaClass.simpleName}; not reported as a decode failure")
+            }
         }
+    }
+
+    /** Set once this process has swept the model the engine swap replaced (#374). */
+    private var legacySwept = false
+
+    /**
+     * After the first successful decode on the new engine, remove the sherpa-onnx model it replaced (#374), so a
+     * phone is never left with neither. Runs on the worker, after the result was handed over; never throws.
+     */
+    private fun sweepLegacyModelOnce() {
+        if (legacySwept) return
+        legacySwept = true
+        val removed = LegacyModelSweep.sweep(ModelStorage.root(this))
+        if (removed > 0) DebugLogger.log(TAG, "Removed the replaced speech model: $removed bytes")
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -258,44 +271,21 @@ class AsrService : Service() {
         DebugLogger.log(TAG, "AsrService destroyed; recognizer release queued")
     }
 
-    /** Returns the loaded recognizer, or null when the model is not verified or fails to load. */
-    private fun initRecognizer(): OfflineRecognizer? {
+    /** Returns the loaded engine, or null when the model is not verified or fails to load. */
+    private fun initRecognizer(): ParakeetEngine? {
         return try {
             val t0 = SystemClock.elapsedRealtime()
-            val modelDir = ModelStorage.directory(this, ModelManifest.parakeet)
             if (!ModelStorage.isReady(this, ModelManifest.parakeet)) {
                 DebugLogger.warn(TAG, "Parakeet model is not verified in app-private storage")
                 return null
             }
-
-            val transducerConfig = OfflineTransducerModelConfig(
-                encoder = File(modelDir, "encoder.int8.onnx").path,
-                decoder = File(modelDir, "decoder.int8.onnx").path,
-                joiner = File(modelDir, "joiner.int8.onnx").path,
-            )
-
-            val modelConfig = OfflineModelConfig()
-            modelConfig.transducer = transducerConfig
-            modelConfig.tokens = File(modelDir, "tokens.txt").path
-            modelConfig.modelType = "nemo_transducer"
-            modelConfig.numThreads = 4
-            modelConfig.debug = false
-
-            val config = OfflineRecognizerConfig()
-            config.modelConfig = modelConfig
-            // Pinned, not defaulted. sherpa-onnx already defaults to greedy_search (read from the
-            // v1.12.29 tag, 2026-09-02), but sherpa-onnx issue 3267 reports modified_beam_search
-            // hallucinating or returning empty text on Parakeet TDT about a fifth of the time. An AAR
-            // upgrade that changed the default would otherwise reach this model silently.
-            config.decodingMethod = "greedy_search"
-
-            val recognizer = OfflineRecognizer(null, config)
-
-            val elapsed = SystemClock.elapsedRealtime() - t0
-            DebugLogger.log(TAG, "Recognizer initialized in ${elapsed}ms")
-            recognizer
-        } catch (e: Exception) {
-            DebugLogger.error(TAG, "Failed to initialize recognizer", e)
+            val preprocessor = assets.open(ParakeetEngine.PREPROCESSOR_ASSET).use { it.readBytes() }
+            val engine = ParakeetEngine.open(ModelStorage.directory(this, ModelManifest.parakeet), preprocessor)
+            DebugLogger.log(TAG, "Speech engine initialized in ${SystemClock.elapsedRealtime() - t0}ms")
+            engine
+        } catch (e: Throwable) {
+            // The class name only: an ONNX Runtime message can quote paths or model internals.
+            DebugLogger.warn(TAG, "Failed to initialize the speech engine: ${e.javaClass.simpleName}")
             null
         }
     }

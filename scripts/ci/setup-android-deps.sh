@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Shared CI dependency setup: the pinned, checksum-verified sherpa-onnx AAR and
-# the exact SDK toolchain the native build needs, plus local.properties.
+# Shared CI dependency setup: the exact SDK toolchain the native build needs, plus
+# local.properties. (The sherpa-onnx AAR it used to fetch left with #374: speech and
+# silence detection now run on the ONNX Runtime Maven dependency.)
 #
 # WHY THIS IS ITS OWN FILE. The PR check (pr-check.yml) and the release build
 # (release/build.sh) must install IDENTICAL dependencies, or a PR could pass
@@ -11,17 +12,6 @@
 set -euo pipefail
 
 : "${ANDROID_HOME:?Android SDK required}"
-
-# Pinned to the same release the app is built against. Both values are also
-# asserted by the release build; changing the AAR version means changing both.
-SHERPA_VERSION=1.12.29
-SHERPA_SHA256=2beeb891a6f07043a7993d9957fdd4d6a67ec9b8ccdb573cb9fe57c4834f3376
-
-mkdir -p app/libs
-curl --fail --location --silent --show-error --retry 3 \
-  "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/sherpa-onnx-${SHERPA_VERSION}.aar" \
-  -o app/libs/sherpa-onnx.aar
-printf '%s  %s\n' "$SHERPA_SHA256" app/libs/sherpa-onnx.aar | sha256sum --check
 
 # Accept the SDK licences only for the explicitly requested toolchain packages.
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \

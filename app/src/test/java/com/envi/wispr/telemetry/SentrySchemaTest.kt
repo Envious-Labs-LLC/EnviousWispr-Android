@@ -159,10 +159,10 @@ class SentrySchemaTest {
     }
 
     /**
-     * #374 chunk 1: a model-delivery breadcrumb naming the staged speech model keeps its id. MUTATION: derive the
-     * `model` shape from `ModelManifest.all` (the id is then redacted).
+     * #374: a model-delivery breadcrumb naming the speech model keeps its id. MUTATION: an allowlist that is not
+     * the manifest's (the id is then redacted).
      */
-    @Test fun aStagedModelDeliveryBreadcrumbKeepsItsModel() {
+    @Test fun aSpeechModelDeliveryBreadcrumbKeepsItsModel() {
         val crumb = Breadcrumb("terminal").apply { category = "model_delivery"; setData("model", "parakeet-sq") }
         assertEquals("parakeet-sq", SentryBootstrap.sanitize(crumb).data["model"])
         val bad = Breadcrumb("terminal").apply { category = "model_delivery"; setData("model", "parakeet-sq-x") }

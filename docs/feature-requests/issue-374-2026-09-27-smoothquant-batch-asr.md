@@ -89,10 +89,10 @@ Grounding sweep (read-only agent, 2026-09-27; `grep -rnE -i "sherpa|k2fsa|loadLi
 - **Capture.** `:audio` writes the take to a PCM16 16 kHz file and hands its path to `:asr` via `IAsrService.transcribeFileForTake(path, takeId, cb)` (`app/src/main/aidl/com/envi/wispr/asr/IAsrService.aidl:20`).
 - **`AsrService`** (`process=":asr"`, `AndroidManifest.xml:98-101`):
   - checks the file (`AsrService.kt:145,155`), reads it (:167) and converts it with `PcmAudio.toFloatSamples` (:206);
-  - decodes on the single `RecognizerOwner` executor under `AsrWatchdog`/`AsrBounds`: `createStream`/`acceptWaveform`/`decode`/`getResult` (:211-218);
+  - decodes on the single `RecognizerOwner` executor under `AsrWatchdog`/`AsrBounds`: the sherpa stream calls create stream, accept waveform, decode, get result (:211-218 before chunk 2, which removed them);
   - delivers trimmed raw text by `IAsrCallback.onResult(String)` (:238). No timestamps cross the binder.
   - Failures are `AsrFailureReason` codes (`AsrFailureReason.kt:13`) via `onFailure(int, String)`.
-- **Model load.** `onCreate` → `owner.load(initRecognizer)` (:249), then `initRecognizer` (:262-301). It gates on `ModelStorage.isReady` and reads `encoder/decoder/joiner.int8.onnx`, `tokens.txt` with `numThreads=4`, `greedy_search`.
+- **Model load.** `onCreate` → `owner.load(initRecognizer)` (:249), then `initRecognizer` (:262-301). It gates on `ModelStorage.isReady` and reads `encoder/decoder/joiner.int8.onnx`, `tokens.txt` with `numThreads=4` and sherpa greedy search (as of the plan; chunk 2 removed this loader).
 - **VAD.** `SilenceVadService` (`process=":vad"`, manifest :93-96) receives `processBlock(token, pcm16)` (`ISilenceVadService.aidl:26`). `SileroVadSession` runs sherpa `Vad.compute()` on 8 × 512-sample windows per 4096-sample block (`SileroVadSession.kt:37-51`), and the probabilities feed our own `SilenceStopDetector` (`:93-118`). The model is the APK asset `silero_vad.onnx` (643,854 B, sha `9e2449e1…`, `SileroVadSession.kt:74-75`) with inputs `x[1,512]`, `h[2,1,64]`, `c[2,1,64]` and outputs `prob`, `new_h`, `new_c` (onnxruntime session inspection, pasted in #379 work).
 - **Model delivery.** `ModelManifest.parakeet` (`ModelManifest.kt:50-55`: 4 files, revision `2bda32ec…`, host `models.enviouslabs.co/parakeet-onnx/<rev>/`, Hugging Face fallback) → `ModelDelivery` → `ModelStorage` (`noBackupFilesDir/models/<id>`, verified receipt).
   - Consumers: `ModelWorkViewModel.kt:63,65,85`, `ReadinessViewModel.kt:105`, `OnboardingViewModel.kt:103`, `TranscriptionScreen.kt:64-81`, `OnboardingScreen.kt:121`, `ModelBootstrapApplication.kt:109`.
@@ -173,6 +173,7 @@ This will live in `:asr` inside `AsrService`'s existing `RecognizerOwner` becaus
 ## 4. Contract deltas
 - **`IAsrService` / `IAsrCallback`:** unchanged. Still raw text, the same failure codes and the same bounds.
 - **`AsrFailureReason`:** unchanged set. An ORT load failure maps to `MODEL_NOT_LOADED`, as a sherpa load failure does today; an ORT run failure maps to `DECODE_FAILED`.
+- **Build deviation (2026-09-27): the property keeps the name `ModelManifest.parakeet`.** Only the descriptor it holds changes (id `parakeet-sq`, the fields below). With the old descriptor deleted there is no second Parakeet to tell apart, and keeping the name leaves the direct consumers in §6 unedited; the storage id, which receipts, notifications and telemetry key on, is `parakeet-sq` as planned.
 - **`ModelManifest.parakeet` → `parakeetSq` (proposed):** in chunk 2 the old descriptor is deleted, and every consumer reads `parakeetSq`: id `parakeet-sq`, engine `onnxruntime`, the Olicorne revision, four onnx-asr-layout files, host prefix `parakeet-sq`, and CC BY 4.0 notices naming NVIDIA and Olicorne. The display name "Parakeet" and the licence string are kept, so on-screen text is unchanged.
 - **`SileroVadSession.compute`:** the same probability semantics, and the same `open` null-on-failure contract.
 

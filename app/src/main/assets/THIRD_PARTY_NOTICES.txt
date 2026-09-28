@@ -6,11 +6,17 @@ Model repository: https://huggingface.co/superwhisper/s1-mini-GGUF
 Pinned revision: 34add00a48a2e5d24e5a4ee5405a99620a3a240c
 License: Apache License 2.0
 
-"Parakeet TDT 0.6b v3 int8" by "NVIDIA", packaged for sherpa-onnx by csukuangfj
-Model ID: parakeet
-Model repository: https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
-Pinned revision: 2bda32ec70b097a55adaa07d9a7173915b43cc78
+"Parakeet TDT 0.6b v3" by "NVIDIA", SmoothQuant int8 ONNX export by Olicorne
+Model ID: parakeet-sq
+Model repository: https://huggingface.co/Olicorne/parakeet-tdt-0.6b-v3-smoothquant-onnx
+Pinned revision: 9d104194420cfe48c3374385bb42b42a788b9225
 License: CC-BY-4.0
+Changes: quantised to int8 with SmoothQuant by Olicorne from NVIDIA's weights; used unmodified here.
+
+onnx-asr audio front end (nemo128.onnx)
+Source repository: https://github.com/istupakov/onnx-asr
+Version: 0.12.0, file taken unmodified from the package
+License: MIT License, Copyright (c) 2025 Ilya Stupakov; full text in the root THIRD-PARTY-NOTICES.txt
 
 llama.cpp
 Source repository: https://github.com/ggml-org/llama.cpp
@@ -356,7 +362,7 @@ phone to notice when you have stopped speaking. It runs offline and sends
 nothing anywhere.
 
 The file shipped is silero-vad v4, exported to ONNX by the k2-fsa project with
-only the 16 kHz branch kept, and distributed with sherpa-onnx.
+only the 16 kHz branch kept, as distributed with sherpa-onnx, and run here on ONNX Runtime.
 
 Source: https://github.com/snakers4/silero-vad
 

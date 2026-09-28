@@ -17,7 +17,7 @@ Use the latest successful publishing run and its Play read-back as the current d
 ## What the workflow uses
 
 - Standard GitHub-hosted Linux runner, Java 21 and pinned Android build tools.
-- The pinned llama.cpp submodule and upstream sherpa-onnx AAR with an exact SHA-256 check. No laptop-only file is required.
+- The pinned llama.cpp submodule; every other native dependency comes from Maven. No laptop-only file is required.
 - Two jobs: an uncredentialed build followed by signing/publication. The artifact is tied to the current run and commit.
 - Keyless Google authentication restricted to this repository and the internal testing branch. The existing upload key remains in Google Secret Manager. No service-account JSON key is stored in GitHub.
 - GitHub environment `play-internal`, with variables `PLAY_WORKLOAD_IDENTITY_PROVIDER` and `PLAY_SERVICE_ACCOUNT`. The associated service account needs access to the one signing secret and Play Console rights for this app's testing releases.

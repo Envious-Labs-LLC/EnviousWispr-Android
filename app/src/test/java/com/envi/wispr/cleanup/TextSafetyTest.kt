@@ -10,6 +10,10 @@ import org.junit.Test
  * Product Outcome: when this fails an essay replaces a "yeah", half a dictation vanishes, or a question
  * comes back as an answer; every refusal keeps the deterministic text. The rules are the Mac's
  * `validatePolishOutput` plus this app's own four.
+ *
+ * Rows tagged `_385` test the number rule (a count's dropped tail). The ones that only `assertNull` are
+ * ACCEPTANCE CONTROLS: they hold the rule's false-refusal surface down and pass with the rule removed on
+ * purpose. The rule is proven present by every `assertEquals("number drop ...` row beside them.
  */
 class TextSafetyTest {
     private val paragraph = "so um we should probably move the launch to next week because the build is not stable yet and marketing needs more time"
@@ -152,6 +156,15 @@ class TextSafetyTest {
         assertEquals("number drop 1 numbers", TextSafety.refusal("count 18, 19, 20", "Count eighteen, nineteen, twenty-one."))
         assertNull(TextSafety.refusal("count 18, 19, 20", "Count eighteen, nineteen, twenty."))
         assertEquals("number drop 1 numbers", TextSafety.refusal("count 18, 19, 20 please", "Count 18, 19, 3.20 please."))
+    }
+
+    @Test fun identifiersPronounsAndScaledNumbersNeverStandInForALostTail_385() {
+        // Codex round 9: each answer lost the tail and carries a look-alike of it elsewhere.
+        assertEquals("number drop 1 numbers", TextSafety.refusal("room 3: count 1, 2, 3", "Room 3: count 1, 2. Use version v3."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count 3, 2, 1", "Count 3, 2. That's the one."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count 1, 2, 3", "Count one, two, three hundred."))
+        assertNull(TextSafety.refusal("room 3: count 1, 2, 3", "Room 3: count 1, 2, 3."))
+        assertNull(TextSafety.refusal("count 3, 2, 1", "Count 3, 2, 1."))
     }
 
     @Test fun wordsAfterACountDoNotDisableIt_385() {

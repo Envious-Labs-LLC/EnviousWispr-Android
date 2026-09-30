@@ -714,7 +714,9 @@ internal object TextSafety {
         } else outputNumberWords[item]
     }
 
-    private val numberToken = Regex("\\d{1,3}(?:,\\d{3})+|\\d+\\.\\d+|\\d+|\\p{L}+")
+    // A figure glued to a letter ("v3", "a4") is an identifier, not a number: its digits never count.
+    private val numberToken = Regex("(?<![\\p{L}\\d])(?:\\d{1,3}(?:,\\d{3})+|\\d+\\.\\d+|\\d+)(?![\\p{L}\\d])|\\p{L}+")
+    private val scaleWords = setOf("hundred", "thousand", "million", "billion")
 
     /**
      * Every number in [lower], in order, each token consumed once: a figure (a thousands figure as one
@@ -729,23 +731,38 @@ internal object TextSafety {
             val token = tokens[index]
             val text = token.value
             index++
-            when {
-                text[0].isDigit() -> if ('.' !in text) text.replace(",", "").toLongOrNull()?.let { values += it }
-                else -> {
-                    val value = outputNumberWords[text] ?: continue
-                    val next = tokens.getOrNull(index)
-                    val unit = next?.let { unitWords[it.value] ?: unitOrdinals[it.value] }
-                    val gap = next?.let { lower.substring(token.range.last + 1, it.range.first) }
-                    if (tensWords[text] != null && unit != null && gap != null && gap.isNotEmpty() && gap.all { it == ' ' || it == '-' }) {
-                        values += value + unit
-                        index++
-                    } else {
-                        values += value
-                    }
+            // "one" is never read as a number: it is also a pronoun ("that's the one"), and a tail of 1
+            // written that way is only a refusal, which costs the polish and nothing else.
+            var value: Long? = when {
+                text[0].isDigit() -> if ('.' !in text) text.replace(",", "").toLongOrNull() else null
+                text == "one" -> null
+                else -> outputNumberWords[text] ?: continue
+            }
+            var last = token
+            val joined = tokens.getOrNull(index)
+            if (value != null && tensWords[text] != null && joined != null && spacedOrHyphenated(lower, last, joined)) {
+                val unit = unitWords[joined.value] ?: unitOrdinals[joined.value]
+                if (unit != null) {
+                    value += unit
+                    last = joined
+                    index++
                 }
             }
+            // A number that a scale word continues ("three hundred") is a different, larger number: it
+            // supplies none of its parts.
+            val scale = tokens.getOrNull(index)
+            if (scale != null && scale.value in scaleWords && spacedOrHyphenated(lower, last, scale)) {
+                index++
+                value = null
+            }
+            value?.let { values += it }
         }
         return values
+    }
+
+    private fun spacedOrHyphenated(lower: String, from: MatchResult, to: MatchResult): Boolean {
+        val gap = lower.substring(from.range.last + 1, to.range.first)
+        return gap.isNotEmpty() && gap.all { it == ' ' || it == '-' }
     }
 
     private val leadingFillers = setOf("um", "uh", "so", "like", "well", "okay", "ok")

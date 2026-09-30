@@ -24,16 +24,25 @@ internal object S1PromptBuilder {
      * the engine's own `S1 generation ended` line) a 73 character count to twenty generated 73
      * tokens and stopped on its own (`stop=eos`). The old chars/3.5 estimate gave that take the
      * 64 token floor, so it would have ended after the seventeenth item (#385). The cap is one and
-     * a fifth tokens per character plus headroom; the floor and ceiling keep short takes safe and
-     * leave room in the model's context ([S1Config.CONTEXT_SIZE]) for the system prompt and input.
-     * A list longer than about 800 characters can still reach the ceiling, and the log says so
-     * (`reachedCap=true`).
+     * a fifth tokens per character plus headroom, floor 128, and never more than the context has left:
+     * the model's window ([S1Config.CONTEXT_SIZE]) holds the prompt AND the answer, so the cap is held
+     * to `CONTEXT_SIZE - (PROMPT_OVERHEAD_TOKENS + one token per input character)`. A list longer than
+     * about 800 characters can still reach the cap, and the log says so (`reachedCap=true`).
      */
-    fun maxOutputTokens(rawText: String): Int =
-        (rawText.length * TOKENS_PER_CHAR_WORST_CASE + HEADROOM_TOKENS).roundToInt().coerceIn(128, MAX_OUTPUT_TOKENS)
+    fun maxOutputTokens(rawText: String): Int {
+        val wanted = maxOf(rawText.length * TOKENS_PER_CHAR_WORST_CASE + HEADROOM_TOKENS, MIN_OUTPUT_TOKENS.toDouble())
+        val roomLeft = S1Config.CONTEXT_SIZE - (PROMPT_OVERHEAD_TOKENS + rawText.length)
+        return minOf(wanted, roomLeft.toDouble()).roundToInt().coerceIn(CRAMPED_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+    }
 
     private const val TOKENS_PER_CHAR_WORST_CASE = 1.2
     private const val HEADROOM_TOKENS = 64
+    private const val MIN_OUTPUT_TOKENS = 128
+    private const val CRAMPED_OUTPUT_TOKENS = 64
+
+    // System prompt, control line and chat template around the input. Measured 2026-09-30: 151 prompt
+    // tokens for a 73 character take, so 78 beyond the input at one token per character; 160 is the margin.
+    private const val PROMPT_OVERHEAD_TOKENS = 160
 
     /** Legacy flat-word migration sanitizer. It does not participate in runtime matching. */
     fun sanitizeCustomWords(words: List<String>): List<String> = words

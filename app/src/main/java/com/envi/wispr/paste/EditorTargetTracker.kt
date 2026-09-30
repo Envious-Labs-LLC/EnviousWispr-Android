@@ -205,6 +205,55 @@ internal class EditorTargetTracker(private val service: AccessibilityService) {
         }
     }
 
+    /**
+     * Gives input focus back to the pinned editor, ONCE, when a SIBLING field in the same focused window
+     * holds it (#201). Every guard must pass before `ACTION_FOCUS` is sent, and any guard that does not
+     * (or throws) answers [RefocusResult.DECLINED] having sent nothing:
+     * - the pin exists, its window is found and HAS input focus (`findPinnedWindowRoot` alone finds an
+     *   unfocused window, so the focus check is here; another app on top is never touched);
+     * - the pinned node refreshes, is visible, editable and focusable, matches the pin, is not already
+     *   focused, and advertises `ACTION_FOCUS`;
+     * - the window's input-focused node is a DIFFERENT editable node (a sibling holds focus, not "nothing").
+     * Never changes text and never moves focus across windows.
+     */
+    fun refocusPinnedNode(): RefocusResult {
+        val expected = pinnedTarget ?: return RefocusResult.DECLINED
+        val pinnedNode = expected.node
+        var windowRoot: AccessibilityNodeInfo? = null
+        var sibling: AccessibilityNodeInfo? = null
+        try {
+            val refusal = RefocusGuards.firstRefusal(
+                windowFocused = { isInFocusedWindow(expected.windowId) },
+                windowFound = {
+                    windowRoot = findPinnedWindowRoot(expected)
+                    windowRoot != null
+                },
+                pinRefreshed = { pinnedNode.refresh() },
+                pinUsable = {
+                    pinnedNode.isVisibleToUser && pinnedNode.isEditable && pinnedNode.isFocusable &&
+                        !pinnedNode.isFocused && matchesPinnedTarget(pinnedNode, expected)
+                },
+                advertisesFocus = { pinnedNode.actionList.any { it.id == AccessibilityNodeInfo.ACTION_FOCUS } },
+                siblingHoldsFocus = {
+                    sibling = windowRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                    sibling?.let { it.isEditable && it != pinnedNode } == true
+                },
+            )
+            if (refusal != null) return RefocusResult.DECLINED
+        } catch (error: Exception) {
+            return RefocusResult.DECLINED
+        } finally {
+            sibling?.recycle()
+            windowRoot?.recycle()
+        }
+        // The one focus action. A throw here may have moved focus, so it is its own result.
+        return try {
+            if (pinnedNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) RefocusResult.ACCEPTED else RefocusResult.REJECTED
+        } catch (error: Exception) {
+            RefocusResult.THREW
+        }
+    }
+
     fun clearTarget() {
         lastTarget?.node?.recycle()
         lastTarget = null

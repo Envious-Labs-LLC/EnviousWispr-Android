@@ -317,6 +317,17 @@ internal class AccessibilityInsertionRunner(
                 )
             }
 
+        /** #201: one try to give focus back to the pinned field; a counts-only breadcrumb, never text. */
+        override fun refocusOriginal(): RefocusResult {
+            val result = tracker.refocusPinnedNode()
+            if (result.sentAnAction) {
+                DebugLogger.log(TAG, "Refocus of the pinned editor: ${result.name.lowercase()}")
+            } else {
+                DebugLogger.debug(TAG, "Refocus of the pinned editor: declined")
+            }
+            return result
+        }
+
         /**
          * The input session and the pinned node are two identities. The pipe is used only when they
          * provably coincide right now: input is started on the pipe for the pinned package, the

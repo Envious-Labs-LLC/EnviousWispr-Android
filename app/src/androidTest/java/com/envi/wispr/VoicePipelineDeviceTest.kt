@@ -278,27 +278,28 @@ class VoicePipelineDeviceTest {
     }
 
     /**
-     * REF-01's two-editor case, asserting the product's FAIL-SAFE (`architecture-rules.md` RULE:
-     * insertion-fails-safe-never-silently): the take is pinned to editor A at its start; when B holds
-     * focus at insertion time the words go into NEITHER editor and stay on the clipboard, the paste
-     * service having waited for the original editor to return and given up (the live run 2026-09-22 read
-     * `outcome=NEVER_RETURNED attempts=20`, row `insertion_interrupted`/`copy_only`). A first draft of
-     * this row expected the words in A; the rig said otherwise and the product's rule is the authority.
-     * REVERT: insert into whatever is focused at insertion time (B gains the text), or write into an
-     * unfocused A.
+     * REF-01's two-editor case, after #201 (founder decision 2026-09-30): the take is pinned to editor A at
+     * its start; when B, a SIBLING in the same window, holds focus at insertion time, the paste service gives
+     * focus back to A once and pastes there, so A receives the words and B never does
+     * (`architecture-rules.md` RULE: insertion-fails-safe-never-silently still holds: the words go only into
+     * the PINNED node, never into whatever is focused now). Before #201 this row asserted the clipboard
+     * outcome (`NEVER_RETURNED`, `copy_only`, `insertion_interrupted`).
+     * REVERT: remove the refocus (`InsertionAttempt.refocusThenWait`): A and B stay empty and the row is
+     * `copy_only` again. Or insert into B: B gains the text.
      */
     @Test
-    fun aTakeStartedInAAndFocusMovedToBInsertsNowhereAndKeepsTheWordsOnTheClipboard() {
+    fun aTakeStartedInAAndFocusMovedToBInsertsIntoAAndNeverIntoB() {
+        val expected = expectedFinal()
         val run = SideButtonRun()
         startRig(twoFields = true)
         run.recordOneTake(stage = { moveFocusToB() })
         val row = run.awaitFinalRow()
         val a = receipt(PasteTargetActivity.RECEIPT_NAME)
         val b = receipt(PasteTargetActivity.RECEIPT_B_NAME)
-        assertEquals("editor A, focused at the start but not at insertion, received nothing", "", a)
-        assertEquals("editor B, focused at insertion time, received nothing", "", b)
-        assertEquals("the owner recorded the copy-only fallback", InsertionResults.COPY_ONLY, row.insertionResult)
-        assertEquals("the row is closed as insertion interrupted", TranscriptEntity.STATUS_INSERTION_INTERRUPTED, row.status)
+        assertEquals("editor A, the pinned field, holds the words", expected, a)
+        assertEquals("the words appear once in A", 1, occurrences(a, expected.trim()))
+        assertEquals("editor B, the sibling that held focus, received nothing", "", b)
+        assertEquals("the owner recorded the paste route (COMMIT is off after a refocus)", InsertionResults.PASTED, row.insertionResult)
     }
 
     /**

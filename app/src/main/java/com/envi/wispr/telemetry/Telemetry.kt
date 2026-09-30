@@ -1,6 +1,7 @@
 package com.envi.wispr.telemetry
 
 import android.content.Context
+import android.os.Build
 import com.envi.wispr.BuildConfig
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.history.EnviousWisprDatabase
@@ -67,6 +68,11 @@ internal object Telemetry {
     fun bootstrap(context: Context) {
         val app = context.applicationContext
         appContext = app
+        if (SupportedPlatform.isBelowMinimum(Build.VERSION.SDK_INT, BuildConfig.MIN_SDK)) {
+            // Google's automated review sandbox (#179): neither vendor starts, no identity is minted.
+            DebugLogger.log(TAG, "Telemetry off: this Android is below the app's minimum (${BuildConfig.MIN_SDK})")
+            return
+        }
         val cfg = runCatching { TelemetryConfig.read(app) }.getOrElse {
             DebugLogger.warn(TAG, "Telemetry config unreadable: ${it.javaClass.simpleName}")
             return

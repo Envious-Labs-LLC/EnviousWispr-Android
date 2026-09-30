@@ -1,6 +1,6 @@
 # Issue #201 — Put the words back in the field you started in — 2026-09-30
 
-GitHub issue: `#201`. Tier: LARGE (insertion path). Status: DRAFT.
+GitHub issue: `#201`. Tier: LARGE (insertion path). Status: APPROVED (founder, 2026-09-30, Gate 2; Codex grounded review ALL CLEAR at round 5).
 
 ## Preface — Lane + Hardware UAT declaration
 

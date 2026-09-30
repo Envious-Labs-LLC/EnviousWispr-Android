@@ -195,9 +195,24 @@ class TakePreparationBoundTest {
             now.addAndGet(60_000L)
             rig.lastReadPolicy = fresh
         }
-        val coordinator = rig.coordinator(preparationBoundMs = 1_000L)
+        // The policy read is HELD until the preparer has computed its deadline and started the matcher job. The
+        // preparer takes the deadline from the host clock AFTER the policy job is launched, and the read's answer
+        // advances that clock by 60 s as it lands; a read that answered first made the deadline 60 s later too, so
+        // the answer was on time and the row failed on a loaded machine (#389). Releasing the read from the
+        // matcher's own entry makes the order the row asserts (deadline first, late stamp after) the only order.
+        val matcherStarted = CountDownLatch(1)
+        rig.policyHold = CompletableDeferred()
+        val releaser = Thread {
+            matcherStarted.await(10, TimeUnit.SECONDS)
+            rig.policyHold?.complete(Unit)
+        }.apply { isDaemon = true; start() }
+        val coordinator = rig.coordinator(
+            preparationBoundMs = 1_000L,
+            compileMatcher = { terms -> matcherStarted.countDown(); StructuredTermRestorer.compile(terms) },
+        )
         goLive(coordinator)
         rawSentToPolish(coordinator)
+        releaser.join(10_000L)
         assertEquals(lastRead, rig.polish.lastPolicy)
         assertEquals(listOf("polish_policy_unreadable"), policyDefects())
     }

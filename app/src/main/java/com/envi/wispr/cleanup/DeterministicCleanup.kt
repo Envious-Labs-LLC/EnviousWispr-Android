@@ -616,14 +616,17 @@ internal object TextSafety {
         return allowLargeContraction || input.length < 24 || output.length >= input.length / 4
     }
 
-    fun isSafe(input: String, output: String): Boolean = refusal(input, output) == null
+    fun isSafe(input: String, output: String, checkNumbers: Boolean = true): Boolean =
+        refusal(input, output, checkNumbers) == null
 
     /**
      * Why the model's output is refused, or null when it is accepted. Six checks: the four this app has
      * always run, plus the Mac's word-count drop and question-to-answer rules
-     * (`LLMPolishStep.validatePolishOutput`); the expansion rule is the Mac's max(3x, 200).
+     * (`LLMPolishStep.validatePolishOutput`); the expansion rule is the Mac's max(3x, 200). A seventh,
+     * [numbersMissing], is this app's own and applies to a MODEL's answer only: the spelling restore of
+     * custom words passes `checkNumbers = false`, because it is not a model and may re-spell a number word.
      */
-    fun refusal(input: String, output: String): String? {
+    fun refusal(input: String, output: String, checkNumbers: Boolean = true): String? {
         if (input.isNotBlank() && output.isBlank()) return "blank output"
         if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' }) return "control characters"
         if (output.length > maxOf(input.length * 3, 200)) return "expansion ${output.length}/${input.length} chars"
@@ -632,8 +635,10 @@ internal object TextSafety {
         val outputWords = output.split(Regex("\\s+")).count { it.isNotEmpty() }
         if (inputWords >= 10 && outputWords < (inputWords * 2 + 4) / 5) return "content drop $outputWords/$inputWords words"
         if (looksLikeQuestion(input) && !looksLikeQuestion(output)) return "question turned into an answer"
-        val missing = numbersMissing(input, output)
-        if (missing > 0) return "number drop $missing numbers"
+        if (checkNumbers) {
+            val missing = numbersMissing(input, output)
+            if (missing > 0) return "number drop $missing numbers"
+        }
         return null
     }
 
@@ -647,51 +652,69 @@ internal object TextSafety {
     // Words that join into a larger number ("twenty one", "two hundred"): a neighbour of one of these is
     // part of a compound the model may write as a single figure, so it is not counted on its own.
     private val numberJoiners = numberWords.keys + setOf("one", "zero", "oh", "hundred", "thousand", "million", "billion", "and")
-    private val digitRun = Regex("\\d{1,3}(?:,\\d{3})+|\\d+")
-    private val tokenPattern = Regex("\\d{1,3}(?:,\\d{3})+|[\\p{L}\\d]+")
+    private val tokenPattern = Regex("[\\p{L}\\d]+")
+
+    // A written figure the input is held to: one or two digits standing on their own. Anything a model may
+    // legitimately reformat is left out on purpose (a decimal, a time, a range, a price, a percentage, a
+    // year, a phone number, a thousands figure, a three-digit figure it may write as "a hundred").
+    private val plainFigure = Regex("(?<![\\d.:/$%#-])\\d{1,2}(?![\\d:/%-]|\\.\\d|,\\d)")
+    private val tensWords = numberWords.filterValues { it >= 20L }
+    private val unitWords = mapOf(
+        "one" to 1L, "two" to 2L, "three" to 3L, "four" to 4L, "five" to 5L, "six" to 6L, "seven" to 7L,
+        "eight" to 8L, "nine" to 9L,
+    )
+    private val outputNumberWords = numberWords + mapOf("one" to 1L, "zero" to 0L)
 
     /**
      * How many numbers the model's output lost (#385: a twenty-item count came back ending at seventeen).
-     * Every written figure of the input must reappear in the output as a figure or as its word; a spoken
-     * number word of the input counts only when it stands alone, so a compound the model rewrites as one
-     * figure is not a drop, and "one" never counts (it is also a pronoun).
+     * Deliberately narrow, because a false refusal silently costs the polish: the input is held to its
+     * plain one or two digit figures ([plainFigure]) and its standalone number words; each must reappear
+     * in the output as a figure or as its word. A spoken number word counts only when it stands alone
+     * (a comma keeps each item of a count separate; a space or hyphen joins a compound such as "twenty
+     * one"), and "one" never counts in the input because it is also a pronoun.
      */
     internal fun numbersMissing(input: String, output: String): Int {
-        val wanted = numbersIn(input, includeWords = true)
+        val wanted = wantedNumbers(input)
         if (wanted.isEmpty()) return 0
-        val kept = numbersIn(output, includeWords = false) + numberWordsIn(output)
+        val kept = keptNumbers(output)
         return wanted.count { it !in kept }
     }
 
-    private fun numbersIn(text: String, includeWords: Boolean): List<Long> {
-        val found = mutableListOf<Long>()
-        val lower = text.lowercase()
-        val matches = tokenPattern.findAll(lower).toList()
-        // A neighbour joins this word only with nothing but spaces or a hyphen between them: the comma in
-        // "eleven, twelve" keeps each item of a spoken count on its own.
+    private fun wantedNumbers(input: String): List<Long> {
+        val lower = input.lowercase()
+        val found = plainFigure.findAll(lower).mapNotNull { it.value.toLongOrNull() }.toMutableList()
+        val words = tokenPattern.findAll(lower).toList()
         fun joinsWith(a: MatchResult, b: MatchResult?, before: Boolean): Boolean {
             if (b == null) return false
             val gap = if (before) lower.substring(b.range.last + 1, a.range.first) else lower.substring(a.range.last + 1, b.range.first)
             return gap.isNotEmpty() && gap.all { it == ' ' || it == '-' } && b.value in numberJoiners
         }
-        matches.forEachIndexed { index, match ->
-            val token = match.value
-            if (token[0].isDigit()) {
-                digitRun.matchEntire(token)?.value?.replace(",", "")?.toLongOrNull()?.let { found += it }
-            } else if (includeWords) {
-                val value = numberWords[token] ?: return@forEachIndexed
-                val joined = joinsWith(match, matches.getOrNull(index - 1), before = true) ||
-                    joinsWith(match, matches.getOrNull(index + 1), before = false)
-                if (!joined) found += value
-            }
+        words.forEachIndexed { index, match ->
+            val value = numberWords[match.value] ?: return@forEachIndexed
+            val joined = joinsWith(match, words.getOrNull(index - 1), before = true) ||
+                joinsWith(match, words.getOrNull(index + 1), before = false)
+            if (!joined) found += value
         }
         return found
     }
 
-    private val outputNumberWords = numberWords + mapOf("one" to 1L, "zero" to 0L)
-
-    private fun numberWordsIn(text: String): Set<Long> =
-        tokenPattern.findAll(text.lowercase()).mapNotNull { outputNumberWords[it.value] }.toSet()
+    /** Every figure in the output (parts of a decimal included), every number word, and "twenty-one" as 21. */
+    private fun keptNumbers(output: String): Set<Long> {
+        val lower = output.lowercase()
+        val kept = mutableSetOf<Long>()
+        Regex("\\d+").findAll(lower.replace(",", "")).mapNotNullTo(kept) { it.value.toLongOrNull() }
+        Regex("\\d+").findAll(lower).mapNotNullTo(kept) { it.value.toLongOrNull() }
+        val words = tokenPattern.findAll(lower).toList()
+        words.forEachIndexed { index, match ->
+            outputNumberWords[match.value]?.let { kept += it }
+            val tens = tensWords[match.value] ?: return@forEachIndexed
+            val next = words.getOrNull(index + 1) ?: return@forEachIndexed
+            val gap = lower.substring(match.range.last + 1, next.range.first)
+            val unit = unitWords[next.value]
+            if (unit != null && gap.isNotEmpty() && gap.all { it == ' ' || it == '-' }) kept += tens + unit
+        }
+        return kept
+    }
 
     private val leadingFillers = setOf("um", "uh", "so", "like", "well", "okay", "ok")
     // The Mac's twelve plus the plain auxiliaries it lacked ("was the meeting moved", "had they left"): code round 1.

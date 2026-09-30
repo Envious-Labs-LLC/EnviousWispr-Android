@@ -75,6 +75,36 @@ class TextSafetyTest {
         assertNull(TextSafety.refusal("call me at five five five one two one two after lunch today please", "Call me at 555-1212 after lunch today please."))
     }
 
+    @Test fun aFullySpelledCountCutOffAtSeventeenIsRefusedAndAFullOneIsNot_385() {
+        val spelled = "one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty"
+        assertEquals("number drop 3 numbers", TextSafety.refusal(spelled, "One, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen."))
+        assertNull(TextSafety.refusal(spelled, "$spelled."))
+        assertNull(TextSafety.refusal(spelled, "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20."))
+    }
+
+    @Test fun reformattingANumberTheRuleDoesNotCheckIsNeverARefusal_385() {
+        // Codex round 3: each of these is a correct polish answer and must not fall back to the raw text.
+        assertNull(TextSafety.refusal("the dose is 3.50 milligrams", "The dose is 3.5 milligrams."))
+        assertNull(TextSafety.refusal("we need 100 chairs for the event", "We need a hundred chairs for the event."))
+        assertNull(TextSafety.refusal("call 2125551212 after lunch today", "Call (212) 555-1212 after lunch today."))
+        assertNull(TextSafety.refusal("we meet at 3:30 in the main room", "We meet at half past three in the main room."))
+        assertNull(TextSafety.refusal("the plan starts in 2024 and runs a while", "The plan starts in twenty twenty-four and runs a while."))
+        assertNull(TextSafety.refusal("the price is \$5 and up to 50% off", "The price is 5 dollars and up to fifty percent off."))
+    }
+
+    @Test fun aPlainFigureWrittenOutAsWordsOrAsACompoundIsKept_385() {
+        assertNull(TextSafety.refusal("we have 21 apples for everyone here", "We have twenty-one apples for everyone here."))
+        assertNull(TextSafety.refusal("we have 21 apples for everyone here", "We have twenty one apples for everyone here."))
+        assertNull(TextSafety.refusal("we have 3 apples for everyone here", "We have three apples for everyone here."))
+        assertNull(TextSafety.refusal("one of them has 1 apple for me", "One of them has one apple for me."))
+    }
+
+    @Test fun theSpellingRestoreOfCustomWordsSkipsTheNumberRule_385() {
+        val input = "we have 18 and 19 apples for everyone here today"
+        assertFalse(TextSafety.isSafe(input, "We have apples for everyone here today."))
+        assertTrue(TextSafety.isSafe(input, "We have apples for everyone here today.", checkNumbers = false))
+    }
+
     @Test fun theWordOneIsNeverCountedBecauseItIsAlsoAPronoun_385() {
         assertNull(TextSafety.refusal("that one thing we talked about needs a lot more work before friday", "That thing we talked about needs a lot more work before Friday."))
     }

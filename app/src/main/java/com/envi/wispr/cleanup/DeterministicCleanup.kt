@@ -649,7 +649,6 @@ internal object TextSafety {
         "twenty" to 20L, "thirty" to 30L, "forty" to 40L, "fifty" to 50L, "sixty" to 60L, "seventy" to 70L,
         "eighty" to 80L, "ninety" to 90L,
     )
-    private val tokenPattern = Regex("[\\p{L}\\d]+")
     private val tensWords = numberWords.filterValues { it >= 20L }
     private val unitWords = mapOf(
         "one" to 1L, "two" to 2L, "three" to 3L, "four" to 4L, "five" to 5L, "six" to 6L, "seven" to 7L,
@@ -682,22 +681,27 @@ internal object TextSafety {
     // A spoken count is three or more such items in a row joined by commas. Nothing else is checked: a lone
     // "1 time", "2nd" or "3:30" is a number a model may word another way, and refusing a correct answer
     // silently costs the polish, so only an enumeration (where a dropped tail is unmistakable) is held.
-    private val spokenCount = Regex("(?<![\\p{L}\\d.:/$%#-])$countItem(?:,\\s*$countItem){2,}(?![\\p{L}\\d:/%-]|\\.\\d|,\\d|[\\s-]+(?:one|two|three|four|five|six|seven|eight|nine|hundred|thousand|million|billion))")
+    private val spokenCount = Regex("(?<![\\p{L}\\d.:/$%#-])$countItem(?:,\\s*$countItem){2,}(?![\\p{L}\\d:/%-]|\\.\\d|,\\d|[\\s-]+(?:hundred|thousand|million|billion)|(?<=twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[\\s-]+(?:one|two|three|four|five|six|seven|eight|nine))")
 
     /**
-     * How many items of a spoken count the model's output lost (#385: a twenty-item count came back ending
-     * at seventeen). Each item of each count in the input must reappear in the output as a figure or as its
-     * word.
+     * How many counts in the input lost their last item in the model's output (#385: a twenty-item count
+     * came back ending at seventeen). Only the LAST item of each count is held: both reproductions lost the
+     * tail, and a model may legitimately fold the middle ("1, 2, 3" to "1 to 3") or use ordinals.
+     *
+     * The output must carry that value as many times as the INPUT does, in any form. A bare presence test
+     * let an unrelated number hide the loss ("count to 20: 1, 2, ..., 20" answered "Count to 20: 1, ...,
+     * 17" kept a 20), so every occurrence of the value in the input, inside the count or not, has to be
+     * matched. A model that merges repeated values ("5, 5, 5" to "5") is refused: that costs the polish only.
      */
     internal fun numbersMissing(input: String, output: String): Int {
-        // Only the LAST item of each count is held: both #385 reproductions lost the tail, and a model may
-        // legitimately fold the middle ("1, 2, 3" to "1 to 3") or turn a count into ordinals.
-        val wanted = spokenCount.findAll(input.lowercase()).mapNotNull { run ->
+        val lowerInput = input.lowercase()
+        val tails = spokenCount.findAll(lowerInput).mapNotNull { run ->
             Regex(countItem).findAll(run.value).lastOrNull()?.let { valueOfItem(it.value) }
         }.toList()
-        if (wanted.isEmpty()) return 0
-        val kept = keptNumbers(output)
-        return wanted.count { it !in kept }
+        if (tails.isEmpty()) return 0
+        val inputValues = numberValues(lowerInput)
+        val outputValues = numberValues(output.lowercase())
+        return tails.distinct().count { tail -> outputValues.count { it == tail } < inputValues.count { it == tail } }
     }
 
     private fun valueOfItem(item: String): Long? {
@@ -710,22 +714,38 @@ internal object TextSafety {
         } else outputNumberWords[item]
     }
 
-    /** Every figure in the output (parts of a decimal included), every number word, and "twenty-one" as 21. */
-    private fun keptNumbers(output: String): Set<Long> {
-        val lower = output.lowercase()
-        val kept = mutableSetOf<Long>()
-        Regex("\\d+").findAll(lower.replace(",", "")).mapNotNullTo(kept) { it.value.toLongOrNull() }
-        Regex("\\d+").findAll(lower).mapNotNullTo(kept) { it.value.toLongOrNull() }
-        val words = tokenPattern.findAll(lower).toList()
-        words.forEachIndexed { index, match ->
-            outputNumberWords[match.value]?.let { kept += it }
-            val tens = tensWords[match.value] ?: return@forEachIndexed
-            val next = words.getOrNull(index + 1) ?: return@forEachIndexed
-            val gap = lower.substring(match.range.last + 1, next.range.first)
-            val unit = unitWords[next.value] ?: unitOrdinals[next.value]
-            if (unit != null && gap.isNotEmpty() && gap.all { it == ' ' || it == '-' }) kept += tens + unit
+    private val numberToken = Regex("\\d{1,3}(?:,\\d{3})+|\\d+\\.\\d+|\\d+|\\p{L}+")
+
+    /**
+     * Every number in [lower], in order, each token consumed once: a figure (a thousands figure as one
+     * value), a number word, and "twenty-one" as the single value 21, never as 20 and 1. A decimal is one
+     * non-integer number and yields nothing, so "3.5" does not supply a 3 or a 5.
+     */
+    private fun numberValues(lower: String): List<Long> {
+        val tokens = numberToken.findAll(lower).toList()
+        val values = mutableListOf<Long>()
+        var index = 0
+        while (index < tokens.size) {
+            val token = tokens[index]
+            val text = token.value
+            index++
+            when {
+                text[0].isDigit() -> if ('.' !in text) text.replace(",", "").toLongOrNull()?.let { values += it }
+                else -> {
+                    val value = outputNumberWords[text] ?: continue
+                    val next = tokens.getOrNull(index)
+                    val unit = next?.let { unitWords[it.value] ?: unitOrdinals[it.value] }
+                    val gap = next?.let { lower.substring(token.range.last + 1, it.range.first) }
+                    if (tensWords[text] != null && unit != null && gap != null && gap.isNotEmpty() && gap.all { it == ' ' || it == '-' }) {
+                        values += value + unit
+                        index++
+                    } else {
+                        values += value
+                    }
+                }
+            }
         }
-        return kept
+        return values
     }
 
     private val leadingFillers = setOf("um", "uh", "so", "like", "well", "okay", "ok")

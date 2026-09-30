@@ -131,11 +131,34 @@ class TextSafetyTest {
         assertNull(TextSafety.refusal("the price is \$5 and up to 50% off", "The price is 5 dollars and up to fifty percent off."))
     }
 
-    @Test fun aPlainFigureWrittenOutAsWordsOrAsACompoundIsKept_385() {
-        assertNull(TextSafety.refusal("we have 21 apples for everyone here", "We have twenty-one apples for everyone here."))
-        assertNull(TextSafety.refusal("we have 21 apples for everyone here", "We have twenty one apples for everyone here."))
-        assertNull(TextSafety.refusal("we have 3 apples for everyone here", "We have three apples for everyone here."))
-        assertNull(TextSafety.refusal("one of them has 1 apple for me", "One of them has one apple for me."))
+    @Test fun aCountsTailWrittenAsWordsOrAsACompoundIsKeptAndADroppedOneIsNot_385() {
+        val input = "we have 19, 20, 21 apples for everyone here"
+        assertNull(TextSafety.refusal(input, "We have nineteen, twenty, twenty-one apples for everyone here."))
+        assertNull(TextSafety.refusal(input, "We have nineteen, twenty, twenty one apples for everyone here."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "We have nineteen, twenty, twenty apples for everyone here."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "We have nineteen and twenty apples for everyone here."))
+        assertNull(TextSafety.refusal("we have 1, 2, 3 apples for me", "We have one, two, three apples for me."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("we have 1, 2, 3 apples for me", "We have one and two apples for me."))
+    }
+
+    @Test fun anUnrelatedNumberCannotStandInForALostTail_385() {
+        // Codex round 8: the output must carry the tail as many times as the input does.
+        val input = "count to 20: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
+        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "Count to 20: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17."))
+        assertNull(TextSafety.refusal(input, "Count to 20: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20."))
+    }
+
+    @Test fun aCompoundSuppliesOneValueNeverItsTwoParts_385() {
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count 18, 19, 20", "Count eighteen, nineteen, twenty-one."))
+        assertNull(TextSafety.refusal("count 18, 19, 20", "Count eighteen, nineteen, twenty."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count 18, 19, 20 please", "Count 18, 19, 3.20 please."))
+    }
+
+    @Test fun wordsAfterACountDoNotDisableIt_385() {
+        assertEquals("number drop 1 numbers", TextSafety.refusal("say 1, 2, 3 one more time", "Say 1, 2 one more time."))
+        assertNull(TextSafety.refusal("say 1, 2, 3 one more time", "Say 1, 2, 3 one more time."))
+        // A number that really continues the last item is one number, not a count ending early.
+        assertNull(TextSafety.refusal("the reference numbers are 1, 2, twenty one hundred", "The reference numbers are 1, 2, 2100."))
     }
 
     @Test fun theSpellingRestoreOfCustomWordsSkipsTheNumberRule_385() {

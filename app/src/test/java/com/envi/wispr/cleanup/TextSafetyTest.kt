@@ -64,10 +64,25 @@ class TextSafetyTest {
         assertNull(TextSafety.refusal(countToTwenty, countToTwenty.replace("1, ", "one, ")))
     }
 
-    @Test fun aWrittenFigureTheModelDropsIsRefusedWhateverItsPlace_385() {
-        val input = "the invoice total is 1,200 dollars for 3 seats and we meet at 10 tomorrow morning"
-        assertNull(TextSafety.refusal(input, "The invoice total is 1200 dollars for 3 seats and we meet at 10 tomorrow morning."))
-        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "The invoice total is 1200 dollars for seats and we meet at 10 tomorrow morning."))
+    @Test fun aCountOfThreeOrMoreLosingAnItemInTheMiddleIsRefused_385() {
+        val input = "the codes are 12, 14, 16, 18 and 20 for the lockers"
+        assertNull(TextSafety.refusal(input, "The codes are 12, 14, 16, 18 and 20 for the lockers."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "The codes are 12, 14, 16 and 20 for the lockers."))
+    }
+
+    @Test fun aLoneNumberIsNeverHeldBecauseAModelMayWordItAnotherWay_385() {
+        // Codex rounds 3 and 4: each is a correct answer; only a run of three or more is enforced.
+        assertNull(TextSafety.refusal("repeat this 1 time after lunch", "Repeat this once after lunch."))
+        assertNull(TextSafety.refusal("we should keep both of the 2 options", "We should keep both options."))
+        assertNull(TextSafety.refusal("this is attempt number 1 today", "This is the first attempt today."))
+        assertNull(TextSafety.refusal("this is my 2nd attempt at it", "This is my second attempt at it."))
+        assertNull(TextSafety.refusal("1. buy milk 2. buy eggs", "Buy milk and eggs."))
+        assertNull(TextSafety.refusal("the invoice total is 1,200 dollars for 3 seats and we meet at 10 tomorrow morning", "The invoice is 1200 dollars for seats and we meet tomorrow morning."))
+    }
+
+    @Test fun twoItemsAreNotACountAndAThreeItemRunIs_385() {
+        assertNull(TextSafety.refusal("we need 4, 5 chairs for the event today", "We need chairs for the event today."))
+        assertEquals("number drop 3 numbers", TextSafety.refusal("we need 4, 5, 6 chairs for the event today", "We need chairs for the event today."))
     }
 
     @Test fun compoundsTheModelRewritesAsOneFigureAreNotDrops_385() {
@@ -100,7 +115,7 @@ class TextSafetyTest {
     }
 
     @Test fun theSpellingRestoreOfCustomWordsSkipsTheNumberRule_385() {
-        val input = "we have 18 and 19 apples for everyone here today"
+        val input = "we have 18, 19, 20 apples for everyone here today"
         assertFalse(TextSafety.isSafe(input, "We have apples for everyone here today."))
         assertTrue(TextSafety.isSafe(input, "We have apples for everyone here today.", checkNumbers = false))
     }

@@ -649,15 +649,7 @@ internal object TextSafety {
         "twenty" to 20L, "thirty" to 30L, "forty" to 40L, "fifty" to 50L, "sixty" to 60L, "seventy" to 70L,
         "eighty" to 80L, "ninety" to 90L,
     )
-    // Words that join into a larger number ("twenty one", "two hundred"): a neighbour of one of these is
-    // part of a compound the model may write as a single figure, so it is not counted on its own.
-    private val numberJoiners = numberWords.keys + setOf("one", "zero", "oh", "hundred", "thousand", "million", "billion", "and")
     private val tokenPattern = Regex("[\\p{L}\\d]+")
-
-    // A written figure the input is held to: one or two digits standing on their own. Anything a model may
-    // legitimately reformat is left out on purpose (a decimal, a time, a range, a price, a percentage, a
-    // year, a phone number, a thousands figure, a three-digit figure it may write as "a hundred").
-    private val plainFigure = Regex("(?<![\\d.:/$%#-])\\d{1,2}(?![\\d:/%-]|\\.\\d|,\\d)")
     private val tensWords = numberWords.filterValues { it >= 20L }
     private val unitWords = mapOf(
         "one" to 1L, "two" to 2L, "three" to 3L, "four" to 4L, "five" to 5L, "six" to 6L, "seven" to 7L,
@@ -665,37 +657,40 @@ internal object TextSafety {
     )
     private val outputNumberWords = numberWords + mapOf("one" to 1L, "zero" to 0L)
 
+    // One item of a spoken count: a figure of one or two digits, a number word, or "twenty one".
+    private val countItem = run {
+        val units = "one|two|three|four|five|six|seven|eight|nine"
+        val teens = "ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen"
+        val tens = "twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety"
+        "(?:(?:$tens)(?:[- ](?:$units))?|$teens|$units|zero|\\d{1,2})"
+    }
+    // A spoken count is three or more such items in a row joined by commas. Nothing else is checked: a lone
+    // "1 time", "2nd" or "3:30" is a number a model may word another way, and refusing a correct answer
+    // silently costs the polish, so only an enumeration (where a dropped tail is unmistakable) is held.
+    private val spokenCount = Regex("(?<![\\p{L}\\d.:/$%#-])$countItem(?:,\\s*$countItem){2,}(?![\\p{L}\\d:/%-]|\\.\\d|,\\d)")
+
     /**
-     * How many numbers the model's output lost (#385: a twenty-item count came back ending at seventeen).
-     * Deliberately narrow, because a false refusal silently costs the polish: the input is held to its
-     * plain one or two digit figures ([plainFigure]) and its standalone number words; each must reappear
-     * in the output as a figure or as its word. A spoken number word counts only when it stands alone
-     * (a comma keeps each item of a count separate; a space or hyphen joins a compound such as "twenty
-     * one"), and "one" never counts in the input because it is also a pronoun.
+     * How many items of a spoken count the model's output lost (#385: a twenty-item count came back ending
+     * at seventeen). Each item of each count in the input must reappear in the output as a figure or as its
+     * word.
      */
     internal fun numbersMissing(input: String, output: String): Int {
-        val wanted = wantedNumbers(input)
+        val wanted = spokenCount.findAll(input.lowercase()).flatMap { run ->
+            Regex(countItem).findAll(run.value).mapNotNull { valueOfItem(it.value) }
+        }.toList()
         if (wanted.isEmpty()) return 0
         val kept = keptNumbers(output)
         return wanted.count { it !in kept }
     }
 
-    private fun wantedNumbers(input: String): List<Long> {
-        val lower = input.lowercase()
-        val found = plainFigure.findAll(lower).mapNotNull { it.value.toLongOrNull() }.toMutableList()
-        val words = tokenPattern.findAll(lower).toList()
-        fun joinsWith(a: MatchResult, b: MatchResult?, before: Boolean): Boolean {
-            if (b == null) return false
-            val gap = if (before) lower.substring(b.range.last + 1, a.range.first) else lower.substring(a.range.last + 1, b.range.first)
-            return gap.isNotEmpty() && gap.all { it == ' ' || it == '-' } && b.value in numberJoiners
-        }
-        words.forEachIndexed { index, match ->
-            val value = numberWords[match.value] ?: return@forEachIndexed
-            val joined = joinsWith(match, words.getOrNull(index - 1), before = true) ||
-                joinsWith(match, words.getOrNull(index + 1), before = false)
-            if (!joined) found += value
-        }
-        return found
+    private fun valueOfItem(item: String): Long? {
+        item.toLongOrNull()?.let { return it }
+        val parts = item.split(' ', '-')
+        return if (parts.size == 2) {
+            val tens = tensWords[parts[0]] ?: return null
+            val unit = unitWords[parts[1]] ?: return null
+            tens + unit
+        } else outputNumberWords[item]
     }
 
     /** Every figure in the output (parts of a decimal included), every number word, and "twenty-one" as 21. */

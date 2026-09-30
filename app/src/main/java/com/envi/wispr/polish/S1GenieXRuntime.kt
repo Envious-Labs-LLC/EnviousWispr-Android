@@ -17,11 +17,30 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
+/** How one generation ended (#385): the engine's own stop word and token counts, never text. */
+internal data class GenerationEnd(val stopReason: String, val generatedTokens: Long, val promptTokens: Long, val cap: Int) {
+    /** True when the answer used the whole budget, so it may have been cut off rather than finished. */
+    val reachedCap: Boolean get() = generatedTokens >= cap
+
+    /** One line for the local log: counts and the engine's stop word only. */
+    fun logLine(): String =
+        "S1 generation ended: stop=$stopReason generated=$generatedTokens prompt=$promptTokens cap=$cap reachedCap=$reachedCap"
+}
+
 /** Single owner for S1 inference. PolishService serializes every call onto one worker thread. */
 internal class S1GenieXRuntime(private val context: Context) {
     private var llm: LlmWrapper? = null
 
     var activeComputeUnit: String = "unloaded"
+        private set
+
+    /**
+     * How the last [generate] ended, as the engine reported it: counts and the engine's own stop word, never
+     * text (#385: whether a cut-off answer stopped on the cap or on its own end of sequence). Null until a
+     * generation completes; [generate] clears it first, so a timed-out or failed call leaves it null.
+     */
+    @Volatile
+    var lastGeneration: GenerationEnd? = null
         private set
 
     fun load(modelPath: String, computeUnits: List<String>): String {
@@ -70,6 +89,7 @@ internal class S1GenieXRuntime(private val context: Context) {
      */
     fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int, timeoutMs: Long): String? {
         val active = checkNotNull(llm) { "S1 runtime is not loaded" }
+        lastGeneration = null
         val output = StringBuilder()
         val completed = runBlocking {
           withTimeoutOrNull(timeoutMs) {
@@ -99,7 +119,12 @@ internal class S1GenieXRuntime(private val context: Context) {
             active.generateStreamFlow(formatted, generation).collect { result ->
                 when (result) {
                     is LlmStreamResult.Token -> output.append(result.text)
-                    is LlmStreamResult.Completed -> Unit
+                    is LlmStreamResult.Completed -> lastGeneration = GenerationEnd(
+                        stopReason = result.profile.stopReason,
+                        generatedTokens = result.profile.generatedTokens,
+                        promptTokens = result.profile.promptTokens,
+                        cap = maxTokens,
+                    )
                     is LlmStreamResult.Error -> throw result.throwable
                 }
             }

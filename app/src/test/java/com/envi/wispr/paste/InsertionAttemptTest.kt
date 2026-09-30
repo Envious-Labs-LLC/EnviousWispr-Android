@@ -152,11 +152,114 @@ class InsertionAttemptTest {
 
         override fun commitSessionLive(): Boolean = commitSessionLive
 
+        /** #201: what the focus try answers. ACCEPTED, REJECTED and THREW count as a sent action. */
+        var refocusResult: RefocusResult = RefocusResult.DECLINED
+
+        /** An ACCEPTED action brings the pinned editor back, as handing focus back from a sibling would. */
+        var refocusBringsTheEditorBack: Boolean = false
+        var refocusCalls = 0
+        var refocusActionsSent = 0
+
+        override fun refocusOriginal(): RefocusResult {
+            refocusCalls += 1
+            if (refocusResult.sentAnAction) refocusActionsSent += 1
+            if (refocusResult == RefocusResult.THREW) throw IllegalStateException("focus threw")
+            if (refocusResult == RefocusResult.ACCEPTED && refocusBringsTheEditorBack) present = true
+            return refocusResult
+        }
+
         override fun now(): Long = clock
     }
 
     private fun attempt(editor: FakeEditor, text: String = "and I will", deadline: Long = 2_500L) =
         InsertionAttempt(editor, text, smartInsertion = false, deadlineMs = deadline)
+
+    // ---- #201: a sibling field in the same window holds input focus when the take stops ----------------
+
+    @Test
+    fun aSiblingFocusedFieldIsRefocusedOnceThenTheWordsArePastedNeverCommitted() {
+        val editor = FakeEditor(present = false, commitEligible = true).apply {
+            refocusResult = RefocusResult.ACCEPTED
+            refocusBringsTheEditorBack = true
+        }
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(1, editor.refocusActionsSent)
+        // COMMIT would have been eligible, but after a focus action the input session may still be the sibling's.
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
+        assertEquals(0, editor.commits)
+        assertEquals(1, editor.pastes)
+        assertEquals(1, editor.refocusActionsSent)
+        assertEquals(RefocusResult.ACCEPTED, attempt.refocusResult)
+        assertEquals("Hi team, and I will", editor.field)
+    }
+
+    @Test
+    fun aGuardRefusalSpendsNothingAndAskingAgainCanStillRecover() {
+        val editor = FakeEditor(present = false)
+        val attempt = attempt(editor)
+        repeat(3) { assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick()) }
+        assertEquals(3, editor.refocusCalls)
+        assertEquals(0, editor.refocusActionsSent)
+        // The window finally holds focus and a sibling has it: the same attempt still gets its one action.
+        editor.refocusResult = RefocusResult.ACCEPTED
+        editor.refocusBringsTheEditorBack = true
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(1, editor.refocusActionsSent)
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
+    }
+
+    @Test
+    fun aRejectedFocusActionIsNeverRepeatedAndTheAttemptEndsOnTheClipboardPath() {
+        val editor = FakeEditor(present = false).apply { refocusResult = RefocusResult.REJECTED }
+        val attempt = attempt(editor)
+        repeat(6) { assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick()) }
+        assertEquals(1, editor.refocusCalls)
+        assertEquals(1, editor.refocusActionsSent)
+        assertEquals(RefocusResult.REJECTED, attempt.refocusResult)
+        editor.clock = 2_500L
+        assertEquals(InsertionAttempt.Tick.Expired(false), attempt.tick())
+        assertEquals(0, editor.pastes)
+        assertEquals(0, editor.commits)
+    }
+
+    @Test
+    fun aThrowingFocusActionSpendsTheActionAndLaterTicksStillPasteOnly() {
+        val editor = FakeEditor(present = false, commitEligible = true).apply { refocusResult = RefocusResult.THREW }
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(RefocusResult.THREW, attempt.refocusResult)
+        // The throw may have moved focus: the editor is back, and the next tick must not commit through a stale session.
+        editor.present = true
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
+        assertEquals(1, editor.refocusCalls)
+        assertEquals(0, editor.commits)
+    }
+
+    @Test
+    fun anAcceptedFocusThatNeverBringsTheEditorBackIsNotRepeated() {
+        val editor = FakeEditor(present = false).apply { refocusResult = RefocusResult.ACCEPTED }
+        val attempt = attempt(editor)
+        repeat(6) { assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick()) }
+        assertEquals(1, editor.refocusCalls)
+    }
+
+    @Test
+    fun noFocusActionIsSentOnceTheDeadlinePassedDuringTheLocate() {
+        val editor = FakeEditor(present = false, readCostMs = 3_000L).apply { refocusResult = RefocusResult.ACCEPTED }
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(0, editor.refocusCalls)
+    }
+
+    @Test
+    fun anEditorThatIsAlreadyFocusedIsNeverRefocusedAndStillCommitsWhenEligible() {
+        val editor = FakeEditor(commitEligible = true).apply { refocusResult = RefocusResult.ACCEPTED }
+        val attempt = attempt(editor)
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), attempt.tick())
+        assertEquals(0, editor.refocusCalls)
+        assertEquals(1, editor.commits)
+    }
 
     @Test
     fun pasteThatLandsIsVerifiedOnTheFirstTickWithOneWrite() {

@@ -27,7 +27,16 @@ def run():
     parser.add_argument('--pcm', required=True, help='existing PHONE path, 16 kHz mono signed little-endian PCM')
     parser.add_argument('--expect', required=True, help='expected final editor text, including any pre-existing text')
     parser.add_argument('--receipt', type=Path, required=True)
+    parser.add_argument('--focus-between', help='after the audio is in and before stop, press this editor (its text or hint) so a SIBLING field holds '
+                        'input focus at stop time (#201); needs --focus-package')
+    parser.add_argument('--focus-package', help='package of the app that owns the --focus-between editor')
+    parser.add_argument('--focus-between-at', help='X,Y centre of the sibling editor, for one with no text or hint (a web form input); '
+                        'read it from the tree BEFORE the take; replaces --focus-between')
     args = parser.parse_args()
+    if bool(args.focus_between) != bool(args.focus_package) and not args.focus_between_at:
+        parser.error('--focus-between and --focus-package go together')
+    if args.focus_between and args.focus_between_at:
+        parser.error('--focus-between and --focus-between-at are alternatives')
     args.receipt.mkdir(parents=True, exist_ok=True)
     adb = [eyes.ADB, '-s', args.serial]
     def shell(command):
@@ -43,6 +52,19 @@ def run():
     eyes.device(args.serial)
     if not eyes.ready() or not eyes.bound(): raise RuntimeError('Phone or auto-paste not ready')
     if eyes.recording(): raise RuntimeError('Another take is active')
+    focus_point = None
+    if args.focus_between_at:
+        focus_point = tuple(int(part) for part in args.focus_between_at.split(','))
+        print(f'FOCUS_TARGET at {focus_point}', flush=True)
+    elif args.focus_between:
+        # READ BEFORE THE TAKE. On a release build the tree comes from `uiautomator dump`, which takes the
+        # UiAutomation connection and UNBINDS our accessibility service for a moment; a read while the take is
+        # open made the service reconnect and lose its pin (2026-09-30: "No editor was pinned", clipboard only).
+        # So the sibling editor's centre is found now, on the screen this take will still be looking at, and
+        # pressed by that centre once the audio is in (#201).
+        node = eyes.find(args.focus_between, exact=True, clickable=None, package=args.focus_package)
+        focus_point = node['centre']
+        print(f'FOCUS_TARGET {args.focus_between!r} at {focus_point}', flush=True)
     # Caller owns the editor. Do not launch an activity that steals its pinned focus.
     before_volume = volume()
     remote = '/data/local/tmp/wispr-silent-' + uuid.uuid4().hex + '.jar'
@@ -94,6 +116,13 @@ def run():
         (args.receipt/'routing.txt').write_text(routing)
         helper.stdin.write('GO\n'); helper.stdin.flush()
         wait(hq, 'INJECTED')
+        if focus_point is not None:
+            # #201: a sibling editor takes input focus while the take is still open, then stop is pressed. No
+            # tree read here (see above); the press lands on the centre found before the take.
+            time.sleep(1.0)
+            eyes._adb(f'input tap {int(focus_point[0])} {int(focus_point[1])}')
+            print('SIBLING_PRESSED', flush=True)
+            time.sleep(1.0)
         shell('am start -n com.envi.wispr/.ui.VoiceInputActivity --ez stop true')
         outcome = wait(logq, 'insertion api=', 40)
         view = eyes.tree()

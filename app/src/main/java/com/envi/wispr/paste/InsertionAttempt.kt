@@ -109,6 +109,12 @@ internal interface EditorWrites {
      */
     fun commitSessionLive(): Boolean
 
+    /**
+     * Tries once to give input focus back to the pinned editor when a SIBLING in the same focused window
+     * holds it (#201). Only [RefocusResult.DECLINED] means no action was sent. Never changes text.
+     */
+    fun refocusOriginal(): RefocusResult
+
     fun now(): Long
 }
 
@@ -170,6 +176,15 @@ internal class InsertionAttempt(
     var writeCount: Int = 0
         private set
 
+    /** The last result of the focus try (#201), or null while none was made. */
+    var refocusResult: RefocusResult? = null
+        private set
+
+    // True once a focus ACTION was sent (accepted, rejected or thrown): the attempt's one action is spent and
+    // the COMMIT route is off for the rest of the attempt, because the input session may still be the
+    // sibling's and a commit through it would land there. A DECLINED try sends nothing and leaves this false.
+    private var refocusTried: Boolean = false
+
     // A read at any point returned a complete but wrong field (the editor changed or dropped the
     // payload). It latches, because a single MISS is real evidence of failure that a later unreadable
     // tick must not erase: a commit is trusted on expiry ONLY when every judgement was UNREADABLE.
@@ -198,12 +213,13 @@ internal class InsertionAttempt(
     }
 
     private fun prepareAndWrite(): Tick {
-        val target = locate() ?: return Tick.Waiting
+        val target = locate() ?: return refocusThenWait()
         if (target.sensitive) return Tick.Sensitive
         if (expired()) return Tick.Expired(false)
 
         val baseline = AccessibilityInsertionRules.baseline(target.read)
-        val chosen = InsertionRoutePolicy.select(commitEligible())
+        // After a focus action the COMMIT route is off (see [refocusTried]); PASTE needs no input session.
+        val chosen = InsertionRoutePolicy.select(!refocusTried && commitEligible())
         route = chosen
         return when (chosen) {
             InsertionRoute.COMMIT -> {
@@ -445,6 +461,24 @@ internal class InsertionAttempt(
             return InsertionText.SmartPayloadPlan(text, false)
         }
         return InsertionText.smartPayloadPlan(baseline, text, selection.start, selection.end)
+    }
+
+    /**
+     * The pinned editor was not found focused (#201): when a sibling in the same focused window holds input
+     * focus, try ONCE to give it back, then let the next tick locate again. Checked against the deadline
+     * first; a guard refusal ([RefocusResult.DECLINED]) spends nothing and may be asked again next tick;
+     * an accepted, rejected or thrown action spends the one action.
+     */
+    private fun refocusThenWait(): Tick {
+        if (refocusTried || expired()) return Tick.Waiting
+        val result = try {
+            editor.refocusOriginal()
+        } catch (error: Exception) {
+            RefocusResult.THREW
+        }
+        refocusResult = result
+        if (result.sentAnAction) refocusTried = true
+        return Tick.Waiting
     }
 
     private fun locate(): TargetState? = try {

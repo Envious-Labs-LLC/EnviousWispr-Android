@@ -172,6 +172,13 @@ class TextSafetyTest {
         assertEquals("number drop 1 numbers", TextSafety.refusal("count three, two, one", "Count three, two."))
         assertNull(TextSafety.refusal("count three, two, one", "Count three, two, one."))
         assertNull(TextSafety.refusal("count three, two, one", "Count 3, 2, 1."))
+        // Codex round 11: an earlier "one" in the answer must not satisfy the countdown's own last word.
+        val preface = "one last countdown: five, four, three, two, one"
+        assertEquals("number drop 1 numbers", TextSafety.refusal(preface, "One last countdown: five, four, three, two."))
+        assertNull(TextSafety.refusal(preface, "One last countdown: five, four, three, two, one."))
+        val twoCountdowns = "first three, two, one then again three, two, one"
+        assertEquals("number drop 1 numbers", TextSafety.refusal(twoCountdowns, "First three, two, one then again three, two."))
+        assertNull(TextSafety.refusal(twoCountdowns, "First three, two, one then again three, two, one."))
     }
 
     @Test fun wordsAfterACountDoNotDisableIt_385() {

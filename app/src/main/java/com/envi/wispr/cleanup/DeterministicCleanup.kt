@@ -708,7 +708,8 @@ internal object TextSafety {
             // "one" ("three, two, one") must still be held: its own word then counts in the answer.
             val spelledOne = item == "one"
             val have = outputValues.count { it == tail } + if (spelledOne) oneWord.findAll(lowerOutput).count() else 0
-            have < maxOf(inputValues.count { it == tail }, 1)
+            val needed = inputValues.count { it == tail } + if (spelledOne) oneWord.findAll(lowerInput).count() else 0
+            have < maxOf(needed, 1)
         }
     }
 

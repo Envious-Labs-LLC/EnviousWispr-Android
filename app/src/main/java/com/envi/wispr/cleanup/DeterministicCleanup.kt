@@ -655,7 +655,12 @@ internal object TextSafety {
         "one" to 1L, "two" to 2L, "three" to 3L, "four" to 4L, "five" to 5L, "six" to 6L, "seven" to 7L,
         "eight" to 8L, "nine" to 9L,
     )
-    private val outputNumberWords = numberWords + mapOf("one" to 1L, "zero" to 0L)
+    private val outputNumberWords = numberWords + mapOf("one" to 1L, "zero" to 0L) + mapOf(
+        "first" to 1L, "second" to 2L, "third" to 3L, "fourth" to 4L, "fifth" to 5L, "sixth" to 6L,
+        "seventh" to 7L, "eighth" to 8L, "ninth" to 9L, "tenth" to 10L, "eleventh" to 11L, "twelfth" to 12L,
+        "thirteenth" to 13L, "fourteenth" to 14L, "fifteenth" to 15L, "sixteenth" to 16L,
+        "seventeenth" to 17L, "eighteenth" to 18L, "nineteenth" to 19L, "twentieth" to 20L,
+    )
 
     // One item of a spoken count: a figure of one or two digits, a number word, or "twenty one".
     private val countItem = run {
@@ -667,7 +672,7 @@ internal object TextSafety {
     // A spoken count is three or more such items in a row joined by commas. Nothing else is checked: a lone
     // "1 time", "2nd" or "3:30" is a number a model may word another way, and refusing a correct answer
     // silently costs the polish, so only an enumeration (where a dropped tail is unmistakable) is held.
-    private val spokenCount = Regex("(?<![\\p{L}\\d.:/$%#-])$countItem(?:,\\s*$countItem){2,}(?![\\p{L}\\d:/%-]|\\.\\d|,\\d)")
+    private val spokenCount = Regex("(?<![\\p{L}\\d.:/$%#-])$countItem(?:,\\s*$countItem){2,}(?![\\p{L}\\d:/%-]|\\.\\d|,\\d|[\\s-]+(?:one|two|three|four|five|six|seven|eight|nine|hundred|thousand|million|billion))")
 
     /**
      * How many items of a spoken count the model's output lost (#385: a twenty-item count came back ending
@@ -675,8 +680,10 @@ internal object TextSafety {
      * word.
      */
     internal fun numbersMissing(input: String, output: String): Int {
-        val wanted = spokenCount.findAll(input.lowercase()).flatMap { run ->
-            Regex(countItem).findAll(run.value).mapNotNull { valueOfItem(it.value) }
+        // Only the LAST item of each count is held: both #385 reproductions lost the tail, and a model may
+        // legitimately fold the middle ("1, 2, 3" to "1 to 3") or turn a count into ordinals.
+        val wanted = spokenCount.findAll(input.lowercase()).mapNotNull { run ->
+            Regex(countItem).findAll(run.value).lastOrNull()?.let { valueOfItem(it.value) }
         }.toList()
         if (wanted.isEmpty()) return 0
         val kept = keptNumbers(output)

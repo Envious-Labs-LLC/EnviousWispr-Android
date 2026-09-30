@@ -54,7 +54,7 @@ class TextSafetyTest {
 
     @Test fun aCountCutOffAfterSeventeenIsRefusedByName_385() {
         val cutOff = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17."
-        assertEquals("number drop 3 numbers", TextSafety.refusal(countToTwenty, cutOff))
+        assertEquals("number drop 1 numbers", TextSafety.refusal(countToTwenty, cutOff))
         assertFalse(TextSafety.isSafe(countToTwenty, cutOff))
     }
 
@@ -70,6 +70,14 @@ class TextSafetyTest {
         assertEquals("number drop 1 numbers", TextSafety.refusal(input, "The codes are 12, 14, 16 and 20 for the lockers."))
     }
 
+    @Test fun aCountMayBeFoldedOrReorderedAsLongAsItsTailSurvives_385() {
+        // Codex round 5: each is a correct answer. Only the last item of a count is held.
+        assertNull(TextSafety.refusal("the options are 1, 2, 3", "The options are 1 to 3."))
+        assertNull(TextSafety.refusal("the positions are 1, 2, 3", "The positions are first, second, third."))
+        assertNull(TextSafety.refusal("the reference numbers are 1, 2, twenty one hundred", "The reference numbers are 1, 2, 2100."))
+        assertNull(TextSafety.refusal("the codes are 12, 14, 16, 18 and 20 for the lockers", "The codes are 12, 14, 18 and 20 for the lockers."))
+    }
+
     @Test fun aLoneNumberIsNeverHeldBecauseAModelMayWordItAnotherWay_385() {
         // Codex rounds 3 and 4: each is a correct answer; only a run of three or more is enforced.
         assertNull(TextSafety.refusal("repeat this 1 time after lunch", "Repeat this once after lunch."))
@@ -82,7 +90,7 @@ class TextSafetyTest {
 
     @Test fun twoItemsAreNotACountAndAThreeItemRunIs_385() {
         assertNull(TextSafety.refusal("we need 4, 5 chairs for the event today", "We need chairs for the event today."))
-        assertEquals("number drop 3 numbers", TextSafety.refusal("we need 4, 5, 6 chairs for the event today", "We need chairs for the event today."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("we need 4, 5, 6 chairs for the event today", "We need chairs for the event today."))
     }
 
     @Test fun compoundsTheModelRewritesAsOneFigureAreNotDrops_385() {
@@ -92,7 +100,7 @@ class TextSafetyTest {
 
     @Test fun aFullySpelledCountCutOffAtSeventeenIsRefusedAndAFullOneIsNot_385() {
         val spelled = "one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty"
-        assertEquals("number drop 3 numbers", TextSafety.refusal(spelled, "One, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal(spelled,"One, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen."))
         assertNull(TextSafety.refusal(spelled, "$spelled."))
         assertNull(TextSafety.refusal(spelled, "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20."))
     }

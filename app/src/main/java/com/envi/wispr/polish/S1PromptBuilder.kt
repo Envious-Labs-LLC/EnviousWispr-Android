@@ -32,7 +32,9 @@ internal object S1PromptBuilder {
     fun maxOutputTokens(rawText: String): Int {
         val wanted = maxOf(rawText.length * TOKENS_PER_CHAR_WORST_CASE + HEADROOM_TOKENS, MIN_OUTPUT_TOKENS.toDouble())
         val roomLeft = S1Config.CONTEXT_SIZE - (PROMPT_OVERHEAD_TOKENS + rawText.length)
-        return minOf(wanted, roomLeft.toDouble()).roundToInt().coerceIn(CRAMPED_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+        // The floor yields to the window: when the prompt leaves less than 64 tokens, the answer gets what is left.
+        val floor = minOf(CRAMPED_OUTPUT_TOKENS, maxOf(roomLeft, 1))
+        return minOf(wanted, roomLeft.toDouble()).roundToInt().coerceIn(floor, MAX_OUTPUT_TOKENS)
     }
 
     private const val TOKENS_PER_CHAR_WORST_CASE = 1.2

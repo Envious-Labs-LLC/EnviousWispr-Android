@@ -36,18 +36,20 @@ class S1PromptBuilderTest {
     }
 
     @Test
-    fun `a 141-char take gets more than the 84 tokens the old estimate gave it (385)`() {
-        val count = (1..20).joinToString(" ") { "number$it" }.take(141)
+    fun `the measured 73 character count to twenty fits the cap with room to spare (385)`() {
+        // Phone receipt, build 236, 2026-09-30: 73 characters in, 73 tokens generated, stop=eos.
+        val measuredTokens = 73
+        val oldCap = (((73 / 3.5).let { Math.round(it) }.coerceAtLeast(1) * 1.3 + 32).let { Math.round(it) }).toInt().coerceIn(64, 512)
 
-        assertEquals(141, count.length)
-        assertTrue(S1PromptBuilder.maxOutputTokens(count) > 84)
+        assertTrue("the old cap $oldCap would have cut a $measuredTokens token answer", oldCap < measuredTokens)
+        assertTrue(S1PromptBuilder.maxOutputTokens("x".repeat(73)) >= measuredTokens * 2)
     }
 
     @Test
-    fun `up to 2048 chars the cap stays at or above two chars per token`() {
-        for (length in listOf(1, 50, 141, 400, 1000, 1400, 2000, 2048)) {
+    fun `up to 800 chars the cap stays at or above one token per character`() {
+        for (length in listOf(1, 50, 73, 141, 400, 800)) {
             val budget = S1PromptBuilder.maxOutputTokens("x".repeat(length))
-            assertTrue("length=$length budget=$budget", budget >= length / 2)
+            assertTrue("length=$length budget=$budget", budget >= length)
         }
     }
 

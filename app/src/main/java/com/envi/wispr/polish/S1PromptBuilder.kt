@@ -19,18 +19,21 @@ internal object S1PromptBuilder {
 
     /**
      * The cap is a runaway guard, not a length target: the cooperative deadline bounds time. It
-     * should not bind on a faithful answer. Prose costs about one token per 4 chars, but spoken
-     * number lists cost several tokens per item (digits split, comma, space) and polish also turns
-     * number words into digits. The old chars/3.5 estimate is the SUSPECTED cause of a twenty-item
-     * count ending after the seventeenth item (#385; cap versus end of sequence is not yet logged).
-     * Two chars per token is an estimate for such lists; the multiplier and floor add headroom. The
-     * ceiling leaves room in the model's context ([S1Config.CONTEXT_SIZE]) for the system prompt and
-     * the input.
+     * should not bind on a faithful answer. Prose costs about one token per 4 chars, but a spoken
+     * number list costs about ONE TOKEN PER CHARACTER: measured on the S26 (build 236, 2026-09-30,
+     * the engine's own `S1 generation ended` line) a 73 character count to twenty generated 73
+     * tokens and stopped on its own (`stop=eos`). The old chars/3.5 estimate gave that take the
+     * 64 token floor, so it would have ended after the seventeenth item (#385). The cap is one and
+     * a fifth tokens per character plus headroom; the floor and ceiling keep short takes safe and
+     * leave room in the model's context ([S1Config.CONTEXT_SIZE]) for the system prompt and input.
+     * A list longer than about 800 characters can still reach the ceiling, and the log says so
+     * (`reachedCap=true`).
      */
-    fun maxOutputTokens(rawText: String): Int {
-        val estimatedTokens = (rawText.length / 2.0).roundToInt().coerceAtLeast(1)
-        return (estimatedTokens * 1.5 + 64).roundToInt().coerceIn(128, MAX_OUTPUT_TOKENS)
-    }
+    fun maxOutputTokens(rawText: String): Int =
+        (rawText.length * TOKENS_PER_CHAR_WORST_CASE + HEADROOM_TOKENS).roundToInt().coerceIn(128, MAX_OUTPUT_TOKENS)
+
+    private const val TOKENS_PER_CHAR_WORST_CASE = 1.2
+    private const val HEADROOM_TOKENS = 64
 
     /** Legacy flat-word migration sanitizer. It does not participate in runtime matching. */
     fun sanitizeCustomWords(words: List<String>): List<String> = words

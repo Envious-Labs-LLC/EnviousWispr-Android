@@ -622,8 +622,10 @@ class PolishService : Service() {
             record(PolishReason.OUTPUT_REJECTED)
             return null
         }
-        if (!TextSafety.isSafe(rawText, cleaned)) {
-            log.warn("Rejected unsafe S1 output")
+        val refusal = TextSafety.refusal(rawText, cleaned)
+        if (refusal != null) {
+            // The refusal names a rule and counts only, never words (PayloadSanitizer stays untouched).
+            log.warn("Rejected unsafe S1 output: $refusal")
             record(PolishReason.OUTPUT_REJECTED)
             return null
         }

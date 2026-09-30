@@ -50,6 +50,35 @@ class TextSafetyTest {
         assertEquals("question turned into an answer", TextSafety.refusal("i was wondering if you could send it", "You could send it."))
     }
 
+    private val countToTwenty = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty"
+
+    @Test fun aCountCutOffAfterSeventeenIsRefusedByName_385() {
+        val cutOff = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17."
+        assertEquals("number drop 3 numbers", TextSafety.refusal(countToTwenty, cutOff))
+        assertFalse(TextSafety.isSafe(countToTwenty, cutOff))
+    }
+
+    @Test fun aFullCountPassesWhetherTheModelWritesFiguresOrWords_385() {
+        val figures = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20."
+        assertNull(TextSafety.refusal(countToTwenty, figures))
+        assertNull(TextSafety.refusal(countToTwenty, countToTwenty.replace("1, ", "one, ")))
+    }
+
+    @Test fun aWrittenFigureTheModelDropsIsRefusedWhateverItsPlace_385() {
+        val input = "the invoice total is 1,200 dollars for 3 seats and we meet at 10 tomorrow morning"
+        assertNull(TextSafety.refusal(input, "The invoice total is 1200 dollars for 3 seats and we meet at 10 tomorrow morning."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "The invoice total is 1200 dollars for seats and we meet at 10 tomorrow morning."))
+    }
+
+    @Test fun compoundsTheModelRewritesAsOneFigureAreNotDrops_385() {
+        assertNull(TextSafety.refusal("we shipped twenty one builds and two hundred and fifty tests last quarter", "We shipped 21 builds and 250 tests last quarter."))
+        assertNull(TextSafety.refusal("call me at five five five one two one two after lunch today please", "Call me at 555-1212 after lunch today please."))
+    }
+
+    @Test fun theWordOneIsNeverCountedBecauseItIsAlsoAPronoun_385() {
+        assertNull(TextSafety.refusal("that one thing we talked about needs a lot more work before friday", "That thing we talked about needs a lot more work before Friday."))
+    }
+
     @Test fun theQuestionDetectorIsConservative() {
         listOf("should we ship", "can you send it", "is there a room", "how do we start", "what is the plan?", "um well do you know if it works", "was the meeting moved", "had they already left", "\"should we ship\"", "'should we ship'", "i'm wondering if it works").forEach {
             assertTrue(it, TextSafety.looksLikeQuestion(it))

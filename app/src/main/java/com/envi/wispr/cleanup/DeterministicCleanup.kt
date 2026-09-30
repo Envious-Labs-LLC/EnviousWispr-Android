@@ -632,8 +632,66 @@ internal object TextSafety {
         val outputWords = output.split(Regex("\\s+")).count { it.isNotEmpty() }
         if (inputWords >= 10 && outputWords < (inputWords * 2 + 4) / 5) return "content drop $outputWords/$inputWords words"
         if (looksLikeQuestion(input) && !looksLikeQuestion(output)) return "question turned into an answer"
+        val missing = numbersMissing(input, output)
+        if (missing > 0) return "number drop $missing numbers"
         return null
     }
+
+    private val numberWords = mapOf(
+        "two" to 2L, "three" to 3L, "four" to 4L, "five" to 5L, "six" to 6L, "seven" to 7L, "eight" to 8L,
+        "nine" to 9L, "ten" to 10L, "eleven" to 11L, "twelve" to 12L, "thirteen" to 13L, "fourteen" to 14L,
+        "fifteen" to 15L, "sixteen" to 16L, "seventeen" to 17L, "eighteen" to 18L, "nineteen" to 19L,
+        "twenty" to 20L, "thirty" to 30L, "forty" to 40L, "fifty" to 50L, "sixty" to 60L, "seventy" to 70L,
+        "eighty" to 80L, "ninety" to 90L,
+    )
+    // Words that join into a larger number ("twenty one", "two hundred"): a neighbour of one of these is
+    // part of a compound the model may write as a single figure, so it is not counted on its own.
+    private val numberJoiners = numberWords.keys + setOf("one", "zero", "oh", "hundred", "thousand", "million", "billion", "and")
+    private val digitRun = Regex("\\d{1,3}(?:,\\d{3})+|\\d+")
+    private val tokenPattern = Regex("\\d{1,3}(?:,\\d{3})+|[\\p{L}\\d]+")
+
+    /**
+     * How many numbers the model's output lost (#385: a twenty-item count came back ending at seventeen).
+     * Every written figure of the input must reappear in the output as a figure or as its word; a spoken
+     * number word of the input counts only when it stands alone, so a compound the model rewrites as one
+     * figure is not a drop, and "one" never counts (it is also a pronoun).
+     */
+    internal fun numbersMissing(input: String, output: String): Int {
+        val wanted = numbersIn(input, includeWords = true)
+        if (wanted.isEmpty()) return 0
+        val kept = numbersIn(output, includeWords = false) + numberWordsIn(output)
+        return wanted.count { it !in kept }
+    }
+
+    private fun numbersIn(text: String, includeWords: Boolean): List<Long> {
+        val found = mutableListOf<Long>()
+        val lower = text.lowercase()
+        val matches = tokenPattern.findAll(lower).toList()
+        // A neighbour joins this word only with nothing but spaces or a hyphen between them: the comma in
+        // "eleven, twelve" keeps each item of a spoken count on its own.
+        fun joinsWith(a: MatchResult, b: MatchResult?, before: Boolean): Boolean {
+            if (b == null) return false
+            val gap = if (before) lower.substring(b.range.last + 1, a.range.first) else lower.substring(a.range.last + 1, b.range.first)
+            return gap.isNotEmpty() && gap.all { it == ' ' || it == '-' } && b.value in numberJoiners
+        }
+        matches.forEachIndexed { index, match ->
+            val token = match.value
+            if (token[0].isDigit()) {
+                digitRun.matchEntire(token)?.value?.replace(",", "")?.toLongOrNull()?.let { found += it }
+            } else if (includeWords) {
+                val value = numberWords[token] ?: return@forEachIndexed
+                val joined = joinsWith(match, matches.getOrNull(index - 1), before = true) ||
+                    joinsWith(match, matches.getOrNull(index + 1), before = false)
+                if (!joined) found += value
+            }
+        }
+        return found
+    }
+
+    private val outputNumberWords = numberWords + mapOf("one" to 1L, "zero" to 0L)
+
+    private fun numberWordsIn(text: String): Set<Long> =
+        tokenPattern.findAll(text.lowercase()).mapNotNull { outputNumberWords[it.value] }.toSet()
 
     private val leadingFillers = setOf("um", "uh", "so", "like", "well", "okay", "ok")
     // The Mac's twelve plus the plain auxiliaries it lacked ("was the meeting moved", "had they left"): code round 1.

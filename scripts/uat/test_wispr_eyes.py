@@ -2439,6 +2439,25 @@ Group main:
 
     test_pick_one_groups()
 
+    # ---- #384: a duplicate wireless connection has a space inside its serial --------------------------
+    devices_original_run = eyes._run
+    listing = (
+        "List of devices attached\n"
+        "adb-R5GL11DR0EZ-mWi7wF (2)._adb-tls-connect._tcp device product:m3quew model:SM_S948U1 device:m3q transport_id:10\n"
+        "adb-R5GL11DR0EZ-mWi7wF._adb-tls-connect._tcp device product:m3quew model:SM_S948U1 device:m3q transport_id:1\n"
+        "emulator-5554          device product:sdk_gphone64_arm64 model:sdk_gphone64_arm64 device:emu64a transport_id:9\n"
+        "R5GL11DR0EZ            offline transport_id:4\n"
+    )
+    eyes._run = lambda args, **kw: (0, listing, "")
+    try:
+        attached = eyes.devices()
+    finally:
+        eyes._run = devices_original_run
+    check("devices() keeps the whole serial of a duplicate wireless connection (#384)",
+          attached == [("adb-R5GL11DR0EZ-mWi7wF (2)._adb-tls-connect._tcp", "SM_S948U1"),
+                       ("adb-R5GL11DR0EZ-mWi7wF._adb-tls-connect._tcp", "SM_S948U1"),
+                       ("emulator-5554", "sdk_gphone64_arm64")], attached)
+
     print()
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")
     if FAILED:

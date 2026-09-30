@@ -456,7 +456,7 @@ internal class TakePolishController(
     /** The vocabulary restore, or null when it threw ([step] names it in the one preparation defect). */
     private fun restoreVocabulary(text: String, takePreferences: SessionPreferences, step: String): String? = guarded(step) {
         val restored = restore(text, takePreferences.matcher)
-        val kept = if (TextSafety.isSafe(text, restored)) restored else text
+        val kept = if (TextSafety.isSafe(text, restored, checkNumbers = false)) restored else text
         // The take's words after this restore step (#378), into the local log file only.
         log.words(step) { kept }
         kept

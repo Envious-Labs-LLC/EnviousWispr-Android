@@ -119,12 +119,16 @@ internal class S1GenieXRuntime(private val context: Context) {
             active.generateStreamFlow(formatted, generation).collect { result ->
                 when (result) {
                     is LlmStreamResult.Token -> output.append(result.text)
-                    is LlmStreamResult.Completed -> lastGeneration = GenerationEnd(
-                        stopReason = result.profile.stopReason,
-                        generatedTokens = result.profile.generatedTokens,
-                        promptTokens = result.profile.promptTokens,
-                        cap = maxTokens,
-                    )
+                    // A diagnostic must never end a take: the engine builds this from native code, so a field
+                    // it leaves null throws here, and a dropped line is the whole cost.
+                    is LlmStreamResult.Completed -> lastGeneration = runCatching {
+                        GenerationEnd(
+                            stopReason = result.profile.stopReason,
+                            generatedTokens = result.profile.generatedTokens,
+                            promptTokens = result.profile.promptTokens,
+                            cap = maxTokens,
+                        )
+                    }.getOrNull()
                     is LlmStreamResult.Error -> throw result.throwable
                 }
             }

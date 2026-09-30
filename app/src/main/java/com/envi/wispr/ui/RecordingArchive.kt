@@ -15,18 +15,24 @@ import java.util.TimeZone
  * pulled with `adb pull` from a release build and replayed on the emulator or the Mac. The copy never leaves the
  * phone. [dir] is resolved on the caller's thread each time; null (no shared storage) keeps nothing and says so.
  * A take that was not kept throws [NotKept]; a cleanup that failed while the take WAS kept goes to [warn].
+ *
+ * [enabled] is the Developer page's Keep recordings switch (#375, founder 2026-09-30: at launch nothing is
+ * recorded; the code stays for future crash recovery). Asked on EVERY take, so the switch takes effect at the
+ * next take. A take while it is off is not an error: nothing is copied, no folder is made, nothing is logged.
  */
 internal class RecordingArchive(
     private val dir: () -> File?,
     private val warn: (String) -> Unit,
     private val limit: Int = LIMIT,
     private val now: () -> Long = System::currentTimeMillis,
+    private val enabled: () -> Boolean = { true },
 ) {
     /**
      * Copies [source] (raw 16 kHz mono PCM16) into the folder as a WAV and leaves at most [limit] recordings: the
-     * oldest go BEFORE the new one appears.
+     * oldest go BEFORE the new one appears. Does nothing while [enabled] says no.
      */
     fun keep(source: File) {
+        if (!enabled()) return
         val folder = dir() ?: throw NotKept("recordings storage unavailable")
         if (!folder.isDirectory && !folder.mkdirs()) throw NotKept("recordings folder unavailable")
         // A copy cut short by a process death leaves its part file; it is never a recording, so one that cannot be

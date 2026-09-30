@@ -15,6 +15,7 @@ import android.os.VibratorManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import com.envi.wispr.debug.DeveloperSwitches
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.models.ModelBootstrapApplication
@@ -230,7 +231,13 @@ class DictationSessionService : Service() {
             lastReadPolicy = { ProviderConfigurationRepository.lastProcessRead() },
             pipeline = bindings,
             capturedAudio = CapturedAudioFiles.forProcess(
-                RecordingArchive(dir = { getExternalFilesDir(RecordingArchive.FOLDER) }, warn = DebugSessionLog::warn),
+                RecordingArchive(
+                    dir = { getExternalFilesDir(RecordingArchive.FOLDER) },
+                    warn = DebugSessionLog::warn,
+                    // The Developer page's Keep recordings switch (#375): off by default in a release build, so a
+                    // customer's phone keeps no audio. The flag file is written by DeveloperSwitches in main.
+                    enabled = { DeveloperSwitches.of(applicationContext).keepRecordingsNow() },
+                ),
             ),
             scope = scope,
             mainDispatcher = mainDispatcher,

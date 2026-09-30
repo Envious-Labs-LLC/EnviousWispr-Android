@@ -73,6 +73,13 @@ internal class DeveloperSwitches(
 
     val state: StateFlow<State> = mutableState
 
+    /**
+     * Whether the Keep recordings flag file is present right now (#375). The recording archive asks this at every
+     * take instead of building `LogFiles` itself: this class owns the flag files. A plain file check, safe on any
+     * thread and in any process that can see the app's files.
+     */
+    fun keepRecordingsNow(): Boolean = files.keepRecordingsFlag.exists()
+
     /** Completes when the cold-start repair has run; the adb door waits on it before any call (D10). */
     val ready = CompletableDeferred<Unit>()
 

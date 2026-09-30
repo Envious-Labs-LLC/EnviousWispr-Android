@@ -32,6 +32,53 @@ class RecordingArchiveTest {
     private fun le32(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())
     private fun le16(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte())
 
+    /**
+     * Launch row (#375, founder 2026-09-30: at launch nothing is recorded): while the Keep recordings switch is off
+     * the archive copies nothing, makes no folder and logs nothing, and the source is left for the caller's delete.
+     * When this fails, a customer's phone keeps their last ten dictations' audio. MUTATION: drop the `enabled()` check.
+     */
+    @Test fun whileTheSwitchIsOffNothingIsKeptNoFolderIsMadeAndNothingIsLogged() {
+        val off = RecordingArchive(dir = { folder }, warn = { warnings += it }, now = { clock }, enabled = { false })
+        val file = take("off", ByteArray(2_000))
+        off.keep(file)
+        assertFalse("no folder is made", folder.exists())
+        assertTrue("nothing is logged", warnings.isEmpty())
+        assertTrue("the source is left for the delete that follows", file.isFile)
+    }
+
+    /**
+     * The production archive is built WITH the switch (#375): a customer's phone keeps nothing because the service
+     * hands the archive `keepRecordingsNow()`, and dropping that argument would bring back the default-keep behaviour.
+     * Comments are stripped so a commented-out argument cannot satisfy it. REVERT: remove the `enabled =` argument.
+     */
+    @Test fun theServiceBuildsTheArchiveWithTheDeveloperSwitch() {
+        val source = (File("src/main/java/com/envi/wispr/ui/DictationSessionService.kt").takeIf { it.exists() }
+            ?: File("app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt")).readText()
+            .replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), "")
+            .replace(Regex("""//[^\n]*"""), "")
+        val construction = source.substringAfter("RecordingArchive(").substringBefore("capturedAudio").substringBefore("scope = scope")
+        assertTrue(
+            "RecordingArchive must be constructed with enabled = { ...keepRecordingsNow() }",
+            Regex("""enabled\s*=\s*\{\s*DeveloperSwitches\.of\(applicationContext\)\.keepRecordingsNow\(\)\s*\}""").containsMatchIn(construction),
+        )
+    }
+
+    /** The switch is asked at EVERY take: on keeps it, turning it off stops the next one, turning it on again resumes. */
+    @Test fun theSwitchIsReadAtEveryTake() {
+        var on = true
+        val switched = RecordingArchive(dir = { folder }, warn = { warnings += it }, now = { clock }, enabled = { on })
+        switched.keep(take("a", ByteArray(10)))
+        assertEquals(1, folder.listFiles()!!.size)
+        on = false
+        clock += 1_000
+        switched.keep(take("b", ByteArray(10)))
+        assertEquals("a take while off is not kept", 1, folder.listFiles()!!.size)
+        on = true
+        clock += 1_000
+        switched.keep(take("c", ByteArray(10)))
+        assertEquals(2, folder.listFiles()!!.size)
+    }
+
     /** Row 1: the copy is a 16 kHz mono PCM16 WAV whose data is the take's bytes. MUTATION m1: copy without the header. */
     @Test fun aKeptTakeIsAPlayableWavOfTheSameAudio() {
         val pcm = ByteArray(32_000) { (it % 251).toByte() }

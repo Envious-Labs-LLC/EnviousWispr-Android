@@ -36,28 +36,45 @@ class S1PromptBuilderTest {
     }
 
     @Test
-    fun `a 141-char take gets more than the 84 tokens the old estimate gave it (385)`() {
-        val count = (1..20).joinToString(" ") { "number$it" }.take(141)
+    fun `the measured 73 character count to twenty fits the cap with room to spare (385)`() {
+        // Phone receipt, build 236, 2026-09-30: 73 characters in, 73 tokens generated, stop=eos.
+        val measuredTokens = 73
+        val oldCap = (((73 / 3.5).let { Math.round(it) }.coerceAtLeast(1) * 1.3 + 32).let { Math.round(it) }).toInt().coerceIn(64, 512)
 
-        assertEquals(141, count.length)
-        assertTrue(S1PromptBuilder.maxOutputTokens(count) > 84)
+        assertTrue("the old cap $oldCap would have cut a $measuredTokens token answer", oldCap < measuredTokens)
+        assertTrue(S1PromptBuilder.maxOutputTokens("x".repeat(73)) >= measuredTokens * 2)
     }
 
     @Test
-    fun `up to 2048 chars the cap stays at or above two chars per token`() {
-        for (length in listOf(1, 50, 141, 400, 1000, 1400, 2000, 2048)) {
+    fun `up to 800 chars the cap stays at or above one token per character`() {
+        for (length in listOf(1, 50, 73, 141, 400, 800)) {
             val budget = S1PromptBuilder.maxOutputTokens("x".repeat(length))
-            assertTrue("length=$length budget=$budget", budget >= length / 2)
+            assertTrue("length=$length budget=$budget", budget >= length)
         }
     }
 
     @Test
-    fun `an empty take still gets the floor and a huge one hits the ceiling`() {
+    fun `an empty take still gets the floor and a mid-size one reaches the ceiling`() {
         assertEquals(128, S1PromptBuilder.maxOutputTokens(""))
-        assertEquals(
-            S1PromptBuilder.MAX_OUTPUT_TOKENS,
-            S1PromptBuilder.maxOutputTokens("x".repeat(100_000)),
-        )
+        assertEquals(S1PromptBuilder.MAX_OUTPUT_TOKENS, S1PromptBuilder.maxOutputTokens("x".repeat(800)))
+    }
+
+    @Test
+    fun `the prompt plus the cap never exceeds the context while the prompt itself fits`() {
+        // Estimated prompt = 160 tokens of overhead plus one token per character (the measured worst case).
+        for (length in listOf(0, 73, 500, 800, 900, 1200, 1500, 1800, 1824, 1825, 1850, 1887)) {
+            val prompt = 160 + length
+            val cap = S1PromptBuilder.maxOutputTokens("x".repeat(length))
+            assertTrue("length=$length prompt=$prompt cap=$cap", prompt + cap <= S1Config.CONTEXT_SIZE)
+        }
+    }
+
+    @Test
+    fun `a take whose prompt alone overflows the context still gets a positive cap`() {
+        assertEquals(1, S1PromptBuilder.maxOutputTokens("x".repeat(100_000)))
+        // 1800 characters leave 2048 - (160 + 1800) = 88 tokens; 1850 leave 38, under the 64 token floor.
+        assertEquals(88, S1PromptBuilder.maxOutputTokens("x".repeat(1800)))
+        assertEquals(38, S1PromptBuilder.maxOutputTokens("x".repeat(1850)))
     }
 
     @Test

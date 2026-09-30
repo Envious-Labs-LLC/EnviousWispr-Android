@@ -135,7 +135,12 @@ def main():
             state = api(session, 'GET', f'{ROOT}/{verification}/tracks/{TRACK}')
             committed = any(str(version) in item.get('versionCodes', []) and item.get('status') == 'completed' for item in state.get('releases', []))
         finally:
-            api(session, 'DELETE', f'{ROOT}/{verification}')
+            # Best effort, like the main edit's cleanup below: the verification edit is read-only, and a 5xx on
+            # its delete (run 137, 2026-09-30: HTTP 503) must not turn a confirmed publication into a failure (#390).
+            try:
+                api(session, 'DELETE', f'{ROOT}/{verification}')
+            except Exception:
+                pass
         if not committed:
             raise RuntimeError('Publication not confirmed; inspect Play before retrying')
         published = dict(receipt, package=PACKAGE, track=TRACK, signed_sha256=signed_hash, status='completed')

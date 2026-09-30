@@ -16,6 +16,8 @@ android {
         // Android 13: the accessibility input-method route needs API 33, and a phone still on 11 or 12
         // in 2026 cannot run the on-device models comfortably (founder decision 2026-09-13, #141).
         minSdk = 33
+        // The same number, for code: telemetry stays off on anything older (Google's review sandbox, #179).
+        buildConfigField("int", "MIN_SDK", "$minSdk")
         targetSdk = 36
         versionCode = providers.gradleProperty("playVersionCode").orNull?.toInt() ?: 3
         versionName = "0.1.0"

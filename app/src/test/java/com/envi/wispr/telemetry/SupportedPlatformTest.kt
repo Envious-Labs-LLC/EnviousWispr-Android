@@ -29,13 +29,30 @@ class SupportedPlatformTest {
     }
 
     @Test fun bootstrapAsksTheGuardWithTheBuildsOwnMinSdkBeforeAnyVendorStarts() {
+        // Comments are stripped first, so a commented-out guard cannot satisfy this row.
         val source = (File("src/main/java/com/envi/wispr/telemetry/Telemetry.kt").takeIf { it.exists() }
             ?: File("app/src/main/java/com/envi/wispr/telemetry/Telemetry.kt")).readText()
-        val guard = source.indexOf("SupportedPlatform.isBelowMinimum(Build.VERSION.SDK_INT, BuildConfig.MIN_SDK)")
+            .replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), "")
+            .replace(Regex("""//[^\n]*"""), "")
+        val guardBlock = Regex(
+            """if \(SupportedPlatform\.isBelowMinimum\(Build\.VERSION\.SDK_INT, BuildConfig\.MIN_SDK\)\) \{(?:[^}]|\$\{[^}]*\})*?\breturn\b(?:[^}]|\$\{[^}]*\})*\}""",
+        ).find(source)
+        assertTrue("bootstrap must return when the phone is below minSdk (condition not negated, return present)", guardBlock != null)
         val sentry = source.indexOf("SentryBootstrap.start(")
         val postHog = source.indexOf("PostHogBootstrap.start(")
-        assertTrue("the guard is missing from bootstrap", guard >= 0)
-        assertTrue("the guard must come before Sentry starts", guard < sentry)
-        assertTrue("the guard must come before PostHog starts", guard < postHog)
+        val identity = source.indexOf("InstallIdentity.resolve(")
+        assertTrue("the guard must come before identity is minted", guardBlock!!.range.first < identity)
+        assertTrue("the guard must come before Sentry starts", guardBlock.range.first < sentry)
+        assertTrue("the guard must come before PostHog starts", guardBlock.range.first < postHog)
+    }
+
+    @Test fun thereIsExactlyOneStartSiteForEachVendorAndNoManifestAutoInit() {
+        val root = File("src/main").takeIf { it.exists() } ?: File("app/src/main")
+        val kotlin = root.walkTopDown().filter { it.extension == "kt" }.map { it.readText() }.toList()
+        fun sites(needle: String) = kotlin.sumOf { Regex(Regex.escape(needle)).findAll(it).count() }
+        assertEquals("Sentry starts from one place", 1, sites("SentryAndroid.init("))
+        assertEquals("PostHog starts from one place", 1, sites("PostHogAndroid.setup("))
+        val manifest = File(root, "AndroidManifest.xml").readText()
+        assertTrue("Sentry must not auto-init from the manifest", manifest.contains("""io.sentry.auto-init" android:value="false""""))
     }
 }

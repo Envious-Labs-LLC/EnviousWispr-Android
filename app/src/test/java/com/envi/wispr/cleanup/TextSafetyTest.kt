@@ -10,6 +10,10 @@ import org.junit.Test
  * Product Outcome: when this fails an essay replaces a "yeah", half a dictation vanishes, or a question
  * comes back as an answer; every refusal keeps the deterministic text. The rules are the Mac's
  * `validatePolishOutput` plus this app's own four.
+ *
+ * Rows tagged `_385` test the number rule (a count's dropped tail). The ones that only `assertNull` are
+ * ACCEPTANCE CONTROLS: they hold the rule's false-refusal surface down and pass with the rule removed on
+ * purpose. The rule is proven present by every `assertEquals("number drop ...` row beside them.
  */
 class TextSafetyTest {
     private val paragraph = "so um we should probably move the launch to next week because the build is not stable yet and marketing needs more time"
@@ -48,6 +52,150 @@ class TextSafetyTest {
         assertEquals("question turned into an answer", TextSafety.refusal("um so how many people are coming", "Many people are coming."))
         assertNull(TextSafety.refusal("how we handle this is up to the team", "How we handle this is up to the team."))
         assertEquals("question turned into an answer", TextSafety.refusal("i was wondering if you could send it", "You could send it."))
+    }
+
+    private val countToTwenty = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty"
+
+    @Test fun aCountCutOffAfterSeventeenIsRefusedByName_385() {
+        val cutOff = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17."
+        assertEquals("number drop 1 numbers", TextSafety.refusal(countToTwenty, cutOff))
+        assertFalse(TextSafety.isSafe(countToTwenty, cutOff))
+    }
+
+    @Test fun aFullCountPassesWhetherTheModelWritesFiguresOrWords_385() {
+        val figures = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20."
+        assertNull(TextSafety.refusal(countToTwenty, figures))
+        assertNull(TextSafety.refusal(countToTwenty, countToTwenty.replace("1, ", "one, ")))
+    }
+
+    @Test fun aCountOfThreeOrMoreLosingAnItemInTheMiddleIsRefused_385() {
+        val input = "the codes are 12, 14, 16, 18 and 20 for the lockers"
+        assertNull(TextSafety.refusal(input, "The codes are 12, 14, 16, 18 and 20 for the lockers."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "The codes are 12, 14, 16 and 20 for the lockers."))
+    }
+
+    @Test fun aCountMayBeFoldedOrReorderedAsLongAsItsTailSurvives_385() {
+        // Codex round 5: each is a correct answer. Only the last item of a count is held.
+        assertNull(TextSafety.refusal("the options are 1, 2, 3", "The options are 1 to 3."))
+        assertNull(TextSafety.refusal("the positions are 1, 2, 3", "The positions are first, second, third."))
+        assertNull(TextSafety.refusal("the reference numbers are 1, 2, twenty one hundred", "The reference numbers are 1, 2, 2100."))
+        assertNull(TextSafety.refusal("the codes are 12, 14, 16, 18 and 20 for the lockers", "The codes are 12, 14, 18 and 20 for the lockers."))
+        // Codex round 6: other honest wordings of a tail.
+        assertNull(TextSafety.refusal("the scores were 3, 2, 0", "The scores were three, two, and nil."))
+        assertNull(TextSafety.refusal("the positions are 19, 20, 21", "The positions are nineteenth, twentieth, twenty-first."))
+    }
+
+    @Test fun aWordThatCanMeanAnotherQuantityNeverStandsInForADroppedTail_385() {
+        // Codex round 7: "dozen" also means "half a dozen" and "two dozen"; "second" is also a unit of time.
+        // Refusing an honest "a dozen" only costs the polish; accepting a wrong one would hide a lost tail.
+        assertEquals("number drop 1 numbers", TextSafety.refusal("pack sizes are 3, 6, 12 eggs", "Pack sizes are three and half a dozen eggs."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("pack sizes are 6, 9, 12 eggs", "Pack sizes are six, nine, or a dozen eggs."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("pause for twenty seconds then read 20, 21, 22", "After a twenty-second pause, read 20 and 21."))
+    }
+
+    @Test fun aTailTheModelReallyDroppedIsStillRefusedWhenTheOtherItemsSurvive_385() {
+        assertEquals("number drop 1 numbers", TextSafety.refusal("pack sizes are 6, 9, 12 eggs", "Pack sizes are six and nine eggs."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("the scores were 3, 2, 0", "The scores were three and two."))
+    }
+
+    @Test fun aLoneNumberIsNeverHeldBecauseAModelMayWordItAnotherWay_385() {
+        // Codex rounds 3 and 4: each is a correct answer; only a run of three or more is enforced.
+        assertNull(TextSafety.refusal("repeat this 1 time after lunch", "Repeat this once after lunch."))
+        assertNull(TextSafety.refusal("we should keep both of the 2 options", "We should keep both options."))
+        assertNull(TextSafety.refusal("this is attempt number 1 today", "This is the first attempt today."))
+        assertNull(TextSafety.refusal("this is my 2nd attempt at it", "This is my second attempt at it."))
+        assertNull(TextSafety.refusal("1. buy milk 2. buy eggs", "Buy milk and eggs."))
+        assertNull(TextSafety.refusal("the invoice total is 1,200 dollars for 3 seats and we meet at 10 tomorrow morning", "The invoice is 1200 dollars for seats and we meet tomorrow morning."))
+    }
+
+    @Test fun twoItemsAreNotACountAndAThreeItemRunIs_385() {
+        assertNull(TextSafety.refusal("we need 4, 5 chairs for the event today", "We need chairs for the event today."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("we need 4, 5, 6 chairs for the event today", "We need chairs for the event today."))
+    }
+
+    @Test fun compoundsTheModelRewritesAsOneFigureAreNotDrops_385() {
+        assertNull(TextSafety.refusal("we shipped twenty one builds and two hundred and fifty tests last quarter", "We shipped 21 builds and 250 tests last quarter."))
+        assertNull(TextSafety.refusal("call me at five five five one two one two after lunch today please", "Call me at 555-1212 after lunch today please."))
+    }
+
+    @Test fun aFullySpelledCountCutOffAtSeventeenIsRefusedAndAFullOneIsNot_385() {
+        val spelled = "one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty"
+        assertEquals("number drop 1 numbers", TextSafety.refusal(spelled,"One, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen."))
+        assertNull(TextSafety.refusal(spelled, "$spelled."))
+        assertNull(TextSafety.refusal(spelled, "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20."))
+    }
+
+    @Test fun reformattingANumberTheRuleDoesNotCheckIsNeverARefusal_385() {
+        // Codex round 3: each of these is a correct polish answer and must not fall back to the raw text.
+        assertNull(TextSafety.refusal("the dose is 3.50 milligrams", "The dose is 3.5 milligrams."))
+        assertNull(TextSafety.refusal("we need 100 chairs for the event", "We need a hundred chairs for the event."))
+        assertNull(TextSafety.refusal("call 2125551212 after lunch today", "Call (212) 555-1212 after lunch today."))
+        assertNull(TextSafety.refusal("we meet at 3:30 in the main room", "We meet at half past three in the main room."))
+        assertNull(TextSafety.refusal("the plan starts in 2024 and runs a while", "The plan starts in twenty twenty-four and runs a while."))
+        assertNull(TextSafety.refusal("the price is \$5 and up to 50% off", "The price is 5 dollars and up to fifty percent off."))
+    }
+
+    @Test fun aCountsTailWrittenAsWordsOrAsACompoundIsKeptAndADroppedOneIsNot_385() {
+        val input = "we have 19, 20, 21 apples for everyone here"
+        assertNull(TextSafety.refusal(input, "We have nineteen, twenty, twenty-one apples for everyone here."))
+        assertNull(TextSafety.refusal(input, "We have nineteen, twenty, twenty one apples for everyone here."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "We have nineteen, twenty, twenty apples for everyone here."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "We have nineteen and twenty apples for everyone here."))
+        assertNull(TextSafety.refusal("we have 1, 2, 3 apples for me", "We have one, two, three apples for me."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("we have 1, 2, 3 apples for me", "We have one and two apples for me."))
+    }
+
+    @Test fun anUnrelatedNumberCannotStandInForALostTail_385() {
+        // Codex round 8: the output must carry the tail as many times as the input does.
+        val input = "count to 20: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
+        assertEquals("number drop 1 numbers", TextSafety.refusal(input, "Count to 20: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17."))
+        assertNull(TextSafety.refusal(input, "Count to 20: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20."))
+    }
+
+    @Test fun aCompoundSuppliesOneValueNeverItsTwoParts_385() {
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count 18, 19, 20", "Count eighteen, nineteen, twenty-one."))
+        assertNull(TextSafety.refusal("count 18, 19, 20", "Count eighteen, nineteen, twenty."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count 18, 19, 20 please", "Count 18, 19, 3.20 please."))
+    }
+
+    @Test fun identifiersPronounsAndScaledNumbersNeverStandInForALostTail_385() {
+        // Codex round 9: each answer lost the tail and carries a look-alike of it elsewhere.
+        assertEquals("number drop 1 numbers", TextSafety.refusal("room 3: count 1, 2, 3", "Room 3: count 1, 2. Use version v3."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count 3, 2, 1", "Count 3, 2. That's the one."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count 1, 2, 3", "Count one, two, three hundred."))
+        assertNull(TextSafety.refusal("room 3: count 1, 2, 3", "Room 3: count 1, 2, 3."))
+        assertNull(TextSafety.refusal("count 3, 2, 1", "Count 3, 2, 1."))
+    }
+
+    @Test fun aSpokenCountdownEndingOnTheWordOneIsStillHeld_385() {
+        // Codex round 10: "one" is never read as a number, yet ordinary truncation of this count must refuse.
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count three, two, one", "Count three, two."))
+        assertNull(TextSafety.refusal("count three, two, one", "Count three, two, one."))
+        assertNull(TextSafety.refusal("count three, two, one", "Count 3, 2, 1."))
+        // Codex round 11: an earlier "one" in the answer must not satisfy the countdown's own last word.
+        val preface = "one last countdown: five, four, three, two, one"
+        assertEquals("number drop 1 numbers", TextSafety.refusal(preface, "One last countdown: five, four, three, two."))
+        assertNull(TextSafety.refusal(preface, "One last countdown: five, four, three, two, one."))
+        val twoCountdowns = "first three, two, one then again three, two, one"
+        assertEquals("number drop 1 numbers", TextSafety.refusal(twoCountdowns, "First three, two, one then again three, two."))
+        assertNull(TextSafety.refusal(twoCountdowns, "First three, two, one then again three, two, one."))
+    }
+
+    @Test fun wordsAfterACountDoNotDisableIt_385() {
+        assertEquals("number drop 1 numbers", TextSafety.refusal("say 1, 2, 3 one more time", "Say 1, 2 one more time."))
+        assertNull(TextSafety.refusal("say 1, 2, 3 one more time", "Say 1, 2, 3 one more time."))
+        // A number that really continues the last item is one number, not a count ending early.
+        assertNull(TextSafety.refusal("the reference numbers are 1, 2, twenty one hundred", "The reference numbers are 1, 2, 2100."))
+    }
+
+    @Test fun theSpellingRestoreOfCustomWordsSkipsTheNumberRule_385() {
+        val input = "we have 18, 19, 20 apples for everyone here today"
+        assertFalse(TextSafety.isSafe(input, "We have apples for everyone here today."))
+        assertTrue(TextSafety.isSafe(input, "We have apples for everyone here today.", checkNumbers = false))
+    }
+
+    @Test fun theWordOneIsNeverCountedBecauseItIsAlsoAPronoun_385() {
+        assertNull(TextSafety.refusal("that one thing we talked about needs a lot more work before friday", "That thing we talked about needs a lot more work before Friday."))
     }
 
     @Test fun theQuestionDetectorIsConservative() {

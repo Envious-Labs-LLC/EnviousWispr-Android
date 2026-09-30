@@ -459,7 +459,10 @@ def devices():
     for line in out.splitlines()[1:]:
         if not line.strip() or "\tdevice" not in line and " device " not in line:
             continue
-        serial = line.split()[0]
+        # A duplicate wireless connection is named `adb-XXXX (2)._adb-tls-connect._tcp`, a space inside
+        # the serial, so the serial is everything before the state word, never the first token (#384).
+        named = re.match(r"^(.+?)\s+device(?:\s|$)", line)
+        serial = named.group(1) if named else line.split()[0]
         model = re.search(r"model:(\S+)", line)
         found.append((serial, model.group(1) if model else "unknown"))
     return found

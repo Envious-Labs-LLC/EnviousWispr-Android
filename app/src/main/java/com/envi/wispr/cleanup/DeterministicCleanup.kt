@@ -616,14 +616,17 @@ internal object TextSafety {
         return allowLargeContraction || input.length < 24 || output.length >= input.length / 4
     }
 
-    fun isSafe(input: String, output: String): Boolean = refusal(input, output) == null
+    fun isSafe(input: String, output: String, checkNumbers: Boolean = true): Boolean =
+        refusal(input, output, checkNumbers) == null
 
     /**
      * Why the model's output is refused, or null when it is accepted. Six checks: the four this app has
      * always run, plus the Mac's word-count drop and question-to-answer rules
-     * (`LLMPolishStep.validatePolishOutput`); the expansion rule is the Mac's max(3x, 200).
+     * (`LLMPolishStep.validatePolishOutput`); the expansion rule is the Mac's max(3x, 200). A seventh,
+     * [numbersMissing], is this app's own and applies to a MODEL's answer only: the spelling restore of
+     * custom words passes `checkNumbers = false`, because it is not a model and may re-spell a number word.
      */
-    fun refusal(input: String, output: String): String? {
+    fun refusal(input: String, output: String, checkNumbers: Boolean = true): String? {
         if (input.isNotBlank() && output.isBlank()) return "blank output"
         if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' }) return "control characters"
         if (output.length > maxOf(input.length * 3, 200)) return "expansion ${output.length}/${input.length} chars"
@@ -632,7 +635,145 @@ internal object TextSafety {
         val outputWords = output.split(Regex("\\s+")).count { it.isNotEmpty() }
         if (inputWords >= 10 && outputWords < (inputWords * 2 + 4) / 5) return "content drop $outputWords/$inputWords words"
         if (looksLikeQuestion(input) && !looksLikeQuestion(output)) return "question turned into an answer"
+        if (checkNumbers) {
+            val missing = numbersMissing(input, output)
+            if (missing > 0) return "number drop $missing numbers"
+        }
         return null
+    }
+
+    private val numberWords = mapOf(
+        "two" to 2L, "three" to 3L, "four" to 4L, "five" to 5L, "six" to 6L, "seven" to 7L, "eight" to 8L,
+        "nine" to 9L, "ten" to 10L, "eleven" to 11L, "twelve" to 12L, "thirteen" to 13L, "fourteen" to 14L,
+        "fifteen" to 15L, "sixteen" to 16L, "seventeen" to 17L, "eighteen" to 18L, "nineteen" to 19L,
+        "twenty" to 20L, "thirty" to 30L, "forty" to 40L, "fifty" to 50L, "sixty" to 60L, "seventy" to 70L,
+        "eighty" to 80L, "ninety" to 90L,
+    )
+    private val tensWords = numberWords.filterValues { it >= 20L }
+    private val unitWords = mapOf(
+        "one" to 1L, "two" to 2L, "three" to 3L, "four" to 4L, "five" to 5L, "six" to 6L, "seven" to 7L,
+        "eight" to 8L, "nine" to 9L,
+    )
+    private val outputNumberWords = numberWords + mapOf("one" to 1L, "zero" to 0L) + mapOf(
+        // No "second" (also a unit of time) and no "dozen" (also "half a dozen", "two dozen"): a word that
+        // can stand for a DIFFERENT quantity would hide a dropped tail, and a refusal only costs the polish.
+        "first" to 1L, "third" to 3L, "fourth" to 4L, "fifth" to 5L, "sixth" to 6L,
+        "seventh" to 7L, "eighth" to 8L, "ninth" to 9L, "tenth" to 10L, "eleventh" to 11L, "twelfth" to 12L,
+        "thirteenth" to 13L, "fourteenth" to 14L, "fifteenth" to 15L, "sixteenth" to 16L,
+        "seventeenth" to 17L, "eighteenth" to 18L, "nineteenth" to 19L, "twentieth" to 20L,
+        "thirtieth" to 30L, "fortieth" to 40L, "fiftieth" to 50L, "sixtieth" to 60L, "seventieth" to 70L,
+        "eightieth" to 80L, "ninetieth" to 90L,
+        // Other words a model may write for a figure of a count.
+        "nil" to 0L, "nought" to 0L, "naught" to 0L,
+    )
+    private val unitOrdinals = mapOf(
+        "first" to 1L, "third" to 3L, "fourth" to 4L, "fifth" to 5L, "sixth" to 6L,
+        "seventh" to 7L, "eighth" to 8L, "ninth" to 9L,
+    )
+
+    // One item of a spoken count: a figure of one or two digits, a number word, or "twenty one".
+    private val countItem = run {
+        val units = "one|two|three|four|five|six|seven|eight|nine"
+        val teens = "ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen"
+        val tens = "twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety"
+        "(?:(?:$tens)(?:[- ](?:$units))?|$teens|$units|zero|\\d{1,2})"
+    }
+    // A spoken count is three or more such items in a row joined by commas. Nothing else is checked: a lone
+    // "1 time", "2nd" or "3:30" is a number a model may word another way, and refusing a correct answer
+    // silently costs the polish, so only an enumeration (where a dropped tail is unmistakable) is held.
+    private val spokenCount = Regex("(?<![\\p{L}\\d.:/$%#-])$countItem(?:,\\s*$countItem){2,}(?![\\p{L}\\d:/%-]|\\.\\d|,\\d|[\\s-]+(?:hundred|thousand|million|billion)|(?<=twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[\\s-]+(?:one|two|three|four|five|six|seven|eight|nine))")
+
+    /**
+     * How many counts in the input lost their last item in the model's output (#385: a twenty-item count
+     * came back ending at seventeen). Only the LAST item of each count is held: both reproductions lost the
+     * tail, and a model may legitimately fold the middle ("1, 2, 3" to "1 to 3") or use ordinals.
+     *
+     * The output must carry that value as many times as the INPUT does, in any form. A bare presence test
+     * let an unrelated number hide the loss ("count to 20: 1, 2, ..., 20" answered "Count to 20: 1, ...,
+     * 17" kept a 20), so every occurrence of the value in the input, inside the count or not, has to be
+     * matched. A model that merges repeated values ("5, 5, 5" to "5") is refused: that costs the polish only.
+     */
+    internal fun numbersMissing(input: String, output: String): Int {
+        val lowerInput = input.lowercase()
+        val tails = spokenCount.findAll(lowerInput).mapNotNull { run ->
+            Regex(countItem).findAll(run.value).lastOrNull()?.value
+        }.toList()
+        if (tails.isEmpty()) return 0
+        val inputValues = numberValues(lowerInput)
+        val lowerOutput = output.lowercase()
+        val outputValues = numberValues(lowerOutput)
+        return tails.distinct().count { item ->
+            val tail = valueOfItem(item) ?: return@count false
+            // "one" is not read as a number (it is also a pronoun), yet a count that ENDS on the spoken word
+            // "one" ("three, two, one") must still be held: its own word then counts in the answer.
+            val spelledOne = item == "one"
+            val have = outputValues.count { it == tail } + if (spelledOne) oneWord.findAll(lowerOutput).count() else 0
+            val needed = inputValues.count { it == tail } + if (spelledOne) oneWord.findAll(lowerInput).count() else 0
+            have < maxOf(needed, 1)
+        }
+    }
+
+    private val oneWord = Regex("(?<![\\p{L}\\d])one(?![\\p{L}\\d])")
+
+    private fun valueOfItem(item: String): Long? {
+        item.toLongOrNull()?.let { return it }
+        val parts = item.split(' ', '-')
+        return if (parts.size == 2) {
+            val tens = tensWords[parts[0]] ?: return null
+            val unit = unitWords[parts[1]] ?: return null
+            tens + unit
+        } else outputNumberWords[item]
+    }
+
+    // A figure glued to a letter ("v3", "a4") is an identifier, not a number: its digits never count.
+    private val numberToken = Regex("(?<![\\p{L}\\d])(?:\\d{1,3}(?:,\\d{3})+|\\d+\\.\\d+|\\d+)(?![\\p{L}\\d])|\\p{L}+")
+    private val scaleWords = setOf("hundred", "thousand", "million", "billion")
+
+    /**
+     * Every number in [lower], in order, each token consumed once: a figure (a thousands figure as one
+     * value), a number word, and "twenty-one" as the single value 21, never as 20 and 1. A decimal is one
+     * non-integer number and yields nothing, so "3.5" does not supply a 3 or a 5.
+     */
+    private fun numberValues(lower: String): List<Long> {
+        val tokens = numberToken.findAll(lower).toList()
+        val values = mutableListOf<Long>()
+        var index = 0
+        while (index < tokens.size) {
+            val token = tokens[index]
+            val text = token.value
+            index++
+            // "one" is never read as a number: it is also a pronoun ("that's the one"), and a tail of 1
+            // written that way is only a refusal, which costs the polish and nothing else.
+            var value: Long? = when {
+                text[0].isDigit() -> if ('.' !in text) text.replace(",", "").toLongOrNull() else null
+                text == "one" -> null
+                else -> outputNumberWords[text] ?: continue
+            }
+            var last = token
+            val joined = tokens.getOrNull(index)
+            if (value != null && tensWords[text] != null && joined != null && spacedOrHyphenated(lower, last, joined)) {
+                val unit = unitWords[joined.value] ?: unitOrdinals[joined.value]
+                if (unit != null) {
+                    value += unit
+                    last = joined
+                    index++
+                }
+            }
+            // A number that a scale word continues ("three hundred") is a different, larger number: it
+            // supplies none of its parts.
+            val scale = tokens.getOrNull(index)
+            if (scale != null && scale.value in scaleWords && spacedOrHyphenated(lower, last, scale)) {
+                index++
+                value = null
+            }
+            value?.let { values += it }
+        }
+        return values
+    }
+
+    private fun spacedOrHyphenated(lower: String, from: MatchResult, to: MatchResult): Boolean {
+        val gap = lower.substring(from.range.last + 1, to.range.first)
+        return gap.isNotEmpty() && gap.all { it == ' ' || it == '-' }
     }
 
     private val leadingFillers = setOf("um", "uh", "so", "like", "well", "okay", "ok")

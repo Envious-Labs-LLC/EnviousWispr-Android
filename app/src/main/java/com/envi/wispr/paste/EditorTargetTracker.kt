@@ -222,17 +222,24 @@ internal class EditorTargetTracker(private val service: AccessibilityService) {
         var windowRoot: AccessibilityNodeInfo? = null
         var sibling: AccessibilityNodeInfo? = null
         try {
-            if (!isInFocusedWindow(expected.windowId)) return RefocusResult.DECLINED
-            windowRoot = findPinnedWindowRoot(expected) ?: return RefocusResult.DECLINED
-            if (!pinnedNode.refresh()) return RefocusResult.DECLINED
-            if (!pinnedNode.isVisibleToUser || !pinnedNode.isEditable || !pinnedNode.isFocusable ||
-                pinnedNode.isFocused || !matchesPinnedTarget(pinnedNode, expected)
-            ) {
-                return RefocusResult.DECLINED
-            }
-            if (pinnedNode.actionList.none { it.id == AccessibilityNodeInfo.ACTION_FOCUS }) return RefocusResult.DECLINED
-            sibling = windowRoot.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            if (sibling == null || !sibling.isEditable || sibling == pinnedNode) return RefocusResult.DECLINED
+            val refusal = RefocusGuards.firstRefusal(
+                windowFocused = { isInFocusedWindow(expected.windowId) },
+                windowFound = {
+                    windowRoot = findPinnedWindowRoot(expected)
+                    windowRoot != null
+                },
+                pinRefreshed = { pinnedNode.refresh() },
+                pinUsable = {
+                    pinnedNode.isVisibleToUser && pinnedNode.isEditable && pinnedNode.isFocusable &&
+                        !pinnedNode.isFocused && matchesPinnedTarget(pinnedNode, expected)
+                },
+                advertisesFocus = { pinnedNode.actionList.any { it.id == AccessibilityNodeInfo.ACTION_FOCUS } },
+                siblingHoldsFocus = {
+                    sibling = windowRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                    sibling?.let { it.isEditable && it != pinnedNode } == true
+                },
+            )
+            if (refusal != null) return RefocusResult.DECLINED
         } catch (error: Exception) {
             return RefocusResult.DECLINED
         } finally {

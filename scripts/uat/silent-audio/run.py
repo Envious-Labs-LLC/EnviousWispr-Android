@@ -27,7 +27,12 @@ def run():
     parser.add_argument('--pcm', required=True, help='existing PHONE path, 16 kHz mono signed little-endian PCM')
     parser.add_argument('--expect', required=True, help='expected final editor text, including any pre-existing text')
     parser.add_argument('--receipt', type=Path, required=True)
+    parser.add_argument('--focus-between', help='after the audio is in and before stop, press this editor (its text or hint) so a SIBLING field holds '
+                        'input focus at stop time (#201); needs --focus-package')
+    parser.add_argument('--focus-package', help='package of the app that owns the --focus-between editor')
     args = parser.parse_args()
+    if bool(args.focus_between) != bool(args.focus_package):
+        parser.error('--focus-between and --focus-package go together')
     args.receipt.mkdir(parents=True, exist_ok=True)
     adb = [eyes.ADB, '-s', args.serial]
     def shell(command):
@@ -94,6 +99,10 @@ def run():
         (args.receipt/'routing.txt').write_text(routing)
         helper.stdin.write('GO\n'); helper.stdin.flush()
         wait(hq, 'INJECTED')
+        if args.focus_between:
+            # #201: a sibling editor takes input focus while the take is still open, then stop is pressed.
+            time.sleep(1.0)
+            print(eyes.focus_field(args.focus_between, args.focus_package), flush=True)
         shell('am start -n com.envi.wispr/.ui.VoiceInputActivity --ez stop true')
         outcome = wait(logq, 'insertion api=', 40)
         view = eyes.tree()

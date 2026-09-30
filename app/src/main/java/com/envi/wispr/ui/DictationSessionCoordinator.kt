@@ -104,7 +104,7 @@ internal class DictationSessionCoordinator(
      * The take's captured-audio file (#358): its length and its delete, which runs on a process-owned worker, never
      * the session scope, so a Service teardown right after a take's ending cannot cancel it (#253). A test holds it.
      */
-    private val capturedAudio: CapturedAudioFiles = CapturedAudioFiles.PROCESS,
+    private val capturedAudio: CapturedAudioFiles,
 ) : PipelineController.Listener {
     companion object {
         /**

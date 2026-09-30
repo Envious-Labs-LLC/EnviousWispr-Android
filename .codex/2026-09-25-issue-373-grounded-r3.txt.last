@@ -1,0 +1,7 @@
+Keep recordings — DONE
+
+1. **MEDIUM | [RecordingArchive.kt:37](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/keep-recordings/app/src/main/java/com/envi/wispr/ui/RecordingArchive.kt:37), [CapturedAudioFiles.kt:30](/Users/m4pro_sv/Developer/EnviousLabs/EnviousWispr-Android/.claude/worktrees/keep-recordings/app/src/main/java/com/envi/wispr/ui/CapturedAudioFiles.kt:30).** The exit sweep misses a **throwing warning callback**. If cleanup or archiving fails and `warn` throws, the exception at line 30 stops the runnable before cache deletion at line 32. A warning in `RecordingArchive` can take the same path. This is a hypothetical, testable failure of G4, not an observed phone failure. **Fix:** put cache deletion in a `finally` that runs regardless of warning failures, and contain warning callbacks so they cannot replace the original archive result. Test with a warning callback that throws: the runnable must still delete the cache file.
+
+The other listed exits and the round 2 fixes match the current code.
+
+VERDICT: PROCEED-WITH-REVISIONS

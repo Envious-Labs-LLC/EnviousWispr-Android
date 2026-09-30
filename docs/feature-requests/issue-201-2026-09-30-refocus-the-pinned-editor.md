@@ -28,7 +28,7 @@ Cross-persona check: no persona wants the words in the second field; the only di
 
 ## 0. TL;DR
 
-Founder decision 2026-09-30: when a sibling field in the SAME window holds input focus at stop time, the words go into the field the take was pinned to. At insertion time, if the pinned editor is present, visible and editable in the focused window and a sibling holds input focus, call `ACTION_FOCUS` (external) on the pinned node once, then let the existing route selection (COMMIT else PASTE) run. Anything else keeps today's clipboard outcome. LARGE tier; proof is a rig row, an emulator scene that flips, and a phone pass.
+Founder decision 2026-09-30: when a sibling field in the SAME window holds input focus at stop time, the words go into the field the take was pinned to. At insertion time, if the pinned editor is present, visible and editable in the focused window and a sibling holds input focus, call `ACTION_FOCUS` (external) on the pinned node once, then let route selection run with COMMIT disabled for that attempt (PASTE only). Anything else keeps today's clipboard outcome. LARGE tier; proof is a rig row, an emulator scene that flips, and a phone pass.
 
 Consolidation: none. This adds one capability (refocus the pinned node) to the one owner that already holds the pin, the window roots and the focused-window check (`EditorTargetTracker`); it replaces no second mechanism and leaves no duplicate behind, so there is no dominant root to consolidate and no site to migrate.
 
@@ -59,13 +59,13 @@ Gmail body pinned at start, Subject tapped while speaking, stop pressed: `Pinned
 
 ## 3. Design
 
-New `EditorTargetTracker.refocusPinnedNode(): RefocusOutcome` (proposed), refusing unless ALL hold: a pin exists; `findPinnedWindowRoot` finds the window; `isInFocusedWindow(pinned.windowId)` is true (`:288`, the guard `findPinnedWindowRoot` lacks); `expected.node.refresh()` succeeds and is visible, editable and focusable, matches `matchesPinnedTarget`, and advertises `ACTION_FOCUS` in its action list; the window's `findFocus(FOCUS_INPUT)` returns a DIFFERENT editable node (a sibling holds focus, not "nothing focused"). Then one `performAction(ACTION_FOCUS)`. `EditorWrites` gains `refocusOriginal()` (proposed); `InsertionAttempt.prepareAndWrite` calls it (flag `refocusTried` (proposed)) when `locate()` is null, then returns `Tick.Waiting` so the next tick re-locates.
+New `EditorTargetTracker.refocusPinnedNode(): RefocusResult` (proposed) (one enum shared with `EditorWrites.refocusOriginal`, §4), refusing unless ALL hold: a pin exists; `findPinnedWindowRoot` finds the window; `isInFocusedWindow(pinned.windowId)` is true (`:288`, the guard `findPinnedWindowRoot` lacks); `expected.node.refresh()` succeeds and is visible, editable and focusable, matches `matchesPinnedTarget`, and advertises `ACTION_FOCUS` in its action list; the window's `findFocus(FOCUS_INPUT)` returns a DIFFERENT editable node (a sibling holds focus, not "nothing focused"). Then one `performAction(ACTION_FOCUS)`. `EditorWrites` gains `refocusOriginal()` (proposed); `InsertionAttempt.prepareAndWrite` calls it (flag `refocusTried` (proposed)) when `locate()` is null, then returns `Tick.Waiting` so the next tick re-locates.
 
 Revisions from the Codex grounded review (round 1, PROCEED-WITH-REVISIONS):
 - **The flag is spent only by an actual focus attempt.** A guard refusal ("not ready": window not yet focused, nothing advertised) leaves `refocusTried` false so a later tick can still recover; an accepted, rejected or throwing `performAction` sets it true. A throw counts as attempted (no loop). Exactly one focus action per attempt.
 - **Deadline first.** `expired()` is checked before the refocus (the existing check at `InsertionAttempt.kt:203` does not cover the null-locate path); a blocking action can still overrun, as every other action here can.
-- **After a refocus this attempt uses the PASTE route only.** `commitIneligibleReason` proves package, window and node focus but not that the IME session is NEWER than the refocus, so a stale connection to the sibling could accept a `commitText`. `InsertionRoutePolicy.select` is called with `commitEligible && !refocused`; COMMIT returns to use on the next take. PASTE needs no IME (it needs the refreshed pinned node to advertise `ACTION_PASTE`; if not, `REJECTED` and the clipboard line).
-- **No claim that eventual success is guaranteed.** One `Tick.Waiting` gives time, not proof of readiness; the outcome set is `VERIFIED`, `REJECTED`, `UNVERIFIED` or `NEVER_RETURNED` (§7).
+- **After a refocus this attempt uses the PASTE route only.** `commitIneligibleReason` proves package, window and node focus but not that the IME session is NEWER than the refocus, so a stale connection to the sibling could accept a `commitText`. `InsertionRoutePolicy.select` is called with `!refocusTried && commitEligible()`; COMMIT returns to use on the next take. PASTE needs no IME (it needs the refreshed pinned node to advertise `ACTION_PASTE`; if not, `REJECTED` and the clipboard line).
+- **No claim that eventual success is guaranteed.** One `Tick.Waiting` gives time, not proof of readiness; the outcome set is the existing one: `VERIFIED`, `REJECTED`, `UNVERIFIED`, `NEVER_RETURNED`, plus `SENSITIVE` and `STAGING_FAILED` (`AccessibilityInsertionRunner.kt:222,232,249`); the refocus adds none (§7).
 
 Rejected: putting the focus inside `withPinnedNode` (it also serves read paths `readTarget`/`locateTarget`; reads must not move focus); `ACTION_SET_TEXT` (forbidden); dropping the focused test (would write into an unfocused node, the forbidden shape).
 
@@ -75,8 +75,8 @@ This lives on `EditorTargetTracker` because it already owns the pin, the window 
 
 ## 4. Contract deltas
 
-- `EditorWrites.refocusOriginal()` (proposed): "try once to give input focus back to the pinned editor; true only if the action was accepted". Implementers: `FakeEditor` (`InsertionAttemptTest.kt:20`), the delegate object (`:362`), `ServiceEditor`.
-- `InsertionAttempt` gains one boolean of state; `Tick` values unchanged.
+- `EditorWrites.refocusOriginal()` (proposed) returns a new enum `RefocusResult` (proposed) with four values: `DECLINED` (proposed) (a guard refused before any action: window not focused, nothing advertised, no sibling; NO focus action was sent), `ACCEPTED` (`performAction` returned true), `REJECTED` (it returned false), `THREW` (it threw; focus may have moved). Implementers: `FakeEditor` (`InsertionAttemptTest.kt:20`), the delegate object (`:362`), `ServiceEditor`.
+- `InsertionAttempt` gains one boolean, `refocusTried` (proposed): true for ACCEPTED, REJECTED and THREW (every case where an action was sent), false for DECLINED. Route selection is `InsertionRoutePolicy.select(!refocusTried && commitEligible())` at the one call site (`InsertionAttempt.kt:206`), so any actual focus action disables COMMIT for that attempt, including a throw that may have moved focus. `Tick` values unchanged.
 - `withPinnedNode` unchanged.
 
 ## 5. End-to-end state and lifecycle audit
@@ -105,21 +105,23 @@ This lives on `EditorTargetTracker` because it already owns the pin, the window 
 
 | Failure | Origin | Caller | User sees | Persisted | Retry |
 |---|---|---|---|---|---|
-| refocus refused (window not focused, nothing to focus) | tracker guard | attempt | today's wait then clipboard line | copy-only row | none |
-| `performAction` returns false | app refuses focus | attempt | clipboard line as today | copy-only | none |
-| focus moves but IME slow | async IME switch | next ticks | words land (PASTE) or COMMIT after a tick | normal row | within 2.5 s |
+| `DECLINED` (window not focused, nothing advertised, no sibling) | tracker guard | attempt | today's wait then clipboard line | copy-only row | a later tick within the deadline may try again (no action was sent) |
+| `REJECTED` (`performAction` returned false) | app refuses focus | attempt | clipboard line as today | copy-only | none (flag spent) |
+| `THREW` | framework or app | attempt | clipboard line as today, COMMIT disabled | copy-only | none (flag spent) |
+| `ACCEPTED` but the IME is slow | async IME switch | next ticks | words land by PASTE (COMMIT is disabled, so the IME is not needed) | normal row | within the deadline |
 | user left the app | window not focused | guard | unchanged | unchanged | none |
 | refocus accepted but the field refuses `ACTION_PASTE` | app | attempt | `REJECTED`, clipboard line | copy-only | none |
 | refocus accepted, write not confirmed by the editor's text | app or IME | judge | `UNVERIFIED` (existing handling) | as today | none |
-| deadline reached before or after the refocus | clock | runner | `NEVER_RETURNED` as today | copy-only | none |
+| deadline reached before or after the refocus | clock | runner | `NEVER_RETURNED` if nothing was written, else the existing expired-after-write handling (`AccessibilityInsertionRunner.kt:249`) | copy-only or as today | none |
+| the pin's field is sensitive, or staging the clip fails | existing | attempt | `SENSITIVE` or `STAGING_FAILED` as today (`:222,232`) | as today | none |
 
 ## 8. Caller-visible signals audit
 
-Outcome line fields (`route`, `written`, `evidence`, `outcome`, `attempts`, `ms`): `attempts` rises by the refocus tick; a new counts-only breadcrumb `refocus=ok|refused|declined` (proposed) joins the local take log, never text. `not present in this change`: the History row shape, telemetry allowlist, Room schema.
+Outcome line fields (`route`, `written`, `evidence`, `outcome`, `attempts`, `ms`): `attempts` rises by the refocus tick; a new counts-only breadcrumb `refocus=declined|accepted|rejected|threw` (proposed, the `RefocusResult` name) joins the local take log, never text. `not present in this change`: the History row shape, telemetry allowlist, Room schema.
 
 ## 9. Fallback source-of-truth audit
 
-Fallback is today's `NEVER_RETURNED` path unchanged; its source is the pinned token already held. No new fallback expression is introduced.
+Every failure branch keeps today's fallback unchanged: the outcome set in §7 is the existing one, and the words for the clipboard line come from the transcript the take already holds, never from the pin (the pin only names the target). No new fallback expression, source or consumer is introduced.
 
 ## 10. File-by-file changes
 
@@ -135,7 +137,7 @@ Fallback is today's `NEVER_RETURNED` path unchanged; its source is the pinned to
 
 - **Subsystem:** heart path.
 - **Recipe:** emulator scene of the `#192` reproduction first (Gmail compose, `device-testing.md` FACT: the-play-store-emulator-for-gmail-and-chatgpt), then the S26: Gmail body, tap Subject, stop; Messages; Chrome form. Silent audio injection for the take (`scripts/uat/silent-audio/`).
-- **Expected:** editor's own text holds the words in the pinned field; the other field is empty; `route=COMMIT|PASTE outcome=VERIFIED`; no `NEVER_RETURNED`.
+- **Expected:** editor's own text holds the words in the pinned field; the other field is empty; `route=PASTE outcome=VERIFIED` (COMMIT is disabled after a refocus); no `NEVER_RETURNED`.
 - **Restore:** none beyond `restore()`.
 
 ### 11.2 Other obligations

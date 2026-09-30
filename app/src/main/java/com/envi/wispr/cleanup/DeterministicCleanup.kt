@@ -660,6 +660,14 @@ internal object TextSafety {
         "seventh" to 7L, "eighth" to 8L, "ninth" to 9L, "tenth" to 10L, "eleventh" to 11L, "twelfth" to 12L,
         "thirteenth" to 13L, "fourteenth" to 14L, "fifteenth" to 15L, "sixteenth" to 16L,
         "seventeenth" to 17L, "eighteenth" to 18L, "nineteenth" to 19L, "twentieth" to 20L,
+        "thirtieth" to 30L, "fortieth" to 40L, "fiftieth" to 50L, "sixtieth" to 60L, "seventieth" to 70L,
+        "eightieth" to 80L, "ninetieth" to 90L,
+        // Other words a model may write for a figure of a count.
+        "dozen" to 12L, "nil" to 0L, "nought" to 0L, "naught" to 0L,
+    )
+    private val unitOrdinals = mapOf(
+        "first" to 1L, "second" to 2L, "third" to 3L, "fourth" to 4L, "fifth" to 5L, "sixth" to 6L,
+        "seventh" to 7L, "eighth" to 8L, "ninth" to 9L,
     )
 
     // One item of a spoken count: a figure of one or two digits, a number word, or "twenty one".
@@ -712,7 +720,7 @@ internal object TextSafety {
             val tens = tensWords[match.value] ?: return@forEachIndexed
             val next = words.getOrNull(index + 1) ?: return@forEachIndexed
             val gap = lower.substring(match.range.last + 1, next.range.first)
-            val unit = unitWords[next.value]
+            val unit = unitWords[next.value] ?: unitOrdinals[next.value]
             if (unit != null && gap.isNotEmpty() && gap.all { it == ' ' || it == '-' }) kept += tens + unit
         }
         return kept

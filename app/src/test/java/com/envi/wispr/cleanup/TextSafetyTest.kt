@@ -76,6 +76,15 @@ class TextSafetyTest {
         assertNull(TextSafety.refusal("the positions are 1, 2, 3", "The positions are first, second, third."))
         assertNull(TextSafety.refusal("the reference numbers are 1, 2, twenty one hundred", "The reference numbers are 1, 2, 2100."))
         assertNull(TextSafety.refusal("the codes are 12, 14, 16, 18 and 20 for the lockers", "The codes are 12, 14, 18 and 20 for the lockers."))
+        // Codex round 6: other honest wordings of a tail.
+        assertNull(TextSafety.refusal("pack sizes are 6, 9, 12 eggs", "Pack sizes are six, nine, or a dozen eggs."))
+        assertNull(TextSafety.refusal("the scores were 3, 2, 0", "The scores were three, two, and nil."))
+        assertNull(TextSafety.refusal("the positions are 19, 20, 21", "The positions are nineteenth, twentieth, twenty-first."))
+    }
+
+    @Test fun aTailTheModelReallyDroppedIsStillRefusedWhenTheOtherItemsSurvive_385() {
+        assertEquals("number drop 1 numbers", TextSafety.refusal("pack sizes are 6, 9, 12 eggs", "Pack sizes are six and nine eggs."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("the scores were 3, 2, 0", "The scores were three and two."))
     }
 
     @Test fun aLoneNumberIsNeverHeldBecauseAModelMayWordItAnotherWay_385() {

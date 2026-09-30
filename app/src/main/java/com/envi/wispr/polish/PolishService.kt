@@ -603,6 +603,7 @@ class PolishService : Service() {
                 record(PolishReason.LOCAL_TIMEOUT)
                 return null
             }
+            s1Runtime.lastGeneration?.let { log.log(it.logLine()) }
             generated.trim()
         } catch (exception: Exception) {
             log.error("S1 generation threw", exception)

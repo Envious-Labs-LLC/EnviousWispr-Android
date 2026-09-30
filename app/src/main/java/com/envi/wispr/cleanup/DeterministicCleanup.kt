@@ -656,17 +656,19 @@ internal object TextSafety {
         "eight" to 8L, "nine" to 9L,
     )
     private val outputNumberWords = numberWords + mapOf("one" to 1L, "zero" to 0L) + mapOf(
-        "first" to 1L, "second" to 2L, "third" to 3L, "fourth" to 4L, "fifth" to 5L, "sixth" to 6L,
+        // No "second" (also a unit of time) and no "dozen" (also "half a dozen", "two dozen"): a word that
+        // can stand for a DIFFERENT quantity would hide a dropped tail, and a refusal only costs the polish.
+        "first" to 1L, "third" to 3L, "fourth" to 4L, "fifth" to 5L, "sixth" to 6L,
         "seventh" to 7L, "eighth" to 8L, "ninth" to 9L, "tenth" to 10L, "eleventh" to 11L, "twelfth" to 12L,
         "thirteenth" to 13L, "fourteenth" to 14L, "fifteenth" to 15L, "sixteenth" to 16L,
         "seventeenth" to 17L, "eighteenth" to 18L, "nineteenth" to 19L, "twentieth" to 20L,
         "thirtieth" to 30L, "fortieth" to 40L, "fiftieth" to 50L, "sixtieth" to 60L, "seventieth" to 70L,
         "eightieth" to 80L, "ninetieth" to 90L,
         // Other words a model may write for a figure of a count.
-        "dozen" to 12L, "nil" to 0L, "nought" to 0L, "naught" to 0L,
+        "nil" to 0L, "nought" to 0L, "naught" to 0L,
     )
     private val unitOrdinals = mapOf(
-        "first" to 1L, "second" to 2L, "third" to 3L, "fourth" to 4L, "fifth" to 5L, "sixth" to 6L,
+        "first" to 1L, "third" to 3L, "fourth" to 4L, "fifth" to 5L, "sixth" to 6L,
         "seventh" to 7L, "eighth" to 8L, "ninth" to 9L,
     )
 

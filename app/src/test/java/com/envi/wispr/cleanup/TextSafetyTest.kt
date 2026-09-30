@@ -77,9 +77,16 @@ class TextSafetyTest {
         assertNull(TextSafety.refusal("the reference numbers are 1, 2, twenty one hundred", "The reference numbers are 1, 2, 2100."))
         assertNull(TextSafety.refusal("the codes are 12, 14, 16, 18 and 20 for the lockers", "The codes are 12, 14, 18 and 20 for the lockers."))
         // Codex round 6: other honest wordings of a tail.
-        assertNull(TextSafety.refusal("pack sizes are 6, 9, 12 eggs", "Pack sizes are six, nine, or a dozen eggs."))
         assertNull(TextSafety.refusal("the scores were 3, 2, 0", "The scores were three, two, and nil."))
         assertNull(TextSafety.refusal("the positions are 19, 20, 21", "The positions are nineteenth, twentieth, twenty-first."))
+    }
+
+    @Test fun aWordThatCanMeanAnotherQuantityNeverStandsInForADroppedTail_385() {
+        // Codex round 7: "dozen" also means "half a dozen" and "two dozen"; "second" is also a unit of time.
+        // Refusing an honest "a dozen" only costs the polish; accepting a wrong one would hide a lost tail.
+        assertEquals("number drop 1 numbers", TextSafety.refusal("pack sizes are 3, 6, 12 eggs", "Pack sizes are three and half a dozen eggs."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("pack sizes are 6, 9, 12 eggs", "Pack sizes are six, nine, or a dozen eggs."))
+        assertEquals("number drop 1 numbers", TextSafety.refusal("pause for twenty seconds then read 20, 21, 22", "After a twenty-second pause, read 20 and 21."))
     }
 
     @Test fun aTailTheModelReallyDroppedIsStillRefusedWhenTheOtherItemsSurvive_385() {

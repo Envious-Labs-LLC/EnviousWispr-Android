@@ -167,6 +167,13 @@ class TextSafetyTest {
         assertNull(TextSafety.refusal("count 3, 2, 1", "Count 3, 2, 1."))
     }
 
+    @Test fun aSpokenCountdownEndingOnTheWordOneIsStillHeld_385() {
+        // Codex round 10: "one" is never read as a number, yet ordinary truncation of this count must refuse.
+        assertEquals("number drop 1 numbers", TextSafety.refusal("count three, two, one", "Count three, two."))
+        assertNull(TextSafety.refusal("count three, two, one", "Count three, two, one."))
+        assertNull(TextSafety.refusal("count three, two, one", "Count 3, 2, 1."))
+    }
+
     @Test fun wordsAfterACountDoNotDisableIt_385() {
         assertEquals("number drop 1 numbers", TextSafety.refusal("say 1, 2, 3 one more time", "Say 1, 2 one more time."))
         assertNull(TextSafety.refusal("say 1, 2, 3 one more time", "Say 1, 2, 3 one more time."))

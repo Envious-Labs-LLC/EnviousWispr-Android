@@ -696,13 +696,23 @@ internal object TextSafety {
     internal fun numbersMissing(input: String, output: String): Int {
         val lowerInput = input.lowercase()
         val tails = spokenCount.findAll(lowerInput).mapNotNull { run ->
-            Regex(countItem).findAll(run.value).lastOrNull()?.let { valueOfItem(it.value) }
+            Regex(countItem).findAll(run.value).lastOrNull()?.value
         }.toList()
         if (tails.isEmpty()) return 0
         val inputValues = numberValues(lowerInput)
-        val outputValues = numberValues(output.lowercase())
-        return tails.distinct().count { tail -> outputValues.count { it == tail } < inputValues.count { it == tail } }
+        val lowerOutput = output.lowercase()
+        val outputValues = numberValues(lowerOutput)
+        return tails.distinct().count { item ->
+            val tail = valueOfItem(item) ?: return@count false
+            // "one" is not read as a number (it is also a pronoun), yet a count that ENDS on the spoken word
+            // "one" ("three, two, one") must still be held: its own word then counts in the answer.
+            val spelledOne = item == "one"
+            val have = outputValues.count { it == tail } + if (spelledOne) oneWord.findAll(lowerOutput).count() else 0
+            have < maxOf(inputValues.count { it == tail }, 1)
+        }
     }
+
+    private val oneWord = Regex("(?<![\\p{L}\\d])one(?![\\p{L}\\d])")
 
     private fun valueOfItem(item: String): Long? {
         item.toLongOrNull()?.let { return it }

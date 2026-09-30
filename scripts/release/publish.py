@@ -7,6 +7,7 @@ from pathlib import Path
 import struct
 import subprocess
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -33,6 +34,22 @@ def api(session, method, url, **kwargs):
     if not result.ok:
         raise RuntimeError(f'Google API {method} failed with HTTP {result.status_code}')
     return result.json() if result.content else {}
+
+
+def read_api(session, method, url, attempts=3, **kwargs):
+    """A READ-ONLY call after the commit, retried a bounded number of times on any failure.
+
+    The commit is already done when these run, so a transient 5xx on the verification edit or the track
+    read-back (run 137, #390) must not turn a committed release red. Still fail closed: when every attempt
+    fails, the last error propagates and the run is red, because publication is then unconfirmed.
+    """
+    for attempt in range(attempts):
+        try:
+            return api(session, method, url, **kwargs)
+        except RuntimeError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(5 * (attempt + 1))
 
 
 def require_bundle(source, version):
@@ -130,12 +147,17 @@ def main():
             api(session, 'POST', f'{ROOT}/{edit}:commit')
         except Exception:
             pass
-        verification = api(session, 'POST', ROOT, json={})['id']
+        verification = read_api(session, 'POST', ROOT, json={})['id']
         try:
-            state = api(session, 'GET', f'{ROOT}/{verification}/tracks/{TRACK}')
+            state = read_api(session, 'GET', f'{ROOT}/{verification}/tracks/{TRACK}')
             committed = any(str(version) in item.get('versionCodes', []) and item.get('status') == 'completed' for item in state.get('releases', []))
         finally:
-            api(session, 'DELETE', f'{ROOT}/{verification}')
+            # Best effort, like the main edit's cleanup below: the verification edit is read-only, and a 5xx on
+            # its delete (run 137, 2026-09-30: HTTP 503) must not turn a confirmed publication into a failure (#390).
+            try:
+                api(session, 'DELETE', f'{ROOT}/{verification}')
+            except Exception:
+                pass
         if not committed:
             raise RuntimeError('Publication not confirmed; inspect Play before retrying')
         published = dict(receipt, package=PACKAGE, track=TRACK, signed_sha256=signed_hash, status='completed')

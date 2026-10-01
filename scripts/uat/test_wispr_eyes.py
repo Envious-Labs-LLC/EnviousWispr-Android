@@ -19,6 +19,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import os  # noqa: E402
+# NO PHONE-SIDE AGENT IN THE FIXTURE RUNS: every row drives a fake `_adb`, and an agent start would reach for
+# a real device. The agent rows below install their own fakes.
+os.environ["WISPR_AGENT"] = "off"
 import wispr_eyes as eyes  # noqa: E402
 
 
@@ -640,6 +644,278 @@ def test_pick_one_groups():
         for name, value in originals.items():
             setattr(eyes, name, value)
         eyes._STATE["tree"] = None
+
+
+def test_agent():
+    """The phone-side agent (scripts/uat/agent): its protocol, the eye it feeds, and the press path.
+
+    When these fail: a read silently falls back to the slow eye while claiming the fast one, a press goes
+    through `input tap` with the agent connected, or `reveal` on another app's page never sees the row.
+    """
+    import socket
+    import threading
+    # ---- the protocol: OK <bytes> then the bytes, ERR <message> -----------------------------------
+    server = socket.socket(); server.bind(("127.0.0.1", 0)); server.listen(1)
+    port = server.getsockname()[1]
+    replies = [b"OK 4\npong", "OK 6\nhéllo".encode("utf-8"), b"ERR no such thing\n"]
+
+    def serve():
+        conn, _ = server.accept()
+        f = conn.makefile("rb")
+        for reply in replies:
+            f.readline()
+            conn.sendall(reply)
+        conn.close()
+    threading.Thread(target=serve, daemon=True).start()
+    link = eyes._AgentLink(port)
+    check("the agent link reads a sized reply", link.call("ping") == "pong")
+    check("and counts the size in BYTES, so non-ASCII text is read whole", link.call("x") == "héllo")
+    try:
+        link.call("bogus")
+        check("an ERR reply refuses", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("an ERR reply refuses and names the command", "'bogus'" in str(refusal) and "no such thing" in str(refusal), refusal)
+    link.close(); server.close()
+
+    # ---- the eye: an agent dump is the tree, and the state says so ---------------------------------
+    original_call, original_adb, original_agent = eyes._agent_call, eyes._adb, eyes._agent
+    sent = []
+
+    def fake_agent(line):
+        sent.append(line)
+        return TWO_REMOVES if line == "dump" else "changed"
+    eyes._agent_call = fake_agent
+    eyes._agent = lambda: object()
+    eyes._adb = lambda command, timeout=60, check=True: (_ for _ in ()).throw(AssertionError(f"raw adb used: {command}"))
+    eyes._STATE["tree"], eyes._STATE["eye"] = None, None
+    nodes = eyes.tree(refresh=True)
+    check("an agent dump is parsed as the screen", len(nodes) == 7 and eyes._STATE["eye"] == "agent", (len(nodes), eyes._STATE["eye"]))
+    # ---- the press: through the agent's settle, never `input tap` -----------------------------------
+    sent.clear()
+    eyes._press_at(10, 20, "7")
+    check("a press with the agent is ONE settle command naming the window it aims at",
+          sent == ["settle 250 1500 5000 tap 10 20 7"], sent)
+    # REVERT: let a press go without a window id, and a target the reading cannot place is pressed blind.
+    sent.clear()
+    try:
+        eyes._press_at(10, 20, None)
+        check("with the agent, a press with no window identity refuses", False, sent)
+    except eyes.Blocked as refusal:
+        check("with the agent, a press with no window identity refuses before sending", "window identity" in str(refusal) and not sent, refusal)
+    sent.clear()
+    eyes._key(4)
+    check("a key with the agent goes through settle too", sent and sent[0].startswith("settle ") and sent[0].endswith(" key 4"), sent)
+    # ---- without the agent the old path is used, loudly not silently --------------------------------
+    raw = []
+    eyes._agent_call = lambda line: None
+    eyes._adb = lambda command, timeout=60, check=True: (raw.append(command), (0, ""))[1]
+    real_sleep = eyes.time.sleep
+    eyes.time.sleep = lambda s: None
+    eyes._agent = lambda: None
+    eyes._press_at(10, 20, None)
+    eyes.time.sleep = real_sleep
+    check("with no agent at all a press uses input tap", raw == ["input tap 10 20"], raw)
+    eyes._agent_call, eyes._adb, eyes._agent = original_call, original_adb, original_agent
+    eyes._STATE["tree"], eyes._STATE["eye"] = None, None
+
+    # ---- an ACTION whose reply is lost is never resent and never handed to input tap (review round 1) --
+    # REVERT: let `_agent_call` retry every command, and the tap is sent twice.
+    class Dropping:
+        def __init__(self):
+            self.lines = []
+        def call(self, line):
+            self.lines.append(line)
+            raise OSError("reply lost")
+        def close(self):
+            pass
+    links = []
+
+    def fresh_link():
+        links.append(Dropping())
+        return links[-1]
+    eyes._agent = fresh_link
+    eyes._adb = lambda command, timeout=60, check=True: (_ for _ in ()).throw(AssertionError(f"fallback used: {command}"))
+    try:
+        eyes._press_at(10, 20, "7")
+        check("a tap whose reply is lost refuses", False, "it returned")
+    except eyes.Blocked as refusal:
+        sent_lines = [l for link in links for l in link.lines]
+        check("a tap whose reply is lost refuses as unknown, sent ONCE, with no input-tap fallback",
+              "unknown" in str(refusal) and sent_lines == ["settle 250 1500 5000 tap 10 20 7"], (str(refusal), sent_lines))
+    links.clear()
+    check("a READ whose reply is lost is retried once on a fresh link, then given up",
+          eyes._agent_call("dump") is None and len(links) == 2, len(links))
+    eyes._agent, eyes._adb = original_agent, original_adb
+    eyes._STATE["agent"], eyes._STATE["agent_off"] = None, None
+
+    # ---- a line break can never become a second command ----------------------------------------------
+    try:
+        eyes._AgentLink.call(type("L", (), {})(), "text hello\nkey 3")
+        check("a command with a line break refuses", False, "it was sent")
+    except eyes.Blocked as refusal:
+        check("a command with a line break refuses before anything is sent", "line break" in str(refusal), refusal)
+
+    # ---- `busy` is not arrival: it must earn a settled read, or refuse ------------------------------
+    calls = []
+    real_settled = eyes._settled_tree
+    eyes._settled_tree = lambda *a, **k: calls.append("settled")
+    eyes._after_settle("busy")
+    check("a busy settle demands a settled read before the press counts", calls == ["settled"], calls)
+    eyes._after_settle("same")
+    check("a same settle is an answer (drawn, nothing moved), not a refusal", calls == ["settled"], calls)
+    try:
+        eyes._after_settle("garbage")
+        check("an unknown settle answer refuses", False, "it returned")
+    except eyes.Blocked:
+        check("an unknown settle answer refuses", True)
+    eyes._settled_tree = real_settled
+
+    # ---- a label covered by a higher window is not pressed ----------------------------------------
+    # REVERT: drop the `_covered` check in tap(), and the button under the dialog is "pressed".
+    covered = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <window id="1" layer="1" type="1" bounds="[0,0][1000,2000]">
+    <node text="Delete" bounds="[400,900][600,1000]" package="com.envi.wispr" clickable="true" enabled="true" />
+  </window>
+  <window id="2" layer="5" type="1" bounds="[100,600][900,1400]">
+    <node text="Are you sure?" bounds="[150,650][850,750]" package="com.envi.wispr" clickable="false" enabled="true" />
+  </window>
+</hierarchy>"""
+    saved = with_screen(covered)
+    real_ready, real_press = eyes.ready, eyes._press_at
+    pressed = []
+    eyes.ready = lambda: True
+    eyes._press_at = lambda x, y, window=None, settle_s=1.2: pressed.append((x, y))
+    try:
+        eyes.tap("Delete")
+        check("a button under a dialog is not pressed", False, pressed)
+    except eyes.Blocked as refusal:
+        check("a button under a dialog is not pressed, and the refusal says what covers it",
+              "covered" in str(refusal) and not pressed, (str(refusal), pressed))
+    eyes.ready, eyes._press_at = real_ready, real_press
+    restore_adb(saved)
+
+    # ---- typing: exactly the text, into the same field, once ------------------------------------------
+    field = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0"><window id="7" layer="1" type="1" bounds="[0,0][1000,2000]">
+  <node text="{text}" resource-id="app:id/search" class="android.widget.EditText" package="com.android.settings"
+        focused="true" showing-hint="{hint}" bounds="[0,100][1000,200]" clickable="true" enabled="true" />
+</window></hierarchy>"""
+    state = {"text": "Search settings", "hint": "true"}
+    texts = []
+
+    def typing_agent(partial):
+        def call(line):
+            if line == "dump":
+                return field.format(**state)
+            if line == "ime":
+                return "shown"
+            if line.startswith("text "):
+                texts.append(line[5:])
+                typed = line[5:]
+                state["text"] = typed[:-1] if partial else typed
+                state["hint"] = "false"
+                return ""
+            return "changed"
+        return call
+    eyes._agent = lambda: object()
+    for line_break in ("a\nb", "a\rb"):
+        try:
+            eyes.type_text(line_break)
+            check("type_text refuses a line break", False, "typed")
+        except eyes.Blocked as refusal:
+            check("type_text refuses a line break before sending anything", "line break" in str(refusal) and not texts, refusal)
+    eyes._agent_call = typing_agent(partial=False)
+    check("text typed into a field showing its hint lands whole", "reads 'bluetooth'" in eyes.type_text("bluetooth"))
+    # REVERT: bring back the automatic retype, and a partial landing becomes 'blueto' + 'bluetooth'.
+    state.update(text="Search settings", hint="true"); texts.clear()
+    eyes._agent_call = typing_agent(partial=True)
+    try:
+        eyes.type_text("abc")
+        check("a partial landing refuses", False, "it reported success")
+    except eyes.Blocked as refusal:
+        check("a partial landing refuses and is NOT retyped", "Not retyped" in str(refusal) and texts == ["abc"], (str(refusal), texts))
+    # REVERT: bring back the length-and-substring success test, and `abcXYZ` passes for `old` + `abc`.
+    state.update(text="old", hint="false"); texts.clear()
+
+    def corrupting(line):
+        if line.startswith("text "):
+            texts.append(line[5:]); state["text"] = "abcXYZ"; return ""
+        return typing_agent(False)(line)
+    eyes._agent_call = corrupting
+    try:
+        eyes.type_text("abc")
+        check("a read-back that is not old text plus typed text refuses", False, "it reported success")
+    except eyes.Blocked:
+        check("a read-back that is not old text plus typed text refuses", True)
+    # REVERT: drop the bounds from the field identity, and focus moving to a twin field still types.
+    twins = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0"><window id="7" layer="1" type="1" bounds="[0,0][1000,2000]">
+  <node text="" class="android.widget.EditText" package="com.example" focused="{a}" bounds="[0,100][1000,200]" clickable="true" enabled="true" />
+  <node text="" class="android.widget.EditText" package="com.example" focused="{b}" bounds="[0,300][1000,400]" clickable="true" enabled="true" />
+</window></hierarchy>"""
+    focus = {"a": "true", "b": "false"}; texts.clear()
+
+    def moving(line):
+        if line == "dump":
+            return twins.format(**focus)
+        if line == "ime":
+            focus.update(a="false", b="true")  # focus jumps to the twin while waiting for the keyboard
+            return "shown"
+        if line.startswith("text "):
+            texts.append(line[5:]); return ""
+        return "changed"
+    eyes._agent_call = moving
+    try:
+        eyes.type_text("x")
+        check("focus moving to a twin field refuses", False, texts)
+    except eyes.Blocked as refusal:
+        check("focus moving to a twin field (same id, class, window) refuses before typing",
+              "focus moved" in str(refusal) and not texts, (str(refusal), texts))
+    eyes._agent_call, eyes._agent = original_call, original_agent
+    eyes._STATE["tree"], eyes._STATE["eye"] = None, None
+
+    # ---- a window with no readable content still covers what is under it -------------------------
+    rootless = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <window id="1" layer="1" type="1" bounds="[0,0][1000,2000]">
+    <node text="Delete" bounds="[400,900][600,1000]" package="com.envi.wispr" clickable="true" enabled="true" />
+  </window>
+  <window id="9" layer="8" type="3" bounds="[0,800][1000,1200]"></window>
+</hierarchy>"""
+    saved = with_screen(rootless)
+    eyes.ready = lambda: True
+    pressed.clear()
+    eyes._press_at = lambda x, y, window=None, settle_s=1.2: pressed.append((x, y))
+    try:
+        eyes.tap("Delete")
+        check("a rootless window over a button blocks the press", False, pressed)
+    except eyes.Blocked as refusal:
+        check("a rootless window over a button blocks the press", "covered" in str(refusal) and not pressed, refusal)
+    eyes.ready, eyes._press_at = real_ready, real_press
+    restore_adb(saved)
+
+    # ---- dropping a link removes its forward ------------------------------------------------------
+    removed = []
+    real_run = eyes._run
+    eyes._run = lambda args, timeout=60: (removed.append(args[-2:]), (0, "", ""))[1]
+    eyes._STATE["agent_forward"] = ("serial-x", 41234)
+    eyes._STATE["agent"] = type("Link", (), {"close": lambda self: None})()
+    eyes._drop_agent_link()
+    check("dropping a link removes its adb forward", removed == [["--remove", "tcp:41234"]] and eyes._STATE["agent_forward"] is None, removed)
+    eyes._run = real_run
+
+    # ---- reveal looks in the page's OWN package (2026-10-01, Samsung's Deep sleeping picker) ----------
+    # REVERT: drop `package=package` from reveal's `present` calls, and a row plainly on another app's
+    # screen reads as absent.
+    other = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="EnviousWispr" bounds="[326,843][1001,909]" package="com.samsung.android.lool" clickable="false" enabled="true" />
+</hierarchy>"""
+    saved = with_screen(other)
+    check("reveal finds a label on another app's page where it already is",
+          eyes.reveal("EnviousWispr", package="com.samsung.android.lool") is True)
+    restore_adb(saved)
 
 
 def main():
@@ -2504,6 +2780,7 @@ Group main:
         setattr(eyes, name, fn)
 
     test_pick_one_groups()
+    test_agent()
 
     # ---- #384: a duplicate wireless connection has a space inside its serial --------------------------
     devices_original_run = eyes._run

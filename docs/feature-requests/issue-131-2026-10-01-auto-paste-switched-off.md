@@ -178,6 +178,22 @@ Unclean marker with permission refresh held back, then release a granted answer:
 may say auto-paste was switched off. (`ui/ReadinessViewModel.kt` feeds a default `false` into readiness and
 marks combined emissions loaded before the real permission read.)
 
+The marker reader is one process-scoped object in paste/PasteAccessibilityService.kt, shared by the UI and
+dictation service in the default process. It retains only application context. Either consumer can start its
+background initial load idempotently, even when accessibility is disabled; the task is not owned by an
+accessibility-service instance. Expose a StateFlow containing Loading, Available(lastStop), or Unavailable.
+Successful existing lifecycle writes update that same snapshot. An initial-load result must not overwrite a
+newer lifecycle write, and no storage read may hold a lock needed by connection, teardown or session startup.
+ReadinessViewModel passes this flow to AutoPasteReadiness.observe; session checks read its current value
+without waiting.
+
+Represent accessibility permission for the readiness join as one snapshot: Unchecked, Granted, or Revoked.
+refreshPermissions publishes the checked value atomically; model updates preserve it. AutoPasteReadiness.evaluate
+and observe accept this snapshot. Unchecked returns AutoPasteReadiness.initial and can never produce
+SWITCHED_OFF_UNEXPECTEDLY. Keep AutoPasteReadiness.initial unchanged. Do not reuse ReadinessUiState.loaded as the
+permission-check flag, and do not make loaded depend on marker loading. DictationSessionService supplies Granted
+or Revoked from its existing direct permission read.
+
 ### 3.3 Rejected
 - A new "ever granted" DataStore flag (the issue's proposal): it cannot tell the user's own turn-off from
   Android's, so it would nag a user who chose to turn auto-paste off.
@@ -227,7 +243,7 @@ disagree with the first.
 ## 7. Failure modes
 | Failure | Origin | Caller | User sees | Persisted | Retry |
 |---|---|---|---|---|---|
-| marker unreadable | SharedPreferences | readiness | today's two-input answer (`LIVE`, `PERMITTED_NOT_RUNNING` or `NOT_PERMITTED`); only the new distinction is suppressed | none | next refresh |
+| marker unreadable | SharedPreferences | readiness | today's two-input answer (`LIVE`, `PERMITTED_NOT_RUNNING` or `NOT_PERMITTED`); only the new distinction is suppressed | none | next process start; a successful lifecycle write can restore the current snapshot |
 | arm lost to a kill right after connect | service | readiness | after a later force-stop, today's `NOT_PERMITTED` (missed detection) | marker Clean | next connect re-arms |
 | user turned off, marker write lost (process died inside onDestroy) | service | readiness | the neutral §3.2 wording; never attribute the switch-off to Android | marker false | clears on re-grant |
 
@@ -242,7 +258,7 @@ permitted and unbound, otherwise `NOT_PERMITTED`.
 
 ## 10. File-by-file changes
 - `paste/AutoPasteAvailability.kt`: member, `evaluate`/`observe` third input.
-- `paste/PasteAccessibilityService.kt`: expose the marker read (a small reader object), writes unchanged.
+- `paste/PasteAccessibilityService.kt`: the process-scoped marker reader (§3.2b), writes unchanged in place.
 - `ui/ReadinessViewModel.kt`, `ui/DictationSessionService.kt`: pass the marker.
 - `ui/SettingsComponents.kt`, `ui/SettingsPages.kt`, `ui/OnboardingScreen.kt`,
   `insertion/InsertionOutcomeMessages.kt`: the new state's words.
@@ -261,6 +277,11 @@ permitted and unbound, otherwise `NOT_PERMITTED`.
   the listening and fallback lines for copied, History-only, copy-failed and rescued-word outcomes, the new
   state at onboarding steps 3 and 4, and the combined state (microphone or model missing plus auto-paste off)
   naming which cards show.
+- Keep one readiness observer subscribed while the marker loads without any accessibility-service instance.
+  Assert the expected state when loading completes. Race initial-load publication against a newer clean write
+  and require the newer snapshot to win. With permission Unchecked and marker Unclean, assert initial; after
+  Granted, assert LIVE when bound; after Revoked, assert SWITCHED_OFF_UNEXPECTEDLY. A model update must
+  preserve the checked permission answer.
 - One observer subscribed across permission, binding and marker transitions, awaiting each emission without
   restarting collection, including a marker-only transition (today's `AutoPasteReadinessObserveTest` calls
   `first()` afresh and would pass with a single snapshot). Each of: marker subscription, arming, clean marking,

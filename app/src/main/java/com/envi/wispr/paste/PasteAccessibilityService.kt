@@ -96,10 +96,17 @@ class PasteAccessibilityService : AccessibilityService() {
         private fun publishBinding(service: PasteAccessibilityService?) {
             // An orderly withdrawal: the clean mark follows, but a running service's marker reads UNCLEAN
             // until it lands, and unbound with UNCLEAN is the switched-off state (#131). Suppress the
-            // distinction BEFORE liveness drops, so no reader sees the user's own turn-off as Android's.
-            if (service == null) stopMarker.withdrawing()
-            instance = service
-            boundState.value = service != null
+            // distinction BEFORE liveness drops, so no reader sees the user's own turn-off as Android's,
+            // and under the marker's lock, so an arm that already passed its instance guard finishes
+            // first and one arriving later sees no instance and declines; neither can re-publish
+            // UNCLEAN over the suppression. A connect takes no lock: the heart's connect path never
+            // waits on a storage write.
+            val lock = if (service == null) STOP_MARKER_LOCK else Any()
+            synchronized(lock) {
+                if (service == null) stopMarker.withdrawing()
+                instance = service
+                boundState.value = service != null
+            }
         }
 
         /**

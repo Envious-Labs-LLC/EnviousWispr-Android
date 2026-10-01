@@ -153,6 +153,13 @@ class AutoPasteWiringTest {
                 "reads unbound with the running service's armed marker, which is the switched-off state: $publish",
             publish.indexOf("stopMarker.withdrawing()").let { it >= 0 && it < publish.indexOf("boundState.value") },
         )
+        // Code review r2: without the arm's lock, an arm past its instance guard re-publishes UNCLEAN over
+        // the suppression before liveness drops.
+        assertTrue(
+            "A withdrawal no longer holds the marker lock, so a concurrent arm can undo the suppression: $publish",
+            publish.contains("val lock = if (service == null) STOP_MARKER_LOCK else Any()") &&
+                publish.indexOf("synchronized(lock) {").let { it >= 0 && it < publish.indexOf("stopMarker.withdrawing()") },
+        )
         val writer = slice(service, "private fun writeStopMarker(clean: Boolean) {", "\n    }")
         assertTrue(
             "A marker write no longer updates the snapshot, so a user who turns auto-paste off in this " +

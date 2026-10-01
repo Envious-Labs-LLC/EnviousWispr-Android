@@ -68,6 +68,11 @@ internal fun modelUiState(
             ModelUiState("Paused", ModelHealth.NOT_READY, safeBytes, safeTotal, reason, ModelUiAction.RESUME)
         } else if (verifiedReady) {
             ModelUiState("Ready", ModelHealth.READY, safeBytes, safeTotal, action = ModelUiAction.REMOVE)
+        } else if (cancelled) {
+            // A finished REMOVAL: `enqueueRemove` writes CANCELLED, then its work SUCCEEDS on the download chain.
+            // Without this branch the card fell to "Checking" with no action, and nothing on the tab could bring
+            // the model back (S26, build 246, 2026-10-01).
+            ModelUiState("Missing", ModelHealth.NOT_READY, safeBytes, safeTotal, action = ModelUiAction.DOWNLOAD)
         } else if (staleInstalled) {
             ModelUiState("Update available", ModelHealth.NOT_READY, safeBytes, safeTotal, action = ModelUiAction.UPDATE)
         } else {

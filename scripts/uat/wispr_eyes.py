@@ -851,6 +851,45 @@ def look(only_ours=False, nodes=None):
     return "\n".join(unique)
 
 
+def _one_press(matches, package, nodes):
+    """The ONE control several matching nodes stand for, or None when they are not provably one press.
+
+    All of these, or None (code review round 1 of #315 named the two holes a looser rule left):
+    - every match resolves to the SAME control node (itself, or its nearest clickable ancestor exactly as
+      `tap` resolves it), compared by identity: two separate controls can share a box;
+    - one match covers that control's box exactly, so the name is the control's own (a provider tile
+      carrying "Gemini" as its description) and the press point, the control's centre, lies inside it;
+    - no other clickable node, apart from the control and its ancestors, contains that point, so nothing
+      drawn over or inside the control can take the press.
+    A shared ancestor alone is not one press: two rows of one clickable list share the list but are two
+    places, and neither covers the list's box.
+    """
+    target = None
+    for node in matches:
+        try:
+            resolved = node if node["clickable"] else _holder(node, lambda n: n["clickable"], package=package)
+        except Blocked:
+            return None
+        if resolved is None or (target is not None and resolved is not target):
+            return None
+        target = resolved
+    if not any(m["bounds"] == target["bounds"] for m in matches):
+        return None
+    ancestors = []
+    current = target
+    while current is not None:
+        ancestors.append(current)
+        current = nodes[current["parent"]] if current.get("parent") is not None else None
+    px, py = target["centre"]
+    for other in nodes:
+        if not other["clickable"] or any(other is a for a in ancestors):
+            continue
+        x0, y0, x1, y1 = other["bounds"]
+        if x0 <= px <= x1 and y0 <= py <= y1:
+            return None
+    return target
+
+
 def find(text, exact=True, clickable=None, package=PACKAGE, stable=False):
     """The ONE node matching, or a refusal naming every candidate.
 
@@ -889,6 +928,14 @@ def find(text, exact=True, clickable=None, package=PACKAGE, stable=False):
         # at one point are one press, not a guess; the ambiguity this refuses is two DIFFERENT places.
         if len({n["centre"] for n in matches}) == 1:
             matches = [next((n for n in matches if n["clickable"]), matches[0])]
+    if len(matches) > 1:
+        # One tile, its name twice inside it (#315: an AI Polish provider tile carries "Gemini" as its own
+        # description AND as a TextView child, at different centres). When the matches are provably one
+        # press, the CONTROL is returned, so `tap` presses its centre and nowhere composed from a label.
+        control = _one_press(matches, package, snapshot)
+        if control is not None:
+            owner = next(m for m in matches if m["bounds"] == control["bounds"])
+            matches = [dict(control, text=owner["text"], desc=owner["desc"])]
     if len(matches) > 1:
         where = "; ".join(f"{_label(n)!r} at {n['centre']}" for n in matches)
         raise Blocked(

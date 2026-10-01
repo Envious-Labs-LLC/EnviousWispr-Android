@@ -104,8 +104,8 @@ the existing authority for "how did the service last stop". No persisted "ever g
 plan does not add one, because the marker's existence already means the service connected at least once.
 
 ### 3. Prior attempts and direction
-#131 proposed a remembered "the user turned this on" flag. The stop marker answers the sharper question
-(did the USER turn it off) without a new flag. macOS catalog: macOS says only "Auto-paste needs
+#131 proposed a remembered "the user turned this on" flag. The marker answers whether an orderly service stop
+was recorded, without identifying who disabled access, and needs no new flag. macOS catalog: macOS says only "Auto-paste needs
 Accessibility" (no lost-versus-never distinction; queried 2026-10-01), so Android words this state itself
 under `content-brand.md`.
 
@@ -141,7 +141,9 @@ service, the service has connected at least once (the marker key exists), and it
 `Never`, `Clean`, `Unclean`), read from the existing preference. Ordering stays "a revoked permission outranks
 a binding", so a stale binding can never report `LIVE`.
 
-### 3.2 Surfaces (exhaustive `when`s break the build until each answers)
+### 3.2 Surfaces
+Update both exhaustive branches and comparison-based consumers listed in §6; compilation alone does not verify
+every surface (`insertion/InsertionOutcomeMessages.kt` and `ui/OnboardingScreen.kt` compare, not `when`).
 The marker proves whether an orderly stop was recorded, not who disabled auto-paste: a user who turns it off
 after an unclean death also lands here, because no live service is left to write Clean. So no sentence states
 a cause as certain.
@@ -156,14 +158,33 @@ a cause as certain.
   on in Accessibility settings." It never says "Copied" when the copy failed or auto-copy is off (the existing
   `ClipboardOutcome` decides the first half). Once per take. Final copy to the founder at Gate 2.
 - The sleep case keeps the existing not-connected wording, because the setting survives a sleep.
-- Onboarding: unchanged route (anything not `LIVE` goes to Permissions), the row shows the new sentence.
+- Onboarding keeps its existing Welcome and model checks. Restored Demo or Practice returns to Permissions when
+  auto-paste is not LIVE. The row shows the new sentence.
 - Listening line: as `NOT_PERMITTED` (states only what is decided).
+
+### 3.2b Reading the marker never delays the heart, and an unread permission never qualifies
+Load the existing marker off the main thread and publish an in-memory snapshot. Session startup, foreground
+promotion, target pinning, insertion and accessibility connection must never wait for marker storage. Until
+loading answers, or if it fails, preserve the existing two-input readiness result. Refresh surfaces when the
+marker arrives. Preserve the existing marker write locations and instance guards. Gate the storage read in a
+test and prove foreground promotion and session startup proceed while it remains blocked.
+(Grounded round 1: `ui/DictationSessionService.kt` consults readiness while building the notification before
+`startForeground`, and a SharedPreferences read waits for its disk load; the service itself already avoids
+loading these preferences on the main thread.)
+
+Distinguish an unread permission snapshot from a verified revoked permission. Derive SWITCHED_OFF_UNEXPECTEDLY
+only after permission membership has been checked; initial false defaults must not qualify. Test a loaded
+Unclean marker with permission refresh held back, then release a granted answer: no emitted user-facing state
+may say auto-paste was switched off. (`ui/ReadinessViewModel.kt` feeds a default `false` into readiness and
+marks combined emissions loaded before the real permission read.)
 
 ### 3.3 Rejected
 - A new "ever granted" DataStore flag (the issue's proposal): it cannot tell the user's own turn-off from
   Android's, so it would nag a user who chose to turn auto-paste off.
-- `ApplicationExitInfo` `REASON_USER_REQUESTED`: names force-stops only, not sleep kills, and is read in a
-  later process; the marker already covers both.
+- ApplicationExitInfo can provide evidence about a previous process exit, but REASON_USER_REQUESTED is not
+  exclusive to force-stop and does not prove who disabled accessibility. Before Android 14 it also covered
+  updates and component changes. Do not use it as the readiness authority; current permission membership,
+  binding and the existing marker remain the inputs.
 
 ### 3.4 Founder choice at Gate 2
 Whether the sleep case's existing "not connected" card should also suggest adding EnviousWispr to Samsung's
@@ -190,7 +211,7 @@ disagree with the first.
 | Marker timing | Binding publishes before the background arm (`reportPreviousStop` runs on an IO task); every write uses `apply()`, which updates memory at once and disk later. A kill can lose either write: a lost arm leaves Clean after a connect (missed detection), a lost clean leaves Unclean after a user turn-off (the accepted false attribution above). A completed `apply` is not proof of persistence. The readiness reader observes the marker independently of `previousStopReported`, which gates logging only. |
 | Publication | Marker changes are published to the readiness flow even when permission and binding do not change (a marker-only transition). Cases covered by rows: delayed arm, unbind before arm, reconnect within one process, replacement connection before the outgoing teardown, a UI read between binding publication and the marker update. The existing instance guards stay. UI and service share a process: a timing race, not cross-process storage. |
 | Readers of the marker | `reportPreviousStop` today; the readiness producer after this change |
-| When the marker is read | each readiness refresh (resume) and each session start; a SharedPreferences read, cheap, main process |
+| When the marker is read | once per process, off the main thread, into an in-memory snapshot (§3.2b); readers take the snapshot, never storage |
 | Stale | a grant made while the app is dead: the next connect arms false and the setting names us, so the state clears |
 
 ## 6. Consumer matrix
@@ -208,7 +229,7 @@ disagree with the first.
 |---|---|---|---|---|---|
 | marker unreadable | SharedPreferences | readiness | today's two-input answer (`LIVE`, `PERMITTED_NOT_RUNNING` or `NOT_PERMITTED`); only the new distinction is suppressed | none | next refresh |
 | arm lost to a kill right after connect | service | readiness | after a later force-stop, today's `NOT_PERMITTED` (missed detection) | marker Clean | next connect re-arms |
-| user turned off, marker write lost (process died inside onDestroy) | service | readiness | "switched off by Android" once | marker false | clears on re-grant or by turning off again |
+| user turned off, marker write lost (process died inside onDestroy) | service | readiness | the neutral §3.2 wording; never attribute the switch-off to Android | marker false | clears on re-grant |
 
 ## 8. Caller-visible signals
 `stop_was_clean` key ABSENT = never connected; `false` = last stop unclean; `true` = clean. Absence is the

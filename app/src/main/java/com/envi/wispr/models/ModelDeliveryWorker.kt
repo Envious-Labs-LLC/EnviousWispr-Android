@@ -36,7 +36,9 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             val removed = store.remove(model)
             controls.clear(model)
             ModelDeliveryNotification.clear(applicationContext, model)
-            return@withContext if (removed) Result.success() else failure("model removal failed")
+            // Says so in its result: the control is cleared above, so the card tells a finished removal from a
+            // finished download by reading this.
+            return@withContext if (removed) Result.success(Data.Builder().putBoolean(KEY_REMOVED, true).build()) else failure("model removal failed")
         }
         if (inputData.getBoolean(KEY_REPAIR, false)) {
             if (!store.repair(model)) return@withContext failure("model repair cleanup failed", DownloadState.REPAIR_NEEDED)
@@ -257,6 +259,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         private const val TAG = "ModelDelivery"
         internal const val KEY_MODEL_ID = "model_id"
         internal const val KEY_REMOVE = "remove"
+        /** Output of a finished removal, so the card offers Download rather than waiting on a download that never ran. */
+        internal const val KEY_REMOVED = "removed"
         internal const val KEY_REPAIR = "repair"
         internal const val KEY_UPDATE = "update"
         internal const val KEY_ADOPT_ONLY = "adopt_only"

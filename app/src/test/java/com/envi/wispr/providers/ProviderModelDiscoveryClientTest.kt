@@ -271,26 +271,32 @@ class ProviderModelDiscoveryClientTest {
     }
 
     /**
-     * Product Outcome (#110). When this fails, a key the provider rejects part way through still sends every
-     * queued probe afterwards: up to forty paid requests on a key the user has just been told is bad.
+     * Product Outcome (#110). When the final assertion fails, a key the provider rejects part way through still
+     * sends queued probes afterwards: up to forty paid requests on a key the user has just been told is bad.
      *
      * The deadline row below cannot tell the cancel loop from the per-probe budget check, because either alone
      * stops the queue there. This row separates them: discovery returns EARLY, on a key rejection, with most of
      * its budget left, so the budget check stops nothing and only cancellation can keep the queued probes from
-     * running. Staged with signals, never sleeps: the first model's probe answers 401 only once three distinct
-     * probes are in flight, and every other probe is held on a latch released after discovery has returned.
+     * running. Responses are staged with latches: the first model's probe answers 401 once three distinct
+     * probes are in flight, every other probe is held until after discovery has returned. Completion is a
+     * signal from the probe pool itself, never a quiet-count poll.
+     *
+     * The bound is exact: at the rejection the pool's three workers hold gpt-m0 and two held probes; the worker
+     * gpt-m0 frees can take ONE more queued probe before the cancel loop runs, and that one is held too. So at
+     * most four probes reach the server, and a cancel loop that missed any queued probe sends a fifth.
      * CONTROL: removing `futures.forEach { it.cancel(true) }` alone turns this red, naming all nine models.
      */
     @Test fun aKeyRejectedPartWayCancelsTheProbesStillQueued() {
         val models = 9
         val threeInFlight = CountDownLatch(3)
+        val stagedInTime = java.util.concurrent.atomic.AtomicBoolean(false)
         val release = CountDownLatch(1)
         ScriptedServer({ request ->
             when {
                 request.path.startsWith("/models") -> 200 to openAiList(*Array(models) { "gpt-m$it" })
                 probedModel(request) == "gpt-m0" -> {
                     threeInFlight.countDown()
-                    threeInFlight.await(10, TimeUnit.SECONDS)
+                    stagedInTime.set(threeInFlight.await(10, TimeUnit.SECONDS))
                     401 to "{\"error\":{\"code\":\"invalid_api_key\"}}"
                 }
                 else -> {
@@ -303,28 +309,36 @@ class ProviderModelDiscoveryClientTest {
             fun probed(): List<String> = synchronized(server.requests) {
                 server.requests.filter { it.path.startsWith("/probe") }.map { probedModel(it) }
             }
-            val started = System.nanoTime()
-            val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 30_000, probeTimeoutMs = 20_000, readTimeoutMs = 20_000)
-                .discoverModels(Provider.OPENAI, "k")
-            val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
-            assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), result)
-            // The precondition the row depends on: the return was EARLY, so the per-probe budget check had most
-            // of 30 s left and could not be what stopped the queue.
-            assertTrue("discovery returned on the rejection, not near its deadline: $elapsedMs ms", elapsedMs < 10_000)
-            release.countDown()
-
-            // Let any queued probe that was NOT cancelled run and land. The loop gates on the count going quiet.
-            var total = probed().size
-            var quiet = 0
-            var polls = 0
-            while (quiet < 5 && polls < 50) {
-                Thread.sleep(200)
-                val now = probed().size
-                if (now == total) quiet++ else { quiet = 0; total = now }
-                polls++
+            try {
+                val started = System.nanoTime()
+                val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 30_000, probeTimeoutMs = 20_000, readTimeoutMs = 20_000)
+                    .discoverModels(Provider.OPENAI, "k")
+                val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                assertTrue("fixture: three probes were in flight before the rejection", stagedInTime.get())
+                assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), result)
+                // Fixture precondition, which also proves gpt-m0 is the first future waited on: the return was
+                // EARLY, so the per-probe budget check had most of 30 s left and could not stop the queue.
+                assertTrue("fixture: discovery returned on the rejection, not near its deadline: $elapsedMs ms", elapsedMs < 10_000)
+            } finally {
+                release.countDown()
             }
-            assertTrue("the rejected model's probe was recorded: ${probed()}", "gpt-m0" in probed())
-            assertTrue("all $models models were probed after the key was rejected: ${probed()}", total < models)
+
+            // Every task queued before these markers has FINISHED once all three markers run at once: the pool is
+            // three workers draining one FIFO queue, so three markers holding all three workers means nothing
+            // earlier is still running or waiting. A finished probe has already been logged by the server.
+            val allHeld = CountDownLatch(3)
+            val markers = (1..3).map {
+                ProviderModelDiscoveryClient.PROBE_EXECUTOR.submit {
+                    allHeld.countDown()
+                    allHeld.await(20, TimeUnit.SECONDS)
+                }
+            }
+            markers.forEach { it.get(30, TimeUnit.SECONDS) }
+            assertEquals("fixture: the three markers held the whole pool together", 0L, allHeld.count)
+
+            val arrived = probed()
+            assertTrue("the rejected model's probe was recorded: $arrived", "gpt-m0" in arrived)
+            assertTrue("queued probes ran after the key was rejected: $arrived", arrived.size <= 4)
         }
     }
 

@@ -270,6 +270,64 @@ class ProviderModelDiscoveryClientTest {
         }
     }
 
+    /**
+     * Product Outcome (#110). When this fails, a key the provider rejects part way through still sends every
+     * queued probe afterwards: up to forty paid requests on a key the user has just been told is bad.
+     *
+     * The deadline row below cannot tell the cancel loop from the per-probe budget check, because either alone
+     * stops the queue there. This row separates them: discovery returns EARLY, on a key rejection, with most of
+     * its budget left, so the budget check stops nothing and only cancellation can keep the queued probes from
+     * running. Staged with signals, never sleeps: the first model's probe answers 401 only once three distinct
+     * probes are in flight, and every other probe is held on a latch released after discovery has returned.
+     * CONTROL: removing `futures.forEach { it.cancel(true) }` alone turns this red, naming all nine models.
+     */
+    @Test fun aKeyRejectedPartWayCancelsTheProbesStillQueued() {
+        val models = 9
+        val threeInFlight = CountDownLatch(3)
+        val release = CountDownLatch(1)
+        ScriptedServer({ request ->
+            when {
+                request.path.startsWith("/models") -> 200 to openAiList(*Array(models) { "gpt-m$it" })
+                probedModel(request) == "gpt-m0" -> {
+                    threeInFlight.countDown()
+                    threeInFlight.await(10, TimeUnit.SECONDS)
+                    401 to "{\"error\":{\"code\":\"invalid_api_key\"}}"
+                }
+                else -> {
+                    threeInFlight.countDown()
+                    release.await(10, TimeUnit.SECONDS)
+                    200 to okBody(Provider.OPENAI)
+                }
+            }
+        }).use { server ->
+            fun probed(): List<String> = synchronized(server.requests) {
+                server.requests.filter { it.path.startsWith("/probe") }.map { probedModel(it) }
+            }
+            val started = System.nanoTime()
+            val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 30_000, probeTimeoutMs = 20_000, readTimeoutMs = 20_000)
+                .discoverModels(Provider.OPENAI, "k")
+            val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+            assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), result)
+            // The precondition the row depends on: the return was EARLY, so the per-probe budget check had most
+            // of 30 s left and could not be what stopped the queue.
+            assertTrue("discovery returned on the rejection, not near its deadline: $elapsedMs ms", elapsedMs < 10_000)
+            release.countDown()
+
+            // Let any queued probe that was NOT cancelled run and land. The loop gates on the count going quiet.
+            var total = probed().size
+            var quiet = 0
+            var polls = 0
+            while (quiet < 5 && polls < 50) {
+                Thread.sleep(200)
+                val now = probed().size
+                if (now == total) quiet++ else { quiet = 0; total = now }
+                polls++
+            }
+            assertTrue("the rejected model's probe was recorded: ${probed()}", "gpt-m0" in probed())
+            assertTrue("all $models models were probed after the key was rejected: ${probed()}", total < models)
+        }
+    }
+
     @Test fun noProbeIsSentAfterTheDeadlineHasPassedAndTheCallHasReturned() {
         // Renamed from theDeadlineCancelsQueuedAndActiveProbes (#110). The old name claimed more than
         // the row establishes, and the difference is the whole story below.
@@ -339,8 +397,8 @@ class ProviderModelDiscoveryClientTest {
             // Removing the per-probe budget check alone: still green. Removing BOTH: RED, naming all
             // nine models. So the row does catch a client where nothing stops the queue, and it cannot
             // say WHICH of the two mechanisms stopped it, because either one suffices and this fixture
-            // does not hold them apart. #110 carries a concrete fixture that would separate them, using
-            // an early key rejection rather than the deadline, and records it as unbuilt.
+            // does not hold them apart. `aKeyRejectedPartWayCancelsTheProbesStillQueued` separates them
+            // with an early key rejection rather than the deadline (#110).
             assertTrue(
                 "all $models models were probed, so nothing stopped the queue: ${probeDetail()}",
                 total < models,

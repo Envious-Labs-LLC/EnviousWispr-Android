@@ -24,7 +24,11 @@ class DeveloperSwitchesTest {
 
     private class FakeStore(var stored: DeveloperStored = DeveloperStored(false, null, null)) : DeveloperSwitches.Store {
         var gate: CompletableDeferred<Unit>? = null
-        override suspend fun read() = stored
+        var readGate: CompletableDeferred<Unit>? = null
+        override suspend fun read(): DeveloperStored {
+            readGate?.await()
+            return stored
+        }
         override suspend fun setUnlocked() { stored = stored.copy(unlocked = true) }
         override suspend fun setDetailedLog(on: Boolean) {
             // Holds ONLY the first call that finds the gate: a later request passes straight through, which is
@@ -109,6 +113,22 @@ class DeveloperSwitchesTest {
         assertEquals(false, store.stored.detailedLog)
     }
 
+    /** Each request does what it says: On creates the flag and stores On, Off removes it and stores Off. */
+    @Test fun keepRecordingsOnThenOffEachLand() = runBlocking {
+        val store = FakeStore()
+        val (files, s) = switches(store)
+        s.coldStartRepair()
+        s.ready.await()
+        assertEquals(DeveloperSwitches.Switch.On, s.requestKeepRecordings(true).await())
+        assertTrue(files.keepRecordingsFlag.exists())
+        assertEquals(true, store.stored.keepRecordings)
+        assertTrue(s.keepRecordingsNow())
+        assertEquals(DeveloperSwitches.Switch.Off, s.requestKeepRecordings(false).await())
+        assertFalse(files.keepRecordingsFlag.exists())
+        assertEquals(false, store.stored.keepRecordings)
+        assertFalse(s.keepRecordingsNow())
+    }
+
     @Test fun keepRecordingsFollowsTheLastRequest() = runBlocking {
         val store = FakeStore()
         val (files, s) = switches(store)
@@ -118,5 +138,41 @@ class DeveloperSwitchesTest {
         on.await(); off.await()
         assertEquals(DeveloperSwitches.Switch.Off, s.state.value.keepRecordings)
         assertFalse(files.keepRecordingsFlag.exists())
+    }
+
+    /**
+     * Launch row (#375): a Keep recordings flag file an earlier build left behind is not obeyed before this
+     * process's cold-start repair has finished, so a release phone keeps nothing in that window. After the repair
+     * the answer follows the stored switch. REVERT: drop the settled-state check from `keepRecordingsNow`.
+     */
+    @Test fun aStaleKeepFlagIsNotObeyedUntilTheRepairHasRun() = runBlocking {
+        val store = FakeStore(DeveloperStored(true, null, true))
+        val (files, s) = switches(store, debuggable = false)
+        files.keepRecordingsFlag.parentFile?.mkdirs()
+        files.keepRecordingsFlag.createNewFile()
+        val gate = CompletableDeferred<Unit>()
+        store.readGate = gate
+        s.coldStartRepair()
+        assertFalse("the stale flag is ignored while the repair is held", s.keepRecordingsNow())
+        gate.complete(Unit)
+        s.ready.await()
+        assertTrue("after the repair the stored On is obeyed", s.keepRecordingsNow())
+        assertEquals(DeveloperSwitches.Switch.Off, s.requestKeepRecordings(false).await())
+        assertFalse("turning it off stops every later copy", s.keepRecordingsNow())
+    }
+
+    /**
+     * Launch row (#375, code review round 1): a release phone whose stale keep flag cannot be removed (here a
+     * non-empty directory sits at the flag's path) reports Error and keeps nothing, although the path exists.
+     * REVERT: drop the settled-state check from `keepRecordingsNow`.
+     */
+    @Test fun aKeepFlagTheRepairCannotRemoveIsNotObeyed() = runBlocking {
+        val (files, s) = switches(FakeStore(DeveloperStored(false, null, false)), debuggable = false)
+        java.io.File(files.keepRecordingsFlag, "stuck").apply { parentFile!!.mkdirs() }.writeText("x")
+        s.coldStartRepair()
+        s.ready.await()
+        assertTrue("the repair could not remove it", s.state.value.keepRecordings is DeveloperSwitches.Switch.Error)
+        assertTrue(files.keepRecordingsFlag.exists())
+        assertFalse(s.keepRecordingsNow())
     }
 }

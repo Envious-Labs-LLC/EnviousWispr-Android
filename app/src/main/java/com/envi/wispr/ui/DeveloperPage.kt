@@ -59,9 +59,21 @@ internal fun DeveloperPage() {
                 enabled = state.detailedLog != DeveloperSwitches.Switch.Pending,
                 onCheckedChange = { switches.requestDetailedLog(it) },
             )
-            // No Keep recordings row yet: the recording archive is #373 (PR #376), and whether it sits behind this
-            // page's switch is #375. `DeveloperSwitches` already owns that switch and its flag file; the row
-            // appears when something reads it, never before (a switch nothing reads looks like it worked).
+            // The recording archive (#373) asks this switch at every take, when the take's audio is cleaned up
+            // (`DictationSessionService` passes `keepRecordingsNow()` to `RecordingArchive`), so a row that looks
+            // settled is settled (#375, founder 2026-09-30: at launch nothing is recorded, so a release build
+            // starts Off). Keeping is best effort, and the On sentence says so.
+            SettingsToggleRow(
+                title = "Keep recordings",
+                subtitle = switchSubtitle(
+                    state.keepRecordings,
+                    on = "On. The app tries to keep the audio of your last 10 dictations on this phone, in this app's storage, for testing. A dictation made while the app is still starting, or one that fails to save, is skipped. It is never uploaded.",
+                    off = "Off. Recordings are queued for deletion after processing. Changing this switch affects recordings still waiting to be copied, including the current dictation. A copy already started may finish. Copies already kept stay on the phone.",
+                ),
+                checked = state.keepRecordings == DeveloperSwitches.Switch.On,
+                enabled = state.keepRecordings != DeveloperSwitches.Switch.Pending,
+                onCheckedChange = { switches.requestKeepRecordings(it) },
+            )
         }
         SettingsGroup("Log files") {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

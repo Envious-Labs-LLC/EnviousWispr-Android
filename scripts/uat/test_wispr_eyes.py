@@ -693,7 +693,8 @@ def test_agent():
     # ---- the press: through the agent's settle, never `input tap` -----------------------------------
     sent.clear()
     eyes._press_at(10, 20)
-    check("a press with the agent goes through its event-driven settle", sent == ["settle 250 1500 5000 tap 10 20"], sent)
+    check("a press with the agent is sent as ONE settle command (its arrival is the agent's to judge)",
+          sent == ["settle 250 1500 5000 tap 10 20"], sent)
     sent.clear()
     eyes._key(4)
     check("a key with the agent goes through settle too", sent and sent[0].startswith("settle ") and sent[0].endswith(" key 4"), sent)
@@ -705,8 +706,128 @@ def test_agent():
     eyes.time.sleep = lambda s: None
     eyes._press_at(10, 20)
     eyes.time.sleep = real_sleep
-    check("without the agent a press falls back to input tap", raw == ["input tap 10 20"], raw)
+    check("with no agent at all a press uses input tap", raw == ["input tap 10 20"], raw)
     eyes._agent_call, eyes._adb, eyes._agent = original_call, original_adb, original_agent
+    eyes._STATE["tree"], eyes._STATE["eye"] = None, None
+
+    # ---- an ACTION whose reply is lost is never resent and never handed to input tap (review round 1) --
+    # REVERT: let `_agent_call` retry every command, and the tap is sent twice.
+    class Dropping:
+        def __init__(self):
+            self.lines = []
+        def call(self, line):
+            self.lines.append(line)
+            raise OSError("reply lost")
+        def close(self):
+            pass
+    links = []
+
+    def fresh_link():
+        links.append(Dropping())
+        return links[-1]
+    eyes._agent = fresh_link
+    eyes._adb = lambda command, timeout=60, check=True: (_ for _ in ()).throw(AssertionError(f"fallback used: {command}"))
+    try:
+        eyes._press_at(10, 20)
+        check("a tap whose reply is lost refuses", False, "it returned")
+    except eyes.Blocked as refusal:
+        sent_lines = [l for link in links for l in link.lines]
+        check("a tap whose reply is lost refuses as unknown, sent ONCE, with no input-tap fallback",
+              "unknown" in str(refusal) and sent_lines == ["settle 250 1500 5000 tap 10 20"], (str(refusal), sent_lines))
+    links.clear()
+    check("a READ whose reply is lost is retried once on a fresh link, then given up",
+          eyes._agent_call("dump") is None and len(links) == 2, len(links))
+    eyes._agent, eyes._adb = original_agent, original_adb
+    eyes._STATE["agent"], eyes._STATE["agent_off"] = None, None
+
+    # ---- a line break can never become a second command ----------------------------------------------
+    try:
+        eyes._AgentLink.call(type("L", (), {})(), "text hello\nkey 3")
+        check("a command with a line break refuses", False, "it was sent")
+    except eyes.Blocked as refusal:
+        check("a command with a line break refuses before anything is sent", "line break" in str(refusal), refusal)
+
+    # ---- `busy` is not arrival: it must earn a settled read, or refuse ------------------------------
+    calls = []
+    real_settled = eyes._settled_tree
+    eyes._settled_tree = lambda *a, **k: calls.append("settled")
+    eyes._after_settle("busy")
+    check("a busy settle demands a settled read before the press counts", calls == ["settled"], calls)
+    eyes._after_settle("same")
+    check("a same settle is an answer (drawn, nothing moved), not a refusal", calls == ["settled"], calls)
+    try:
+        eyes._after_settle("garbage")
+        check("an unknown settle answer refuses", False, "it returned")
+    except eyes.Blocked:
+        check("an unknown settle answer refuses", True)
+    eyes._settled_tree = real_settled
+
+    # ---- a label covered by a higher window is not pressed ----------------------------------------
+    # REVERT: drop the `_covered` check in tap(), and the button under the dialog is "pressed".
+    covered = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <window id="1" layer="1" type="1" bounds="[0,0][1000,2000]">
+    <node text="Delete" bounds="[400,900][600,1000]" package="com.envi.wispr" clickable="true" enabled="true" />
+  </window>
+  <window id="2" layer="5" type="1" bounds="[100,600][900,1400]">
+    <node text="Are you sure?" bounds="[150,650][850,750]" package="com.envi.wispr" clickable="false" enabled="true" />
+  </window>
+</hierarchy>"""
+    saved = with_screen(covered)
+    real_ready, real_press = eyes.ready, eyes._press_at
+    pressed = []
+    eyes.ready = lambda: True
+    eyes._press_at = lambda x, y, settle_s=1.2: pressed.append((x, y))
+    try:
+        eyes.tap("Delete")
+        check("a button under a dialog is not pressed", False, pressed)
+    except eyes.Blocked as refusal:
+        check("a button under a dialog is not pressed, and the refusal says what covers it",
+              "covered" in str(refusal) and not pressed, (str(refusal), pressed))
+    eyes.ready, eyes._press_at = real_ready, real_press
+    restore_adb(saved)
+
+    # ---- typing: exactly the text, into the same field, once ------------------------------------------
+    field = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0"><window id="7" layer="1" type="1" bounds="[0,0][1000,2000]">
+  <node text="{text}" resource-id="app:id/search" class="android.widget.EditText" package="com.android.settings"
+        focused="true" showing-hint="{hint}" bounds="[0,100][1000,200]" clickable="true" enabled="true" />
+</window></hierarchy>"""
+    state = {"text": "Search settings", "hint": "true"}
+    texts = []
+
+    def typing_agent(partial):
+        def call(line):
+            if line == "dump":
+                return field.format(**state)
+            if line == "ime":
+                return "shown"
+            if line.startswith("text "):
+                texts.append(line[5:])
+                typed = line[5:]
+                state["text"] = typed[:-1] if partial else typed
+                state["hint"] = "false"
+                return ""
+            return "changed"
+        return call
+    eyes._agent = lambda: object()
+    for line_break in ("a\nb", "a\rb"):
+        try:
+            eyes.type_text(line_break)
+            check("type_text refuses a line break", False, "typed")
+        except eyes.Blocked as refusal:
+            check("type_text refuses a line break before sending anything", "line break" in str(refusal) and not texts, refusal)
+    eyes._agent_call = typing_agent(partial=False)
+    check("text typed into a field showing its hint lands whole", "reads 'bluetooth'" in eyes.type_text("bluetooth"))
+    # REVERT: bring back the automatic retype, and a partial landing becomes 'blueto' + 'bluetooth'.
+    state.update(text="Search settings", hint="true"); texts.clear()
+    eyes._agent_call = typing_agent(partial=True)
+    try:
+        eyes.type_text("abc")
+        check("a partial landing refuses", False, "it reported success")
+    except eyes.Blocked as refusal:
+        check("a partial landing refuses and is NOT retyped", "Not retyped" in str(refusal) and texts == ["abc"], (str(refusal), texts))
+    eyes._agent_call, eyes._agent = original_call, original_agent
     eyes._STATE["tree"], eyes._STATE["eye"] = None, None
 
     # ---- reveal looks in the page's OWN package (2026-10-01, Samsung's Deep sleeping picker) ----------

@@ -134,6 +134,7 @@ public final class Main {
     }
 
     private static String handle(String line) throws Exception {
+        if (line.indexOf('\r') >= 0) throw new IllegalArgumentException("a command may not contain a carriage return");
         String[] parts = line.split(" ", 2);
         String rest = parts.length > 1 ? parts[1] : "";
         String[] a = rest.isEmpty() ? new String[0] : rest.split(" ");
@@ -175,7 +176,7 @@ public final class Main {
             handle(action);
             long changeBy = start + change, end = start + timeout;
             while (lastChange == 0 && SystemClock.uptimeMillis() < changeBy) Thread.sleep(5);
-            if (lastChange == 0) return "same";
+            if (lastChange == 0) return activeWindowDrawn() ? "same" : "busy";
             while (SystemClock.uptimeMillis() < end && SystemClock.uptimeMillis() - lastChange < quiet) Thread.sleep(5);
             // QUIET IS NOT DRAWN. Between one page leaving and the next drawing there can be a quiet gap
             // with no app window content at all (2026-10-01, emulator Settings: a read there saw only the
@@ -221,7 +222,15 @@ public final class Main {
                 AccessibilityNodeInfo root = window.getRoot();
                 if (root == null) continue;
                 any = true;
+                // WINDOW IDENTITY TRAVELS WITH ITS NODES, so the host can refuse a target that a higher
+                // window (a dialog, the keyboard, a bar) covers: a tap goes to whatever is on top.
+                Rect wb = new Rect();
+                window.getBoundsInScreen(wb);
+                xml.append("<window id=\"").append(window.getId()).append("\" layer=\"").append(window.getLayer())
+                        .append("\" type=\"").append(window.getType()).append("\" bounds=\"[").append(wb.left).append(',')
+                        .append(wb.top).append("][").append(wb.right).append(',').append(wb.bottom).append("]\">");
                 node(xml, root, 0);
+                xml.append("</window>");
             }
         }
         if (!any) {
@@ -262,6 +271,7 @@ public final class Main {
         flag(xml, "long-clickable", node.isLongClickable());
         flag(xml, "password", node.isPassword());
         flag(xml, "selected", node.isSelected());
+        flag(xml, "showing-hint", node.isShowingHintText());
         xml.append(" bounds=\"[").append(r.left).append(',').append(r.top).append("][")
                 .append(r.right).append(',').append(r.bottom).append("]\">");
         int count = node.getChildCount();
@@ -284,7 +294,11 @@ public final class Main {
                     case '"': xml.append("&quot;"); break;
                     case '\n': xml.append("&#10;"); break;
                     default:
-                        if (c < 0x20 && c != '\t') xml.append(' '); else xml.append(c);
+                        // XML 1.0 forbids C0 controls (bar tab) and U+FFFE/U+FFFF; a lone surrogate also breaks a parser.
+                        if ((c < 0x20 && c != '\t') || c == 0xFFFE || c == 0xFFFF) xml.append(' ');
+                        else if (Character.isHighSurrogate(c) && i + 1 < value.length() && Character.isLowSurrogate(value.charAt(i + 1))) { xml.append(c).append(value.charAt(++i)); }
+                        else if (Character.isSurrogate(c)) xml.append(' ');
+                        else xml.append(c);
                 }
             }
         }
@@ -300,24 +314,41 @@ public final class Main {
     private static void tap(float x, float y) throws Exception {
         long down = SystemClock.uptimeMillis();
         motion(down, down, MotionEvent.ACTION_DOWN, x, y);
-        motion(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y);
+        boolean lifted = false;
+        try {
+            motion(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y);
+            lifted = true;
+        } finally {
+            // A DOWN with no UP leaves a finger on the glass for the whole system; never leave one.
+            if (!lifted) cancel(down, x, y);
+        }
+    }
+
+    private static void cancel(long down, float x, float y) {
+        try { motion(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, x, y); } catch (Throwable ignored) { }
     }
 
     /** A drag at a steady speed: `ms` long, one move every 8 ms, so a slow drag does not fling. */
     private static void swipe(float x1, float y1, float x2, float y2, long ms) throws Exception {
         long down = SystemClock.uptimeMillis();
         motion(down, down, MotionEvent.ACTION_DOWN, x1, y1);
-        int steps = (int) Math.max(1, ms / 8);
-        for (int i = 1; i <= steps; i++) {
-            float f = (float) i / steps;
-            long when = down + ms * i / steps;
-            long wait = when - SystemClock.uptimeMillis();
-            if (wait > 0) Thread.sleep(wait);
-            motion(down, when, MotionEvent.ACTION_MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f);
+        boolean lifted = false;
+        try {
+            int steps = (int) Math.max(1, ms / 8);
+            for (int i = 1; i <= steps; i++) {
+                float f = (float) i / steps;
+                long when = down + ms * i / steps;
+                long wait = when - SystemClock.uptimeMillis();
+                if (wait > 0) Thread.sleep(wait);
+                motion(down, when, MotionEvent.ACTION_MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f);
+            }
+            // Hold still before lifting, so the list stops where the finger stops instead of flinging on.
+            Thread.sleep(60);
+            motion(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x2, y2);
+            lifted = true;
+        } finally {
+            if (!lifted) cancel(down, x2, y2);
         }
-        // Hold still before lifting, so the list stops where the finger stops instead of flinging on.
-        Thread.sleep(60);
-        motion(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x2, y2);
     }
 
     private static void motion(long down, long when, int action, float x, float y) throws Exception {
@@ -336,7 +367,13 @@ public final class Main {
     private static void key(int code) throws Exception {
         long now = SystemClock.uptimeMillis();
         send(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0));
-        send(new KeyEvent(now, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0));
+        try {
+            send(new KeyEvent(now, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0));
+        } catch (Exception failed) {
+            // A key left down repeats; release it, flagged cancelled, then report the failure.
+            try { send(new KeyEvent(now, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0, 0, -1, 0, KeyEvent.FLAG_CANCELED)); } catch (Throwable ignored) { }
+            throw failed;
+        }
     }
 
     /** InputManager when reachable (fast, no UiAutomation), else UiAutomation's own injector. */

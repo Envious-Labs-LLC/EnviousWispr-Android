@@ -74,16 +74,13 @@ internal class DeveloperSwitches(
     val state: StateFlow<State> = mutableState
 
     /**
-     * Whether the Keep recordings flag file is present right now (#375). The recording archive asks this at every
-     * take instead of building `LogFiles` itself: this class owns the flag files. A plain file check, safe on any
-     * thread and in any process that can see the app's files.
+     * Whether a take's audio may be kept right now (#375). The recording archive asks this at every take instead
+     * of building `LogFiles` itself: this class owns the flag files. True only while the switch is SETTLED On and
+     * its flag is present: before the cold-start repair (Pending), while a request is in flight, and after a
+     * repair or request that failed (Error, for instance a stale flag that could not be removed) it is false, so a
+     * release-default phone keeps nothing. Main only, where the dictation service runs; safe on any thread.
      */
-    fun keepRecordingsNow(): Boolean = repaired && files.keepRecordingsFlag.exists()
-
-    // True only once this process's cold-start repair SUCCEEDED. Until then the flag file on disk may be stale (an
-    // earlier internal build left it on), and a release-default phone must keep nothing: fail closed (#375).
-    @Volatile
-    private var repaired = false
+    fun keepRecordingsNow(): Boolean = state.value.keepRecordings == Switch.On && files.keepRecordingsFlag.exists()
 
     /** Completes when the cold-start repair has run; the adb door waits on it before any call (D10). */
     val ready = CompletableDeferred<Unit>()
@@ -104,7 +101,6 @@ internal class DeveloperSwitches(
         val detailed = if (stored.detailedLog ?: debuggable) turnOn(files.detailedLogFlag) else offBarrier()
         val keep = setFlag(files.keepRecordingsFlag, stored.keepRecordings ?: debuggable)
         mutableState.value = State(stored.unlocked || debuggable, detailed, keep)
-        repaired = true
     }
 
     fun unlock() {

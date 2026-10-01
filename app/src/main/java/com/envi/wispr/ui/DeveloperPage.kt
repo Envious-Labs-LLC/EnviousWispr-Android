@@ -59,15 +59,16 @@ internal fun DeveloperPage() {
                 enabled = state.detailedLog != DeveloperSwitches.Switch.Pending,
                 onCheckedChange = { switches.requestDetailedLog(it) },
             )
-            // The recording archive (#373) reads this switch's flag file at every take (`DictationSessionService`
-            // passes it to `RecordingArchive`), so a row that looks settled is settled (#375, founder 2026-09-30:
-            // at launch nothing is recorded, so a release build starts Off).
+            // The recording archive (#373) asks this switch at every take, when the take's audio is cleaned up
+            // (`DictationSessionService` passes `keepRecordingsNow()` to `RecordingArchive`), so a row that looks
+            // settled is settled (#375, founder 2026-09-30: at launch nothing is recorded, so a release build
+            // starts Off). Keeping is best effort, and the On sentence says so.
             SettingsToggleRow(
                 title = "Keep recordings",
                 subtitle = switchSubtitle(
                     state.keepRecordings,
-                    on = "On. The audio of your last 10 dictations is kept on this phone, in this app's storage, for testing. It is never uploaded.",
-                    off = "Off. New recordings are queued for deletion as soon as they have been processed, and none is copied. Turning it on affects the next dictation; copies already kept stay until later ones replace them.",
+                    on = "On. The app tries to keep the audio of your last 10 dictations on this phone, in this app's storage, for testing. A dictation made while the app is still starting, or one that fails to save, is skipped. It is never uploaded.",
+                    off = "Off. No audio is copied: each recording is queued for deletion once it has been processed. A change applies to every recording not yet processed, including one in progress. Copies already kept stay on the phone.",
                 ),
                 checked = state.keepRecordings == DeveloperSwitches.Switch.On,
                 enabled = state.keepRecordings != DeveloperSwitches.Switch.Pending,

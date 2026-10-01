@@ -113,6 +113,22 @@ class DeveloperSwitchesTest {
         assertEquals(false, store.stored.detailedLog)
     }
 
+    /** Each request does what it says: On creates the flag and stores On, Off removes it and stores Off. */
+    @Test fun keepRecordingsOnThenOffEachLand() = runBlocking {
+        val store = FakeStore()
+        val (files, s) = switches(store)
+        s.coldStartRepair()
+        s.ready.await()
+        assertEquals(DeveloperSwitches.Switch.On, s.requestKeepRecordings(true).await())
+        assertTrue(files.keepRecordingsFlag.exists())
+        assertEquals(true, store.stored.keepRecordings)
+        assertTrue(s.keepRecordingsNow())
+        assertEquals(DeveloperSwitches.Switch.Off, s.requestKeepRecordings(false).await())
+        assertFalse(files.keepRecordingsFlag.exists())
+        assertEquals(false, store.stored.keepRecordings)
+        assertFalse(s.keepRecordingsNow())
+    }
+
     @Test fun keepRecordingsFollowsTheLastRequest() = runBlocking {
         val store = FakeStore()
         val (files, s) = switches(store)
@@ -127,7 +143,7 @@ class DeveloperSwitchesTest {
     /**
      * Launch row (#375): a Keep recordings flag file an earlier build left behind is not obeyed before this
      * process's cold-start repair has finished, so a release phone keeps nothing in that window. After the repair
-     * the answer follows the stored switch. REVERT: drop `repaired &&` from `keepRecordingsNow`.
+     * the answer follows the stored switch. REVERT: drop the settled-state check from `keepRecordingsNow`.
      */
     @Test fun aStaleKeepFlagIsNotObeyedUntilTheRepairHasRun() = runBlocking {
         val store = FakeStore(DeveloperStored(true, null, true))
@@ -143,5 +159,20 @@ class DeveloperSwitchesTest {
         assertTrue("after the repair the stored On is obeyed", s.keepRecordingsNow())
         assertEquals(DeveloperSwitches.Switch.Off, s.requestKeepRecordings(false).await())
         assertFalse("turning it off stops the next take", s.keepRecordingsNow())
+    }
+
+    /**
+     * Launch row (#375, code review round 1): a release phone whose stale keep flag cannot be removed (here a
+     * non-empty directory sits at the flag's path) reports Error and keeps nothing, although the path exists.
+     * REVERT: drop the settled-state check from `keepRecordingsNow`.
+     */
+    @Test fun aKeepFlagTheRepairCannotRemoveIsNotObeyed() = runBlocking {
+        val (files, s) = switches(FakeStore(DeveloperStored(false, null, false)), debuggable = false)
+        java.io.File(files.keepRecordingsFlag, "stuck").apply { parentFile!!.mkdirs() }.writeText("x")
+        s.coldStartRepair()
+        s.ready.await()
+        assertTrue("the repair could not remove it", s.state.value.keepRecordings is DeveloperSwitches.Switch.Error)
+        assertTrue(files.keepRecordingsFlag.exists())
+        assertFalse(s.keepRecordingsNow())
     }
 }

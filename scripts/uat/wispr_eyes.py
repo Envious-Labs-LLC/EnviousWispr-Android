@@ -2702,12 +2702,18 @@ def enable_auto_paste():
     if ACCESSIBILITY_SERVICE in services:
         # NAMED BUT NOT BOUND: an install over the app, or an instrumentation restart of its process
         # (seen 2026-09-22), unbinds the service and re-putting the SAME string does not rebind it
-        # (`android-tooling.md` RULE: install-then-force-stop). Clear, settle, then set. The clear is
-        # written without `_put_a11y`'s exact read-back: the system normalises `accessibility_enabled`
-        # on its own right after the list empties (it read 1 with an empty list on this AVD), and the
-        # debt covering both keys is already in the book above.
-        _adb("settings delete secure enabled_accessibility_services", check=False)
-        _adb("settings put secure accessibility_enabled 0")
+        # (`android-tooling.md` RULE: install-then-force-stop). Take OURS out, settle, then put it back.
+        # Only ours (#131): every other service the founder runs stays enabled through the cycle, so a
+        # screen reader is never switched off to rebind auto-paste. The flag drops to 0 only when ours
+        # was the only one. Written without `_put_a11y`'s exact read-back: the system normalises
+        # `accessibility_enabled` on its own (it read 1 with an empty list on this AVD), and the debt
+        # covering both keys is already in the book above.
+        others = [service for service in services if service != ACCESSIBILITY_SERVICE]
+        if others:
+            _adb(f"settings put secure enabled_accessibility_services {shlex.quote(':'.join(others))}")
+        else:
+            _adb("settings delete secure enabled_accessibility_services", check=False)
+            _adb("settings put secure accessibility_enabled 0")
         time.sleep(1.5)
     else:
         services.append(ACCESSIBILITY_SERVICE)
@@ -2776,8 +2782,13 @@ def stop_app():
 
     That is a silent, user-visible break caused by a harness convenience, which is why this repairs it
     here rather than warning about it. Founder-facing consequence, and worth knowing outside this tool:
-    ANY force-stop does this — from app info, a task killer, or Samsung's own "put unused apps to
-    sleep".
+    ANY force-stop does this, from app info or a task killer. Samsung's Deep sleeping is NOT a
+    force-stop: measured on the S26 2026-10-01, it kills the app but KEEPS the setting, and the service
+    sits in "Crashed services" until it is turned off and on (the app's "not connected" state).
+
+    **IT CANNOT STAGE THE "AUTO-PASTE WAS SWITCHED OFF" UAT (#131)**, because it puts the setting back
+    before anything reads the cleared state. That UAT needs a bare `am force-stop` left unrepaired while
+    the app is opened and read, with `restore()` (or `enable_auto_paste()`) as its recorded cleanup.
     """
     # MEMBERSHIP, NOT EQUALITY. With any other accessibility service also enabled the value reads
     # `theirs:ours`, so an equality test answered "it was not on" and the repair below never ran.

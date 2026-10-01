@@ -646,6 +646,50 @@ def test_pick_one_groups():
         eyes._STATE["tree"] = None
 
 
+def test_enable_auto_paste_cycles_only_ours():
+    """#131: rebinding auto-paste must never switch off another accessibility service the founder runs."""
+    import tempfile
+    import types
+    originals = {name: getattr(eyes, name) for name in ("_adb", "_JOURNAL", "bound", "time")}
+    eyes._JOURNAL = Path(tempfile.mkdtemp()) / "restore.json"
+    eyes._STATE["serial"] = "fixture"
+    real_time = originals["time"]
+    eyes.time = types.SimpleNamespace(sleep=lambda s: None, monotonic=real_time.monotonic, time=real_time.time)
+    reader = "com.google.android.marvin.talkback/com.google.android.marvin.talkback.TalkBackService"
+    ours = eyes.ACCESSIBILITY_SERVICE
+    settings = {"enabled_accessibility_services": f"{reader}:{ours}", "accessibility_enabled": "1"}
+    seen = []  # every value the list held, in order: the property is about the WHOLE cycle
+
+    def phone(command, timeout=60, check=True, serial=None):
+        parts = command.split(" ", 4)
+        if command.startswith("settings get secure "):
+            return 0, settings.get(parts[3], "null") + "\n"
+        if command.startswith("settings put secure "):
+            settings[parts[3]] = parts[4].strip("'")
+            seen.append(settings.get("enabled_accessibility_services", "null"))
+            return 0, ""
+        if command.startswith("settings delete secure "):
+            settings.pop(parts[3], None)
+            seen.append(settings.get("enabled_accessibility_services", "null"))
+            return 0, ""
+        raise AssertionError(f"unexpected adb: {command}")
+
+    # Named but not bound (an install over the app), bound again once ours is put back after the cycle.
+    eyes._adb = phone
+    eyes.bound = lambda: len(seen) >= 2 and ours in settings.get("enabled_accessibility_services", "")
+    try:
+        changed = eyes.enable_auto_paste()
+    finally:
+        for name, value in originals.items():
+            setattr(eyes, name, value)
+    check("enable_auto_paste rebinds a named, unbound service", changed is True, (changed, seen))
+    check("and the other service stays enabled through every step of the cycle",
+          seen and all(reader in value for value in seen), seen)
+    check("and ours was really taken out and put back", any(ours not in value for value in seen)
+          and ours in settings["enabled_accessibility_services"], seen)
+    eyes._STATE["serial"] = None
+
+
 def test_agent():
     """The phone-side agent (scripts/uat/agent): its protocol, the eye it feeds, and the press path.
 
@@ -2780,6 +2824,7 @@ Group main:
         setattr(eyes, name, fn)
 
     test_pick_one_groups()
+    test_enable_auto_paste_cycles_only_ours()
     test_agent()
 
     # ---- #384: a duplicate wireless connection has a space inside its serial --------------------------

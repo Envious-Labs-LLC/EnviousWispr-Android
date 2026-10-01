@@ -128,6 +128,25 @@ class AutoPasteWiringTest {
             session.contains("PasteAccessibilityService.loadStopMarker(applicationContext)"),
         )
         val service = read("paste/PasteAccessibilityService.kt")
+        // The marker's own writes are a product input now, not only a log: without the arm a force-stop
+        // reads as never connected, and without the clean mark a user's own turn-off reads as Android's.
+        assertTrue(
+            "reportPreviousStop no longer arms the marker on connect, so a later force-stop is missed",
+            slice(service, "private fun reportPreviousStop() {", "\n    }").contains("writeStopMarker(clean = false)"),
+        )
+        assertTrue(
+            "markStopWasClean no longer writes the clean stop",
+            service.contains("private fun markStopWasClean() = writeStopMarker(clean = true)"),
+        )
+        assertEquals(
+            "onUnbind and onDestroy must each mark the stop clean, or a user who turns auto-paste off " +
+                "is told Android switched it off",
+            listOf(true, true),
+            listOf(
+                slice(service, "override fun onUnbind(intent: Intent?): Boolean {", "\n    }").contains("markStopWasClean()"),
+                slice(service, "override fun onDestroy() {", "\n    }").contains("markStopWasClean()"),
+            ),
+        )
         val writer = slice(service, "private fun writeStopMarker(clean: Boolean) {", "\n    }")
         assertTrue(
             "A marker write no longer updates the snapshot, so a user who turns auto-paste off in this " +
@@ -361,12 +380,17 @@ class AutoPasteWiringTest {
             ),
             Triple(
                 "the Permissions page 'not connected' card",
-                "AutoPasteAvailability.PERMITTED_NOT_RUNNING -> AutoPasteNoticeCard(",
+                "AutoPasteAvailability.PERMITTED_NOT_RUNNING -> AutoPasteNotice(",
                 source,
             ),
             Triple(
                 "the Permissions page 'switched off' card",
-                "AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AutoPasteNoticeCard(",
+                "AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AutoPasteNotice(",
+                source,
+            ),
+            Triple(
+                "the Permissions page rendering its calm card",
+                "autoPasteNotice(autoPaste)?.let { notice ->",
                 source,
             ),
             Triple(

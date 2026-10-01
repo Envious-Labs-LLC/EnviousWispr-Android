@@ -21,7 +21,7 @@ class RecordingArchiveTest {
     private val source = File(root, "cache").apply { mkdirs() }
     private var clock = 1_758_800_000_000L
     private val warnings = mutableListOf<String>()
-    private val archive = RecordingArchive(dir = { folder }, warn = { warnings += it }, now = { clock })
+    private val archive = RecordingArchive(dir = { folder }, warn = { warnings += it }, now = { clock }, enabled = { true })
 
     @After fun tearDown() {
         root.deleteRecursively()
@@ -134,7 +134,7 @@ class RecordingArchiveTest {
     /** Row 4: with no shared storage nothing is kept and it says why. MUTATION m4: return silently on null. */
     @Test fun noFolderKeepsNothingAndSaysSo() {
         val error = assertThrows(RecordingArchive.NotKept::class.java) {
-            RecordingArchive(dir = { null }, warn = { warnings += it }).keep(take("x", ByteArray(10)))
+            RecordingArchive(dir = { null }, warn = { warnings += it }, enabled = { true }).keep(take("x", ByteArray(10)))
         }
         assertEquals("recordings storage unavailable", error.message)
         assertFalse(folder.exists())
@@ -154,7 +154,7 @@ class RecordingArchiveTest {
     /** Row 8b: the same stuck part with a warning that throws still keeps the take. MUTATION m10: warn uncaught. */
     @Test fun aThrowingWarningNeverStopsTheCopy() {
         File(folder, "20250101-000000-000-dead.part").apply { mkdirs(); File(this, "inside").writeText("x") }
-        RecordingArchive(dir = { folder }, warn = { throw IllegalStateException("log down") }, now = { clock })
+        RecordingArchive(dir = { folder }, warn = { throw IllegalStateException("log down") }, now = { clock }, enabled = { true })
             .keep(take("w", ByteArray(10)))
         assertTrue(File(folder, "20250925-113320-000-w.wav").isFile)
     }

@@ -25,7 +25,7 @@ internal class RecordingArchive(
     private val warn: (String) -> Unit,
     private val limit: Int = LIMIT,
     private val now: () -> Long = System::currentTimeMillis,
-    private val enabled: () -> Boolean = { true },
+    private val enabled: () -> Boolean,
 ) {
     /**
      * Copies [source] (raw 16 kHz mono PCM16) into the folder as a WAV and leaves at most [limit] recordings: the

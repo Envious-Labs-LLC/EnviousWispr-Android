@@ -67,7 +67,7 @@ internal fun DeveloperPage() {
                 subtitle = switchSubtitle(
                     state.keepRecordings,
                     on = "On. The audio of your last 10 dictations is kept on this phone, in this app's storage, for testing. It is never uploaded.",
-                    off = "Off. No audio is kept: each recording is deleted as soon as it has been transcribed. Turning it on affects the next dictation; copies already kept stay until later ones replace them.",
+                    off = "Off. New recordings are queued for deletion as soon as they have been processed, and none is copied. Turning it on affects the next dictation; copies already kept stay until later ones replace them.",
                 ),
                 checked = state.keepRecordings == DeveloperSwitches.Switch.On,
                 enabled = state.keepRecordings != DeveloperSwitches.Switch.Pending,

@@ -78,7 +78,12 @@ internal class DeveloperSwitches(
      * take instead of building `LogFiles` itself: this class owns the flag files. A plain file check, safe on any
      * thread and in any process that can see the app's files.
      */
-    fun keepRecordingsNow(): Boolean = files.keepRecordingsFlag.exists()
+    fun keepRecordingsNow(): Boolean = repaired && files.keepRecordingsFlag.exists()
+
+    // True only once this process's cold-start repair SUCCEEDED. Until then the flag file on disk may be stale (an
+    // earlier internal build left it on), and a release-default phone must keep nothing: fail closed (#375).
+    @Volatile
+    private var repaired = false
 
     /** Completes when the cold-start repair has run; the adb door waits on it before any call (D10). */
     val ready = CompletableDeferred<Unit>()
@@ -99,6 +104,7 @@ internal class DeveloperSwitches(
         val detailed = if (stored.detailedLog ?: debuggable) turnOn(files.detailedLogFlag) else offBarrier()
         val keep = setFlag(files.keepRecordingsFlag, stored.keepRecordings ?: debuggable)
         mutableState.value = State(stored.unlocked || debuggable, detailed, keep)
+        repaired = true
     }
 
     fun unlock() {

@@ -24,7 +24,11 @@ class DeveloperSwitchesTest {
 
     private class FakeStore(var stored: DeveloperStored = DeveloperStored(false, null, null)) : DeveloperSwitches.Store {
         var gate: CompletableDeferred<Unit>? = null
-        override suspend fun read() = stored
+        var readGate: CompletableDeferred<Unit>? = null
+        override suspend fun read(): DeveloperStored {
+            readGate?.await()
+            return stored
+        }
         override suspend fun setUnlocked() { stored = stored.copy(unlocked = true) }
         override suspend fun setDetailedLog(on: Boolean) {
             // Holds ONLY the first call that finds the gate: a later request passes straight through, which is
@@ -118,5 +122,26 @@ class DeveloperSwitchesTest {
         on.await(); off.await()
         assertEquals(DeveloperSwitches.Switch.Off, s.state.value.keepRecordings)
         assertFalse(files.keepRecordingsFlag.exists())
+    }
+
+    /**
+     * Launch row (#375): a Keep recordings flag file an earlier build left behind is not obeyed before this
+     * process's cold-start repair has finished, so a release phone keeps nothing in that window. After the repair
+     * the answer follows the stored switch. REVERT: drop `repaired &&` from `keepRecordingsNow`.
+     */
+    @Test fun aStaleKeepFlagIsNotObeyedUntilTheRepairHasRun() = runBlocking {
+        val store = FakeStore(DeveloperStored(true, null, true))
+        val (files, s) = switches(store, debuggable = false)
+        files.keepRecordingsFlag.parentFile?.mkdirs()
+        files.keepRecordingsFlag.createNewFile()
+        val gate = CompletableDeferred<Unit>()
+        store.readGate = gate
+        s.coldStartRepair()
+        assertFalse("the stale flag is ignored while the repair is held", s.keepRecordingsNow())
+        gate.complete(Unit)
+        s.ready.await()
+        assertTrue("after the repair the stored On is obeyed", s.keepRecordingsNow())
+        assertEquals(DeveloperSwitches.Switch.Off, s.requestKeepRecordings(false).await())
+        assertFalse("turning it off stops the next take", s.keepRecordingsNow())
     }
 }

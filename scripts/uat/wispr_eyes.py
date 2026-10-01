@@ -851,32 +851,43 @@ def look(only_ours=False, nodes=None):
     return "\n".join(unique)
 
 
-def _one_press(matches, package):
-    """Whether several matching nodes are ONE press: every one resolves to the same clickable control
-    (itself, or its nearest clickable ancestor, exactly as `tap` would press it) AND each pair is nested,
-    one box inside the other.
+def _one_press(matches, package, nodes):
+    """The ONE control several matching nodes stand for, or None when they are not provably one press.
 
-    Both halves are needed. A shared ancestor alone is not one press: two labels in two rows of one
-    clickable list share that list, and `tap` presses at the LABEL's row, so they are two places. Nesting
-    alone is not either: a label can sit inside one control while a different control is drawn over it.
+    All of these, or None (code review round 1 of #315 named the two holes a looser rule left):
+    - every match resolves to the SAME control node (itself, or its nearest clickable ancestor exactly as
+      `tap` resolves it), compared by identity: two separate controls can share a box;
+    - one match covers that control's box exactly, so the name is the control's own (a provider tile
+      carrying "Gemini" as its description) and the press point, the control's centre, lies inside it;
+    - no other clickable node, apart from the control and its ancestors, contains that point, so nothing
+      drawn over or inside the control can take the press.
+    A shared ancestor alone is not one press: two rows of one clickable list share the list but are two
+    places, and neither covers the list's box.
     """
-    targets = set()
+    target = None
     for node in matches:
         try:
-            target = node if node["clickable"] else _holder(node, lambda n: n["clickable"], package=package)
+            resolved = node if node["clickable"] else _holder(node, lambda n: n["clickable"], package=package)
         except Blocked:
-            return False
-        if target is None:
-            return False
-        targets.add((target["bounds"], target["package"]))
-    if len(targets) != 1:
-        return False
-
-    def inside(a, b):
-        return a[0] >= b[0] and a[1] >= b[1] and a[2] <= b[2] and a[3] <= b[3]
-
-    return all(inside(m["bounds"], n["bounds"]) or inside(n["bounds"], m["bounds"])
-               for i, m in enumerate(matches) for n in matches[i + 1:])
+            return None
+        if resolved is None or (target is not None and resolved is not target):
+            return None
+        target = resolved
+    if not any(m["bounds"] == target["bounds"] for m in matches):
+        return None
+    ancestors = []
+    current = target
+    while current is not None:
+        ancestors.append(current)
+        current = nodes[current["parent"]] if current.get("parent") is not None else None
+    px, py = target["centre"]
+    for other in nodes:
+        if not other["clickable"] or any(other is a for a in ancestors):
+            continue
+        x0, y0, x1, y1 = other["bounds"]
+        if x0 <= px <= x1 and y0 <= py <= y1:
+            return None
+    return target
 
 
 def find(text, exact=True, clickable=None, package=PACKAGE, stable=False):
@@ -917,12 +928,14 @@ def find(text, exact=True, clickable=None, package=PACKAGE, stable=False):
         # at one point are one press, not a guess; the ambiguity this refuses is two DIFFERENT places.
         if len({n["centre"] for n in matches}) == 1:
             matches = [next((n for n in matches if n["clickable"]), matches[0])]
-    if len(matches) > 1 and _one_press(matches, package):
+    if len(matches) > 1:
         # One tile, its name twice inside it (#315: an AI Polish provider tile carries "Gemini" as its own
-        # description AND as a TextView child, at different centres). Both resolve to the one control a
-        # press would reach, and each lies inside the other, so pressing either presses the same thing.
-        # The innermost is kept: `tap` takes its row from the label.
-        matches = [min(matches, key=lambda n: (n["bounds"][2] - n["bounds"][0]) * (n["bounds"][3] - n["bounds"][1]))]
+        # description AND as a TextView child, at different centres). When the matches are provably one
+        # press, the CONTROL is returned, so `tap` presses its centre and nowhere composed from a label.
+        control = _one_press(matches, package, snapshot)
+        if control is not None:
+            owner = next(m for m in matches if m["bounds"] == control["bounds"])
+            matches = [dict(control, text=owner["text"], desc=owner["desc"])]
     if len(matches) > 1:
         where = "; ".join(f"{_label(n)!r} at {n['centre']}" for n in matches)
         raise Blocked(

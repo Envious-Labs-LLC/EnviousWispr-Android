@@ -69,6 +69,29 @@ ONE_LIST_TWO_ROWS = """<?xml version='1.0' encoding='UTF-8'?>
   </node>
 </hierarchy>"""
 
+# #315 review round 1: a control whose own box carries the name, with a SIBLING button drawn over its
+# centre. Pressing the control's centre would press the sibling, so this must refuse.
+ONE_TILE_SIBLING_OVER_CENTRE = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="" bounds="[0,0][1000,1000]" package="com.envi.wispr" clickable="false" enabled="true">
+    <node text="" content-desc="Gemini" bounds="[0,0][1000,1000]" package="com.envi.wispr" clickable="true" enabled="true">
+      <node text="Gemini" bounds="[100,700][200,750]" package="com.envi.wispr" clickable="false" enabled="true" />
+    </node>
+    <node text="Remove" bounds="[450,450][550,550]" package="com.envi.wispr" clickable="true" enabled="true" />
+  </node>
+</hierarchy>"""
+
+# #315 review round 1: two SEPARATE clickable controls with one box, each holding a matching label.
+TWO_CONTROLS_ONE_BOX = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="" bounds="[0,0][1000,1000]" package="com.envi.wispr" clickable="false" enabled="true">
+    <node text="" content-desc="Gemini" bounds="[0,0][1000,1000]" package="com.envi.wispr" clickable="true" enabled="true" />
+    <node text="" bounds="[0,0][1000,1000]" package="com.envi.wispr" clickable="true" enabled="true">
+      <node text="Gemini" bounds="[100,700][200,750]" package="com.envi.wispr" clickable="false" enabled="true" />
+    </node>
+  </node>
+</hierarchy>"""
+
 NOTHING_OF_OURS = """<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy rotation="0">
   <node text="Gmail" bounds="[0,100][100,200]" package="com.google.android.apps.nexuslauncher" clickable="true" enabled="true" />
@@ -675,8 +698,18 @@ def main():
     # #315: a tile's name twice inside the one tile is one press, and the innermost label is kept.
     original = with_screen(ONE_TILE_NAME_TWICE)
     found = eyes.find("Gemini")
-    check("one tile's name twice resolves to its inner label", found["bounds"] == (600, 1076, 744, 1129), found)
+    check("one tile's name twice resolves to the tile itself, pressed at its centre",
+          found["clickable"] and found["bounds"] == (477, 940, 867, 1168) and found["centre"] == (672, 1054), found)
     restore_adb(original)
+    for fixture, name in ((ONE_TILE_SIBLING_OVER_CENTRE, "a sibling over the tile's centre"),
+                          (TWO_CONTROLS_ONE_BOX, "two separate controls with one box")):
+        original = with_screen(fixture)
+        try:
+            eyes.find("Gemini")
+            check(f"{name} still refuses", False, "it resolved to one")
+        except eyes.Blocked as refusal:
+            check(f"{name} still refuses", "2 nodes match" in str(refusal), refusal)
+        restore_adb(original)
     # Two rows of one clickable list still refuse: a shared ancestor is not one press.
     original = with_screen(ONE_LIST_TWO_ROWS)
     try:

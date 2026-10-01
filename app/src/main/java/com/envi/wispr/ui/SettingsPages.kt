@@ -445,15 +445,17 @@ private fun AutoPasteNoticeCard(
                 .fillMaxWidth()
                 .padding(18.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalAlignment = Alignment.Top,
         ) {
             StatusDot(ready = false, description = autoPaste.statusDescription())
-            Column(Modifier.weight(1f)) {
+            // The button sits UNDER the words, not beside them: beside them, its label took most of the
+            // row on the S26 and the title wrapped mid-word ("Auto-pas te", build 244, 2026-10-01).
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(notice.title, style = MaterialTheme.typography.titleMedium)
                 Text(notice.body, style = MaterialTheme.typography.bodyMedium)
-            }
-            FilledTonalButton(onClick = onOpenAccessibility) {
-                Text("Accessibility settings")
+                FilledTonalButton(onClick = onOpenAccessibility, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("Accessibility settings")
+                }
             }
         }
     }

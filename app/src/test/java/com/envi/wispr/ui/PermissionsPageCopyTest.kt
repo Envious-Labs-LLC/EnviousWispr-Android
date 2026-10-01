@@ -40,4 +40,18 @@ class PermissionsPageCopyTest {
         rows.forEach { (autoPaste, row) -> assertEquals("row for $autoPaste", row, autoPasteRowSubtitle(autoPaste)) }
         assertEquals("Needs attention", AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY.statusDescription())
     }
+
+    /** Plan §3.2: with core setup unfinished the red card shows as today and the calm card does not. */
+    @Test
+    fun switchedOffWithSetupUnfinishedShowsOnlyTheSetupCard() {
+        val ready = AppReadiness(microphoneGranted = true, speechModelReady = true, polishModelReady = true)
+        val switchedOff = AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY
+        listOf(ready.copy(microphoneGranted = false), ready.copy(polishModelReady = false)).forEach { unfinished ->
+            assertEquals(true, setupCardShows(unfinished, switchedOff))
+            assertEquals(null, calmAutoPasteNotice(unfinished, switchedOff))
+        }
+        assertEquals(false, setupCardShows(ready, switchedOff))
+        assertEquals("Auto-paste was switched off", calmAutoPasteNotice(ready, switchedOff)?.title)
+        assertEquals("a never-set-up user keeps the setup card", true, setupCardShows(ready, AutoPasteAvailability.NOT_PERMITTED))
+    }
 }

@@ -286,7 +286,7 @@ internal fun PermissionsPage(
     onOpenAccessibility: () -> Unit,
 ) {
     ScreenContainer(subtitle = SettingsPage.Permissions.subtitle) {
-        if (!readiness.coreReady || autoPaste == AutoPasteAvailability.NOT_PERMITTED) {
+        if (setupCardShows(readiness, autoPaste)) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
             ) {
@@ -318,10 +318,8 @@ internal fun PermissionsPage(
         // cold start, and firing the red alarm through that window would train the user to ignore it.
         // Suppressed entirely while the setup card above is showing, so the screen never carries two
         // alarm cards for one unfinished setup; the row below still names the auto-paste state then.
-        if (readiness.coreReady) {
-            autoPasteNotice(autoPaste)?.let { notice ->
-                AutoPasteNoticeCard(autoPaste, notice, onOpenAccessibility)
-            }
+        calmAutoPasteNotice(readiness, autoPaste)?.let { notice ->
+            AutoPasteNoticeCard(autoPaste, notice, onOpenAccessibility)
         }
 
         Text(
@@ -387,6 +385,14 @@ internal fun PermissionsPage(
         }
     }
 }
+
+/** The red "Setup needs attention" card: core setup unfinished, or auto-paste never set up. */
+internal fun setupCardShows(readiness: AppReadiness, autoPaste: AutoPasteAvailability): Boolean =
+    !readiness.coreReady || autoPaste == AutoPasteAvailability.NOT_PERMITTED
+
+/** The calm card, only once core setup is done, so the page never carries two alarm cards. */
+internal fun calmAutoPasteNotice(readiness: AppReadiness, autoPaste: AutoPasteAvailability): AutoPasteNotice? =
+    if (readiness.coreReady) autoPasteNotice(autoPaste) else null
 
 /** The words of the Permissions page's calm auto-paste card. */
 internal data class AutoPasteNotice(val title: String, val body: String)

@@ -147,6 +147,12 @@ class AutoPasteWiringTest {
                 slice(service, "override fun onDestroy() {", "\n    }").contains("markStopWasClean()"),
             ),
         )
+        val publish = slice(service, "private fun publishBinding(service: PasteAccessibilityService?) {", "\n        }")
+        assertTrue(
+            "publishBinding no longer suppresses the marker BEFORE liveness drops, so an ordinary turn-off " +
+                "reads unbound with the running service's armed marker, which is the switched-off state: $publish",
+            publish.indexOf("stopMarker.withdrawing()").let { it >= 0 && it < publish.indexOf("boundState.value") },
+        )
         val writer = slice(service, "private fun writeStopMarker(clean: Boolean) {", "\n    }")
         assertTrue(
             "A marker write no longer updates the snapshot, so a user who turns auto-paste off in this " +
@@ -390,7 +396,7 @@ class AutoPasteWiringTest {
             ),
             Triple(
                 "the Permissions page rendering its calm card",
-                "autoPasteNotice(autoPaste)?.let { notice ->",
+                "calmAutoPasteNotice(readiness, autoPaste)?.let { notice ->",
                 source,
             ),
             Triple(

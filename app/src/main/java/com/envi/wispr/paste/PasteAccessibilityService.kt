@@ -94,6 +94,10 @@ class PasteAccessibilityService : AccessibilityService() {
         }
 
         private fun publishBinding(service: PasteAccessibilityService?) {
+            // An orderly withdrawal: the clean mark follows, but a running service's marker reads UNCLEAN
+            // until it lands, and unbound with UNCLEAN is the switched-off state (#131). Suppress the
+            // distinction BEFORE liveness drops, so no reader sees the user's own turn-off as Android's.
+            if (service == null) stopMarker.withdrawing()
             instance = service
             boundState.value = service != null
         }
@@ -394,6 +398,11 @@ internal class StopMarkerSnapshot(private val background: (() -> Unit) -> Unit) 
             )
             state.compareAndSet(StopMarkerState.Loading, loaded)
         }
+    }
+
+    /** An orderly stop has begun and its clean mark is not written yet: claim nothing until it is. */
+    fun withdrawing() {
+        state.value = StopMarkerState.Unavailable
     }
 
     /** A marker write that succeeded; always newer than whatever the initial read finds. */

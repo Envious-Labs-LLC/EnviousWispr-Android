@@ -19,7 +19,10 @@ import org.junit.Test
  */
 class StopMarkerSnapshotTest {
 
-    /** Session start and foreground promotion read the snapshot; a read stuck on storage must not hold them. */
+    /**
+     * The snapshot half of "session start never waits on storage": a reader gets an answer while the read
+     * is held. That the session reads this snapshot and not storage is `AutoPasteWiringTest`'s row.
+     */
     @Test
     fun aReadStuckOnStorageNeverBlocksAReader() {
         val release = CountDownLatch(1)
@@ -59,6 +62,24 @@ class StopMarkerSnapshotTest {
         snapshot.recorded(LastServiceStop.CLEAN)
         publish.countDown()
         assertTrue("the read never finished", loadFinished.await(5, TimeUnit.SECONDS))
+        assertEquals(StopMarkerState.Available(LastServiceStop.CLEAN), snapshot.current.value)
+    }
+
+    /**
+     * Code review r1: an orderly turn-off drops liveness before its clean mark lands, and in between the
+     * running service's armed marker read UNCLEAN, which is the switched-off state for the user's own
+     * turn-off. Withdrawing suppresses the distinction until the clean mark is recorded.
+     */
+    @Test
+    fun anOrderlyWithdrawalNeverReadsAsSwitchedOff() {
+        val snapshot = StopMarkerSnapshot(background = { work -> work() })
+        snapshot.recorded(LastServiceStop.UNCLEAN) // armed on connect
+        snapshot.withdrawing()
+        assertEquals(
+            AutoPasteAvailability.NOT_PERMITTED,
+            AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.REVOKED, false, snapshot.current.value),
+        )
+        snapshot.recorded(LastServiceStop.CLEAN)
         assertEquals(StopMarkerState.Available(LastServiceStop.CLEAN), snapshot.current.value)
     }
 

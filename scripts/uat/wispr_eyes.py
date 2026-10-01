@@ -4953,7 +4953,11 @@ def open_tab(name):
     holder = _holder(node, lambda n: n["clickable"])
     x, y = holder["centre"][0], node["centre"][1]
     _STATE["tree"] = None
-    _adb(f"input tap {x} {y}")
+    over = _covered(x, y, node)
+    if over is not None:
+        raise Blocked(f"the {name!r} tab is covered at ({x}, {y}) by {_WINDOW_TYPES.get(over['type'], 'another window')}")
+    # Through the one press path (the agent when it runs), with no fixed sleep: the read-back below waits.
+    _press_at(x, y, settle_s=0)
     # READ BACK that the tab took, polling up to the old fixed wait; a tap that landed mid-animation
     # is reported here rather than by the next call failing to find a switch.
     deadline = time.monotonic() + 1.2

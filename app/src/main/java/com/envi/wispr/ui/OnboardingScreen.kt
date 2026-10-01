@@ -145,7 +145,7 @@ internal fun OnboardingScreen(
                         // real, beside the practice box.
                         SetupHeading("Your models are ready.\nLet’s try them.", "Allow EnviousWispr to hear your words and put the polished text where you need it.", muted)
                         PermissionRow("Microphone", "To hear your voice for transcription.", SetupPermission.MICROPHONE, readiness.microphoneGranted, surface, muted, accent, green, onRequestMicrophone)
-                        PermissionRow("Accessibility", if (autoPaste == AutoPasteAvailability.PERMITTED_NOT_RUNNING) "Access is on. Waiting for the service to connect." else ACCESSIBILITY_CARD_COPY, SetupPermission.ACCESSIBILITY, autoPaste == AutoPasteAvailability.LIVE, surface, muted, accent, green, onOpenAccessibility)
+                        PermissionRow("Accessibility", accessibilityRowCopy(autoPaste), SetupPermission.ACCESSIBILITY, autoPaste == AutoPasteAvailability.LIVE, surface, muted, accent, green, onOpenAccessibility)
                         PermissionRow("Notifications", "Recording controls in your notification panel.", SetupPermission.NOTIFICATIONS, readiness.notificationsGranted, surface, muted, accent, green, onRequestNotifications)
                         if (!readiness.notificationsGranted) Text("Notifications are optional. You can enable them later.", Modifier.padding(top = 14.dp), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
                     }
@@ -254,4 +254,13 @@ private fun PermissionRow(title: String, description: String, kind: SetupPermiss
             else FilledTonalButton(onClick = action, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp), shape = RoundedCornerShape(10.dp)) { Text("Grant", fontSize = 12.sp) }
         }
     }
+}
+
+/** The setup screen's accessibility row: what to do next, per auto-paste state. */
+internal fun accessibilityRowCopy(autoPaste: AutoPasteAvailability): String = when (autoPaste) {
+    AutoPasteAvailability.PERMITTED_NOT_RUNNING -> "Access is on. Waiting for the service to connect."
+    AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AUTO_PASTE_SWITCHED_OFF_ROW
+    AutoPasteAvailability.NOT_PERMITTED,
+    AutoPasteAvailability.LIVE,
+    -> ACCESSIBILITY_CARD_COPY
 }

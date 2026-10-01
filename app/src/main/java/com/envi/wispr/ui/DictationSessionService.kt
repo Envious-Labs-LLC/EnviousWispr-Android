@@ -20,6 +20,7 @@ import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.paste.AccessibilityPermission
+import com.envi.wispr.paste.AccessibilityPermissionCheck
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.AutoPasteReadiness
 import com.envi.wispr.paste.PasteAccessibilityService
@@ -196,12 +197,15 @@ class DictationSessionService : Service() {
      * RULE: no-idle-cost). The setting alone cannot answer this: it still names a crashed service.
      */
     private fun autoPasteAvailability(): AutoPasteAvailability = AutoPasteReadiness.evaluate(
-        permittedInSettings = AccessibilityPermission.isGranted(this),
-        serviceBound = PasteAccessibilityService.isBound.value,
+        permission = AccessibilityPermissionCheck.of(AccessibilityPermission.isGranted(this)),
+        // ONE read of liveness and the marker together, in memory: this runs before startForeground and
+        // on the fallback's thread, where two reads could straddle a reconnect (#131).
+        lifecycle = PasteAccessibilityService.lifecycle.current.value,
     )
 
     override fun onCreate() {
         super.onCreate()
+        PasteAccessibilityService.loadStopMarker(applicationContext)
         languageDetector = MlKitLanguageDetector(applicationContext)
         val customTermRepository = CustomTermRepository(applicationContext)
         val providerConfiguration = ProviderConfigurationRepository(applicationContext)

@@ -59,7 +59,7 @@ class AppStateOwnershipShapeTest {
         val readinessText = code.getValue(readiness)
         assertTrue(
             "readiness no longer joins the permission with the paste service's pushed liveness",
-            Regex("""AutoPasteReadiness\.observe\((?s:[^)]*)PasteAccessibilityService\.isBound""").containsMatchIn(readinessText),
+            Regex("""AutoPasteReadiness\.observe\((?s:[^)]*)PasteAccessibilityService\.lifecycle""").containsMatchIn(readinessText),
         )
         assertTrue("readiness's state does not carry the joined auto-paste answer", Regex("""\bautoPaste\b""").containsMatchIn(stateExpression(readiness)))
         val polishText = code.getValue(polish)

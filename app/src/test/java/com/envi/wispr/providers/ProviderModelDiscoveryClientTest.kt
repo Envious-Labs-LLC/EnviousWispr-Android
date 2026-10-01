@@ -281,22 +281,31 @@ class ProviderModelDiscoveryClientTest {
      * probes are in flight, every other probe is held until after discovery has returned. Completion is a
      * signal from the probe pool itself, never a quiet-count poll.
      *
-     * The bound is exact: at the rejection the pool's three workers hold gpt-m0 and two held probes; the worker
-     * gpt-m0 frees can take ONE more queued probe before the cancel loop runs, and that one is held too. So at
-     * most four probes reach the server, and a cancel loop that missed any queued probe sends a fifth.
-     * CONTROL: removing `futures.forEach { it.cancel(true) }` alone turns this red, naming all nine models.
+     * The subject is each queued probe, not a count: while gpt-m0 is held, the six probes still waiting in the
+     * pool's queue are captured, and every one of them must be cancelled once discovery has returned. The
+     * arrival count is a second, weaker check (at most four: three in flight plus the one the freed worker may
+     * take, which is held too). CONTROLS, run: removing `futures.forEach { it.cancel(true) }` alone, and
+     * cancelling all but the first five futures, each turn this red.
      */
     @Test fun aKeyRejectedPartWayCancelsTheProbesStillQueued() {
         val models = 9
         val threeInFlight = CountDownLatch(3)
         val stagedInTime = java.util.concurrent.atomic.AtomicBoolean(false)
         val release = CountDownLatch(1)
+        val pool = ProviderModelDiscoveryClient.PROBE_EXECUTOR as java.util.concurrent.ThreadPoolExecutor
+        val queued = java.util.concurrent.atomic.AtomicReference<List<java.util.concurrent.Future<*>>>(emptyList())
         ScriptedServer({ request ->
             when {
                 request.path.startsWith("/models") -> 200 to openAiList(*Array(models) { "gpt-m$it" })
                 probedModel(request) == "gpt-m0" -> {
                     threeInFlight.countDown()
-                    stagedInTime.set(threeInFlight.await(10, TimeUnit.SECONDS))
+                    val inFlight = threeInFlight.await(10, TimeUnit.SECONDS)
+                    // All nine are submitted before the first is waited on, so six must be queued behind the three
+                    // held workers. Bounded: a fixture that cannot see them fails below as a fixture failure.
+                    val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+                    while (pool.queue.size < models - 3 && System.nanoTime() < until) Thread.sleep(5)
+                    queued.set(pool.queue.map { it as java.util.concurrent.Future<*> })
+                    stagedInTime.set(inFlight && queued.get().size == models - 3)
                     401 to "{\"error\":{\"code\":\"invalid_api_key\"}}"
                 }
                 else -> {
@@ -314,7 +323,7 @@ class ProviderModelDiscoveryClientTest {
                 val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 30_000, probeTimeoutMs = 20_000, readTimeoutMs = 20_000)
                     .discoverModels(Provider.OPENAI, "k")
                 val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
-                assertTrue("fixture: three probes were in flight before the rejection", stagedInTime.get())
+                assertTrue("fixture: three probes were in flight and six queued before the rejection", stagedInTime.get())
                 assertEquals(ProviderDiscovery.Refused(ProviderKeyCheck.Rejected(401)), result)
                 // Fixture precondition, which also proves gpt-m0 is the first future waited on: the return was
                 // EARLY, so the per-probe budget check had most of 30 s left and could not stop the queue.
@@ -326,15 +335,23 @@ class ProviderModelDiscoveryClientTest {
             // Every task queued before these markers has FINISHED once all three markers run at once: the pool is
             // three workers draining one FIFO queue, so three markers holding all three workers means nothing
             // earlier is still running or waiting. A finished probe has already been logged by the server.
+            // A marker whose wait runs out FAILS, so a timed-out marker cannot free its worker for the next marker
+            // and fake a pool that was never held whole (code review round 2).
             val allHeld = CountDownLatch(3)
             val markers = (1..3).map {
-                ProviderModelDiscoveryClient.PROBE_EXECUTOR.submit {
+                pool.submit {
                     allHeld.countDown()
-                    allHeld.await(20, TimeUnit.SECONDS)
+                    check(allHeld.await(20, TimeUnit.SECONDS)) { "fixture: the three markers never held the pool together" }
                 }
             }
-            markers.forEach { it.get(30, TimeUnit.SECONDS) }
-            assertEquals("fixture: the three markers held the whole pool together", 0L, allHeld.count)
+            try {
+                markers.forEach { it.get(30, TimeUnit.SECONDS) }
+            } finally {
+                markers.forEach { it.cancel(true) }
+            }
+
+            val notCancelled = queued.get().filterNot { it.isCancelled }
+            assertTrue("${notCancelled.size} of the ${models - 3} queued probes were not cancelled", notCancelled.isEmpty())
 
             val arrived = probed()
             assertTrue("the rejected model's probe was recorded: $arrived", "gpt-m0" in arrived)

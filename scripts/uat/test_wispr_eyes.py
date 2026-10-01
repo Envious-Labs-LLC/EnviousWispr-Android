@@ -19,6 +19,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import os  # noqa: E402
+# NO PHONE-SIDE AGENT IN THE FIXTURE RUNS: every row drives a fake `_adb`, and an agent start would reach for
+# a real device. The agent rows below install their own fakes.
+os.environ["WISPR_AGENT"] = "off"
 import wispr_eyes as eyes  # noqa: E402
 
 
@@ -640,6 +644,82 @@ def test_pick_one_groups():
         for name, value in originals.items():
             setattr(eyes, name, value)
         eyes._STATE["tree"] = None
+
+
+def test_agent():
+    """The phone-side agent (scripts/uat/agent): its protocol, the eye it feeds, and the press path.
+
+    When these fail: a read silently falls back to the slow eye while claiming the fast one, a press goes
+    through `input tap` with the agent connected, or `reveal` on another app's page never sees the row.
+    """
+    import socket
+    import threading
+    # ---- the protocol: OK <bytes> then the bytes, ERR <message> -----------------------------------
+    server = socket.socket(); server.bind(("127.0.0.1", 0)); server.listen(1)
+    port = server.getsockname()[1]
+    replies = [b"OK 4\npong", "OK 6\nhéllo".encode("utf-8"), b"ERR no such thing\n"]
+
+    def serve():
+        conn, _ = server.accept()
+        f = conn.makefile("rb")
+        for reply in replies:
+            f.readline()
+            conn.sendall(reply)
+        conn.close()
+    threading.Thread(target=serve, daemon=True).start()
+    link = eyes._AgentLink(port)
+    check("the agent link reads a sized reply", link.call("ping") == "pong")
+    check("and counts the size in BYTES, so non-ASCII text is read whole", link.call("x") == "héllo")
+    try:
+        link.call("bogus")
+        check("an ERR reply refuses", False, "it returned")
+    except eyes.Blocked as refusal:
+        check("an ERR reply refuses and names the command", "'bogus'" in str(refusal) and "no such thing" in str(refusal), refusal)
+    link.close(); server.close()
+
+    # ---- the eye: an agent dump is the tree, and the state says so ---------------------------------
+    original_call, original_adb, original_agent = eyes._agent_call, eyes._adb, eyes._agent
+    sent = []
+
+    def fake_agent(line):
+        sent.append(line)
+        return TWO_REMOVES if line == "dump" else "changed"
+    eyes._agent_call = fake_agent
+    eyes._agent = lambda: object()
+    eyes._adb = lambda command, timeout=60, check=True: (_ for _ in ()).throw(AssertionError(f"raw adb used: {command}"))
+    eyes._STATE["tree"], eyes._STATE["eye"] = None, None
+    nodes = eyes.tree(refresh=True)
+    check("an agent dump is parsed as the screen", len(nodes) == 7 and eyes._STATE["eye"] == "agent", (len(nodes), eyes._STATE["eye"]))
+    # ---- the press: through the agent's settle, never `input tap` -----------------------------------
+    sent.clear()
+    eyes._press_at(10, 20)
+    check("a press with the agent goes through its event-driven settle", sent == ["settle 250 1500 5000 tap 10 20"], sent)
+    sent.clear()
+    eyes._key(4)
+    check("a key with the agent goes through settle too", sent and sent[0].startswith("settle ") and sent[0].endswith(" key 4"), sent)
+    # ---- without the agent the old path is used, loudly not silently --------------------------------
+    raw = []
+    eyes._agent_call = lambda line: None
+    eyes._adb = lambda command, timeout=60, check=True: (raw.append(command), (0, ""))[1]
+    real_sleep = eyes.time.sleep
+    eyes.time.sleep = lambda s: None
+    eyes._press_at(10, 20)
+    eyes.time.sleep = real_sleep
+    check("without the agent a press falls back to input tap", raw == ["input tap 10 20"], raw)
+    eyes._agent_call, eyes._adb, eyes._agent = original_call, original_adb, original_agent
+    eyes._STATE["tree"], eyes._STATE["eye"] = None, None
+
+    # ---- reveal looks in the page's OWN package (2026-10-01, Samsung's Deep sleeping picker) ----------
+    # REVERT: drop `package=package` from reveal's `present` calls, and a row plainly on another app's
+    # screen reads as absent.
+    other = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="EnviousWispr" bounds="[326,843][1001,909]" package="com.samsung.android.lool" clickable="false" enabled="true" />
+</hierarchy>"""
+    saved = with_screen(other)
+    check("reveal finds a label on another app's page where it already is",
+          eyes.reveal("EnviousWispr", package="com.samsung.android.lool") is True)
+    restore_adb(saved)
 
 
 def main():
@@ -2504,6 +2584,7 @@ Group main:
         setattr(eyes, name, fn)
 
     test_pick_one_groups()
+    test_agent()
 
     # ---- #384: a duplicate wireless connection has a space inside its serial --------------------------
     devices_original_run = eyes._run

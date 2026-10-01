@@ -105,7 +105,9 @@ _STATE = {"serial": None, "restore": [], "tree": None, "holding_journal": False,
           # "slow": nobody answered the probe (a release build), so `uiautomator` for the rest of this
           # process. `eye_retry_after` counts slow reads still to go before the fast eye is tried again
           # after a transient refusal (unbound, too big, timeout).
-          "eye": None, "eye_retry_after": 0}
+          "eye": None, "eye_retry_after": 0,
+          # THE AGENT (scripts/uat/agent): a link to the phone-side server, or the reason there is none.
+          "agent": None, "agent_off": None}
 
 
 def _journal_read():
@@ -661,7 +663,9 @@ def tree(refresh=True):
     """
     if not refresh and _STATE["tree"] is not None:
         return _STATE["tree"]
-    xml = _fast_dump_xml()
+    xml = _agent_dump_xml()
+    if xml is None:
+        xml = _fast_dump_xml()
     last = None
     # A PATH OF OUR OWN, made once per process. A fixed name is a file we do not own: another session
     # writes it between our dump and our read, and reading it reports THEIR screen as ours.
@@ -739,6 +743,243 @@ def tree(refresh=True):
     return nodes
 
 
+# ---- the agent: one phone-side server for reading and input (scripts/uat/agent) -------------------
+#
+# WHY. Measured 2026-10-01: `uiautomator dump` takes ~1.9 s a read and connects UiAutomation with no flags,
+# which suppresses every other accessibility service (ours included) while it runs; `adb shell input`
+# starts a JVM per tap; and the debug build's fast eye (#181) exists only on a DEBUG build, so the
+# founder's Play build always paid the slow path. The agent connects UiAutomation ONCE with
+# FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES and injects input through InputManager: a read in ~60 ms on
+# the S26 (release build) and ~80 ms on the emulator, a tap in under 10 ms, the paste service bound
+# throughout. Every caller falls back to the older path when the agent cannot run, and says which eye
+# answered in `_STATE["eye"]`. `WISPR_AGENT=off` turns it off for a comparison run.
+
+AGENT_DIR = Path(__file__).resolve().parent / "agent"
+AGENT_REMOTE = "/data/local/tmp/wispr-agent.jar"
+AGENT_SOCKET = "wispr-agent"
+AGENT_IDLE_EXIT_MS = 10 * 60 * 1000
+
+
+class _AgentLink:
+    """One socket to the agent. Every reply is `OK <bytes>` then the bytes, or `ERR <message>`."""
+
+    def __init__(self, port, timeout=15):
+        import socket
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        self.file = self.sock.makefile("rb")
+
+    def call(self, line):
+        self.sock.sendall((line + "\n").encode("utf-8"))
+        head = self.file.readline().decode("utf-8").strip()
+        if head.startswith("ERR "):
+            raise Blocked(f"the phone-side agent refused {line.split(' ')[0]!r}: {head[4:]}")
+        if not head.startswith("OK "):
+            raise Blocked(f"the phone-side agent answered {head!r} to {line.split(' ')[0]!r}, which is not its protocol")
+        size = int(head[3:])
+        body = self.file.read(size)
+        if len(body) != size:
+            raise Blocked("the phone-side agent's answer was cut short")
+        return body.decode("utf-8")
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+def _agent_jar():
+    """The built agent, building it first when the source is newer than the jar."""
+    jar = AGENT_DIR / "build" / "wispr-agent.jar"
+    sources = list((AGENT_DIR / "src").rglob("*.java"))
+    if not jar.exists() or any(src.stat().st_mtime > jar.stat().st_mtime for src in sources):
+        done = subprocess.run([str(AGENT_DIR / "build.sh")], capture_output=True, text=True, timeout=300)
+        if done.returncode != 0 or not jar.exists():
+            raise Blocked(f"the phone-side agent did not build: {(done.stderr or done.stdout).strip()[-300:]}")
+    return jar
+
+
+def _agent():
+    """The connected agent, started on the device if needed; None when it cannot run, with the reason kept."""
+    link = _STATE["agent"]
+    if link is not None:
+        return link
+    if os.environ.get("WISPR_AGENT", "").lower() == "off":
+        _STATE["agent_off"] = "WISPR_AGENT=off"
+        return None
+    if _STATE["agent_off"]:
+        return None
+    serial = device()
+    try:
+        jar = _agent_jar()
+        import hashlib
+        local = hashlib.md5(jar.read_bytes()).hexdigest()
+        _, remote = _adb(f"md5sum {AGENT_REMOTE} 2>/dev/null", check=False)
+        if local not in (remote or ""):
+            code, _, err = _run([ADB, "-s", serial, "push", str(jar), AGENT_REMOTE], timeout=60)
+            if code != 0:
+                raise Blocked(f"the agent could not be pushed: {err.strip()}")
+            # A copy built from older source may still hold the socket; ask it to go.
+            _agent_quit_running(serial)
+        code, out, err = _run([ADB, "-s", serial, "forward", "tcp:0", f"localabstract:{AGENT_SOCKET}"], timeout=20)
+        if code != 0 or not out.strip().isdigit():
+            raise Blocked(f"adb would not forward to the agent: {err.strip() or out.strip()}")
+        port = int(out.strip())
+        link = _agent_connect(port)
+        if link is None:
+            _run([ADB, "-s", serial, "shell",
+                  f"CLASSPATH={AGENT_REMOTE} setsid app_process / com.envi.agent.Main "
+                  f"--idle-exit-ms {AGENT_IDLE_EXIT_MS} >/dev/null 2>&1 < /dev/null &"], timeout=20)
+            deadline = time.monotonic() + 8
+            while link is None and time.monotonic() < deadline:
+                time.sleep(0.2)
+                link = _agent_connect(port)
+        if link is None:
+            raise Blocked("the agent did not answer within 8 s of starting")
+    except (Blocked, OSError, subprocess.TimeoutExpired) as why:
+        # LOUD IN THE STATE, QUIET IN THE FLOW: callers fall back to the older eye, and `_STATE["eye"]`
+        # and `agent_status()` say why, so a slow run is never mistaken for a fast one.
+        _STATE["agent_off"] = str(why)
+        return None
+    _STATE["agent"] = link
+    return link
+
+
+def _agent_connect(port):
+    try:
+        link = _AgentLink(port, timeout=3)
+        if link.call("ping") == "pong":
+            link.sock.settimeout(30)
+            return link
+        link.close()
+    except (OSError, Blocked):
+        pass
+    return None
+
+
+def _agent_quit_running(serial):
+    code, out, _ = _run([ADB, "-s", serial, "forward", "tcp:0", f"localabstract:{AGENT_SOCKET}"], timeout=20)
+    if code == 0 and out.strip().isdigit():
+        link = _agent_connect(int(out.strip()))
+        if link is not None:
+            try:
+                link.sock.sendall(b"quit\n")
+            except OSError:
+                pass
+            link.close()
+            time.sleep(0.5)
+
+
+def agent_status():
+    """Which control path this process uses, in one line."""
+    if _STATE["agent"] is not None:
+        return "agent: connected"
+    return f"agent: off ({_STATE['agent_off'] or 'not started yet'})"
+
+
+def stop_agent():
+    """Ask the agent on the selected device to exit now, instead of at its idle timeout."""
+    link = _STATE["agent"]
+    _STATE["agent"] = None
+    if link is not None:
+        try:
+            link.sock.sendall(b"quit\n")
+        except OSError:
+            pass
+        link.close()
+        return "agent stopped"
+    return "no agent was running for this process"
+
+
+def _agent_call(line):
+    """One agent command, or None when there is no agent; a dropped link is retried once on a fresh one."""
+    for attempt in (1, 2):
+        link = _agent()
+        if link is None:
+            return None
+        try:
+            return link.call(line)
+        except OSError:
+            _STATE["agent"] = None
+            link.close()
+            if attempt == 2:
+                _STATE["agent_off"] = "the agent's link dropped twice"
+                return None
+    return None
+
+
+def _agent_dump_xml():
+    xml = _agent_call("dump")
+    if xml is None:
+        return None
+    if "<hierarchy" not in xml:
+        raise Blocked("the phone-side agent answered a dump with something that is not a screen tree")
+    _STATE["eye"] = "agent"
+    return xml
+
+
+# How long a press waits for the screen: up to CHANGE for the first window or content event, then until
+# QUIET passes with none, bounded by TIMEOUT. Event-driven on the phone (the agent's `settle`), so a press
+# costs what the app takes to answer it, not a fixed sleep and not a dump every few milliseconds.
+SETTLE_QUIET_MS, SETTLE_CHANGE_MS, SETTLE_TIMEOUT_MS = 250, 1500, 5000
+
+
+def _press_at(x, y, settle_s=1.2):
+    """A tap at a point: the agent's event-driven settle, else `input tap` and the old sleep."""
+    if _agent_call(f"settle {SETTLE_QUIET_MS} {SETTLE_CHANGE_MS} {SETTLE_TIMEOUT_MS} tap {int(x)} {int(y)}") is not None:
+        _STATE["tree"] = None
+        return
+    _adb(f"input tap {x} {y}")
+    time.sleep(settle_s)
+
+
+def _key(code, settle_s=0.8):
+    if _agent_call(f"settle {SETTLE_QUIET_MS} 800 {SETTLE_TIMEOUT_MS} key {int(code)}") is not None:
+        _STATE["tree"] = None
+        return
+    _adb(f"input keyevent {int(code)}")
+    time.sleep(settle_s)
+
+
+def type_text(text):
+    """Type into the FOCUSED editable field and read it back. Needs the agent; refuses without one.
+
+    Refuses when no editable field has focus (typing would go nowhere, or somewhere unasked), and when the
+    text has characters the virtual keyboard map cannot type.
+    """
+    if not isinstance(text, str) or not text:
+        raise Blocked("type_text needs non-empty text")
+    if _agent() is None:
+        raise Blocked(f"typing needs the phone-side agent, which is off: {_STATE['agent_off']}")
+    # FOCUS ARRIVES AFTER THE PRESS SETTLES: a search box takes focus (and its keyboard) a beat after the
+    # page has gone quiet. Wait, bounded, for exactly one focused editable field.
+    deadline = time.monotonic() + 2.0
+    while True:
+        focused = [n for n in tree(refresh=True) if n["focused"] and n["kind"] in ("EditText", "AutoCompleteTextView")]
+        if len(focused) == 1 or time.monotonic() > deadline:
+            break
+        time.sleep(0.05)
+    if len(focused) != 1:
+        raise Blocked(f"{len(focused)} editable fields have focus, so where the text would go is a guess")
+    before = focused[0]["text"]
+    # KEYS BEFORE THE KEYBOARD ARE DROPPED. A field can hold focus before its input connection exists, and
+    # keys injected then vanish (2026-10-01, emulator Settings search: the field still read its hint).
+    # Wait, bounded, for the on-screen keyboard window, then type, read back, and retry ONCE if nothing
+    # landed. A retry cannot double the text: it runs only when the field does not contain it.
+    deadline = time.monotonic() + 2.0
+    while _agent_call("ime") != "shown" and time.monotonic() < deadline:
+        time.sleep(0.05)
+    for attempt in (1, 2):
+        _agent_call("text " + text)
+        _agent_call("idle 100 2000")
+        for _ in range(20):
+            now = [n for n in tree(refresh=True) if n["focused"] and n["kind"] in ("EditText", "AutoCompleteTextView")]
+            if now and text in now[0]["text"]:
+                return f"typed {text!r}; the field reads {now[0]['text']!r}"
+            time.sleep(0.05)
+    raise Blocked(f"typed {text!r} twice but the focused field still reads {before!r}; the text did not land")
+
+
 DUMP_ACTION = "com.envi.wispr.debug.DUMP"
 EYE_COOLDOWN_READS = 3
 
@@ -800,11 +1041,14 @@ def _stable_tree(max_wait=1.5, gap=0.12):
     read-back after the action is what catches a miss.
     """
     def shape(nodes):
+        # THE STATUS BAR NEVER HOLDS STILL. The agent reads every window, systemui's included, and its
+        # clock and signal icons change between two reads, so a shape that counted them never settled and
+        # every stable read ran to `max_wait` (1.4 s a press on the emulator, 2026-10-01).
         return [(n["package"], n["id"], n["text"], n["desc"], n["bounds"], n["clickable"], n["enabled"],
-                 n["checkable"], n["on"], n["parent"]) for n in nodes]
+                 n["checkable"], n["on"], n["parent"]) for n in nodes if n["package"] != "com.android.systemui"]
 
     previous = tree(refresh=True)
-    if _STATE["eye"] != "fast":
+    if _STATE["eye"] not in ("fast", "agent"):
         # A `uiautomator` read is 1.9 s of process start; the screen has settled long before it answers,
         # and a second one would double the cost of every tap on the phone (#181 review).
         return previous
@@ -950,10 +1194,10 @@ def find(text, exact=True, clickable=None, package=PACKAGE, stable=False):
     return node
 
 
-def present(text, exact=False):
+def present(text, exact=False, package=PACKAGE):
     """Whether exactly one node matches, WITHOUT swallowing an ambiguity as a no."""
     try:
-        find(text, exact=exact)
+        find(text, exact=exact, package=package)
         return True
     except Blocked as refusal:
         if "nothing on screen matches" in str(refusal):
@@ -1579,20 +1823,18 @@ def tap(text, exact=True, clickable=True, package=PACKAGE):
         raise Blocked(f"{text!r} is on screen but disabled or has no area, so pressing it proves nothing")
     x, y = node["centre"]
     _STATE["tree"] = None
-    _adb(f"input tap {x} {y}")
-    time.sleep(1.2)
+    _press_at(x, y)
+    _STATE["tree"] = None
     return f"pressed {_label(node)!r} at ({x}, {y})"
 
 
 def back():
-    _adb("input keyevent KEYCODE_BACK")
-    time.sleep(0.8)
+    _key(4)
     _STATE["tree"] = None
 
 
 def home():
-    _adb("input keyevent KEYCODE_HOME")
-    time.sleep(0.8)
+    _key(3)
     _STATE["tree"] = None
 
 
@@ -1627,7 +1869,10 @@ def reveal(label, package=PACKAGE):
                 return False
             raise
 
-    if present(label, exact=True):
+    # THE PAGE'S OWNER IS PASSED ON. `present` searched our own package whatever `package` said, so on
+    # another app's page (Samsung's Deep sleeping picker, 2026-10-01) the row was never "present" and the
+    # walk ended False with the row on screen.
+    if present(label, exact=True, package=package):
         return True
     # BOUNDED. A list whose rows change as it moves — a timer, a live count — makes every comparison
     # differ, so "keep going while the screen is moving" never stops. Twice the depth a page is walked
@@ -1635,12 +1880,12 @@ def reveal(label, package=PACKAGE):
     for _ in range((SCREEN_DEPTH + 2) * 2):
         if not try_scroll("up"):
             break
-        if present(label, exact=True):
+        if present(label, exact=True, package=package):
             return True
     for _ in range(SCREEN_DEPTH + 2):
         if not try_scroll("down"):
             return False
-        if present(label, exact=True):
+        if present(label, exact=True, package=package):
             return True
     return False
 
@@ -1684,7 +1929,8 @@ def scroll(direction="down", amount=1, package=PACKAGE):
         raise Blocked("amount must be a whole number from 1 to 20")
     # ONE read serves both questions asked of this screen: what scrolls, and what was here before the
     # swipe. Reading twice costs about two seconds per swipe, and `scan()` swipes dozens of times.
-    here = _stable_tree()
+    # With the agent, every action already ended on a settled screen, so one read is enough.
+    here = tree(refresh=True) if _agent() is not None else _stable_tree()
     areas = [n for n in here if n["scrollable"] and n["package"] == package]
     if not areas:
         raise Blocked(
@@ -1710,11 +1956,15 @@ def scroll(direction="down", amount=1, package=PACKAGE):
     moved = 0
     for _ in range(amount):
         before = [(_label(n), n["bounds"]) for n in here if n["package"] == package]
-        if direction == "down":
-            _adb(f"input swipe {x} {far} {x} {near} 300")
-        else:
-            _adb(f"input swipe {x} {near} {x} {far} 300")
-        time.sleep(0.6)
+        # THE AGENT DRAGS AND HOLDS BEFORE LIFTING, so a list moves the drag's length and stops: no fling.
+        # An `input swipe` flings on, and on a long picker one swipe jumped four rows past its target
+        # (Samsung's Deep sleeping picker, 2026-10-01), so `reveal()` never saw the row it was looking for.
+        start, end = (far, near) if direction == "down" else (near, far)
+        # 150 ms of quiet, not the press's 250: a held drag stops where the finger stops, so there is no
+        # coast to wait out, and the comparison below catches a list that was still moving.
+        if _agent_call(f"settle 150 800 {SETTLE_TIMEOUT_MS} swipe {x} {start} {x} {end} 300") is None:
+            _adb(f"input swipe {x} {start} {x} {end} 300")
+            time.sleep(0.6)
         _STATE["tree"] = None
         # The tree read here is left CACHED on purpose. A caller that scrolls and then asks what is on
         # screen would otherwise pay for a third `uiautomator dump` of the same screen, and each one
@@ -1728,6 +1978,15 @@ def scroll(direction="down", amount=1, package=PACKAGE):
 
 
 def _screen_size():
+    cached = _STATE.get("screen_size")
+    if cached and cached[0] == _STATE["serial"]:
+        return cached[1]
+    size = _read_screen_size()
+    _STATE["screen_size"] = (_STATE["serial"], size)
+    return size
+
+
+def _read_screen_size():
     _, out = _adb("wm size")
     found = re.search(r"(\d+)x(\d+)", out or "")
     if not found:

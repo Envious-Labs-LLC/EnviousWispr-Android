@@ -226,22 +226,6 @@ internal class LogWriter(
         }
     }
 
-    /** The first [length] bytes of [from] into a new [to]; the pin is never appended to afterwards. */
-    private fun copyPrefix(from: File, to: File, length: Long) {
-        from.inputStream().use { input ->
-            to.outputStream().use { output ->
-                val buffer = ByteArray(64 * 1024)
-                var left = length
-                while (left > 0) {
-                    val read = input.read(buffer, 0, minOf(buffer.size.toLong(), left).toInt())
-                    if (read < 0) break
-                    output.write(buffer, 0, read)
-                    left -= read
-                }
-            }
-        }
-    }
-
     private fun writeAtomically(target: File, text: String) {
         target.parentFile?.mkdirs()
         val temp = File(target.parentFile, ".${target.name}.tmp")
@@ -273,5 +257,21 @@ internal class LogWriter(
         const val DEFAULT_CAPACITY = 8_192
         private const val MAX_BATCH = 256
         const val LOCK_TIMEOUT_MS = 2_000L
+
+        /** The first [length] bytes of [from] into a new [to]; the pin is never appended to afterwards. */
+        fun copyPrefix(from: File, to: File, length: Long) {
+            from.inputStream().use { input ->
+                to.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var left = length
+                    while (left > 0) {
+                        val read = input.read(buffer, 0, minOf(buffer.size.toLong(), left).toInt())
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        left -= read
+                    }
+                }
+            }
+        }
     }
 }

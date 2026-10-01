@@ -81,7 +81,7 @@ class AutoPasteWiringTest {
         // permission back in charge with no dot after the call. So the rule is about the view
         // model's JOB instead. It wires; it does not decide. Deciding here means naming an
         // availability or re-running the rule, and neither has any legitimate reason to appear.
-        val decisions = Regex("AutoPasteAvailability\\.(NOT_PERMITTED|PERMITTED_NOT_RUNNING|LIVE)")
+        val decisions = Regex("AutoPasteAvailability\\.(NOT_PERMITTED|PERMITTED_NOT_RUNNING|LIVE|SWITCHED_OFF_UNEXPECTEDLY)")
             .findAll(source).map { it.value }.toList()
         assertEquals(
             "ReadinessViewModel names an auto-paste answer directly (${decisions.joinToString()}). It is " +
@@ -94,6 +94,45 @@ class AutoPasteWiringTest {
             "ReadinessViewModel calls AutoPasteReadiness.evaluate directly, so it can answer with the " +
                 "permission fact in both arguments and never consult the pushed liveness at all",
             source.contains("AutoPasteReadiness.evaluate("),
+        )
+    }
+
+    /**
+     * #131. REVERT, each alone: the view model not passing the marker snapshot; the session owner not
+     * passing it, or reading storage instead of the snapshot; either reader not starting the load; the
+     * marker writer not updating the snapshot. Each leaves `AutoPasteReadinessObserveTest` and
+     * `StopMarkerSnapshotTest` green, because they drive the join and the snapshot with flows of their own.
+     */
+    @Test
+    fun bothReadinessReadersFollowTheStopMarkerSnapshot() {
+        val viewModel = read("ui/ReadinessViewModel.kt")
+        val arguments = callArguments(viewModel, "AutoPasteReadiness.observe(").single()
+        assertTrue(
+            "ReadinessViewModel does not pass the stop marker snapshot, so the Permissions page can " +
+                "never say auto-paste was switched off: $arguments",
+            arguments.contains("stopMarker = PasteAccessibilityService.stopMarker.current"),
+        )
+        assertTrue(
+            "ReadinessViewModel never starts the marker read, so the snapshot stays Loading",
+            viewModel.contains("PasteAccessibilityService.loadStopMarker(appContext)"),
+        )
+        val session = read("ui/DictationSessionService.kt")
+        val evaluate = slice(session, "private fun autoPasteAvailability(): AutoPasteAvailability = AutoPasteReadiness.evaluate(", "\n    )")
+        assertTrue(
+            "The session owner does not read the in-memory snapshot, so a dictation in the switched-off " +
+                "state stays silent, or start waits on storage before startForeground: $evaluate",
+            evaluate.contains("stopMarker = PasteAccessibilityService.stopMarker.current.value,"),
+        )
+        assertTrue(
+            "The session owner never starts the marker read",
+            session.contains("PasteAccessibilityService.loadStopMarker(applicationContext)"),
+        )
+        val service = read("paste/PasteAccessibilityService.kt")
+        val writer = slice(service, "private fun writeStopMarker(clean: Boolean) {", "\n    }")
+        assertTrue(
+            "A marker write no longer updates the snapshot, so a user who turns auto-paste off in this " +
+                "process is told Android switched it off: $writer",
+            writer.contains("stopMarker.recorded(if (clean) LastServiceStop.CLEAN else LastServiceStop.UNCLEAN)"),
         )
     }
 
@@ -322,7 +361,12 @@ class AutoPasteWiringTest {
             ),
             Triple(
                 "the Permissions page 'not connected' card",
-                "autoPaste == AutoPasteAvailability.PERMITTED_NOT_RUNNING",
+                "AutoPasteAvailability.PERMITTED_NOT_RUNNING -> AutoPasteNoticeCard(",
+                source,
+            ),
+            Triple(
+                "the Permissions page 'switched off' card",
+                "AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AutoPasteNoticeCard(",
                 source,
             ),
             Triple(

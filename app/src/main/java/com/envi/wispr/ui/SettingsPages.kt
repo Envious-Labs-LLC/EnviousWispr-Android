@@ -313,41 +313,36 @@ internal fun PermissionsPage(
         }
 
         // A separate, CALMER card, and calmer has to be visible or the split is only in the source.
-        // The permission is granted, so routing the user back to grant it would be a wrong
-        // instruction, and the service is legitimately unbound for a moment at every cold start:
-        // firing the same red alarm through that window would train the user to ignore it.
-        // Suppressed entirely while the setup card above is showing, so the screen never carries
-        // two alarm cards for one unfinished setup.
-        if (readiness.coreReady && autoPaste == AutoPasteAvailability.PERMITTED_NOT_RUNNING) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                ),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    StatusDot(ready = false, description = autoPaste.statusDescription())
-                    Column(Modifier.weight(1f)) {
-                        Text("Auto-paste is not connected", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            // No destination named here. `autoCopyToClipboard` decides whether
-                            // that is the clipboard or History, and this card cannot see it; the
-                            // line after a dictation names the destination that was measured.
-                            "Your words will not go into the field until it reconnects. If it " +
-                                "stays disconnected, turn EnviousWispr off and then on in " +
-                                "Accessibility settings.",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                    FilledTonalButton(onClick = onOpenAccessibility) {
-                        Text("Accessibility settings")
-                    }
-                }
+        // Neither state is the setup a new user still has to do, so routing either back to the guided
+        // checks would be a wrong instruction. The service is legitimately unbound for a moment at every
+        // cold start, and firing the red alarm through that window would train the user to ignore it.
+        // Suppressed entirely while the setup card above is showing, so the screen never carries two
+        // alarm cards for one unfinished setup; the row below still names the auto-paste state then.
+        if (readiness.coreReady) {
+            when (autoPaste) {
+                AutoPasteAvailability.PERMITTED_NOT_RUNNING -> AutoPasteNoticeCard(
+                    autoPaste = autoPaste,
+                    title = "Auto-paste is not connected",
+                    // No destination named here. `autoCopyToClipboard` decides whether that is the
+                    // clipboard or History, and this card cannot see it; the line after a dictation
+                    // names the destination that was measured.
+                    body = "Your words will not go into the field until it reconnects. If it " +
+                        "stays disconnected, turn EnviousWispr off and then on in " +
+                        "Accessibility settings.",
+                    onOpenAccessibility = onOpenAccessibility,
+                )
+                // The stop marker proves only that no orderly stop was recorded, not who switched it
+                // off, so the body says how it CAN happen and never states a cause (#131).
+                AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AutoPasteNoticeCard(
+                    autoPaste = autoPaste,
+                    title = "Auto-paste was switched off",
+                    body = "This can happen when the app is stopped. Turn EnviousWispr back on in " +
+                        "Accessibility settings.",
+                    onOpenAccessibility = onOpenAccessibility,
+                )
+                AutoPasteAvailability.NOT_PERMITTED,
+                AutoPasteAvailability.LIVE,
+                -> Unit
             }
         }
 
@@ -404,6 +399,7 @@ internal fun PermissionsPage(
                     AutoPasteAvailability.PERMITTED_NOT_RUNNING ->
                         "Turned on but not connected. Words will not go into the field until it reconnects."
                     AutoPasteAvailability.NOT_PERMITTED -> "Needs accessibility permission"
+                    AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AUTO_PASTE_SWITCHED_OFF_ROW
                 },
                 ready = autoPaste == AutoPasteAvailability.LIVE,
                 statusDescription = autoPaste.statusDescription(),
@@ -416,6 +412,38 @@ internal fun PermissionsPage(
                 ready = null,
                 onClick = onContinueSetup,
             )
+        }
+    }
+}
+
+/** The Permissions page's calm auto-paste card: a known state with one way out, never the setup alarm. */
+@Composable
+private fun AutoPasteNoticeCard(
+    autoPaste: AutoPasteAvailability,
+    title: String,
+    body: String,
+    onOpenAccessibility: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusDot(ready = false, description = autoPaste.statusDescription())
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(body, style = MaterialTheme.typography.bodyMedium)
+            }
+            FilledTonalButton(onClick = onOpenAccessibility) {
+                Text("Accessibility settings")
+            }
         }
     }
 }

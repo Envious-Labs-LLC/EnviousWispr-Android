@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The accessibility service as Android sees it (#217): its lifecycle callbacks, its
@@ -64,6 +65,33 @@ class PasteAccessibilityService : AccessibilityService() {
          * setting string cannot answer this: it still names a service that has crashed.
          */
         internal val isBound: StateFlow<Boolean> = boundState.asStateFlow()
+
+        // Process lifetime on purpose: the marker read belongs to no Activity or Service, and it is one
+        // short read that ends by itself.
+        private val markerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        /**
+         * The stop marker as readiness reads it (#131): one in-memory snapshot per process, which every
+         * successful marker write below updates. Readers take the snapshot and never storage, so no
+         * session start or connect waits on disk.
+         */
+        internal val stopMarker = StopMarkerSnapshot(background = { work -> markerScope.launch { work() } })
+
+        /**
+         * Starts the one background read of the marker, if nothing has yet. Either readiness reader may
+         * call it, with or without a bound service; only the application context is retained.
+         */
+        internal fun loadStopMarker(context: Context) {
+            val appContext = context.applicationContext
+            stopMarker.load { readLastStop(appContext) }
+        }
+
+        private fun readLastStop(context: Context): LastServiceStop {
+            val preferences = context.getSharedPreferences(LIFECYCLE_PREFERENCES, Context.MODE_PRIVATE)
+            // Absence is the signal that keeps a user who never connected out of the new state.
+            if (!preferences.contains(KEY_STOP_WAS_CLEAN)) return LastServiceStop.NEVER
+            return if (preferences.getBoolean(KEY_STOP_WAS_CLEAN, true)) LastServiceStop.CLEAN else LastServiceStop.UNCLEAN
+        }
 
         private fun publishBinding(service: PasteAccessibilityService?) {
             instance = service
@@ -318,6 +346,7 @@ class PasteAccessibilityService : AccessibilityService() {
             if (clean && instance != null) return
             runCatching {
                 lifecyclePreferences().edit().putBoolean(KEY_STOP_WAS_CLEAN, clean).apply()
+                stopMarker.recorded(if (clean) LastServiceStop.CLEAN else LastServiceStop.UNCLEAN)
             }.onFailure { error -> DebugLogger.warn(TAG, "Unable to record the stop marker: ${error.javaClass.simpleName}") }
         }
     }
@@ -336,4 +365,39 @@ class PasteAccessibilityService : AccessibilityService() {
      * no file read, no database call, no network call, and no lock a caller of this may hold.
      */
     private fun <T> callOnMain(fallback: T, action: () -> T): T = mainCall.call(fallback, action)
+}
+
+/**
+ * One process's in-memory copy of the stop marker (#131), so readiness never reads storage on a caller's
+ * thread.
+ *
+ * The first [load] starts the only read and later calls do nothing. The read's answer lands only while
+ * nothing newer has: a lifecycle write that [recorded] while the read was in flight is the newer fact,
+ * so the read's older answer is dropped rather than overwriting it. The read holds no lock, so connect,
+ * teardown and session start never wait on it.
+ */
+internal class StopMarkerSnapshot(private val background: (() -> Unit) -> Unit) {
+    private val state = MutableStateFlow<StopMarkerState>(StopMarkerState.Loading)
+    private val loadStarted = AtomicBoolean(false)
+
+    val current: StateFlow<StopMarkerState> = state.asStateFlow()
+
+    fun load(read: () -> LastServiceStop) {
+        if (!loadStarted.compareAndSet(false, true)) return
+        background {
+            val loaded = runCatching(read).fold(
+                onSuccess = { StopMarkerState.Available(it) },
+                onFailure = { error ->
+                    DebugLogger.warn("PasteService", "Unable to read the stop marker: ${error.javaClass.simpleName}")
+                    StopMarkerState.Unavailable
+                },
+            )
+            state.compareAndSet(StopMarkerState.Loading, loaded)
+        }
+    }
+
+    /** A marker write that succeeded; always newer than whatever the initial read finds. */
+    fun recorded(stop: LastServiceStop) {
+        state.value = StopMarkerState.Available(stop)
+    }
 }

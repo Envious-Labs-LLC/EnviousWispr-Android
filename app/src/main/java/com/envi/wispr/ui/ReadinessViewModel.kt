@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.paste.AccessibilityPermission
+import com.envi.wispr.paste.AccessibilityPermissionCheck
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.AutoPasteReadiness
 import com.envi.wispr.paste.PasteAccessibilityService
@@ -23,7 +24,8 @@ import kotlinx.coroutines.flow.stateIn
 internal data class AppReadiness(
     val microphoneGranted: Boolean = false,
     val notificationsGranted: Boolean = false,
-    val accessibilityPermitted: Boolean = false,
+    /** UNCHECKED until the first real read, so a default can never pass for a verified revocation (#131). */
+    val accessibility: AccessibilityPermissionCheck = AccessibilityPermissionCheck.UNCHECKED,
     val speechModelReady: Boolean = false,
     val polishModelReady: Boolean = false,
 ) {
@@ -52,14 +54,20 @@ internal class ReadinessViewModel(
 ) : ViewModel() {
     private val readiness = MutableStateFlow(AppReadiness())
 
+    init {
+        // Off the main thread; until it answers, readiness gives the answer it gave before #131.
+        PasteAccessibilityService.loadStopMarker(appContext)
+    }
+
     // Derived, never stored. AppReadiness is a snapshot written wholesale from the Settings screen,
     // so a liveness field inside it would go stale between pushes; combining here gives the answer
     // exactly one producer and no second home (`architecture-rules.md` RULE: own-state-locally).
     // Assigned directly, with no operator after it: AutoPasteReadiness.observe owns the join, and
     // projecting its answer back down here would put the permission fact in charge again.
     private val autoPaste = AutoPasteReadiness.observe(
-        permittedInSettings = readiness.map { it.accessibilityPermitted },
+        permission = readiness.map { it.accessibility },
         serviceBound = PasteAccessibilityService.isBound,
+        stopMarker = PasteAccessibilityService.stopMarker.current,
     )
 
     val state: StateFlow<ReadinessUiState> = combine(readiness, autoPaste) { currentReadiness, autoPasteStatus ->
@@ -78,7 +86,7 @@ internal class ReadinessViewModel(
         readiness.value = readiness.value.copy(
             microphoneGranted = ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
             notificationsGranted = ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED,
-            accessibilityPermitted = AccessibilityPermission.isGranted(appContext),
+            accessibility = AccessibilityPermissionCheck.of(AccessibilityPermission.isGranted(appContext)),
         )
     }
 
@@ -100,7 +108,7 @@ internal class ReadinessViewModel(
  * `PasteAccessibilityService.isBound`, and the two are combined in [ReadinessViewModel].
  */
 internal fun readAppReadiness(context: Context): AppReadiness {
-    val accessibilityPermitted = AccessibilityPermission.isGranted(context)
+    val accessibility = AccessibilityPermissionCheck.of(AccessibilityPermission.isGranted(context))
 
     val speechModelReady = ModelStorage.isReady(context, ModelManifest.parakeet)
 
@@ -114,7 +122,7 @@ internal fun readAppReadiness(context: Context): AppReadiness {
                 context,
                 Manifest.permission.POST_NOTIFICATIONS,
             ) == PackageManager.PERMISSION_GRANTED,
-        accessibilityPermitted = accessibilityPermitted,
+        accessibility = accessibility,
         speechModelReady = speechModelReady,
         polishModelReady = ModelStorage.isReady(context, ModelManifest.s1),
     )

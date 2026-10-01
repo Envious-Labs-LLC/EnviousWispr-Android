@@ -28,6 +28,10 @@ import com.envi.wispr.paste.InsertionHandoff
  * the destination is measured, not inferred, so the one case it cannot get wrong is the one where a
  * dead service makes the entry point unknowable, which is reasoned about on
  * `InsertionHandoff.SERVICE_NOT_RUNNING` in [autoPasteWasExpectedToWork].
+ *
+ * One state adds a second sentence after the destination (#131): with the setting measured as cleared
+ * after an unclean stop, "Auto-paste is off" is a reading, not an inference, and it names the user's
+ * fix. It still names no actor, because the stop marker cannot say who switched it off.
  */
 internal class FallbackAnnouncement private constructor(val line: String) {
     companion object {

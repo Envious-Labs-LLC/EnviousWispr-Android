@@ -11,8 +11,8 @@ import kotlinx.coroutines.flow.combine
  * running service at all. Three cases rather than two, because the service is legitimately not yet
  * bound during the normal connect window at every cold start, and telling a user who already granted
  * the permission to grant it again is a wrong instruction on the screen they open when the product
- * looks broken. A fourth since #131: a setting Android cleared under a running service is not the
- * setup a new user still has to do.
+ * looks broken. A fourth since #131: a setting cleared after the service died without an orderly stop
+ * is not the setup a new user still has to do.
  */
 internal enum class AutoPasteAvailability {
     /** The accessibility service is not enabled in Android settings. */

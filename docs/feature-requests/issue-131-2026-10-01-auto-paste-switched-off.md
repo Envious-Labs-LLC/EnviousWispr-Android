@@ -1,6 +1,6 @@
 # Issue #131 — Say when auto-paste was switched off without an orderly stop — 2026-10-01
 
-GitHub issue: `#131`. Tier: MEDIUM (permissions, new runtime behaviour). Status: DRAFT.
+GitHub issue: `#131`. Tier: MEDIUM (permissions, new runtime behaviour). Status: APPROVED (founder, Gate 2, 2026-10-01).
 
 ## Preface — Lane + Hardware UAT declaration
 
@@ -205,6 +205,9 @@ or Revoked from its existing direct permission read.
 ### 3.4 Founder choice at Gate 2
 Whether the sleep case's existing "not connected" card should also suggest adding EnviousWispr to Samsung's
 "Never auto sleeping apps" (prevents the sleep kill; Samsung-only wording).
+
+Decided 2026-10-01: the founder approved the proposed wording as written and did not take up the Samsung
+suggestion, so the sleep case keeps today's card unchanged in this change.
 
 Consolidation: none. The change adds one state to the existing single owner (`AutoPasteReadiness`) and one
 input it reads; no second owner of readiness exists to fold in, and the stop marker keeps its one writer.

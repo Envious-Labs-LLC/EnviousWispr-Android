@@ -86,6 +86,57 @@ class InsertionOutcomeMessagesTest {
         }
     }
 
+    /**
+     * #131: auto-paste was on and Android switched it off. The user is still relying on it, so a
+     * dictation that missed the field says where the words are and then how to turn it back on, in
+     * one line. The destination comes first and is the measured one; the cause sentence names no actor.
+     */
+    @Test
+    fun aSwitchedOffUserIsToldWhereTheWordsAreAndHowToTurnAutoPasteBackOn() {
+        val tail = " Auto-paste is off; turn it back on in Accessibility settings."
+        assertEquals(
+            copiedLine + tail,
+            announce(AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY, InsertionHandoff.SERVICE_NOT_RUNNING)?.line,
+        )
+        assertEquals(
+            "Auto-copy off: History is the destination, never the clipboard",
+            historyLine + tail,
+            announce(
+                AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY,
+                InsertionHandoff.SERVICE_NOT_RUNNING,
+                clipboard = ClipboardOutcome.NOT_ATTEMPTED,
+            )?.line,
+        )
+        assertEquals(
+            "A failed copy must never be called Copied",
+            historyLine + tail,
+            announce(
+                AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY,
+                InsertionHandoff.SERVICE_NOT_RUNNING,
+                clipboard = ClipboardOutcome.WRITE_FAILED,
+            )?.line,
+        )
+        assertEquals(
+            "Kept on this phone. Open EnviousWispr to find them." + tail,
+            FallbackAnnouncement.fallbackAnnouncement(
+                autoPaste = AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY,
+                handoff = InsertionHandoff.SERVICE_NOT_RUNNING,
+                clipboard = ClipboardOutcome.WRITE_FAILED,
+                savedInHistory = false,
+                kept = WordsKept.KEPT,
+            )?.line,
+        )
+        // No field was in play: the clipboard was the designed destination and the dictation worked.
+        assertNull(announce(AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY, InsertionHandoff.NO_PINNED_TARGET))
+        // Only this state carries the sentence.
+        AutoPasteAvailability.entries.filter { it != AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY }.forEach { other ->
+            InsertionHandoff.entries.forEach { handoff ->
+                val line = announce(other, handoff, ClipboardOutcome.WRITE_FAILED, savedInHistory = false)?.line.orEmpty()
+                assertFalse("autoPaste=$other handoff=$handoff named the switch-off: $line", line.contains("Auto-paste is off"))
+            }
+        }
+    }
+
     /** The silence has a floor: words the user cannot reach are announced whatever else was true. */
     @Test
     fun silenceForAnUnpermittedUserStopsAtWordsThatCouldBeLost() {
@@ -370,6 +421,15 @@ class InsertionOutcomeMessagesTest {
         assertEquals(
             "Speak naturally. Your words will be saved in History.",
             InsertionOutcomeMessages.listeningDetail(AutoPasteAvailability.NOT_PERMITTED, copyOff),
+        )
+        // #131: with the setting cleared the destination is as decided as for a user who never set it up.
+        assertEquals(
+            "Speak naturally. Your words will go to the clipboard.",
+            InsertionOutcomeMessages.listeningDetail(AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY, copyOn),
+        )
+        assertEquals(
+            "Speak naturally. Your words will be saved in History.",
+            InsertionOutcomeMessages.listeningDetail(AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY, copyOff),
         )
         // Settings not loaded yet. The destination is not decided at all, so no sentence may name
         // one, whatever the permission says.

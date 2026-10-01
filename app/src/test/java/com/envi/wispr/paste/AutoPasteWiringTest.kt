@@ -33,10 +33,10 @@ class AutoPasteWiringTest {
     fun theViewModelDerivesAutoPasteFromLivenessAndNotFromAConstant() {
         val source = read("ui/ReadinessViewModel.kt")
         assertTrue(
-            "ReadinessViewModel no longer reads PasteAccessibilityService.isBound, so every readiness " +
-                "surface is back to reporting the Android setting alone, which still names a " +
-                "crashed service. That is issue #16.",
-            source.contains("PasteAccessibilityService.isBound"),
+            "ReadinessViewModel no longer reads the pushed liveness (PasteAccessibilityService.lifecycle, " +
+                "#131), so every readiness surface is back to reporting the Android setting alone, which " +
+                "still names a crashed service. That is issue #16.",
+            source.contains("PasteAccessibilityService.lifecycle.current"),
         )
         // The join itself lives in AutoPasteReadiness.observe and is proven by execution in
         // AutoPasteReadinessObserveTest. What this file still has to protect is that the view model
@@ -52,7 +52,7 @@ class AutoPasteWiringTest {
         assertTrue(
             "AutoPasteReadiness.observe is not passed the pushed liveness " +
                 "(${arguments.first()}), so the answer can be computed without it",
-            arguments.first().contains("PasteAccessibilityService.isBound"),
+            arguments.first().contains("lifecycle = PasteAccessibilityService.lifecycle.current"),
         )
         assertFalse(
             "AutoPasteReadiness.observe is called with a hardcoded boolean " +
@@ -81,7 +81,7 @@ class AutoPasteWiringTest {
         // permission back in charge with no dot after the call. So the rule is about the view
         // model's JOB instead. It wires; it does not decide. Deciding here means naming an
         // availability or re-running the rule, and neither has any legitimate reason to appear.
-        val decisions = Regex("AutoPasteAvailability\\.(NOT_PERMITTED|PERMITTED_NOT_RUNNING|LIVE)")
+        val decisions = Regex("AutoPasteAvailability\\.(NOT_PERMITTED|PERMITTED_NOT_RUNNING|LIVE|SWITCHED_OFF_UNEXPECTEDLY)")
             .findAll(source).map { it.value }.toList()
         assertEquals(
             "ReadinessViewModel names an auto-paste answer directly (${decisions.joinToString()}). It is " +
@@ -94,6 +94,77 @@ class AutoPasteWiringTest {
             "ReadinessViewModel calls AutoPasteReadiness.evaluate directly, so it can answer with the " +
                 "permission fact in both arguments and never consult the pushed liveness at all",
             source.contains("AutoPasteReadiness.evaluate("),
+        )
+    }
+
+    /**
+     * #131. REVERT, each alone: the view model not passing the marker snapshot; the session owner not
+     * passing it, or reading storage instead of the snapshot; either reader not starting the load; the
+     * marker writer not updating the snapshot. Each leaves `AutoPasteReadinessObserveTest` and
+     * `PasteLifecycleSnapshotTest` green, because they drive the join and the snapshot with flows of their own.
+     */
+    @Test
+    fun bothReadinessReadersFollowTheLifecycleSnapshot() {
+        val viewModel = read("ui/ReadinessViewModel.kt")
+        val arguments = callArguments(viewModel, "AutoPasteReadiness.observe(").single()
+        assertTrue(
+            "ReadinessViewModel does not pass the lifecycle snapshot, so the Permissions page can " +
+                "never say auto-paste was switched off: $arguments",
+            arguments.contains("lifecycle = PasteAccessibilityService.lifecycle.current"),
+        )
+        assertTrue(
+            "ReadinessViewModel never starts the marker read, so the snapshot stays Loading",
+            viewModel.contains("PasteAccessibilityService.loadStopMarker(appContext)"),
+        )
+        val session = read("ui/DictationSessionService.kt")
+        val evaluate = slice(session, "private fun autoPasteAvailability(): AutoPasteAvailability = AutoPasteReadiness.evaluate(", "\n    )")
+        assertTrue(
+            "The session owner does not read the in-memory snapshot, so a dictation in the switched-off " +
+                "state stays silent, or start waits on storage before startForeground: $evaluate",
+            evaluate.contains("lifecycle = PasteAccessibilityService.lifecycle.current.value,"),
+        )
+        assertTrue(
+            "The session owner never starts the marker read",
+            session.contains("PasteAccessibilityService.loadStopMarker(applicationContext)"),
+        )
+        val service = read("paste/PasteAccessibilityService.kt")
+        // The marker's own writes are a product input now, not only a log: without the arm a force-stop
+        // reads as never connected, and without the clean mark a user's own turn-off reads as Android's.
+        assertTrue(
+            "reportPreviousStop no longer arms the marker on connect, so a later force-stop is missed",
+            slice(service, "private fun reportPreviousStop() {", "\n    }").contains("writeStopMarker(clean = false)"),
+        )
+        assertTrue(
+            "markStopWasClean no longer writes the clean stop",
+            service.contains("private fun markStopWasClean() = writeStopMarker(clean = true)"),
+        )
+        assertEquals(
+            "onUnbind and onDestroy must each mark the stop clean, or a user who turns auto-paste off " +
+                "is told Android switched it off",
+            listOf(true, true),
+            listOf(
+                slice(service, "override fun onUnbind(intent: Intent?): Boolean {", "\n    }").contains("markStopWasClean()"),
+                slice(service, "override fun onDestroy() {", "\n    }").contains("markStopWasClean()"),
+            ),
+        )
+        val publish = slice(service, "private fun publishBinding(service: PasteAccessibilityService?) {", "\n        }")
+        assertTrue(
+            "publishBinding no longer suppresses the marker BEFORE liveness drops, so an ordinary turn-off " +
+                "reads unbound with the running service's armed marker, which is the switched-off state: $publish",
+            publish.contains("if (service == null) lifecycle.withdrawing() else lifecycle.connected()"),
+        )
+        // Code review r2: without the arm's lock, an arm past its instance guard re-publishes UNCLEAN over
+        // the suppression before liveness drops.
+        assertTrue(
+            "A withdrawal no longer holds the marker lock, so a concurrent arm can undo the suppression: $publish",
+            publish.contains("val lock = if (service == null) STOP_MARKER_LOCK else Any()") &&
+                publish.indexOf("synchronized(lock) {").let { it >= 0 && it < publish.indexOf("lifecycle.withdrawing()") },
+        )
+        val writer = slice(service, "private fun writeStopMarker(clean: Boolean) {", "\n    }")
+        assertTrue(
+            "A marker write no longer updates the snapshot, so a user who turns auto-paste off in this " +
+                "process is told Android switched it off: $writer",
+            writer.contains("lifecycle.recorded(if (clean) LastServiceStop.CLEAN else LastServiceStop.UNCLEAN)"),
         )
     }
 
@@ -151,6 +222,17 @@ class AutoPasteWiringTest {
             "publishBinding no longer writes the UI-facing liveness flow, so every readiness " +
                 "surface is frozen at whatever the flow was initialised to: $body",
             body.contains("boundState.value = service != null"),
+        )
+        // Readiness reads liveness from the lifecycle snapshot (#131), so it too has exactly one writer,
+        // the same function, or the insertion path and the readiness surfaces can disagree.
+        assertEquals(
+            "The lifecycle snapshot's liveness is written outside publishBinding",
+            listOf("lifecycle.withdrawing()", "lifecycle.connected()"),
+            Regex("lifecycle\\.(withdrawing|connected)\\(\\)").findAll(source).map { it.value }.toList(),
+        )
+        assertTrue(
+            "publishBinding no longer writes the lifecycle snapshot's liveness: $body",
+            body.contains("lifecycle.withdrawing() else lifecycle.connected()"),
         )
         assertTrue(
             "onServiceConnected must publish through publishBinding",
@@ -322,7 +404,17 @@ class AutoPasteWiringTest {
             ),
             Triple(
                 "the Permissions page 'not connected' card",
-                "autoPaste == AutoPasteAvailability.PERMITTED_NOT_RUNNING",
+                "AutoPasteAvailability.PERMITTED_NOT_RUNNING -> AutoPasteNotice(",
+                source,
+            ),
+            Triple(
+                "the Permissions page 'switched off' card",
+                "AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AutoPasteNotice(",
+                source,
+            ),
+            Triple(
+                "the Permissions page rendering its calm card",
+                "calmAutoPasteNotice(readiness, autoPaste)?.let { notice ->",
                 source,
             ),
             Triple(

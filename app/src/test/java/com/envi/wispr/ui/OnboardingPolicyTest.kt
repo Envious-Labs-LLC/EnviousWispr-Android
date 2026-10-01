@@ -2,6 +2,7 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.paste.AccessibilityPermissionCheck
 import com.envi.wispr.paste.AutoPasteAvailability
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -20,6 +21,24 @@ class OnboardingPolicyTest {
         assertEquals(OnboardingStage.PERMISSIONS, onboardingStage(3, ready, AutoPasteAvailability.PERMITTED_NOT_RUNNING))
     }
 
+    /** #131: a restored Demo or Practice step returns to Permissions when Android switched auto-paste off. */
+    @Test fun switchedOffAccessibilityDoesNotAllowPractice() {
+        assertEquals(OnboardingStage.PERMISSIONS, onboardingStage(4, ready, AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY))
+        assertEquals(OnboardingStage.PERMISSIONS, onboardingStage(3, ready, AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY))
+    }
+
+    /** #131: the setup row says it was switched off and how to turn it back on, never the first-time copy. */
+    @Test fun theSetupRowNamesEachAutoPasteState() {
+        val expected = mapOf(
+            AutoPasteAvailability.LIVE to ACCESSIBILITY_CARD_COPY,
+            AutoPasteAvailability.NOT_PERMITTED to ACCESSIBILITY_CARD_COPY,
+            AutoPasteAvailability.PERMITTED_NOT_RUNNING to "Access is on. Waiting for the service to connect.",
+            AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY to "Switched off. Turn it back on in Accessibility settings.",
+        )
+        assertEquals(AutoPasteAvailability.entries.toSet(), expected.keys)
+        expected.forEach { (autoPaste, copy) -> assertEquals("$autoPaste", copy, accessibilityRowCopy(autoPaste)) }
+    }
+
     @Test fun notificationsAreOptionalButMicrophoneIsRequired() {
         assertEquals(OnboardingStage.PRACTICE, onboardingStage(4, ready, AutoPasteAvailability.LIVE))
         assertEquals(OnboardingStage.DEMO, onboardingStage(3, ready, AutoPasteAvailability.LIVE))
@@ -33,7 +52,7 @@ class OnboardingPolicyTest {
     }
 
     @Test fun anOlderModelCheckCannotRevokeANewerPermissionAnswer() {
-        val granted = AppReadiness(microphoneGranted = true, notificationsGranted = true, accessibilityPermitted = true)
+        val granted = AppReadiness(microphoneGranted = true, notificationsGranted = true, accessibility = AccessibilityPermissionCheck.GRANTED)
         val checkedBeforeGrant = AppReadiness(speechModelReady = true, polishModelReady = true)
         assertEquals(granted.copy(speechModelReady = true, polishModelReady = true), granted.withVerifiedModels(checkedBeforeGrant))
     }

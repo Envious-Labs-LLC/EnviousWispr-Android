@@ -286,7 +286,7 @@ internal fun PermissionsPage(
     onOpenAccessibility: () -> Unit,
 ) {
     ScreenContainer(subtitle = SettingsPage.Permissions.subtitle) {
-        if (!readiness.coreReady || autoPaste == AutoPasteAvailability.NOT_PERMITTED) {
+        if (setupCardShows(readiness, autoPaste)) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
             ) {
@@ -313,42 +313,13 @@ internal fun PermissionsPage(
         }
 
         // A separate, CALMER card, and calmer has to be visible or the split is only in the source.
-        // The permission is granted, so routing the user back to grant it would be a wrong
-        // instruction, and the service is legitimately unbound for a moment at every cold start:
-        // firing the same red alarm through that window would train the user to ignore it.
-        // Suppressed entirely while the setup card above is showing, so the screen never carries
-        // two alarm cards for one unfinished setup.
-        if (readiness.coreReady && autoPaste == AutoPasteAvailability.PERMITTED_NOT_RUNNING) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                ),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    StatusDot(ready = false, description = autoPaste.statusDescription())
-                    Column(Modifier.weight(1f)) {
-                        Text("Auto-paste is not connected", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            // No destination named here. `autoCopyToClipboard` decides whether
-                            // that is the clipboard or History, and this card cannot see it; the
-                            // line after a dictation names the destination that was measured.
-                            "Your words will not go into the field until it reconnects. If it " +
-                                "stays disconnected, turn EnviousWispr off and then on in " +
-                                "Accessibility settings.",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                    FilledTonalButton(onClick = onOpenAccessibility) {
-                        Text("Accessibility settings")
-                    }
-                }
-            }
+        // Neither state is the setup a new user still has to do, so routing either back to the guided
+        // checks would be a wrong instruction. The service is legitimately unbound for a moment at every
+        // cold start, and firing the red alarm through that window would train the user to ignore it.
+        // Suppressed entirely while the setup card above is showing, so the screen never carries two
+        // alarm cards for one unfinished setup; the row below still names the auto-paste state then.
+        calmAutoPasteNotice(readiness, autoPaste)?.let { notice ->
+            AutoPasteNoticeCard(autoPaste, notice, onOpenAccessibility)
         }
 
         Text(
@@ -399,12 +370,7 @@ internal fun PermissionsPage(
             HorizontalDivider()
             SettingsActionRow(
                 title = "Auto-paste access",
-                subtitle = when (autoPaste) {
-                    AutoPasteAvailability.LIVE -> "Ready for side-button dictation"
-                    AutoPasteAvailability.PERMITTED_NOT_RUNNING ->
-                        "Turned on but not connected. Words will not go into the field until it reconnects."
-                    AutoPasteAvailability.NOT_PERMITTED -> "Needs accessibility permission"
-                },
+                subtitle = autoPasteRowSubtitle(autoPaste),
                 ready = autoPaste == AutoPasteAvailability.LIVE,
                 statusDescription = autoPaste.statusDescription(),
                 onClick = onOpenAccessibility,
@@ -416,6 +382,81 @@ internal fun PermissionsPage(
                 ready = null,
                 onClick = onContinueSetup,
             )
+        }
+    }
+}
+
+/** The red "Setup needs attention" card: core setup unfinished, or auto-paste never set up. */
+internal fun setupCardShows(readiness: AppReadiness, autoPaste: AutoPasteAvailability): Boolean =
+    !readiness.coreReady || autoPaste == AutoPasteAvailability.NOT_PERMITTED
+
+/** The calm card, only once core setup is done, so the page never carries two alarm cards. */
+internal fun calmAutoPasteNotice(readiness: AppReadiness, autoPaste: AutoPasteAvailability): AutoPasteNotice? =
+    if (readiness.coreReady) autoPasteNotice(autoPaste) else null
+
+/** The words of the Permissions page's calm auto-paste card. */
+internal data class AutoPasteNotice(val title: String, val body: String)
+
+/**
+ * The calm card for a known auto-paste state with one way out, or null where there is none. Neither state
+ * is the setup a new user still has to do, so routing either back to the guided checks would be wrong.
+ */
+internal fun autoPasteNotice(autoPaste: AutoPasteAvailability): AutoPasteNotice? = when (autoPaste) {
+    AutoPasteAvailability.PERMITTED_NOT_RUNNING -> AutoPasteNotice(
+        title = "Auto-paste is not connected",
+        // No destination named here. `autoCopyToClipboard` decides whether that is the clipboard or
+        // History, and this card cannot see it; the line after a dictation names the measured one.
+        body = "Your words will not go into the field until it reconnects. If it stays disconnected, " +
+            "turn EnviousWispr off and then on in Accessibility settings.",
+    )
+    // The stop marker proves only that no orderly stop was recorded, not who switched it off, so the
+    // body says how it CAN happen and never states a cause (#131).
+    AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AutoPasteNotice(
+        title = "Auto-paste was switched off",
+        body = "This can happen when the app is stopped. Turn EnviousWispr back on in Accessibility settings.",
+    )
+    AutoPasteAvailability.NOT_PERMITTED,
+    AutoPasteAvailability.LIVE,
+    -> null
+}
+
+/** The Permissions page's auto-paste row, per state. */
+internal fun autoPasteRowSubtitle(autoPaste: AutoPasteAvailability): String = when (autoPaste) {
+    AutoPasteAvailability.LIVE -> "Ready for side-button dictation"
+    AutoPasteAvailability.PERMITTED_NOT_RUNNING ->
+        "Turned on but not connected. Words will not go into the field until it reconnects."
+    AutoPasteAvailability.NOT_PERMITTED -> "Needs accessibility permission"
+    AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AUTO_PASTE_SWITCHED_OFF_ROW
+}
+
+@Composable
+private fun AutoPasteNoticeCard(
+    autoPaste: AutoPasteAvailability,
+    notice: AutoPasteNotice,
+    onOpenAccessibility: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            StatusDot(ready = false, description = autoPaste.statusDescription())
+            // The button sits UNDER the words, not beside them: beside them, its label took most of the
+            // row on the S26 and the title wrapped mid-word ("Auto-pas te", build 244, 2026-10-01).
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(notice.title, style = MaterialTheme.typography.titleMedium)
+                Text(notice.body, style = MaterialTheme.typography.bodyMedium)
+                FilledTonalButton(onClick = onOpenAccessibility, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("Accessibility settings")
+                }
+            }
         }
     }
 }

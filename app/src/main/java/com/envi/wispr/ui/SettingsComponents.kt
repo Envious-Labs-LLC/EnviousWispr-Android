@@ -314,5 +314,10 @@ internal fun StatusDot(ready: Boolean, description: String? = null) {
 internal fun AutoPasteAvailability.statusDescription(): String = when (this) {
     AutoPasteAvailability.LIVE -> "Ready"
     AutoPasteAvailability.PERMITTED_NOT_RUNNING -> "Not connected"
-    AutoPasteAvailability.NOT_PERMITTED -> "Needs attention"
+    AutoPasteAvailability.NOT_PERMITTED,
+    AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY,
+    -> "Needs attention"
 }
+
+/** The auto-paste row's sentence on the Permissions page and in setup when Android switched it off (#131). */
+internal const val AUTO_PASTE_SWITCHED_OFF_ROW = "Switched off. Turn it back on in Accessibility settings."

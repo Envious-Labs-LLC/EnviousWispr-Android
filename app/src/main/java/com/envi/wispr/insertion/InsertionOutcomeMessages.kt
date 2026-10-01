@@ -28,6 +28,10 @@ import com.envi.wispr.paste.InsertionHandoff
  * the destination is measured, not inferred, so the one case it cannot get wrong is the one where a
  * dead service makes the entry point unknowable, which is reasoned about on
  * `InsertionHandoff.SERVICE_NOT_RUNNING` in [autoPasteWasExpectedToWork].
+ *
+ * One state adds a second sentence after the destination (#131): with the setting measured as cleared
+ * after an unclean stop, "Auto-paste is off" is a reading, not an inference, and it names the user's
+ * fix. It still names no actor, because the stop marker cannot say who switched it off.
  */
 internal class FallbackAnnouncement private constructor(val line: String) {
     companion object {
@@ -52,7 +56,18 @@ internal class FallbackAnnouncement private constructor(val line: String) {
             ) {
                 return null
             }
-            return FallbackAnnouncement(destinationLine(clipboard, savedInHistory, kept))
+            val destination = destinationLine(clipboard, savedInHistory, kept)
+            // The one cause this line may name (#131): the setting is measured as cleared, so "is off" is
+            // a fact, and the fix is the user's to make. It says nothing about who switched it off.
+            return FallbackAnnouncement(
+                when (autoPaste) {
+                    AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> "$destination $AUTO_PASTE_SWITCHED_OFF_TAIL"
+                    AutoPasteAvailability.NOT_PERMITTED,
+                    AutoPasteAvailability.PERMITTED_NOT_RUNNING,
+                    AutoPasteAvailability.LIVE,
+                    -> destination
+                },
+            )
         }
 
         /**
@@ -134,13 +149,19 @@ internal object InsertionOutcomeMessages {
         autoPaste: AutoPasteAvailability,
         clipboard: ClipboardInsertionPolicy?,
     ): String {
-        // Where the words will go is either not decided yet or not decided until the insertion is
-        // attempted, so this says nothing about it.
-        val destinationIsDecided =
-            clipboard != null && autoPaste == AutoPasteAvailability.NOT_PERMITTED
-        if (!destinationIsDecided) return "Speak naturally. Stop or cancel at any time."
-        // Clipboard-only mode by the user's own choice, so the destination IS known in advance.
-        // Not a fault for this user, so it is not reported as one.
+        // Unless the setting is off and the clipboard setting has been read, where the words will go is
+        // either not decided yet or not decided until the insertion is attempted, so this says nothing.
+        val autoPasteIsOff = when (autoPaste) {
+            AutoPasteAvailability.NOT_PERMITTED,
+            AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY,
+            -> true
+            AutoPasteAvailability.PERMITTED_NOT_RUNNING,
+            AutoPasteAvailability.LIVE,
+            -> false
+        }
+        if (clipboard == null || !autoPasteIsOff) return "Speak naturally. Stop or cancel at any time."
+        // The setting is off, so the destination IS known in advance. Not a fault for a user who chose
+        // clipboard-only mode, and a switched-off one is told once, after the words exist (#131).
         return if (clipboard.autoCopyToClipboard) {
             "Speak naturally. Your words will go to the clipboard."
         } else {
@@ -195,6 +216,8 @@ private fun autoPasteWasExpectedToWork(
 ): Boolean {
     val permitted = when (autoPaste) {
         AutoPasteAvailability.NOT_PERMITTED -> false
+        // Auto-paste was on and went off without an orderly stop (#131): the user is still relying on it.
+        AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY,
         AutoPasteAvailability.PERMITTED_NOT_RUNNING,
         AutoPasteAvailability.LIVE,
         -> true
@@ -270,6 +293,9 @@ private fun destinationLine(
     kept == WordsKept.UNCONFIRMED -> "Saving your words. Open EnviousWispr to check."
     else -> "Your words could not be saved. Please dictate again."
 }
+
+/** Said after the destination when the setting was cleared under a service that never stopped in order (#131). */
+private const val AUTO_PASTE_SWITCHED_OFF_TAIL = "Auto-paste is off; turn it back on in Accessibility settings."
 
 /** The same fact, for the one path where the words may ALSO already be in the field. */
 private fun hedgedDestinationLine(

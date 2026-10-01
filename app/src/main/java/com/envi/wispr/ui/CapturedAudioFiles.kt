@@ -12,7 +12,7 @@ import java.util.concurrent.Executors
  * delete worker, which outlives every Service instance as the History queue does (#115), so a take's file is
  * deleted even when the Service is destroyed right after its ending (#253).
  *
- * Before the delete, [archive] keeps a copy (#373, the newest ten takes in production); a copy that fails says so
+ * Before the delete, [archive] keeps a copy (#373, the newest ten takes, only while the Developer page's Keep recordings switch is on: #375); a copy that fails says so
  * and never stops the delete.
  */
 internal class CapturedAudioFiles(

@@ -137,7 +137,11 @@ internal fun workUiState(info: WorkInfo?, ready: Boolean, model: com.envi.wispr.
         .ifBlank { null }
     val controls = ModelDeliveryControlStore(com.envi.wispr.models.ModelStorage.root(context)).read(model)
     val stale = ModelDeliveryWorker.hasStaleInstallation(context, model)
-    return modelUiState(ready, info?.state?.name, progressState, bytes, total, reason, controls.name, stale)
+    // A finished removal says so in its output; one finished before that flag existed is known by the model
+    // directory being gone, which a successful download never leaves (it succeeds only once verified in place).
+    val removed = info?.outputData?.getBoolean(ModelDeliveryWorker.KEY_REMOVED, false) == true ||
+        !com.envi.wispr.models.ModelDeliveryStore(com.envi.wispr.models.ModelStorage.root(context)).finalDirectory(model).exists()
+    return modelUiState(ready, info?.state?.name, progressState, bytes, total, reason, controls.name, stale, removed)
 }
 
 internal fun preferredModelWork(download: List<WorkInfo>, adoption: List<WorkInfo>): WorkInfo? {

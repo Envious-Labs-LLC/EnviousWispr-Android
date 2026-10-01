@@ -27,6 +27,8 @@ internal fun modelUiState(
     reason: String? = null,
     controlState: String? = null,
     staleInstalled: Boolean = false,
+    /** The finished work left no installed model: a removal (`ModelDeliveryWorker.KEY_REMOVED`), not a download. */
+    removed: Boolean = false,
 ): ModelUiState {
     val normalizedWork = workState?.uppercase()
     val normalizedProgress = progressState?.uppercase()
@@ -68,10 +70,10 @@ internal fun modelUiState(
             ModelUiState("Paused", ModelHealth.NOT_READY, safeBytes, safeTotal, reason, ModelUiAction.RESUME)
         } else if (verifiedReady) {
             ModelUiState("Ready", ModelHealth.READY, safeBytes, safeTotal, action = ModelUiAction.REMOVE)
-        } else if (cancelled) {
-            // A finished REMOVAL: `enqueueRemove` writes CANCELLED, then its work SUCCEEDS on the download chain.
-            // Without this branch the card fell to "Checking" with no action, and nothing on the tab could bring
-            // the model back (S26, build 246, 2026-10-01).
+        } else if (removed) {
+            // A finished REMOVAL succeeds on the download chain too. Read as a download that is still verifying, it
+            // left the card on "Checking" with no action and no way to bring the model back (S26, build 246,
+            // 2026-10-01).
             ModelUiState("Missing", ModelHealth.NOT_READY, safeBytes, safeTotal, action = ModelUiAction.DOWNLOAD)
         } else if (staleInstalled) {
             ModelUiState("Update available", ModelHealth.NOT_READY, safeBytes, safeTotal, action = ModelUiAction.UPDATE)

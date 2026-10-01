@@ -28,13 +28,15 @@ class ModelDeliveryUiTest {
 
     /**
      * S26, build 246: Remove on Parakeet left the card on "Checking" with no button and no way to download it
-     * again. A finished removal (control CANCELLED, its work SUCCEEDED on the download chain) offers Download.
+     * again. A finished removal (its work SUCCEEDED on the download chain, the control already cleared, as the
+     * worker leaves it) offers Download; a finished download still verifying keeps Checking.
      */
     @Test fun aFinishedRemovalOffersDownloadAgain() {
-        val removed = modelUiState(false, "SUCCEEDED", controlState = ModelDeliveryControlState.CANCELLED.name)
+        val removed = modelUiState(false, "SUCCEEDED", controlState = ModelDeliveryControlState.ACTIVE.name, removed = true)
         assertEquals("Missing", removed.label)
         assertEquals(ModelUiAction.DOWNLOAD, removed.action)
         assertEquals(ModelHealth.NOT_READY, removed.health)
+        assertEquals(ModelUiAction.NONE, modelUiState(false, "SUCCEEDED", controlState = ModelDeliveryControlState.ACTIVE.name).action)
     }
 
     @Test fun repairNeededProgressOffersRepair() {

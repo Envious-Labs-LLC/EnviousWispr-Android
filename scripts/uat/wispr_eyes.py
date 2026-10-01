@@ -851,6 +851,34 @@ def look(only_ours=False, nodes=None):
     return "\n".join(unique)
 
 
+def _one_press(matches, package):
+    """Whether several matching nodes are ONE press: every one resolves to the same clickable control
+    (itself, or its nearest clickable ancestor, exactly as `tap` would press it) AND each pair is nested,
+    one box inside the other.
+
+    Both halves are needed. A shared ancestor alone is not one press: two labels in two rows of one
+    clickable list share that list, and `tap` presses at the LABEL's row, so they are two places. Nesting
+    alone is not either: a label can sit inside one control while a different control is drawn over it.
+    """
+    targets = set()
+    for node in matches:
+        try:
+            target = node if node["clickable"] else _holder(node, lambda n: n["clickable"], package=package)
+        except Blocked:
+            return False
+        if target is None:
+            return False
+        targets.add((target["bounds"], target["package"]))
+    if len(targets) != 1:
+        return False
+
+    def inside(a, b):
+        return a[0] >= b[0] and a[1] >= b[1] and a[2] <= b[2] and a[3] <= b[3]
+
+    return all(inside(m["bounds"], n["bounds"]) or inside(n["bounds"], m["bounds"])
+               for i, m in enumerate(matches) for n in matches[i + 1:])
+
+
 def find(text, exact=True, clickable=None, package=PACKAGE, stable=False):
     """The ONE node matching, or a refusal naming every candidate.
 
@@ -889,6 +917,12 @@ def find(text, exact=True, clickable=None, package=PACKAGE, stable=False):
         # at one point are one press, not a guess; the ambiguity this refuses is two DIFFERENT places.
         if len({n["centre"] for n in matches}) == 1:
             matches = [next((n for n in matches if n["clickable"]), matches[0])]
+    if len(matches) > 1 and _one_press(matches, package):
+        # One tile, its name twice inside it (#315: an AI Polish provider tile carries "Gemini" as its own
+        # description AND as a TextView child, at different centres). Both resolve to the one control a
+        # press would reach, and each lies inside the other, so pressing either presses the same thing.
+        # The innermost is kept: `tap` takes its row from the label.
+        matches = [min(matches, key=lambda n: (n["bounds"][2] - n["bounds"][0]) * (n["bounds"][3] - n["bounds"][1]))]
     if len(matches) > 1:
         where = "; ".join(f"{_label(n)!r} at {n['centre']}" for n in matches)
         raise Blocked(

@@ -49,6 +49,26 @@ ONE_BUTTON_TWO_NODES = """<?xml version='1.0' encoding='UTF-8'?>
   </node>
 </hierarchy>"""
 
+# #315, observed 2026-09-24 on the emulator: an AI Polish provider tile carries its name as its own
+# description (same box as the tile) AND as a TextView child, at different centres. One press.
+ONE_TILE_NAME_TWICE = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="" bounds="[477,940][867,1168]" package="com.envi.wispr" clickable="true" enabled="true">
+    <node text="" content-desc="Gemini" bounds="[477,940][867,1168]" package="com.envi.wispr" clickable="false" enabled="true" />
+    <node text="Gemini" bounds="[600,1076][744,1129]" package="com.envi.wispr" clickable="false" enabled="true" />
+  </node>
+</hierarchy>"""
+
+# The case the #315 rule must still refuse: one clickable list holding two rows that each say "Gemini".
+# They share the list as their nearest clickable ancestor, but they are two places, not one.
+ONE_LIST_TWO_ROWS = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="" bounds="[0,800][1080,1400]" package="com.envi.wispr" clickable="true" enabled="true">
+    <node text="Gemini" bounds="[100,900][400,960]" package="com.envi.wispr" clickable="false" enabled="true" />
+    <node text="Gemini" bounds="[100,1200][400,1260]" package="com.envi.wispr" clickable="false" enabled="true" />
+  </node>
+</hierarchy>"""
+
 NOTHING_OF_OURS = """<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy rotation="0">
   <node text="Gmail" bounds="[0,100][100,200]" package="com.google.android.apps.nexuslauncher" clickable="true" enabled="true" />
@@ -651,6 +671,19 @@ def main():
     original = with_screen(ONE_BUTTON_TWO_NODES)
     found = eyes.find("Update", exact=True, package="com.android.vending")
     check("two nodes at one point resolve to the clickable one", found["clickable"] and found["centre"] == (784, 852), found)
+    restore_adb(original)
+    # #315: a tile's name twice inside the one tile is one press, and the innermost label is kept.
+    original = with_screen(ONE_TILE_NAME_TWICE)
+    found = eyes.find("Gemini")
+    check("one tile's name twice resolves to its inner label", found["bounds"] == (600, 1076, 744, 1129), found)
+    restore_adb(original)
+    # Two rows of one clickable list still refuse: a shared ancestor is not one press.
+    original = with_screen(ONE_LIST_TWO_ROWS)
+    try:
+        eyes.find("Gemini")
+        check("two rows sharing one clickable list still refuse", False, "it resolved to one")
+    except eyes.Blocked as refusal:
+        check("two rows sharing one clickable list still refuse", "2 nodes match" in str(refusal), refusal)
     restore_adb(original)
     original = with_screen(TWO_REMOVES)
 

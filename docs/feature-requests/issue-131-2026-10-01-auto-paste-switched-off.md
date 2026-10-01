@@ -239,7 +239,7 @@ disagree with the first.
 | new member | `SettingsComponents.statusDescription` | 3 labels | 4th label | yes | compile + copy row |
 | new member | `SettingsPages` cards and row | red setup card | calm cause card | yes | row in a new copy test |
 | new member | `OnboardingScreen` row | generic | sentence | yes | copy row |
-| new member | `OnboardingPolicy` | not LIVE → PERMISSIONS | same | no | `OnboardingPolicyTest` |
+| new member | `onboardingStage` | not LIVE → PERMISSIONS | same | no | `OnboardingPolicyTest` |
 | new member | `InsertionOutcomeMessages` (listening, expected, fallback) | silent | one line | yes | `InsertionOutcomeMessagesTest` new rows |
 | evaluate input | `ReadinessViewModel`, `DictationSessionService` | two inputs | three | yes | `AutoPasteAvailabilityTest`, wiring test |
 

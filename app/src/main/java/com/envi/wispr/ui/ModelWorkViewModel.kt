@@ -39,8 +39,9 @@ internal data class ModelWorkUiState(
 /**
  * The settings shell's one owner of model-delivery observation (#255). A model is observed only while its tab
  * shows and the activity is started ([show]); its WorkManager work and verified readiness are projected on
- * [io], never during composition, and published on main. Each activation starts at [CHECKING], so a card
- * cached from before a hidden download, removal or repair is never shown as current. [finished] is the
+ * [io], never during composition, and published on main. Each activation starts its own card at [CHECKING], so a
+ * card cached from before a hidden download, removal or repair is never shown as current; the card of the tab
+ * being left keeps its last value while that tab fades out. [finished] is the
  * always-on signal that some model work finished, which the activity turns into its readiness refresh.
  * Onboarding keeps its own pipeline (`OnboardingViewModel`), which also verifies files and stages bytes.
  */
@@ -79,12 +80,15 @@ internal class ModelWorkViewModel(
     fun show(destination: AppDestination?) {
         activation?.cancel()
         activation = null
-        published.value = ModelWorkUiState()
         val model = when (destination) {
             AppDestination.Polish -> ModelManifest.s1
             AppDestination.Transcription -> ModelManifest.parakeet
             AppDestination.History, AppDestination.Dictionary, null -> return
         }
+        // Only the ARRIVING card restarts at Checking. The tab being left is still on screen while it fades
+        // out, and resetting its card there flashed a red "Checking" on every tab switch (S26, build 245,
+        // 2026-10-01). It is never shown again without passing through this reset first.
+        publish(model, CHECKING)
         activation = viewModelScope.launch {
             observe(model)
                 // A failed observation shows the neutral card; the next activation retries.

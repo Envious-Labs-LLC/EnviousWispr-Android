@@ -183,6 +183,31 @@ class ModelWorkViewModelTest {
         assertEquals("a fresh subscription", 2, subscribed(s1Download))
     }
 
+    /**
+     * Row 5a (S26, build 245): switching tabs leaves the outgoing card as it was, because that tab is still on
+     * screen while it fades out; resetting it flashed a red "Checking" on every switch. The arriving card still
+     * starts at Checking (row 5). MUTATION: reset both cards in `show`.
+     */
+    @Test fun theCardBeingLeftKeepsItsValueWhileItsTabFadesOut() {
+        seed(s1Download, s1Adoption, parakeetDownload, parakeetAdoption)
+        val vm = viewModel()
+        onMain { vm.show(AppDestination.Polish) }
+        awaitModels(vm) { it.polish.label == "s1 RUNNING false" }
+        var firstFrame: ModelWorkUiState? = null
+        onMain {
+            vm.show(AppDestination.Transcription)
+            firstFrame = vm.models.value
+        }
+        assertEquals("the outgoing S1 card flashed", "s1 RUNNING false", firstFrame?.polish?.label)
+        assertEquals("the arriving card starts at Checking", ModelWorkViewModel.CHECKING, firstFrame?.speech)
+        var leaving: ModelWorkUiState? = null
+        onMain {
+            vm.show(AppDestination.Dictionary)
+            leaving = vm.models.value
+        }
+        assertEquals("leaving for a tab with no card resets nothing", firstFrame?.polish, leaving?.polish)
+    }
+
     /** Row 5b: a projection still running when the tab changes never lands on the new tab. MUTATION: omit cancellation. */
     @Test fun aLateProjectionNeverLandsAfterTheTabChanged() {
         seed(s1Download, s1Adoption, parakeetDownload, parakeetAdoption)

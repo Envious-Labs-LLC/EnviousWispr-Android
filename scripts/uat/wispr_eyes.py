@@ -2772,7 +2772,7 @@ def rebind_auto_paste_if_unbound():
 
 
 @_atomic_change
-def stop_app():
+def stop_app(keep_switched_off=False):
     """Force-stop the app, and put auto-paste back, because force-stopping silently switches it off.
 
     **MEASURED TWO WAYS ON THE PHONE, 2026-09-06.** Before: `bound=True`, the setting names our
@@ -2786,9 +2786,9 @@ def stop_app():
     force-stop: measured on the S26 2026-10-01, it kills the app but KEEPS the setting, and the service
     sits in "Crashed services" until it is turned off and on (the app's "not connected" state).
 
-    **IT CANNOT STAGE THE "AUTO-PASTE WAS SWITCHED OFF" UAT (#131)**, because it puts the setting back
-    before anything reads the cleared state. That UAT needs a bare `am force-stop` left unrepaired while
-    the app is opened and read, with `restore()` (or `enable_auto_paste()`) as its recorded cleanup.
+    **`keep_switched_off=True` STAGES THE "AUTO-PASTE WAS SWITCHED OFF" UAT (#131)**: the default puts
+    the setting back before anything can read the cleared state, so that UAT leaves it cleared. The
+    previous settings stay in the restore book, and `restore()` puts them back.
     """
     # MEMBERSHIP, NOT EQUALITY. With any other accessibility service also enabled the value reads
     # `theirs:ours`, so an equality test answered "it was not on" and the repair below never ran.
@@ -2805,6 +2805,8 @@ def stop_app():
     _adb(f"am force-stop {PACKAGE}")
     time.sleep(1)
     _STATE["tree"] = None
+    if keep_switched_off:
+        return
     if was_on:
         _put_a11y(before)
         for _ in range(6):

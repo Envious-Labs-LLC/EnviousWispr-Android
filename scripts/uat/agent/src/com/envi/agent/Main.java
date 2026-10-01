@@ -220,8 +220,9 @@ public final class Main {
             windows.sort((x, y) -> Integer.compare(x.getLayer(), y.getLayer()));
             for (AccessibilityWindowInfo window : windows) {
                 AccessibilityNodeInfo root = window.getRoot();
-                if (root == null) continue;
-                any = true;
+                // EVERY window is reported, a rootless one too: it still covers what is under it, and leaving
+                // it out let a press go under it (code review round 2).
+                if (root != null) any = true;
                 // WINDOW IDENTITY TRAVELS WITH ITS NODES, so the host can refuse a target that a higher
                 // window (a dialog, the keyboard, a bar) covers: a tap goes to whatever is on top.
                 Rect wb = new Rect();
@@ -229,11 +230,13 @@ public final class Main {
                 xml.append("<window id=\"").append(window.getId()).append("\" layer=\"").append(window.getLayer())
                         .append("\" type=\"").append(window.getType()).append("\" bounds=\"[").append(wb.left).append(',')
                         .append(wb.top).append("][").append(wb.right).append(',').append(wb.bottom).append("]\">");
-                node(xml, root, 0);
+                if (root != null) node(xml, root, 0);
                 xml.append("</window>");
             }
         }
         if (!any) {
+            // No window had a root: fall back to the active window alone, outside any <window>, so the host
+            // knows it has no covering information for these nodes.
             AccessibilityNodeInfo root = automation.getRootInActiveWindow();
             if (root != null) node(xml, root, 0);
         }
@@ -361,7 +364,25 @@ public final class Main {
     private static void text(String value) throws Exception {
         KeyEvent[] events = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(value.toCharArray());
         if (events == null) throw new IllegalArgumentException("text has characters the virtual keyboard map cannot type");
-        for (KeyEvent event : events) send(event);
+        // Every key (a character or a shift) that went DOWN is released if a later event fails, flagged
+        // cancelled, so a failure mid-text never leaves a key held (code review round 2).
+        java.util.ArrayDeque<KeyEvent> held = new java.util.ArrayDeque<>();
+        boolean finished = false;
+        try {
+            for (KeyEvent event : events) {
+                send(event);
+                if (event.getAction() == KeyEvent.ACTION_DOWN) held.push(event);
+                else if (event.getAction() == KeyEvent.ACTION_UP) held.removeIf(down -> down.getKeyCode() == event.getKeyCode());
+            }
+            finished = true;
+        } finally {
+            if (!finished) {
+                for (KeyEvent down : held) {
+                    long now = SystemClock.uptimeMillis();
+                    try { send(new KeyEvent(down.getDownTime(), now, KeyEvent.ACTION_UP, down.getKeyCode(), 0, down.getMetaState(), -1, 0, KeyEvent.FLAG_CANCELED)); } catch (Throwable ignored) { }
+                }
+            }
+        }
     }
 
     private static void key(int code) throws Exception {

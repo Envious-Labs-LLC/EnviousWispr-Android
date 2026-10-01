@@ -827,8 +827,75 @@ def test_agent():
         check("a partial landing refuses", False, "it reported success")
     except eyes.Blocked as refusal:
         check("a partial landing refuses and is NOT retyped", "Not retyped" in str(refusal) and texts == ["abc"], (str(refusal), texts))
+    # REVERT: bring back the length-and-substring success test, and `abcXYZ` passes for `old` + `abc`.
+    state.update(text="old", hint="false"); texts.clear()
+
+    def corrupting(line):
+        if line.startswith("text "):
+            texts.append(line[5:]); state["text"] = "abcXYZ"; return ""
+        return typing_agent(False)(line)
+    eyes._agent_call = corrupting
+    try:
+        eyes.type_text("abc")
+        check("a read-back that is not old text plus typed text refuses", False, "it reported success")
+    except eyes.Blocked:
+        check("a read-back that is not old text plus typed text refuses", True)
+    # REVERT: drop the bounds from the field identity, and focus moving to a twin field still types.
+    twins = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0"><window id="7" layer="1" type="1" bounds="[0,0][1000,2000]">
+  <node text="" class="android.widget.EditText" package="com.example" focused="{a}" bounds="[0,100][1000,200]" clickable="true" enabled="true" />
+  <node text="" class="android.widget.EditText" package="com.example" focused="{b}" bounds="[0,300][1000,400]" clickable="true" enabled="true" />
+</window></hierarchy>"""
+    focus = {"a": "true", "b": "false"}; texts.clear()
+
+    def moving(line):
+        if line == "dump":
+            return twins.format(**focus)
+        if line == "ime":
+            focus.update(a="false", b="true")  # focus jumps to the twin while waiting for the keyboard
+            return "shown"
+        if line.startswith("text "):
+            texts.append(line[5:]); return ""
+        return "changed"
+    eyes._agent_call = moving
+    try:
+        eyes.type_text("x")
+        check("focus moving to a twin field refuses", False, texts)
+    except eyes.Blocked as refusal:
+        check("focus moving to a twin field (same id, class, window) refuses before typing",
+              "focus moved" in str(refusal) and not texts, (str(refusal), texts))
     eyes._agent_call, eyes._agent = original_call, original_agent
     eyes._STATE["tree"], eyes._STATE["eye"] = None, None
+
+    # ---- a window with no readable content still covers what is under it -------------------------
+    rootless = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <window id="1" layer="1" type="1" bounds="[0,0][1000,2000]">
+    <node text="Delete" bounds="[400,900][600,1000]" package="com.envi.wispr" clickable="true" enabled="true" />
+  </window>
+  <window id="9" layer="8" type="3" bounds="[0,800][1000,1200]"></window>
+</hierarchy>"""
+    saved = with_screen(rootless)
+    eyes.ready = lambda: True
+    pressed.clear()
+    eyes._press_at = lambda x, y, settle_s=1.2: pressed.append((x, y))
+    try:
+        eyes.tap("Delete")
+        check("a rootless window over a button blocks the press", False, pressed)
+    except eyes.Blocked as refusal:
+        check("a rootless window over a button blocks the press", "covered" in str(refusal) and not pressed, refusal)
+    eyes.ready, eyes._press_at = real_ready, real_press
+    restore_adb(saved)
+
+    # ---- dropping a link removes its forward ------------------------------------------------------
+    removed = []
+    real_run = eyes._run
+    eyes._run = lambda args, timeout=60: (removed.append(args[-2:]), (0, "", ""))[1]
+    eyes._STATE["agent_forward"] = ("serial-x", 41234)
+    eyes._STATE["agent"] = type("Link", (), {"close": lambda self: None})()
+    eyes._drop_agent_link()
+    check("dropping a link removes its adb forward", removed == [["--remove", "tcp:41234"]] and eyes._STATE["agent_forward"] is None, removed)
+    eyes._run = real_run
 
     # ---- reveal looks in the page's OWN package (2026-10-01, Samsung's Deep sleeping picker) ----------
     # REVERT: drop `package=package` from reveal's `present` calls, and a row plainly on another app's

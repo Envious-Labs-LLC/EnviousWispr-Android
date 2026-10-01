@@ -840,6 +840,7 @@ def _agent():
                 raise Blocked(f"the agent could not be pushed: {err.strip()}")
             # A copy built from older source may still hold the socket; ask it to go.
             _agent_quit_running(serial)
+        _remove_agent_forward()  # one forward per process, never a stranded one
         code, out, err = _run([ADB, "-s", serial, "forward", "tcp:0", f"localabstract:{AGENT_SOCKET}"], timeout=20)
         if code != 0 or not out.strip().isdigit():
             raise Blocked(f"adb would not forward to the agent: {err.strip() or out.strip()}")
@@ -867,14 +868,18 @@ def _agent():
 
 
 def _agent_connect(port):
+    link = None
     try:
         link = _AgentLink(port, timeout=3)
         if link.call("ping") == "pong":
             link.sock.settimeout(30)
-            return link
-        link.close()
+            good, link = link, None
+            return good
     except (OSError, Blocked):
         pass
+    finally:
+        if link is not None:
+            link.close()
     return None
 
 
@@ -893,6 +898,19 @@ def _agent_quit_running(serial):
                 time.sleep(0.5)
         finally:
             _run([ADB, "-s", serial, "forward", "--remove", f"tcp:{port}"], timeout=20)
+
+
+import atexit  # noqa: E402  (here, beside the one thing it cleans up)
+
+
+@atexit.register
+def _forget_agent_at_exit():
+    # ONE FORWARD PER PROCESS, REMOVED WHEN IT ENDS. Each errand is its own Python process; without this,
+    # every one left its adb forward behind (45 on the emulator after one benchmark session, 2026-10-01).
+    try:
+        _drop_agent_link()
+    except Exception:  # noqa: BLE001 - exit cleanup must never raise over the caller's own result
+        pass
 
 
 def _remove_agent_forward():
@@ -915,10 +933,12 @@ def agent_status():
 
 
 def _drop_agent_link():
+    """Forget the link AND remove its forward, so a reconnect never strands an unreachable forward."""
     link = _STATE["agent"]
     _STATE["agent"] = None
     if link is not None:
         link.close()
+    _remove_agent_forward()
 
 
 def stop_agent():
@@ -984,8 +1004,12 @@ def _agent_dump_xml():
 SETTLE_QUIET_MS, SETTLE_CHANGE_MS, SETTLE_TIMEOUT_MS = 250, 1500, 5000
 
 
-def _settled_tree(max_wait=2.0, gap=0.06):
-    """A read the screen agrees with twice in a row (status bar aside), or a refusal. Never a guess."""
+def _settled_tree(max_wait=5.0, gap=0.06):
+    """A read the screen agrees with twice in a row (status bar aside), or a refusal. Never a guess.
+
+    Five seconds, the agent's own settle bound: a list that fills in as it loads (All apps writes each app's
+    size a moment after opening, 2026-10-01) is still settling at two, and refusing it then is not safety.
+    """
     def shape(nodes):
         return [(n["package"], n["text"], n["desc"], n["bounds"], n["on"]) for n in nodes
                 if n["package"] != "com.android.systemui"]
@@ -1071,8 +1095,15 @@ def type_text(text):
         return [n for n in tree(refresh=True)
                 if n["focused"] and n["enabled"] and n["kind"] in ("EditText", "AutoCompleteTextView")]
 
-    def identity(n):
+    def key(n):
         return (n["package"], n["id"], n["kind"], n["window"])
+
+    def identity(n, nodes):
+        # Package, id, class and window name a field unless two editable fields share them (an empty id,
+        # code review round 2); only then does the top-left corner join, so a field that resizes as its
+        # keyboard opens (Settings search, 2026-10-01) is not mistaken for focus moving.
+        twins = [m for m in nodes if m["enabled"] and m["kind"] in ("EditText", "AutoCompleteTextView") and key(m) == key(n)]
+        return key(n) + ((n["bounds"][0], n["bounds"][1]) if len(twins) > 1 else ())
 
     deadline = time.monotonic() + 2.0
     fields = focused_fields()
@@ -1081,24 +1112,26 @@ def type_text(text):
         fields = focused_fields()
     if len(fields) != 1:
         raise Blocked(f"{len(fields)} editable fields have focus, so where the text would go is a guess")
-    field = fields[0]
+    field, field_id = fields[0], identity(fields[0], _STATE["tree"])
     deadline = time.monotonic() + 2.0
     while _agent_call("ime") != "shown":
         if time.monotonic() > deadline:
             raise Blocked("the keyboard never appeared, so typed keys would be dropped")
         time.sleep(0.05)
     fields = focused_fields()
-    if len(fields) != 1 or identity(fields[0]) != identity(field):
+    if len(fields) != 1 or identity(fields[0], _STATE["tree"]) != field_id:
         raise Blocked("focus moved to another field before typing, so the text is not sent")
     before = "" if fields[0]["hint"] else fields[0]["text"]
     _agent_call("text " + text)
     after = None
     deadline = time.monotonic() + 1.5
     while time.monotonic() < deadline:
-        now = [n for n in focused_fields() if identity(n) == identity(field)]
+        now = [n for n in focused_fields() if identity(n, _STATE["tree"]) == field_id]
         if len(now) == 1:
             after = "" if now[0]["hint"] else now[0]["text"]
-            if after == before + text or (len(after) == len(before) + len(text) and text in after):
+            # EXACTLY the old text plus the new, nothing looser: a length-and-substring test passed `abcXYZ`
+            # for `old` + `abc` (code review round 2). A caret placed mid-text refuses here, honestly.
+            if after == before + text:
                 return f"typed {text!r}; the field reads {after!r}"
         time.sleep(0.05)
     raise Blocked(f"typed {text!r} once; the field reads {after!r} where it read {before!r}, so what landed is "

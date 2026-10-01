@@ -692,9 +692,16 @@ def test_agent():
     check("an agent dump is parsed as the screen", len(nodes) == 7 and eyes._STATE["eye"] == "agent", (len(nodes), eyes._STATE["eye"]))
     # ---- the press: through the agent's settle, never `input tap` -----------------------------------
     sent.clear()
-    eyes._press_at(10, 20)
-    check("a press with the agent is sent as ONE settle command (its arrival is the agent's to judge)",
-          sent == ["settle 250 1500 5000 tap 10 20"], sent)
+    eyes._press_at(10, 20, "7")
+    check("a press with the agent is ONE settle command naming the window it aims at",
+          sent == ["settle 250 1500 5000 tap 10 20 7"], sent)
+    # REVERT: let a press go without a window id, and a target the reading cannot place is pressed blind.
+    sent.clear()
+    try:
+        eyes._press_at(10, 20, None)
+        check("with the agent, a press with no window identity refuses", False, sent)
+    except eyes.Blocked as refusal:
+        check("with the agent, a press with no window identity refuses before sending", "window identity" in str(refusal) and not sent, refusal)
     sent.clear()
     eyes._key(4)
     check("a key with the agent goes through settle too", sent and sent[0].startswith("settle ") and sent[0].endswith(" key 4"), sent)
@@ -704,7 +711,8 @@ def test_agent():
     eyes._adb = lambda command, timeout=60, check=True: (raw.append(command), (0, ""))[1]
     real_sleep = eyes.time.sleep
     eyes.time.sleep = lambda s: None
-    eyes._press_at(10, 20)
+    eyes._agent = lambda: None
+    eyes._press_at(10, 20, None)
     eyes.time.sleep = real_sleep
     check("with no agent at all a press uses input tap", raw == ["input tap 10 20"], raw)
     eyes._agent_call, eyes._adb, eyes._agent = original_call, original_adb, original_agent
@@ -728,12 +736,12 @@ def test_agent():
     eyes._agent = fresh_link
     eyes._adb = lambda command, timeout=60, check=True: (_ for _ in ()).throw(AssertionError(f"fallback used: {command}"))
     try:
-        eyes._press_at(10, 20)
+        eyes._press_at(10, 20, "7")
         check("a tap whose reply is lost refuses", False, "it returned")
     except eyes.Blocked as refusal:
         sent_lines = [l for link in links for l in link.lines]
         check("a tap whose reply is lost refuses as unknown, sent ONCE, with no input-tap fallback",
-              "unknown" in str(refusal) and sent_lines == ["settle 250 1500 5000 tap 10 20"], (str(refusal), sent_lines))
+              "unknown" in str(refusal) and sent_lines == ["settle 250 1500 5000 tap 10 20 7"], (str(refusal), sent_lines))
     links.clear()
     check("a READ whose reply is lost is retried once on a fresh link, then given up",
           eyes._agent_call("dump") is None and len(links) == 2, len(links))
@@ -777,7 +785,7 @@ def test_agent():
     real_ready, real_press = eyes.ready, eyes._press_at
     pressed = []
     eyes.ready = lambda: True
-    eyes._press_at = lambda x, y, settle_s=1.2: pressed.append((x, y))
+    eyes._press_at = lambda x, y, window=None, settle_s=1.2: pressed.append((x, y))
     try:
         eyes.tap("Delete")
         check("a button under a dialog is not pressed", False, pressed)
@@ -878,7 +886,7 @@ def test_agent():
     saved = with_screen(rootless)
     eyes.ready = lambda: True
     pressed.clear()
-    eyes._press_at = lambda x, y, settle_s=1.2: pressed.append((x, y))
+    eyes._press_at = lambda x, y, window=None, settle_s=1.2: pressed.append((x, y))
     try:
         eyes.tap("Delete")
         check("a rootless window over a button blocks the press", False, pressed)

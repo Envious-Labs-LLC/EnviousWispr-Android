@@ -946,14 +946,15 @@ def stop_agent():
     link = _STATE["agent"]
     _STATE["agent"] = None
     try:
-        if link is not None:
-            try:
-                link.sock.sendall(b"quit\n")
-            except OSError:
-                pass
+        if link is None:
+            return "no agent was running for this process"
+        try:
+            answer = link.call("quit")
+        except (OSError, Blocked) as why:
+            return f"asked the agent to stop, but it did not confirm ({why}); it exits by itself after 10 idle minutes"
+        finally:
             link.close()
-            return "agent stopped"
-        return "no agent was running for this process"
+        return "agent stopped" if answer == "bye" else f"the agent answered {answer!r} to quit"
     finally:
         _remove_agent_forward()
 
@@ -1033,9 +1034,22 @@ def _after_settle(outcome):
         raise Blocked(f"the agent's settle answered {outcome!r}, which is not one of its answers")
 
 
-def _press_at(x, y, settle_s=1.2):
-    """A tap at a point: the agent's event-driven settle, else `input tap` and the old sleep."""
-    outcome = _agent_call(f"settle {SETTLE_QUIET_MS} {SETTLE_CHANGE_MS} {SETTLE_TIMEOUT_MS} tap {int(x)} {int(y)}")
+def _window_for_agent(window, what):
+    """The window id an agent coordinate action must name. With the agent running, none is a refusal."""
+    if window is None:
+        raise Blocked(f"{what} has no window identity in this reading, so whether something covers it is "
+                      "unknown; not pressed")
+    return window
+
+
+def _press_at(x, y, window, settle_s=1.2):
+    """A tap at a point aimed at `window`: the agent refuses it unless that window is on top there (it sees
+    every window, rootless ones too); without the agent, `input tap` and the old sleep."""
+    if _agent() is not None:
+        aimed = _window_for_agent(window, f"the point ({x}, {y})")
+        outcome = _agent_call(f"settle {SETTLE_QUIET_MS} {SETTLE_CHANGE_MS} {SETTLE_TIMEOUT_MS} tap {int(x)} {int(y)} {aimed}")
+    else:
+        outcome = None
     if outcome is not None:
         _after_settle(outcome)
         return
@@ -1987,7 +2001,7 @@ def tap(text, exact=True, clickable=True, package=PACKAGE):
         raise Blocked(f"{text!r} is covered at ({x}, {y}) by {_WINDOW_TYPES.get(over['type'], 'another window')}, "
                       "so a press there would land on that instead")
     _STATE["tree"] = None
-    _press_at(x, y)
+    _press_at(x, y, node.get("window"))
     _STATE["tree"] = None
     return f"pressed {_label(node)!r} at ({x}, {y})"
 
@@ -2125,7 +2139,13 @@ def scroll(direction="down", amount=1, package=PACKAGE):
         start, end = (far, near) if direction == "down" else (near, far)
         # 150 ms of quiet, not the press's 250: a held drag stops where the finger stops, so there is no
         # coast to wait out, and the comparison below catches a list that was still moving.
-        outcome = _agent_call(f"settle 150 800 {SETTLE_TIMEOUT_MS} swipe {x} {start} {x} {end} 300")
+        # The swipe names the scroll area's window, so the agent refuses a drag that would land on a
+        # keyboard or dialog above the list (review round 3: such a drag moved nothing and read as "end").
+        if _agent() is not None:
+            aimed = _window_for_agent(areas[0].get("window"), "the scrolling area")
+            outcome = _agent_call(f"settle 150 800 {SETTLE_TIMEOUT_MS} swipe {x} {start} {x} {end} 300 {aimed}")
+        else:
+            outcome = None
         if outcome is not None:
             _after_settle(outcome)
         else:
@@ -4957,7 +4977,7 @@ def open_tab(name):
     if over is not None:
         raise Blocked(f"the {name!r} tab is covered at ({x}, {y}) by {_WINDOW_TYPES.get(over['type'], 'another window')}")
     # Through the one press path (the agent when it runs), with no fixed sleep: the read-back below waits.
-    _press_at(x, y, settle_s=0)
+    _press_at(x, y, node.get("window"), settle_s=0)
     # READ BACK that the tab took, polling up to the old fixed wait; a tap that landed mid-animation
     # is reported here rather than by the next call failing to find a switch.
     deadline = time.monotonic() + 1.2

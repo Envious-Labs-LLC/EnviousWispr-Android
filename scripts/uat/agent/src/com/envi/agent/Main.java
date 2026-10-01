@@ -39,7 +39,10 @@ import java.util.List;
  * lingers on the founder's daily phone, and a second copy refuses to start while one holds the socket.
  *
  * PROTOCOL. One command per line; every reply is `OK <byte count>\n<bytes>` or `ERR <message>\n`.
- *   ping | dump | tap X Y | swipe X1 Y1 X2 Y2 MS | text STRING | key CODE | idle IDLE_MS TIMEOUT_MS | quit
+ *   ping | dump | tap X Y WINDOW | swipe X1 Y1 X2 Y2 MS WINDOW | text STRING | key CODE | ime | idle IDLE_MS TIMEOUT_MS | quit
+ *   A coordinate action names the window it is aimed at (an id from `dump`). It is REFUSED unless that
+ *   window is the topmost one containing the point the finger lands on: this process sees every window,
+ *   rootless ones included, so no caller can press or drag under a dialog, the keyboard or a bar.
  *   settle QUIET_MS CHANGE_MS TIMEOUT_MS ACTION...  runs ACTION, waits up to CHANGE_MS for the screen to
  *     change (a window or content event), then until no event for QUIET_MS; answers `changed` or `same`.
  *     Event-driven on the phone, so the host does not poll dumps to learn when a press has landed.
@@ -111,7 +114,11 @@ public final class Main {
             String line;
             while ((line = in.readLine()) != null) {
                 lastCommand = SystemClock.uptimeMillis();
-                if (line.equals("quit")) { reply(out, "bye"); return false; }
+                if (line.equals("quit")) {
+                    // Quit means quit, whether or not the goodbye reaches the host (review round 3).
+                    try { reply(out, "bye"); } catch (Throwable ignored) { }
+                    return false;
+                }
                 try {
                     reply(out, handle(line));
                 } catch (Throwable error) {
@@ -141,8 +148,14 @@ public final class Main {
         switch (parts[0]) {
             case "ping": return "pong";
             case "dump": return dump();
-            case "tap": tap(Float.parseFloat(a[0]), Float.parseFloat(a[1])); return "";
-            case "swipe": swipe(Float.parseFloat(a[0]), Float.parseFloat(a[1]), Float.parseFloat(a[2]), Float.parseFloat(a[3]), Long.parseLong(a[4])); return "";
+            case "tap":
+                requireTopmost(Float.parseFloat(a[0]), Float.parseFloat(a[1]), a[2]);
+                tap(Float.parseFloat(a[0]), Float.parseFloat(a[1]));
+                return "";
+            case "swipe":
+                requireTopmost(Float.parseFloat(a[0]), Float.parseFloat(a[1]), a[5]);
+                swipe(Float.parseFloat(a[0]), Float.parseFloat(a[1]), Float.parseFloat(a[2]), Float.parseFloat(a[3]), Long.parseLong(a[4]));
+                return "";
             case "text": text(rest); return "";
             case "key": key(Integer.parseInt(a[0])); return "";
             case "settle": return settle(rest);
@@ -197,6 +210,23 @@ public final class Main {
         return false;
     }
 
+    /** Refuses unless window `id` is the topmost window whose bounds contain (x, y). */
+    private static void requireTopmost(float x, float y, String id) {
+        List<AccessibilityWindowInfo> windows = automation.getWindows();
+        if (windows == null || windows.isEmpty()) throw new IllegalStateException("no windows are visible, so where a touch lands is unknown");
+        AccessibilityWindowInfo top = null;
+        Rect bounds = new Rect();
+        for (AccessibilityWindowInfo window : windows) {
+            window.getBoundsInScreen(bounds);
+            if (bounds.contains((int) x, (int) y) && (top == null || window.getLayer() > top.getLayer())) top = window;
+        }
+        if (top == null) throw new IllegalStateException("no window contains (" + (int) x + ", " + (int) y + ")");
+        if (!String.valueOf(top.getId()).equals(id)) {
+            throw new IllegalStateException("covered: (" + (int) x + ", " + (int) y + ") belongs to window " + top.getId()
+                    + " (type " + top.getType() + "), not the aimed window " + id);
+        }
+    }
+
     private static boolean activeWindowDrawn() {
         clearCache();
         AccessibilityNodeInfo root = automation.getRootInActiveWindow();
@@ -237,6 +267,7 @@ public final class Main {
         if (!any) {
             // No window had a root: fall back to the active window alone, outside any <window>, so the host
             // knows it has no covering information for these nodes.
+            // Its nodes carry no window, and the host refuses to press anything without one.
             AccessibilityNodeInfo root = automation.getRootInActiveWindow();
             if (root != null) node(xml, root, 0);
         }

@@ -3,6 +3,7 @@ package com.envi.wispr.paste
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -24,11 +25,10 @@ class AutoPasteReadinessObserveTest {
     @Test
     fun oneObserverFollowsEverySourceThroughEveryTransition() = runBlocking {
         val permission = MutableStateFlow(AccessibilityPermissionCheck.UNCHECKED)
-        val bound = MutableStateFlow(false)
-        val marker = MutableStateFlow<StopMarkerState>(StopMarkerState.Loading)
+        val lifecycle = MutableStateFlow(PasteLifecycle())
         val emissions = Channel<AutoPasteAvailability>(Channel.UNLIMITED)
         val observer = launch(start = CoroutineStart.UNDISPATCHED) {
-            AutoPasteReadiness.observe(permission, bound, marker).collect { emissions.send(it) }
+            AutoPasteReadiness.observe(permission, lifecycle).collect { emissions.send(it) }
         }
         suspend fun next(): AutoPasteAvailability = withTimeout(5_000) { emissions.receive() }
 
@@ -36,7 +36,7 @@ class AutoPasteReadinessObserveTest {
 
         // The marker answers before the permission refresh does: an unread permission must not
         // qualify for the switched-off state, whatever the marker says.
-        marker.value = StopMarkerState.Available(LastServiceStop.UNCLEAN)
+        lifecycle.update { it.copy(marker = StopMarkerState.Available(LastServiceStop.UNCLEAN)) }
         assertEquals(
             "A loaded unclean marker with the permission still unread must not say switched off",
             AutoPasteAvailability.NOT_PERMITTED,
@@ -50,11 +50,11 @@ class AutoPasteReadinessObserveTest {
             next(),
         )
 
-        bound.value = true
+        lifecycle.update { it.copy(bound = true) }
         assertEquals("Granted and bound is the only state that may report LIVE", AutoPasteAvailability.LIVE, next())
 
         // Issue #16: the service dies, the Android setting still names it. Only liveness changes.
-        bound.value = false
+        lifecycle.update { it.copy(bound = false) }
         assertEquals(
             "A service that died while the setting still names it must stop reporting LIVE",
             AutoPasteAvailability.PERMITTED_NOT_RUNNING,
@@ -70,13 +70,13 @@ class AutoPasteReadinessObserveTest {
         )
 
         // Marker-only transitions: neither permission nor binding moves.
-        marker.value = StopMarkerState.Available(LastServiceStop.CLEAN)
+        lifecycle.update { it.copy(marker = StopMarkerState.Available(LastServiceStop.CLEAN)) }
         assertEquals("A clean stop recorded later must be followed", AutoPasteAvailability.NOT_PERMITTED, next())
-        marker.value = StopMarkerState.Available(LastServiceStop.UNCLEAN)
+        lifecycle.update { it.copy(marker = StopMarkerState.Available(LastServiceStop.UNCLEAN)) }
         assertEquals("And back again", AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY, next())
 
         // A revoked permission outranks a binding that somehow survived it.
-        bound.value = true
+        lifecycle.update { it.copy(bound = true) }
         assertEquals("A revoked permission must outrank a stale binding", AutoPasteAvailability.NOT_PERMITTED, next())
 
         observer.cancel()

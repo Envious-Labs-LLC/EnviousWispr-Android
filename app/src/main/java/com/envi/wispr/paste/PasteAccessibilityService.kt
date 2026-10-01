@@ -21,6 +21,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -71,11 +72,11 @@ class PasteAccessibilityService : AccessibilityService() {
         private val markerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         /**
-         * The stop marker as readiness reads it (#131): one in-memory snapshot per process, which every
-         * successful marker write below updates. Readers take the snapshot and never storage, so no
-         * session start or connect waits on disk.
+         * Liveness and the stop marker as readiness reads them (#131): one in-memory value per process,
+         * which [publishBinding] and every successful marker write below update. Readers take the value
+         * and never storage, so no session start or connect waits on disk.
          */
-        internal val stopMarker = StopMarkerSnapshot(background = { work -> markerScope.launch { work() } })
+        internal val lifecycle = PasteLifecycleSnapshot(background = { work -> markerScope.launch { work() } })
 
         /**
          * Starts the one background read of the marker, if nothing has yet. Either readiness reader may
@@ -83,7 +84,7 @@ class PasteAccessibilityService : AccessibilityService() {
          */
         internal fun loadStopMarker(context: Context) {
             val appContext = context.applicationContext
-            stopMarker.load { readLastStop(appContext) }
+            lifecycle.load { readLastStop(appContext) }
         }
 
         private fun readLastStop(context: Context): LastServiceStop {
@@ -95,15 +96,14 @@ class PasteAccessibilityService : AccessibilityService() {
 
         private fun publishBinding(service: PasteAccessibilityService?) {
             // An orderly withdrawal: the clean mark follows, but a running service's marker reads UNCLEAN
-            // until it lands, and unbound with UNCLEAN is the switched-off state (#131). Suppress the
-            // distinction BEFORE liveness drops, so no reader sees the user's own turn-off as Android's,
-            // and under the marker's lock, so an arm that already passed its instance guard finishes
-            // first and one arriving later sees no instance and declines; neither can re-publish
-            // UNCLEAN over the suppression. A connect takes no lock: the heart's connect path never
-            // waits on a storage write.
+            // until it lands, and unbound with UNCLEAN is the switched-off state (#131). `withdrawing`
+            // drops readiness's liveness and suppresses the distinction in one update, under the marker's
+            // lock, so an arm that already passed its instance guard finishes first and one arriving later
+            // sees no instance and declines; neither can re-publish UNCLEAN over the suppression. A
+            // connect takes no lock: the heart's connect path never waits on a storage write.
             val lock = if (service == null) STOP_MARKER_LOCK else Any()
             synchronized(lock) {
-                if (service == null) stopMarker.withdrawing()
+                if (service == null) lifecycle.withdrawing() else lifecycle.connected()
                 instance = service
                 boundState.value = service != null
             }
@@ -357,7 +357,7 @@ class PasteAccessibilityService : AccessibilityService() {
             if (clean && instance != null) return
             runCatching {
                 lifecyclePreferences().edit().putBoolean(KEY_STOP_WAS_CLEAN, clean).apply()
-                stopMarker.recorded(if (clean) LastServiceStop.CLEAN else LastServiceStop.UNCLEAN)
+                lifecycle.recorded(if (clean) LastServiceStop.CLEAN else LastServiceStop.UNCLEAN)
             }.onFailure { error -> DebugLogger.warn(TAG, "Unable to record the stop marker: ${error.javaClass.simpleName}") }
         }
     }
@@ -379,19 +379,19 @@ class PasteAccessibilityService : AccessibilityService() {
 }
 
 /**
- * One process's in-memory copy of the stop marker (#131), so readiness never reads storage on a caller's
- * thread.
+ * One process's in-memory [PasteLifecycle] (#131): liveness and the stop marker, so readiness never reads
+ * storage on a caller's thread and never pairs two reads taken at different moments.
  *
- * The first [load] starts the only read and later calls do nothing. The read's answer lands only while
- * nothing newer has: a lifecycle write that [recorded] while the read was in flight is the newer fact,
- * so the read's older answer is dropped rather than overwriting it. The read holds no lock, so connect,
- * teardown and session start never wait on it.
+ * The first [load] starts the only read of the marker and later calls do nothing. The read's answer lands
+ * only while the marker is still Loading: a lifecycle write that [recorded] while the read was in flight
+ * is the newer fact. The read holds no lock, so connect, teardown and session start never wait on it.
+ * Every change replaces the whole value in one atomic update.
  */
-internal class StopMarkerSnapshot(private val background: (() -> Unit) -> Unit) {
-    private val state = MutableStateFlow<StopMarkerState>(StopMarkerState.Loading)
+internal class PasteLifecycleSnapshot(private val background: (() -> Unit) -> Unit) {
+    private val state = MutableStateFlow(PasteLifecycle())
     private val loadStarted = AtomicBoolean(false)
 
-    val current: StateFlow<StopMarkerState> = state.asStateFlow()
+    val current: StateFlow<PasteLifecycle> = state.asStateFlow()
 
     fun load(read: () -> LastServiceStop) {
         if (!loadStarted.compareAndSet(false, true)) return
@@ -403,17 +403,26 @@ internal class StopMarkerSnapshot(private val background: (() -> Unit) -> Unit) 
                     StopMarkerState.Unavailable
                 },
             )
-            state.compareAndSet(StopMarkerState.Loading, loaded)
+            state.update { if (it.marker == StopMarkerState.Loading) it.copy(marker = loaded) else it }
         }
     }
 
-    /** An orderly stop has begun and its clean mark is not written yet: claim nothing until it is. */
+    /** A service instance published itself. Its arm follows and records UNCLEAN while it runs. */
+    fun connected() {
+        state.update { it.copy(bound = true) }
+    }
+
+    /**
+     * An orderly stop has begun and its clean mark is not written yet. Liveness drops and the marker
+     * claims nothing in the same update, so no reader sees unbound beside the running service's armed
+     * UNCLEAN.
+     */
     fun withdrawing() {
-        state.value = StopMarkerState.Unavailable
+        state.update { PasteLifecycle(bound = false, marker = StopMarkerState.Unavailable) }
     }
 
     /** A marker write that succeeded; always newer than whatever the initial read finds. */
     fun recorded(stop: LastServiceStop) {
-        state.value = StopMarkerState.Available(stop)
+        state.update { it.copy(marker = StopMarkerState.Available(stop)) }
     }
 }

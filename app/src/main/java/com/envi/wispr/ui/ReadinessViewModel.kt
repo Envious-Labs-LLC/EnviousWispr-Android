@@ -66,8 +66,7 @@ internal class ReadinessViewModel(
     // projecting its answer back down here would put the permission fact in charge again.
     private val autoPaste = AutoPasteReadiness.observe(
         permission = readiness.map { it.accessibility },
-        serviceBound = PasteAccessibilityService.isBound,
-        stopMarker = PasteAccessibilityService.stopMarker.current,
+        lifecycle = PasteAccessibilityService.lifecycle.current,
     )
 
     val state: StateFlow<ReadinessUiState> = combine(readiness, autoPaste) { currentReadiness, autoPasteStatus ->

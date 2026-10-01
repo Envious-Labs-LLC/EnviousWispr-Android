@@ -21,7 +21,7 @@ class AutoPasteAvailabilityTest {
     fun aPermittedServiceThatIsNotBoundIsNeverReportedAsLive() {
         assertEquals(
             AutoPasteAvailability.PERMITTED_NOT_RUNNING,
-            AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.GRANTED, serviceBound = false, unclean),
+            AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.GRANTED, PasteLifecycle(false, unclean)),
         )
     }
 
@@ -29,7 +29,7 @@ class AutoPasteAvailabilityTest {
     fun aPermittedAndBoundServiceIsLive() {
         assertEquals(
             AutoPasteAvailability.LIVE,
-            AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.GRANTED, serviceBound = true, unclean),
+            AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.GRANTED, PasteLifecycle(true, unclean)),
         )
     }
 
@@ -40,7 +40,7 @@ class AutoPasteAvailabilityTest {
             assertEquals(
                 "A bound service holds its marker armed, so $marker says nothing about a stop",
                 AutoPasteAvailability.NOT_PERMITTED,
-                AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.REVOKED, serviceBound = true, marker),
+                AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.REVOKED, PasteLifecycle(true, marker)),
             )
         }
     }
@@ -64,7 +64,7 @@ class AutoPasteAvailabilityTest {
             assertEquals(
                 "revoked, unbound, marker $marker",
                 availability,
-                AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.REVOKED, serviceBound = false, marker),
+                AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.REVOKED, PasteLifecycle(false, marker)),
             )
         }
     }
@@ -77,7 +77,7 @@ class AutoPasteAvailabilityTest {
                 assertEquals(
                     "unchecked, bound=$bound, marker $marker",
                     AutoPasteAvailability.NOT_PERMITTED,
-                    AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.UNCHECKED, bound, marker),
+                    AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.UNCHECKED, PasteLifecycle(bound, marker)),
                 )
             }
         }
@@ -87,12 +87,12 @@ class AutoPasteAvailabilityTest {
     @Test
     fun aMarkerThatHasNotAnsweredKeepsTheTwoInputAnswer() {
         listOf(StopMarkerState.Loading, StopMarkerState.Unavailable).forEach { marker ->
-            assertEquals(AutoPasteAvailability.LIVE, AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.GRANTED, true, marker))
+            assertEquals(AutoPasteAvailability.LIVE, AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.GRANTED, PasteLifecycle(true, marker)))
             assertEquals(
                 AutoPasteAvailability.PERMITTED_NOT_RUNNING,
-                AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.GRANTED, false, marker),
+                AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.GRANTED, PasteLifecycle(false, marker)),
             )
-            assertEquals(AutoPasteAvailability.NOT_PERMITTED, AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.REVOKED, false, marker))
+            assertEquals(AutoPasteAvailability.NOT_PERMITTED, AutoPasteReadiness.evaluate(AccessibilityPermissionCheck.REVOKED, PasteLifecycle(false, marker)))
         }
     }
 

@@ -76,30 +76,40 @@ internal sealed interface StopMarkerState {
     data class Available(val stop: LastServiceStop) : StopMarkerState
 }
 
+/**
+ * The paste service's liveness and its stop marker as ONE value (#131, code review r3), because readiness
+ * pairs them: read separately, a reconnect between the two reads pairs an old "unbound" with the new
+ * service's armed UNCLEAN and reports the switched-off state for an ordinary off and on. Every writer
+ * replaces this whole value atomically, so a reader can only ever see a pair that once existed.
+ */
+internal data class PasteLifecycle(
+    val bound: Boolean = false,
+    val marker: StopMarkerState = StopMarkerState.Loading,
+)
+
 /** Combines the permission fact, the binding fact and the stop marker. None owns the answer alone. */
 internal object AutoPasteReadiness {
     /**
      * @param permission the Android `ENABLED_ACCESSIBILITY_SERVICES` answer, once it has been read.
-     * @param serviceBound whether a live service instance published itself.
-     * @param stopMarker how the service last stopped; only consulted once the permission is revoked.
+     * @param lifecycle whether a live service instance published itself, and how the last one stopped,
+     *   read as one value; the marker is only consulted once the permission is revoked.
      */
     fun evaluate(
         permission: AccessibilityPermissionCheck,
-        serviceBound: Boolean,
-        stopMarker: StopMarkerState,
+        lifecycle: PasteLifecycle,
     ): AutoPasteAvailability = when (permission) {
         // Nothing has been read, so nothing may be claimed: least capable, and never the new state.
         AccessibilityPermissionCheck.UNCHECKED -> initial
         // A revoked permission outranks a binding, so a service that is somehow still bound after
         // revocation can never report LIVE.
         AccessibilityPermissionCheck.REVOKED ->
-            if (!serviceBound && stoppedUncleanly(stopMarker)) {
+            if (!lifecycle.bound && stoppedUncleanly(lifecycle.marker)) {
                 AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY
             } else {
                 AutoPasteAvailability.NOT_PERMITTED
             }
         AccessibilityPermissionCheck.GRANTED ->
-            if (serviceBound) AutoPasteAvailability.LIVE else AutoPasteAvailability.PERMITTED_NOT_RUNNING
+            if (lifecycle.bound) AutoPasteAvailability.LIVE else AutoPasteAvailability.PERMITTED_NOT_RUNNING
     }
 
     // A running service holds its marker armed (UNCLEAN) by design, which is why the caller asks only
@@ -136,15 +146,14 @@ internal object AutoPasteReadiness {
      * Owning the combine here makes the join itself something the fast gate can run.
      *
      * @param permission the Android `ENABLED_ACCESSIBILITY_SERVICES` answer over time.
-     * @param serviceBound liveness pushed from the accessibility service lifecycle.
-     * @param stopMarker the stop marker's in-memory snapshot, which changes without either of the others.
+     * @param lifecycle liveness and the stop marker, pushed together from the accessibility service
+     *   lifecycle; the marker changes without either of the others.
      */
     fun observe(
         permission: Flow<AccessibilityPermissionCheck>,
-        serviceBound: Flow<Boolean>,
-        stopMarker: Flow<StopMarkerState>,
+        lifecycle: Flow<PasteLifecycle>,
     ): Flow<AutoPasteAvailability> =
-        combine(permission, serviceBound, stopMarker) { checked, bound, marker ->
-            evaluate(checked, bound, marker)
+        combine(permission, lifecycle) { checked, current ->
+            evaluate(checked, current)
         }
 }

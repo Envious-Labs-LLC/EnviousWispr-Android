@@ -197,9 +197,9 @@ class DictationSessionService : Service() {
      */
     private fun autoPasteAvailability(): AutoPasteAvailability = AutoPasteReadiness.evaluate(
         permission = AccessibilityPermissionCheck.of(AccessibilityPermission.isGranted(this)),
-        serviceBound = PasteAccessibilityService.isBound.value,
-        // The in-memory snapshot, never storage: this runs before startForeground (#131).
-        stopMarker = PasteAccessibilityService.stopMarker.current.value,
+        // ONE read of liveness and the marker together, in memory: this runs before startForeground and
+        // on the fallback's thread, where two reads could straddle a reconnect (#131).
+        lifecycle = PasteAccessibilityService.lifecycle.current.value,
     )
 
     override fun onCreate() {

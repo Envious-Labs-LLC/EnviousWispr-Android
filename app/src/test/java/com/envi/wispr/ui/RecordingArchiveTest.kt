@@ -63,7 +63,7 @@ class RecordingArchiveTest {
         )
     }
 
-    /** The switch is asked at EVERY take: on keeps it, turning it off stops the next one, turning it on again resumes. */
+    /** The switch is asked at EVERY copy: on keeps it, turning it off stops the next copy, turning it on again resumes. */
     @Test fun theSwitchIsReadAtEveryTake() {
         var on = true
         val switched = RecordingArchive(dir = { folder }, warn = { warnings += it }, now = { clock }, enabled = { on })

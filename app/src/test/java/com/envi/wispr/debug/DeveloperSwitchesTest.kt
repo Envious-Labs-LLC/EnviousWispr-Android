@@ -158,7 +158,7 @@ class DeveloperSwitchesTest {
         s.ready.await()
         assertTrue("after the repair the stored On is obeyed", s.keepRecordingsNow())
         assertEquals(DeveloperSwitches.Switch.Off, s.requestKeepRecordings(false).await())
-        assertFalse("turning it off stops the next take", s.keepRecordingsNow())
+        assertFalse("turning it off stops every later copy", s.keepRecordingsNow())
     }
 
     /**

@@ -17,8 +17,9 @@ import java.util.TimeZone
  * A take that was not kept throws [NotKept]; a cleanup that failed while the take WAS kept goes to [warn].
  *
  * [enabled] is the Developer page's Keep recordings switch (#375, founder 2026-09-30: at launch nothing is
- * recorded; the code stays for future crash recovery). Asked on EVERY take, so the switch takes effect at the
- * next take. A take while it is off is not an error: nothing is copied, no folder is made, nothing is logged.
+ * recorded; the code stays for future crash recovery). Asked at the start of EVERY copy, so a change reaches
+ * every recording not yet being copied, including the current one; a copy already started finishes. A take
+ * while it is off is not an error: nothing is copied, no folder is made, nothing is logged.
  */
 internal class RecordingArchive(
     private val dir: () -> File?,

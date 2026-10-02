@@ -4,7 +4,7 @@ package com.envi.wispr.cleanup
 internal class ProtectedText(input: String) {
     private val prefix = generateSequence("\uE000") { it + "\uE000" }.first { it !in input }
     private val values = mutableListOf<String>()
-    private val pattern = Regex(Regex.escape(prefix) + "([0-9]+)\uE001")
+    private val pattern = cleaningRegex(Regex.escape(prefix) + "([0-9]+)\uE001")
     fun protect(value: String): String {
         val index = values.size
         values += value

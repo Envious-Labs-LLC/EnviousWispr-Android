@@ -4,8 +4,8 @@ import com.envi.wispr.vocabulary.StructuredTermRestorer
 
 /** Explicit trigger first, then canonical/synonym lookup, then guarded phonetic lookup. */
 internal object SpokenEmojiFormatter {
-    private val trigger = Regex("\\b(?:emoji|emoticon)\\b", RegexOption.IGNORE_CASE)
-    private val token = Regex("[\\p{L}\\p{N}'-]+")
+    private val trigger = cleaningRegex("\\b(?:emoji|emoticon)\\b", RegexOption.IGNORE_CASE)
+    private val token = cleaningRegex("[\\p{L}\\p{N}'-]+")
     private val discussion = setOf("category", "categories", "feature", "features", "name", "names", "symbol", "symbols", "word", "words", "button", "buttons", "glyph", "glyphs", "icon", "icons", "character", "characters", "version", "format", "library", "set", "picker", "keyboard", "meaning", "description", "usage", "shortcode", "unicode", "code")
     private data class Surface(val text: String, val entry: CleanupResources.Emoji)
     private data class Dictionary(val canonical: Map<String, Surface>, val synonyms: Map<String, Surface>, val phonetic: Map<String, List<Surface>>, val longest: Int)
@@ -18,7 +18,7 @@ internal object SpokenEmojiFormatter {
             Dictionary(canon.associateBy { it.text }, synonyms.associateBy { it.text }, phoneticSurfaces.groupBy { StructuredTermRestorer.soundex(it.text.filter(Char::isLetter)) }, all.maxOf { it.text.split(' ').size })
         }
     }
-    private fun normalize(text: String) = text.lowercase(java.util.Locale.ROOT).replace(Regex("[\\s,.!?—–-]+"), " ").trim()
+    private fun normalize(text: String) = text.lowercase(java.util.Locale.ROOT).replace(cleaningRegex("[\\s,.!?—–-]+"), " ").trim()
     fun format(text: String): String {
         if (!trigger.containsMatchIn(text)) return text
         val data = dictionary ?: return text

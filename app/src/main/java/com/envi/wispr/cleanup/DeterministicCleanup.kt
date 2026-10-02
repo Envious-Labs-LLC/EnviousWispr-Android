@@ -37,7 +37,7 @@ internal object DeterministicCleanup {
         CleanupLanguagePolicy.allExtraFillerSets.associateWith { extras ->
             val unitTokens = listOf("ah") + if ("mm" in extras) listOf("mm") else emptyList()
             val ordinaryTokens = (baseFillers + extras.sorted()).filterNot { it in unitTokens }
-            Regex("(?<!\\p{Nd})(?<!\\p{Nd} )(?<!\\p{Nd}-)\\b(?!(?-i:[A-Z]{2,})\\b)(${unitTokens.joinToString("|")})\\b[,.!?;:]*\\s*|\\b(?!(?-i:[A-Z]{2,})\\b)(${ordinaryTokens.joinToString("|") { Regex.escape(it) }})\\b[,.!?;:]*\\s*", RegexOption.IGNORE_CASE)
+            cleaningRegex("(?<!\\p{Nd})(?<!\\p{Nd} )(?<!\\p{Nd}-)\\b(?!(?-i:[A-Z]{2,})\\b)(${unitTokens.joinToString("|")})\\b[,.!?;:]*\\s*|\\b(?!(?-i:[A-Z]{2,})\\b)(${ordinaryTokens.joinToString("|") { Regex.escape(it) }})\\b[,.!?;:]*\\s*", RegexOption.IGNORE_CASE)
         }
 
     internal fun fillerMatcher(language: CleanupLanguage): Regex =
@@ -48,10 +48,10 @@ internal object DeterministicCleanup {
         "semicolon" to ";", "period" to ".", "comma" to ",", "colon" to ":",
     )
     private val protectedPhrases = listOf(
-        Regex("\\beleventh hour\\b", RegexOption.IGNORE_CASE),
-        Regex("\\bthe whole nine yards\\b", RegexOption.IGNORE_CASE),
-        Regex("\\b(?:a |an )?(?:quarter|half)\\s+(?:past|to)\\s+\\w+", RegexOption.IGNORE_CASE),
-        Regex("\\b(?:a |an )?(?:couple|few|several|many)\\s+hundred\\b", RegexOption.IGNORE_CASE),
+        cleaningRegex("\\beleventh hour\\b", RegexOption.IGNORE_CASE),
+        cleaningRegex("\\bthe whole nine yards\\b", RegexOption.IGNORE_CASE),
+        cleaningRegex("\\b(?:a |an )?(?:quarter|half)\\s+(?:past|to)\\s+\\w+", RegexOption.IGNORE_CASE),
+        cleaningRegex("\\b(?:a |an )?(?:couple|few|several|many)\\s+hundred\\b", RegexOption.IGNORE_CASE),
     )
     internal val units = mapOf(
         "zero" to 0, "oh" to 0, "o" to 0, "one" to 1, "two" to 2, "three" to 3,
@@ -150,8 +150,8 @@ internal object DeterministicCleanup {
                         protected.protect(match.value)
                     }
                 }
-                value = Regex("\\b(?:a|an)\\s+(hundred\\b)(?!-)").replace(value, "$1")
-                value = Regex(
+                value = cleaningRegex("\\b(?:a|an)\\s+(hundred\\b)(?!-)").replace(value, "$1")
+                value = cleaningRegex(
                     "(?i)\\b(a|an|the|this|that|another)\\s+catch[\\s-]+(?:twenty[\\s-]+two|22)\\b",
                 ).replace(value) { "${it.groupValues[1]} Catch-22" }
                 val beforeStructured = value
@@ -164,9 +164,9 @@ internal object DeterministicCleanup {
             }
             if (options.spokenPunctuation && !skipEnglishRewrites) punctuation.forEach { (phrase, mark) ->
                 val command = if ('\n' in mark) {
-                    Regex("\\b${Regex.escape(phrase)}\\b", RegexOption.IGNORE_CASE)
+                    cleaningRegex("\\b${Regex.escape(phrase)}\\b", RegexOption.IGNORE_CASE)
                 } else {
-                    Regex("\\s*\\b${Regex.escape(phrase)}\\b\\s*", RegexOption.IGNORE_CASE)
+                    cleaningRegex("\\s*\\b${Regex.escape(phrase)}\\b\\s*", RegexOption.IGNORE_CASE)
                 }
                 val replacement = if ('\n' in mark) mark else "$mark "
                 value = value.replace(command, replacement)
@@ -204,7 +204,7 @@ internal object DeterministicCleanup {
 
     private fun normalizeStructured(input: String): String {
         var hyphenated = input
-        val hyphenJoin = Regex("\\b((?i:$numberNoAndAlt))-(?=(?:$numberNoAndAlt|$ordinalAlt)\\b)")
+        val hyphenJoin = cleaningRegex("\\b((?i:$numberNoAndAlt))-(?=(?:$numberNoAndAlt|$ordinalAlt)\\b)")
         do {
             val previous = hyphenated
             hyphenated = hyphenJoin.replace(hyphenated, "$1 ")
@@ -212,12 +212,12 @@ internal object DeterministicCleanup {
         val protected = ProtectedText(input)
         fun protect(value: String) = protected.protect(value)
         var text = " $hyphenated "
-        text = Regex("(?i)\\bat\\s+one\\s+point\\b(?=\\s+(?:\\d+|(?:$numberNoAndAlt)(?:\\s+(?:$numberNoAndAlt))*)\\s+point\\b)").replace(text) { protect(it.value) }
+        text = cleaningRegex("(?i)\\bat\\s+one\\s+point\\b(?=\\s+(?:\\d+|(?:$numberNoAndAlt)(?:\\s+(?:$numberNoAndAlt))*)\\s+point\\b)").replace(text) { protect(it.value) }
         text = NeutralAddresses.normalize(text, neutral = false)
         text = urls(text)
         text = SpokenIdentifiers.normalize(text, english = true)
         val part = "(?:\\d+|(?:$numberNoAndAlt)(?:\\s+(?:$numberNoAndAlt))*)"
-        text = Regex("(?i)\\b(?:$part(?:\\s+(?:dot|point|punkt|punto|ponto)\\s+$part){2,}|\\d+(?:\\.\\d+)+(?:\\s+(?:dot|point|punkt|punto|ponto)\\s+$part)+)\\b").replace(text) { protect(it.value) }
+        text = cleaningRegex("(?i)\\b(?:$part(?:\\s+(?:dot|point|punkt|punto|ponto)\\s+$part){2,}|\\d+(?:\\.\\d+)+(?:\\s+(?:dot|point|punkt|punto|ponto)\\s+$part)+)\\b").replace(text) { protect(it.value) }
         text = decimals(text)
         text = moneyPercent(text)
         text = times(text)
@@ -239,43 +239,43 @@ internal object DeterministicCleanup {
 
     private fun urls(input: String): String {
         val tlds = "com|org|io|co|dev|me|net"
-        var text = input.replace(Regex("(?i)\\b(?:h|aitch)\\s+slash\\s+slash(?=\\s+[a-z0-9])"), "https slash slash")
-        text = Regex(
+        var text = input.replace(cleaningRegex("(?i)\\b(?:h|aitch)\\s+slash\\s+slash(?=\\s+[a-z0-9])"), "https slash slash")
+        text = cleaningRegex(
             "(?<![@\\w.-])([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)\\s+dot\\s+($tlds)((?:\\s+slash\\s+[a-z0-9-]+)*)",
             RegexOption.IGNORE_CASE,
         ).replace(text) {
             if (hasUnresolvedUrlContext(text, it) || it.groupValues[1].lowercase() in CleanupReferenceTables.englishProseDomainWords) it.value
-            else it.groupValues[1] + "." + it.groupValues[2] + Regex("(?i)\\s+slash\\s+").replace(it.groupValues[3], "/")
+            else it.groupValues[1] + "." + it.groupValues[2] + cleaningRegex("(?i)\\s+slash\\s+").replace(it.groupValues[3], "/")
         }
-        text = Regex(
+        text = cleaningRegex(
             "(?<![@\\w.-])([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\\.(?:$tlds|ai|app|xyz))((?:\\s+slash\\s+[a-z0-9-]+)+)",
             RegexOption.IGNORE_CASE,
         ).replace(text) {
             if (hasUnresolvedUrlContext(text, it) || it.groupValues[1].lowercase() in CleanupReferenceTables.englishProseDomainWords) it.value
-            else it.groupValues[1] + Regex("(?i)\\s+slash\\s+").replace(it.groupValues[2], "/")
+            else it.groupValues[1] + cleaningRegex("(?i)\\s+slash\\s+").replace(it.groupValues[2], "/")
         }
-        text = text.replace(Regex("(?i)(\\b[a-z0-9][a-z0-9.-]*\\.(?:$tlds|ai|app|xyz))\\s+dot\\.?\\s*$"), "$1")
-        return if (Regex("(?i)^\\s*(?:https?://)?[a-z0-9.-]+\\.(?:$tlds|ai|app|xyz)(?:/[a-z0-9-]+)*\\.\\s*$").matches(text)) text.trim().removeSuffix(".") else text
+        text = text.replace(cleaningRegex("(?i)(\\b[a-z0-9][a-z0-9.-]*\\.(?:$tlds|ai|app|xyz))\\s+dot\\.?\\s*$"), "$1")
+        return if (cleaningRegex("(?i)^\\s*(?:https?://)?[a-z0-9.-]+\\.(?:$tlds|ai|app|xyz)(?:/[a-z0-9-]+)*\\.\\s*$").matches(text)) text.trim().removeSuffix(".") else text
     }
 
     private fun hasUnresolvedUrlContext(text: String, match: MatchResult): Boolean {
         val before = text.substring(0, match.range.first).trimEnd().lowercase()
         val after = text.substring(match.range.last + 1).trimStart().lowercase()
-        val beforeWords = before.split(Regex("\\s+")).filter(String::isNotEmpty)
+        val beforeWords = before.split(cleaningRegex("\\s+")).filter(String::isNotEmpty)
         val emailLikeAt = beforeWords.size <= 2 && beforeWords.lastOrNull() == "at"
         val blockedBefore = emailLikeAt || listOf("@", "slash slash", " dot", " dash").any(before::endsWith)
-        val blockedAfter = Regex("^(?:slash|dot|underscore|dash|question mark|equals?|colon|at)\\b")
+        val blockedAfter = cleaningRegex("^(?:slash|dot|underscore|dash|question mark|equals?|colon|at)\\b")
             .containsMatchIn(after)
         val letterSpelledHost = beforeWords.takeLast(3).size == 3 &&
             beforeWords.takeLast(3).all { word -> word.length == 1 } &&
-            Regex("^dot(?:\\s+[a-z]){2,}\\b", RegexOption.IGNORE_CASE).containsMatchIn(after)
+            cleaningRegex("^dot(?:\\s+[a-z]){2,}\\b", RegexOption.IGNORE_CASE).containsMatchIn(after)
         return blockedBefore || blockedAfter && !letterSpelledHost
     }
 
     private fun decimals(input: String): String {
-        var text = Regex("(?i)\\b($numberRun)\\s+(?:point|dot)\\s+((?:$digitAlt)(?:\\s+(?:$digitAlt))*)(?:\\s+(thousand|million|billion))?\\b").replace(input) { match ->
+        var text = cleaningRegex("(?i)\\b($numberRun)\\s+(?:point|dot)\\s+((?:$digitAlt)(?:\\s+(?:$digitAlt))*)(?:\\s+(thousand|million|billion))?\\b").replace(input) { match ->
             val rawWhole = match.groupValues[1]
-            val digitRead = if (rawWhole.trim().split(Regex("\\s+")).size > 1) spokenDigits(rawWhole) else null
+            val digitRead = if (rawWhole.trim().split(cleaningRegex("\\s+")).size > 1) spokenDigits(rawWhole) else null
             val whole = digitRead ?: wordsToLong(rawWhole)?.toString() ?: return@replace match.value
             val digits = spokenDigits(match.groupValues[2]) ?: return@replace match.value
             val scale = scales[match.groupValues[3].lowercase()]
@@ -284,48 +284,48 @@ internal object DeterministicCleanup {
                     .setScale(0, RoundingMode.HALF_EVEN).longValueExact().let(::comma)
             }.getOrElse { match.value }
         }
-        return Regex("(?i)\\b(?:(negative|minus)\\s+)?point\\s+((?:$digitAlt)(?:\\s+(?:$digitAlt))*)\\b").replace(text) {
+        return cleaningRegex("(?i)\\b(?:(negative|minus)\\s+)?point\\s+((?:$digitAlt)(?:\\s+(?:$digitAlt))*)\\b").replace(text) {
             val digits = spokenDigits(it.groupValues[2]) ?: return@replace it.value
             if (it.groupValues[1].isBlank() && digits.length < 3) it.value else "${if (it.groupValues[1].isBlank()) "" else "negative "}0.$digits"
         }
     }
 
     private fun moneyPercent(input: String): String {
-        var text = Regex("(?i)(?<![\\d.])\\b($numberRun)\\s+dollars?\\s+($numberRunNoLeadingAnd)\\s+cents?\\b").replace(input) {
+        var text = cleaningRegex("(?i)(?<![\\d.])\\b($numberRun)\\s+dollars?\\s+($numberRunNoLeadingAnd)\\s+cents?\\b").replace(input) {
             val dollars = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             val cents = wordsToLong(it.groupValues[2]) ?: return@replace it.value
             "$${comma(dollars)} $${"%.2f".format(Locale.US, cents / 100.0)}"
         }
-        text = Regex("(?i)(?<![\\d.])\\b($numberRun)\\s+dollars?(?:\\s+and\\s+($numberRun)\\s+cents?)?\\b").replace(text) {
+        text = cleaningRegex("(?i)(?<![\\d.])\\b($numberRun)\\s+dollars?(?:\\s+and\\s+($numberRun)\\s+cents?)?\\b").replace(text) {
             val dollars = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             if (it.groupValues[2].isBlank()) "$${comma(dollars)}" else {
                 val cents = wordsToLong(it.groupValues[2]) ?: return@replace it.value
                 "$${comma(dollars)}.${cents.toString().padStart(2, '0')}"
             }
         }
-        text = Regex("(?i)(?<![\\d.])\\b($numberRun)\\s+cents?\\b").replace(text) {
+        text = cleaningRegex("(?i)(?<![\\d.])\\b($numberRun)\\s+cents?\\b").replace(text) {
             val cents = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             "$${"%.2f".format(Locale.US, cents / 100.0)}"
         }
-        text = Regex("(?i)\\b($numberRun)\\s+(?:percent|per\\s+cent)\\b").replace(text) {
+        text = cleaningRegex("(?i)\\b($numberRun)\\s+(?:percent|per\\s+cent)\\b").replace(text) {
             val value = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             "$value%"
         }
-        return Regex("(?i)\\b(\\d[\\d,]*\\.\\d+)\\s+(?:percent|per\\s+cent)\\b").replace(text, "$1%")
+        return cleaningRegex("(?i)\\b(\\d[\\d,]*\\.\\d+)\\s+(?:percent|per\\s+cent)\\b").replace(text, "$1%")
     }
 
     private fun times(input: String): String {
         val hourToken = "(?:$numberNoAndAlt|\\d{1,2})"
-        var text = Regex("(?i)\\b(?:oh|o)\\s+($digitAlt)\\s+hundred\\b").replace(input) {
+        var text = cleaningRegex("(?i)\\b(?:oh|o)\\s+($digitAlt)\\s+hundred\\b").replace(input) {
             val hour = units[it.groupValues[1].lowercase()] ?: return@replace it.value
             "${hour}00"
         }
-        text = Regex("(?i)(?<!\\S)($hourToken)(?:\\s+($numberRun))?\\s+([ap])\\s*m\\b").replace(text) {
+        text = cleaningRegex("(?i)(?<!\\S)($hourToken)(?:\\s+($numberRun))?\\s+([ap])\\s*m\\b").replace(text) {
             val hour = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             val minute = if (it.groupValues[2].isBlank()) 0 else wordsToLong(it.groupValues[2]) ?: spokenDigits(it.groupValues[2])?.toLongOrNull() ?: return@replace it.value
             if (hour !in 1..12 || minute !in 0..59) it.value else "$hour:${minute.toString().padStart(2, '0')} ${it.groupValues[3].uppercase()}M"
         }
-        return Regex("(?i)\\b($numberRun)\\s+o'?clock\\b").replace(text) {
+        return cleaningRegex("(?i)\\b($numberRun)\\s+o'?clock\\b").replace(text) {
             val hour = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             if (hour in 1..12) "$hour:00" else it.value
         }
@@ -333,7 +333,7 @@ internal object DeterministicCleanup {
 
     private fun dates(input: String): String {
         val monthAlt = months.keys.joinToString("|")
-        return Regex("(?i)\\b($monthAlt)\\s+($dateOrdinalAlt|\\d{1,2}),?\\s+($numberRun)\\b").replace(input) {
+        return cleaningRegex("(?i)\\b($monthAlt)\\s+($dateOrdinalAlt|\\d{1,2}),?\\s+($numberRun)\\b").replace(input) {
             val day = dateOrdinals[it.groupValues[2].lowercase()] ?: it.groupValues[2].toIntOrNull() ?: return@replace it.value
             val year = parseYear(it.groupValues[3]) ?: return@replace it.value
             if (day !in 1..31 || year !in 1000..2999) it.value else "${months.getValue(it.groupValues[1].lowercase())} $day, $year"
@@ -347,17 +347,17 @@ internal object DeterministicCleanup {
         val lowTeens = units.filterValues { it in 10..19 }.keys.joinToString("|")
         val centuryLow = "(?:(?:$lowTens)(?:\\s+(?:$lowUnits))?|(?:$lowTeens)|(?:oh|o)\\s+(?:$lowUnits))"
         val twoThousandLow = "(?:(?:$lowTens)(?:\\s+(?:$lowUnits))?|(?:$lowTeens)|(?:$lowUnits)|(?:oh|o)\\s+(?:$lowUnits))"
-        var text = Regex(
+        var text = cleaningRegex(
             "(?i)\\btwo thousand(?:\\s+and)?\\s+($twoThousandLow)\\b" +
                 "(?!\\s+(?:hundred|thousand|million|billion))",
         ).replace(input) {
             val low = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             if (low in 1..99) "${2000 + low}" else it.value
         }
-        text = Regex("(?i)\\b($centuries)\\s+($centuryLow)\\b").replace(text) {
+        text = cleaningRegex("(?i)\\b($centuries)\\s+($centuryLow)\\b").replace(text) {
             val century = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             val lowRaw = it.groupValues[2]
-            val low = if (Regex("(?i)^(oh|o)\\s+").containsMatchIn(lowRaw)) units[lowRaw.trim().split(Regex("\\s+")).last().lowercase()]?.toLong() else wordsToLong(lowRaw)
+            val low = if (cleaningRegex("(?i)^(oh|o)\\s+").containsMatchIn(lowRaw)) units[lowRaw.trim().split(cleaningRegex("\\s+")).last().lowercase()]?.toLong() else wordsToLong(lowRaw)
             if (low != null && low in 1..99) "${century * 100 + low}" else it.value
         }
         return text
@@ -371,34 +371,34 @@ internal object DeterministicCleanup {
             "billionth" to "billion",
         )
         val scaleOrdinalAlt = scaleOrdinals.keys.joinToString("|")
-        var text = Regex("(?i)\\b(?:($numberRun)\\s+)?($scaleOrdinalAlt)\\b").replace(input) {
+        var text = cleaningRegex("(?i)\\b(?:($numberRun)\\s+)?($scaleOrdinalAlt)\\b").replace(input) {
             val scaleWord = scaleOrdinals.getValue(it.groupValues[2].lowercase())
             val cardinal = listOf(it.groupValues[1], scaleWord).filter(String::isNotBlank).joinToString(" ")
             val value = wordsToLong(cardinal) ?: return@replace it.value
             val after = input.substring(it.range.last + 1).trimStart()
             if (after.startsWith("of ", ignoreCase = true)) it.value else "${comma(value)}${ordinalSuffix(value.toInt())}"
         }
-        text = Regex("(?i)\\b($numberRun)\\s+($ordinalAlt)\\b").replace(text) {
+        text = cleaningRegex("(?i)\\b($numberRun)\\s+($ordinalAlt)\\b").replace(text) {
             val tailWord = it.groupValues[2].lowercase()
             val after = text.substring(it.range.last + 1).trimStart()
             if (tailWord == "second" && durationNoun(after)) return@replace it.value
             if (after.startsWith("of ", ignoreCase = true)) return@replace it.value
             val base = wordsToLong(it.groupValues[1]) ?: return@replace it.value
-            val lastCardinal = it.groupValues[1].lowercase().split(Regex("\\s+"))
+            val lastCardinal = it.groupValues[1].lowercase().split(cleaningRegex("\\s+"))
                 .lastOrNull { word -> word != "and" }
             if (lastCardinal !in scales) return@replace it.value
             val value = base + ordinals.getValue(tailWord)
             "${comma(value)}${ordinalSuffix(value.toInt())}"
         }
         val unitOrdinal = ordinals.filterValues { it in 1..9 }.keys.joinToString("|")
-        text = Regex("(?i)\\b(${tens.keys.joinToString("|")})\\s+($unitOrdinal)\\b").replace(text) {
+        text = cleaningRegex("(?i)\\b(${tens.keys.joinToString("|")})\\s+($unitOrdinal)\\b").replace(text) {
             val tailWord = it.groupValues[2].lowercase()
             val after = text.substring(it.range.last + 1).trimStart()
             if (tailWord == "second" && durationNoun(after)) return@replace it.value
             val value = tens.getValue(it.groupValues[1].lowercase()) + ordinals.getValue(tailWord)
             "$value${ordinalSuffix(value)}"
         }
-        return Regex("(?i)\\b($ordinalAlt)\\b").replace(text) {
+        return cleaningRegex("(?i)\\b($ordinalAlt)\\b").replace(text) {
             val value = ordinals.getValue(it.value.lowercase())
             if (value < 10) it.value else "$value${ordinalSuffix(value)}"
         }
@@ -414,8 +414,8 @@ internal object DeterministicCleanup {
         )
     }
 
-    private fun digitRuns(input: String): String = Regex("(?i)\\b(?:$digitAlt|\\d{1,4})(?:\\s+(?:$digitAlt|\\d{1,4})){1,}\\b").replace(input) {
-        val tokens = it.value.split(Regex("\\s+"))
+    private fun digitRuns(input: String): String = cleaningRegex("(?i)\\b(?:$digitAlt|\\d{1,4})(?:\\s+(?:$digitAlt|\\d{1,4})){1,}\\b").replace(input) {
+        val tokens = it.value.split(cleaningRegex("\\s+"))
         val digits = tokens.joinToString("") { token -> units[token.lowercase()]?.takeIf { n -> n < 10 }?.toString() ?: token }
         when {
             digits.length == 10 -> "${digits.take(3)}-${digits.substring(3, 6)}-${digits.takeLast(4)}"
@@ -426,27 +426,27 @@ internal object DeterministicCleanup {
     }
 
     private fun rangesAndDimensions(input: String): String {
-        var text = Regex("(?i)\\bbetween\\s+($numberRun)\\s+and\\s+($numberRun)\\b").replace(input) {
+        var text = cleaningRegex("(?i)\\bbetween\\s+($numberRun)\\s+and\\s+($numberRun)\\b").replace(input) {
             val a = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             val b = wordsToLong(it.groupValues[2]) ?: return@replace it.value
-            if (it.groupValues[1].contains(Regex("(?i)\\band\\b"))) {
+            if (it.groupValues[1].contains(cleaningRegex("(?i)\\band\\b"))) {
                 "between ${comma(a)} and ${comma(b)}"
             } else {
                 "between ${comma(a)}-${comma(b)}"
             }
         }
-        text = Regex("(?i)\\b($numberRun)\\s+(?:to|through)\\s+($numberRun)\\b").replace(text) {
+        text = cleaningRegex("(?i)\\b($numberRun)\\s+(?:to|through)\\s+($numberRun)\\b").replace(text) {
             val a = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             val b = wordsToLong(it.groupValues[2]) ?: return@replace it.value
             "${comma(a)}-${comma(b)}"
         }
-        text = Regex("(?i)(?<![\\d.])\\b($numberRun)(?:\\s+slash\\s+$numberRun)+\\b").replace(text) {
-            val parts = it.value.split(Regex("(?i)\\s+slash\\s+"))
+        text = cleaningRegex("(?i)(?<![\\d.])\\b($numberRun)(?:\\s+slash\\s+$numberRun)+\\b").replace(text) {
+            val parts = it.value.split(cleaningRegex("(?i)\\s+slash\\s+"))
             val values = parts.map(::wordsToLong)
             if (values.any { value -> value == null }) it.value else values.joinToString("/") { value -> value.toString() }
         }
-        text = Regex("(?i)(?<![\\d.])\\b($numberRun)(?:\\s+by\\s+$numberRun)+\\b").replace(text) {
-            val parts = it.value.split(Regex("(?i)\\s+by\\s+"))
+        text = cleaningRegex("(?i)(?<![\\d.])\\b($numberRun)(?:\\s+by\\s+$numberRun)+\\b").replace(text) {
+            val parts = it.value.split(cleaningRegex("(?i)\\s+by\\s+"))
             val values = parts.map(::wordsToLong)
             val after = text.substring(it.range.last + 1).trimStart()
             val followedByUnit = after.takeWhile(Char::isLetter).lowercase() in unitNouns
@@ -456,10 +456,10 @@ internal object DeterministicCleanup {
                 values.joinToString(" by ") { value -> comma(value!!) }
             }
         }
-        return Regex("(?<![-\\d.])\\b(\\d+)\\s+to\\s+(\\d+)\\b").replace(text, "$1-$2")
+        return cleaningRegex("(?<![-\\d.])\\b(\\d+)\\s+to\\s+(\\d+)\\b").replace(text, "$1-$2")
     }
 
-    private fun digitScales(input: String): String = Regex(
+    private fun digitScales(input: String): String = cleaningRegex(
         "(?i)\\b(\\d[\\d,]*\\s+(?:hundred|thousand)(?:\\s+(?:$numberAlt))*)\\b",
     ).replace(input) {
         wordsToLong(it.groupValues[1])?.let(::comma) ?: it.value
@@ -468,14 +468,14 @@ internal object DeterministicCleanup {
     private fun dosageRuns(input: String): String {
         val oneToNine = units.filterValues { it in 1..9 }.keys.joinToString("|")
         val dosageUnits = "milligram|milligrams|mg|milliliter|milliliters|ml"
-        return Regex("(?i)\\b($numberNoAndAlt)\\s+($oneToNine)(?=\\s+(?:$dosageUnits)\\b)").replace(input) {
+        return cleaningRegex("(?i)\\b($numberNoAndAlt)\\s+($oneToNine)(?=\\s+(?:$dosageUnits)\\b)").replace(input) {
             val digit = units[it.groupValues[2].lowercase()] ?: return@replace it.value
             "${it.groupValues[1]} $digit"
         }
     }
 
-    private fun cardinals(input: String): String = Regex("(?i)\\b(?:$numberNoAndAlt)(?:\\s+(?:$numberAlt))*\\b").replace(input) {
-        val words = it.value.trim().split(Regex("\\s+")).toMutableList()
+    private fun cardinals(input: String): String = cleaningRegex("(?i)\\b(?:$numberNoAndAlt)(?:\\s+(?:$numberAlt))*\\b").replace(input) {
+        val words = it.value.trim().split(cleaningRegex("\\s+")).toMutableList()
         var trailingAnd = false
         if (words.lastOrNull()?.equals("and", ignoreCase = true) == true) {
             words.removeLast()
@@ -502,13 +502,13 @@ internal object DeterministicCleanup {
         val capitalizedHyphenTitle = after.startsWith("-") && hyphenWord.firstOrNull()?.isUpperCase() == true &&
             (hyphenWord.lowercase() in numberWords || hyphenWord.lowercase() in ordinals)
         val midSentenceCapital = firstCapital && !sentenceInitial && !allCaps
-        val afterWords = after.split(Regex("\\s+")).filter(String::isNotEmpty)
+        val afterWords = after.split(cleaningRegex("\\s+")).filter(String::isNotEmpty)
         val modifiedUnit = next in setOf("square", "cubic") && afterWords.getOrNull(1)?.lowercase() in unitNouns
         val age = next in agePeriods && afterWords.getOrNull(1)?.equals("old", ignoreCase = true) == true
         val hyphenatedUnit = after.startsWith("-") && after.substringBefore(' ').split('-')
             .any { word -> word.lowercase() in unitNouns }
         val force = next in unitNouns || modifiedUnit || age || hyphenatedUnit ||
-            Regex("(?i)^-(?:year|month|week|day)s?-old\\b").containsMatchIn(after)
+            cleaningRegex("(?i)^-(?:year|month|week|day)s?-old\\b").containsMatchIn(after)
         val replacement = if (value >= 10 || force) comma(value) else it.value
         when {
             (titleLike || capitalizedSingleTitle || capitalizedHyphenTitle) && !shout ||
@@ -519,7 +519,7 @@ internal object DeterministicCleanup {
         }
     }
 
-    private fun keepMagnitude(input: String): String = Regex("(?:(?<=\\w[A-Z])|(?<![A-Z]))(\\$)?(\\d{1,3}(?:,\\d{3})+)\\b(?!\\.\\d)(?!,\\d)").replace(input) {
+    private fun keepMagnitude(input: String): String = cleaningRegex("(?:(?<=\\w[A-Z])|(?<![A-Z]))(\\$)?(\\d{1,3}(?:,\\d{3})+)\\b(?!\\.\\d)(?!,\\d)").replace(input) {
         val value = it.groupValues[2].replace(",", "").toLongOrNull() ?: return@replace it.value
         for ((word, scale) in listOf("trillion" to 1_000_000_000_000L, "billion" to 1_000_000_000L, "million" to 1_000_000L)) {
             val thousandth = scale / 1_000
@@ -534,14 +534,14 @@ internal object DeterministicCleanup {
     }
 
     private fun formatText(input: String): String {
-        var value = input.replace(Regex("[ \\t]{2,}"), " ")
-        value = value.replace(Regex("[ \\t]+([,;:?!.])"), "$1")
-        value = value.replace(Regex("([.!?]\\s+)([\\p{Ll}])")) { "${it.groupValues[1]}${it.groupValues[2].uppercase()}" }
+        var value = input.replace(cleaningRegex("[ \\t]{2,}"), " ")
+        value = value.replace(cleaningRegex("[ \\t]+([,;:?!.])"), "$1")
+        value = value.replace(cleaningRegex("([.!?]\\s+)([\\p{Ll}])")) { "${it.groupValues[1]}${it.groupValues[2].uppercase()}" }
         return value.trim()
     }
 
     internal fun wordsToLong(raw: String): Long? {
-        val tokens = raw.lowercase().replace("-", " ").trim().split(Regex("\\s+")).filter { it != "and" }
+        val tokens = raw.lowercase().replace("-", " ").trim().split(cleaningRegex("\\s+")).filter { it != "and" }
         if (tokens.isEmpty()) return null
         if (tokens.size == 1 && tokens[0] in setOf("zero", "0")) return 0
         var total = 0L
@@ -586,7 +586,7 @@ internal object DeterministicCleanup {
 
     internal fun spokenDigits(raw: String): String? {
         val output = StringBuilder()
-        for (token in raw.trim().split(Regex("\\s+"))) {
+        for (token in raw.trim().split(cleaningRegex("\\s+"))) {
             val digit = units[token.lowercase()]?.takeIf { it < 10 } ?: return null
             output.append(digit)
         }
@@ -594,7 +594,7 @@ internal object DeterministicCleanup {
     }
 
     internal fun parseYear(raw: String): Long? {
-        val tokens = raw.lowercase().split(Regex("\\s+")).filter(String::isNotBlank)
+        val tokens = raw.lowercase().split(cleaningRegex("\\s+")).filter(String::isNotBlank)
         if (tokens.size < 2) return null
         if ("thousand" in tokens || "hundred" in tokens) return wordsToLong(raw)
         for (split in 1 until tokens.size) {
@@ -637,8 +637,8 @@ internal object TextSafety {
         if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' && it != '\r' }) return "control characters"
         if (output.length > maxOf(input.length * 3, 200)) return "expansion ${output.length}/${input.length} chars"
         if (input.length >= 24 && output.length < input.length / 4) return "contraction ${output.length}/${input.length} chars"
-        val inputWords = input.split(Regex("\\s+")).count { it.isNotEmpty() }
-        val outputWords = output.split(Regex("\\s+")).count { it.isNotEmpty() }
+        val inputWords = input.split(cleaningRegex("\\s+")).count { it.isNotEmpty() }
+        val outputWords = output.split(cleaningRegex("\\s+")).count { it.isNotEmpty() }
         if (inputWords >= 10 && outputWords < (inputWords * 2 + 4) / 5) return "content drop $outputWords/$inputWords words"
         if (looksLikeQuestion(input) && !looksLikeQuestion(output)) return "question turned into an answer"
         if (checkNumbers) {
@@ -687,7 +687,7 @@ internal object TextSafety {
     // A spoken count is three or more such items in a row joined by commas. Nothing else is checked: a lone
     // "1 time", "2nd" or "3:30" is a number a model may word another way, and refusing a correct answer
     // silently costs the polish, so only an enumeration (where a dropped tail is unmistakable) is held.
-    private val spokenCount = Regex("(?<![\\p{L}\\d.:/$%#-])$countItem(?:,\\s*$countItem){2,}(?![\\p{L}\\d:/%-]|\\.\\d|,\\d|[\\s-]+(?:hundred|thousand|million|billion)|(?<=twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[\\s-]+(?:one|two|three|four|five|six|seven|eight|nine))")
+    private val spokenCount = cleaningRegex("(?<![\\p{L}\\d.:/$%#-])$countItem(?:,\\s*$countItem){2,}(?![\\p{L}\\d:/%-]|\\.\\d|,\\d|[\\s-]+(?:hundred|thousand|million|billion)|(?<=twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[\\s-]+(?:one|two|three|four|five|six|seven|eight|nine))")
 
     /**
      * How many counts in the input lost their last item in the model's output (#385: a twenty-item count
@@ -702,7 +702,7 @@ internal object TextSafety {
     internal fun numbersMissing(input: String, output: String): Int {
         val lowerInput = input.lowercase()
         val tails = spokenCount.findAll(lowerInput).mapNotNull { run ->
-            Regex(countItem).findAll(run.value).lastOrNull()?.value
+            cleaningRegex(countItem).findAll(run.value).lastOrNull()?.value
         }.toList()
         if (tails.isEmpty()) return 0
         val inputValues = numberValues(lowerInput)
@@ -719,7 +719,7 @@ internal object TextSafety {
         }
     }
 
-    private val oneWord = Regex("(?<![\\p{L}\\d])one(?![\\p{L}\\d])")
+    private val oneWord = cleaningRegex("(?<![\\p{L}\\d])one(?![\\p{L}\\d])")
 
     private fun valueOfItem(item: String): Long? {
         item.toLongOrNull()?.let { return it }
@@ -732,7 +732,7 @@ internal object TextSafety {
     }
 
     // A figure glued to a letter ("v3", "a4") is an identifier, not a number: its digits never count.
-    private val numberToken = Regex("(?<![\\p{L}\\d])(?:\\d{1,3}(?:,\\d{3})+|\\d+\\.\\d+|\\d+)(?![\\p{L}\\d])|\\p{L}+")
+    private val numberToken = cleaningRegex("(?<![\\p{L}\\d])(?:\\d{1,3}(?:,\\d{3})+|\\d+\\.\\d+|\\d+)(?![\\p{L}\\d])|\\p{L}+")
     private val scaleWords = setOf("hundred", "thousand", "million", "billion")
 
     /**
@@ -797,7 +797,7 @@ internal object TextSafety {
         if (text.contains('?')) return true
         // Tokens shed every boundary mark, quotes and apostrophes included (an internal apostrophe, "i'm", stays),
         // so a quoted start still matches.
-        val words = text.lowercase().trim().split(Regex("\\s+"))
+        val words = text.lowercase().trim().split(cleaningRegex("\\s+"))
             .map { token -> token.trim { !it.isLetterOrDigit() } }
             .filter { it.isNotEmpty() }
             .toMutableList()

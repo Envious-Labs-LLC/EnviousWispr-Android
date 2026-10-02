@@ -82,7 +82,7 @@ internal object ListMarkers {
         return all.size % 2 == 0 && all.zipWithNext().none { it.first == it.second } && leftCount % 2 == 0
     }
     fun apply(input: String): String {
-        var text = Regex("\\b(?<card>$cardinal)[ \\t]+(?<letter>[A-Za-z])\\b(?!\\.[ \\t]*[A-Za-z]\\b)", RegexOption.IGNORE_CASE).replace(input) { m ->
+        var text = cleaningRegex("\\b(?<card>$cardinal)[ \\t]+(?<letter>[A-Za-z])\\b(?!\\.[ \\t]*[A-Za-z]\\b)", RegexOption.IGNORE_CASE).replace(input) { m ->
             val letter = m.groups["letter"]!!.value
             val raw = m.groups["card"]!!.value
             val following = next(input, m.range.last + 1)
@@ -90,9 +90,9 @@ internal object ListMarkers {
             if (letter == "I" || letter != letter.uppercase() || value == null || raw.trimEnd().substringAfterLast(' ').equals("and", true) || !allowedEnd(input, m.range.last + 1) || (raw.first().isUpperCase() && following.firstOrNull()?.isUpperCase() == true) || following.trim { !it.isLetter() }.lowercase() in countNouns || !paired(input, m.range.first, m.range.last + 1, listOf('N', 'L'))) m.value else "${java.text.NumberFormat.getIntegerInstance(java.util.Locale.US).format(value)}$letter"
         }
         val original = text
-        text = Regex("\\b(?<letter>[A-Za-z])[ \\t]+(?<card>$cardinal)\\b", RegexOption.IGNORE_CASE).replace(original) { m ->
+        text = cleaningRegex("\\b(?<letter>[A-Za-z])[ \\t]+(?<card>$cardinal)\\b", RegexOption.IGNORE_CASE).replace(original) { m ->
             val letter = m.groups["letter"]!!.value; val raw = m.groups["card"]!!.value
-            val parts = raw.split(Regex("[ \\t]+" )).toMutableList(); var tail = ""
+            val parts = raw.split(cleaningRegex("[ \\t]+" )).toMutableList(); var tail = ""
             while (parts.lastOrNull()?.equals("and", true) == true) tail = " " + parts.removeAt(parts.lastIndex) + tail
             val value = DeterministicCleanup.wordsToLong(parts.joinToString(" "))
             val tagEnd = m.range.last + 1 - tail.length

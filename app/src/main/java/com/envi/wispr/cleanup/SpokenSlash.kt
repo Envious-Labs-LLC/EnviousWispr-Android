@@ -5,8 +5,8 @@ internal object SpokenSlash {
     private enum class Reading { WORD, PAIR, PREFIX, GLUE, UNRESOLVED }
     private data class Token(val raw: String, val core: String, val edge: Int)
     private val t = CleanupReferenceTables
-    private val marker = Regex("[^\\S\\r\\n]*(?:(?<=\\S),)?[^\\S\\r\\n]*(?<![^\\s\"'(\\[{“‘«])(back[^\\S\\r\\n]*slash|(?:forward[^\\S\\r\\n]+)?slash)(?![^\\s.,;:!?])(?![.,;:!?]\\S)[^\\S\\r\\n]*", RegexOption.IGNORE_CASE)
-    private val sentenceBreak = Regex("(?:(?<![^\\p{L}\\p{M}][\\p{L}\\p{M}])(?<!^[\\p{L}\\p{M}])(?<!\\b(?i:${t.slashAbbreviations.joinToString("|")}))\\.|[!?…])[\"'”’»)\\]}]*\\s|\\R")
+    private val marker = cleaningRegex("[^\\S\\r\\n]*(?:(?<=\\S),)?[^\\S\\r\\n]*(?<![^\\s\"'(\\[{“‘«])(back[^\\S\\r\\n]*slash|(?:forward[^\\S\\r\\n]+)?slash)(?![^\\s.,;:!?])(?![.,;:!?]\\S)[^\\S\\r\\n]*", RegexOption.IGNORE_CASE)
+    private val sentenceBreak = cleaningRegex("(?:(?<![^\\p{L}\\p{M}][\\p{L}\\p{M}])(?<!^[\\p{L}\\p{M}])(?<!\\b(?i:${t.slashAbbreviations.joinToString("|")}))\\.|[!?…])[\"'”’»)\\]}]*\\s|\\R")
     private fun horizontal(c: Char) = c.isWhitespace() && c != '\r' && c != '\n'
     private fun core(raw: String, left: Boolean): String {
         var value = raw.trim { !it.isLetterOrDigit() && it !in "_/\\" }
@@ -104,7 +104,7 @@ internal object SpokenSlash {
                 if (left.core == "slash" && earlier.core == "forward") earlier = before(text, earlier.edge)
                 val next = after(text, right.edge)
                 val nextCore = if (next.core == "forward" && after(text, next.edge).core == "slash") "slash" else next.core
-                val title = command.split(Regex("\\s+")).all { it.first().isUpperCase() && it.drop(1).none(Char::isUpperCase) }
+                val title = command.split(cleaningRegex("\\s+")).all { it.first().isUpperCase() && it.drop(1).none(Char::isUpperCase) }
                 val decision = reading(left, right, earlier, nextCore, previous, title && !startsSentence(text, group.range.first), spelledScheme(text, left.edge + left.raw.length), spelledScheme(text, earlier.edge + earlier.raw.length))
                 previous = decision
                 when (decision) {
@@ -117,6 +117,6 @@ internal object SpokenSlash {
                 }
             }
         }
-        return if (wrote && Regex("^\\s*(/[\\p{L}\\p{N}_][\\p{L}\\p{N}_-]*)\\s*\\.?\\s*$").matches(result)) result.trim().removeSuffix(".").trim().lowercase() else result
+        return if (wrote && cleaningRegex("^\\s*(/[\\p{L}\\p{N}_][\\p{L}\\p{N}_-]*)\\s*\\.?\\s*$").matches(result)) result.trim().removeSuffix(".").trim().lowercase() else result
     }
 }

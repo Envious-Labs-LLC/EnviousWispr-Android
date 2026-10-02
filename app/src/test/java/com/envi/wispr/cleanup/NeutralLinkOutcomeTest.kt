@@ -32,10 +32,39 @@ class NeutralLinkOutcomeTest {
             "www punto ejemplo punto es.foo",
             "www punto ejemplo punto es:8080",
             "ejemplo punto ai barra ayuda",
+            "2 punto 5 punto 0 barra ayuda",
+            "localhost punto ai barra ayuda",
+            "localhost punto app barra ayuda",
+            "localhost punto xyz barra ayuda",
+            "localhostdemo punto ai barra ayuda",
             "https://WWW.Example.COM/Case",
             "https dos puntos barra barra localhost dos puntos 99999",
         )
         for (input in rows) assertEquals(input, input, clean(input))
+    }
+
+    @Test fun mailboxFramesCannotConsumeARefusedAsciiTailOrAnUnsupportedContinuation() {
+        val rows = listOf(
+            "écris à jean dash dupont arobase gmail point com" to "écris à jean-dupont@gmail.com",
+            "maría punto lópez arroba gmail punto com" to "maría.lópez@gmail.com",
+            "mensagem ao arroba empresa.pt" to "mensagem ao arroba empresa.pt",
+            "adres janapenstaartjevoorbeeld.it" to "adres janapenstaartjevoorbeeld.it",
+            "mail infochiocciolaazienda.it punto com" to "mail infochiocciolaazienda.it punto com",
+            "pismo info.собака.yandex.ru barra api" to "pismo info.собака.yandex.ru/api",
+        )
+        for ((input, expected) in rows) assertEquals(input, expected, clean(input))
+    }
+
+    @Test fun dashedCodesDoNotInheritTheDottedConsumersTrailingLinkPredicate() {
+        assertEquals("La référence est B-2 barre oblique aide.", clean("La référence est B tiret 2 barre oblique aide."))
+        assertEquals("2 punto 5 punto 0 barra ayuda", clean("2 punto 5 punto 0 barra ayuda"))
+    }
+
+    @Test fun unicodeWordAndSpaceClassesMatchAndroidsAlwaysUnicodeLibrary() {
+        assertEquals(true, cleaningRegex("\\w+").matches("maría東京"))
+        assertEquals(true, cleaningRegex("\\s+").matches("\u00A0\u2028"))
+        assertEquals("la référence B-2", clean("la référence B trait d’union 2"))
+        assertEquals("ejemplo punto es barra api point d’interrogation q", clean("ejemplo punto es barra api point d’interrogation q"))
     }
 
     @Test fun aLongSupportedPathIsReadWholeAndDoesNotAcquireAnInventedSegmentBudget() {

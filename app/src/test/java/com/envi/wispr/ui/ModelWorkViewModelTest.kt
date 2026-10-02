@@ -1,5 +1,7 @@
 package com.envi.wispr.ui
 
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelDescriptor
@@ -10,6 +12,7 @@ import com.envi.wispr.models.ModelUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.MainCoroutineDispatcher
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -40,6 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.CoroutineContext
 
 /**
+ * Product Outcome: a model card flashes a stale or empty value when these cases fail.
  * `ModelWorkViewModel` (#255): the settings shell's one owner of model-delivery observation. Main is one named
  * thread (`test-main`) and IO another (`test-io`), so a row can say where the projection ran; every wait is on a
  * signal or a drained executor, never a clock.
@@ -76,21 +80,26 @@ class ModelWorkViewModelTest {
 
     /** Every projection: the model, the chosen work's state, readiness, and the thread it ran on. */
     private val projected = CopyOnWriteArrayList<String>()
-    @Volatile private var holdS1: CountDownLatch? = null
-    private val s1Entered = CountDownLatch(1)
+    @Volatile private var holdProjection: CountDownLatch? = null
+    @Volatile private var heldModel = ModelManifest.s1
+    private val projectionEntered = CountDownLatch(1)
     private val project: (WorkInfo?, Boolean, ModelDescriptor) -> ModelUiState = { info, ready, model ->
         val name = if (model == ModelManifest.s1) "s1" else "parakeet"
         projected += "$name:${info?.state}:$ready on ${Thread.currentThread().name.substringBefore(" @")}"
-        if (name == "s1") {
-            s1Entered.countDown()
-            holdS1?.await(10, TimeUnit.SECONDS)
+        if (model == heldModel) {
+            projectionEntered.countDown()
+            holdProjection?.let { gate ->
+                assertTrue("the held projection was not released", gate.await(10, TimeUnit.SECONDS))
+            }
         }
         ModelUiState("$name ${info?.state} $ready", ModelHealth.READY, action = ModelUiAction.REMOVE)
     }
 
     private fun info(state: WorkInfo.State) = WorkInfo(UUID.randomUUID(), state, emptySet())
 
+    private val createdModels = mutableListOf<ModelWorkViewModel>()
     private fun viewModel() = ModelWorkViewModel(work, readiness, project, ioExecutor.asCoroutineDispatcher())
+        .also(createdModels::add)
 
     private fun onMain(block: () -> Unit) = mainExecutor.submit(block).get(10, TimeUnit.SECONDS)
 
@@ -106,10 +115,21 @@ class ModelWorkViewModelTest {
     @Before fun setUp() = Dispatchers.setMain(mainDispatcher)
 
     @After fun tearDown() {
-        holdS1?.countDown()
+        holdProjection?.countDown()
+        val jobs = createdModels.map { checkNotNull(it.viewModelScope.coroutineContext[Job]) }
+        onMain {
+            ViewModelStore().apply {
+                createdModels.forEachIndexed { index, model -> put(index.toString(), model) }
+                clear()
+            }
+        }
+        // Scope completion owns teardown: no projection may resume onto an executor after it closes.
+        runBlocking { withTimeout(10_000) { jobs.forEach { it.join() } } }
         Dispatchers.resetMain()
-        mainExecutor.shutdownNow()
-        ioExecutor.shutdownNow()
+        mainExecutor.shutdown()
+        ioExecutor.shutdown()
+        assertTrue("main executor did not stop", mainExecutor.awaitTermination(10, TimeUnit.SECONDS))
+        assertTrue("IO executor did not stop", ioExecutor.awaitTermination(10, TimeUnit.SECONDS))
     }
 
     private fun seed(vararg names: String, state: WorkInfo.State = WorkInfo.State.RUNNING) {
@@ -172,6 +192,8 @@ class ModelWorkViewModelTest {
         check(stream(s1Download).tryEmit(listOf(info(WorkInfo.State.SUCCEEDED))))
         check(stream(s1Adoption).tryEmit(listOf(info(WorkInfo.State.SUCCEEDED))))
         readiness.value = readiness.value.copy(readiness = readiness.value.readiness.copy(polishModelReady = true))
+        // Hold the arriving projection so the first-frame assertion tests the reset, even when IO finishes inline.
+        holdProjection = CountDownLatch(1)
         var firstFrame: ModelWorkUiState? = null
         onMain {
             vm.show(AppDestination.Polish)
@@ -179,6 +201,7 @@ class ModelWorkViewModelTest {
         }
         assertEquals("the first frame is Checking with no action", ModelWorkViewModel.CHECKING, firstFrame?.polish)
         assertEquals(ModelUiAction.NONE, firstFrame?.polish?.action)
+        holdProjection?.countDown()
         assertEquals("s1 SUCCEEDED true", awaitModels(vm) { it.polish != ModelWorkViewModel.CHECKING }.polish.label)
         assertEquals("a fresh subscription", 2, subscribed(s1Download))
     }
@@ -193,6 +216,9 @@ class ModelWorkViewModelTest {
         val vm = viewModel()
         onMain { vm.show(AppDestination.Polish) }
         awaitModels(vm) { it.polish.label == "s1 RUNNING false" }
+        // The arriving card must still be pending when its first frame is captured.
+        heldModel = ModelManifest.parakeet
+        holdProjection = CountDownLatch(1)
         var firstFrame: ModelWorkUiState? = null
         onMain {
             vm.show(AppDestination.Transcription)
@@ -211,12 +237,12 @@ class ModelWorkViewModelTest {
     /** Row 5b: a projection still running when the tab changes never lands on the new tab. MUTATION: omit cancellation. */
     @Test fun aLateProjectionNeverLandsAfterTheTabChanged() {
         seed(s1Download, s1Adoption, parakeetDownload, parakeetAdoption)
-        holdS1 = CountDownLatch(1)
+        holdProjection = CountDownLatch(1)
         val vm = viewModel()
         onMain { vm.show(AppDestination.Polish) }
-        assertTrue("the S1 projection started", s1Entered.await(10, TimeUnit.SECONDS))
+        assertTrue("the S1 projection started", projectionEntered.await(10, TimeUnit.SECONDS))
         onMain { vm.show(AppDestination.Transcription) }
-        holdS1?.countDown()
+        holdProjection?.countDown()
         awaitModels(vm) { it.speech != ModelWorkViewModel.CHECKING }
         // The held S1 projection has returned and anything it queued on main has run.
         ioExecutor.submit { }.get(10, TimeUnit.SECONDS)

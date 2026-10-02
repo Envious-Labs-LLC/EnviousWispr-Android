@@ -33,6 +33,8 @@ internal class ProviderModelDiscoveryClient(
     private val probeTimeoutMs: Int = PROBE_TIMEOUT_MS,
     /** The HTTP round trip; the production default, a test may pass a fake. */
     private val transport: ProviderTransport = HttpProviderTransport(logWarn),
+    /** Monotonic time; tests advance deadlines without depending on host scheduling. */
+    private val nanoTime: () -> Long = System::nanoTime,
 ) : ProviderKeyChecker, ProviderModelDiscoverer {
     /**
      * Asks the provider's model-list endpoint whether [apiKey] works (#61): a GET with the same auth
@@ -92,8 +94,8 @@ internal class ProviderModelDiscoveryClient(
         if (apiKey.isBlank() || apiKey.any(Char::isISOControl)) {
             return ProviderDiscovery.Refused(ProviderKeyCheck.Unverified(PolishFailure.BAD_REQUEST))
         }
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(discoveryTimeoutMs.coerceAtLeast(1).toLong())
-        fun remaining(): Int = ProviderDeadlines.remainingMillis(deadline)
+        val deadline = nanoTime() + TimeUnit.MILLISECONDS.toNanos(discoveryTimeoutMs.coerceAtLeast(1).toLong())
+        fun remaining(): Int = ProviderDeadlines.remainingMillis(deadline, nanoTime())
 
         // The list, page by page for the one provider that pages.
         val rows = mutableListOf<ListedModel>()
@@ -249,7 +251,7 @@ internal class ProviderModelDiscoveryClient(
         // discovery deadline, leaving later models unverified — the very state this retry exists to clear.
         val budget = remainingMs.coerceAtMost(probeTimeoutMs.coerceAtLeast(1))
         if (budget <= 0) return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(budget.toLong())
+        val deadline = nanoTime() + TimeUnit.MILLISECONDS.toNanos(budget.toLong())
         val first = probeOnce(adapter, model, apiKey, deadline, ProbeStyle.DEFAULT)
             ?: return ProbeOutcome.Access(ModelAccess.UNVERIFIED)
         // ONLY a model that ANSWERED and said nothing useful is worth asking again, and 200 is the whole
@@ -281,7 +283,7 @@ internal class ProviderModelDiscoveryClient(
      */
     private fun probeOnce(adapter: ProviderAdapter, model: String, apiKey: String, deadline: Long, style: ProbeStyle): ProbeAttempt? {
         val plan = adapter.probePlan(model, apiKey, style, endpointOverrides[adapter.provider]) ?: return null
-        val budget = ProviderDeadlines.remainingMillis(deadline)
+        val budget = ProviderDeadlines.remainingMillis(deadline, nanoTime())
         if (budget <= 0) return null
         return when (val transport = transport.run(plan, ProviderCancellation(), budget, connectTimeoutMs.coerceIn(1, ProviderPolishClient.MAX_CONNECT_TIMEOUT_MS), readTimeoutMs.coerceIn(1, budget))) {
             // A transport failure has no body at all; the null status makes this UNVERIFIED before the

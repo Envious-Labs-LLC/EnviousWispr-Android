@@ -114,9 +114,41 @@ class CleaningParityOutcomeTest {
     }
 
     @Test fun actualAlignmentTokensBoundLongPunctuationSeparatedInput() {
-        val before = (1..1_001).joinToString(",") { "word$it" } + " 🔥"
+        val before = List(201) { "a" }.joinToString(",") + " 🔥"
         val after = before.removeSuffix(" 🔥")
-        assertEquals(1_001, EmojiRestorer.alignmentTokenCount(before))
+        assertEquals(401, EmojiRestorer.scannedGraphemeCount(before))
         assertEquals(after, EmojiRestorer.restore(before, after))
     }
+    @Test fun boundedEmojiAdmissionRepairsAtCapAndStopsAtFirstExcessWord() {
+        val body = List(200) { "a" }.joinToString(" ")
+        assertEquals("$body 🔥.", EmojiRestorer.restore("$body 🔥.", "$body."))
+        val excess = List(201) { "a" }.joinToString(" ") + ".".repeat(1_000)
+        assertEquals(401, EmojiRestorer.scannedGraphemeCount(excess))
+        assertEquals("Short answer.", EmojiRestorer.restore("$excess 🔥", "Short answer."))
+        assertEquals(excess, EmojiRestorer.restore("Short 🔥", excess))
+    }
+
+    @Test fun emojiAdmissionBoundsHugeClustersAndDenseRunsWithoutAlteringAcceptedText() {
+        for (before in listOf("a".repeat(4_097), "a" + "\u0301".repeat(4_096))) {
+            assertEquals(0, EmojiRestorer.scannedGraphemeCount(before))
+            assertEquals("Answer.", EmojiRestorer.restore(before + " 🔥", "Answer."))
+        }
+        assertEquals(2_049, EmojiRestorer.scannedGraphemeCount(".".repeat(2_049)))
+        assertEquals(65, EmojiRestorer.scannedGraphemeCount("🔥".repeat(65)))
+        assertEquals("Answer.", EmojiRestorer.restore("🔥".repeat(65), "Answer."))
+        assertEquals("🔥".repeat(65), EmojiRestorer.restore("Hi 🔥", "🔥".repeat(65)))
+    }
+
+    @Test fun boundedEmojiTokenizerRetainsApostrophesAndUnicodeClusters() {
+        val cases = listOf("can't", "can’t", "rock'n'roll", "rock’n’roll", "word'", "école", "e\u0301cole", "𐐀name", "a\u200Db")
+        for (word in cases) {
+            val before = "Keep $word 👨‍👩‍👧‍👦 safe."
+            val after = "Keep $word safe."
+            assertEquals(before, EmojiRestorer.restore(before, after))
+        }
+        val prefix = List(199) { "a" }.joinToString(" ")
+        assertEquals("$prefix can't 🔥.", EmojiRestorer.restore("$prefix can't 🔥.", "$prefix can't."))
+        assertEquals("$prefix rock'n'roll.", EmojiRestorer.restore("$prefix rock'n'roll 🔥.", "$prefix rock'n'roll."))
+    }
+
 }

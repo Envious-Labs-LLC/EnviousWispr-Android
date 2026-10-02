@@ -2,7 +2,10 @@ package com.envi.wispr.cleanup
 
 /** Deletion-only grapheme restoration. The allocation is bounded by the alignment tokenizer. */
 internal object EmojiRestorer {
-    internal const val MAX_ALIGNMENT_TOKENS = 1_000
+    internal const val MAX_ALIGNMENT_TOKENS = 200
+    internal const val MAX_INPUT_UTF16 = 4_096
+    internal const val MAX_GRAPHEMES = 2_048
+    internal const val MAX_EMOJI_CLUSTERS = 64
     private val grapheme = Regex("\\X")
     private val bound = setOf("%", "°", "+", "#", "*", "‰")
     private val noSpaceBefore = setOf(".", ",", "!", "?", ";", ":", ")", "]", "}", "%", "°", "'", "’", "…")
@@ -18,28 +21,63 @@ internal object EmojiRestorer {
     private fun key(value: String): String = buildString {
         value.codePoints().forEach { cp -> if (cp != 0xFE0F && cp !in 0x1F3FB..0x1F3FF) appendCodePoint(cp) }
     }
-    private fun tokens(chars: List<String>): List<Word> {
-        val out = mutableListOf<Word>(); var i = 0
-        while (i < chars.size) {
-            if (!word(chars[i])) { i++; continue }
-            val start = i
-            while (i < chars.size && word(chars[i])) i++
-            if (i + 1 < chars.size && chars[i] in setOf("'", "’") && word(chars[i + 1])) {
-                i++; while (i < chars.size && word(chars[i])) i++
+    private data class Prepared(val chars: List<String>, val words: List<Word>, val glyphs: List<Glyph>)
+    private data class Admission(val prepared: Prepared?, val consumed: Int)
+
+    // One scanner owns token semantics and admission. Whole-input refusal never slices a cluster.
+    private fun scan(text: String): Admission {
+        if (text.length > MAX_INPUT_UTF16) return Admission(null, 0)
+        val matches = grapheme.toPattern().matcher(text)
+        val pending = java.util.ArrayDeque<String>()
+        val chars = mutableListOf<String>()
+        val words = mutableListOf<Word>()
+        val glyphs = mutableListOf<Glyph>()
+        var consumed = 0
+        fun peek(offset: Int = 0): String? {
+            while (pending.size <= offset) {
+                if (!matches.find()) return null
+                consumed++
+                pending.addLast(matches.group())
             }
-            out += Word(chars.subList(start, i).joinToString("").lowercase(java.util.Locale.ROOT).replace('’', '\''), start, i)
+            return pending.elementAt(offset)
         }
-        return out
+        fun take(): Boolean {
+            val value = pending.removeFirst()
+            if (chars.size >= MAX_GRAPHEMES) return false
+            if (emoji(value)) {
+                if (glyphs.size >= MAX_EMOJI_CLUSTERS) return false
+                glyphs += Glyph(chars.size, value)
+            }
+            chars += value
+            return true
+        }
+        while (true) {
+            val next = peek() ?: break
+            if (!word(next)) {
+                if (!take()) return Admission(null, consumed)
+                continue
+            }
+            if (words.size >= MAX_ALIGNMENT_TOKENS) return Admission(null, consumed)
+            val start = chars.size
+            while (peek()?.let(::word) == true) if (!take()) return Admission(null, consumed)
+            if (peek() in setOf("'", "’") && peek(1)?.let(::word) == true) {
+                if (!take()) return Admission(null, consumed)
+                while (peek()?.let(::word) == true) if (!take()) return Admission(null, consumed)
+            }
+            words += Word(chars.subList(start, chars.size).joinToString("").lowercase(java.util.Locale.ROOT).replace('’', '\''), start, chars.size)
+        }
+        return Admission(Prepared(chars, words, glyphs), consumed)
     }
-    fun alignmentTokenCount(text: String): Int = tokens(grapheme.findAll(text).map { it.value }.toList()).size
+    internal fun scannedGraphemeCount(text: String): Int = scan(text).consumed
     fun restore(prePolish: String, polished: String): String {
         if (polished.isBlank()) return polished
-        val pre = grapheme.findAll(prePolish).map { it.value }.toList()
-        val glyphs = pre.mapIndexedNotNull { i, v -> if (emoji(v)) Glyph(i, v) else null }
-        if (glyphs.isEmpty()) return polished
-        val post = grapheme.findAll(polished).map { it.value }.toList()
-        val a = tokens(pre); val b = tokens(post)
-        if (maxOf(a.size, b.size) > MAX_ALIGNMENT_TOKENS) return polished
+        val before = scan(prePolish).prepared ?: return polished
+        if (before.glyphs.isEmpty()) return polished
+        val after = scan(polished).prepared ?: return polished
+        val pre = before.chars
+        val post = after.chars
+        val glyphs = before.glyphs
+        val a = before.words; val b = after.words
         fun leftKey(words: List<Word>, i: Int) = words.lastOrNull { it.end <= i }?.key.orEmpty()
         val kept = post.mapIndexedNotNull { i, value -> if (emoji(value)) Glyph(i, value) else null }
         val used = BooleanArray(kept.size); val keptIndex = IntArray(glyphs.size) { -1 }

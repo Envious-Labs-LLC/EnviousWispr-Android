@@ -91,6 +91,7 @@ class ModelBootstrapApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.envi.wispr.cleanup.CleanupResources.installAssetReader { name -> assets.open("cleanup/$name") }
         val processName = Application.getProcessName()
         val isMain = processName == packageName
         // Every process's local log (#378), before anything logs: it writes only while the hidden Detailed

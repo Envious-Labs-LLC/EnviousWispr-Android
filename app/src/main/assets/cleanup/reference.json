@@ -1,0 +1,11 @@
+{
+  "source_repository": "https://github.com/saurabhav88/EnviousWispr",
+  "revision": "214e550071e782f8407371599f4467f5f001e566",
+  "sha256": {
+    "varcon-LICENSE.txt": "e91b1ffbc78c8c4ce505eb314a46eff77cc2c5607a3ce3732e6bfd1a09587e8a",
+    "british-spelling.json": "d615937cbae19406fee75583454875e7de41f2184da602414bcd7fe6012a3a63",
+    "emoji-dictionary.json": "6e655d6332645e9bc414a17e0605bf11b533d0aa0ca5c14825a6bb786aca3bd4"
+  },
+  "emoji_source": "Bundled EnviousWispr phrase/glyph table; app GPL-3.0; Unicode characters are textual values, not emoji artwork.",
+  "spelling_source": "VarCon 2020.12.07 subset; copyright, permission and modified-version notice in varcon-LICENSE.txt."
+}

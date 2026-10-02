@@ -14,7 +14,12 @@ internal data class PolishOutcome(
     val reason: PolishReason,
     val statusCode: Int,
     val latencyMs: Long,
+    /** The language decision used for THIS text; owner spelling never redetects a model answer. */
+    val englishText: Boolean = false,
 ) : Parcelable {
+    // Keep the constructor used by the separately installed instrumentation APK callable.
+    constructor(requestId: Long, text: String, engine: String, reason: PolishReason, statusCode: Int, latencyMs: Long) :
+        this(requestId, text, engine, reason, statusCode, latencyMs, false)
     override fun describeContents(): Int = 0
 
     override fun writeToParcel(dest: Parcel, flags: Int) {
@@ -24,6 +29,7 @@ internal data class PolishOutcome(
         dest.writeString(reason.name)
         dest.writeInt(statusCode)
         dest.writeLong(latencyMs)
+        dest.writeInt(if (englishText) 1 else 0)
     }
 
     /** Content-free on purpose: the text never reaches a log line through this. */
@@ -40,6 +46,7 @@ internal data class PolishOutcome(
                 reason = PolishReason.valueOf(checkNotNull(source.readString())),
                 statusCode = source.readInt(),
                 latencyMs = source.readLong(),
+                englishText = if (source.dataAvail() > 0) source.readInt() == 1 else false,
             )
 
             override fun newArray(size: Int): Array<PolishOutcome?> = arrayOfNulls(size)

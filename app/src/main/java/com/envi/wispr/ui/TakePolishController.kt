@@ -260,12 +260,10 @@ internal class TakePolishController(
                 return@launch
             }
             try {
-                checkNotNull(service).polishRequestForTake(
+                checkNotNull(service).polishRequestWithCleanupForTake(
                     requestId,
                     preparedRaw,
-                    takePreferences.cleanup.removeFillers,
-                    takePreferences.cleanup.spokenEmoji,
-                    takePreferences.cleanup.spokenPunctuation,
+                    takePreferences.cleanup,
                     takePreferences.policy,
                     takeId,
                     listener(requestId, rawText, takePreferences),
@@ -348,7 +346,7 @@ internal class TakePolishController(
             // status (#252); the notice follows that reason, none for POLISHED. Restored off main (#253).
             handBack {
                 PreparedText.Polished(
-                    restoreVocabulary(outcome.text, takePreferences, STEP_RESTORE_ANSWER) ?: outcome.text,
+                    finishSpelling(restoreVocabulary(outcome.text, takePreferences, STEP_RESTORE_ANSWER) ?: outcome.text, takePreferences, if (outcome.englishText) com.envi.wispr.cleanup.CleanupLanguage.Known("en") else com.envi.wispr.cleanup.CleanupLanguage.Unknown),
                     outcome.engine,
                     outcome.latencyMs,
                     outcome.reason,
@@ -448,10 +446,15 @@ internal class TakePolishController(
         // from being the one that still applies English rules to foreign words when the engine is the side
         // that failed (#107); the alternative was a new AIDL transaction to carry it across, which
         // `workflow-process.md` RULE: tier-routing classifies as REFACTOR for a limb feature.
-        val cleaned = guarded(STEP_CLEANUP) { cleanup(prepared, takePreferences.cleanup, languageDetector) } ?: return prepared
+        var language: com.envi.wispr.cleanup.CleanupLanguage = com.envi.wispr.cleanup.CleanupLanguage.Unknown
+        val observedDetector = LanguageDetector { text -> languageDetector.detect(text).also { language = com.envi.wispr.cleanup.CleanupLanguagePolicy.resolve(it) } }
+        val cleaned = guarded(STEP_CLEANUP) { cleanup(prepared, takePreferences.cleanup, observedDetector) } ?: return prepared
         log.words(STEP_CLEANUP) { cleaned }
-        return restoreVocabulary(cleaned, takePreferences, STEP_RESTORE_CLEANED) ?: cleaned
+        return finishSpelling(restoreVocabulary(cleaned, takePreferences, STEP_RESTORE_CLEANED) ?: cleaned, takePreferences, language)
     }
+
+    private fun finishSpelling(text: String, preferences: SessionPreferences, language: com.envi.wispr.cleanup.CleanupLanguage): String =
+        guarded("spelling_final") { com.envi.wispr.cleanup.BritishSpelling.convert(text, preferences.cleanup.englishSpelling, language, preferences.cleanup.spellingProtectedWords) } ?: text
 
     /** The vocabulary restore, or null when it threw ([step] names it in the one preparation defect). */
     private fun restoreVocabulary(text: String, takePreferences: SessionPreferences, step: String): String? = guarded(step) {

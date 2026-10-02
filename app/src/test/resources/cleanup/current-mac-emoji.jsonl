@@ -1,0 +1,1688 @@
+{"expected":"👍","input":"thumbs up emoji"}
+{"expected":"👍","input":"thumb up emoji"}
+{"expected":"👍","input":"thumbsup emoji"}
+{"expected":"👎","input":"thumbs down emoji"}
+{"expected":"👎","input":"thumb down emoji"}
+{"expected":"👎","input":"thumbsdown emoji"}
+{"expected":"❤️","input":"red heart emoji"}
+{"expected":"❤️","input":"heart emoji"}
+{"expected":"💖","input":"sparkling heart emoji"}
+{"expected":"💖","input":"sparkle heart emoji"}
+{"expected":"😍","input":"heart eyes emoji"}
+{"expected":"love 👀","input":"love eyes emoji"}
+{"expected":"😍","input":"heart eyed face emoji"}
+{"expected":"🔥","input":"fire emoji"}
+{"expected":"🔥","input":"flame emoji"}
+{"expected":"🚀","input":"rocket emoji"}
+{"expected":"rocket 🚢","input":"rocket ship emoji"}
+{"expected":"🚀","input":"spaceship emoji"}
+{"expected":"🙂","input":"smiling face emoji"}
+{"expected":"🙂","input":"smile emoji"}
+{"expected":"🙂","input":"smiley face emoji"}
+{"expected":"🙂","input":"happy face emoji"}
+{"expected":"🙂","input":"smiley emoji"}
+{"expected":"🙂","input":"slight smile emoji"}
+{"expected":"😀","input":"smiling face with open mouth emoji"}
+{"expected":"😀","input":"big smile emoji"}
+{"expected":"😀","input":"grinning face emoji"}
+{"expected":"😀","input":"grin emoji"}
+{"expected":"😂","input":"laughing face emoji"}
+{"expected":"😂","input":"lol emoji"}
+{"expected":"😂","input":"tears of joy emoji"}
+{"expected":"😂","input":"face with tears of joy emoji"}
+{"expected":"😂","input":"laughing crying emoji"}
+{"expected":"😉","input":"wink emoji"}
+{"expected":"😉","input":"winking face emoji"}
+{"expected":"😢","input":"sad face emoji"}
+{"expected":"😢","input":"crying face emoji"}
+{"expected":"😢","input":"tear face emoji"}
+{"expected":"😢","input":"sob emoji"}
+{"expected":"😢","input":"sad emoji"}
+{"expected":"😢","input":"crying emoji"}
+{"expected":"😭","input":"loud crying emoji"}
+{"expected":"😭","input":"loud crying face emoji"}
+{"expected":"😭","input":"loudly crying emoji"}
+{"expected":"😭","input":"ugly cry emoji"}
+{"expected":"😠","input":"angry face emoji"}
+{"expected":"😠","input":"angry emoji"}
+{"expected":"😠","input":"mad emoji"}
+{"expected":"😠","input":"mad face emoji"}
+{"expected":"😡","input":"pouting face emoji"}
+{"expected":"😡","input":"enraged emoji"}
+{"expected":"😡","input":"raging emoji"}
+{"expected":"👿","input":"angry face with horns emoji"}
+{"expected":"👿","input":"devil face emoji"}
+{"expected":"💀","input":"skull emoji"}
+{"expected":"💀","input":"skull face emoji"}
+{"expected":"👻","input":"ghost emoji"}
+{"expected":"👻","input":"spooky emoji"}
+{"expected":"👽","input":"alien emoji"}
+{"expected":"👽","input":"alien face emoji"}
+{"expected":"👾","input":"alien monster emoji"}
+{"expected":"👾","input":"space invader emoji"}
+{"expected":"👾","input":"video game emoji"}
+{"expected":"🤔","input":"thinking face emoji"}
+{"expected":"🤔","input":"thinking emoji"}
+{"expected":"🤔","input":"think emoji"}
+{"expected":"🤷","input":"shrug emoji"}
+{"expected":"🤷","input":"shrugging emoji"}
+{"expected":"🥺","input":"pleading face emoji"}
+{"expected":"puppy 👀","input":"puppy eyes emoji"}
+{"expected":"🥺","input":"pleading emoji"}
+{"expected":"😴","input":"sleeping face emoji"}
+{"expected":"😴","input":"sleeping emoji"}
+{"expected":"😴","input":"asleep emoji"}
+{"expected":"🥱","input":"yawning face emoji"}
+{"expected":"🥱","input":"yawn emoji"}
+{"expected":"🥱","input":"tired face emoji"}
+{"expected":"🤯","input":"exploding head emoji"}
+{"expected":"🤯","input":"mind blown emoji"}
+{"expected":"🤯","input":"head exploding emoji"}
+{"expected":"🙄","input":"face with rolling eyes emoji"}
+{"expected":"🙄","input":"eye roll emoji"}
+{"expected":"rolling 👀","input":"rolling eyes emoji"}
+{"expected":"🤦","input":"facepalm emoji"}
+{"expected":"🤦","input":"face palm emoji"}
+{"expected":"👌","input":"okay hand emoji"}
+{"expected":"👌","input":"ok hand emoji"}
+{"expected":"👌","input":"ok sign emoji"}
+{"expected":"✋","input":"raised hand emoji"}
+{"expected":"✋","input":"hand up emoji"}
+{"expected":"✋","input":"high five emoji"}
+{"expected":"👋","input":"waving hand emoji"}
+{"expected":"👋","input":"wave emoji"}
+{"expected":"👏","input":"clapping hands emoji"}
+{"expected":"👏","input":"clap emoji"}
+{"expected":"👏","input":"clapped hands emoji"}
+{"expected":"👏","input":"applause emoji"}
+{"expected":"🙏","input":"folded hands emoji"}
+{"expected":"🙏","input":"pray emoji"}
+{"expected":"🙏","input":"praying hands emoji"}
+{"expected":"🙏","input":"prayer emoji"}
+{"expected":"🙏","input":"thank you emoji"}
+{"expected":"🙏","input":"please emoji"}
+{"expected":"💪","input":"muscle emoji"}
+{"expected":"💪","input":"flexed biceps emoji"}
+{"expected":"💪","input":"strong emoji"}
+{"expected":"👀","input":"eyes emoji"}
+{"expected":"👀","input":"looking emoji"}
+{"expected":"🎉","input":"party popper emoji"}
+{"expected":"🎉","input":"party emoji"}
+{"expected":"🎉","input":"celebration emoji"}
+{"expected":"🎉","input":"celebrate emoji"}
+{"expected":"🎈","input":"balloon emoji"}
+{"expected":"🎉","input":"tada emoji"}
+{"expected":"🏆","input":"trophy emoji"}
+{"expected":"🏆","input":"winner emoji"}
+{"expected":"✅","input":"checkmark emoji"}
+{"expected":"✅","input":"check emoji"}
+{"expected":"✅","input":"check mark emoji"}
+{"expected":"✅","input":"green check emoji"}
+{"expected":"✅","input":"tick emoji"}
+{"expected":"❌","input":"cross mark emoji"}
+{"expected":"❌","input":"x mark emoji"}
+{"expected":"❌","input":"red x emoji"}
+{"expected":"❌","input":"no emoji"}
+{"expected":"⚠️","input":"warning emoji"}
+{"expected":"⚠️","input":"warning sign emoji"}
+{"expected":"⚠️","input":"caution emoji"}
+{"expected":"🛑","input":"stop sign emoji"}
+{"expected":"🛑","input":"stop emoji"}
+{"expected":"💯","input":"hundred emoji"}
+{"expected":"💯","input":"100 emoji"}
+{"expected":"💯","input":"hundred points emoji"}
+{"expected":"⭐","input":"star emoji"}
+{"expected":"✨","input":"sparkles emoji"}
+{"expected":"✨","input":"sparkle emoji"}
+{"expected":"💰","input":"money bag emoji"}
+{"expected":"💰","input":"money emoji"}
+{"expected":"📅","input":"calendar emoji"}
+{"expected":"⏰","input":"alarm clock emoji"}
+{"expected":"⏰","input":"alarm emoji"}
+{"expected":"💡","input":"lightbulb emoji"}
+{"expected":"💡","input":"light bulb emoji"}
+{"expected":"💡","input":"idea emoji"}
+{"expected":"💣","input":"bomb emoji"}
+{"expected":"❄️","input":"snowflake emoji"}
+{"expected":"❄️","input":"snow emoji"}
+{"expected":"☂️","input":"umbrella emoji"}
+{"expected":"☀️","input":"sun emoji"}
+{"expected":"☀️","input":"sunshine emoji"}
+{"expected":"🌈","input":"rainbow emoji"}
+{"expected":"🌙","input":"moon emoji"}
+{"expected":"crescent 🌙","input":"crescent moon emoji"}
+{"expected":"☕","input":"coffee emoji"}
+{"expected":"☕","input":"hot beverage emoji"}
+{"expected":"🍺","input":"beer emoji"}
+{"expected":"🍺","input":"beer mug emoji"}
+{"expected":"🎂","input":"cake emoji"}
+{"expected":"birthday 🎂","input":"birthday cake emoji"}
+{"expected":"🍕","input":"pizza emoji"}
+{"expected":"🌮","input":"taco emoji"}
+{"expected":"🍔","input":"burger emoji"}
+{"expected":"🍔","input":"hamburger emoji"}
+{"expected":"🍿","input":"popcorn emoji"}
+{"expected":"🥛","input":"milk emoji"}
+{"expected":"glass of 🥛","input":"glass of milk emoji"}
+{"expected":"🐶","input":"dog emoji"}
+{"expected":"🐶","input":"puppy emoji"}
+{"expected":"🐶","input":"dog face emoji"}
+{"expected":"🐱","input":"cat emoji"}
+{"expected":"🐱","input":"kitty emoji"}
+{"expected":"🐱","input":"cat face emoji"}
+{"expected":"🦄","input":"unicorn emoji"}
+{"expected":"🦄","input":"unicorn face emoji"}
+{"expected":"🐍","input":"snake emoji"}
+{"expected":"🐙","input":"octopus emoji"}
+{"expected":"♪","input":"eighth note emoji"}
+{"expected":"♭","input":"flat emoji"}
+{"expected":"♯","input":"sharp emoji"}
+{"expected":"😃","input":"grinning face with big eyes emoji"}
+{"expected":"😄","input":"grinning face with smiling eyes emoji"}
+{"expected":"😁","input":"beaming face with smiling eyes emoji"}
+{"expected":"😆","input":"grinning squinting face emoji"}
+{"expected":"😅","input":"grinning face with sweat emoji"}
+{"expected":"🤣","input":"rolling on the floor laughing emoji"}
+{"expected":"🙂","input":"slightly smiling face emoji"}
+{"expected":"🙃","input":"upside-down face emoji"}
+{"expected":"🫠","input":"melting face emoji"}
+{"expected":"😊","input":"smiling face with smiling eyes emoji"}
+{"expected":"😇","input":"smiling face with halo emoji"}
+{"expected":"😇","input":"angel face emoji"}
+{"expected":"🥰","input":"smiling face with hearts emoji"}
+{"expected":"🥰","input":"love face emoji"}
+{"expected":"😍","input":"smiling face with heart-eyes emoji"}
+{"expected":"🤩","input":"star-struck emoji"}
+{"expected":"starry 👀","input":"starry eyes emoji"}
+{"expected":"😘","input":"face blowing a kiss emoji"}
+{"expected":"😗","input":"kissing face emoji"}
+{"expected":"😚","input":"kissing face with closed eyes emoji"}
+{"expected":"😙","input":"kissing face with smiling eyes emoji"}
+{"expected":"🥲","input":"smiling face with tear emoji"}
+{"expected":"😋","input":"face savoring food emoji"}
+{"expected":"😛","input":"face with tongue emoji"}
+{"expected":"😜","input":"winking face with tongue emoji"}
+{"expected":"🤪","input":"zany face emoji"}
+{"expected":"🤪","input":"crazy face emoji"}
+{"expected":"😝","input":"squinting face with tongue emoji"}
+{"expected":"🤑","input":"money-mouth face emoji"}
+{"expected":"🤑","input":"money face emoji"}
+{"expected":"🤗","input":"smiling face with open hands emoji"}
+{"expected":"🤭","input":"face with hand over mouth emoji"}
+{"expected":"🫢","input":"face with open eyes and hand over mouth emoji"}
+{"expected":"🫣","input":"face with peeking eye emoji"}
+{"expected":"🤫","input":"shushing face emoji"}
+{"expected":"🤫","input":"shush emoji"}
+{"expected":"🤫","input":"quiet emoji"}
+{"expected":"🫡","input":"saluting face emoji"}
+{"expected":"🫡","input":"salute emoji"}
+{"expected":"🤐","input":"zipper-mouth face emoji"}
+{"expected":"🤨","input":"face with raised eyebrow emoji"}
+{"expected":"😐","input":"neutral face emoji"}
+{"expected":"😑","input":"expressionless face emoji"}
+{"expected":"😶","input":"face without mouth emoji"}
+{"expected":"🫥","input":"dotted line face emoji"}
+{"expected":"😶‍🌫","input":"face in clouds emoji"}
+{"expected":"😏","input":"smirking face emoji"}
+{"expected":"😒","input":"unamused face emoji"}
+{"expected":"😬","input":"grimacing face emoji"}
+{"expected":"😮‍💨","input":"face exhaling emoji"}
+{"expected":"🤥","input":"lying face emoji"}
+{"expected":"🫨","input":"shaking face emoji"}
+{"expected":"🙂‍↔","input":"head shaking horizontally emoji"}
+{"expected":"🙂‍↕","input":"head shaking vertically emoji"}
+{"expected":"😌","input":"relieved face emoji"}
+{"expected":"😔","input":"pensive face emoji"}
+{"expected":"😪","input":"sleepy face emoji"}
+{"expected":"🤤","input":"drooling face emoji"}
+{"expected":"🤤","input":"yum face emoji"}
+{"expected":"🫩","input":"face with bags under eyes emoji"}
+{"expected":"😷","input":"face with medical mask emoji"}
+{"expected":"🤒","input":"face with thermometer emoji"}
+{"expected":"🤒","input":"fever emoji"}
+{"expected":"🤕","input":"face with head-bandage emoji"}
+{"expected":"🤢","input":"nauseated face emoji"}
+{"expected":"🤢","input":"sick emoji"}
+{"expected":"🤢","input":"queasy emoji"}
+{"expected":"🤢","input":"ill emoji"}
+{"expected":"🤮","input":"face vomiting emoji"}
+{"expected":"🤮","input":"throw up emoji"}
+{"expected":"🤮","input":"puke emoji"}
+{"expected":"🤧","input":"sneezing face emoji"}
+{"expected":"🥵","input":"hot face emoji"}
+{"expected":"🥵","input":"sweating face emoji"}
+{"expected":"🥶","input":"cold face emoji"}
+{"expected":"🥶","input":"freezing emoji"}
+{"expected":"🥶","input":"frozen face emoji"}
+{"expected":"🥴","input":"woozy face emoji"}
+{"expected":"😵","input":"face with crossed-out eyes emoji"}
+{"expected":"😵‍💫","input":"face with spiral eyes emoji"}
+{"expected":"🤠","input":"cowboy hat face emoji"}
+{"expected":"🥳","input":"partying face emoji"}
+{"expected":"🥳","input":"party face emoji"}
+{"expected":"🥸","input":"disguised face emoji"}
+{"expected":"😎","input":"smiling face with sunglasses emoji"}
+{"expected":"😎","input":"cool emoji"}
+{"expected":"🤓","input":"nerd face emoji"}
+{"expected":"🧐","input":"face with monocle emoji"}
+{"expected":"😕","input":"confused face emoji"}
+{"expected":"🫤","input":"face with diagonal mouth emoji"}
+{"expected":"😟","input":"worried face emoji"}
+{"expected":"🙁","input":"slightly frowning face emoji"}
+{"expected":"☹","input":"frowning face emoji"}
+{"expected":"😮","input":"face with open mouth emoji"}
+{"expected":"😯","input":"hushed face emoji"}
+{"expected":"😲","input":"astonished face emoji"}
+{"expected":"😳","input":"flushed face emoji"}
+{"expected":"🫪","input":"distorted face emoji"}
+{"expected":"🥹","input":"face holding back tears emoji"}
+{"expected":"😦","input":"frowning face with open mouth emoji"}
+{"expected":"😧","input":"anguished face emoji"}
+{"expected":"😨","input":"fearful face emoji"}
+{"expected":"😰","input":"anxious face with sweat emoji"}
+{"expected":"😥","input":"sad but relieved face emoji"}
+{"expected":"😭","input":"loudly crying face emoji"}
+{"expected":"😭","input":"bawling emoji"}
+{"expected":"😱","input":"face screaming in fear emoji"}
+{"expected":"😖","input":"confounded face emoji"}
+{"expected":"😣","input":"persevering face emoji"}
+{"expected":"😞","input":"disappointed face emoji"}
+{"expected":"😓","input":"downcast face with sweat emoji"}
+{"expected":"😩","input":"weary face emoji"}
+{"expected":"😤","input":"face with steam from nose emoji"}
+{"expected":"😡","input":"enraged face emoji"}
+{"expected":"🤬","input":"face with symbols on mouth emoji"}
+{"expected":"😈","input":"smiling face with horns emoji"}
+{"expected":"☠","input":"skull and crossbones emoji"}
+{"expected":"💩","input":"pile of poo emoji"}
+{"expected":"🤡","input":"clown face emoji"}
+{"expected":"👹","input":"ogre emoji"}
+{"expected":"👺","input":"goblin emoji"}
+{"expected":"🤖","input":"robot emoji"}
+{"expected":"😺","input":"grinning cat emoji"}
+{"expected":"😸","input":"grinning cat with smiling eyes emoji"}
+{"expected":"😹","input":"cat with tears of joy emoji"}
+{"expected":"😻","input":"smiling cat with heart-eyes emoji"}
+{"expected":"😼","input":"cat with wry smile emoji"}
+{"expected":"😽","input":"kissing cat emoji"}
+{"expected":"🙀","input":"weary cat emoji"}
+{"expected":"😿","input":"crying cat emoji"}
+{"expected":"😾","input":"pouting cat emoji"}
+{"expected":"🙈","input":"see-no-evil monkey emoji"}
+{"expected":"🙉","input":"hear-no-evil monkey emoji"}
+{"expected":"🙊","input":"speak-no-evil monkey emoji"}
+{"expected":"💌","input":"love letter emoji"}
+{"expected":"💘","input":"heart with arrow emoji"}
+{"expected":"💝","input":"heart with ribbon emoji"}
+{"expected":"💗","input":"growing heart emoji"}
+{"expected":"💓","input":"beating heart emoji"}
+{"expected":"💞","input":"revolving hearts emoji"}
+{"expected":"💕","input":"two hearts emoji"}
+{"expected":"💟","input":"heart decoration emoji"}
+{"expected":"❣","input":"heart exclamation emoji"}
+{"expected":"💔","input":"broken heart emoji"}
+{"expected":"❤‍🔥","input":"heart on fire emoji"}
+{"expected":"❤‍🩹","input":"mending heart emoji"}
+{"expected":"🩷","input":"pink heart emoji"}
+{"expected":"🧡","input":"orange heart emoji"}
+{"expected":"💛","input":"yellow heart emoji"}
+{"expected":"💚","input":"green heart emoji"}
+{"expected":"💙","input":"blue heart emoji"}
+{"expected":"🩵","input":"light blue heart emoji"}
+{"expected":"💜","input":"purple heart emoji"}
+{"expected":"🤎","input":"brown heart emoji"}
+{"expected":"🖤","input":"black heart emoji"}
+{"expected":"🩶","input":"grey heart emoji"}
+{"expected":"🤍","input":"white heart emoji"}
+{"expected":"💋","input":"kiss mark emoji"}
+{"expected":"💢","input":"anger symbol emoji"}
+{"expected":"🫯","input":"fight cloud emoji"}
+{"expected":"💥","input":"collision emoji"}
+{"expected":"💫","input":"dizzy emoji"}
+{"expected":"💦","input":"sweat droplets emoji"}
+{"expected":"💨","input":"dashing away emoji"}
+{"expected":"🕳","input":"hole emoji"}
+{"expected":"💬","input":"speech balloon emoji"}
+{"expected":"👁‍🗨","input":"eye in speech bubble emoji"}
+{"expected":"🗨","input":"left speech bubble emoji"}
+{"expected":"🗯","input":"right anger bubble emoji"}
+{"expected":"💭","input":"thought balloon emoji"}
+{"expected":"💤","input":"ZZZ emoji"}
+{"expected":"🤚","input":"raised back of hand emoji"}
+{"expected":"🖐","input":"hand with fingers splayed emoji"}
+{"expected":"🖖","input":"vulcan salute emoji"}
+{"expected":"🫱","input":"rightwards hand emoji"}
+{"expected":"🫲","input":"leftwards hand emoji"}
+{"expected":"🫳","input":"palm down hand emoji"}
+{"expected":"🫴","input":"palm up hand emoji"}
+{"expected":"🫷","input":"leftwards pushing hand emoji"}
+{"expected":"🫸","input":"rightwards pushing hand emoji"}
+{"expected":"🤌","input":"pinched fingers emoji"}
+{"expected":"🤏","input":"pinching hand emoji"}
+{"expected":"✌","input":"victory hand emoji"}
+{"expected":"🤞","input":"crossed fingers emoji"}
+{"expected":"🫰","input":"hand with index finger and thumb crossed emoji"}
+{"expected":"🤟","input":"love-you gesture emoji"}
+{"expected":"🤘","input":"sign of the horns emoji"}
+{"expected":"🤙","input":"call me hand emoji"}
+{"expected":"👈","input":"backhand index pointing left emoji"}
+{"expected":"👉","input":"backhand index pointing right emoji"}
+{"expected":"👆","input":"backhand index pointing up emoji"}
+{"expected":"🖕","input":"middle finger emoji"}
+{"expected":"👇","input":"backhand index pointing down emoji"}
+{"expected":"☝","input":"index pointing up emoji"}
+{"expected":"🫵","input":"index pointing at the viewer emoji"}
+{"expected":"✊","input":"raised fist emoji"}
+{"expected":"👊","input":"oncoming fist emoji"}
+{"expected":"🤛","input":"left-facing fist emoji"}
+{"expected":"🤜","input":"right-facing fist emoji"}
+{"expected":"🙌","input":"raising hands emoji"}
+{"expected":"🫶","input":"heart hands emoji"}
+{"expected":"👐","input":"open hands emoji"}
+{"expected":"🤲","input":"palms up together emoji"}
+{"expected":"🤝","input":"handshake emoji"}
+{"expected":"✍","input":"writing hand emoji"}
+{"expected":"💅","input":"nail polish emoji"}
+{"expected":"🤳","input":"selfie emoji"}
+{"expected":"🦾","input":"mechanical arm emoji"}
+{"expected":"🦿","input":"mechanical leg emoji"}
+{"expected":"🦵","input":"leg emoji"}
+{"expected":"🦶","input":"foot emoji"}
+{"expected":"👂","input":"ear emoji"}
+{"expected":"🦻","input":"ear with hearing aid emoji"}
+{"expected":"👃","input":"nose emoji"}
+{"expected":"🧠","input":"brain emoji"}
+{"expected":"🫀","input":"anatomical heart emoji"}
+{"expected":"🫁","input":"lungs emoji"}
+{"expected":"🦷","input":"tooth emoji"}
+{"expected":"🦴","input":"bone emoji"}
+{"expected":"👁","input":"eye emoji"}
+{"expected":"👅","input":"tongue emoji"}
+{"expected":"👄","input":"mouth emoji"}
+{"expected":"🫦","input":"biting lip emoji"}
+{"expected":"👶","input":"baby emoji"}
+{"expected":"🧒","input":"child emoji"}
+{"expected":"👦","input":"boy emoji"}
+{"expected":"👧","input":"girl emoji"}
+{"expected":"🧑","input":"person emoji"}
+{"expected":"👱","input":"person: blond hair emoji"}
+{"expected":"👨","input":"man emoji"}
+{"expected":"🧔","input":"person: beard emoji"}
+{"expected":"🧔‍♂","input":"man: beard emoji"}
+{"expected":"👱‍♂","input":"man: blond hair emoji"}
+{"expected":"👩","input":"woman emoji"}
+{"expected":"🧔‍♀","input":"woman: beard emoji"}
+{"expected":"👱‍♀","input":"woman: blond hair emoji"}
+{"expected":"🧓","input":"older person emoji"}
+{"expected":"👴","input":"old man emoji"}
+{"expected":"👵","input":"old woman emoji"}
+{"expected":"🙍","input":"person frowning emoji"}
+{"expected":"🙍‍♂","input":"man frowning emoji"}
+{"expected":"🙍‍♀","input":"woman frowning emoji"}
+{"expected":"🙎","input":"person pouting emoji"}
+{"expected":"🙎‍♂","input":"man pouting emoji"}
+{"expected":"🙎‍♀","input":"woman pouting emoji"}
+{"expected":"🙅","input":"person gesturing NO emoji"}
+{"expected":"🙅‍♂","input":"man gesturing NO emoji"}
+{"expected":"🙅‍♀","input":"woman gesturing NO emoji"}
+{"expected":"🙆","input":"person gesturing OK emoji"}
+{"expected":"🙆‍♂","input":"man gesturing OK emoji"}
+{"expected":"🙆‍♀","input":"woman gesturing OK emoji"}
+{"expected":"💁","input":"person tipping hand emoji"}
+{"expected":"💁‍♂","input":"man tipping hand emoji"}
+{"expected":"💁‍♀","input":"woman tipping hand emoji"}
+{"expected":"🙋","input":"person raising hand emoji"}
+{"expected":"🙋‍♂","input":"man raising hand emoji"}
+{"expected":"🙋‍♀","input":"woman raising hand emoji"}
+{"expected":"🧏","input":"deaf person emoji"}
+{"expected":"🧏‍♂","input":"deaf man emoji"}
+{"expected":"🧏‍♀","input":"deaf woman emoji"}
+{"expected":"🙇","input":"person bowing emoji"}
+{"expected":"🙇‍♂","input":"man bowing emoji"}
+{"expected":"🙇‍♀","input":"woman bowing emoji"}
+{"expected":"🤦","input":"person facepalming emoji"}
+{"expected":"🤦‍♂","input":"man facepalming emoji"}
+{"expected":"🤦‍♀","input":"woman facepalming emoji"}
+{"expected":"🤷","input":"person shrugging emoji"}
+{"expected":"🤷‍♂","input":"man shrugging emoji"}
+{"expected":"🤷‍♀","input":"woman shrugging emoji"}
+{"expected":"🧑‍⚕","input":"health worker emoji"}
+{"expected":"👨‍⚕","input":"man health worker emoji"}
+{"expected":"👩‍⚕","input":"woman health worker emoji"}
+{"expected":"🧑‍🎓","input":"student emoji"}
+{"expected":"👨‍🎓","input":"man student emoji"}
+{"expected":"👩‍🎓","input":"woman student emoji"}
+{"expected":"🧑‍🏫","input":"teacher emoji"}
+{"expected":"👨‍🏫","input":"man teacher emoji"}
+{"expected":"👩‍🏫","input":"woman teacher emoji"}
+{"expected":"🧑‍⚖","input":"judge emoji"}
+{"expected":"👨‍⚖","input":"man judge emoji"}
+{"expected":"👩‍⚖","input":"woman judge emoji"}
+{"expected":"🧑‍🌾","input":"farmer emoji"}
+{"expected":"👨‍🌾","input":"man farmer emoji"}
+{"expected":"👩‍🌾","input":"woman farmer emoji"}
+{"expected":"🧑‍🍳","input":"cook emoji"}
+{"expected":"👨‍🍳","input":"man cook emoji"}
+{"expected":"👩‍🍳","input":"woman cook emoji"}
+{"expected":"🧑‍🔧","input":"mechanic emoji"}
+{"expected":"👨‍🔧","input":"man mechanic emoji"}
+{"expected":"👩‍🔧","input":"woman mechanic emoji"}
+{"expected":"🧑‍🏭","input":"factory worker emoji"}
+{"expected":"👨‍🏭","input":"man factory worker emoji"}
+{"expected":"👩‍🏭","input":"woman factory worker emoji"}
+{"expected":"🧑‍💼","input":"office worker emoji"}
+{"expected":"👨‍💼","input":"man office worker emoji"}
+{"expected":"👩‍💼","input":"woman office worker emoji"}
+{"expected":"🧑‍🔬","input":"scientist emoji"}
+{"expected":"👨‍🔬","input":"man scientist emoji"}
+{"expected":"👩‍🔬","input":"woman scientist emoji"}
+{"expected":"🧑‍💻","input":"technologist emoji"}
+{"expected":"👨‍💻","input":"man technologist emoji"}
+{"expected":"👩‍💻","input":"woman technologist emoji"}
+{"expected":"🧑‍🎤","input":"singer emoji"}
+{"expected":"👨‍🎤","input":"man singer emoji"}
+{"expected":"👩‍🎤","input":"woman singer emoji"}
+{"expected":"🧑‍🎨","input":"artist emoji"}
+{"expected":"👨‍🎨","input":"man artist emoji"}
+{"expected":"👩‍🎨","input":"woman artist emoji"}
+{"expected":"🧑‍✈","input":"pilot emoji"}
+{"expected":"👨‍✈","input":"man pilot emoji"}
+{"expected":"👩‍✈","input":"woman pilot emoji"}
+{"expected":"🧑‍🚀","input":"astronaut emoji"}
+{"expected":"👨‍🚀","input":"man astronaut emoji"}
+{"expected":"👩‍🚀","input":"woman astronaut emoji"}
+{"expected":"🧑‍🚒","input":"firefighter emoji"}
+{"expected":"👨‍🚒","input":"man firefighter emoji"}
+{"expected":"👩‍🚒","input":"woman firefighter emoji"}
+{"expected":"👮","input":"police officer emoji"}
+{"expected":"👮‍♂","input":"man police officer emoji"}
+{"expected":"👮‍♀","input":"woman police officer emoji"}
+{"expected":"🕵","input":"detective emoji"}
+{"expected":"🕵‍♂","input":"man detective emoji"}
+{"expected":"🕵‍♀","input":"woman detective emoji"}
+{"expected":"💂","input":"guard emoji"}
+{"expected":"💂‍♂","input":"man guard emoji"}
+{"expected":"💂‍♀","input":"woman guard emoji"}
+{"expected":"🥷","input":"ninja emoji"}
+{"expected":"👷","input":"construction worker emoji"}
+{"expected":"👷‍♂","input":"man construction worker emoji"}
+{"expected":"👷‍♀","input":"woman construction worker emoji"}
+{"expected":"🫅","input":"person with crown emoji"}
+{"expected":"🤴","input":"prince emoji"}
+{"expected":"👸","input":"princess emoji"}
+{"expected":"👳","input":"person wearing turban emoji"}
+{"expected":"👳‍♂","input":"man wearing turban emoji"}
+{"expected":"👳‍♀","input":"woman wearing turban emoji"}
+{"expected":"👲","input":"person with skullcap emoji"}
+{"expected":"🧕","input":"woman with headscarf emoji"}
+{"expected":"🤵","input":"person in tuxedo emoji"}
+{"expected":"🤵‍♂","input":"man in tuxedo emoji"}
+{"expected":"🤵‍♀","input":"woman in tuxedo emoji"}
+{"expected":"👰","input":"person with veil emoji"}
+{"expected":"👰‍♂","input":"man with veil emoji"}
+{"expected":"👰‍♀","input":"woman with veil emoji"}
+{"expected":"🤰","input":"pregnant woman emoji"}
+{"expected":"🫃","input":"pregnant man emoji"}
+{"expected":"🫄","input":"pregnant person emoji"}
+{"expected":"🤱","input":"breast-feeding emoji"}
+{"expected":"👩‍🍼","input":"woman feeding baby emoji"}
+{"expected":"👨‍🍼","input":"man feeding baby emoji"}
+{"expected":"🧑‍🍼","input":"person feeding baby emoji"}
+{"expected":"👼","input":"baby angel emoji"}
+{"expected":"🎅","input":"Santa Claus emoji"}
+{"expected":"🤶","input":"Mrs. Claus emoji"}
+{"expected":"🧑‍🎄","input":"Mx Claus emoji"}
+{"expected":"🦸","input":"superhero emoji"}
+{"expected":"🦸‍♂","input":"man superhero emoji"}
+{"expected":"🦸‍♀","input":"woman superhero emoji"}
+{"expected":"🦹","input":"supervillain emoji"}
+{"expected":"🦹‍♂","input":"man supervillain emoji"}
+{"expected":"🦹‍♀","input":"woman supervillain emoji"}
+{"expected":"🧙","input":"mage emoji"}
+{"expected":"🧙‍♂","input":"man mage emoji"}
+{"expected":"🧙‍♀","input":"woman mage emoji"}
+{"expected":"🧚","input":"fairy emoji"}
+{"expected":"🧚‍♂","input":"man fairy emoji"}
+{"expected":"🧚‍♀","input":"woman fairy emoji"}
+{"expected":"🧛","input":"vampire emoji"}
+{"expected":"🧛‍♂","input":"man vampire emoji"}
+{"expected":"🧛‍♀","input":"woman vampire emoji"}
+{"expected":"🧜","input":"merperson emoji"}
+{"expected":"🧜‍♂","input":"merman emoji"}
+{"expected":"🧜‍♀","input":"mermaid emoji"}
+{"expected":"🧝","input":"elf emoji"}
+{"expected":"🧝‍♂","input":"man elf emoji"}
+{"expected":"🧝‍♀","input":"woman elf emoji"}
+{"expected":"🧞","input":"genie emoji"}
+{"expected":"🧞‍♂","input":"man genie emoji"}
+{"expected":"🧞‍♀","input":"woman genie emoji"}
+{"expected":"🧟","input":"zombie emoji"}
+{"expected":"🧟‍♂","input":"man zombie emoji"}
+{"expected":"🧟‍♀","input":"woman zombie emoji"}
+{"expected":"🧌","input":"troll emoji"}
+{"expected":"🫈","input":"hairy creature emoji"}
+{"expected":"💆","input":"person getting massage emoji"}
+{"expected":"💆‍♂","input":"man getting massage emoji"}
+{"expected":"💆‍♀","input":"woman getting massage emoji"}
+{"expected":"💇","input":"person getting haircut emoji"}
+{"expected":"💇‍♂","input":"man getting haircut emoji"}
+{"expected":"💇‍♀","input":"woman getting haircut emoji"}
+{"expected":"🚶","input":"person walking emoji"}
+{"expected":"🚶‍♂","input":"man walking emoji"}
+{"expected":"🚶‍♀","input":"woman walking emoji"}
+{"expected":"🧍","input":"person standing emoji"}
+{"expected":"🧍‍♂","input":"man standing emoji"}
+{"expected":"🧍‍♀","input":"woman standing emoji"}
+{"expected":"🧎","input":"person kneeling emoji"}
+{"expected":"🧎‍♂","input":"man kneeling emoji"}
+{"expected":"🧎‍♀","input":"woman kneeling emoji"}
+{"expected":"🧑‍🦯","input":"person with white cane emoji"}
+{"expected":"👨‍🦯","input":"man with white cane emoji"}
+{"expected":"👩‍🦯","input":"woman with white cane emoji"}
+{"expected":"🧑‍🦼","input":"person in motorized wheelchair emoji"}
+{"expected":"👨‍🦼","input":"man in motorized wheelchair emoji"}
+{"expected":"👩‍🦼","input":"woman in motorized wheelchair emoji"}
+{"expected":"🧑‍🦽","input":"person in manual wheelchair emoji"}
+{"expected":"👨‍🦽","input":"man in manual wheelchair emoji"}
+{"expected":"👩‍🦽","input":"woman in manual wheelchair emoji"}
+{"expected":"🏃","input":"person running emoji"}
+{"expected":"🏃‍♂","input":"man running emoji"}
+{"expected":"🏃‍♀","input":"woman running emoji"}
+{"expected":"🧑‍🩰","input":"ballet dancer emoji"}
+{"expected":"💃","input":"woman dancing emoji"}
+{"expected":"🕺","input":"man dancing emoji"}
+{"expected":"🕴","input":"person in suit levitating emoji"}
+{"expected":"👯","input":"people with bunny ears emoji"}
+{"expected":"👯‍♂","input":"men with bunny ears emoji"}
+{"expected":"👯‍♀","input":"women with bunny ears emoji"}
+{"expected":"🧖","input":"person in steamy room emoji"}
+{"expected":"🧖‍♂","input":"man in steamy room emoji"}
+{"expected":"🧖‍♀","input":"woman in steamy room emoji"}
+{"expected":"🧗","input":"person climbing emoji"}
+{"expected":"🧗‍♂","input":"man climbing emoji"}
+{"expected":"🧗‍♀","input":"woman climbing emoji"}
+{"expected":"🤺","input":"person fencing emoji"}
+{"expected":"🏇","input":"horse racing emoji"}
+{"expected":"⛷","input":"skier emoji"}
+{"expected":"🏂","input":"snowboarder emoji"}
+{"expected":"🏌","input":"person golfing emoji"}
+{"expected":"🏌‍♂","input":"man golfing emoji"}
+{"expected":"🏌‍♀","input":"woman golfing emoji"}
+{"expected":"🏄","input":"person surfing emoji"}
+{"expected":"🏄‍♂","input":"man surfing emoji"}
+{"expected":"🏄‍♀","input":"woman surfing emoji"}
+{"expected":"🚣","input":"person rowing boat emoji"}
+{"expected":"🚣‍♂","input":"man rowing boat emoji"}
+{"expected":"🚣‍♀","input":"woman rowing boat emoji"}
+{"expected":"🏊","input":"person swimming emoji"}
+{"expected":"🏊‍♂","input":"man swimming emoji"}
+{"expected":"🏊‍♀","input":"woman swimming emoji"}
+{"expected":"⛹","input":"person bouncing ball emoji"}
+{"expected":"⛹‍♂","input":"man bouncing ball emoji"}
+{"expected":"⛹‍♀","input":"woman bouncing ball emoji"}
+{"expected":"🏋","input":"person lifting weights emoji"}
+{"expected":"🏋‍♂","input":"man lifting weights emoji"}
+{"expected":"🏋‍♀","input":"woman lifting weights emoji"}
+{"expected":"🚴","input":"person biking emoji"}
+{"expected":"🚴‍♂","input":"man biking emoji"}
+{"expected":"🚴‍♀","input":"woman biking emoji"}
+{"expected":"🚵","input":"person mountain biking emoji"}
+{"expected":"🚵‍♂","input":"man mountain biking emoji"}
+{"expected":"🚵‍♀","input":"woman mountain biking emoji"}
+{"expected":"🤸","input":"person cartwheeling emoji"}
+{"expected":"🤸‍♂","input":"man cartwheeling emoji"}
+{"expected":"🤸‍♀","input":"woman cartwheeling emoji"}
+{"expected":"🤼","input":"people wrestling emoji"}
+{"expected":"🤼‍♂","input":"men wrestling emoji"}
+{"expected":"🤼‍♀","input":"women wrestling emoji"}
+{"expected":"🤽","input":"person playing water polo emoji"}
+{"expected":"🤽‍♂","input":"man playing water polo emoji"}
+{"expected":"🤽‍♀","input":"woman playing water polo emoji"}
+{"expected":"🤾","input":"person playing handball emoji"}
+{"expected":"🤾‍♂","input":"man playing handball emoji"}
+{"expected":"🤾‍♀","input":"woman playing handball emoji"}
+{"expected":"🤹","input":"person juggling emoji"}
+{"expected":"🤹‍♂","input":"man juggling emoji"}
+{"expected":"🤹‍♀","input":"woman juggling emoji"}
+{"expected":"🧘","input":"person in lotus position emoji"}
+{"expected":"🧘‍♂","input":"man in lotus position emoji"}
+{"expected":"🧘‍♀","input":"woman in lotus position emoji"}
+{"expected":"🛀","input":"person taking bath emoji"}
+{"expected":"🛌","input":"person in bed emoji"}
+{"expected":"🧑‍🤝‍🧑","input":"people holding hands emoji"}
+{"expected":"👭","input":"women holding hands emoji"}
+{"expected":"👫","input":"woman and man holding hands emoji"}
+{"expected":"👬","input":"men holding hands emoji"}
+{"expected":"💏","input":"kiss emoji"}
+{"expected":"💑","input":"couple with heart emoji"}
+{"expected":"🗣","input":"speaking head emoji"}
+{"expected":"👤","input":"bust in silhouette emoji"}
+{"expected":"👥","input":"busts in silhouette emoji"}
+{"expected":"🫂","input":"people hugging emoji"}
+{"expected":"👪","input":"family emoji"}
+{"expected":"🧑‍🧑‍🧒","input":"family: adult, adult, child emoji"}
+{"expected":"🧑‍🧑‍🧒‍🧒","input":"family: adult, adult, child, child emoji"}
+{"expected":"🧑‍🧒","input":"family: adult, child emoji"}
+{"expected":"🧑‍🧒‍🧒","input":"family: adult, child, child emoji"}
+{"expected":"👣","input":"footprints emoji"}
+{"expected":"🫆","input":"fingerprint emoji"}
+{"expected":"🦰","input":"red hair emoji"}
+{"expected":"🦱","input":"curly hair emoji"}
+{"expected":"🦳","input":"white hair emoji"}
+{"expected":"🦲","input":"bald emoji"}
+{"expected":"🐵","input":"monkey face emoji"}
+{"expected":"🐒","input":"monkey emoji"}
+{"expected":"🦍","input":"gorilla emoji"}
+{"expected":"🦧","input":"orangutan emoji"}
+{"expected":"🦮","input":"guide dog emoji"}
+{"expected":"🐕‍🦺","input":"service dog emoji"}
+{"expected":"🐩","input":"poodle emoji"}
+{"expected":"🐺","input":"wolf emoji"}
+{"expected":"🦊","input":"fox emoji"}
+{"expected":"🦝","input":"raccoon emoji"}
+{"expected":"🐈‍⬛","input":"black cat emoji"}
+{"expected":"🦁","input":"lion emoji"}
+{"expected":"🐯","input":"tiger face emoji"}
+{"expected":"🐅","input":"tiger emoji"}
+{"expected":"🐆","input":"leopard emoji"}
+{"expected":"🐴","input":"horse face emoji"}
+{"expected":"🫎","input":"moose emoji"}
+{"expected":"🫏","input":"donkey emoji"}
+{"expected":"🐎","input":"horse emoji"}
+{"expected":"🦓","input":"zebra emoji"}
+{"expected":"🦌","input":"deer emoji"}
+{"expected":"🦬","input":"bison emoji"}
+{"expected":"🐮","input":"cow face emoji"}
+{"expected":"🐂","input":"ox emoji"}
+{"expected":"🐃","input":"water buffalo emoji"}
+{"expected":"🐄","input":"cow emoji"}
+{"expected":"🐷","input":"pig face emoji"}
+{"expected":"🐖","input":"pig emoji"}
+{"expected":"🐗","input":"boar emoji"}
+{"expected":"🐽","input":"pig nose emoji"}
+{"expected":"🐏","input":"ram emoji"}
+{"expected":"🐑","input":"ewe emoji"}
+{"expected":"🐐","input":"goat emoji"}
+{"expected":"🐪","input":"camel emoji"}
+{"expected":"🐫","input":"two-hump camel emoji"}
+{"expected":"🦙","input":"llama emoji"}
+{"expected":"🦒","input":"giraffe emoji"}
+{"expected":"🐘","input":"elephant emoji"}
+{"expected":"🦣","input":"mammoth emoji"}
+{"expected":"🦏","input":"rhinoceros emoji"}
+{"expected":"🦛","input":"hippopotamus emoji"}
+{"expected":"🐭","input":"mouse face emoji"}
+{"expected":"🐁","input":"mouse emoji"}
+{"expected":"🐀","input":"rat emoji"}
+{"expected":"🐹","input":"hamster emoji"}
+{"expected":"🐰","input":"rabbit face emoji"}
+{"expected":"🐇","input":"rabbit emoji"}
+{"expected":"🐿","input":"chipmunk emoji"}
+{"expected":"🦫","input":"beaver emoji"}
+{"expected":"🦔","input":"hedgehog emoji"}
+{"expected":"🦇","input":"bat emoji"}
+{"expected":"🐻","input":"bear emoji"}
+{"expected":"🐻‍❄","input":"polar bear emoji"}
+{"expected":"🐨","input":"koala emoji"}
+{"expected":"🐼","input":"panda emoji"}
+{"expected":"🦥","input":"sloth emoji"}
+{"expected":"🦦","input":"otter emoji"}
+{"expected":"🦨","input":"skunk emoji"}
+{"expected":"🦘","input":"kangaroo emoji"}
+{"expected":"🦡","input":"badger emoji"}
+{"expected":"🐾","input":"paw prints emoji"}
+{"expected":"🦃","input":"turkey emoji"}
+{"expected":"🐔","input":"chicken emoji"}
+{"expected":"🐓","input":"rooster emoji"}
+{"expected":"🐣","input":"hatching chick emoji"}
+{"expected":"🐤","input":"baby chick emoji"}
+{"expected":"🐥","input":"front-facing baby chick emoji"}
+{"expected":"🐦","input":"bird emoji"}
+{"expected":"🐧","input":"penguin emoji"}
+{"expected":"🕊","input":"dove emoji"}
+{"expected":"🦅","input":"eagle emoji"}
+{"expected":"🦆","input":"duck emoji"}
+{"expected":"🦢","input":"swan emoji"}
+{"expected":"🦉","input":"owl emoji"}
+{"expected":"🦤","input":"dodo emoji"}
+{"expected":"🪶","input":"feather emoji"}
+{"expected":"🦩","input":"flamingo emoji"}
+{"expected":"🦚","input":"peacock emoji"}
+{"expected":"🦜","input":"parrot emoji"}
+{"expected":"🪽","input":"wing emoji"}
+{"expected":"🐦‍⬛","input":"black bird emoji"}
+{"expected":"🪿","input":"goose emoji"}
+{"expected":"🐦‍🔥","input":"phoenix emoji"}
+{"expected":"🐸","input":"frog emoji"}
+{"expected":"🐊","input":"crocodile emoji"}
+{"expected":"🐢","input":"turtle emoji"}
+{"expected":"🦎","input":"lizard emoji"}
+{"expected":"🐲","input":"dragon face emoji"}
+{"expected":"🐉","input":"dragon emoji"}
+{"expected":"🦕","input":"sauropod emoji"}
+{"expected":"🦖","input":"T-Rex emoji"}
+{"expected":"🐳","input":"spouting whale emoji"}
+{"expected":"🐋","input":"whale emoji"}
+{"expected":"🐬","input":"dolphin emoji"}
+{"expected":"🫍","input":"orca emoji"}
+{"expected":"🦭","input":"seal emoji"}
+{"expected":"🐟","input":"fish emoji"}
+{"expected":"🐠","input":"tropical fish emoji"}
+{"expected":"🐡","input":"blowfish emoji"}
+{"expected":"🦈","input":"shark emoji"}
+{"expected":"🐚","input":"spiral shell emoji"}
+{"expected":"🪸","input":"coral emoji"}
+{"expected":"🪼","input":"jellyfish emoji"}
+{"expected":"🦀","input":"crab emoji"}
+{"expected":"🦞","input":"lobster emoji"}
+{"expected":"🦐","input":"shrimp emoji"}
+{"expected":"🦑","input":"squid emoji"}
+{"expected":"🦪","input":"oyster emoji"}
+{"expected":"🐌","input":"snail emoji"}
+{"expected":"🦋","input":"butterfly emoji"}
+{"expected":"🐛","input":"bug emoji"}
+{"expected":"🐜","input":"ant emoji"}
+{"expected":"🐝","input":"honeybee emoji"}
+{"expected":"🪲","input":"beetle emoji"}
+{"expected":"🐞","input":"lady beetle emoji"}
+{"expected":"🦗","input":"cricket emoji"}
+{"expected":"🪳","input":"cockroach emoji"}
+{"expected":"🕷","input":"spider emoji"}
+{"expected":"🕸","input":"spider web emoji"}
+{"expected":"🦂","input":"scorpion emoji"}
+{"expected":"🦟","input":"mosquito emoji"}
+{"expected":"🪰","input":"fly emoji"}
+{"expected":"🪱","input":"worm emoji"}
+{"expected":"🦠","input":"microbe emoji"}
+{"expected":"💐","input":"bouquet emoji"}
+{"expected":"🌸","input":"cherry blossom emoji"}
+{"expected":"💮","input":"white flower emoji"}
+{"expected":"🪷","input":"lotus emoji"}
+{"expected":"🏵","input":"rosette emoji"}
+{"expected":"🌹","input":"rose emoji"}
+{"expected":"🥀","input":"wilted flower emoji"}
+{"expected":"🌺","input":"hibiscus emoji"}
+{"expected":"🌻","input":"sunflower emoji"}
+{"expected":"🌼","input":"blossom emoji"}
+{"expected":"🌷","input":"tulip emoji"}
+{"expected":"🪻","input":"hyacinth emoji"}
+{"expected":"🌱","input":"seedling emoji"}
+{"expected":"🪴","input":"potted plant emoji"}
+{"expected":"🌲","input":"evergreen tree emoji"}
+{"expected":"🌳","input":"deciduous tree emoji"}
+{"expected":"🌴","input":"palm tree emoji"}
+{"expected":"🌵","input":"cactus emoji"}
+{"expected":"🌾","input":"sheaf of rice emoji"}
+{"expected":"🌿","input":"herb emoji"}
+{"expected":"☘","input":"shamrock emoji"}
+{"expected":"🍀","input":"four leaf clover emoji"}
+{"expected":"🍁","input":"maple leaf emoji"}
+{"expected":"🍂","input":"fallen leaf emoji"}
+{"expected":"🍃","input":"leaf fluttering in wind emoji"}
+{"expected":"🪹","input":"empty nest emoji"}
+{"expected":"🪺","input":"nest with eggs emoji"}
+{"expected":"🍄","input":"mushroom emoji"}
+{"expected":"🪾","input":"leafless tree emoji"}
+{"expected":"🍇","input":"grapes emoji"}
+{"expected":"🍈","input":"melon emoji"}
+{"expected":"🍉","input":"watermelon emoji"}
+{"expected":"🍊","input":"tangerine emoji"}
+{"expected":"🍋","input":"lemon emoji"}
+{"expected":"🍋‍🟩","input":"lime emoji"}
+{"expected":"🍌","input":"banana emoji"}
+{"expected":"🍍","input":"pineapple emoji"}
+{"expected":"🥭","input":"mango emoji"}
+{"expected":"🍎","input":"red apple emoji"}
+{"expected":"🍏","input":"green apple emoji"}
+{"expected":"🍐","input":"pear emoji"}
+{"expected":"🍑","input":"peach emoji"}
+{"expected":"🍒","input":"cherries emoji"}
+{"expected":"🍓","input":"strawberry emoji"}
+{"expected":"🫐","input":"blueberries emoji"}
+{"expected":"🥝","input":"kiwi fruit emoji"}
+{"expected":"🍅","input":"tomato emoji"}
+{"expected":"🫒","input":"olive emoji"}
+{"expected":"🥥","input":"coconut emoji"}
+{"expected":"🥑","input":"avocado emoji"}
+{"expected":"🍆","input":"eggplant emoji"}
+{"expected":"🥔","input":"potato emoji"}
+{"expected":"🥕","input":"carrot emoji"}
+{"expected":"🌽","input":"ear of corn emoji"}
+{"expected":"🌶","input":"hot pepper emoji"}
+{"expected":"🫑","input":"bell pepper emoji"}
+{"expected":"🥒","input":"cucumber emoji"}
+{"expected":"🥬","input":"leafy green emoji"}
+{"expected":"🥦","input":"broccoli emoji"}
+{"expected":"🧄","input":"garlic emoji"}
+{"expected":"🧅","input":"onion emoji"}
+{"expected":"🥜","input":"peanuts emoji"}
+{"expected":"🫘","input":"beans emoji"}
+{"expected":"🌰","input":"chestnut emoji"}
+{"expected":"🫚","input":"ginger root emoji"}
+{"expected":"🫛","input":"pea pod emoji"}
+{"expected":"🍄‍🟫","input":"brown mushroom emoji"}
+{"expected":"🫜","input":"root vegetable emoji"}
+{"expected":"🍞","input":"bread emoji"}
+{"expected":"🥐","input":"croissant emoji"}
+{"expected":"🥖","input":"baguette bread emoji"}
+{"expected":"🫓","input":"flatbread emoji"}
+{"expected":"🥨","input":"pretzel emoji"}
+{"expected":"🥯","input":"bagel emoji"}
+{"expected":"🥞","input":"pancakes emoji"}
+{"expected":"🧇","input":"waffle emoji"}
+{"expected":"🧀","input":"cheese wedge emoji"}
+{"expected":"🍖","input":"meat on bone emoji"}
+{"expected":"🍗","input":"poultry leg emoji"}
+{"expected":"🥩","input":"cut of meat emoji"}
+{"expected":"🥓","input":"bacon emoji"}
+{"expected":"🍟","input":"french fries emoji"}
+{"expected":"🌭","input":"hot dog emoji"}
+{"expected":"🥪","input":"sandwich emoji"}
+{"expected":"🌯","input":"burrito emoji"}
+{"expected":"🫔","input":"tamale emoji"}
+{"expected":"🥙","input":"stuffed flatbread emoji"}
+{"expected":"🧆","input":"falafel emoji"}
+{"expected":"🥚","input":"egg emoji"}
+{"expected":"🍳","input":"cooking emoji"}
+{"expected":"🥘","input":"shallow pan of food emoji"}
+{"expected":"🍲","input":"pot of food emoji"}
+{"expected":"🫕","input":"fondue emoji"}
+{"expected":"🥣","input":"bowl with spoon emoji"}
+{"expected":"🥗","input":"green salad emoji"}
+{"expected":"🧈","input":"butter emoji"}
+{"expected":"🧂","input":"salt emoji"}
+{"expected":"🥫","input":"canned food emoji"}
+{"expected":"🍱","input":"bento box emoji"}
+{"expected":"🍘","input":"rice cracker emoji"}
+{"expected":"🍙","input":"rice ball emoji"}
+{"expected":"🍚","input":"cooked rice emoji"}
+{"expected":"🍛","input":"curry rice emoji"}
+{"expected":"🍜","input":"steaming bowl emoji"}
+{"expected":"🍝","input":"spaghetti emoji"}
+{"expected":"🍠","input":"roasted sweet potato emoji"}
+{"expected":"🍢","input":"oden emoji"}
+{"expected":"🍣","input":"sushi emoji"}
+{"expected":"🍤","input":"fried shrimp emoji"}
+{"expected":"🍥","input":"fish cake with swirl emoji"}
+{"expected":"🥮","input":"moon cake emoji"}
+{"expected":"🍡","input":"dango emoji"}
+{"expected":"🥟","input":"dumpling emoji"}
+{"expected":"🥠","input":"fortune cookie emoji"}
+{"expected":"🥡","input":"takeout box emoji"}
+{"expected":"🍦","input":"soft ice cream emoji"}
+{"expected":"🍧","input":"shaved ice emoji"}
+{"expected":"🍨","input":"ice cream emoji"}
+{"expected":"🍩","input":"doughnut emoji"}
+{"expected":"🍪","input":"cookie emoji"}
+{"expected":"🍰","input":"shortcake emoji"}
+{"expected":"🧁","input":"cupcake emoji"}
+{"expected":"🥧","input":"pie emoji"}
+{"expected":"🍫","input":"chocolate bar emoji"}
+{"expected":"🍬","input":"candy emoji"}
+{"expected":"🍭","input":"lollipop emoji"}
+{"expected":"🍮","input":"custard emoji"}
+{"expected":"🍯","input":"honey pot emoji"}
+{"expected":"🍼","input":"baby bottle emoji"}
+{"expected":"🫖","input":"teapot emoji"}
+{"expected":"🍵","input":"teacup without handle emoji"}
+{"expected":"🍶","input":"sake emoji"}
+{"expected":"🍾","input":"bottle with popping cork emoji"}
+{"expected":"🍷","input":"wine glass emoji"}
+{"expected":"🍸","input":"cocktail glass emoji"}
+{"expected":"🍹","input":"tropical drink emoji"}
+{"expected":"🍻","input":"clinking beer mugs emoji"}
+{"expected":"🥂","input":"clinking glasses emoji"}
+{"expected":"🥃","input":"tumbler glass emoji"}
+{"expected":"🫗","input":"pouring liquid emoji"}
+{"expected":"🥤","input":"cup with straw emoji"}
+{"expected":"🧋","input":"bubble tea emoji"}
+{"expected":"🧃","input":"beverage box emoji"}
+{"expected":"🧉","input":"mate emoji"}
+{"expected":"🧊","input":"ice emoji"}
+{"expected":"🥢","input":"chopsticks emoji"}
+{"expected":"🍽","input":"fork and knife with plate emoji"}
+{"expected":"🍴","input":"fork and knife emoji"}
+{"expected":"🥄","input":"spoon emoji"}
+{"expected":"🔪","input":"kitchen knife emoji"}
+{"expected":"🫙","input":"jar emoji"}
+{"expected":"🏺","input":"amphora emoji"}
+{"expected":"🌍","input":"globe showing Europe-Africa emoji"}
+{"expected":"🌎","input":"globe showing Americas emoji"}
+{"expected":"🌏","input":"globe showing Asia-Australia emoji"}
+{"expected":"🌐","input":"globe with meridians emoji"}
+{"expected":"🗺","input":"world map emoji"}
+{"expected":"🗾","input":"map of Japan emoji"}
+{"expected":"🧭","input":"compass emoji"}
+{"expected":"🏔","input":"snow-capped mountain emoji"}
+{"expected":"⛰","input":"mountain emoji"}
+{"expected":"🛘","input":"landslide emoji"}
+{"expected":"🌋","input":"volcano emoji"}
+{"expected":"🗻","input":"mount fuji emoji"}
+{"expected":"🏕","input":"camping emoji"}
+{"expected":"🏖","input":"beach with umbrella emoji"}
+{"expected":"🏜","input":"desert emoji"}
+{"expected":"🏝","input":"desert island emoji"}
+{"expected":"🏞","input":"national park emoji"}
+{"expected":"🏟","input":"stadium emoji"}
+{"expected":"🏛","input":"classical building emoji"}
+{"expected":"🏗","input":"building construction emoji"}
+{"expected":"🧱","input":"brick emoji"}
+{"expected":"🪨","input":"rock emoji"}
+{"expected":"🪵","input":"wood emoji"}
+{"expected":"🛖","input":"hut emoji"}
+{"expected":"🏘","input":"houses emoji"}
+{"expected":"🏚","input":"derelict house emoji"}
+{"expected":"🏠","input":"house emoji"}
+{"expected":"🏡","input":"house with garden emoji"}
+{"expected":"🏢","input":"office building emoji"}
+{"expected":"🏣","input":"Japanese post office emoji"}
+{"expected":"🏤","input":"post office emoji"}
+{"expected":"🏥","input":"hospital emoji"}
+{"expected":"🏦","input":"bank emoji"}
+{"expected":"🏨","input":"hotel emoji"}
+{"expected":"🏩","input":"love hotel emoji"}
+{"expected":"🏪","input":"convenience store emoji"}
+{"expected":"🏫","input":"school emoji"}
+{"expected":"🏬","input":"department store emoji"}
+{"expected":"🏭","input":"factory emoji"}
+{"expected":"🏯","input":"Japanese castle emoji"}
+{"expected":"🏰","input":"castle emoji"}
+{"expected":"💒","input":"wedding emoji"}
+{"expected":"🗼","input":"Tokyo tower emoji"}
+{"expected":"🗽","input":"Statue of Liberty emoji"}
+{"expected":"⛪","input":"church emoji"}
+{"expected":"🕌","input":"mosque emoji"}
+{"expected":"🛕","input":"hindu temple emoji"}
+{"expected":"🕍","input":"synagogue emoji"}
+{"expected":"⛩","input":"shinto shrine emoji"}
+{"expected":"🕋","input":"kaaba emoji"}
+{"expected":"⛲","input":"fountain emoji"}
+{"expected":"⛺","input":"tent emoji"}
+{"expected":"🌁","input":"foggy emoji"}
+{"expected":"🌃","input":"night with stars emoji"}
+{"expected":"🏙","input":"cityscape emoji"}
+{"expected":"🌄","input":"sunrise over mountains emoji"}
+{"expected":"🌅","input":"sunrise emoji"}
+{"expected":"🌆","input":"cityscape at dusk emoji"}
+{"expected":"🌇","input":"sunset emoji"}
+{"expected":"🌉","input":"bridge at night emoji"}
+{"expected":"♨","input":"hot springs emoji"}
+{"expected":"🎠","input":"carousel horse emoji"}
+{"expected":"🛝","input":"playground slide emoji"}
+{"expected":"🎡","input":"ferris wheel emoji"}
+{"expected":"🎢","input":"roller coaster emoji"}
+{"expected":"💈","input":"barber pole emoji"}
+{"expected":"🎪","input":"circus tent emoji"}
+{"expected":"🚂","input":"locomotive emoji"}
+{"expected":"🚃","input":"railway car emoji"}
+{"expected":"🚄","input":"high-speed train emoji"}
+{"expected":"🚅","input":"bullet train emoji"}
+{"expected":"🚆","input":"train emoji"}
+{"expected":"🚇","input":"metro emoji"}
+{"expected":"🚈","input":"light rail emoji"}
+{"expected":"🚉","input":"station emoji"}
+{"expected":"🚊","input":"tram emoji"}
+{"expected":"🚝","input":"monorail emoji"}
+{"expected":"🚞","input":"mountain railway emoji"}
+{"expected":"🚋","input":"tram car emoji"}
+{"expected":"🚌","input":"bus emoji"}
+{"expected":"🚍","input":"oncoming bus emoji"}
+{"expected":"🚎","input":"trolleybus emoji"}
+{"expected":"🚐","input":"minibus emoji"}
+{"expected":"🚑","input":"ambulance emoji"}
+{"expected":"🚒","input":"fire engine emoji"}
+{"expected":"🚓","input":"police car emoji"}
+{"expected":"🚔","input":"oncoming police car emoji"}
+{"expected":"🚕","input":"taxi emoji"}
+{"expected":"🚖","input":"oncoming taxi emoji"}
+{"expected":"🚗","input":"automobile emoji"}
+{"expected":"🚘","input":"oncoming automobile emoji"}
+{"expected":"🚙","input":"sport utility vehicle emoji"}
+{"expected":"🛻","input":"pickup truck emoji"}
+{"expected":"🚚","input":"delivery truck emoji"}
+{"expected":"🚛","input":"articulated lorry emoji"}
+{"expected":"🚜","input":"tractor emoji"}
+{"expected":"🏎","input":"racing car emoji"}
+{"expected":"🏍","input":"motorcycle emoji"}
+{"expected":"🛵","input":"motor scooter emoji"}
+{"expected":"🦽","input":"manual wheelchair emoji"}
+{"expected":"🦼","input":"motorized wheelchair emoji"}
+{"expected":"🛺","input":"auto rickshaw emoji"}
+{"expected":"🚲","input":"bicycle emoji"}
+{"expected":"🛴","input":"kick scooter emoji"}
+{"expected":"🛹","input":"skateboard emoji"}
+{"expected":"🛼","input":"roller skate emoji"}
+{"expected":"🚏","input":"bus stop emoji"}
+{"expected":"🛣","input":"motorway emoji"}
+{"expected":"🛤","input":"railway track emoji"}
+{"expected":"🛢","input":"oil drum emoji"}
+{"expected":"⛽","input":"fuel pump emoji"}
+{"expected":"🛞","input":"wheel emoji"}
+{"expected":"🚨","input":"police car light emoji"}
+{"expected":"🚥","input":"horizontal traffic light emoji"}
+{"expected":"🚦","input":"vertical traffic light emoji"}
+{"expected":"🚧","input":"construction emoji"}
+{"expected":"⚓","input":"anchor emoji"}
+{"expected":"🛟","input":"ring buoy emoji"}
+{"expected":"⛵","input":"sailboat emoji"}
+{"expected":"🛶","input":"canoe emoji"}
+{"expected":"🚤","input":"speedboat emoji"}
+{"expected":"🛳","input":"passenger ship emoji"}
+{"expected":"⛴","input":"ferry emoji"}
+{"expected":"🛥","input":"motor boat emoji"}
+{"expected":"🚢","input":"ship emoji"}
+{"expected":"✈","input":"airplane emoji"}
+{"expected":"🛩","input":"small airplane emoji"}
+{"expected":"🛫","input":"airplane departure emoji"}
+{"expected":"🛬","input":"airplane arrival emoji"}
+{"expected":"🪂","input":"parachute emoji"}
+{"expected":"💺","input":"seat emoji"}
+{"expected":"🚁","input":"helicopter emoji"}
+{"expected":"🚟","input":"suspension railway emoji"}
+{"expected":"🚠","input":"mountain cableway emoji"}
+{"expected":"🚡","input":"aerial tramway emoji"}
+{"expected":"🛰","input":"satellite emoji"}
+{"expected":"🛸","input":"flying saucer emoji"}
+{"expected":"🛎","input":"bellhop bell emoji"}
+{"expected":"🧳","input":"luggage emoji"}
+{"expected":"⌛","input":"hourglass done emoji"}
+{"expected":"⏳","input":"hourglass not done emoji"}
+{"expected":"⌚","input":"watch emoji"}
+{"expected":"⏱","input":"stopwatch emoji"}
+{"expected":"⏲","input":"timer clock emoji"}
+{"expected":"🕰","input":"mantelpiece clock emoji"}
+{"expected":"🕛","input":"twelve o’clock emoji"}
+{"expected":"🕧","input":"twelve-thirty emoji"}
+{"expected":"🕐","input":"one o’clock emoji"}
+{"expected":"🕜","input":"one-thirty emoji"}
+{"expected":"🕑","input":"two o’clock emoji"}
+{"expected":"🕝","input":"two-thirty emoji"}
+{"expected":"🕒","input":"three o’clock emoji"}
+{"expected":"🕞","input":"three-thirty emoji"}
+{"expected":"🕓","input":"four o’clock emoji"}
+{"expected":"🕟","input":"four-thirty emoji"}
+{"expected":"🕔","input":"five o’clock emoji"}
+{"expected":"🕠","input":"five-thirty emoji"}
+{"expected":"🕕","input":"six o’clock emoji"}
+{"expected":"🕡","input":"six-thirty emoji"}
+{"expected":"🕖","input":"seven o’clock emoji"}
+{"expected":"🕢","input":"seven-thirty emoji"}
+{"expected":"🕗","input":"eight o’clock emoji"}
+{"expected":"🕣","input":"eight-thirty emoji"}
+{"expected":"🕘","input":"nine o’clock emoji"}
+{"expected":"🕤","input":"nine-thirty emoji"}
+{"expected":"🕙","input":"ten o’clock emoji"}
+{"expected":"🕥","input":"ten-thirty emoji"}
+{"expected":"🕚","input":"eleven o’clock emoji"}
+{"expected":"🕦","input":"eleven-thirty emoji"}
+{"expected":"🌑","input":"new moon emoji"}
+{"expected":"🌒","input":"waxing crescent moon emoji"}
+{"expected":"🌓","input":"first quarter moon emoji"}
+{"expected":"🌔","input":"waxing gibbous moon emoji"}
+{"expected":"🌕","input":"full moon emoji"}
+{"expected":"🌖","input":"waning gibbous moon emoji"}
+{"expected":"🌗","input":"last quarter moon emoji"}
+{"expected":"🌘","input":"waning crescent moon emoji"}
+{"expected":"🌚","input":"new moon face emoji"}
+{"expected":"🌛","input":"first quarter moon face emoji"}
+{"expected":"🌜","input":"last quarter moon face emoji"}
+{"expected":"🌡","input":"thermometer emoji"}
+{"expected":"🌝","input":"full moon face emoji"}
+{"expected":"🌞","input":"sun with face emoji"}
+{"expected":"🪐","input":"ringed planet emoji"}
+{"expected":"🌟","input":"glowing star emoji"}
+{"expected":"🌠","input":"shooting star emoji"}
+{"expected":"🌌","input":"milky way emoji"}
+{"expected":"☁","input":"cloud emoji"}
+{"expected":"⛅","input":"sun behind cloud emoji"}
+{"expected":"⛈","input":"cloud with lightning and rain emoji"}
+{"expected":"🌤","input":"sun behind small cloud emoji"}
+{"expected":"🌥","input":"sun behind large cloud emoji"}
+{"expected":"🌦","input":"sun behind rain cloud emoji"}
+{"expected":"🌧","input":"cloud with rain emoji"}
+{"expected":"🌨","input":"cloud with snow emoji"}
+{"expected":"🌩","input":"cloud with lightning emoji"}
+{"expected":"🌪","input":"tornado emoji"}
+{"expected":"🌫","input":"fog emoji"}
+{"expected":"🌬","input":"wind face emoji"}
+{"expected":"🌀","input":"cyclone emoji"}
+{"expected":"🌂","input":"closed umbrella emoji"}
+{"expected":"☔","input":"umbrella with rain drops emoji"}
+{"expected":"⛱","input":"umbrella on ground emoji"}
+{"expected":"⚡","input":"high voltage emoji"}
+{"expected":"☃","input":"snowman emoji"}
+{"expected":"⛄","input":"snowman without snow emoji"}
+{"expected":"☄","input":"comet emoji"}
+{"expected":"💧","input":"droplet emoji"}
+{"expected":"🌊","input":"water wave emoji"}
+{"expected":"🎃","input":"jack-o-lantern emoji"}
+{"expected":"🎄","input":"Christmas tree emoji"}
+{"expected":"🎆","input":"fireworks emoji"}
+{"expected":"🎇","input":"sparkler emoji"}
+{"expected":"🧨","input":"firecracker emoji"}
+{"expected":"🎊","input":"confetti ball emoji"}
+{"expected":"🎋","input":"tanabata tree emoji"}
+{"expected":"🎍","input":"pine decoration emoji"}
+{"expected":"🎎","input":"Japanese dolls emoji"}
+{"expected":"🎏","input":"carp streamer emoji"}
+{"expected":"🎐","input":"wind chime emoji"}
+{"expected":"🎑","input":"moon viewing ceremony emoji"}
+{"expected":"🧧","input":"red envelope emoji"}
+{"expected":"🎀","input":"ribbon emoji"}
+{"expected":"🎁","input":"wrapped gift emoji"}
+{"expected":"🎗","input":"reminder ribbon emoji"}
+{"expected":"🎟","input":"admission tickets emoji"}
+{"expected":"🎫","input":"ticket emoji"}
+{"expected":"🎖","input":"military medal emoji"}
+{"expected":"🏅","input":"sports medal emoji"}
+{"expected":"🥇","input":"1st place medal emoji"}
+{"expected":"🥈","input":"2nd place medal emoji"}
+{"expected":"🥉","input":"3rd place medal emoji"}
+{"expected":"⚽","input":"soccer ball emoji"}
+{"expected":"⚾","input":"baseball emoji"}
+{"expected":"🥎","input":"softball emoji"}
+{"expected":"🏀","input":"basketball emoji"}
+{"expected":"🏐","input":"volleyball emoji"}
+{"expected":"🏈","input":"american football emoji"}
+{"expected":"🏉","input":"rugby football emoji"}
+{"expected":"🎾","input":"tennis emoji"}
+{"expected":"🥏","input":"flying disc emoji"}
+{"expected":"🎳","input":"bowling emoji"}
+{"expected":"🏏","input":"cricket game emoji"}
+{"expected":"🏑","input":"field hockey emoji"}
+{"expected":"🏒","input":"ice hockey emoji"}
+{"expected":"🥍","input":"lacrosse emoji"}
+{"expected":"🏓","input":"ping pong emoji"}
+{"expected":"🏸","input":"badminton emoji"}
+{"expected":"🥊","input":"boxing glove emoji"}
+{"expected":"🥋","input":"martial arts uniform emoji"}
+{"expected":"🥅","input":"goal net emoji"}
+{"expected":"⛳","input":"flag in hole emoji"}
+{"expected":"⛸","input":"ice skate emoji"}
+{"expected":"🎣","input":"fishing pole emoji"}
+{"expected":"🤿","input":"diving mask emoji"}
+{"expected":"🎽","input":"running shirt emoji"}
+{"expected":"🎿","input":"skis emoji"}
+{"expected":"🛷","input":"sled emoji"}
+{"expected":"🥌","input":"curling stone emoji"}
+{"expected":"🎯","input":"bullseye emoji"}
+{"expected":"🪀","input":"yo-yo emoji"}
+{"expected":"🪁","input":"kite emoji"}
+{"expected":"🔫","input":"water pistol emoji"}
+{"expected":"🎱","input":"pool 8 ball emoji"}
+{"expected":"🔮","input":"crystal ball emoji"}
+{"expected":"🪄","input":"magic wand emoji"}
+{"expected":"🕹","input":"joystick emoji"}
+{"expected":"🎰","input":"slot machine emoji"}
+{"expected":"🎲","input":"game die emoji"}
+{"expected":"🧩","input":"puzzle piece emoji"}
+{"expected":"🧸","input":"teddy bear emoji"}
+{"expected":"🪅","input":"piñata emoji"}
+{"expected":"🪩","input":"mirror ball emoji"}
+{"expected":"🪆","input":"nesting dolls emoji"}
+{"expected":"♠","input":"spade suit emoji"}
+{"expected":"♥","input":"heart suit emoji"}
+{"expected":"♦","input":"diamond suit emoji"}
+{"expected":"♣","input":"club suit emoji"}
+{"expected":"♟","input":"chess pawn emoji"}
+{"expected":"🃏","input":"joker emoji"}
+{"expected":"🀄","input":"mahjong red dragon emoji"}
+{"expected":"🎴","input":"flower playing cards emoji"}
+{"expected":"🎭","input":"performing arts emoji"}
+{"expected":"🖼","input":"framed picture emoji"}
+{"expected":"🎨","input":"artist palette emoji"}
+{"expected":"🧵","input":"thread emoji"}
+{"expected":"🪡","input":"sewing needle emoji"}
+{"expected":"🧶","input":"yarn emoji"}
+{"expected":"🪢","input":"knot emoji"}
+{"expected":"👓","input":"glasses emoji"}
+{"expected":"🕶","input":"sunglasses emoji"}
+{"expected":"🥽","input":"goggles emoji"}
+{"expected":"🥼","input":"lab coat emoji"}
+{"expected":"🦺","input":"safety vest emoji"}
+{"expected":"👔","input":"necktie emoji"}
+{"expected":"👕","input":"t-shirt emoji"}
+{"expected":"👖","input":"jeans emoji"}
+{"expected":"🧣","input":"scarf emoji"}
+{"expected":"🧤","input":"gloves emoji"}
+{"expected":"🧥","input":"coat emoji"}
+{"expected":"🧦","input":"socks emoji"}
+{"expected":"👗","input":"dress emoji"}
+{"expected":"👘","input":"kimono emoji"}
+{"expected":"🥻","input":"sari emoji"}
+{"expected":"🩱","input":"one-piece swimsuit emoji"}
+{"expected":"🩲","input":"briefs emoji"}
+{"expected":"🩳","input":"shorts emoji"}
+{"expected":"👙","input":"bikini emoji"}
+{"expected":"👚","input":"woman’s clothes emoji"}
+{"expected":"🪭","input":"folding hand fan emoji"}
+{"expected":"👛","input":"purse emoji"}
+{"expected":"👜","input":"handbag emoji"}
+{"expected":"👝","input":"clutch bag emoji"}
+{"expected":"🛍","input":"shopping bags emoji"}
+{"expected":"🎒","input":"backpack emoji"}
+{"expected":"🩴","input":"thong sandal emoji"}
+{"expected":"👞","input":"man’s shoe emoji"}
+{"expected":"👟","input":"running shoe emoji"}
+{"expected":"🥾","input":"hiking boot emoji"}
+{"expected":"🥿","input":"flat shoe emoji"}
+{"expected":"👠","input":"high-heeled shoe emoji"}
+{"expected":"👡","input":"woman’s sandal emoji"}
+{"expected":"🩰","input":"ballet shoes emoji"}
+{"expected":"👢","input":"woman’s boot emoji"}
+{"expected":"🪮","input":"hair pick emoji"}
+{"expected":"👑","input":"crown emoji"}
+{"expected":"👒","input":"woman’s hat emoji"}
+{"expected":"🎩","input":"top hat emoji"}
+{"expected":"🎓","input":"graduation cap emoji"}
+{"expected":"🧢","input":"billed cap emoji"}
+{"expected":"🪖","input":"military helmet emoji"}
+{"expected":"⛑","input":"rescue worker’s helmet emoji"}
+{"expected":"📿","input":"prayer beads emoji"}
+{"expected":"💄","input":"lipstick emoji"}
+{"expected":"💍","input":"ring emoji"}
+{"expected":"💎","input":"gem stone emoji"}
+{"expected":"🔇","input":"muted speaker emoji"}
+{"expected":"🔈","input":"speaker low volume emoji"}
+{"expected":"🔉","input":"speaker medium volume emoji"}
+{"expected":"🔊","input":"speaker high volume emoji"}
+{"expected":"📢","input":"loudspeaker emoji"}
+{"expected":"📣","input":"megaphone emoji"}
+{"expected":"📯","input":"postal horn emoji"}
+{"expected":"🔔","input":"bell emoji"}
+{"expected":"🔕","input":"bell with slash emoji"}
+{"expected":"🎼","input":"musical score emoji"}
+{"expected":"🎵","input":"musical note emoji"}
+{"expected":"🎶","input":"musical notes emoji"}
+{"expected":"🎙","input":"studio microphone emoji"}
+{"expected":"🎚","input":"level slider emoji"}
+{"expected":"🎛","input":"control knobs emoji"}
+{"expected":"🎤","input":"microphone emoji"}
+{"expected":"🎧","input":"headphone emoji"}
+{"expected":"📻","input":"radio emoji"}
+{"expected":"🎷","input":"saxophone emoji"}
+{"expected":"🎺","input":"trumpet emoji"}
+{"expected":"🪊","input":"trombone emoji"}
+{"expected":"🪗","input":"accordion emoji"}
+{"expected":"🎸","input":"guitar emoji"}
+{"expected":"🎹","input":"musical keyboard emoji"}
+{"expected":"🎻","input":"violin emoji"}
+{"expected":"🪕","input":"banjo emoji"}
+{"expected":"🥁","input":"drum emoji"}
+{"expected":"🪘","input":"long drum emoji"}
+{"expected":"🪇","input":"maracas emoji"}
+{"expected":"🪈","input":"flute emoji"}
+{"expected":"🪉","input":"harp emoji"}
+{"expected":"📱","input":"mobile phone emoji"}
+{"expected":"📲","input":"mobile phone with arrow emoji"}
+{"expected":"☎","input":"telephone emoji"}
+{"expected":"📞","input":"telephone receiver emoji"}
+{"expected":"📟","input":"pager emoji"}
+{"expected":"📠","input":"fax machine emoji"}
+{"expected":"🔋","input":"battery emoji"}
+{"expected":"🪫","input":"low battery emoji"}
+{"expected":"🔌","input":"electric plug emoji"}
+{"expected":"💻","input":"laptop emoji"}
+{"expected":"🖥","input":"desktop computer emoji"}
+{"expected":"🖨","input":"printer emoji"}
+{"expected":"⌨","input":"keyboard emoji"}
+{"expected":"🖱","input":"computer mouse emoji"}
+{"expected":"🖲","input":"trackball emoji"}
+{"expected":"💽","input":"computer disk emoji"}
+{"expected":"💾","input":"floppy disk emoji"}
+{"expected":"💿","input":"optical disk emoji"}
+{"expected":"📀","input":"dvd emoji"}
+{"expected":"🧮","input":"abacus emoji"}
+{"expected":"🎥","input":"movie camera emoji"}
+{"expected":"🎞","input":"film frames emoji"}
+{"expected":"📽","input":"film projector emoji"}
+{"expected":"🎬","input":"clapper board emoji"}
+{"expected":"📺","input":"television emoji"}
+{"expected":"📷","input":"camera emoji"}
+{"expected":"📸","input":"camera with flash emoji"}
+{"expected":"📹","input":"video camera emoji"}
+{"expected":"📼","input":"videocassette emoji"}
+{"expected":"🔍","input":"magnifying glass tilted left emoji"}
+{"expected":"🔎","input":"magnifying glass tilted right emoji"}
+{"expected":"🕯","input":"candle emoji"}
+{"expected":"🔦","input":"flashlight emoji"}
+{"expected":"🏮","input":"red paper lantern emoji"}
+{"expected":"🪔","input":"diya lamp emoji"}
+{"expected":"📔","input":"notebook with decorative cover emoji"}
+{"expected":"📕","input":"closed book emoji"}
+{"expected":"📖","input":"open book emoji"}
+{"expected":"📗","input":"green book emoji"}
+{"expected":"📘","input":"blue book emoji"}
+{"expected":"📙","input":"orange book emoji"}
+{"expected":"📚","input":"books emoji"}
+{"expected":"📓","input":"notebook emoji"}
+{"expected":"📒","input":"ledger emoji"}
+{"expected":"📃","input":"page with curl emoji"}
+{"expected":"📜","input":"scroll emoji"}
+{"expected":"📄","input":"page facing up emoji"}
+{"expected":"📰","input":"newspaper emoji"}
+{"expected":"🗞","input":"rolled-up newspaper emoji"}
+{"expected":"📑","input":"bookmark tabs emoji"}
+{"expected":"🔖","input":"bookmark emoji"}
+{"expected":"🏷","input":"label emoji"}
+{"expected":"🪙","input":"coin emoji"}
+{"expected":"🪎","input":"treasure chest emoji"}
+{"expected":"💴","input":"yen banknote emoji"}
+{"expected":"💵","input":"dollar banknote emoji"}
+{"expected":"💶","input":"euro banknote emoji"}
+{"expected":"💷","input":"pound banknote emoji"}
+{"expected":"💸","input":"money with wings emoji"}
+{"expected":"💳","input":"credit card emoji"}
+{"expected":"🧾","input":"receipt emoji"}
+{"expected":"💹","input":"chart increasing with yen emoji"}
+{"expected":"✉","input":"envelope emoji"}
+{"expected":"📧","input":"e-mail emoji"}
+{"expected":"📨","input":"incoming envelope emoji"}
+{"expected":"📩","input":"envelope with arrow emoji"}
+{"expected":"📤","input":"outbox tray emoji"}
+{"expected":"📥","input":"inbox tray emoji"}
+{"expected":"📦","input":"package emoji"}
+{"expected":"📫","input":"closed mailbox with raised flag emoji"}
+{"expected":"📪","input":"closed mailbox with lowered flag emoji"}
+{"expected":"📬","input":"open mailbox with raised flag emoji"}
+{"expected":"📭","input":"open mailbox with lowered flag emoji"}
+{"expected":"📮","input":"postbox emoji"}
+{"expected":"🗳","input":"ballot box with ballot emoji"}
+{"expected":"✏","input":"pencil emoji"}
+{"expected":"✒","input":"black nib emoji"}
+{"expected":"🖋","input":"fountain pen emoji"}
+{"expected":"🖊","input":"pen emoji"}
+{"expected":"🖌","input":"paintbrush emoji"}
+{"expected":"🖍","input":"crayon emoji"}
+{"expected":"📝","input":"memo emoji"}
+{"expected":"💼","input":"briefcase emoji"}
+{"expected":"📁","input":"file folder emoji"}
+{"expected":"📂","input":"open file folder emoji"}
+{"expected":"🗂","input":"card index dividers emoji"}
+{"expected":"📆","input":"tear-off calendar emoji"}
+{"expected":"🗒","input":"spiral notepad emoji"}
+{"expected":"🗓","input":"spiral calendar emoji"}
+{"expected":"📇","input":"card index emoji"}
+{"expected":"📈","input":"chart increasing emoji"}
+{"expected":"📉","input":"chart decreasing emoji"}
+{"expected":"📊","input":"bar chart emoji"}
+{"expected":"📋","input":"clipboard emoji"}
+{"expected":"📌","input":"pushpin emoji"}
+{"expected":"📍","input":"round pushpin emoji"}
+{"expected":"📎","input":"paperclip emoji"}
+{"expected":"🖇","input":"linked paperclips emoji"}
+{"expected":"📏","input":"straight ruler emoji"}
+{"expected":"📐","input":"triangular ruler emoji"}
+{"expected":"✂","input":"scissors emoji"}
+{"expected":"🗃","input":"card file box emoji"}
+{"expected":"🗄","input":"file cabinet emoji"}
+{"expected":"🗑","input":"wastebasket emoji"}
+{"expected":"🔒","input":"locked emoji"}
+{"expected":"🔓","input":"unlocked emoji"}
+{"expected":"🔏","input":"locked with pen emoji"}
+{"expected":"🔐","input":"locked with key emoji"}
+{"expected":"🔑","input":"key emoji"}
+{"expected":"🗝","input":"old key emoji"}
+{"expected":"🔨","input":"hammer emoji"}
+{"expected":"🪓","input":"axe emoji"}
+{"expected":"⛏","input":"pick emoji"}
+{"expected":"⚒","input":"hammer and pick emoji"}
+{"expected":"🛠","input":"hammer and wrench emoji"}
+{"expected":"🗡","input":"dagger emoji"}
+{"expected":"⚔","input":"crossed swords emoji"}
+{"expected":"🪃","input":"boomerang emoji"}
+{"expected":"🏹","input":"bow and arrow emoji"}
+{"expected":"🛡","input":"shield emoji"}
+{"expected":"🪚","input":"carpentry saw emoji"}
+{"expected":"🔧","input":"wrench emoji"}
+{"expected":"🪛","input":"screwdriver emoji"}
+{"expected":"🔩","input":"nut and bolt emoji"}
+{"expected":"⚙","input":"gear emoji"}
+{"expected":"🗜","input":"clamp emoji"}
+{"expected":"⚖","input":"balance scale emoji"}
+{"expected":"🦯","input":"white cane emoji"}
+{"expected":"🔗","input":"link emoji"}
+{"expected":"⛓‍💥","input":"broken chain emoji"}
+{"expected":"⛓","input":"chains emoji"}
+{"expected":"🪝","input":"hook emoji"}
+{"expected":"🧰","input":"toolbox emoji"}
+{"expected":"🧲","input":"magnet emoji"}
+{"expected":"🪜","input":"ladder emoji"}
+{"expected":"🪏","input":"shovel emoji"}
+{"expected":"⚗","input":"alembic emoji"}
+{"expected":"🧪","input":"test tube emoji"}
+{"expected":"🧫","input":"petri dish emoji"}
+{"expected":"🧬","input":"dna emoji"}
+{"expected":"🔬","input":"microscope emoji"}
+{"expected":"🔭","input":"telescope emoji"}
+{"expected":"📡","input":"satellite antenna emoji"}
+{"expected":"💉","input":"syringe emoji"}
+{"expected":"🩸","input":"drop of blood emoji"}
+{"expected":"💊","input":"pill emoji"}
+{"expected":"🩹","input":"adhesive bandage emoji"}
+{"expected":"🩼","input":"crutch emoji"}
+{"expected":"🩺","input":"stethoscope emoji"}
+{"expected":"🩻","input":"x-ray emoji"}
+{"expected":"🚪","input":"door emoji"}
+{"expected":"🛗","input":"elevator emoji"}
+{"expected":"🪞","input":"mirror emoji"}
+{"expected":"🪟","input":"window emoji"}
+{"expected":"🛏","input":"bed emoji"}
+{"expected":"🛋","input":"couch and lamp emoji"}
+{"expected":"🪑","input":"chair emoji"}
+{"expected":"🚽","input":"toilet emoji"}
+{"expected":"🪠","input":"plunger emoji"}
+{"expected":"🚿","input":"shower emoji"}
+{"expected":"🛁","input":"bathtub emoji"}
+{"expected":"🪤","input":"mouse trap emoji"}
+{"expected":"🪒","input":"razor emoji"}
+{"expected":"🧴","input":"lotion bottle emoji"}
+{"expected":"🧷","input":"safety pin emoji"}
+{"expected":"🧹","input":"broom emoji"}
+{"expected":"🧺","input":"basket emoji"}
+{"expected":"🧻","input":"roll of paper emoji"}
+{"expected":"🪣","input":"bucket emoji"}
+{"expected":"🧼","input":"soap emoji"}
+{"expected":"🫧","input":"bubbles emoji"}
+{"expected":"🪥","input":"toothbrush emoji"}
+{"expected":"🧽","input":"sponge emoji"}
+{"expected":"🧯","input":"fire extinguisher emoji"}
+{"expected":"🛒","input":"shopping cart emoji"}
+{"expected":"🚬","input":"cigarette emoji"}
+{"expected":"⚰","input":"coffin emoji"}
+{"expected":"🪦","input":"headstone emoji"}
+{"expected":"⚱","input":"funeral urn emoji"}
+{"expected":"🧿","input":"nazar amulet emoji"}
+{"expected":"🪬","input":"hamsa emoji"}
+{"expected":"🗿","input":"moai emoji"}
+{"expected":"🪧","input":"placard emoji"}
+{"expected":"🪪","input":"identification card emoji"}
+{"expected":"🏧","input":"ATM sign emoji"}
+{"expected":"🚮","input":"litter in bin sign emoji"}
+{"expected":"🚰","input":"potable water emoji"}
+{"expected":"♿","input":"wheelchair symbol emoji"}
+{"expected":"🚹","input":"men’s room emoji"}
+{"expected":"🚺","input":"women’s room emoji"}
+{"expected":"🚻","input":"restroom emoji"}
+{"expected":"🚼","input":"baby symbol emoji"}
+{"expected":"🚾","input":"water closet emoji"}
+{"expected":"🛂","input":"passport control emoji"}
+{"expected":"🛃","input":"customs emoji"}
+{"expected":"🛄","input":"baggage claim emoji"}
+{"expected":"🛅","input":"left luggage emoji"}
+{"expected":"🚸","input":"children crossing emoji"}
+{"expected":"⛔","input":"no entry emoji"}
+{"expected":"🚫","input":"prohibited emoji"}
+{"expected":"🚳","input":"no bicycles emoji"}
+{"expected":"🚭","input":"no smoking emoji"}
+{"expected":"🚯","input":"no littering emoji"}
+{"expected":"🚱","input":"non-potable water emoji"}
+{"expected":"🚷","input":"no pedestrians emoji"}
+{"expected":"📵","input":"no mobile phones emoji"}
+{"expected":"🔞","input":"no one under eighteen emoji"}
+{"expected":"☢","input":"radioactive emoji"}
+{"expected":"☣","input":"biohazard emoji"}
+{"expected":"➡","input":"right arrow emoji"}
+{"expected":"🔃","input":"clockwise vertical arrows emoji"}
+{"expected":"🔄","input":"counterclockwise arrows button emoji"}
+{"expected":"🔙","input":"BACK arrow emoji"}
+{"expected":"🔚","input":"END arrow emoji"}
+{"expected":"🔛","input":"ON! arrow emoji"}
+{"expected":"🔜","input":"SOON arrow emoji"}
+{"expected":"🔝","input":"TOP arrow emoji"}
+{"expected":"🛐","input":"place of worship emoji"}
+{"expected":"⚛","input":"atom symbol emoji"}
+{"expected":"🕉","input":"om emoji"}
+{"expected":"✡","input":"star of David emoji"}
+{"expected":"☸","input":"wheel of dharma emoji"}
+{"expected":"☯","input":"yin yang emoji"}
+{"expected":"✝","input":"latin cross emoji"}
+{"expected":"☦","input":"orthodox cross emoji"}
+{"expected":"☪","input":"star and crescent emoji"}
+{"expected":"☮","input":"peace symbol emoji"}
+{"expected":"🕎","input":"menorah emoji"}
+{"expected":"🔯","input":"dotted six-pointed star emoji"}
+{"expected":"🪯","input":"khanda emoji"}
+{"expected":"♈","input":"Aries emoji"}
+{"expected":"♉","input":"Taurus emoji"}
+{"expected":"♊","input":"Gemini emoji"}
+{"expected":"♋","input":"Cancer emoji"}
+{"expected":"♌","input":"Leo emoji"}
+{"expected":"♍","input":"Virgo emoji"}
+{"expected":"♎","input":"Libra emoji"}
+{"expected":"♏","input":"Scorpio emoji"}
+{"expected":"♐","input":"Sagittarius emoji"}
+{"expected":"♑","input":"Capricorn emoji"}
+{"expected":"♒","input":"Aquarius emoji"}
+{"expected":"♓","input":"Pisces emoji"}
+{"expected":"⛎","input":"Ophiuchus emoji"}
+{"expected":"🔀","input":"shuffle tracks button emoji"}
+{"expected":"🔁","input":"repeat button emoji"}
+{"expected":"🔂","input":"repeat single button emoji"}
+{"expected":"⏩","input":"fast-forward button emoji"}
+{"expected":"⏭","input":"next track button emoji"}
+{"expected":"⏯","input":"play or pause button emoji"}
+{"expected":"⏪","input":"fast reverse button emoji"}
+{"expected":"⏮","input":"last track button emoji"}
+{"expected":"🔼","input":"upwards button emoji"}
+{"expected":"⏫","input":"fast up button emoji"}
+{"expected":"🔽","input":"downwards button emoji"}
+{"expected":"⏬","input":"fast down button emoji"}
+{"expected":"⏸","input":"pause button emoji"}
+{"expected":"⏹","input":"stop button emoji"}
+{"expected":"⏺","input":"record button emoji"}
+{"expected":"⏏","input":"eject button emoji"}
+{"expected":"🎦","input":"cinema emoji"}
+{"expected":"🔅","input":"dim button emoji"}
+{"expected":"🔆","input":"bright button emoji"}
+{"expected":"📶","input":"antenna bars emoji"}
+{"expected":"🛜","input":"wireless emoji"}
+{"expected":"📳","input":"vibration mode emoji"}
+{"expected":"📴","input":"mobile phone off emoji"}
+{"expected":"♀","input":"female sign emoji"}
+{"expected":"♂","input":"male sign emoji"}
+{"expected":"⚧","input":"transgender symbol emoji"}
+{"expected":"✖","input":"multiply emoji"}
+{"expected":"➕","input":"plus emoji"}
+{"expected":"➖","input":"minus emoji"}
+{"expected":"➗","input":"divide emoji"}
+{"expected":"🟰","input":"heavy equals sign emoji"}
+{"expected":"♾","input":"infinity emoji"}
+{"expected":"❓","input":"red question mark emoji"}
+{"expected":"❔","input":"white question mark emoji"}
+{"expected":"❕","input":"white exclamation mark emoji"}
+{"expected":"❗","input":"red exclamation mark emoji"}
+{"expected":"💱","input":"currency exchange emoji"}
+{"expected":"💲","input":"heavy dollar sign emoji"}
+{"expected":"⚕","input":"medical symbol emoji"}
+{"expected":"♻","input":"recycling symbol emoji"}
+{"expected":"⚜","input":"fleur-de-lis emoji"}
+{"expected":"🔱","input":"trident emblem emoji"}
+{"expected":"📛","input":"name badge emoji"}
+{"expected":"🔰","input":"Japanese symbol for beginner emoji"}
+{"expected":"✅","input":"check mark button emoji"}
+{"expected":"☑","input":"check box with check emoji"}
+{"expected":"❎","input":"cross mark button emoji"}
+{"expected":"➰","input":"curly loop emoji"}
+{"expected":"➿","input":"double curly loop emoji"}
+{"expected":"✳","input":"eight-spoked asterisk emoji"}
+{"expected":"✴","input":"eight-pointed star emoji"}
+{"expected":"🫟","input":"splatter emoji"}
+{"expected":"🔠","input":"input latin uppercase emoji"}
+{"expected":"🔡","input":"input latin lowercase emoji"}
+{"expected":"🔢","input":"input numbers emoji"}
+{"expected":"🔣","input":"input symbols emoji"}
+{"expected":"🔤","input":"input latin letters emoji"}
+{"expected":"🅰","input":"A button (blood type) emoji"}
+{"expected":"🆎","input":"AB button (blood type) emoji"}
+{"expected":"🅱","input":"B button (blood type) emoji"}
+{"expected":"🆑","input":"CL button emoji"}
+{"expected":"🆒","input":"COOL button emoji"}
+{"expected":"🆓","input":"FREE button emoji"}
+{"expected":"🆔","input":"ID button emoji"}
+{"expected":"🆕","input":"NEW button emoji"}
+{"expected":"🆖","input":"NG button emoji"}
+{"expected":"🅾","input":"O button (blood type) emoji"}
+{"expected":"🆗","input":"OK button emoji"}
+{"expected":"🅿","input":"P button emoji"}
+{"expected":"🆘","input":"SOS button emoji"}
+{"expected":"🆙","input":"UP! button emoji"}
+{"expected":"🆚","input":"VS button emoji"}
+{"expected":"🈁","input":"Japanese “here” button emoji"}
+{"expected":"🈂","input":"Japanese “service charge” button emoji"}
+{"expected":"🈷","input":"Japanese “monthly amount” button emoji"}
+{"expected":"🈶","input":"Japanese “not free of charge” button emoji"}
+{"expected":"🈯","input":"Japanese “reserved” button emoji"}
+{"expected":"🉐","input":"Japanese “bargain” button emoji"}
+{"expected":"🈹","input":"Japanese “discount” button emoji"}
+{"expected":"🈚","input":"Japanese “free of charge” button emoji"}
+{"expected":"🈲","input":"Japanese “prohibited” button emoji"}
+{"expected":"🉑","input":"Japanese “acceptable” button emoji"}
+{"expected":"🈸","input":"Japanese “application” button emoji"}
+{"expected":"🈴","input":"Japanese “passing grade” button emoji"}
+{"expected":"🈳","input":"Japanese “vacancy” button emoji"}
+{"expected":"🈺","input":"Japanese “open for business” button emoji"}
+{"expected":"🈵","input":"Japanese “no vacancy” button emoji"}
+{"expected":"🔴","input":"red circle emoji"}
+{"expected":"🟠","input":"orange circle emoji"}
+{"expected":"🟡","input":"yellow circle emoji"}
+{"expected":"🟢","input":"green circle emoji"}
+{"expected":"🔵","input":"blue circle emoji"}
+{"expected":"🟣","input":"purple circle emoji"}
+{"expected":"🟤","input":"brown circle emoji"}
+{"expected":"⚫","input":"black circle emoji"}
+{"expected":"⚪","input":"white circle emoji"}
+{"expected":"🟥","input":"red square emoji"}
+{"expected":"🟧","input":"orange square emoji"}
+{"expected":"🟨","input":"yellow square emoji"}
+{"expected":"🟩","input":"green square emoji"}
+{"expected":"🟦","input":"blue square emoji"}
+{"expected":"🟪","input":"purple square emoji"}
+{"expected":"🟫","input":"brown square emoji"}
+{"expected":"🔶","input":"large orange diamond emoji"}
+{"expected":"🔷","input":"large blue diamond emoji"}
+{"expected":"🔸","input":"small orange diamond emoji"}
+{"expected":"🔹","input":"small blue diamond emoji"}
+{"expected":"🔺","input":"red triangle pointed up emoji"}
+{"expected":"🔻","input":"red triangle pointed down emoji"}
+{"expected":"💠","input":"diamond with a dot emoji"}
+{"expected":"🔘","input":"radio button emoji"}
+{"expected":"🔳","input":"white square button emoji"}
+{"expected":"🔲","input":"black square button emoji"}
+{"expected":"🏁","input":"chequered flag emoji"}
+{"expected":"🚩","input":"triangular flag emoji"}
+{"expected":"🎌","input":"crossed flags emoji"}
+{"expected":"🏴","input":"black flag emoji"}
+{"expected":"🏳","input":"white flag emoji"}
+{"expected":"🏳‍🌈","input":"rainbow flag emoji"}
+{"expected":"🏳‍⚧","input":"transgender flag emoji"}
+{"expected":"🏴‍☠","input":"pirate flag emoji"}
+{"expected":"🛙","input":"lighthouse emoji"}
+{"expected":"🪋","input":"meteor emoji"}
+{"expected":"🪌","input":"eraser emoji"}
+{"expected":"🪍","input":"net with handle emoji"}
+{"expected":"🫌","input":"monarch butterfly emoji"}
+{"expected":"🫝","input":"pickle emoji"}
+{"expected":"🫫","input":"cracking face emoji"}
+{"expected":"🫹","input":"leftwards thumb sign emoji"}
+{"expected":"🫺","input":"rightwards thumb sign emoji"}

@@ -81,6 +81,7 @@ class TakePolishControllerTest {
 
     /** The controller under test; #252's rows pass a restorer, a cleanup or a defect sink that throws. */
     private fun newController(
+        detector: com.envi.wispr.cleanup.LanguageDetector = com.envi.wispr.cleanup.LanguageDetector { null },
         restore: (String, com.envi.wispr.vocabulary.StructuredTermRestorer.Matcher) -> String = { text, matcher -> matcher.restore(text) },
         cleanup: (String, com.envi.wispr.cleanup.CleanupOptions, com.envi.wispr.cleanup.LanguageDetector) -> String = com.envi.wispr.polish.PolishFallback::deterministic,
         defectSink: (AppDefect, Map<String, Any?>) -> Unit = { defect, facts -> defects += defect to facts },
@@ -90,7 +91,7 @@ class TakePolishControllerTest {
         timeout = timeout,
         scope = scope,
         link = { link },
-        languageDetector = { null },
+        languageDetector = detector,
         log = log,
         takeId = "take-1",
         defectSink = defectSink,
@@ -123,17 +124,21 @@ class TakePolishControllerTest {
         @Volatile var hold: CountDownLatch? = null
         /** The raw text the controller sent (#252). */
         @Volatile var lastRaw: String? = null
+        @Volatile var lastCleanup: com.envi.wispr.cleanup.CleanupOptions? = null
+        @Volatile var throwOnRequest = false
         val requested = CountDownLatch(1)
         val cancels = CopyOnWriteArrayList<Long>()
         val cancelUnderLock = CopyOnWriteArrayList<Boolean>()
         @Volatile var cancelled = CountDownLatch(1)
         @Volatile var throwOnCancel = false
         override fun warmUpWithPolicy(policy: PolishPolicy) = Unit
-        override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
+        override fun polishRequestWithCleanupForTake(requestId: Long, rawText: String, cleanup: com.envi.wispr.cleanup.CleanupOptions, policy: PolishPolicy, takeId: String, listener: PolishListener) {
             this.requestId = requestId
             this.listener = listener
             lastRaw = rawText
+            lastCleanup = cleanup
             requested.countDown()
+            if (throwOnRequest) throw android.os.TransactionTooLargeException()
             hold?.await(10, TimeUnit.SECONDS)
         }
         override fun cancel(requestId: Long) {
@@ -160,6 +165,30 @@ class TakePolishControllerTest {
     }
 
     private fun protocolShapes() = defects.filter { it.first == AppDefect.PolishProtocolViolation }.map { it.second["shape"] }
+
+    @Test fun aFailedLargeOptionTransportKeepsTheCompleteLocalSpellingProtection() {
+        val subject = newController(detector = com.envi.wispr.cleanup.LanguageDetector { com.envi.wispr.cleanup.DetectedLanguage("en", 1.0f) })
+        link.throwOnRequest = true
+        val protections = (1..2_000).map { "savedword$it" }.toSet() + "center"
+        val prefs = preferences.copy(cleanup = com.envi.wispr.cleanup.CleanupOptions(englishSpelling = com.envi.wispr.cleanup.EnglishSpelling.BRITISH, spellingProtectedWords = protections))
+        subject.prepare("the color review will meet at the center", prefs)
+        link.awaitRequest()
+        val text = awaitHandedBack()
+        assertTrue(text is PreparedText.Fallback)
+        assertEquals("the transmitted options must retain the full set", protections, checkNotNull(link.lastCleanup).spellingProtectedWords)
+        assertEquals(PolishReason.CALL_FAILED, (text as PreparedText.Fallback).reason)
+        assertEquals("the colour review will meet at the center", text.text)
+    }
+
+    @Test fun finalSpellingUsesTheEnginesDecisionAfterVocabularyWithoutAnotherDetection() {
+        val detector = com.envi.wispr.cleanup.LanguageDetector { error("normal result must not redetect") }
+        val subject = newController(detector = detector, restore = { _, _ -> "The color recognizer is ready." })
+        val prefs = preferences.copy(cleanup = com.envi.wispr.cleanup.CleanupOptions(englishSpelling = com.envi.wispr.cleanup.EnglishSpelling.BRITISH))
+        subject.prepare("The color recognizer is ready.", prefs)
+        val listener = link.awaitRequest()
+        listener.onOutcome(link.outcome("The colour recogniser is ready.").copy(englishText = true))
+        assertEquals("The colour recogniser is ready.", awaitHandedBack().text)
+    }
 
     /** Row a: the watchdog wins and a late answer is ignored. */
     @Test fun theWatchdogWinsAndALateAnswerIsIgnored() {
@@ -550,7 +579,7 @@ class TakePolishControllerTest {
     @Test fun anAnswerSentBeforeTheRequestThrewWins() {
         val release = holdMain()
         val throwing = object : PolishLink by link {
-            override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
+            override fun polishRequestWithCleanupForTake(requestId: Long, rawText: String, cleanup: com.envi.wispr.cleanup.CleanupOptions, policy: PolishPolicy, takeId: String, listener: PolishListener) {
                 val answer = PolishOutcome(requestId = requestId, text = "Hello world.", engine = "Fake engine", reason = PolishReason.POLISHED, statusCode = 0, latencyMs = 1L)
                 countingMain.execute { listener.onOutcome(answer) }
                 throw IllegalStateException("engine threw after answering")

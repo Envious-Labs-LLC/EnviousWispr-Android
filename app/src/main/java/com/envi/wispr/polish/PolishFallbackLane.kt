@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class PolishFallbackLane(
     private val worker: ExecutorService,
     /** The deterministic text; its warnings go to the request's take log when there is one (#378). */
-    private val prepare: (String, CleanupOptions, TakeLog?) -> String,
+    private val prepare: (String, CleanupOptions, TakeLog?) -> CleanedText,
     /** Starts the refusal's deliverer; a daemon thread in production, a held thread in a test. */
     private val startRefusal: (Runnable) -> Unit = { runnable -> Thread(runnable, "PolishFallbackRefusal").apply { isDaemon = true }.start() },
 ) {
@@ -41,7 +41,11 @@ internal class PolishFallbackLane(
         val admitted = synchronized(lock) {
             !closed && try {
                 // A cleanup that throws answers the raw words: an answer with less cleanup beats none.
-                worker.execute { deliver(token, sink) { PolishOutcome(requestId, runCatching { prepare(raw, options, log) }.getOrDefault(raw), PolishEngineLabels.DETERMINISTIC, reason, 0, 0) } }
+                worker.execute { deliver(token, sink) {
+                    val cleaned = try { prepare(raw, options, log) } catch (_: Exception) { CleanedText(raw) }
+                    PolishOutcome(requestId, cleaned.text, PolishEngineLabels.DETERMINISTIC, reason, 0, 0,
+                        englishText = cleaned.language == com.envi.wispr.cleanup.CleanupLanguage.Known("en"))
+                } }
                 true
             } catch (refused: RejectedExecutionException) {
                 false

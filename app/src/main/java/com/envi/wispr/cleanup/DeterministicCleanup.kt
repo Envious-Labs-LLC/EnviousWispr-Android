@@ -9,11 +9,13 @@ internal data class CleanupOptions(
     val removeFillers: Boolean = true,
     val spokenEmoji: Boolean = true,
     val spokenPunctuation: Boolean = false,
+    val englishSpelling: EnglishSpelling = EnglishSpelling.AMERICAN,
+    val spellingProtectedWords: Set<String> = emptySet(),
 )
 
 internal data class CleanupResult(val text: String, val changed: Boolean, val recovered: Boolean)
 
-/** Conservative, deterministic English cleanup. It never calls a network service. */
+/** Deterministic English cleanup plus the language-neutral identifier/address subset. No network. */
 internal object DeterministicCleanup {
     // `um` and `err` were removed 2026-09-02 (#36, #107). Both are ordinary WORDS, so stripping them
     // deletes something the speaker authored, and RULE: matcher-set-adversarial-tests says that direction
@@ -33,13 +35,13 @@ internal object DeterministicCleanup {
      */
     private val fillerByExtras: Map<Set<String>, Regex> =
         CleanupLanguagePolicy.allExtraFillerSets.associateWith { extras ->
-            val tokens = (baseFillers + extras.sorted()).joinToString("|") { Regex.escape(it) }
-            Regex("\\b($tokens)\\b[,:]?\\s*", RegexOption.IGNORE_CASE)
+            val unitTokens = listOf("ah") + if ("mm" in extras) listOf("mm") else emptyList()
+            val ordinaryTokens = (baseFillers + extras.sorted()).filterNot { it in unitTokens }
+            Regex("(?<!\\p{Nd})(?<!\\p{Nd} )(?<!\\p{Nd}-)\\b(?!(?-i:[A-Z]{2,})\\b)(${unitTokens.joinToString("|")})\\b[,.!?;:]*\\s*|\\b(?!(?-i:[A-Z]{2,})\\b)(${ordinaryTokens.joinToString("|") { Regex.escape(it) }})\\b[,.!?;:]*\\s*", RegexOption.IGNORE_CASE)
         }
 
     internal fun fillerMatcher(language: CleanupLanguage): Regex =
         fillerByExtras.getValue(CleanupLanguagePolicy.extraFillers(language))
-    private val emoji = linkedMapOf("smiley face" to "🙂", "smiling face" to "🙂", "thumbs up" to "👍", "heart" to "❤️", "fire" to "🔥")
     private val punctuation = linkedMapOf(
         "new paragraph" to "\n\n", "new line" to "\n", "question mark" to "?",
         "exclamation mark" to "!", "exclamation point" to "!", "full stop" to ".",
@@ -51,26 +53,22 @@ internal object DeterministicCleanup {
         Regex("\\b(?:a |an )?(?:quarter|half)\\s+(?:past|to)\\s+\\w+", RegexOption.IGNORE_CASE),
         Regex("\\b(?:a |an )?(?:couple|few|several|many)\\s+hundred\\b", RegexOption.IGNORE_CASE),
     )
-    private val units = mapOf(
+    internal val units = mapOf(
         "zero" to 0, "oh" to 0, "o" to 0, "one" to 1, "two" to 2, "three" to 3,
         "four" to 4, "five" to 5, "six" to 6, "seven" to 7, "eight" to 8, "nine" to 9,
         "ten" to 10, "eleven" to 11, "twelve" to 12, "thirteen" to 13, "fourteen" to 14,
         "fifteen" to 15, "sixteen" to 16, "seventeen" to 17, "eighteen" to 18, "nineteen" to 19,
     )
-    private val tens = mapOf("twenty" to 20, "thirty" to 30, "forty" to 40, "fifty" to 50, "sixty" to 60, "seventy" to 70, "eighty" to 80, "ninety" to 90)
+    internal val tens = mapOf("twenty" to 20, "thirty" to 30, "forty" to 40, "fifty" to 50, "sixty" to 60, "seventy" to 70, "eighty" to 80, "ninety" to 90)
     private val scales = mapOf("hundred" to 100L, "thousand" to 1_000L, "million" to 1_000_000L, "billion" to 1_000_000_000L)
     private val numberWords = units.keys + tens.keys + scales.keys + "and"
     private val numberAlt = numberWords.sortedByDescending(String::length).joinToString("|") { Regex.escape(it) }
-    private val numberNoAndAlt = numberWords.filterNot { it == "and" }.sortedByDescending(String::length)
+    internal val numberNoAndAlt = numberWords.filterNot { it == "and" }.sortedByDescending(String::length)
         .joinToString("|") { Regex.escape(it) }
     private val numberRun = "(?:$numberAlt|\\d[\\d,]*)(?:[ -]+(?:$numberAlt|\\d[\\d,]*))*"
     private val numberRunNoLeadingAnd =
         "(?:$numberNoAndAlt|\\d[\\d,]*)(?:[ -]+(?:$numberAlt|\\d[\\d,]*))*"
     private val digitAlt = units.filterValues { it < 10 }.keys.sortedByDescending(String::length).joinToString("|") { Regex.escape(it) }
-    private val dottedNumericChain = Regex(
-        "(?i)\\b(?:$digitAlt|\\d[\\d,]*)(?:\\s+(?:$digitAlt|\\d[\\d,]*))*" +
-            "(?:\\s+dot\\s+(?:$digitAlt|\\d[\\d,]*)(?:\\s+(?:$digitAlt|\\d[\\d,]*))*){2,}\\b",
-    )
     private val months = linkedMapOf(
         "january" to "January", "february" to "February", "march" to "March", "april" to "April",
         "may" to "May", "june" to "June", "july" to "July", "august" to "August",
@@ -117,43 +115,39 @@ internal object DeterministicCleanup {
         language: CleanupLanguage = CleanupLanguage.Unknown,
         trace: (family: String, text: String) -> Unit = NO_TRACE,
     ): CleanupResult {
-        if (raw.isBlank()) return CleanupResult(raw, false, false)
+        if (raw.isBlank()) return CleanupResult("", raw.isNotEmpty(), false)
         val original = raw.trim()
         // Every English-shaped rewriting family below is gated on this ONE answer, so a language the app
         // could not establish takes exactly the path it took before #107. Filler removal is deliberately
         // NOT gated on it: the shared six are safe in all 25 languages and the English extras are added
         // by the same policy, which is macOS `FillerRemovalStep` read from the English side.
         val skipEnglishRewrites = CleanupLanguagePolicy.skipsEnglishRewrites(language)
+        var lastGood = original
         return try {
             var value = original
             if (options.removeFillers) {
-                value = fillerMatcher(language).replace(value, "")
+                value = fillerMatcher(language).replace(value) { match ->
+                    val token = match.groups[1]?.value ?: match.groups[2]?.value.orEmpty()
+                    if (token.lowercase(Locale.ROOT) in options.spellingProtectedWords) match.value else ""
+                }
+                if (!TextSafety.isDeterministicSafe(lastGood, value, false)) return CleanupResult(lastGood, lastGood != original, true)
+                lastGood = value
                 trace("fillers", value)
             }
-            if (options.spokenEmoji && !skipEnglishRewrites) emoji.forEach { (phrase, symbol) ->
-                val discussion = "category|categories|feature|features|name|names|symbol|symbols|" +
-                    "word|words|button|buttons|glyph|glyphs|icon|icons|character|characters|" +
-                    "version|format|library|set|picker|keyboard|meaning|description|usage|" +
-                    "shortcode|unicode|code"
-                value = value.replace(
-                    Regex(
-                        "\\b${Regex.escape(phrase)}\\s+(?:emoji|emoticon)\\b" +
-                            "(?!\\s+(?:$discussion)\\b)",
-                        RegexOption.IGNORE_CASE,
-                    ),
-                    symbol,
-                )
-            }
+            val beforeEmoji = value
+            if (options.spokenEmoji && !skipEnglishRewrites) value = SpokenEmojiFormatter.format(value)
+            val emojiChanged = value != beforeEmoji
+            if (!TextSafety.isDeterministicSafe(lastGood, value, emojiChanged)) return CleanupResult(lastGood, lastGood != original, true)
+            lastGood = value
             if (options.spokenEmoji && !skipEnglishRewrites) trace("emoji", value)
             // The placeholder insert and its restore are one unit and are skipped together; leaving the
             // insert reachable without the restore would ship private-use characters into the editor.
             var structuredChanged = false
             if (!skipEnglishRewrites) {
-                val protected = mutableListOf<String>()
-                (protectedPhrases + dottedNumericChain).forEach { phrase ->
+                val protected = ProtectedText(value)
+                protectedPhrases.forEach { phrase ->
                     value = phrase.replace(value) { match ->
-                        protected += match.value
-                        "\uE000${protected.lastIndex}\uE001"
+                        protected.protect(match.value)
                     }
                 }
                 value = Regex("\\b(?:a|an)\\s+(hundred\\b)(?!-)").replace(value, "$1")
@@ -163,7 +157,9 @@ internal object DeterministicCleanup {
                 val beforeStructured = value
                 value = normalizeStructured(value)
                 structuredChanged = value != beforeStructured
-                protected.forEachIndexed { index, phrase -> value = value.replace("\uE000$index\uE001", phrase) }
+                value = protected.restore(value)
+                if (!TextSafety.isDeterministicSafe(lastGood, value, structuredChanged)) return CleanupResult(lastGood, lastGood != original, true)
+                lastGood = value
                 trace("structured", value)
             }
             if (options.spokenPunctuation && !skipEnglishRewrites) punctuation.forEach { (phrase, mark) ->
@@ -175,13 +171,19 @@ internal object DeterministicCleanup {
                 val replacement = if ('\n' in mark) mark else "$mark "
                 value = value.replace(command, replacement)
             }
+            if (!skipEnglishRewrites) value = SpokenSlash.apply(value, options.spokenPunctuation)
+            else value = SpokenIdentifiers.normalize(NeutralAddresses.normalize(value, neutral = true), english = false)
+            if (!TextSafety.isDeterministicSafe(lastGood, value, true)) return CleanupResult(lastGood, lastGood != original, true)
+            lastGood = value
             if (options.spokenPunctuation && !skipEnglishRewrites) trace("punctuation", value)
             value = formatText(value)
+            value = BritishSpelling.convert(value, options.englishSpelling, language, options.spellingProtectedWords)
+            if (!TextSafety.isDeterministicSafe(original, value, structuredChanged || emojiChanged)) return CleanupResult(lastGood, lastGood != original, true)
+            lastGood = value
             trace("format", value)
-            if (!TextSafety.isDeterministicSafe(original, value, structuredChanged)) CleanupResult(original, false, true)
-            else CleanupResult(value, value != original, false)
+            CleanupResult(value, value != original, false)
         } catch (_: RuntimeException) {
-            CleanupResult(original, false, true)
+            CleanupResult(lastGood, lastGood != original, true)
         } catch (_: StackOverflowError) {
             // Catastrophic backtracking in one of the regex families unwinds the stack rather than
             // corrupting it, so it is recoverable, and a limb must never throw into the session path
@@ -191,12 +193,9 @@ internal object DeterministicCleanup {
             // swallowing it here would hide a dying process behind a transcript that merely looks
             // uncleaned.
             //
-            // Both branches return `original` rather than a partially cleaned value ON PURPOSE. Cleanup
-            // is the FIRST limb, so the raw transcript IS the last successful text at this point
-            // (`architecture-rules.md` FACT: heart-and-limbs). Committing families as they complete would
-            // hand back text that is neither the input nor a finished cleaning, and the structured pass
-            // holds private-use placeholder characters until its restore step runs.
-            CleanupResult(original, false, true)
+            // Only completed plain-text stages are eligible here. Sentinels are restored and validated
+            // inside the structured stage before it can become lastGood.
+            CleanupResult(lastGood, lastGood != original, true)
         }
     }
 
@@ -210,14 +209,22 @@ internal object DeterministicCleanup {
             val previous = hyphenated
             hyphenated = hyphenJoin.replace(hyphenated, "$1 ")
         } while (hyphenated != previous)
+        val protected = ProtectedText(input)
+        fun protect(value: String) = protected.protect(value)
         var text = " $hyphenated "
-        text = emails(text)
+        text = Regex("(?i)\\bat\\s+one\\s+point\\b(?=\\s+(?:\\d+|(?:$numberNoAndAlt)(?:\\s+(?:$numberNoAndAlt))*)\\s+point\\b)").replace(text) { protect(it.value) }
+        text = NeutralAddresses.normalize(text, neutral = false)
         text = urls(text)
+        text = SpokenIdentifiers.normalize(text, english = true)
+        val part = "(?:\\d+|(?:$numberNoAndAlt)(?:\\s+(?:$numberNoAndAlt))*)"
+        text = Regex("(?i)\\b(?:$part(?:\\s+(?:dot|point|punkt|punto|ponto)\\s+$part){2,}|\\d+(?:\\.\\d+)+(?:\\s+(?:dot|point|punkt|punto|ponto)\\s+$part)+)\\b").replace(text) { protect(it.value) }
         text = decimals(text)
         text = moneyPercent(text)
         text = times(text)
         text = dates(text)
+        text = ListMarkers.apply(text)
         text = ordinalNumbers(text)
+        text = StreetAddresses.apply(text, ::protect)
         text = years(text)
         text = moneyPercent(text)
         text = digitRuns(text)
@@ -226,13 +233,9 @@ internal object DeterministicCleanup {
         text = dosageRuns(text)
         text = cardinals(text)
         text = keepMagnitude(text)
+        text = protected.restore(text)
         return text.trim()
     }
-
-    private fun emails(input: String) = Regex(
-        "\\b([a-z][a-z0-9_.+-]*)\\s+at\\s+([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\\s+dot\\s+(com|org|io|co|dev|me|net|edu|gov)\\b",
-        RegexOption.IGNORE_CASE,
-    ).replace(input) { "${it.groupValues[1]}@${it.groupValues[2]}.${it.groupValues[3]}" }
 
     private fun urls(input: String): String {
         val tlds = "com|org|io|co|dev|me|net"
@@ -241,17 +244,18 @@ internal object DeterministicCleanup {
             "(?<![@\\w.-])([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)\\s+dot\\s+($tlds)((?:\\s+slash\\s+[a-z0-9-]+)*)",
             RegexOption.IGNORE_CASE,
         ).replace(text) {
-            if (hasUnresolvedUrlContext(text, it)) it.value
+            if (hasUnresolvedUrlContext(text, it) || it.groupValues[1].lowercase() in CleanupReferenceTables.englishProseDomainWords) it.value
             else it.groupValues[1] + "." + it.groupValues[2] + Regex("(?i)\\s+slash\\s+").replace(it.groupValues[3], "/")
         }
         text = Regex(
             "(?<![@\\w.-])([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\\.(?:$tlds|ai|app|xyz))((?:\\s+slash\\s+[a-z0-9-]+)+)",
             RegexOption.IGNORE_CASE,
         ).replace(text) {
-            if (hasUnresolvedUrlContext(text, it)) it.value
+            if (hasUnresolvedUrlContext(text, it) || it.groupValues[1].lowercase() in CleanupReferenceTables.englishProseDomainWords) it.value
             else it.groupValues[1] + Regex("(?i)\\s+slash\\s+").replace(it.groupValues[2], "/")
         }
-        return text.replace(Regex("(?i)(\\b[a-z0-9][a-z0-9.-]*\\.(?:$tlds|ai|app|xyz))\\s+dot\\.?\\s*$"), "$1")
+        text = text.replace(Regex("(?i)(\\b[a-z0-9][a-z0-9.-]*\\.(?:$tlds|ai|app|xyz))\\s+dot\\.?\\s*$"), "$1")
+        return if (Regex("(?i)^\\s*(?:https?://)?[a-z0-9.-]+\\.(?:$tlds|ai|app|xyz)(?:/[a-z0-9-]+)*\\.\\s*$").matches(text)) text.trim().removeSuffix(".") else text
     }
 
     private fun hasUnresolvedUrlContext(text: String, match: MatchResult): Boolean {
@@ -270,7 +274,9 @@ internal object DeterministicCleanup {
 
     private fun decimals(input: String): String {
         var text = Regex("(?i)\\b($numberRun)\\s+(?:point|dot)\\s+((?:$digitAlt)(?:\\s+(?:$digitAlt))*)(?:\\s+(thousand|million|billion))?\\b").replace(input) { match ->
-            val whole = wordsToLong(match.groupValues[1]) ?: return@replace match.value
+            val rawWhole = match.groupValues[1]
+            val digitRead = if (rawWhole.trim().split(Regex("\\s+")).size > 1) spokenDigits(rawWhole) else null
+            val whole = digitRead ?: wordsToLong(rawWhole)?.toString() ?: return@replace match.value
             val digits = spokenDigits(match.groupValues[2]) ?: return@replace match.value
             val scale = scales[match.groupValues[3].lowercase()]
             if (scale == null) "$whole.$digits" else runCatching {
@@ -314,7 +320,7 @@ internal object DeterministicCleanup {
             val hour = units[it.groupValues[1].lowercase()] ?: return@replace it.value
             "${hour}00"
         }
-        text = Regex("(?i)(?<![:\\d])\\b($hourToken)(?:\\s+($numberRun))?\\s+([ap])\\s*m\\b").replace(text) {
+        text = Regex("(?i)(?<!\\S)($hourToken)(?:\\s+($numberRun))?\\s+([ap])\\s*m\\b").replace(text) {
             val hour = wordsToLong(it.groupValues[1]) ?: return@replace it.value
             val minute = if (it.groupValues[2].isBlank()) 0 else wordsToLong(it.groupValues[2]) ?: spokenDigits(it.groupValues[2])?.toLongOrNull() ?: return@replace it.value
             if (hour !in 1..12 || minute !in 0..59) it.value else "$hour:${minute.toString().padStart(2, '0')} ${it.groupValues[3].uppercase()}M"
@@ -509,11 +515,11 @@ internal object DeterministicCleanup {
                 midSentenceCapital || allCaps && adjacentAllCaps && !shout -> it.value
             replacement == it.value -> it.value
             trailingAnd -> "$replacement and"
-            else -> replacement
+            else -> if (input.getOrNull(it.range.last + 1) in setOf('\n', '\r')) "$replacement " else replacement
         }
     }
 
-    private fun keepMagnitude(input: String): String = Regex("(\\$)?(\\d{1,3}(?:,\\d{3})+)(?!\\.\\d)(?!,\\d)").replace(input) {
+    private fun keepMagnitude(input: String): String = Regex("(?:(?<=\\w[A-Z])|(?<![A-Z]))(\\$)?(\\d{1,3}(?:,\\d{3})+)\\b(?!\\.\\d)(?!,\\d)").replace(input) {
         val value = it.groupValues[2].replace(",", "").toLongOrNull() ?: return@replace it.value
         for ((word, scale) in listOf("trillion" to 1_000_000_000_000L, "billion" to 1_000_000_000L, "million" to 1_000_000L)) {
             val thousandth = scale / 1_000
@@ -534,7 +540,7 @@ internal object DeterministicCleanup {
         return value.trim()
     }
 
-    private fun wordsToLong(raw: String): Long? {
+    internal fun wordsToLong(raw: String): Long? {
         val tokens = raw.lowercase().replace("-", " ").trim().split(Regex("\\s+")).filter { it != "and" }
         if (tokens.isEmpty()) return null
         if (tokens.size == 1 && tokens[0] in setOf("zero", "0")) return 0
@@ -578,7 +584,7 @@ internal object DeterministicCleanup {
         return total + current
     }
 
-    private fun spokenDigits(raw: String): String? {
+    internal fun spokenDigits(raw: String): String? {
         val output = StringBuilder()
         for (token in raw.trim().split(Regex("\\s+"))) {
             val digit = units[token.lowercase()]?.takeIf { it < 10 } ?: return null
@@ -587,7 +593,7 @@ internal object DeterministicCleanup {
         return output.toString()
     }
 
-    private fun parseYear(raw: String): Long? {
+    internal fun parseYear(raw: String): Long? {
         val tokens = raw.lowercase().split(Regex("\\s+")).filter(String::isNotBlank)
         if (tokens.size < 2) return null
         if ("thousand" in tokens || "hundred" in tokens) return wordsToLong(raw)
@@ -611,7 +617,7 @@ internal object DeterministicCleanup {
 internal object TextSafety {
     fun isDeterministicSafe(input: String, output: String, allowLargeContraction: Boolean): Boolean {
         if (input.isNotBlank() && output.isBlank()) return false
-        if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' }) return false
+        if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' && it != '\r' }) return false
         if (output.length > input.length * 3 + 200) return false
         return allowLargeContraction || input.length < 24 || output.length >= input.length / 4
     }
@@ -628,7 +634,7 @@ internal object TextSafety {
      */
     fun refusal(input: String, output: String, checkNumbers: Boolean = true): String? {
         if (input.isNotBlank() && output.isBlank()) return "blank output"
-        if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' }) return "control characters"
+        if (output.any { it == '\u0000' || it.isISOControl() && it != '\n' && it != '\t' && it != '\r' }) return "control characters"
         if (output.length > maxOf(input.length * 3, 200)) return "expansion ${output.length}/${input.length} chars"
         if (input.length >= 24 && output.length < input.length / 4) return "contraction ${output.length}/${input.length} chars"
         val inputWords = input.split(Regex("\\s+")).count { it.isNotEmpty() }

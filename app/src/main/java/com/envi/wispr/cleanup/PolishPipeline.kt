@@ -33,6 +33,7 @@ internal object PolishPipeline {
         options: CleanupOptions = CleanupOptions(),
         language: CleanupLanguage = CleanupLanguage.Unknown,
         trace: (family: String, text: String) -> Unit = DeterministicCleanup.NO_TRACE,
+        restoreLocalEmoji: Boolean = false,
         model: ((cleanedText: String) -> String?)? = null,
     ): PolishPipelineResult {
         val cleanup = DeterministicCleanup.apply(rawText, options, language, trace)
@@ -58,7 +59,11 @@ internal object PolishPipeline {
         if (refusal != null) {
             return PolishPipelineResult(fallback, usedModel = false, recovered = true, outcome = PipelineOutcome.MODEL_REJECTED, refusal = refusal)
         }
-        return PolishPipelineResult(candidate, usedModel = true, recovered = false, outcome = PipelineOutcome.MODEL_ACCEPTED)
+        val spelled = try {
+            BritishSpelling.convert(candidate, options.englishSpelling, language, options.spellingProtectedWords)
+        } catch (_: Exception) { candidate }
+        val final = if (restoreLocalEmoji) try { EmojiRestorer.restore(cleaned, spelled) } catch (_: Exception) { spelled } else spelled
+        return PolishPipelineResult(final, usedModel = true, recovered = false, outcome = PipelineOutcome.MODEL_ACCEPTED)
     }
 
     /**

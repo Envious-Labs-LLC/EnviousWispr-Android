@@ -35,6 +35,7 @@ internal data class AppPreferencesState(
     val fillerRemovalEnabled: Boolean = true,
     val emojiFormatterEnabled: Boolean = true,
     val spokenPunctuationEnabled: Boolean = false,
+    val englishSpelling: com.envi.wispr.cleanup.EnglishSpelling = com.envi.wispr.cleanup.EnglishSpelling.AMERICAN,
     val autoCopyToClipboard: Boolean = true,
     val restoreClipboardAfterPaste: Boolean = true,
     val smartInsertionEnabled: Boolean = true,
@@ -60,6 +61,7 @@ internal fun AppPreferencesState.cleanupOptions(): CleanupOptions = CleanupOptio
     removeFillers = fillerRemovalEnabled,
     spokenEmoji = emojiFormatterEnabled,
     spokenPunctuation = spokenPunctuationEnabled,
+    englishSpelling = englishSpelling,
 )
 
 internal fun AppPreferencesState.clipboardInsertionPolicy(): ClipboardInsertionPolicy = ClipboardInsertionPolicy(
@@ -93,6 +95,7 @@ internal class AppPreferences(context: Context) {
         fillerRemovalEnabled = preferences[Keys.FILLER_REMOVAL] ?: true,
         emojiFormatterEnabled = preferences[Keys.EMOJI_FORMATTER] ?: true,
         spokenPunctuationEnabled = preferences[Keys.SPOKEN_PUNCTUATION] ?: false,
+        englishSpelling = com.envi.wispr.cleanup.EnglishSpelling.fromStored(preferences[Keys.ENGLISH_SPELLING]),
         autoCopyToClipboard = preferences[Keys.AUTO_COPY_TO_CLIPBOARD] ?: true,
         restoreClipboardAfterPaste = preferences[Keys.RESTORE_CLIPBOARD_AFTER_PASTE] ?: true,
         smartInsertionEnabled = preferences[Keys.SMART_INSERTION] ?: true,
@@ -161,6 +164,10 @@ internal class AppPreferences(context: Context) {
         dataStore.edit { preferences ->
             preferences[Keys.EMOJI_FORMATTER] = enabled
         }
+    }
+
+    suspend fun setEnglishSpelling(spelling: com.envi.wispr.cleanup.EnglishSpelling) {
+        dataStore.edit { it[Keys.ENGLISH_SPELLING] = spelling.name }
     }
 
     suspend fun setSpokenPunctuationEnabled(enabled: Boolean) {
@@ -240,6 +247,7 @@ internal class AppPreferences(context: Context) {
         val BUBBLE_LOOK = stringPreferencesKey("bubble_look")
         val FILLER_REMOVAL = booleanPreferencesKey("filler_removal_enabled")
         val EMOJI_FORMATTER = booleanPreferencesKey("emoji_formatter_enabled")
+        val ENGLISH_SPELLING = stringPreferencesKey("english_spelling")
         val SPOKEN_PUNCTUATION = booleanPreferencesKey("spoken_punctuation_enabled")
         val AUTO_COPY_TO_CLIPBOARD = booleanPreferencesKey("auto_copy_to_clipboard")
         val RESTORE_CLIPBOARD_AFTER_PASTE = booleanPreferencesKey("restore_clipboard_after_paste")

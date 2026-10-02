@@ -3,9 +3,11 @@ package com.envi.wispr.ui
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -44,6 +46,7 @@ internal fun TranscriptionScreen(
     onFillerRemovalChanged: (Boolean) -> Unit,
     onEmojiFormatterChanged: (Boolean) -> Unit,
     onSpokenPunctuationChanged: (Boolean) -> Unit,
+    onEnglishSpellingChanged: (com.envi.wispr.cleanup.EnglishSpelling) -> Unit,
     onAutoStopOnSilenceChanged: (Boolean) -> Unit,
     onSilencePauseSecondsChanged: (Float) -> Unit,
 ) {
@@ -128,10 +131,25 @@ internal fun TranscriptionScreen(
             HorizontalDivider(Modifier.padding(horizontal = 18.dp))
             SettingsToggleRow(
                 title = "Spoken punctuation",
-                subtitle = "Turn commands such as comma and new paragraph into punctuation.",
+                subtitle = "Turn commands such as comma, new paragraph and backslash into punctuation. Contextual slash commands work with this off too.",
                 checked = preferences.spokenPunctuationEnabled,
                 onCheckedChange = { updateWithHaptic(it, onSpokenPunctuationChanged) },
             )
+            HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+            Text("English spelling", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 18.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(horizontal = 18.dp)) {
+                com.envi.wispr.cleanup.EnglishSpelling.entries.forEach { spelling ->
+                    val label = when (spelling) {
+                        com.envi.wispr.cleanup.EnglishSpelling.AMERICAN -> "American"
+                        com.envi.wispr.cleanup.EnglishSpelling.BRITISH -> "British"
+                    }
+                    FilterChip(selected = preferences.englishSpelling == spelling,
+                        onClick = { view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); onEnglishSpellingChanged(spelling) },
+                        label = { Text(label) })
+                }
+            }
+            Text("Changes confidently identified English text. Your saved words keep their spelling. Other languages and uncertain text keep their original spelling.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 18.dp))
+
         }
         Text(
             "These rules run on this phone, before AI Polish. Turn off anything you prefer to dictate literally. A change here applies to your next dictation, never to one already in progress.",
@@ -142,7 +160,7 @@ internal fun TranscriptionScreen(
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Languages", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "EnviousWispr transcribes 25 European languages. There is nothing to choose: speak, and it writes what it hears, with no network. Tidying up spoken numbers, dates and money is still built for English.",
+                    "EnviousWispr transcribes 25 European languages. There is nothing to choose: speak, and it writes what it hears, with no network. Spoken numbers, dates and money are cleaned up in English. Spoken addresses, links and codes also have support for French, Spanish, Polish, Dutch, German, Russian, Portuguese and Italian.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )

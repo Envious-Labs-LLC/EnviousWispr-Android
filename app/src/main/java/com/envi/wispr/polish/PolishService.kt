@@ -128,7 +128,7 @@ class PolishService : Service() {
             }
             executor.execute {
                 val started = SystemClock.elapsedRealtime()
-                val text = fallbackText(raw, options, null)
+                val text = fallbackText(raw, options, null).text
                 runCatching {
                     callback?.onResult(text, PolishEngineLabels.DETERMINISTIC, SystemClock.elapsedRealtime() - started)
                 }
@@ -151,7 +151,7 @@ class PolishService : Service() {
             spokenPunctuation: Boolean,
             policy: PolishPolicy?,
             callback: IPolishCallback?,
-        ) = accept(requestId, rawText, removeFillers, spokenEmoji, spokenPunctuation, policy, takeId = "", callback)
+        ) = accept(requestId, rawText, CleanupOptions(removeFillers, spokenEmoji, spokenPunctuation), policy, takeId = "", callback)
 
         /** The versioned request (issue #176): identical, plus the take's id bound to the request entry. */
         override fun polishRequestForTake(
@@ -163,20 +163,26 @@ class PolishService : Service() {
             policy: PolishPolicy?,
             takeId: String?,
             callback: IPolishCallback?,
-        ) = accept(requestId, rawText, removeFillers, spokenEmoji, spokenPunctuation, policy, takeId.orEmpty(), callback)
+        ) = accept(requestId, rawText, CleanupOptions(removeFillers, spokenEmoji, spokenPunctuation), policy, takeId.orEmpty(), callback)
+
+        override fun polishRequestWithCleanupForTake(
+            requestId: Long,
+            rawText: String?,
+            cleanup: CleanupRequestOptions?,
+            policy: PolishPolicy?,
+            takeId: String?,
+            callback: IPolishCallback?,
+        ) = accept(requestId, rawText, cleanup?.options ?: CleanupOptions(), if (cleanup == null) null else policy, takeId.orEmpty(), callback)
 
         private fun accept(
             requestId: Long,
             rawText: String?,
-            removeFillers: Boolean,
-            spokenEmoji: Boolean,
-            spokenPunctuation: Boolean,
+            options: CleanupOptions,
             policy: PolishPolicy?,
             takeId: String,
             callback: IPolishCallback?,
         ) {
             val raw = rawText.orEmpty().trim()
-            val options = CleanupOptions(removeFillers, spokenEmoji, spokenPunctuation)
             // The request's own take id (#378), never only the registry's: polish can answer before registration.
             val log = TakeLog(takeId.ifEmpty { LEGACY_TAKE }, TAG).also { it.startPipeline() }
             log.words("polish_input") { raw }
@@ -259,9 +265,9 @@ class PolishService : Service() {
         }
         try {
             val outcome = if (entry.cancellation.isCancelled) {
-                PolishOutcome(requestId, fallbackText(raw, options, log), PolishEngineLabels.DETERMINISTIC, PolishReason.CANCELLED, 0, 0)
+                fallbackOutcome(requestId, raw, options, log, PolishReason.CANCELLED)
             } else if (poisoned.get()) {
-                PolishOutcome(requestId, fallbackText(raw, options, log), PolishEngineLabels.DETERMINISTIC, PolishReason.LOCAL_FAILED, 0, 0)
+                fallbackOutcome(requestId, raw, options, log, PolishReason.LOCAL_FAILED)
             } else {
                 run(requestId, raw, options, effectivePolicy, entry, started, budget, log)
             }
@@ -276,14 +282,7 @@ class PolishService : Service() {
             // else: the hard deadline already expired and owns the delivery and the exit.
         } catch (exception: Exception) {
             log.error("Polish failed", exception)
-            val fallback = PolishOutcome(
-                requestId,
-                fallbackText(raw, options, log),
-                PolishEngineLabels.DETERMINISTIC,
-                PolishReason.UNEXPECTED,
-                0,
-                SystemClock.elapsedRealtime() - started,
-            )
+            val fallback = fallbackOutcome(requestId, raw, options, log, PolishReason.UNEXPECTED, SystemClock.elapsedRealtime() - started)
             if (armed == null || armed.cancel()) {
                 releaseLocal()
                 entry.deliverOnce { deliver(callback, fallback, log) }
@@ -319,14 +318,7 @@ class PolishService : Service() {
             deliver = {
                 deliver(
                     callback,
-                    PolishOutcome(
-                        requestId,
-                        fallbackText(raw, options, log),
-                        PolishEngineLabels.DETERMINISTIC,
-                        PolishReason.LOCAL_TIMEOUT,
-                        0,
-                        SystemClock.elapsedRealtime() - started,
-                    ),
+                    fallbackOutcome(requestId, raw, options, log, PolishReason.LOCAL_TIMEOUT, SystemClock.elapsedRealtime() - started),
                     log,
                 )
             },
@@ -380,10 +372,16 @@ class PolishService : Service() {
      * seven call sites it replaced, so a new failure exit cannot forget the language.
      */
     /** [log] is the request's take log when there is one (#378); the take-less lane and legacy path pass null. */
-    private fun fallbackText(raw: String, options: CleanupOptions, log: TakeLog?): String =
+    private fun fallbackText(raw: String, options: CleanupOptions, log: TakeLog?): CleanedText =
         PolishFallback.deterministicOrWords(raw, options, languageDetector, warn = { message ->
             if (log != null) log.warn(message) else DebugLogger.warn(TAG, message)
         })
+
+    private fun fallbackOutcome(requestId: Long, raw: String, options: CleanupOptions, log: TakeLog?, reason: PolishReason, latencyMs: Long = 0): PolishOutcome {
+        val cleaned = fallbackText(raw, options, log)
+        return PolishOutcome(requestId, cleaned.text, PolishEngineLabels.DETERMINISTIC, reason, 0, latencyMs,
+            englishText = cleaned.language == CleanupLanguage.Known("en"))
+    }
 
     /** The single delivery site. A dead client throws here; the throw is logged and goes no further. */
     private fun deliver(callback: IPolishCallback?, outcome: PolishOutcome, log: TakeLog) {
@@ -413,7 +411,7 @@ class PolishService : Service() {
         val trace: (String, String) -> Unit = { family, text -> log.words("cleanup_$family") { text } }
         val pipeline = when (policy) {
             PolishPolicy.Off, PolishPolicy.CloudUnconfigured -> PolishPipeline.run(raw, options, language, trace = trace)
-            is PolishPolicy.LocalS1 -> PolishPipeline.run(raw, options, language, trace = trace) { cleaned ->
+            is PolishPolicy.LocalS1 -> PolishPipeline.run(raw, options, language, trace = trace, restoreLocalEmoji = true) { cleaned ->
                 if (!modelReady) {
                     attempt = PolishReason.LOCAL_NOT_READY
                     null
@@ -455,7 +453,7 @@ class PolishService : Service() {
             log.warn("Polish fell back: reason=$reason status=$statusCode")
         }
         log.words("pipeline_result") { pipeline.text }
-        return PolishOutcome(requestId, pipeline.text, engine, reason, statusCode, SystemClock.elapsedRealtime() - started)
+        return PolishOutcome(requestId, pipeline.text, engine, reason, statusCode, SystemClock.elapsedRealtime() - started, englishText = language == CleanupLanguage.Known("en"))
     }
 
     override fun onCreate() {

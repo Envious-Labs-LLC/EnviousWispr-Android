@@ -180,23 +180,19 @@ internal class PipelineBindings(
     private class PolishProxy(private val service: IPolishService, private val post: (Runnable) -> Unit) : PolishLink {
         override fun warmUpWithPolicy(policy: PolishPolicy) = service.warmUpWithPolicy(policy)
 
-        override fun polishRequestForTake(
+        override fun polishRequestWithCleanupForTake(
             requestId: Long,
             rawText: String,
-            removeFillers: Boolean,
-            spokenEmoji: Boolean,
-            spokenPunctuation: Boolean,
+            cleanup: com.envi.wispr.cleanup.CleanupOptions,
             policy: PolishPolicy,
             takeId: String,
             listener: PolishListener,
         ) {
             val posting = PostingPolishListener(post, listener)
-            service.polishRequestForTake(
+            service.polishRequestWithCleanupForTake(
                 requestId,
                 rawText,
-                removeFillers,
-                spokenEmoji,
-                spokenPunctuation,
+                com.envi.wispr.polish.CleanupRequestOptions(cleanup),
                 policy,
                 takeId,
                 object : IPolishCallback.Stub() {

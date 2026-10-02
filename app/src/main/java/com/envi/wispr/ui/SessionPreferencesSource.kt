@@ -97,6 +97,7 @@ internal data class SettingsSnapshot(
 internal data class TermsSnapshot(
     val read: PreferenceRead = PreferenceRead.Pending,
     val structuredTerms: List<CustomTerm> = emptyList(),
+    val userSpellings: List<String> = emptyList(),
 )
 
 /**
@@ -168,7 +169,7 @@ internal class SessionPreferencesSource(
                     log.warn("Unable to migrate custom terms: ${error.javaClass.simpleName}")
                 }
                 terms.collect { userTerms ->
-                    termsSnapshot.set(TermsSnapshot(PreferenceRead.Fresh, BuiltinVocabulary.withUserTerms(userTerms)))
+                    termsSnapshot.set(TermsSnapshot(PreferenceRead.Fresh, BuiltinVocabulary.withUserTerms(userTerms), userTerms.map { it.spelling }))
                     termsAnswered.complete(Unit)
                 }
                 // A flow that completes before its first emission is a failed read, not a pending one; one
@@ -249,7 +250,7 @@ internal class SessionPreferencesSource(
      */
     fun freeze(start: PreferenceStart, matcher: StructuredTermRestorer.Matcher, policy: PolishPolicy): SessionPreferences =
         SessionPreferences(
-            cleanup = start.settings.cleanupOptions,
+            cleanup = start.settings.cleanupOptions.copy(spellingProtectedWords = com.envi.wispr.cleanup.BritishSpelling.protectedWords(start.terms.userSpellings)),
             matcher = matcher,
             // The stand-in for a read that never answered: today's null branch, kept on purpose (#193 plan
             // §14 weighs auto-copy on against off for this one case).

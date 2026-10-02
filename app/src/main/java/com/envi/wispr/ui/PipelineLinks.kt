@@ -79,7 +79,7 @@ internal interface SpeechLink {
     fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener)
 }
 
-/** The answer to one `IPolishService.polishRequestForTake`; the engine answers once. */
+/** The answer to one `IPolishService.polishRequestWithCleanupForTake`; the engine answers once. */
 internal interface PolishListener {
     fun onOutcome(outcome: PolishOutcome?)
     fun onResult(text: String?, engine: String?, latencyMs: Long)
@@ -89,12 +89,10 @@ internal interface PolishListener {
 /** `IPolishService`, the members the owner uses. */
 internal interface PolishLink {
     fun warmUpWithPolicy(policy: PolishPolicy)
-    fun polishRequestForTake(
+    fun polishRequestWithCleanupForTake(
         requestId: Long,
         rawText: String,
-        removeFillers: Boolean,
-        spokenEmoji: Boolean,
-        spokenPunctuation: Boolean,
+        cleanup: com.envi.wispr.cleanup.CleanupOptions,
         policy: PolishPolicy,
         takeId: String,
         listener: PolishListener,

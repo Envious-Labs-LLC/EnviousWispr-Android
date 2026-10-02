@@ -137,6 +137,7 @@ class SettingsActivity : ComponentActivity() {
                             onFillerRemovalChanged = shellViewModel::setFillerRemovalEnabled,
                             onEmojiFormatterChanged = shellViewModel::setEmojiFormatterEnabled,
                             onSpokenPunctuationChanged = shellViewModel::setSpokenPunctuationEnabled,
+                            onEnglishSpellingChanged = shellViewModel::setEnglishSpelling,
                             onAutoStopOnSilenceChanged = shellViewModel::setAutoStopOnSilenceEnabled,
                             onSilencePauseSecondsChanged = shellViewModel::setSilencePauseSeconds,
                         ),

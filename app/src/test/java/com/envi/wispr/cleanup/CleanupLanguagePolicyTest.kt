@@ -49,7 +49,7 @@ class CleanupLanguagePolicyTest {
     }
 
     @Test fun onlyEnglishGainsTheExtraFiller() {
-        assertEquals(setOf("um"), CleanupLanguagePolicy.extraFillers(CleanupLanguage.Known("en")))
+        assertEquals(setOf("um", "umm", "uhh", "mm", "mmm", "er"), CleanupLanguagePolicy.extraFillers(CleanupLanguage.Known("en")))
         assertEquals(emptySet<String>(), CleanupLanguagePolicy.extraFillers(CleanupLanguage.Known("de")))
         assertEquals(emptySet<String>(), CleanupLanguagePolicy.extraFillers(CleanupLanguage.Unknown))
     }

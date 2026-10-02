@@ -8,7 +8,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -274,10 +273,9 @@ class ProviderModelDiscoveryClientTest {
      * Product Outcome (#110). When the final assertion fails, a key the provider rejects part way through still
      * sends queued probes afterwards: up to forty paid requests on a key the user has just been told is bad.
      *
-     * The deadline row below cannot tell the cancel loop from the per-probe budget check, because either alone
-     * stops the queue there. This row separates them: discovery returns EARLY, on a key rejection, with most of
-     * its budget left, so the budget check stops nothing and only cancellation can keep the queued probes from
-     * running. Responses are staged with latches: the first model's probe answers 401 once three distinct
+     * The deadline rows separately prove cancellation and budget checks at expiry. This row additionally
+     * proves queued cancellation after an early key rejection, while budget remains.
+     * Responses are staged with latches: the first model's probe answers 401 once three distinct
      * probes are in flight, every other probe is held until after discovery has returned. Completion is a
      * signal from the probe pool itself, never a quiet-count poll.
      *
@@ -359,81 +357,159 @@ class ProviderModelDiscoveryClientTest {
         }
     }
 
-    @Test fun noProbeIsSentAfterTheDeadlineHasPassedAndTheCallHasReturned() {
-        // Renamed from theDeadlineCancelsQueuedAndActiveProbes (#110). The old name claimed more than
-        // the row establishes, and the difference is the whole story below.
-        //
-        // Every probe the fake server receives is HELD on this latch, never slept, so a probe cannot
-        // answer early. A sleep here raced the clock and went red under load (2026-09-02) when the list
-        // fetch ate the budget and the probes timed out instantly.
-        val hold = java.util.concurrent.CountDownLatch(1)
-        val models = 9
-        ScriptedServer({ request ->
-            if (request.path.startsWith("/models")) 200 to openAiList(*Array(models) { "gpt-m$it" }) else { hold.await(10, TimeUnit.SECONDS); 200 to okBody(Provider.OPENAI) }
-        }).use { server ->
-            // The request log is a synchronized list; a count that iterates it must hold its lock, or a
-            // probe landing mid-iteration throws and the test goes red on a correct client.
-            fun probeCount(): Int = synchronized(server.requests) { server.requests.count { it.path.startsWith("/probe") } }
-            // A count alone cannot say WHAT arrived, and "six requests" and "three probes asked twice"
-            // are different defects. The message names the requests so the next red is diagnosed once.
-            fun probeDetail(): String = synchronized(server.requests) {
-                server.requests.filter { it.path.startsWith("/probe") }
-                    .joinToString(", ") { request ->
-                        Regex("\"model\"\\s*:\\s*\"([^\"]+)\"").find(request.body)?.groupValues?.get(1) ?: "?"
+    /**
+     * Harness Contract: clock and executor gates distinguish client admission from server log time.
+     * Product Outcome: discovery returns unverified rows without starting requests after its budget.
+     * The caller is held before cancellation, so cancellation cannot mask a missing budget check.
+     */
+    @Test fun expiredQueuedProbesNeverReachTheTransport() {
+        DeadlineRig(models = 9, expireAfterList = true).use { rig ->
+            rig.awaitSubmitted()
+            rig.releaseWorkersAndDrain()
+            assertEquals("expired queued probes started a transport request", 0, rig.probes.get())
+            rig.releaseCaller()
+            val result = rig.result() as ProviderDiscovery.Listed
+            assertEquals(9, result.models.size)
+            assertTrue(result.models.all { it.access == ModelAccess.UNVERIFIED })
+        }
+    }
+
+    /** Product Outcome: every queued probe is cancelled at expiry, independently of its budget guard. */
+    @Test fun theDeadlineCancelsEveryQueuedProbeBeforeTheWorkersAreReleased() {
+        DeadlineRig(models = 9, expireAfterList = true).use { rig ->
+            rig.awaitSubmitted()
+            val queued = rig.pool.queue.toList().map { it as java.util.concurrent.Future<*> }
+            assertEquals("fixture: all nine probes were queued", 9, queued.size)
+            rig.releaseCaller()
+            assertTrue(rig.result() is ProviderDiscovery.Listed)
+            assertTrue("some queued probes were not cancelled", queued.all { it.isCancelled })
+            rig.releaseWorkersAndDrain()
+            assertEquals(0, rig.probes.get())
+        }
+    }
+
+    /** Product Outcome: a retry cannot spend a fresh budget after the logical probe deadline. */
+    @Test fun anInconclusiveReplyAtTheProbeDeadlineDoesNotStartARetry() {
+        DeadlineRig(models = 1, expireAfterList = false, expireAfterFirstProbe = true).use { rig ->
+            rig.awaitSubmitted()
+            rig.releaseWorkersAndDrain()
+            assertEquals("a retry started after the logical probe deadline", 1, rig.probes.get())
+            rig.releaseCaller()
+            val result = rig.result() as ProviderDiscovery.Listed
+            assertEquals(ModelAccess.UNVERIFIED, result.models.single().access)
+        }
+    }
+
+    /** Product Outcome: the frozen-clock fixture also permits a real pre-deadline successful probe. */
+    @Test fun aLiveFrozenClockStillAllowsAnAvailableModel() {
+        DeadlineRig(models = 1, expireAfterList = false).use { rig ->
+            rig.awaitSubmitted()
+            rig.releaseWorkersAndDrain()
+            assertEquals(1, rig.probes.get())
+            rig.releaseCaller()
+            val result = rig.result() as ProviderDiscovery.Listed
+            assertEquals(ModelAccess.AVAILABLE, result.models.single().access)
+        }
+    }
+
+    /** All gates are signals with fail-fast bounds, and every test owns its caller executor only. */
+    private class DeadlineRig(
+        models: Int,
+        expireAfterList: Boolean,
+        expireAfterFirstProbe: Boolean = false,
+    ) : AutoCloseable {
+        val pool = ProviderModelDiscoveryClient.PROBE_EXECUTOR as java.util.concurrent.ThreadPoolExecutor
+        val probes = java.util.concurrent.atomic.AtomicInteger()
+        private val now = java.util.concurrent.atomic.AtomicLong()
+        private val workersHeld = CountDownLatch(3)
+        private val workersReleased = CountDownLatch(1)
+        private val submitted = CountDownLatch(1)
+        private val callerReleased = CountDownLatch(1)
+        private val listReturned = java.util.concurrent.atomic.AtomicBoolean()
+        private val callerParked = java.util.concurrent.atomic.AtomicBoolean()
+        private val callerThread = java.util.concurrent.atomic.AtomicReference<Thread>()
+        private val caller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        private val holders = (1..3).map {
+            pool.submit {
+                workersHeld.countDown()
+                check(workersReleased.await(20, TimeUnit.SECONDS)) { "fixture: workers were never released" }
+            }
+        }
+        private val answer: java.util.concurrent.Future<ProviderDiscovery>
+
+        init {
+            try {
+                check(workersHeld.await(10, TimeUnit.SECONDS)) { "fixture: could not hold all probe workers" }
+                val transport = object : ProviderTransport {
+                    override fun run(plan: RequestPlan, cancellation: ProviderCancellation, overallTimeoutMs: Int, connectTimeoutMs: Int, readTimeoutMs: Int): Transport {
+                        if (plan.method == "GET") {
+                            if (expireAfterList) now.set(TimeUnit.SECONDS.toNanos(30))
+                            listReturned.set(true)
+                            return Transport.Response(200, openAiList(*Array(models) { "gpt-m$it" }))
+                        }
+                        val count = probes.incrementAndGet()
+                        if (expireAfterFirstProbe && count == 1) {
+                            now.set(TimeUnit.SECONDS.toNanos(1))
+                            return Transport.Response(200, "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"\"}}]}")
+                        }
+                        return Transport.Response(200, okBody(Provider.OPENAI))
                     }
+                }
+                val client = ProviderModelDiscoveryClient(
+                    transport = transport, discoveryTimeoutMs = 30_000, probeTimeoutMs = 1_000,
+                    logInfo = {}, logWarn = {},
+                    nanoTime = {
+                        // Only the caller's first read after the list: all probe submissions precede it.
+                        if (Thread.currentThread() === callerThread.get() && listReturned.get() && callerParked.compareAndSet(false, true)) {
+                            submitted.countDown()
+                            check(callerReleased.await(20, TimeUnit.SECONDS)) { "fixture: caller was never released" }
+                        }
+                        now.get()
+                    },
+                )
+                answer = caller.submit<ProviderDiscovery> {
+                    callerThread.set(Thread.currentThread())
+                    client.discoverModels(Provider.OPENAI, "fixture-key")
+                }
+            } catch (error: Throwable) {
+                callerReleased.countDown()
+                workersReleased.countDown()
+                holders.forEach { it.cancel(true) }
+                caller.shutdownNow()
+                check(caller.awaitTermination(10, TimeUnit.SECONDS)) { "fixture: caller leaked during setup" }
+                throw error
             }
-            val result = discoverer(server, Provider.OPENAI, discoveryTimeoutMs = 800, probeTimeoutMs = 5_000, readTimeoutMs = 5_000).discoverModels(Provider.OPENAI, "k")
-            assertTrue("$result", result is ProviderDiscovery.Listed)
-            hold.countDown()
+        }
 
-            // Let any straggler land. The loop gates on the count going QUIET, never on a fixed sleep.
-            var total = probeCount()
-            var quiet = 0
-            var polls = 0
-            while (quiet < 5 && polls < 25) {
-                Thread.sleep(200)
-                val now = probeCount()
-                if (now == total) quiet++ else { quiet = 0; total = now }
-                polls++
+        fun awaitSubmitted() = check(submitted.await(10, TimeUnit.SECONDS)) { "fixture: discovery never submitted its probes" }
+        fun releaseCaller() = callerReleased.countDown()
+        fun result(): ProviderDiscovery = answer.get(10, TimeUnit.SECONDS)
+        fun releaseWorkersAndDrain() {
+            workersReleased.countDown()
+            holders.forEach { it.get(10, TimeUnit.SECONDS) }
+            // Three simultaneous markers occupy the whole FIFO pool; earlier tasks have finished.
+            val allHeld = CountDownLatch(3)
+            val markers = (1..3).map {
+                pool.submit {
+                    allHeld.countDown()
+                    check(allHeld.await(10, TimeUnit.SECONDS)) { "fixture: probe pool never drained" }
+                }
             }
-
-            // WHAT THE OLD ASSERTION WAS. It read `probesLater <= probesAtReturn + 3 && probesLater < 9`,
-            // with 3 as a literal standing for the executor width.
-            //
-            // What was MEASURED, stated as observations rather than as guarantees: the delta was zero in
-            // every recorded run, quiet and under 2x core oversubscription, and the total was repeatedly
-            // six. Six is correct behaviour, not slack being consumed: a probe's socket timeout is
-            // clamped to what is left of the DISCOVERY budget, so a first wave of three times out just
-            // before the deadline, frees its workers, and a second wave legitimately starts while budget
-            // remains. Those observations do not guarantee a zero delta under other scheduling, which is
-            // exactly why no delta is asserted now.
-            //
-            // THE DELTA IS NOT ASSERTED, and that is the fix rather than a smaller bound. The count comes
-            // from the fake server's request LOG, and a handler can be descheduled between reading a
-            // request and appending it, so a probe sent BEFORE the deadline can be recorded after the
-            // call returns. A correct client would go red. Server logging time cannot establish client
-            // send time, so there is no honest delta assertion available here at all. Raising the old
-            // bound was refused for a different reason and still is: a wider delta also accepts a client
-            // that stopped cancelling.
-            //
-            // When no probe is recorded, this fixture cannot distinguish scheduling delay from a client
-            // defect, so it skips the inconclusive run. Passing it would be vacuous, because the only
-            // remaining assertion is an upper bound.
-            assumeTrue(
-                "no probe was recorded during the observation window, so this run is inconclusive",
-                total >= 1,
-            )
-            // EXACTLY WHAT THIS ROW HAS POWER OVER, from three controls that were run rather than
-            // reasoned about. Removing `futures.forEach { it.cancel(true) }` alone: still green.
-            // Removing the per-probe budget check alone: still green. Removing BOTH: RED, naming all
-            // nine models. So the row does catch a client where nothing stops the queue, and it cannot
-            // say WHICH of the two mechanisms stopped it, because either one suffices and this fixture
-            // does not hold them apart. `aKeyRejectedPartWayCancelsTheProbesStillQueued` separates them
-            // with an early key rejection rather than the deadline (#110).
-            assertTrue(
-                "all $models models were probed, so nothing stopped the queue: ${probeDetail()}",
-                total < models,
-            )
+            try { markers.forEach { it.get(15, TimeUnit.SECONDS) } }
+            finally { markers.forEach { it.cancel(true) } }
+        }
+        override fun close() {
+            callerReleased.countDown()
+            workersReleased.countDown()
+            try {
+                answer.get(10, TimeUnit.SECONDS)
+                releaseWorkersAndDrain()
+            } finally {
+                answer.cancel(true)
+                holders.forEach { it.cancel(true) }
+                caller.shutdownNow()
+                check(caller.awaitTermination(10, TimeUnit.SECONDS)) { "fixture: caller leaked" }
+            }
         }
     }
 

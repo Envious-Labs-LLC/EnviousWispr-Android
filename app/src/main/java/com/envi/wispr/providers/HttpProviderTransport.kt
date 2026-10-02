@@ -55,8 +55,8 @@ internal interface ProviderTransport {
 
 /** Deadline arithmetic shared by both clients and the transport: nanos in, whole milliseconds out, never below zero. */
 internal object ProviderDeadlines {
-    fun remainingMillis(deadline: Long): Int {
-        val nanos = deadline - System.nanoTime()
+    fun remainingMillis(deadline: Long, now: Long = System.nanoTime()): Int {
+        val nanos = deadline - now
         return if (nanos <= 0) 0 else minOf(Int.MAX_VALUE.toLong(), TimeUnit.NANOSECONDS.toMillis(nanos).coerceAtLeast(1)).toInt()
     }
 

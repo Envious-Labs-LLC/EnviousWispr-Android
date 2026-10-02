@@ -7,8 +7,7 @@ import com.envi.wispr.audio.AudioCaptureService
  * `DictationNarrator`: the session owner names the [TerminalReason], never the words, so the copy and
  * the telemetry identity can never disagree (issue #176).
  *
- * Every sentence here is today's sentence, byte for byte, moved from the call site that used to own it.
- * `TakeNoticesTest` freezes them as literals. A member that returns null ends the take silently on
+ * `TakeNoticesTest` freezes the approved sentences as literals. A member that returns null ends the take silently on
  * purpose: a cancel is acknowledged by the haptic and the overlay closing, and a quiet room is not an
  * event worth reporting (founder, 2026-08-31).
  */
@@ -35,7 +34,6 @@ internal object TakeNotices {
         TerminalReason.CANCELLED_RECORDING,
         TerminalReason.CANCELLED_PROCESSING,
         TerminalReason.NO_SPEECH,
-        TerminalReason.ASR_EMPTY_DESPITE_AUDIO,
         TerminalReason.ASR_EMPTY_UNMEASURED,
         TerminalReason.FINAL_TEXT_EMPTY,
         TerminalReason.INTERRUPTED_STARTING,
@@ -43,6 +41,8 @@ internal object TakeNotices {
         TerminalReason.INTERRUPTED_PROCESSING,
         TerminalReason.INTERRUPTED_CANCELLING,
         -> null
+
+        TerminalReason.ASR_EMPTY_DESPITE_AUDIO -> "Couldn't make out the words. Please try again."
 
         TerminalReason.AUDIO_PROCESS_DIED -> "Microphone service stopped unexpectedly"
         TerminalReason.AUDIO_PROCESS_UNRESPONSIVE -> "The microphone stopped answering. Try again."

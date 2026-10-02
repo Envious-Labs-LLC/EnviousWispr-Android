@@ -917,9 +917,12 @@ internal class DictationSessionCoordinator(
         if (rawText.isBlank()) {
             // Committed before the draft is discarded (G2 D2). The peak read at stop decides which of the
             // three empty endings this is; no reading stays unmeasured, never "silence".
-            if (!take.arbiter.commitNow(SpeechEvidence.emptyTranscriptReason(takePeakAmplitude))) return
+            val peak = takePeakAmplitude
+            val reason = SpeechEvidence.emptyTranscriptReason(peak)
+            if (!take.arbiter.commitNow(reason)) return
             take.history.discard()
             insertion.releasePinnedTarget()
+            if (peak?.isFinite() == true) TakeNotices.line(reason)?.let(notices::sayFailure)
             finishSession()
             return
         }

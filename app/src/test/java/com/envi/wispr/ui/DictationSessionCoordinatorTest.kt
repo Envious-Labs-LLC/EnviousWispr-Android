@@ -557,17 +557,77 @@ class DictationSessionCoordinatorTest {
         assertFalse("the take's audio was deleted after the teardown", audio.exists())
     }
 
+    /** Product Outcome (#180): unreadable audio gets one retry line, with no fabricated text. */
     @Test
-    fun audibleNonSpeechLeavesNothing() {
+    fun unreadableAudioExplainsTheEmptyTakeExactlyOnce() {
         rig.capture.peak = 0.5f
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
         rig.command(coordinator, DictationSessionService.ACTION_STOP)
-        rig.speech.awaitRequest().onResult("")
+        val listener = rig.speech.awaitRequest()
+        rig.onMain { listener.onResult("") }
 
         assertEquals(TerminalReason.ASR_EMPTY_DESPITE_AUDIO, rig.endings.awaitOne())
         rig.host.awaitStopped()
+        rig.awaitHistoryIdle()
         assertTrue(rig.dao.rows.isEmpty())
+        assertTrue(rig.insertion.pastes.isEmpty())
+        assertTrue(rig.insertion.releases.get() >= 1)
+        assertFalse(rig.host.events.contains("vibrate:FAILURE"))
+        val expected = listOf("toast:Couldn't make out the words. Please try again.")
+        assertEquals(expected, rig.host.events.filter { it.startsWith("toast") })
+        rig.onMain { listener.onResult("") }
+        assertEquals(expected, rig.host.events.filter { it.startsWith("toast") })
+        assertEquals(1, rig.endings.reasons.size)
+    }
+
+    /** Product Outcome: cancelling processing never adds a retry message from a late empty answer. */
+    @Test
+    fun anEmptySpeechAnswerAfterCancellationStaysSilent() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.command(coordinator, DictationSessionService.ACTION_STOP)
+        val listener = rig.speech.awaitRequest()
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        assertEquals(TerminalReason.CANCELLED_PROCESSING, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        rig.onMain { listener.onResult("") }
+        assertTrue(rig.host.events.none { it.startsWith("toast") })
+        assertTrue(rig.insertion.pastes.isEmpty())
+        rig.awaitHistoryIdle()
+        assertTrue(rig.dao.rows.isEmpty())
+        assertEquals(1, rig.endings.reasons.size)
+    }
+
+    /** Product Outcome: a destroyed take never posts a new message when its old speech callback arrives. */
+    @Test
+    fun anEmptySpeechAnswerAfterDestructionStaysSilent() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.command(coordinator, DictationSessionService.ACTION_STOP)
+        val listener = rig.speech.awaitRequest()
+        rig.onMain { coordinator.destroy() }
+        rig.onMain { listener.onResult("") }
+        assertTrue(rig.host.events.none { it.startsWith("toast") })
+        assertTrue(rig.insertion.pastes.isEmpty())
+        rig.awaitHistoryIdle()
+        assertEquals("interrupted", rig.dao.rows.values.single().status)
+        assertTrue(rig.dao.rows.values.single().interrupted)
+        assertEquals(1, rig.endings.reasons.size)
+    }
+
+    /** Harness Contract: an invalid peak cannot earn the measured-audio retry notice. */
+    @Test
+    fun anEmptyAnswerWithAnInvalidPeakDoesNotShowTheRetryNotice() {
+        rig.capture.peak = Float.NaN
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.command(coordinator, DictationSessionService.ACTION_STOP)
+        val listener = rig.speech.awaitRequest()
+        rig.onMain { listener.onResult("") }
+        assertEquals(TerminalReason.ASR_EMPTY_DESPITE_AUDIO, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertTrue(rig.host.events.none { it.startsWith("toast") })
     }
 
     @Test

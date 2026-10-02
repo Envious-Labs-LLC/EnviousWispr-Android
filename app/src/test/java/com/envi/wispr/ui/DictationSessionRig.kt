@@ -320,7 +320,10 @@ internal class DictationSessionRig {
         override fun promoteToForeground(processing: Boolean) { events += "foreground:$processing" }
         override fun updateSurfacePhase(phase: DictationSurfaceState.Phase) { events += "phase:${phase.name}" }
         override fun vibrate(cue: HapticCue) { events += "vibrate:${cue.name}" }
-        override fun toastFromService(line: String) { events += "toast:$line" }
+        override fun toastFromService(line: String) {
+            check(onMainThread()) { "service toast must run on main" }
+            events += "toast:$line"
+        }
         private val applicationToast = CountDownLatch(1)
         override fun toastFromApplication(line: String) {
             events += "toast-app:$line@${taskKind.get()}"

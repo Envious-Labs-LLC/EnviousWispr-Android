@@ -8,8 +8,8 @@ import org.junit.Test
 /**
  * Drift guard for the sentences a take can end on (issue #176). When this fails, a user reads a
  * different sentence than they did before the closed vocabulary existed, or an ending that was silent
- * starts talking. Every expected value is a literal copied from the session owner as it stood on
- * 2026-09-19, never derived from the mapper under test.
+ * starts talking. Expected values are literal approved sentences, never derived from the mapper under test.
+ * Issue #180 adds one calm retry line for measurable audio with no recognized words.
  */
 class TakeNoticesTest {
 
@@ -20,7 +20,7 @@ class TakeNoticesTest {
         TerminalReason.CANCELLED_RECORDING to null,
         TerminalReason.CANCELLED_PROCESSING to null,
         TerminalReason.NO_SPEECH to null,
-        TerminalReason.ASR_EMPTY_DESPITE_AUDIO to null,
+        TerminalReason.ASR_EMPTY_DESPITE_AUDIO to "Couldn't make out the words. Please try again.",
         TerminalReason.ASR_EMPTY_UNMEASURED to null,
         TerminalReason.FINAL_TEXT_EMPTY to null,
         TerminalReason.INTERRUPTED_STARTING to null,
@@ -50,7 +50,7 @@ class TakeNoticesTest {
     )
 
     @Test
-    fun everyEndingHasExactlyTheSentenceItHadBefore() {
+    fun everyEndingHasItsApprovedSentence() {
         for (reason in TerminalReason.entries) {
             assertTrue("$reason is not in the frozen table", frozen.containsKey(reason))
             assertEquals("$reason", frozen[reason], TakeNotices.line(reason))
@@ -58,15 +58,15 @@ class TakeNoticesTest {
     }
 
     @Test
-    fun onlyFailedEndingsSpeakAndEveryFailedEndingSpeaks() {
+    fun failuresAndUnreadableAudioSpeakWhileSilenceAndCancellationStayQuiet() {
         for (reason in TerminalReason.entries) {
             val speaks = TakeNotices.line(reason) != null
-            // A failure the app survived tells the user; every other ending is acknowledged by the
-            // haptic and the overlay, or is a quiet room, or is a death nobody could announce.
+            // Failures and unreadable audio explain the ending; quiet rooms and cancellations stay quiet.
             val shouldSpeak = when (reason.result) {
-                TerminalResult.FAILED, TerminalResult.AUDIO_INTERRUPTED, TerminalResult.ASR_INTERRUPTED -> true
+                TerminalResult.FAILED, TerminalResult.AUDIO_INTERRUPTED, TerminalResult.ASR_INTERRUPTED,
+                TerminalResult.ASR_EMPTY_DESPITE_AUDIO -> true
                 TerminalResult.COMPLETED, TerminalResult.CANCELLED, TerminalResult.DISCARDED, TerminalResult.NO_SPEECH,
-                TerminalResult.ASR_EMPTY_DESPITE_AUDIO, TerminalResult.ASR_EMPTY, TerminalResult.INTERRUPTED -> false
+                TerminalResult.ASR_EMPTY, TerminalResult.INTERRUPTED -> false
             }
             assertEquals("$reason", shouldSpeak, speaks)
         }

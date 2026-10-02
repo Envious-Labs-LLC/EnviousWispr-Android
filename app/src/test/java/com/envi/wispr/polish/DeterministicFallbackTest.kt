@@ -38,8 +38,7 @@ class DeterministicFallbackTest {
         val source = java.io.File("src/main/java/com/envi/wispr/ui/TakePolishController.kt").readText()
         // Since #252 the call goes through the controller's `cleanup` seam, whose default IS the shared fallback.
         assertTrue(source.contains("private val cleanup: (String, CleanupOptions, LanguageDetector) -> String = PolishFallback::deterministic,"))
-        assertTrue(source.contains("cleanup(prepared, takePreferences.cleanup, observedDetector)"))
-        assertTrue(source.contains("languageDetector.detect(text).also"))
+        assertTrue(source.contains("cleanup(prepared, takePreferences.cleanup, languageDetector)"))
         // Every file of the session owner (#216): a regex polisher in a collaborator is the same drift.
         assertFalse(SessionSources.all.contains("RegexPolisher"))
     }
@@ -87,7 +86,7 @@ class DeterministicFallbackTest {
         val terminals = listOf(
             Triple(
                 "src/main/java/com/envi/wispr/ui/TakePolishController.kt",
-                "cleanup(prepared, takePreferences.cleanup, observedDetector)",
+                "cleanup(prepared, takePreferences.cleanup, languageDetector)",
                 "src/main/java/com/envi/wispr/ui/DictationSessionService.kt",
             ),
             Triple(
@@ -123,9 +122,9 @@ class DeterministicFallbackTest {
     @Test fun aFallbackWhoseDetectionOrCleanupThrowsAnswersTheWordsAsHanded() {
         val warnings = mutableListOf<String>()
         val broken = LanguageDetector { throw IllegalStateException("detector closed") }
-        assertEquals("uh hello world", PolishFallback.deterministicOrWords("uh hello world", CleanupOptions(removeFillers = true), broken, warn = { warnings += it }).text)
+        assertEquals("uh hello world", PolishFallback.deterministicOrWords("uh hello world", CleanupOptions(removeFillers = true), broken, warn = { warnings += it }))
         val failing: (String, CleanupOptions, LanguageDetector) -> String = { _, _, _ -> throw IndexOutOfBoundsException() }
-        assertEquals("uh hello world", PolishFallback.deterministicOrWords("uh hello world", CleanupOptions(removeFillers = true), silent, warn = { warnings += it }, clean = failing).text)
+        assertEquals("uh hello world", PolishFallback.deterministicOrWords("uh hello world", CleanupOptions(removeFillers = true), silent, warn = { warnings += it }, clean = failing))
         assertEquals(
             listOf(
                 "Deterministic fallback failed: IllegalStateException; answering the words as handed",
@@ -135,7 +134,7 @@ class DeterministicFallbackTest {
         )
         assertTrue("never the words in a warning", warnings.none { it.contains("hello") })
         // An ordinary fallback is unchanged.
-        assertEquals("hello world", PolishFallback.deterministicOrWords("uh hello world", CleanupOptions(removeFillers = true), silent, warn = { warnings += it }).text)
+        assertEquals("hello world", PolishFallback.deterministicOrWords("uh hello world", CleanupOptions(removeFillers = true), silent, warn = { warnings += it }))
         assertEquals(2, warnings.size)
     }
 

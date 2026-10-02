@@ -180,16 +180,6 @@ class TakePolishControllerTest {
         assertEquals("the colour review will meet at the center", text.text)
     }
 
-    @Test fun finalSpellingUsesTheEnginesDecisionAfterVocabularyWithoutAnotherDetection() {
-        val detector = com.envi.wispr.cleanup.LanguageDetector { error("normal result must not redetect") }
-        val subject = newController(detector = detector, restore = { _, _ -> "The color recognizer is ready." })
-        val prefs = preferences.copy(cleanup = com.envi.wispr.cleanup.CleanupOptions(englishSpelling = com.envi.wispr.cleanup.EnglishSpelling.BRITISH))
-        subject.prepare("The color recognizer is ready.", prefs)
-        val listener = link.awaitRequest()
-        listener.onOutcome(link.outcome("The colour recogniser is ready.").copy(englishText = true))
-        assertEquals("The colour recogniser is ready.", awaitHandedBack().text)
-    }
-
     /** Row a: the watchdog wins and a late answer is ignored. */
     @Test fun theWatchdogWinsAndALateAnswerIsIgnored() {
         controller.prepare("hello world", preferences)

@@ -37,7 +37,7 @@ class PolishFallbackLaneTest {
 
     private val options = CleanupOptions()
     private val prepared = CopyOnWriteArrayList<String>()
-    private val prepare: (String, CleanupOptions, com.envi.wispr.debug.TakeLog?) -> CleanedText = { raw, _, _ -> prepared += Thread.currentThread().name; CleanedText("Cleaned: $raw") }
+    private val prepare: (String, CleanupOptions, com.envi.wispr.debug.TakeLog?) -> String = { raw, _, _ -> prepared += Thread.currentThread().name; "Cleaned: $raw" }
 
     /** Row 1. `answer` returns without preparing; the worker prepares and delivers once. MUTATION m1: prepare inline before submitting. */
     @Test fun anAnswerIsPreparedOnTheWorkerNeverOnTheCaller() {
@@ -134,7 +134,7 @@ class PolishFallbackLaneTest {
     @Test fun thePreparationReceivesTheRequestsTakeLog() {
         val worker = QueueWorker()
         val seen = CopyOnWriteArrayList<String?>()
-        val lane = PolishFallbackLane(worker, { raw, _, log -> seen += log?.takeId; CleanedText(raw) })
+        val lane = PolishFallbackLane(worker, { raw, _, log -> seen += log?.takeId; raw })
         lane.answer(8L, "eight", options, PolishReason.UNEXPECTED, com.envi.wispr.debug.TakeLog("take-8", "Test")) { }
         worker.runAll()
         assertEquals(listOf<String?>("take-8"), seen.toList())

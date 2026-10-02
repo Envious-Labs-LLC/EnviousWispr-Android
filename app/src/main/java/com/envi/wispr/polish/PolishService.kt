@@ -128,7 +128,7 @@ class PolishService : Service() {
             }
             executor.execute {
                 val started = SystemClock.elapsedRealtime()
-                val text = fallbackText(raw, options, null).text
+                val text = fallbackText(raw, options, null)
                 runCatching {
                     callback?.onResult(text, PolishEngineLabels.DETERMINISTIC, SystemClock.elapsedRealtime() - started)
                 }
@@ -372,15 +372,14 @@ class PolishService : Service() {
      * seven call sites it replaced, so a new failure exit cannot forget the language.
      */
     /** [log] is the request's take log when there is one (#378); the take-less lane and legacy path pass null. */
-    private fun fallbackText(raw: String, options: CleanupOptions, log: TakeLog?): CleanedText =
+    private fun fallbackText(raw: String, options: CleanupOptions, log: TakeLog?): String =
         PolishFallback.deterministicOrWords(raw, options, languageDetector, warn = { message ->
             if (log != null) log.warn(message) else DebugLogger.warn(TAG, message)
         })
 
     private fun fallbackOutcome(requestId: Long, raw: String, options: CleanupOptions, log: TakeLog?, reason: PolishReason, latencyMs: Long = 0): PolishOutcome {
         val cleaned = fallbackText(raw, options, log)
-        return PolishOutcome(requestId, cleaned.text, PolishEngineLabels.DETERMINISTIC, reason, 0, latencyMs,
-            englishText = cleaned.language == CleanupLanguage.Known("en"))
+        return PolishOutcome(requestId, cleaned, PolishEngineLabels.DETERMINISTIC, reason, 0, latencyMs)
     }
 
     /** The single delivery site. A dead client throws here; the throw is logged and goes no further. */
@@ -453,7 +452,7 @@ class PolishService : Service() {
             log.warn("Polish fell back: reason=$reason status=$statusCode")
         }
         log.words("pipeline_result") { pipeline.text }
-        return PolishOutcome(requestId, pipeline.text, engine, reason, statusCode, SystemClock.elapsedRealtime() - started, englishText = language == CleanupLanguage.Known("en"))
+        return PolishOutcome(requestId, pipeline.text, engine, reason, statusCode, SystemClock.elapsedRealtime() - started)
     }
 
     override fun onCreate() {

@@ -52,6 +52,16 @@ class CleaningParityOutcomeTest {
         assertEquals("👍", SpokenEmojiFormatter.format("thumbz up emoji"))
     }
 
+    @Test fun theRealPostModelDictionaryRetainsBritishProseAndTheUsersSavedAmericanWord() {
+        val user = listOf(com.envi.wispr.vocabulary.CustomTerm("center"))
+        val matcher = com.envi.wispr.vocabulary.StructuredTermRestorer.compile(com.envi.wispr.vocabulary.BuiltinVocabulary.withUserTerms(user))
+        val options = british.copy(spellingProtectedWords = BritishSpelling.protectedWords(user.map { it.spelling }))
+        val raw = matcher.restore("The organization needs to prioritize the color review at the center")
+        val result = PolishPipeline.run(raw, options, english) { "The organization needs to prioritize the color review at the center." }
+        assertTrue(result.usedModel)
+        assertEquals("The organisation needs to prioritise the colour review at the center.", matcher.restore(result.text))
+    }
+
     @Test fun britishSpellingSurvivesAnAmericanModelAnswerAndModelFailure() {
         val raw = "we should organize the color review"
         val accepted = PolishPipeline.run(raw, british, english) { cleaned ->

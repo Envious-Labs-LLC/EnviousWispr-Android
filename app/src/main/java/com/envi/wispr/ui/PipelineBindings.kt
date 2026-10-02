@@ -77,7 +77,7 @@ internal class PipelineBindings(
 
     private val polishConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            polish = PolishProxy(IPolishService.Stub.asInterface(binder), mainHandler::post)
+            polish = polishProxy(IPolishService.Stub.asInterface(binder), mainHandler::post)
             listener?.onPolishConnected()
         }
 
@@ -174,6 +174,8 @@ internal class PipelineBindings(
     internal companion object {
         /** The production speech proxy; `androidTest` binds the real `:asr` through it (#253). */
         fun speechProxy(service: IAsrService, post: (Runnable) -> Unit): SpeechLink = SpeechProxy(service, post)
+        /** The production cleanup transport, shared with the actual-boundary device test. */
+        fun polishProxy(service: IPolishService, post: (Runnable) -> Unit): PolishLink = PolishProxy(service, post)
     }
 
     /** Same Stub contract as [SpeechProxy], through [PostingPolishListener]. */

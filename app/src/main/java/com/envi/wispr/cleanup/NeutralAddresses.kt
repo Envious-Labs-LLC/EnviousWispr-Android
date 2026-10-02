@@ -8,26 +8,24 @@ internal object NeutralAddresses {
     private val foreignDash = SpokenIdentifiers.alt(CleanupReferenceTables.neutralOnlyDashWords + setOf("strich", "bindestrich", "tiret", "guion", "guión", "trattino", "traço", "hífen", "hifen"))
     private val emailTlds = setOf("com", "org", "io", "co", "dev", "me", "net", "edu", "gov") + CleanupReferenceTables.countryCodeTLDs
     private val lowRiskTlds = setOf("com", "org", "io", "co", "dev", "me", "net")
-    private val query = "question\\s+mark|equals|ampersand|hash|pound|percent|tilde|underscore|colon|dot|dash|hyphen|slash|fragezeichen|вопросительный\\s+знак|ponto\\s+de\\s+interrogação|punto\\s+interrogativo|point\\s+d'interrogation|punto\\s+de\\s+interrogación|znak\\s+zapytania|vraagteken"
     private val cue = Regex("\\p{L}*(?:mail|adres|correo)\\p{L}*|(?:^|[^\\p{L}])(?:napisz|wyślij|bericht)(?:[^\\p{L}]|$)", RegexOption.IGNORE_CASE)
     private val newCue = Regex("\\p{L}*(?:indirizzo|endereço|mensagem|адрес|письм|почт)\\p{L}*|(?:^|[^\\p{L}])(?:scrivi|manda)(?:[^\\p{L}]|$)", RegexOption.IGNORE_CASE)
     private val neutralDot = "(?:$dotAlt)(?!\\s+(?:de\\s+interrogação|interrogativo)(?![\\p{L}\\p{M}\\p{N}]))"
     private val dots = Regex("\\s+($dotAlt)(?=\\s)", RegexOption.IGNORE_CASE)
     private val sep = "(?:\\.|\\s+$neutralDot\\s+|\\s+(?:$foreignDash)\\s+)"
 
-    fun inUnfinishedLink(text: String, start: Int): Boolean {
-        val before = text.substring(maxOf(0, start - 48), start)
-        return Regex("(?:https?|www)(?:[:/\\s].*)?$|(?:barra|ukośnik|schrägstrich|слэш|слеш|косая\\s+черта|barre\\s+oblique|schuine\\s+streep)\\s+$", RegexOption.IGNORE_CASE).containsMatchIn(before)
-    }
+    fun inUnfinishedLink(text: String, start: Int): Boolean = NeutralLinks.startsEarlier(text, start)
 
-    private fun followsSyntax(text: String, end: Int): Boolean = Regex("^\\s+(?:$query)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text.substring(end, minOf(text.length, end + 64)))
+    private val englishContinuation = Regex("^\\s+(?:question\\s+mark|equals|ampersand|hash|pound|percent|tilde|underscore|colon|dot|dash|hyphen|slash)\\b", RegexOption.IGNORE_CASE)
+    private fun followsSyntax(text: String, end: Int): Boolean = NeutralLinks.continues(text, end)
+    private fun englishContinues(text: String, end: Int): Boolean = englishContinuation.containsMatchIn(text.substring(end, minOf(text.length, end + 64)))
     private fun startsInside(text: String, start: Int): Boolean = Regex("(?:(?:^|\\s)(?:$dotAlt|$foreignDash)\\s+|\\.)$", RegexOption.IGNORE_CASE).containsMatchIn(text.substring(maxOf(0, start - 48), start))
     private fun render(raw: String): String = raw.replace(Regex("\\s+(?:$foreignDash)\\s+", RegexOption.IGNORE_CASE), "-").replace(Regex("\\s+$neutralDot\\s+", RegexOption.IGNORE_CASE), ".")
 
     fun normalize(input: String, neutral: Boolean): String {
         var text = emails(input, neutral)
-        if (neutral) text = neutralPorts(gluedEmails(text))
-        return urls(text, neutral)
+        if (neutral) return NeutralLinks.normalize(gluedEmails(text))
+        return urls(text, neutral = false)
     }
 
     private fun refusedName(labels: List<String>, at: String, foundDots: List<String>): Boolean {
@@ -108,30 +106,8 @@ internal object NeutralAddresses {
         return text
     }
 
-    private fun neutralPorts(input: String): String {
-        var text = input
-        for (words in urlWords.drop(1)) {
-            val slash = "\\s+(?:${words.slash})\\s+[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N}_-]*"
-            val re = Regex("(?<![\\w./:@-])localhost\\s+(?:${words.colon})\\s+(?<port>\\d{1,5})(?<path>(?:$slash){0,8})(?![\\p{L}\\p{N}])", RegexOption.IGNORE_CASE)
-            text = re.replace(text) { m ->
-                val port = m.groups["port"]!!.value.toInt()
-                if (port !in 1..65535 || followsSyntax(text, m.range.last + 1)) m.value else "localhost:$port" + m.groups["path"]!!.value.replace(Regex("\\s+(?:${words.slash})\\s+", RegexOption.IGNORE_CASE), "/")
-            }
-        }
-        return text
-    }
-
     private data class Words(val dots: String, val slash: String, val colon: String, val glueSlash: Boolean = false)
-    private val urlWords = listOf(
-        Words("dot", "(?:forward\\s+)?slash", "colon"),
-        Words("point", "barre\\s+oblique|bar\\s+oblique", "deux\\s+points|deux-points"),
-        Words("punto", "barra(?:\\s+obliqua)?", "dos\\s+puntos|due\\s+punti"),
-        Words("kropka", "ukośnik", "dwukropek"),
-        Words("punt", "schuine\\s+streep", "dubbele\\s+punt", true),
-        Words("punkt", "schrägstrich", "doppelpunkt"),
-        Words("точка", "слэш|слеш|косая\\s+черта", "двоеточие"),
-        Words("ponto(?!\\s+de\\s+interrogação)", "barra", "dois\\s+pontos"),
-    )
+    private val urlWords = listOf(Words("dot", "(?:forward\\s+)?slash", "colon"))
 
     private fun urls(input: String, neutral: Boolean): String {
         var text = input
@@ -154,7 +130,7 @@ internal object NeutralAddresses {
                 val badStart = startsInside(text, m.range.first) || Regex("(?:slash|barra|ukośnik|schrägstrich)\\s+$", RegexOption.IGNORE_CASE).containsMatchIn(before)
                 val mixedEnding = !neutral && spoken && text.getOrNull(m.groups["tld"]!!.range.first - 1) == '.'
                 val badHost = mixedEnding || !neutral && spoken && ((labels.size == 1 && ending !in lowRiskTlds) || (labels.size == 1 && labels[0].length > 1 && labels[0].lowercase() in CleanupReferenceTables.englishProseDomainWords))
-                if (badStart || badHost || followsSyntax(text, m.range.last + 1)) m.value
+                if (badStart || badHost || englishContinues(text, m.range.last + 1)) m.value
                 else {
                     val hostWritten = labels.joinToString(".").let { if (labels.size > 1 && labels.first().equals("W", true)) "www." + labels.drop(1).joinToString(".") else it }
                     val protocol = m.groups["protocol"]?.value?.lowercase()?.plus("://") ?: ""

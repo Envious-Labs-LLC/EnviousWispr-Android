@@ -4,10 +4,6 @@ import com.envi.wispr.cleanup.CleanupLanguagePolicy
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.PolishPipeline
-import com.envi.wispr.cleanup.CleanupLanguage
-
-/** The value and the language decision that actually produced it travel together. */
-internal data class CleanedText(val text: String, val language: CleanupLanguage = CleanupLanguage.Unknown)
 
 /**
  * The one text both sides fall back to: the deterministic pipeline with no model. The engine uses
@@ -45,14 +41,10 @@ internal object PolishFallback {
         detector: LanguageDetector,
         warn: (String) -> Unit,
         clean: (String, CleanupOptions, LanguageDetector) -> String = ::deterministic,
-    ): CleanedText = try {
-        var language: CleanupLanguage = CleanupLanguage.Unknown
-        val observedDetector = LanguageDetector { text ->
-            detector.detect(text).also { language = CleanupLanguagePolicy.resolve(it) }
-        }
-        CleanedText(clean(rawText, options, observedDetector), language)
+    ): String = try {
+        clean(rawText, options, detector)
     } catch (error: Exception) {
         warn("Deterministic fallback failed: ${error.javaClass.simpleName}; answering the words as handed")
-        CleanedText(rawText)
+        rawText
     }
 }

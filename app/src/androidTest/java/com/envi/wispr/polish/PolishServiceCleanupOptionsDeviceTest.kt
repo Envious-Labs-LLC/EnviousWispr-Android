@@ -101,10 +101,10 @@ class PolishServiceCleanupOptionsDeviceTest {
             englishSpelling = com.envi.wispr.cleanup.EnglishSpelling.BRITISH,
             spellingProtectedWords = setOf("center"),
         )
-        checkNotNull(service).polishRequestWithCleanupForTake(4_130L,
+        com.envi.wispr.ui.PipelineBindings.polishProxy(checkNotNull(service)) { it.run() }.polishRequestWithCleanupForTake(4_130L,
             "The organization needs to prioritize the color review at Kennedy Center today.",
-            CleanupRequestOptions(options), PolishPolicy.Off, "cleanup-parity-device",
-            object : IPolishCallback.Stub() {
+            options, PolishPolicy.Off, "cleanup-parity-device",
+            object : com.envi.wispr.ui.PolishListener {
                 override fun onOutcome(value: PolishOutcome?) { outcome = value; completed.countDown() }
                 override fun onResult(text: String?, engine: String?, latencyMs: Long) = Unit
                 override fun onError(message: String?) { completed.countDown() }
@@ -112,7 +112,6 @@ class PolishServiceCleanupOptionsDeviceTest {
         assertTrue("new cleanup request did not answer", completed.await(10, TimeUnit.SECONDS))
         val value = checkNotNull(outcome)
         assertEquals("The organisation needs to prioritise the colour review at Kennedy Center today.", value.text)
-        assertTrue("the real remote language decision was not carried with its text", value.englishText)
         assertEquals(PolishReason.OFF, value.reason)
     }
 

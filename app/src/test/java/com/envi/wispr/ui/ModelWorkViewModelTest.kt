@@ -98,7 +98,8 @@ class ModelWorkViewModelTest {
     private fun info(state: WorkInfo.State) = WorkInfo(UUID.randomUUID(), state, emptySet())
 
     private val createdModels = mutableListOf<ModelWorkViewModel>()
-    private fun viewModel() = ModelWorkViewModel(work, readiness, project, ioExecutor.asCoroutineDispatcher())
+    private fun viewModel(observedWork: (String) -> Flow<List<WorkInfo>> = work) =
+        ModelWorkViewModel(observedWork, readiness, project, ioExecutor.asCoroutineDispatcher())
         .also(createdModels::add)
 
     private fun onMain(block: () -> Unit) = mainExecutor.submit(block).get(10, TimeUnit.SECONDS)
@@ -304,7 +305,7 @@ class ModelWorkViewModelTest {
                 work(name)
             }
         }
-        val vm = ModelWorkViewModel(once, readiness, project, ioExecutor.asCoroutineDispatcher())
+        val vm = viewModel(once)
         onMain { vm.show(AppDestination.Polish) }
         awaitModels(vm) { it.polish.label == "s1 RUNNING false" }
         check(stream("gate").tryEmit(emptyList()))

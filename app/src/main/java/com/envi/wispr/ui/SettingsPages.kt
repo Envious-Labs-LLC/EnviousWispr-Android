@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -329,7 +330,7 @@ internal fun PermissionsPage(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScrollWithFade(rememberScrollState()),
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             ReadinessChip("Microphone", readiness.microphoneGranted)

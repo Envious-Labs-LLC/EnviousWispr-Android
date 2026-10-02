@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -79,7 +80,7 @@ internal fun ModelCard(
             Row(
                 // Scrollable because the labels are words, not codes, so three of them can be wider
                 // than a phone.
-                modifier = Modifier.horizontalScrollWithFade(rememberScrollState()),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 facts.forEach { fact -> FactPill(fact) }
@@ -88,7 +89,7 @@ internal fun ModelCard(
                 Row(
                     // Scrollable for the same reason the facts row above it is: these labels are words,
                     // and at a large system font scale two of them are wider than a narrow phone.
-                    modifier = Modifier.horizontalScrollWithFade(rememberScrollState()),
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
                     ScoreBar("Speed", scores.speed)

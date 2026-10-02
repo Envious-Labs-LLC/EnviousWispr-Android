@@ -22,7 +22,6 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -288,7 +287,7 @@ private fun ModelRung(
     // About four and a half rows, then the region scrolls on its own; the bounded height is what makes a
     // vertical scroll legal inside the tab's own list.
     Column(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 270.dp).verticalScroll(rememberScrollState()),
+        modifier = Modifier.fillMaxWidth().heightIn(max = 270.dp).verticalScrollWithFade(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         rows.forEach { row ->

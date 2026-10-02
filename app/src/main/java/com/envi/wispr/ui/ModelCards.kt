@@ -190,17 +190,20 @@ private fun ModelStorageLine(model: com.envi.wispr.models.ModelDescriptor, state
     // used to take, beside its new status, until the next measurement landed. `key` throws the holder
     // away, so a changed input shows nothing rather than something wrong.
     //
-    // Keyed on everything that can change what is on disk: which model, what the card says it is, what
-    // it is doing, and how far a download has got. A walk of a model directory is a handful of file
-    // lengths, so re-measuring as a download progresses is cheap and is also the honest thing to show.
-    val onDisk by key(model.id, state.label, state.action, state.bytes) {
-        // null while a measurement is in flight. The line is absent rather than showing a zero,
-        // because "0 KB on this phone" is a claim, and a wrong one for a model not yet measured.
-        produceState<Long?>(initialValue = null) {
+    // `key` covers what the card says the model IS (which model, its label, its action). Progress is a
+    // `produceState` key instead, so a download re-measures as it grows while KEEPING the last number:
+    // keying on bytes through `key` removed the line on every progress tick (the worker reports about one per
+    // megabyte), so the card kept changing height while a model downloaded: the founder saw Parakeet's install
+    // flicker, and on the emulator the line was missing in 34 of 51 reads of one download (2026-10-01).
+    // A walk of a model directory is a handful of file lengths, so re-measuring is cheap.
+    val onDisk by key(model.id, state.label, state.action) {
+        // null while the FIRST measurement for this status is in flight. The line is absent rather than
+        // showing a zero, because "0 KB on this phone" is a claim, and a wrong one for a model not yet measured.
+        produceState<Long?>(initialValue = null, state.bytes) {
             value = withContext(Dispatchers.IO) {
                 runCatching { ModelFootprint.bytesUnder(ModelStorage.directory(context, model)) }
                     .getOrNull()
-            }
+            } ?: value // A re-measure that fails keeps the last number rather than removing the line.
         }
     }
     val measured = onDisk

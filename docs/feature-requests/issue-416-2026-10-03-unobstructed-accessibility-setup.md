@@ -1,6 +1,6 @@
 # Issue #416: Unobstructed Accessibility setup, 2026-10-03
 
-GitHub issue: #416. Tier: SMALL. Status: IMPLEMENTING.
+GitHub issue: #416. Tier: SMALL. Status: VALIDATED FIX; broader consumer readiness ongoing.
 
 ## Preface: Lane and hardware
 **Lane:** Code
@@ -24,6 +24,8 @@ A fresh Play install on S26 (firstInstallTime 2026-10-03 12:24:19) reached verif
 Goal: native consent controls remain visible and reachable; agree/decline and failed Settings launch retain their current semantics. Non-goals: changing access permissions, disclosure promises, insertion, capture, models, telemetry or privacy policy. Do not bypass native consent. No floating replacement, retry machine, new detector or service.
 
 ## 2.5 Grounding
+Historical baseline: the next two paragraphs describe source 4c1c6416 before this fix; their line references belong to that revision. Current source removes PiP and compact presentation.
+
 Producer -> owner -> consumer: the disclosure Agree callback calls AccessibilityGuideActivity.openSettings; it replaces disclosure state, waits for pre-draw, calls enterPictureInPictureMode, then starts ACTION_ACCESSIBILITY_SETTINGS. Android chooses the PiP position; the compact AccessibilityGuide composable occupies it beside Settings and the native consent dialog. Source: app/src/main/java/com/envi/wispr/ui/AccessibilityGuideActivity.kt:57-74,106-147. The manifest allows PiP on this activity. Found with rg for Picture/pip/openSettings and ACTION_ACCESSIBILITY_SETTINGS.
 
 The activity is the one shared owner; no second permission entry point is introduced. Bound-service observation closes the activity only after granted+bound, and onResume repeats the same check (:49-52,77-79). Android owns permission. The source intentionally autoplays illustrations every3400ms (:117-120), so its step number is not a current native-screen detector; no such claim is made.
@@ -67,18 +69,27 @@ Hardware: fresh S26 consent flow via wispr-eyes, Play-only delivery; decline sta
 Only the shared permission-guide presentation and its declared capability. Revert the activity/manifest change together through reviewed Git commits; existing consent and permission state remains. No data migration or signing change.
 
 ## 13. Ship criteria
-- [ ] Native approval and denial controls are unobstructed on the S26.
-- [ ] Agree, decline, launch failure and recreation preserve their contracts.
-- [ ] Permission+binding correctly advances setup and first editor insertion succeeds.
-- [ ] Internal Play delivery verified; public production remains inactive.
+- [x] Native approval and denial controls are unobstructed on the S26, internal Play258; the harness pressed Allow normally.
+- [x] Emulator recreation before and after agreement is supported by guide-recreation.log. Disclosure/decline, native denial, retry and grant+binding emulator checks are reported, but their execution receipts were not verified in the bounded final review. Disclosure/approval/return checked on S26. Settings-launch failure controls remain unchanged and source-reviewed, but failure injection was NOT RUN; a supported-device failing Settings launch was not staged. Granted-but-unbound timing was not held for a separate UI check.
+- [x] Grant+binding returns to Ready on S26. Two synthetic silent takes inserted into a real Chrome editor, second retaining the first exactly once.
+- [x] Internal Play258 publication and installation verified. Pipeline targets internal only; no production action taken.
 
 ## 14. Open questions
 No new product/spend decision. The prior consumer device-support decision is unchanged. Other consumer readiness gaps remain separately tracked and must not be declared completed by this fix.
 
 ## 15. Related
-Consumer-readiness work; #10 Play setup; #406 continuation; previous #413 cleaning. Source 4c1c6416, installed internal Play257. No consumer rollout authorized.
+Consumer-readiness work; #10 Play setup; #406 continuation; previous #413 cleaning. Problem baseline: source 4c1c6416, internal Play257. Validated fix: feature commit 3ee85c9a, published commit a9bd8e18, internal Play258. No consumer rollout authorized.
 
 ## Consumer baseline update
 Saurabh completed onboarding himself and said it looks good. A live phone check afterward found the main History screen, accessibility granted and bound, and his first saved dictation. Control plus screen read took 1.67 seconds. This proves setup completion and a History result, not independent editor insertion or the proposed obstruction fix.
 
 Grounded review: PROCEED-AS-PLANNED, 2026-10-03; guide-grounded.txt. Gate 2 implementation proceeds under the existing explicit pre-release mandate, not a claim of separate artifact approval.
+
+## Validation receipt, 2026-10-03
+Source review and confirming review were CLEAN before assembly. Full suite: 1,612 tests in 197 suites, zero failures/errors/skips. The first run skipped the submodule licence check because this new checkout had not initialized the dependency; after initialization, the complete suite and Phase 3 run both executed with zero skips. Local build first needed its machine CMake path corrected, then succeeded. Emulator installation required matching version257 because the ordinary debug code3 was older; only packaging version changed, never production source.
+
+Emulator recreation before and after agreement is supported by guide-recreation.log. Disclosure/decline, native denial, retry and grant+binding emulator checks are reported, but their execution receipts were not verified in the bounded final review. On S26 Play258, the native Allow and Deny controls were visible without PiP, Allow was pressed normally, and the Permissions page returned Ready. Temporary accessibility state was restored; no additional app wipe.
+
+The actual Chrome textarea received “The quarterly report is ready.” then “The quarterly report is ready. The quarterly report is ready.” The second retained the first once. Both ran the release compatibility model on GenieX GPU and ended eos below the output cap. Input was generated speech through a verified silent virtual input, not microphone acoustics. Media volume remained7. The first take is covered by screen recording; the recording ended before the second take completed, so the second result rests on its editor receipt and log. Scratch receipts are in docs/internal/consumer-readiness.
+
+Known proof limits: no injected Settings-launch failure, no held granted-but-unbound UI interval, no other OEMs. Source preservation covers the unchanged failure controls and closing predicate; these unchecked executions are not claimed as runtime passes. This guide fix does not close overall consumer readiness, model upgrade/recovery, multi-device support, store forms or public launch.

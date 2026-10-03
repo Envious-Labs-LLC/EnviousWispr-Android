@@ -76,6 +76,7 @@ internal class TranscriptionActions(
     val onFillerRemovalChanged: (Boolean) -> Unit,
     val onEmojiFormatterChanged: (Boolean) -> Unit,
     val onSpokenPunctuationChanged: (Boolean) -> Unit,
+    val onEnglishSpellingChanged: (com.envi.wispr.cleanup.EnglishSpelling) -> Unit,
     val onAutoStopOnSilenceChanged: (Boolean) -> Unit,
     val onSilencePauseSecondsChanged: (Float) -> Unit,
 )

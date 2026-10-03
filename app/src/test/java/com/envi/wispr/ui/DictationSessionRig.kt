@@ -739,7 +739,7 @@ internal class DictationSessionRig {
             warmed += policy
             warmUpCompleted.countDown()
         }
-        override fun polishRequestForTake(requestId: Long, rawText: String, removeFillers: Boolean, spokenEmoji: Boolean, spokenPunctuation: Boolean, policy: PolishPolicy, takeId: String, listener: PolishListener) {
+        override fun polishRequestWithCleanupForTake(requestId: Long, rawText: String, cleanup: com.envi.wispr.cleanup.CleanupOptions, policy: PolishPolicy, takeId: String, listener: PolishListener) {
             if (throwOnRequest) throw IllegalStateException("engine gone")
             lastRawText = rawText
             lastPolicy = policy

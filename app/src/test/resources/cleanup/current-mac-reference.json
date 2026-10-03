@@ -1,0 +1,67 @@
+{
+  "revision": "214e550071e782f8407371599f4467f5f001e566",
+  "sources": {
+    "InverseTextNormalizerSpokenCodesTests.swift": {
+      "sha256": "7ffdaf5746175c14ef7118a94fd61bb31110ceaa35f5e2d28bbdedfe79038f8d",
+      "extracted_pairs": 89
+    },
+    "InverseTextNormalizerNeutralAddressesTests.swift": {
+      "sha256": "b7ce0b338050ba56d1d2f6057501f8b1921b228cb54381be2dbb00746d00dac1",
+      "extracted_pairs": 67
+    },
+    "InverseTextNormalizerNeutralAddressesMoreLanguagesTests.swift": {
+      "sha256": "34089f1a7aebd340a4147777ec77440a66e19ec423b26cf4152658d69529959f",
+      "extracted_pairs": 40
+    },
+    "InverseTextNormalizerStreetAddressTests.swift": {
+      "sha256": "6ba0a464000609e1d38d1a45e9e71274166b71819c6beca6a793048135f65f1d",
+      "extracted_pairs": 78
+    },
+    "InverseTextNormalizerCountryTLDTests.swift": {
+      "sha256": "2a3f6765fd55d2ae4f8b83d2dedd543c38248d524072f6ec50e28cd988c15d8c",
+      "extracted_pairs": 16
+    },
+    "InverseTextNormalizerDottedEmailTests.swift": {
+      "sha256": "4a7eb68af2d6266e434f68c4667912bb34a0f1114e3e12348272ee99ac922ac7",
+      "extracted_pairs": 32
+    },
+    "InverseTextNormalizerDigitStringDecimalTests.swift": {
+      "sha256": "64c8a43ee2ddf078e451256c939881ca06d58b704f5d0b24f1310011dc5d87f6",
+      "extracted_pairs": 13
+    },
+    "InverseTextNormalizerNeighbourWindowTests.swift": {
+      "sha256": "da1847d71d6322378f38fdec152ba6dfe162ec3ccd0ea194266a0774cc81c3e6",
+      "extracted_pairs": 15
+    },
+    "InverseTextNormalizerLineStartPadTests.swift": {
+      "sha256": "626e5b43b16205e4ef29583c8d5b35126295701aaf6167074a3c9fd73b46beaa",
+      "extracted_pairs": 13
+    },
+    "InverseTextNormalizerSpanRestoreTests.swift": {
+      "sha256": "64eb0dbfeb229dc8caaa22b50322491b360ddb2481cf4d51283a8c4d4675ff7f",
+      "extracted_pairs": 0
+    },
+    "spoken-slash-core.jsonl": {
+      "sha256": "399bdacca14cf776f4c7ef380bf6186a14826eb6528016d2b111d74ff4806914"
+    },
+    "spoken-slash-traps.jsonl": {
+      "sha256": "322419256ab3a29695a08773e1cffde1e2ba0ef3fe946b247802beb379e26a01"
+    },
+    "parity.jsonl": {
+      "sha256": "713da332b63115f569a529acfe0cc5b46e4b84be8dcea143005e4bd0c87cfdf7"
+    },
+    "parity_holdout.jsonl": {
+      "sha256": "8387f7b4452606a7ffccb312767e3e01e2d5b905e8847d1d67372cb2ddbbddf5"
+    },
+    "EmojiFormatter.swift": {
+      "sha256": "f028472f021c82727af393bb7c9d5228e15cdb1b8a21531567f5b866f20dcaff",
+      "oracle": "compiled pinned source over bundled canonical and synonym phrases"
+    }
+  },
+  "notes": "Literal pairs from tracked reference suites; source tests with dynamic expectations require separately authored cases. No Android-generated expectations.",
+  "fixture_sha256": {
+    "current-mac-emoji.jsonl": "84e9ab005a20d8e8dd2eb65f489c1f0de803d591912510b2fce96b1791723889",
+    "current-mac-features.jsonl": "7800ebc162d41921725b0218c5f9bfc02843886abade882780effdb9dcf5881c",
+    "current-mac-overlays.jsonl": "a4ed1c77c550bc99fe5fbfd6f8f177164df853bfbd2866989f5392a23a8288de"
+  }
+}

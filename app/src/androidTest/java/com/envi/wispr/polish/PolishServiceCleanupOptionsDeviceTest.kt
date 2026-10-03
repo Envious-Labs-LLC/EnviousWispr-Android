@@ -94,6 +94,40 @@ class PolishServiceCleanupOptionsDeviceTest {
     }
 
     @Test
+    fun frozenBritishChoiceAndUserSpellingsCrossTheRealPolishProcess() {
+        val completed = CountDownLatch(1)
+        var outcome: PolishOutcome? = null
+        val options = com.envi.wispr.cleanup.CleanupOptions(
+            englishSpelling = com.envi.wispr.cleanup.EnglishSpelling.BRITISH,
+            spellingProtectedWords = setOf("center"),
+        )
+        com.envi.wispr.ui.PipelineBindings.polishProxy(checkNotNull(service)) { it.run() }.polishRequestWithCleanupForTake(4_130L,
+            "The organization needs to prioritize the color review at Kennedy Center today.",
+            options, PolishPolicy.Off, "cleanup-parity-device",
+            object : com.envi.wispr.ui.PolishListener {
+                override fun onOutcome(value: PolishOutcome?) { outcome = value; completed.countDown() }
+                override fun onResult(text: String?, engine: String?, latencyMs: Long) = Unit
+                override fun onError(message: String?) { completed.countDown() }
+            })
+        assertTrue("new cleanup request did not answer", completed.await(10, TimeUnit.SECONDS))
+        val value = checkNotNull(outcome)
+        assertEquals("The organisation needs to prioritise the colour review at Kennedy Center today.", value.text)
+        assertEquals(PolishReason.OFF, value.reason)
+    }
+
+    @Test
+    fun appendedCleanupParcelPreservesEveryFrozenOption() {
+        val options = com.envi.wispr.cleanup.CleanupOptions(false, false, true,
+            com.envi.wispr.cleanup.EnglishSpelling.BRITISH, setOf("kennedy", "center", "colour"))
+        val parcel = android.os.Parcel.obtain()
+        try {
+            CleanupRequestOptions(options).writeToParcel(parcel, 0)
+            parcel.setDataPosition(0)
+            assertEquals(options, CleanupRequestOptions.CREATOR.createFromParcel(parcel).options)
+        } finally { parcel.recycle() }
+    }
+
+    @Test
     fun allDisabledCleanupOptionsCrossTheProcessBoundary() {
         val outcome = polishOff(11L, "uh keep thumbs up emoji comma literal", false, false, false)
         assertEquals("uh keep thumbs up emoji comma literal", outcome.text)

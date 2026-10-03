@@ -260,12 +260,10 @@ internal class TakePolishController(
                 return@launch
             }
             try {
-                checkNotNull(service).polishRequestForTake(
+                checkNotNull(service).polishRequestWithCleanupForTake(
                     requestId,
                     preparedRaw,
-                    takePreferences.cleanup.removeFillers,
-                    takePreferences.cleanup.spokenEmoji,
-                    takePreferences.cleanup.spokenPunctuation,
+                    takePreferences.cleanup,
                     takePreferences.policy,
                     takeId,
                     listener(requestId, rawText, takePreferences),

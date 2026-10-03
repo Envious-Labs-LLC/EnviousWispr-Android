@@ -78,11 +78,11 @@ internal object CleanupLanguagePolicy {
     /**
      * Extra filler tokens per language, and the ONLY place a language earns one.
      *
-     * `um` is here for English and `err` deliberately is nowhere. `err` is an English VERB, so "To err is
+     * The reference hesitation variants are here for confident English only. `mm` is protected after a numeric value by the filler matcher; explicit all-caps acronyms stay literal. `err` deliberately is nowhere. `err` is an English VERB, so "To err is
      * human" became "To is human", and a confident English answer does not make it safe. It stays out at
      * every language state.
      */
-    private val extrasByLanguage: Map<String, Set<String>> = mapOf("en" to setOf("um"))
+    private val extrasByLanguage: Map<String, Set<String>> = mapOf("en" to setOf("um", "umm", "uhh", "mm", "mmm", "er"))
 
     /**
      * Every set [extraFillers] can return, DERIVED from [extrasByLanguage] rather than listed beside it.

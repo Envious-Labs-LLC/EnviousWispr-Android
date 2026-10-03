@@ -77,7 +77,7 @@ internal class PipelineBindings(
 
     private val polishConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            polish = PolishProxy(IPolishService.Stub.asInterface(binder), mainHandler::post)
+            polish = polishProxy(IPolishService.Stub.asInterface(binder), mainHandler::post)
             listener?.onPolishConnected()
         }
 
@@ -174,29 +174,27 @@ internal class PipelineBindings(
     internal companion object {
         /** The production speech proxy; `androidTest` binds the real `:asr` through it (#253). */
         fun speechProxy(service: IAsrService, post: (Runnable) -> Unit): SpeechLink = SpeechProxy(service, post)
+        /** The production cleanup transport, shared with the actual-boundary device test. */
+        fun polishProxy(service: IPolishService, post: (Runnable) -> Unit): PolishLink = PolishProxy(service, post)
     }
 
     /** Same Stub contract as [SpeechProxy], through [PostingPolishListener]. */
     private class PolishProxy(private val service: IPolishService, private val post: (Runnable) -> Unit) : PolishLink {
         override fun warmUpWithPolicy(policy: PolishPolicy) = service.warmUpWithPolicy(policy)
 
-        override fun polishRequestForTake(
+        override fun polishRequestWithCleanupForTake(
             requestId: Long,
             rawText: String,
-            removeFillers: Boolean,
-            spokenEmoji: Boolean,
-            spokenPunctuation: Boolean,
+            cleanup: com.envi.wispr.cleanup.CleanupOptions,
             policy: PolishPolicy,
             takeId: String,
             listener: PolishListener,
         ) {
             val posting = PostingPolishListener(post, listener)
-            service.polishRequestForTake(
+            service.polishRequestWithCleanupForTake(
                 requestId,
                 rawText,
-                removeFillers,
-                spokenEmoji,
-                spokenPunctuation,
+                com.envi.wispr.polish.CleanupRequestOptions(cleanup),
                 policy,
                 takeId,
                 object : IPolishCallback.Stub() {

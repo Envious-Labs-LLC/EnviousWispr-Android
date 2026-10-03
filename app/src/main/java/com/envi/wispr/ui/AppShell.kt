@@ -201,6 +201,7 @@ internal fun EnviousWisprApp(
                             onFillerRemovalChanged = actions.transcription.onFillerRemovalChanged,
                             onEmojiFormatterChanged = actions.transcription.onEmojiFormatterChanged,
                             onSpokenPunctuationChanged = actions.transcription.onSpokenPunctuationChanged,
+                            onEnglishSpellingChanged = actions.transcription.onEnglishSpellingChanged,
                             onAutoStopOnSilenceChanged = actions.transcription.onAutoStopOnSilenceChanged,
                             onSilencePauseSecondsChanged = actions.transcription.onSilencePauseSecondsChanged,
                         )

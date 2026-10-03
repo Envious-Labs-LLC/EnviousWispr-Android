@@ -385,7 +385,7 @@ internal object StructuredTermRestorer {
     private fun lengthAdjustment(candidateLength: Int): Double =
         minOf(0.04, 0.005 * maxOf(0, candidateLength - 8))
 
-    private fun levenshteinSimilarity(left: String, right: String): Double {
+    internal fun levenshteinSimilarity(left: String, right: String): Double {
         if (left.isEmpty()) return if (right.isEmpty()) 1.0 else 0.0
         var previous = IntArray(right.length + 1) { it }
         left.forEachIndexed { leftIndex, leftCharacter ->
@@ -414,7 +414,7 @@ internal object StructuredTermRestorer {
 
     private fun soundexScore(left: String, right: String): Double = if (soundex(left) == soundex(right)) 1.0 else 0.0
 
-    private fun soundex(value: String): String {
+    internal fun soundex(value: String): String {
         val lower = value.lowercase()
         val first = lower.firstOrNull() ?: return "0000"
         fun digit(character: Char): Char? = when (character) {

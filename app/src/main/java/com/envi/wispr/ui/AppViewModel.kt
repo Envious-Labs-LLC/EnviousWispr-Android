@@ -120,6 +120,11 @@ internal class EnviousWisprViewModel(
     fun setShowBluetoothTips(enabled: Boolean) =
         changeSetting(AppLaunchFacts.SHOW_BLUETOOTH_TIPS, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.showBluetoothTips) }) { appPreferences.setShowBluetoothTips(enabled) }
 
+    /** Spelling is a local preference; no new telemetry field is introduced. */
+    fun setEnglishSpelling(spelling: com.envi.wispr.cleanup.EnglishSpelling) {
+        viewModelScope.launch { appPreferences.setEnglishSpelling(spelling) }
+    }
+
     fun setSpokenPunctuationEnabled(enabled: Boolean) =
         changeSetting(AppLaunchFacts.SPOKEN_PUNCTUATION, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.spokenPunctuationEnabled) }) { appPreferences.setSpokenPunctuationEnabled(enabled) }
 

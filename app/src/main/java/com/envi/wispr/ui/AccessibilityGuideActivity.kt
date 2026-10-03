@@ -1,12 +1,8 @@
 package com.envi.wispr.ui
 
-import android.app.PictureInPictureParams
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.content.res.Configuration
 import android.os.Bundle
 import android.provider.Settings
-import android.util.Rational
 import androidx.core.view.doOnPreDraw
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -35,16 +31,14 @@ import com.envi.wispr.ui.theme.EnviousWisprTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** One shared disclosure route, with optional native PiP guidance after affirmative consent. */
+/** One shared disclosure route, with full-screen guidance after affirmative consent. */
 class AccessibilityGuideActivity : ComponentActivity() {
     private var agreed by mutableStateOf(false)
-    private var compact by mutableStateOf(false)
     private var launchFailed by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         agreed = savedInstanceState?.getBoolean("agreed") ?: false
-        compact = isInPictureInPictureMode
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PasteAccessibilityService.isBound.collect { bound ->
@@ -55,7 +49,7 @@ class AccessibilityGuideActivity : ComponentActivity() {
         setContent {
             EnviousWisprTheme(dynamicColor = false) {
                 if (!agreed) AccessibilityDisclosure(onAgree = ::openSettings, onDecline = ::finish)
-                else AccessibilityGuide(compact, launchFailed, ::openSettings, ::finish)
+                else AccessibilityGuide(launchFailed, ::openSettings, ::finish)
             }
         }
     }
@@ -63,12 +57,9 @@ class AccessibilityGuideActivity : ComponentActivity() {
     private fun openSettings() {
         agreed = true
         launchFailed = false
-        // Wait for the accepted disclosure to be replaced by guide content before entering PiP.
+        // Replace the accepted disclosure with guide content before opening Android Settings.
         window.decorView.doOnPreDraw {
             if (isFinishing || isDestroyed) return@doOnPreDraw
-            if (packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
-                runCatching { enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational(230, 215)).build()) }
-            }
             runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                 .onFailure { launchFailed = true }
         }
@@ -80,10 +71,6 @@ class AccessibilityGuideActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) { outState.putBoolean("agreed", agreed); super.onSaveInstanceState(outState) }
-    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
-        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        compact = isInPictureInPictureMode
-    }
 }
 
 @Composable
@@ -103,7 +90,7 @@ private fun AccessibilityDisclosure(onAgree: () -> Unit, onDecline: () -> Unit) 
 }
 
 @Composable
-private fun AccessibilityGuide(compact: Boolean, launchFailed: Boolean, openSettings: () -> Unit, close: () -> Unit) {
+private fun AccessibilityGuide(launchFailed: Boolean, openSettings: () -> Unit, close: () -> Unit) {
     val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val reduced = onboardingReducedMotion()
     var step by remember { mutableIntStateOf(0) }
@@ -121,15 +108,13 @@ private fun AccessibilityGuide(compact: Boolean, launchFailed: Boolean, openSett
     }
     BackHandler(onBack = close)
     Surface(Modifier.fillMaxSize(), color = Color(0xFF251F37), contentColor = Color(0xFFE8E4F1)) {
-        Column(Modifier.fillMaxSize().then(if (compact) Modifier else Modifier.statusBarsPadding().navigationBarsPadding()).padding(if (compact) 8.dp else 24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                OnboardingLips(Modifier.size(if (compact) 26.dp else 70.dp))
-                Text("Setup guide", fontSize = if (compact) 11.sp else 20.sp, modifier = Modifier.weight(1f))
+                OnboardingLips(Modifier.size(70.dp))
+                Text("Setup guide", fontSize = 20.sp, modifier = Modifier.weight(1f))
                 Text("${step + 1} / ${steps.size}", fontSize = 11.sp)
             }
-            if (compact && reduced) {
-                Text(steps.mapIndexed { index, text -> "${index + 1}. $text" }.joinToString("\n"), Modifier.padding(10.dp), fontSize = 12.sp, lineHeight = 19.sp)
-            } else Crossfade(targetState = frames[step], animationSpec = tween(if (reduced) 0 else 400), label = "Accessibility instructions") { current ->
+            Crossfade(targetState = frames[step], animationSpec = tween(if (reduced) 0 else 400), label = "Accessibility instructions") { current ->
                 Surface(color = Color(0xFFF3F3F6), contentColor = Color(0xFF17171B), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(when (current) { 0 -> "Accessibility"; 1 -> if (samsung) "Installed apps" else "Accessibility"; 3 -> "Review Android’s prompt"; else -> appLabel }, fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -138,14 +123,12 @@ private fun AccessibilityGuide(compact: Boolean, launchFailed: Boolean, openSett
                     }
                 }
             }
-            Text(steps[step], fontWeight = FontWeight.Bold, fontSize = if (compact) 11.sp else 18.sp)
-            if (!compact) {
-                Text(if (samsung) "Installed apps → $appLabel → On. Leave the optional Accessibility shortcut off." else "Find $appLabel in Accessibility. Your phone may group it under Downloaded apps or Installed services. Leave the optional shortcut off.", Modifier.padding(vertical = 18.dp), fontSize = 14.sp)
-                if (launchFailed) Text("Open your phone’s Settings, then Accessibility.")
-                Row { TextButton(onClick = { paused = !paused }) { Text(if (paused) "Play" else "Pause") }; TextButton(onClick = { paused = true; step = (step + 1) % steps.size }) { Text("Next") } }
-                Button(onClick = openSettings) { Text("Open Settings again") }
-                TextButton(onClick = close) { Text("Return to EnviousWispr") }
-            }
+            Text(steps[step], fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text(if (samsung) "Installed apps → $appLabel → On. Leave the optional Accessibility shortcut off." else "Find $appLabel in Accessibility. Your phone may group it under Downloaded apps or Installed services. Leave the optional shortcut off.", Modifier.padding(vertical = 18.dp), fontSize = 14.sp)
+            if (launchFailed) Text("Open your phone’s Settings, then Accessibility.")
+            Row { TextButton(onClick = { paused = !paused }) { Text(if (paused) "Play" else "Pause") }; TextButton(onClick = { paused = true; step = (step + 1) % steps.size }) { Text("Next") } }
+            Button(onClick = openSettings) { Text("Open Settings again") }
+            TextButton(onClick = close) { Text("Return to EnviousWispr") }
         }
     }
 }

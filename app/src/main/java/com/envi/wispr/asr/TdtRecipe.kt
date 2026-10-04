@@ -115,7 +115,20 @@ internal class TdtRecipe(private val runner: TdtRunner) {
                 if (step.token == blank && duration == 0) duration = 1
                 val current = t
                 t += duration
-                if (t >= frames) break // a non-blank whose duration leaves the real frames is not emitted (TdtDecoderV3 :409)
+                if (t >= frames) {
+                    // TdtDecoderV3 :409 drops a non-blank whose duration leaves the real frames. On the last window
+                    // that is the end of the take, and the dropped token is the last piece of the final word: with
+                    // the phone's SmoothQuant model it cut "intended" to "intend" and "Friday" to "Frida" on 9 of 26
+                    // clips (#421). The last window keeps it; earlier windows still drop it, because the next
+                    // window's overlap owns those frames.
+                    if (isLast && step.token != blank && current < frames && ++count <= MAX_TOKENS_PER_WINDOW) {
+                        val global = current + offset
+                        if (emitAfterFrame == null || global >= emitAfterFrame) out += Token(step.token, global, duration)
+                        history += step.token
+                        state = step.next
+                    }
+                    break
+                }
                 if (step.token == blank) continue
                 if (++count > MAX_TOKENS_PER_WINDOW) break
                 val global = current + offset

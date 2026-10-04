@@ -26,6 +26,7 @@ def run():
     parser.add_argument('--serial', required=True)
     parser.add_argument('--pcm', required=True, help='existing PHONE path, 16 kHz mono signed little-endian PCM')
     parser.add_argument('--expect', required=True, help='expected final editor text, including any pre-existing text')
+    parser.add_argument('--tail-blocks', type=int, default=16, help='1024-byte blocks of digital silence queued after the speech before stop (0 = stop right at the last sample)')
     parser.add_argument('--receipt', type=Path, required=True)
     parser.add_argument('--focus-between', help='after the audio is in and before stop, press this editor (its text or hint) so a SIBLING field holds '
                         'input focus at stop time (#201); needs --focus-package')
@@ -103,7 +104,7 @@ def run():
         logs = subprocess.Popen(adb + ['logcat', '-T', '1', '-v', 'threadtime', 'AudioCapture:I', 'DictationSession:I', 'AsrService:I', 'PasteService:I', '*:S'], stdout=subprocess.PIPE, text=True)
         processes.append(logs)
         logq = monitor(logs)
-        helper = subprocess.Popen(adb + ['shell', 'CLASSPATH=' + shlex.quote(remote) + ' app_process /system/bin SilentAudio ' + shlex.quote(args.pcm)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        helper = subprocess.Popen(adb + ['shell', 'CLASSPATH=' + shlex.quote(remote) + ' app_process /system/bin SilentAudio ' + shlex.quote(args.pcm) + ' ' + str(args.tail_blocks)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         processes.append(helper)
         hq = monitor(helper)
         wait(hq, 'READY')

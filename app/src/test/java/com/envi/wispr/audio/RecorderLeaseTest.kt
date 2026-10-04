@@ -185,7 +185,7 @@ class RecorderLeaseTest {
     // Row 12. REVERT: remove markEnding from claimEnding.
     @Test
     fun theWinningClaimMarksTheLeaseAsEnding() {
-        val claim = service.substringAfter("private fun claimEnding(active: CaptureSession, reason: Int): Boolean {").substringBefore("\n    }\n")
+        val claim = service.substringAfter("private fun claimEnding(active: CaptureSession, reason: Int, graceMs: Long = 0L): Boolean {").substringBefore("\n    }\n")
         val won = claim.indexOf("if (!active.endingClaim.claim(reason)) return false")
         assertTrue(won >= 0 && claim.indexOf("RecorderLease.PROCESS.markEnding(active.token)") > won)
     }

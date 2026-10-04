@@ -108,7 +108,7 @@ class AudioServiceShapeTest {
         val actualFields = Regex("^ {4}(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:(?:private|internal|public|protected|lateinit|const)\\s+)*(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
             .findAll(service).map { it.groupValues[1] }.toSet()
         assertEquals("the service holds only its own fields", expectedFields, actualFields)
-        val expectedSessionFields = setOf("record", "file", "output", "readBuffer", "token", "detector", "picture", "route", "keepEarbudsReady", "takeId", "log", "liveVisible", "bytesWritten", "endingClaim", "stopRequested")
+        val expectedSessionFields = setOf("record", "file", "output", "readBuffer", "token", "detector", "picture", "route", "keepEarbudsReady", "takeId", "log", "liveVisible", "bytesWritten", "endingClaim", "stopRequested", "grace")
         val actualSessionFields = Regex("^ {8}(?:@\\w+\\s+)*(?:(?:private|internal)\\s+)?(?:val|var)\\s+(\\w+)\\b", RegexOption.MULTILINE)
             .findAll(service.substringAfter("private class CaptureSession(").substringBefore("\n    }\n")).map { it.groupValues[1] }.toSet()
         assertEquals("the session carries the recorder, the file, the token and three owners, nothing of the owners' insides", expectedSessionFields, actualSessionFields)
@@ -166,6 +166,8 @@ class AudioServiceShapeTest {
             // #212: a production take's start removes earlier production takes' files, counts only.
             "log: Removed \${} earlier capture files; \${} could not be removed",
             "log: Stopped by \${}. \${} bytes ",
+            // #419: the file's size when a stop request's grace window closes.
+            "log: Stop grace closed: \${} bytes",
             "log: route adopt=\${} from the warm hold",
             "log: route change=\${} at \${} bytes",
             "log: route earbuds already gone at start; the phone may record",

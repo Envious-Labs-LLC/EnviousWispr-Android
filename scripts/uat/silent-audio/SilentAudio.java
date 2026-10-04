@@ -26,7 +26,7 @@ public final class SilentAudio {
     }
     static void run(String[] args) throws Exception {
         if (android.os.Process.myUid() != 2000) throw new SecurityException("ADB shell required");
-        if (args.length != 1) throw new IllegalArgumentException("local 16k mono s16le PCM required");
+        if (args.length < 1 || args.length > 2) throw new IllegalArgumentException("local 16k mono s16le PCM required");
         byte[] pcm = Files.readAllBytes(Paths.get(args[0]));
         if (pcm.length < 3200 || pcm.length > 960000 || pcm.length % 2 != 0)
             throw new IllegalArgumentException("PCM must be 0.1 to 30 seconds, whole samples");
@@ -105,7 +105,9 @@ public final class SilentAudio {
                 offset+=n;
             }
             // Zero tail drains queued speech through the virtual pipe before the caller stops capture.
-            for(int i=0;i<16;i++) if(track.write(zero,0,zero.length)!=zero.length) throw new IOException("tail write");
+            // args[1] overrides the tail (1024-byte blocks); 0 stops right at the last sample (#419).
+            int tailBlocks = args.length > 1 ? Integer.parseInt(args[1]) : 16;
+            for(int i=0;i<tailBlocks;i++) if(track.write(zero,0,zero.length)!=zero.length) throw new IOException("tail write");
             System.out.println("INJECTED bytes="+offset+" route=REMOTE_SUBMIX render=false");
             System.out.flush();
             if (!"CLOSE".equals(input.readLine())) throw new IOException("CLOSE required");

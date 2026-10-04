@@ -90,6 +90,19 @@ class AudioCaptureService : Service() {
         internal const val LIVE_WAITING = 0
         internal const val LIVE_READY = 1
         internal const val LIVE_FORCED = 2
+
+        /**
+         * How long a stop request keeps recording before the take closes (#419). Stopping the microphone the
+         * instant the user taps drops the last audio still travelling to the app: on the S26 a stop landing at
+         * the last sample lost 105 to 133 ms of it (measured 2026-10-04 from kept recordings against the TTS
+         * fixtures), which is the last syllable of the final word. Only a stop REQUEST waits; silence, the caps
+         * and errors close at once. The window is bounded, so a stalled recorder is still stopped by the
+         * fallback in `endTakeLocked`.
+         */
+        internal const val STOP_GRACE_MS = 250L
+
+        /** The fallback stop lands this long after the grace window, for a read the window cannot end. */
+        internal const val STOP_GRACE_FALLBACK_MS = 150L
     }
 
     /** Every native and file resource for one take has one owner and one lifetime. */
@@ -122,6 +135,9 @@ class AudioCaptureService : Service() {
         val endingClaim = CaptureEndingClaim()
 
         val stopRequested: Boolean get() = endingClaim.ended
+
+        /** The stretch after a stop request in which the loop reads on and files the tail (#419). */
+        val grace = StopGraceWindow()
     }
 
     private val sessionLock = Any()
@@ -593,7 +609,7 @@ class AudioCaptureService : Service() {
     private fun captureLoop(active: CaptureSession) {
         val buffer = active.readBuffer
         try {
-            while (isRecording.get() && session === active) {
+            while ((isRecording.get() || active.grace.isOpen(SystemClock.elapsedRealtime())) && session === active) {
                 // The cap counts from LIVE; the wait for the earbuds has its own bound in the session owner.
                 val live = active.route.liveAtMs
                 val elapsed = if (live > 0L) SystemClock.elapsedRealtime() - live else 0L
@@ -683,6 +699,10 @@ class AudioCaptureService : Service() {
             }
             active.log.error("Capture thread error", e)
         } finally {
+            // The "Stopped by" line counts bytes at the request; this one is the file's size at the close.
+            if (active.grace.wasArmed) {
+                active.log.log("Stop grace closed: ${active.bytesWritten} bytes")
+            }
             releaseSession(active)
         }
     }
@@ -757,11 +777,14 @@ class AudioCaptureService : Service() {
      * session and is what makes it first-wins. The owner learns the reason from the ending
      * [releaseSession] pushes, never from the getter.
      */
-    private fun claimEnding(active: CaptureSession, reason: Int): Boolean {
+    private fun claimEnding(active: CaptureSession, reason: Int, graceMs: Long = 0L): Boolean {
         if (!active.endingClaim.claim(reason)) return false
         // From here a later production start may recover the recorder if this capture never gives it back.
         RecorderLease.PROCESS.markEnding(active.token)
         terminalReason = reason
+        // Armed BEFORE the take stops being "recording": the capture thread reads both without the lock, and
+        // a reader that saw the stop but not the window would leave the loop and lose the tail (#419).
+        active.grace.arm(SystemClock.elapsedRealtime(), graceMs)
         isRecording.set(false)
         return true
     }
@@ -795,19 +818,33 @@ class AudioCaptureService : Service() {
      * Called only while [sessionLock] is held and [active] is still the current session.
      */
     private fun endTakeLocked(active: CaptureSession, reason: Int) {
-        if (!claimEnding(active, reason)) return
+        // Only a stop request waits for the tail; silence, the caps, errors and a destroyed service stop at once.
+        val graceMs = if (reason == TERMINAL_REASON_MANUAL && !destroyed) STOP_GRACE_MS else 0L
+        if (!claimEnding(active, reason, graceMs)) return
         // routedDevice returns null once the recorder is inactive, so the final route is read HERE,
         // before stop(); a headset removed just before the stop is then in the record even when its
         // routing callback runs late. A null read preserves the history and proves nothing.
         active.route.observeFinal(active.record)
-        try {
-            // stop() unblocks a pending read. Do not release here while the reader may
-            // still be using the same AudioRecord instance.
-            active.record.stop()
-        } catch (e: Exception) {
-            // The reader's finally block still owns and releases the resources if stop
-            // itself fails, so a vendor-specific AudioRecord error cannot leak a session.
-            active.log.warn("AudioRecord stop failed: ${e.javaClass.simpleName}")
+        // A stop request keeps the microphone open for the grace window armed in `claimEnding` so the tail
+        // still on its way to the app is filed (#419); the loop reads until the window closes and
+        // `closeResources` stops the recorder.
+        if (active.grace.wasArmed) {
+            // A read the window cannot end (a stalled recorder) is unblocked by the stop() it used to get
+            // immediately, only later. Stopping a recorder the loop already released is a no-op here.
+            routeHandler.postDelayed(
+                { runCatching { active.record.stop() } },
+                STOP_GRACE_MS + STOP_GRACE_FALLBACK_MS,
+            )
+        } else {
+            try {
+                // stop() unblocks a pending read. Do not release here while the reader may
+                // still be using the same AudioRecord instance.
+                active.record.stop()
+            } catch (e: Exception) {
+                // The reader's finally block still owns and releases the resources if stop
+                // itself fails, so a vendor-specific AudioRecord error cannot leak a session.
+                active.log.warn("AudioRecord stop failed: ${e.javaClass.simpleName}")
+            }
         }
         active.log.mark("recording_stop")
         // The ending is read back from the CLAIM rather than from this function's parameter, because the
@@ -922,6 +959,15 @@ class AudioCaptureService : Service() {
         destroyed = true
         synchronized(sessionLock) { warmHoldOwner.close(WarmHold.END_DESTROYED) }
         stopRecording()
+        // A take already ending by a stop request is inside its grace window, and `quitSafely` below would
+        // discard the delayed fallback stop: close the window and stop the recorder now (#419). The reason
+        // is unchanged, and the reader still owns closing and releasing.
+        synchronized(sessionLock) {
+            session?.let { active ->
+                active.grace.cancel()
+                runCatching { active.record.stop() }
+            }
+        }
         session?.let { active ->
             active.detector.close(unbindNow = true)
             active.picture.close()

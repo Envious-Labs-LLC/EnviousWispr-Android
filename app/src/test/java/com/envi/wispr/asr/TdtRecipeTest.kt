@@ -83,20 +83,46 @@ class TdtRecipeTest {
         runner.firstStepStates.forEach { first -> assertTrue(runner.zeroStates.any { it === first }) }
     }
 
-    /** A non-blank whose duration jumps past the real frames is not emitted (TdtDecoderV3 :409). */
-    @Test fun aTokenWhoseDurationLeavesTheAudioIsNotEmitted() {
+    /**
+     * DELIBERATE departure from TdtDecoderV3 :409 (#421). The macOS rule drops a non-blank whose duration leaves the real
+     * frames; on the last window that is the end of the take and the dropped token is the end of the final word
+     * ("intended" read "intend"). The last window keeps it. MUTATION: restore `if (t >= frames) break` with no emit.
+     */
+    @Test fun theLastWindowKeepsATokenWhoseDurationLeavesTheAudio() {
         // 1 s = 13 frames; at frame 12 the joint says "cat" with duration 4, which lands past the last frame.
         val runner = FakeRunner { _, frame, _ -> if (frame == 12) 2 to 4 else blank to 1 }
-        assertEquals("", TdtRecipe(runner).transcribe(loud(1.0)).text)
+        assertEquals("cat", TdtRecipe(runner).transcribe(loud(1.0)).text)
         val kept = FakeRunner { _, frame, _ -> if (frame == 5) 2 to 1 else blank to 1 }
         assertEquals("cat", TdtRecipe(kept).transcribe(loud(1.0)).text)
     }
 
+    /** The kept end token counts against the per-window token limit like any other (#421 review, round 1). */
+    @Test fun theKeptEndTokenRespectsThePerWindowTokenLimit() {
+        val limit = TdtRecipe.MAX_TOKENS_PER_WINDOW
+        // 14 s = 175 frames, one window. The joint emits "▁the" on every frame up to the limit, then "cat" with
+        // duration 4 on the last real frame.
+        val frames = (14.0 * 16_000 / 1_280).toInt()
+        val runner = FakeRunner { _, frame, _ -> if (frame < limit) 0 to 1 else if (frame == frames - 1) 2 to 4 else blank to 1 }
+        val words = TdtRecipe(runner).transcribe(loud(14.0)).text.split(" ").filter { it.isNotEmpty() }
+        assertEquals("the limit holds: no 151st token", limit, words.size)
+        assertTrue(words.none { it == "cat" })
+    }
+
+    /** A window that is NOT the last still drops it: the next window's overlap owns those frames. */
+    @Test fun anEarlierWindowStillDropsATokenWhoseDurationLeavesItsAudio() {
+        // The first window of a 40 s take has 186 frames; at frame 185 the joint says "cat" with duration 4.
+        val runner = FakeRunner { window, frame, _ -> if (window == 0 && frame == 185) 2 to 4 else blank to 1 }
+        assertEquals("", TdtRecipe(runner).transcribe(loud(40.0)).text)
+    }
+
     /** Last-window finalisation emits punctuation only (fork carry #1792): a word there is suppressed. */
     @Test fun finalisationAddsPunctuationButNeverAWord() {
-        val punctuation = FakeRunner { _, frame, previous -> if (frame == 3) 2 to 1 else if (previous == 2 && frame >= 12) 4 to 1 else blank to 1 }
+        // The loop ends by a blank at frame 9 whose duration runs past the 13 real frames (so nothing is emitted in the
+        // loop); only the finalisation then steps at the end. #421 keeps a token emitted INSIDE the loop at a real
+        // frame, so this scenario must reach the end through the blank, not through a token at frame 12.
+        val punctuation = FakeRunner { _, frame, previous -> if (frame == 3) 2 to 1 else if (frame == 9) blank to 4 else if (previous == 2 && frame >= 12) 4 to 1 else blank to 1 }
         assertEquals("cat.", TdtRecipe(punctuation).transcribe(loud(1.0)).text)
-        val word = FakeRunner { _, frame, previous -> if (frame == 3) 2 to 1 else if (previous == 2 && frame >= 12) 5 to 1 else blank to 1 }
+        val word = FakeRunner { _, frame, previous -> if (frame == 3) 2 to 1 else if (frame == 9) blank to 4 else if (previous == 2 && frame >= 12) 5 to 1 else blank to 1 }
         assertEquals("cat", TdtRecipe(word).transcribe(loud(1.0)).text)
     }
 

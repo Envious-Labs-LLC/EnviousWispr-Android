@@ -31,6 +31,7 @@ internal class AppActions(
     val microphone: MicrophoneActions,
     val clipboard: ClipboardActions,
     val appearance: AppearanceActions,
+    val sounds: SoundsActions,
 )
 
 /** The two actions the shell itself fires: the top-bar microphone and the readiness refresh. */
@@ -106,4 +107,10 @@ internal class ClipboardActions(
 internal class AppearanceActions(
     val onDynamicColorChanged: (Boolean) -> Unit,
     val onBubbleLookChanged: (BubbleLook) -> Unit,
+)
+
+internal class SoundsActions(
+    val onRecordingSoundsChanged: (Boolean) -> Unit,
+    val onRecordingSoundPairingChanged: (com.envi.wispr.audio.RecordingSoundPairing) -> Unit,
+    val onRecordingVibrationChanged: (Boolean) -> Unit,
 )

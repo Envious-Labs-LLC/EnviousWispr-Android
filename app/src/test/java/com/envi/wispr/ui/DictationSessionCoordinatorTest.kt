@@ -83,9 +83,73 @@ class DictationSessionCoordinatorTest {
         assertEquals("hello world", row.originalText)
         assertEquals("Phone microphone", row.captureDevice)
         assertEquals(listOf("vibrate:SESSION_TRANSITION", "vibrate:SESSION_TRANSITION"), rig.host.events.filter { it.startsWith("vibrate") })
+        assertEquals(listOf("cue:whisperTick:START", "cue:whisperTick:STOP"), rig.host.events.filter { it.startsWith("cue:") })
         assertTrue("the helpers are unbound on the way out", rig.pipeline.events.contains("unbind"))
         assertEquals("the Service stops itself last", "stopSelf", rig.host.events.last())
         assertTrue(rig.host.events.indexOf("foreground-removed") < rig.host.events.indexOf("stopSelf"))
+    }
+
+    /** Product Outcome: disabling recording vibration does not disable the audible confirmations. */
+    @Test fun recordingVibrationOffKeepsTheSoundPairAndStillDeliversText() {
+        rig.preferenceStates.value = AppPreferencesState(recordingVibrationEnabled = false)
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        rig.host.awaitStopped()
+        assertTrue(rig.host.events.filter { it.startsWith("vibrate") }.isEmpty())
+        assertEquals(listOf("cue:whisperTick:START", "cue:whisperTick:STOP"), rig.host.events.filter { it.startsWith("cue:") })
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+    }
+
+    /** Product Outcome: sound and recording vibration are independent, including cancellation. */
+    @Test fun bothRecordingSwitchesOffKeepACancelQuiet() {
+        rig.preferenceStates.value = AppPreferencesState(recordingSoundsEnabled = false, recordingVibrationEnabled = false)
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        rig.host.awaitStopped()
+        assertTrue(rig.host.events.none { it.startsWith("vibrate:") || it.startsWith("cue:") })
+        assertEquals(TerminalReason.CANCELLED_RECORDING, rig.endings.awaitOne())
+        assertTrue(rig.insertion.pastes.isEmpty())
+    }
+
+    @Test fun soundOffLeavesRecordingVibrationOn() {
+        rig.preferenceStates.value = AppPreferencesState(recordingSoundsEnabled = false)
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        rig.host.awaitStopped()
+        assertTrue(rig.host.events.none { it.startsWith("cue:") })
+        assertEquals(listOf("vibrate:SESSION_TRANSITION", "vibrate:SESSION_CANCELED"), rig.host.events.filter { it.startsWith("vibrate:") })
+    }
+
+    @Test fun aManualStopCannotSoundUntilTheCaptureCloseEvent() {
+        val closed = java.util.concurrent.CountDownLatch(1)
+        rig.capture.endingGate = closed
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.command(coordinator, DictationSessionService.ACTION_STOP)
+        rig.capture.awaitStopRequested()
+        rig.onMain { assertEquals(listOf("cue:whisperTick:START"), rig.host.events.filter { it.startsWith("cue:") }) }
+        closed.countDown()
+        rig.speech.awaitRequest().onResult("hello world")
+        rig.polish.awaitRequest()
+        val polish = rig.polish
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        rig.host.awaitStopped()
+        assertEquals(listOf("cue:whisperTick:START", "cue:whisperTick:STOP"), rig.host.events.filter { it.startsWith("cue:") })
+    }
+
+    @Test fun changingSoundAndVibrationDuringATakeDoesNotChangeItsStop() {
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.preferenceStates.value = AppPreferencesState(recordingSoundsEnabled = false, recordingVibrationEnabled = false, recordingSoundPairing = com.envi.wispr.audio.RecordingSoundPairing.DUST_MOTE)
+        val polish = stopAndTranscribe(coordinator, "hello world")
+        polish.listener!!.onOutcome(polish.outcome("Hello world."))
+        rig.host.awaitStopped()
+        assertEquals(listOf("cue:whisperTick:START", "cue:whisperTick:STOP"), rig.host.events.filter { it.startsWith("cue:") })
+        assertEquals(2, rig.host.events.count { it == "vibrate:SESSION_TRANSITION" })
     }
 
     /**

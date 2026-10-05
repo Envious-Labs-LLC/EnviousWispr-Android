@@ -43,6 +43,9 @@ interface ITakeListener {
      */
     oneway void onEnded(String takeId, int terminalReason, int startFailure, String audioFilePath, int silenceStatus, float takePeakAmplitude, String effectiveInputDevice);
 
+    /** File flush/close and recorder release succeeded. Optional feedback only; ending delivery is unchanged. */
+    oneway void onCaptureClosed(String takeId, boolean resourcesClosed);
+
     // APPENDED. Never reorder or rename anything above this line (architecture-rules.md RULE:
     // aidl-is-append-only): an older installed test APK calls these methods through the app's own
     // generated classes (#330), so a removed or renamed one fails when that test invokes it.

@@ -125,6 +125,7 @@ internal class TakeEventPublisher(
     internal sealed interface Event {
         val takeId: String
 
+        data class CaptureClosed(override val takeId: String, val resourcesClosed: Boolean) : Event
         data class SilenceStatus(override val takeId: String, val status: Int) : Event
         data class Ended(
             override val takeId: String,
@@ -228,6 +229,10 @@ internal class TakeEventPublisher(
         }
     }
 
+    fun publishCaptureClosed(takeId: String, resourcesClosed: Boolean) {
+        offer(Event.CaptureClosed(takeId, resourcesClosed))
+    }
+
     fun publishSilenceStatus(takeId: String, status: Int) {
         offer(Event.SilenceStatus(takeId, status))
     }
@@ -301,6 +306,7 @@ internal class TakeEventPublisher(
             val target = listener.get() ?: continue
             runCatching {
                 when (event) {
+                    is Event.CaptureClosed -> target.onCaptureClosed(event.takeId, event.resourcesClosed)
                     is Event.SilenceStatus -> target.onSilenceStatus(event.takeId, event.status)
                     is Event.Ended -> target.onEnded(event.takeId, event.terminalReason, event.startFailure, event.audioFilePath, event.silenceStatus, event.takePeakAmplitude, event.effectiveInputDevice)
                 }

@@ -22,6 +22,7 @@ internal fun interface SpectrumListener {
  * owner posts each to its main thread before acting, which serialises them in delivery order.
  */
 internal interface TakeListener {
+    fun onCaptureClosed(takeId: String, resourcesClosed: Boolean)
     fun onLive(takeId: String, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long)
     fun onTick(takeId: String, elapsedMs: Long)
     fun onSilenceStatus(takeId: String, status: Int)

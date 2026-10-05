@@ -44,13 +44,13 @@ internal class FeedbackController private constructor(context: Context) {
             else mutable.value.copy(draft = doc.draft.copy(revision = maxOf(doc.draft.revision, doc.admittedRevision) + 1), loaded = true)
         }
     }
-    fun open(): Long {
+    fun open(restoredConsent: Boolean? = null): Long {
         generation++
         val token = generation
         mutable.value = mutable.value.copy(presentation = token,
             phase = if (mutable.value.phase == FeedbackPhase.SAVING) FeedbackPhase.SAVING else FeedbackPhase.EDITING,
             problem = if (mutable.value.loaded) null else mutable.value.problem,
-            includeDiagnostics = Telemetry.status().postHog, diagnostics = null, snapshotLoading = true)
+            includeDiagnostics = restoredConsent ?: Telemetry.status().postHog, diagnostics = null, snapshotLoading = true)
         scope.launch {
             val snapshot = withContext(Dispatchers.IO) { runCatching { FeedbackDiagnostics.snapshot(app, FeedbackDiagnostics.context()) }.getOrNull() }
             val warning = withContext(Dispatchers.IO) {

@@ -27,6 +27,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -58,12 +59,18 @@ internal fun FeedbackScreen(onDismiss: () -> Unit) {
     val controller = remember(context.applicationContext) { FeedbackController.of(context) }
     val state by controller.state.collectAsStateWithLifecycle()
     var preview by remember { mutableStateOf(false) }
+    // Survives activity recreation, but disappears when the user deliberately dismisses this form.
+    var savedConsent by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var opening by remember { mutableStateOf(0L) }
     DisposableEffect(controller) {
-        val opening = controller.open()
-        onDispose { controller.close(opening) }
+        val token = controller.open(savedConsent)
+        opening = token
+        savedConsent = controller.state.value.includeDiagnostics
+        onDispose { controller.close(token) }
     }
-    LaunchedEffect(state.phase, state.presentation) {
-        if (state.phase == FeedbackPhase.SAVED) {
+    val active = opening != 0L && opening == state.presentation
+    LaunchedEffect(state.phase, state.presentation, opening) {
+        if (active && state.phase == FeedbackPhase.SAVED) {
             delay(1800)
             onDismiss()
         }
@@ -87,23 +94,26 @@ internal fun FeedbackScreen(onDismiss: () -> Unit) {
                     Text("If you left your email, we'll reply there.")
                 } else {
                     OutlinedTextField(value = state.draft.message,
-                        onValueChange = { controller.edit(state.presentation, it, state.draft.email) },
-                        enabled = state.loaded, minLines = 4, maxLines = 6,
+                        onValueChange = { controller.edit(opening, it, state.draft.email) },
+                        enabled = state.loaded && active, minLines = 4, maxLines = 6,
                         label = { Text("Feedback message") }, placeholder = { Text("What happened, or what would you like to see?") },
                         isError = issue == FeedbackValidation.Issue.TOO_LONG,
                         supportingText = { if (issue == FeedbackValidation.Issue.TOO_LONG) Text("Please shorten your message to 4,000 characters.") },
                         modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = state.draft.email,
-                        onValueChange = { controller.edit(state.presentation, state.draft.message, it) },
-                        enabled = state.loaded, singleLine = true,
+                        onValueChange = { controller.edit(opening, state.draft.message, it) },
+                        enabled = state.loaded && active, singleLine = true,
                         label = { Text("Email (optional, if you'd like a reply)") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                         isError = issue == FeedbackValidation.Issue.EMAIL,
                         supportingText = { if (issue == FeedbackValidation.Issue.EMAIL) Text("Please check your email address, or leave it empty.") },
                         modifier = Modifier.fillMaxWidth())
                     Row {
-                        Checkbox(checked = state.includeDiagnostics, onCheckedChange = { controller.includeDiagnostics(state.presentation, it) },
-                            enabled = state.snapshotLoading || state.diagnostics != null,
+                        Checkbox(checked = state.includeDiagnostics, onCheckedChange = {
+                                if (opening == controller.state.value.presentation) savedConsent = it
+                                controller.includeDiagnostics(opening, it)
+                            },
+                            enabled = active && (state.snapshotLoading || state.diagnostics != null),
                             modifier = Modifier.semantics { contentDescription = "Include diagnostics" })
                         Column(Modifier.weight(1f).padding(top = 12.dp)) {
                             Text("Include diagnostics", style = MaterialTheme.typography.bodyMedium)
@@ -128,7 +138,7 @@ internal fun FeedbackScreen(onDismiss: () -> Unit) {
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         Spacer(Modifier.weight(1f))
-                        Button(onClick = { controller.send(state.presentation) }, enabled = state.loaded && issue == null &&
+                        Button(onClick = { controller.send(opening) }, enabled = active && state.loaded && issue == null &&
                             state.phase != FeedbackPhase.SAVING && !(state.includeDiagnostics && state.snapshotLoading)) {
                             Text(if (state.phase == FeedbackPhase.SAVING) "Saving..." else "Send")
                         }

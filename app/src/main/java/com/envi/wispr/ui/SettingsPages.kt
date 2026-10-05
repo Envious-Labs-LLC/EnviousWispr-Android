@@ -206,28 +206,6 @@ private fun DrawScope.drawLips(centreX: Float, centreY: Float, side: Float, edge
 }
 
 @Composable
-internal fun SoundsPage() {
-    ScreenContainer(subtitle = SettingsPage.Sounds.subtitle) {
-        Card {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("A short vibration", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "EnviousWispr vibrates when recording starts, when it stops, and when you " +
-                        "cancel. You feel it without looking at the screen.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        Text(
-            "Start and stop sounds are not available yet, so there is nothing here to switch on.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
 internal fun ClipboardPage(
     preferences: AppPreferencesState,
     onAutoCopyChanged: (Boolean) -> Unit,

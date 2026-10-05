@@ -160,6 +160,11 @@ class SettingsActivity : ComponentActivity() {
                             onRestoreClipboardChanged = shellViewModel::setRestoreClipboardAfterPaste,
                             onSmartInsertionChanged = shellViewModel::setSmartInsertionEnabled,
                         ),
+                        sounds = SoundsActions(
+                            onRecordingSoundsChanged = shellViewModel::setRecordingSoundsEnabled,
+                            onRecordingSoundPairingChanged = shellViewModel::setRecordingSoundPairing,
+                            onRecordingVibrationChanged = shellViewModel::setRecordingVibrationEnabled,
+                        ),
                         appearance = AppearanceActions(
                             onDynamicColorChanged = shellViewModel::setDynamicColorEnabled,
                             onBubbleLookChanged = shellViewModel::setBubbleLook,

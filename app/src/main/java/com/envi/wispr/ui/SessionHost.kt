@@ -16,6 +16,11 @@ internal interface SessionHost {
     /** `DictationSurfaceState.update(context, phase)`: the tile and the notification read it. */
     fun updateSurfacePhase(phase: DictationSurfaceState.Phase)
 
+    fun beginRecordingFeedback(takeId: String)
+    fun prepareRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing)
+    fun playRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, moment: com.envi.wispr.audio.RecordingSoundMoment): Boolean
+    fun finishRecordingFeedback(takeId: String)
+
     fun vibrate(cue: HapticCue)
 
     /**

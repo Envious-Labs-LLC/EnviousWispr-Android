@@ -319,6 +319,15 @@ internal class DictationSessionRig {
 
         override fun promoteToForeground(processing: Boolean) { events += "foreground:$processing" }
         override fun updateSurfacePhase(phase: DictationSurfaceState.Phase) { events += "phase:${phase.name}" }
+        override fun beginRecordingFeedback(takeId: String) { events += "cue-admit" }
+        override fun prepareRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing) { events += "cue-prepare:${pairing.storageKey}" }
+        @Volatile var cuePlays = true
+        override fun playRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, moment: com.envi.wispr.audio.RecordingSoundMoment): Boolean {
+            events += "cue:${pairing.storageKey}:${moment.name}"
+            timeline += "cue:${moment.name}"
+            return cuePlays
+        }
+        override fun finishRecordingFeedback(takeId: String) { events += "cue-finish" }
         override fun vibrate(cue: HapticCue) { events += "vibrate:${cue.name}" }
         override fun toastFromService(line: String) {
             check(onMainThread()) { "service toast must run on main" }
@@ -633,6 +642,7 @@ internal class DictationSessionRig {
             val takeId = currentTakeId
             push {
                 endingGate?.await(10, TimeUnit.SECONDS)
+                it.onCaptureClosed(takeId, true)
                 it.onEnded(TakeEnding(takeId, reason, startFailure, audioFile?.path, AudioCaptureService.SILENCE_STATUS_DISABLED, peak, "Phone microphone"))
             }
         }

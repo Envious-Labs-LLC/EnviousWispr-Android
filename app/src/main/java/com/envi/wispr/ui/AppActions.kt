@@ -11,8 +11,8 @@ import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.CustomTermRecord
 
 /**
- * Everything the shell can ask the activity and the view model to do (#190): thirty-nine callbacks in ten
- * groups, each named after the CAPABILITY that owns the action, so a screen that shares a capability reads
+ * Everything the shell can ask the activity and the view model to do (#190): callbacks arranged in
+ * groups named after the CAPABILITY that owns the action, so a screen that shares a capability reads
  * the same group. The activity builds one instance inside `remember(viewModel)`, so the object and every
  * lambda in it keep their identity across recompositions; the lambda types are exactly what the screens
  * took before the groups existed.
@@ -31,6 +31,7 @@ internal class AppActions(
     val microphone: MicrophoneActions,
     val clipboard: ClipboardActions,
     val appearance: AppearanceActions,
+    val sounds: SoundsActions,
 )
 
 /** The two actions the shell itself fires: the top-bar microphone and the readiness refresh. */
@@ -106,4 +107,10 @@ internal class ClipboardActions(
 internal class AppearanceActions(
     val onDynamicColorChanged: (Boolean) -> Unit,
     val onBubbleLookChanged: (BubbleLook) -> Unit,
+)
+
+internal class SoundsActions(
+    val onRecordingSoundsChanged: (Boolean) -> Unit,
+    val onRecordingSoundPairingChanged: (com.envi.wispr.audio.RecordingSoundPairing) -> Unit,
+    val onRecordingVibrationChanged: (Boolean) -> Unit,
 )

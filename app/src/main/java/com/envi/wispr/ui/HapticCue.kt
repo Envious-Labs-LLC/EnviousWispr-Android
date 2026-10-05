@@ -7,8 +7,8 @@ package com.envi.wispr.ui
  * settings. `Settings.System.HAPTIC_FEEDBACK_ENABLED` governs touch and long-press feedback,
  * so honouring it for a RESULT cue is parity with `AccessibilityInsertionRunner.performResultHaptic`.
  * A session cue is not feedback on a touch: on the side-button path there is no window, the
- * user's eyes are on another app's text field, and the buzz is the only signal that recording
- * started or stopped. Gating those on the touch-feedback switch silences the whole product for
+ * user's eyes are on another app's text field, and the buzz confirms that recording
+ * started or stopped when recording vibration is enabled. Gating those on the touch-feedback switch silences the whole product for
  * a user who turned off keyboard clicks.
  *
  * Top-level since #186 so the coordinator names the cue and the Service fires it.
@@ -18,7 +18,7 @@ internal enum class HapticCue(
     val amplitude: Int,
     val honoursSystemHapticSetting: Boolean,
 ) {
-    /** Recording started, or stopped for transcription. The only cue on a windowless path. */
+    /** Recording started, or stopped for transcription. Controlled by the independent recording-vibration switch. */
     SESSION_TRANSITION(28L, 120, honoursSystemHapticSetting = false),
 
     /** The user cancelled. Also a windowless acknowledgement, with the heavier waveform. */

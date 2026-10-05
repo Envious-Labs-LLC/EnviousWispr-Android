@@ -1,6 +1,7 @@
 package com.envi.wispr.ui
 
 import com.envi.wispr.audio.InputDevicePick
+import com.envi.wispr.audio.RecordingSoundPairing
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
 import com.envi.wispr.polish.PolishPolicy
@@ -25,6 +26,9 @@ import java.util.concurrent.atomic.AtomicReference
  * take's answer (a late first read, a mid-take change) can never move a take already decided.
  */
 internal data class SessionPreferences(
+    val recordingSoundsEnabled: Boolean = true,
+    val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
+    val recordingVibrationEnabled: Boolean = true,
     val cleanup: CleanupOptions = CleanupOptions(),
     val matcher: StructuredTermRestorer.Matcher = StructuredTermRestorer.compile(emptyList()),
     val clipboard: ClipboardInsertionPolicy = ClipboardInsertionPolicy(),
@@ -76,6 +80,9 @@ internal sealed interface PreferenceRead {
  * a take reading it sees an outcome and the values that came with it, never a torn pair.
  */
 internal data class SettingsSnapshot(
+    val recordingSoundsEnabled: Boolean = true,
+    val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
+    val recordingVibrationEnabled: Boolean = true,
     val read: PreferenceRead = PreferenceRead.Pending,
     val cleanupOptions: CleanupOptions = CleanupOptions(),
     /**
@@ -191,6 +198,9 @@ internal class SessionPreferencesSource(
                     settingsSnapshot.set(
                         SettingsSnapshot(
                             read = PreferenceRead.Fresh,
+                            recordingSoundsEnabled = preferences.recordingSoundsEnabled,
+                            recordingSoundPairing = preferences.recordingSoundPairing,
+                            recordingVibrationEnabled = preferences.recordingVibrationEnabled,
                             cleanupOptions = preferences.cleanupOptions(),
                             clipboardPolicy = preferences.clipboardInsertionPolicy(),
                             autoStopOnSilence = preferences.autoStopOnSilenceEnabled,
@@ -250,6 +260,9 @@ internal class SessionPreferencesSource(
      */
     fun freeze(start: PreferenceStart, matcher: StructuredTermRestorer.Matcher, policy: PolishPolicy): SessionPreferences =
         SessionPreferences(
+            recordingSoundsEnabled = start.settings.recordingSoundsEnabled,
+            recordingSoundPairing = start.settings.recordingSoundPairing,
+            recordingVibrationEnabled = start.settings.recordingVibrationEnabled,
             cleanup = start.settings.cleanupOptions.copy(spellingProtectedWords = com.envi.wispr.cleanup.BritishSpelling.protectedWords(start.terms.userSpellings)),
             matcher = matcher,
             // The stand-in for a read that never answered: today's null branch, kept on purpose (#193 plan

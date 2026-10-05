@@ -11,8 +11,8 @@ import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.CustomTermRecord
 
 /**
- * Everything the shell can ask the activity and the view model to do (#190): thirty-nine callbacks in ten
- * groups, each named after the CAPABILITY that owns the action, so a screen that shares a capability reads
+ * Everything the shell can ask the activity and the view model to do (#190): callbacks arranged in
+ * groups named after the CAPABILITY that owns the action, so a screen that shares a capability reads
  * the same group. The activity builds one instance inside `remember(viewModel)`, so the object and every
  * lambda in it keep their identity across recompositions; the lambda types are exactly what the screens
  * took before the groups existed.

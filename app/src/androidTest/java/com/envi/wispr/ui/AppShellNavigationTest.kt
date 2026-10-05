@@ -20,6 +20,11 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import android.app.UiAutomation
+import android.view.KeyCharacterMap
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import com.envi.wispr.feedback.FeedbackController
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -155,17 +160,17 @@ class AppShellNavigationTest {
         val controller = FeedbackController.of(composeRule.activity)
         var newer = 0L
         composeRule.runOnUiThread {
-            val old = controller.state.value.presentation
+            val old = controller.state.presentation
             newer = controller.open(restoredConsent = false)
-            val expectedPhase = controller.state.value.phase
-            val expectedProblem = controller.state.value.problem
+            val expectedPhase = controller.state.phase
+            val expectedProblem = controller.state.problem
             controller.edit(old, "UAT stale corruption.", "")
             controller.includeDiagnostics(old, true)
             controller.send(old)
-            assertEquals("UAT current draft.", controller.state.value.draft.message)
-            assertEquals(false, controller.state.value.includeDiagnostics)
-            assertEquals(expectedPhase, controller.state.value.phase)
-            assertEquals(expectedProblem, controller.state.value.problem)
+            assertEquals("UAT current draft.", controller.state.draft.message)
+            assertEquals(false, controller.state.includeDiagnostics)
+            assertEquals(expectedPhase, controller.state.phase)
+            assertEquals(expectedProblem, controller.state.problem)
         }
         composeRule.onNodeWithText("Send", substring = false).assertIsNotEnabled()
         composeRule.runOnUiThread {
@@ -173,6 +178,38 @@ class AppShellNavigationTest {
             controller.close(newer)
         }
         composeRule.onNodeWithText("Close").performScrollTo().performClick()
+    }
+
+    /** Product Outcome: real rapid keyboard events cannot be overwritten by an older Flow projection. */
+    @Test
+    fun feedbackRetainsEveryCharacterFromRapidKeyboardInput() {
+        composeRule.onNodeWithContentDescription("Send feedback").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onNodeWithText("Feedback message").fetchSemanticsNode().config.getOrNull(SemanticsProperties.Disabled) == null
+        }
+        val field = composeRule.onNodeWithText("Feedback message")
+        field.performTextReplacement("")
+        field.performClick()
+        val automation = InstrumentationRegistry.getInstrumentation()
+            .getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+        val originalInfo = automation.serviceInfo
+        val info = automation.serviceInfo
+        info.flags = info.flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        automation.serviceInfo = info
+        try {
+            composeRule.waitUntil(5_000) {
+                automation.windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+            }
+            val expected = "UAT #423 Android feedback with diagnostics. No reply needed."
+            val events = checkNotNull(KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(expected.toCharArray()))
+            events.forEach { check(automation.injectInputEvent(it, false)) { "Keyboard event was refused" } }
+            composeRule.waitUntil(5_000) {
+                field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text == expected
+            }
+            field.assertTextContains(expected)
+            field.performTextReplacement("")
+            composeRule.onNodeWithText("Close").performScrollTo().performClick()
+        } finally { automation.serviceInfo = originalInfo }
     }
 
     @Test

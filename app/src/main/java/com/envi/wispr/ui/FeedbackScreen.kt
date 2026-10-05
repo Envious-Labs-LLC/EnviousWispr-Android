@@ -44,7 +44,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.envi.wispr.feedback.FeedbackController
 import com.envi.wispr.feedback.FeedbackPhase
 import com.envi.wispr.feedback.FeedbackSender
@@ -57,7 +56,7 @@ import kotlinx.coroutines.delay
 internal fun FeedbackScreen(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val controller = remember(context.applicationContext) { FeedbackController.of(context) }
-    val state by controller.state.collectAsStateWithLifecycle()
+    val state = controller.state
     var preview by remember { mutableStateOf(false) }
     // Survives activity recreation, but disappears when the user deliberately dismisses this form.
     var savedConsent by rememberSaveable { mutableStateOf<Boolean?>(null) }
@@ -65,7 +64,7 @@ internal fun FeedbackScreen(onDismiss: () -> Unit) {
     DisposableEffect(controller) {
         val token = controller.open(savedConsent)
         opening = token
-        savedConsent = controller.state.value.includeDiagnostics
+        savedConsent = controller.state.includeDiagnostics
         onDispose { controller.close(token) }
     }
     val active = opening != 0L && opening == state.presentation
@@ -94,14 +93,14 @@ internal fun FeedbackScreen(onDismiss: () -> Unit) {
                     Text("If you left your email, we'll reply there.")
                 } else {
                     OutlinedTextField(value = state.draft.message,
-                        onValueChange = { controller.edit(opening, it, state.draft.email) },
+                        onValueChange = { controller.edit(opening, it, controller.state.draft.email) },
                         enabled = state.loaded && active, minLines = 4, maxLines = 6,
                         label = { Text("Feedback message") }, placeholder = { Text("What happened, or what would you like to see?") },
                         isError = issue == FeedbackValidation.Issue.TOO_LONG,
                         supportingText = { if (issue == FeedbackValidation.Issue.TOO_LONG) Text("Please shorten your message to 4,000 characters.") },
                         modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = state.draft.email,
-                        onValueChange = { controller.edit(opening, state.draft.message, it) },
+                        onValueChange = { controller.edit(opening, controller.state.draft.message, it) },
                         enabled = state.loaded && active, singleLine = true,
                         label = { Text("Email (optional, if you'd like a reply)") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -110,7 +109,7 @@ internal fun FeedbackScreen(onDismiss: () -> Unit) {
                         modifier = Modifier.fillMaxWidth())
                     Row {
                         Checkbox(checked = state.includeDiagnostics, onCheckedChange = {
-                                if (opening == controller.state.value.presentation) savedConsent = it
+                                if (opening == controller.state.presentation) savedConsent = it
                                 controller.includeDiagnostics(opening, it)
                             },
                             enabled = active && (state.snapshotLoading || state.diagnostics != null),

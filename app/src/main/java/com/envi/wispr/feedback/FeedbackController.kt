@@ -6,8 +6,7 @@ import com.envi.wispr.telemetry.Telemetry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
+import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -34,8 +33,8 @@ internal class FeedbackController private constructor(context: Context) {
     private val store = FeedbackDelivery.store(app)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val writes = Mutex()
-    private val mutable = MutableStateFlow(FeedbackFormState())
-    val state: StateFlow<FeedbackFormState> = mutable
+    private val mutable = mutableStateOf(FeedbackFormState())
+    val state: FeedbackFormState get() = mutable.value
     private var generation = 0L
     init {
         scope.launch {
@@ -66,7 +65,7 @@ internal class FeedbackController private constructor(context: Context) {
     fun close(token: Long) { if (generation == token) generation++ }
     fun includeDiagnostics(token: Long, include: Boolean) { if (generation == token) mutable.value = mutable.value.copy(includeDiagnostics = include) }
     fun edit(token: Long, message: String, email: String) {
-        if (generation != token || !mutable.value.loaded) return
+        if (generation != token || !mutable.value.loaded || mutable.value.phase == FeedbackPhase.SAVED) return
         val draft = FeedbackDraft(mutable.value.draft.revision + 1, message, email)
         mutable.value = mutable.value.copy(draft = draft, problem = null)
         scope.launch {
@@ -77,7 +76,7 @@ internal class FeedbackController private constructor(context: Context) {
         }
     }
     fun send(token: Long) {
-        if (generation != token) return
+        if (generation != token || mutable.value.phase != FeedbackPhase.EDITING) return
         val form = mutable.value
         if (!form.loaded || form.phase == FeedbackPhase.SAVING || FeedbackValidation.issue(form.draft, ::feedbackGraphemes) != null ||
             (form.includeDiagnostics && form.snapshotLoading)) return

@@ -11,7 +11,7 @@ import org.junit.Test
 class PrivacyPageSentencesTest {
     @Test fun theOnDeviceSentenceIsTodays() {
         assertEquals(
-            "Your voice stays on this phone. Audio never leaves it. Your words stay here too, unless you " +
+            "Your voice stays on this phone. Audio never leaves it. Your dictated words stay here too, unless you " +
                 "connect your own AI provider for cloud polish; then the selected text goes straight to that provider under your key.",
             PrivacyDisclosures.ON_DEVICE_SUMMARY,
         )

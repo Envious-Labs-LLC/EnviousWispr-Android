@@ -10,7 +10,7 @@ internal object PrivacyDisclosures {
     const val POLICY_URL = "https://enviouswispr.com/privacy-policy/"
 
     /** What stays: the boundary is the network, and audio never crosses it on any path. */
-    const val ON_DEVICE_SUMMARY = "Your voice stays on this phone. Audio never leaves it. Your words stay here too, unless you " +
+    const val ON_DEVICE_SUMMARY = "Your voice stays on this phone. Audio never leaves it. Your dictated words stay here too, unless you " +
         "connect your own AI provider for cloud polish; then the selected text goes straight to that provider under your key."
 
     /**
@@ -22,7 +22,7 @@ internal object PrivacyDisclosures {
         "whether a dictation finished, how long each step took, which settings are on, which app the words went to, " +
         "and a crash report when the app fails. It never sends audio, your dictated words, names you enter, file contents, or API keys. " +
         "A crash report can include the technical location in the code where it failed. " +
-        "A random id tells one install from another; it is not tied to you or an account."
+        "A random id tells one install from another; it is not an account. If you send feedback, that report can link to earlier usage from the same install."
 
     /**
      * #378: shown while the hidden Detailed log switch is on, AND while a local log file or shared log export
@@ -31,6 +31,10 @@ internal object PrivacyDisclosures {
     const val DETAILED_LOG = "Detailed log keeps what you dictate in a file on this phone. Turning it off stops new logging; " +
         "earlier logs stay on this phone until later logging overwrites them or the app is uninstalled. " +
         "A copy you shared stays in the app you shared it to."
+
+    const val FEEDBACK = "Send feedback sends only the message you choose to submit and an optional reply email to Envious Labs via Sentry. " +
+        "You can include and preview technical diagnostics for that report. No audio, dictated words, API keys or detailed local logs are attached. " +
+        "The report can link to earlier usage reports from this install, including when diagnostics are excluded. Drafts and waiting reports stay on this phone."
 
     const val TELEMETRY_VENDORS = "These reports go to PostHog (usage) and Sentry (crashes), stored in the United States. " +
         "PostHog may work out an approximate city or region from the connection; EnviousWispr never reads your phone's location."

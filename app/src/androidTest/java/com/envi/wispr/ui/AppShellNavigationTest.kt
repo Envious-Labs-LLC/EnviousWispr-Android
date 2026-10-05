@@ -2,6 +2,12 @@ package com.envi.wispr.ui
 
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
@@ -87,6 +93,32 @@ class AppShellNavigationTest {
         val count = composeRule.onAllNodes(matcher).fetchSemanticsNodes().size
         check(count <= 1) { "expected at most one node matching $matcher, found $count" }
         return count == 1
+    }
+
+    /** Product Outcome: a report draft survives dismissal/rotation and an invalid reply address cannot be submitted. */
+    @Test
+    fun feedbackKeepsItsDraftAndRefusesAnInvalidReplyAddress() {
+        composeRule.onNodeWithContentDescription("Send feedback").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onNodeWithText("Feedback message").fetchSemanticsNode().config
+                .getOrNull(SemanticsProperties.Disabled) == null
+        }
+        composeRule.onNodeWithText("Feedback message").assertIsEnabled()
+        composeRule.onNodeWithText("Send", substring = false).assertIsNotEnabled()
+        composeRule.onNodeWithText("Feedback message").performTextReplacement("UAT draft: keep my report when I close the form.")
+        composeRule.onNodeWithText("Email (optional, if you'd like a reply)").performTextReplacement("invalid-email")
+        composeRule.onNodeWithText("Please check your email address, or leave it empty.").assertExists()
+        composeRule.onNodeWithText("Send", substring = false).assertIsNotEnabled()
+        composeRule.onNodeWithText("Close").performClick()
+        composeRule.onNodeWithContentDescription("Send feedback").performClick()
+        composeRule.onNodeWithText("Feedback message").assertTextContains("UAT draft: keep my report when I close the form.")
+        composeRule.activityRule.scenario.recreate()
+        composeRule.onNodeWithText("Feedback message").assertTextContains("UAT draft: keep my report when I close the form.")
+        composeRule.onNodeWithText("Send", substring = false).assertIsNotEnabled()
+        // This is our emulator's synthetic draft, not the founder's correspondence.
+        composeRule.onNodeWithText("Feedback message").performTextReplacement("")
+        composeRule.onNodeWithText("Email (optional, if you'd like a reply)").performTextReplacement("")
+        composeRule.onNodeWithText("Close").performClick()
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.envi.wispr.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,6 +37,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
@@ -107,13 +109,17 @@ internal fun FeedbackScreen(onDismiss: () -> Unit) {
                         isError = issue == FeedbackValidation.Issue.EMAIL,
                         supportingText = { if (issue == FeedbackValidation.Issue.EMAIL) Text("Please check your email address, or leave it empty.") },
                         modifier = Modifier.fillMaxWidth())
-                    Row {
-                        Checkbox(checked = state.includeDiagnostics, onCheckedChange = {
-                                if (opening == controller.state.presentation) savedConsent = it
-                                controller.includeDiagnostics(opening, it)
-                            },
-                            enabled = active && (state.snapshotLoading || state.diagnostics != null),
-                            modifier = Modifier.semantics { contentDescription = "Include diagnostics" })
+                    Row(Modifier.fillMaxWidth().toggleable(
+                        value = state.includeDiagnostics,
+                        enabled = active && (state.snapshotLoading || state.diagnostics != null),
+                        role = Role.Checkbox,
+                        onValueChange = {
+                            if (opening == controller.state.presentation) savedConsent = it
+                            controller.includeDiagnostics(opening, it)
+                        },
+                    ).semantics { contentDescription = "Include diagnostics" }) {
+                        Checkbox(checked = state.includeDiagnostics, onCheckedChange = null,
+                            enabled = active && (state.snapshotLoading || state.diagnostics != null))
                         Column(Modifier.weight(1f).padding(top = 12.dp)) {
                             Text("Include diagnostics", style = MaterialTheme.typography.bodyMedium)
                             Text("Includes recent dictation details. No audio or dictated text.", style = MaterialTheme.typography.bodySmall)

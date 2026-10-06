@@ -84,6 +84,8 @@ internal fun EnviousWisprApp(
     // out of the list, or leaving History for another tab, does not close it. Null is "all closed",
     // and holding ONE id is what makes "only one open at a time" true by construction.
     var expandedTranscriptId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var feedbackOpen by rememberSaveable { mutableStateOf(false) }
+    if (feedbackOpen) FeedbackScreen(onDismiss = { feedbackOpen = false })
     // The hidden Developer page (#378 D1): the switches' owner says whether it is unlocked; seven taps on the
     // drawer's version line within three seconds unlock it. A saved Developer route resolves to nothing while
     // locked, so the tab beneath shows.
@@ -147,6 +149,7 @@ internal fun EnviousWisprApp(
             onOpenDrawer = { scope.launch { drawerState.open() } },
             onBack = closePages,
             onSelectDestination = { destinationName = it.name },
+            onFeedback = { feedbackOpen = true },
             onStartDictation = {
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 actions.shell.onStartDictation()

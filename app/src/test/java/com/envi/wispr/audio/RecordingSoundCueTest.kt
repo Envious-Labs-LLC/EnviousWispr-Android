@@ -5,6 +5,30 @@ import org.junit.Test
 
 /** Product Outcome: the user hears at most one matched pair, with no stop before confirmed closure. */
 class RecordingSoundCueTest {
+    @Test fun preparationAfterLiveStillPlaysOneMatchedPair() {
+        var ready = false
+        val heard = mutableListOf<RecordingSoundMoment>()
+        val cue = RecordingSoundCue { _, moment -> if (ready) { heard += moment; true } else false }
+        cue.live(true, RecordingSoundPairing.DEFAULT)
+        assertTrue(heard.isEmpty())
+        ready = true
+        cue.prepared()
+        cue.prepared()
+        cue.captureClosed(true)
+        assertEquals(listOf(RecordingSoundMoment.START, RecordingSoundMoment.STOP), heard)
+    }
+    @Test fun preparationAfterStopCannotPlayAStaleStart() {
+        var ready = false
+        val heard = mutableListOf<RecordingSoundMoment>()
+        val cue = RecordingSoundCue { _, moment -> if (ready) { heard += moment; true } else false }
+        cue.live(true, RecordingSoundPairing.DEFAULT)
+        cue.ending()
+        ready = true
+        cue.prepared()
+        cue.captureClosed(true)
+        assertTrue(heard.isEmpty())
+    }
+
     @Test fun aStopRequiresSuccessfulStartAndConfirmedClosure() {
         val heard = mutableListOf<String>()
         val cue = RecordingSoundCue { pair, moment -> heard += "${pair.storageKey}:${moment.name}"; true }

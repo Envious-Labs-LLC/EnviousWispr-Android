@@ -1,6 +1,7 @@
 package com.envi.wispr.audio
 
 import android.content.Context
+import com.envi.wispr.debug.DebugLogger
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -42,26 +43,35 @@ internal object RecordingSoundOutput {
         busyState.value = true
     }
 
-    fun prepare(context: Context, token: String, pairing: RecordingSoundPairing) {
+    fun prepare(context: Context, token: String, pairing: RecordingSoundPairing, onReady: () -> Unit) {
         main()
         if (takeToken != token) return
         takePlayers?.close()
-        takePlayers = PairPlayers(context.applicationContext, pairing)
+        val pair = PairPlayers(context.applicationContext, pairing)
+        takePlayers = pair
+        pair.whenReady = { if (takeToken == token && takePlayers === pair) onReady() }
     }
 
     fun play(token: String, pairing: RecordingSoundPairing, moment: RecordingSoundMoment): Boolean {
         main()
-        val pair = takePlayers ?: return false
-        if (takeToken != token || pair.pairing != pairing) return false
+        val pair = takePlayers
+        if (pair == null) { DebugLogger.log("RecordingSounds", "$moment unavailable: no prepared pair"); return false }
+        if (takeToken != token || pair.pairing != pairing) { DebugLogger.log("RecordingSounds", "$moment rejected: obsolete take or pair"); return false }
         return when (moment) {
             RecordingSoundMoment.START -> {
-                val played = pair.ready && pair.start.play()
+                if (!pair.ready) {
+                    DebugLogger.log("RecordingSounds", "Start awaiting preparation")
+                    return false
+                }
+                val played = pair.start.play()
+                DebugLogger.log("RecordingSounds", "Start played=$played")
                 if (!played) { pair.close(); takePlayers = null }
                 played
             }
             RecordingSoundMoment.STOP -> {
                 takePlayers = null
                 val played = pair.stop.play()
+                DebugLogger.log("RecordingSounds", "Stop played=$played ready=${pair.stop.ready}")
                 pair.close(keepPlaying = true)
                 played
             }
@@ -120,8 +130,8 @@ internal object RecordingSoundOutput {
     private class PairPlayers(context: Context, val pairing: RecordingSoundPairing) {
         var whenReady: (() -> Unit)? = null
         private var closed = false
-        val start = Clip(context, pairing.startResource, ::loaded, ::failed) {}
-        val stop = Clip(context, pairing.stopResource, ::loaded, ::failed) {
+        val start = Clip(context, pairing.startResource, ::loaded, ::failed, ::interrupted) {}
+        val stop = Clip(context, pairing.stopResource, ::loaded, ::failed, ::interrupted) {
             if (previewPlayers === this) cancelPreview()
         }
         val ready: Boolean get() = !closed && start.ready && stop.ready
@@ -139,7 +149,13 @@ internal object RecordingSoundOutput {
         }
 
         private fun failed() {
+            DebugLogger.warn("RecordingSounds", "Preparation or player failed")
             if (previewPlayers === this) cancelPreview() else close()
+        }
+
+        private fun interrupted() {
+            // A preview is one cancellable sequence. A live take's future stop is a separate cue.
+            if (previewPlayers === this) cancelPreview()
         }
 
         fun close(keepPlaying: Boolean = false) {
@@ -157,6 +173,7 @@ internal object RecordingSoundOutput {
         resource: Int,
         private val onReady: () -> Unit,
         private val onFailure: () -> Unit,
+        private val onInterruption: () -> Unit,
         private val onCompletion: () -> Unit,
     ) {
         private val manager = context.getSystemService(AudioManager::class.java)
@@ -201,7 +218,7 @@ internal object RecordingSoundOutput {
             val output = player ?: return false
             return try {
                 val listener = AudioManager.OnAudioFocusChangeListener { change ->
-                    if (change < 0 && focus != null) { close(); onFailure() }
+                    if (change < 0 && focus != null) { DebugLogger.log("RecordingSounds", "Focus interrupted=$change"); close(); onInterruption() }
                 }
                 focusListener = listener
                 val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)

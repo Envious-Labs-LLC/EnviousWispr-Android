@@ -23,7 +23,7 @@ import java.io.IOException
 private val Context.enviousWisprDataStore by preferencesDataStore(name = "enviouswispr_settings")
 
 internal data class AppPreferencesState(
-    val recordingSoundsEnabled: Boolean = true,
+    val recordingSoundsEnabled: Boolean = false,
     val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
     val recordingVibrationEnabled: Boolean = true,
     val onboardingStep: Int = 0,
@@ -90,7 +90,7 @@ internal class AppPreferences(context: Context) {
         }
 
     private fun mapState(preferences: Preferences): AppPreferencesState = AppPreferencesState(
-        recordingSoundsEnabled = preferences[Keys.RECORDING_SOUNDS] ?: true,
+        recordingSoundsEnabled = preferences[Keys.RECORDING_SOUNDS] ?: false,
         recordingSoundPairing = RecordingSoundPairing.fromStorage(preferences[Keys.RECORDING_SOUND_PAIRING]),
         recordingVibrationEnabled = preferences[Keys.RECORDING_VIBRATION] ?: true,
         onboardingStep = if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0,

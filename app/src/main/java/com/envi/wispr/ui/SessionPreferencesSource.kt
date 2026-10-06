@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicReference
  * take's answer (a late first read, a mid-take change) can never move a take already decided.
  */
 internal data class SessionPreferences(
-    val recordingSoundsEnabled: Boolean = true,
+    val recordingSoundsEnabled: Boolean = false,
     val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
     val recordingVibrationEnabled: Boolean = true,
     val cleanup: CleanupOptions = CleanupOptions(),
@@ -80,7 +80,7 @@ internal sealed interface PreferenceRead {
  * a take reading it sees an outcome and the values that came with it, never a torn pair.
  */
 internal data class SettingsSnapshot(
-    val recordingSoundsEnabled: Boolean = true,
+    val recordingSoundsEnabled: Boolean = false,
     val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
     val recordingVibrationEnabled: Boolean = true,
     val read: PreferenceRead = PreferenceRead.Pending,

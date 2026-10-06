@@ -282,7 +282,7 @@ internal class CaptureSessionController(
         }
 
         override fun onCaptureClosed(takeId: String, resourcesClosed: Boolean) {
-            host.postToMain { if (ours(takeId)) events(CaptureEvent.Closed(resourcesClosed)) }
+            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); events(CaptureEvent.Closed(resourcesClosed)) } }
         }
 
         override fun onEnded(ending: TakeEnding) {

@@ -103,7 +103,7 @@ class DictationSessionService : Service() {
         }
 
         override fun beginRecordingFeedback(takeId: String) = com.envi.wispr.audio.RecordingSoundOutput.admit(takeId)
-        override fun prepareRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing) = com.envi.wispr.audio.RecordingSoundOutput.prepare(applicationContext, takeId, pairing)
+        override fun prepareRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, onReady: () -> Unit) = com.envi.wispr.audio.RecordingSoundOutput.prepare(applicationContext, takeId, pairing, onReady)
         override fun playRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, moment: com.envi.wispr.audio.RecordingSoundMoment): Boolean = com.envi.wispr.audio.RecordingSoundOutput.play(takeId, pairing, moment)
         override fun finishRecordingFeedback(takeId: String) = com.envi.wispr.audio.RecordingSoundOutput.finish(takeId)
 

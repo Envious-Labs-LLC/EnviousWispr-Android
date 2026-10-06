@@ -43,6 +43,37 @@ class RecordingSoundOutputDeviceTest {
         return field(playing, "focusListener") as AudioManager.OnAudioFocusChangeListener
     }
 
+    @Test fun interruptingALiveStartKeepsTheMatchingStopPrepared() {
+        ActivityScenario.launch(SettingsActivity::class.java).use {
+            val token = "live-focus-regression"
+            try {
+                runBlocking {
+                    withTimeout(5_000) {
+                        withContext(Dispatchers.Main.immediate) {
+                            val prepared = kotlinx.coroutines.CompletableDeferred<Unit>()
+                            RecordingSoundOutput.admit(token)
+                            RecordingSoundOutput.prepare(context, token, RecordingSoundPairing.WHISPER_TICK) {
+                                runCatching {
+                                    assertTrue(RecordingSoundOutput.play(token, RecordingSoundPairing.WHISPER_TICK, RecordingSoundMoment.START))
+                                    startedFocusListener().onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+                                    val clips = field(RecordingSoundOutput, "clips") as Set<*>
+                                    assertEquals("only the future stop remains", 1, clips.size)
+                                    assertEquals(true, field(clips.single()!!, "ready"))
+                                    assertTrue(RecordingSoundOutput.play(token, RecordingSoundPairing.WHISPER_TICK, RecordingSoundMoment.STOP))
+                                }.fold(onSuccess = { prepared.complete(Unit) }, onFailure = { prepared.completeExceptionally(it) })
+                            }
+                            prepared.await()
+                        }
+                    }
+                }
+            } finally { main {
+                val cleanupToken = "$token-cleanup"
+                RecordingSoundOutput.admit(cleanupToken)
+                RecordingSoundOutput.finish(cleanupToken)
+            } }
+        }
+    }
+
     @Test fun focusLossCancelsThePendingStopAndReleasesBothPlayers() {
         ActivityScenario.launch(SettingsActivity::class.java).use {
             try {

@@ -452,7 +452,9 @@ internal class DictationSessionCoordinator(
                 val policy = takePolicy(read)
                 sessionPreferences = preferences.freeze(prepared.start, matcher, policy)
                 feedbackPreferencesReady = true
-                if (sessionPreferences.recordingSoundsEnabled) runCatching { host.prepareRecordingSound(takeId, sessionPreferences.recordingSoundPairing) }
+                if (sessionPreferences.recordingSoundsEnabled) runCatching { host.prepareRecordingSound(takeId, sessionPreferences.recordingSoundPairing) {
+                    if (take.takeId == takeId && !destroyed.get() && state.get() == SessionState.RECORDING) soundCue.prepared()
+                } }
                 outcome.bindRequested(sinceAccepted())
                 bindPipelineServices()
             }
@@ -603,7 +605,10 @@ internal class DictationSessionCoordinator(
             is CaptureEvent.Live -> publishLive(event.forced, event.routeKind, event.routeReason, event.liveAfterMs)
             is CaptureEvent.Tick -> onTakeTick(event.elapsedMs)
             is CaptureEvent.SilenceStatus -> publishSilenceNoticeIfNeeded(event.status)
-            is CaptureEvent.Closed -> soundCue.captureClosed(event.resourcesClosed)
+            is CaptureEvent.Closed -> {
+                take.log.log("Sound capture closure confirmed=${event.resourcesClosed}")
+                soundCue.captureClosed(event.resourcesClosed)
+            }
             is CaptureEvent.Ended -> onTakeEnded(event.ending)
             CaptureEvent.Silent -> onCaptureSilent()
             CaptureEvent.LiveDeadlinePassed -> onLiveDeadline()
@@ -810,6 +815,7 @@ internal class DictationSessionCoordinator(
         // follows its CAS cannot run ahead of its publication.
         synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.RECORDING, SessionState.PROCESSING)) return false
+            soundCue.ending()
             surface.showProcessing()
         }
         host.updateSurfacePhase(DictationSurfaceState.Phase.PROCESSING)
@@ -1052,6 +1058,7 @@ internal class DictationSessionCoordinator(
      * service its `finishTake` (a cancelled take leaves the earbuds warm like a finished one).
      */
     private fun cancelCaptureAndFinish(cancel: TakeArbiter.Token, cancelled: TerminalReason) {
+        soundCue.ending()
         surface.showProcessing()
         insertion.releasePinnedTarget()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)

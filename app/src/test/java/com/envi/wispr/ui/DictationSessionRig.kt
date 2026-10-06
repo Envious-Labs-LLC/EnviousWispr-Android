@@ -320,10 +320,11 @@ internal class DictationSessionRig {
         override fun promoteToForeground(processing: Boolean) { events += "foreground:$processing" }
         override fun updateSurfacePhase(phase: DictationSurfaceState.Phase) { events += "phase:${phase.name}" }
         override fun beginRecordingFeedback(takeId: String) { events += "cue-admit" }
-        override fun prepareRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing) { events += "cue-prepare:${pairing.storageKey}" }
+        @Volatile var soundReady: (() -> Unit)? = null
+        override fun prepareRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, onReady: () -> Unit) { events += "cue-prepare:${pairing.storageKey}"; soundReady = onReady }
         @Volatile var cuePlays = true
         override fun playRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, moment: com.envi.wispr.audio.RecordingSoundMoment): Boolean {
-            events += "cue:${pairing.storageKey}:${moment.name}"
+            events += if (cuePlays) "cue:${pairing.storageKey}:${moment.name}" else "cue-failed:${moment.name}"
             timeline += "cue:${moment.name}"
             return cuePlays
         }

@@ -6,9 +6,9 @@ import org.junit.Test
 
 /** Product Outcome: independent persisted choices are mapped into the user's runtime policies. */
 class AppPreferencesStateTest {
-    @Test fun recordingDefaultsAreWhisperTickWithSoundsAndVibrationOn() {
+    @Test fun recordingDefaultsAreWhisperTickWithSoundsOffAndVibrationOn() {
         val defaults = AppPreferencesState()
-        assertTrue(defaults.recordingSoundsEnabled)
+        assertFalse(defaults.recordingSoundsEnabled)
         assertTrue(defaults.recordingVibrationEnabled)
         org.junit.Assert.assertEquals(com.envi.wispr.audio.RecordingSoundPairing.WHISPER_TICK, defaults.recordingSoundPairing)
         org.junit.Assert.assertEquals(com.envi.wispr.audio.RecordingSoundPairing.WHISPER_TICK, com.envi.wispr.audio.RecordingSoundPairing.fromStorage("foreign"))

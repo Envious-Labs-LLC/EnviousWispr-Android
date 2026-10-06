@@ -15,3 +15,4 @@ app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt:DictationSessionS
 app/src/main/java/com/envi/wispr/ui/SettingsActivity.kt:SettingsActivity  # manifest <activity>, the launcher
 app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt:VoiceInputActivity  # manifest <activity>, the recorder entry
 app/src/main/java/com/envi/wispr/vad/SilenceVadService.kt:SilenceVadService  # manifest <service>, process :vad
+app/src/main/java/com/envi/wispr/feedback/FeedbackDeliveryWorker.kt:FeedbackDeliveryWorker  # WorkManager constructs by class name

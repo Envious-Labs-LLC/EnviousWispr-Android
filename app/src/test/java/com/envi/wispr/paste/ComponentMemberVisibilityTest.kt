@@ -1,5 +1,6 @@
 package com.envi.wispr.paste
 
+import com.envi.wispr.feedback.FeedbackDeliveryWorker
 import com.envi.wispr.asr.AsrService
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.models.ModelBootstrapApplication
@@ -49,7 +50,7 @@ class ComponentMemberVisibilityTest {
         ModelDeliveryCancelReceiver::class.java, ModelDeliveryWorker::class.java, PasteAccessibilityService::class.java,
         PolishService::class.java, DictationTileService::class.java, AccessibilityGuideActivity::class.java,
         DictationSessionService::class.java, SettingsActivity::class.java, VoiceInputActivity::class.java,
-        SilenceVadService::class.java,
+        SilenceVadService::class.java, FeedbackDeliveryWorker::class.java,
     )
 
     /** Every superclass and interface up the chain, so an override of a grandparent's method is recognised. */

@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
@@ -109,7 +110,7 @@ internal fun FeedbackScreen(onDismiss: () -> Unit) {
                         isError = issue == FeedbackValidation.Issue.EMAIL,
                         supportingText = { if (issue == FeedbackValidation.Issue.EMAIL) Text("Please check your email address, or leave it empty.") },
                         modifier = Modifier.fillMaxWidth())
-                    Row(Modifier.fillMaxWidth().toggleable(
+                    Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(
                         value = state.includeDiagnostics,
                         enabled = active && (state.snapshotLoading || state.diagnostics != null),
                         role = Role.Checkbox,
@@ -117,13 +118,17 @@ internal fun FeedbackScreen(onDismiss: () -> Unit) {
                             if (opening == controller.state.presentation) savedConsent = it
                             controller.includeDiagnostics(opening, it)
                         },
-                    ).semantics { contentDescription = "Include diagnostics" }) {
-                        Checkbox(checked = state.includeDiagnostics, onCheckedChange = null,
-                            enabled = active && (state.snapshotLoading || state.diagnostics != null))
-                        Column(Modifier.weight(1f).padding(top = 12.dp)) {
-                            Text("Include diagnostics", style = MaterialTheme.typography.bodyMedium)
-                            Text("Includes recent dictation details. No audio or dictated text.", style = MaterialTheme.typography.bodySmall)
+                    ).semantics { contentDescription = "Include diagnostics" }.padding(vertical = 8.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = state.includeDiagnostics, onCheckedChange = null,
+                                enabled = active && (state.snapshotLoading || state.diagnostics != null),
+                                modifier = Modifier.size(24.dp))
+                            Text("Include diagnostics", style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f))
                         }
+                        Text("Includes recent dictation details. No audio or dictated text.",
+                            style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 36.dp))
                     }
                     Text("Your message and optional email go to Envious Labs via Sentry. This report can link to earlier usage reports from this install.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

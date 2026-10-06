@@ -8,18 +8,36 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Product Outcome (#179): when this fails, Google's review sandbox (a fake Android 11 phone) counts as
- * installs and fatal crashes in PostHog and Sentry on every upload, and a daily report says something false.
+ * Product Outcome (#179, #427): when this fails, Google's review sandbox (a fake Android 11 phone that reports a
+ * newer API level) counts as installs and fatal crashes in PostHog and Sentry on every upload, and a daily
+ * report says something false; or a real phone is filtered and its defects never arrive.
  */
 class SupportedPlatformTest {
     @Test fun aPhoneBelowTheBuildsMinSdkIsBelowMinimum() {
-        assertTrue(SupportedPlatform.isBelowMinimum(sdkInt = BuildConfig.MIN_SDK - 1, minSdk = BuildConfig.MIN_SDK))
-        assertTrue(SupportedPlatform.isBelowMinimum(sdkInt = 30, minSdk = BuildConfig.MIN_SDK)) // the sandbox: Android 11
+        assertTrue(SupportedPlatform.isBelowMinimum(sdkInt = BuildConfig.MIN_SDK - 1, minSdk = BuildConfig.MIN_SDK, frameworkHasProbeApi = true))
+        assertTrue(SupportedPlatform.isBelowMinimum(sdkInt = 30, minSdk = BuildConfig.MIN_SDK, frameworkHasProbeApi = false)) // Android 11, honest
+    }
+
+    @Test fun theSandboxReportingANewLevelOverAnOldFrameworkIsBelowMinimum() {
+        // #427: SDK_INT passed AndroidX's `>= 33` branches while PackageManager lacked the API 33 overload.
+        assertTrue(SupportedPlatform.isBelowMinimum(sdkInt = BuildConfig.MIN_SDK, minSdk = BuildConfig.MIN_SDK, frameworkHasProbeApi = false))
+        assertTrue(SupportedPlatform.isBelowMinimum(sdkInt = 36, minSdk = BuildConfig.MIN_SDK, frameworkHasProbeApi = false))
     }
 
     @Test fun aPhoneAtOrAboveMinSdkIsNeverFiltered() {
-        assertFalse(SupportedPlatform.isBelowMinimum(sdkInt = BuildConfig.MIN_SDK, minSdk = BuildConfig.MIN_SDK))
-        assertFalse(SupportedPlatform.isBelowMinimum(sdkInt = 36, minSdk = BuildConfig.MIN_SDK))
+        assertFalse(SupportedPlatform.isBelowMinimum(sdkInt = BuildConfig.MIN_SDK, minSdk = BuildConfig.MIN_SDK, frameworkHasProbeApi = true))
+        assertFalse(SupportedPlatform.isBelowMinimum(sdkInt = 36, minSdk = BuildConfig.MIN_SDK, frameworkHasProbeApi = true))
+    }
+
+    @Test fun theProbeCanNeverFilterASupportedPhone() {
+        // A probe newer than the floor would turn telemetry off on real phones between the two levels.
+        assertTrue("PROBE_API must not exceed the gradle minSdk", SupportedPlatform.PROBE_API <= BuildConfig.MIN_SDK)
+    }
+
+    @Test fun theProbeResolvesAgainstARealFramework() {
+        // The compile SDK's android.jar carries every public framework class and method signature; a misspelt
+        // class, method or parameter type would filter every phone.
+        assertTrue(SupportedPlatform.frameworkHasProbeApi())
     }
 
     @Test fun theThresholdIsTheBuildsMinSdkNotALiteral() {
@@ -35,7 +53,7 @@ class SupportedPlatformTest {
             .replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), "")
             .replace(Regex("""//[^\n]*"""), "")
         val guardBlock = Regex(
-            """if \(SupportedPlatform\.isBelowMinimum\(Build\.VERSION\.SDK_INT, BuildConfig\.MIN_SDK\)\) \{(?:[^}]|\$\{[^}]*\})*?\breturn\b(?:[^}]|\$\{[^}]*\})*\}""",
+            """if \(SupportedPlatform\.isBelowMinimum\(Build\.VERSION\.SDK_INT, BuildConfig\.MIN_SDK, SupportedPlatform\.frameworkHasProbeApi\(\)\)\) \{(?:[^}]|\$\{[^}]*\})*?\breturn\b(?:[^}]|\$\{[^}]*\})*\}""",
         ).find(source)
         assertTrue("bootstrap must return when the phone is below minSdk (condition not negated, return present)", guardBlock != null)
         val sentry = source.indexOf("SentryBootstrap.start(")

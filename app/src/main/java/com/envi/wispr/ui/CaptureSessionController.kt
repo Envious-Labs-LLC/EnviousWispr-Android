@@ -24,6 +24,8 @@ internal sealed interface CaptureEvent {
     /** The take's FIRST ending: the capture side is over and the file is closed (#115). */
     data class Ended(val ending: TakeEnding) : CaptureEvent
 
+    data class Closed(val resourcesClosed: Boolean) : CaptureEvent
+
     /** The capture process published nothing for [CaptureSessionController.TAKE_SILENT_BOUND_MS]. */
     data object Silent : CaptureEvent
 
@@ -277,6 +279,10 @@ internal class CaptureSessionController(
 
         override fun onSilenceStatus(takeId: String, status: Int) {
             host.postToMain { if (ours(takeId)) { rearmSilenceBound(); events(CaptureEvent.SilenceStatus(status)) } }
+        }
+
+        override fun onCaptureClosed(takeId: String, resourcesClosed: Boolean) {
+            host.postToMain { if (ours(takeId)) { rearmSilenceBound(); events(CaptureEvent.Closed(resourcesClosed)) } }
         }
 
         override fun onEnded(ending: TakeEnding) {

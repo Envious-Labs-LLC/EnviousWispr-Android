@@ -102,6 +102,11 @@ class DictationSessionService : Service() {
             DictationSurfaceState.update(this@DictationSessionService, phase)
         }
 
+        override fun beginRecordingFeedback(takeId: String) = com.envi.wispr.audio.RecordingSoundOutput.admit(takeId)
+        override fun prepareRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, onReady: () -> Unit) = com.envi.wispr.audio.RecordingSoundOutput.prepare(applicationContext, takeId, pairing, onReady)
+        override fun playRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, moment: com.envi.wispr.audio.RecordingSoundMoment): Boolean = com.envi.wispr.audio.RecordingSoundOutput.play(takeId, pairing, moment)
+        override fun finishRecordingFeedback(takeId: String) = com.envi.wispr.audio.RecordingSoundOutput.finish(takeId)
+
         override fun vibrate(cue: HapticCue) = this@DictationSessionService.vibrate(cue)
 
         override fun toastFromService(line: String) {

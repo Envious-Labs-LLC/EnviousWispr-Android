@@ -144,6 +144,7 @@ internal class PipelineBindings(
 
         override fun listenForTake(listener: TakeListener) {
             val stub = object : ITakeListener.Stub() {
+                override fun onCaptureClosed(takeId: String?, resourcesClosed: Boolean) = listener.onCaptureClosed(takeId.orEmpty(), resourcesClosed)
                 override fun onLive(takeId: String?, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) = listener.onLive(takeId.orEmpty(), forced, routeKind, routeReason, liveAfterMs)
                 override fun onTick(takeId: String?, elapsedMs: Long) = listener.onTick(takeId.orEmpty(), elapsedMs)
                 override fun onSilenceStatus(takeId: String?, status: Int) = listener.onSilenceStatus(takeId.orEmpty(), status)

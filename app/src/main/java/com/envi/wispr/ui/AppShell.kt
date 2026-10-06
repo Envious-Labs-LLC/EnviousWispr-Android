@@ -236,7 +236,7 @@ internal fun EnviousWisprApp(
                             onShowBluetoothTipsChanged = actions.microphone.onShowBluetoothTipsChanged,
                             onKeepEarbudsReadyChanged = actions.microphone.onKeepEarbudsReadyChanged,
                         )
-                        SettingsPage.Sounds -> SoundsPage()
+                        SettingsPage.Sounds -> SoundsPage(preferences, actions.sounds)
                         SettingsPage.Clipboard -> ClipboardPage(
                             preferences = preferences,
                             onAutoCopyChanged = actions.clipboard.onAutoCopyChanged,

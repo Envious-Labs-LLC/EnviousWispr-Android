@@ -1,6 +1,7 @@
 package com.envi.wispr.settings
 
 import android.content.Context
+import com.envi.wispr.audio.RecordingSoundPairing
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -22,6 +23,9 @@ import java.io.IOException
 private val Context.enviousWisprDataStore by preferencesDataStore(name = "enviouswispr_settings")
 
 internal data class AppPreferencesState(
+    val recordingSoundsEnabled: Boolean = false,
+    val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
+    val recordingVibrationEnabled: Boolean = true,
     val onboardingStep: Int = 0,
     val onboardingMobileData: Boolean = false,
     val onboardingComplete: Boolean = false,
@@ -86,6 +90,9 @@ internal class AppPreferences(context: Context) {
         }
 
     private fun mapState(preferences: Preferences): AppPreferencesState = AppPreferencesState(
+        recordingSoundsEnabled = preferences[Keys.RECORDING_SOUNDS] ?: false,
+        recordingSoundPairing = RecordingSoundPairing.fromStorage(preferences[Keys.RECORDING_SOUND_PAIRING]),
+        recordingVibrationEnabled = preferences[Keys.RECORDING_VIBRATION] ?: true,
         onboardingStep = if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0,
         onboardingMobileData = preferences[Keys.ONBOARDING_MOBILE_DATA] ?: false,
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
@@ -110,6 +117,12 @@ internal class AppPreferences(context: Context) {
         showBluetoothTips = preferences[Keys.SHOW_BLUETOOTH_TIPS] ?: true,
         keepEarbudsReady = preferences[Keys.KEEP_EARBUDS_READY] ?: true,
     )
+
+    suspend fun setRecordingSoundsEnabled(enabled: Boolean) { dataStore.edit { it[Keys.RECORDING_SOUNDS] = enabled } }
+
+    suspend fun setRecordingSoundPairing(pairing: RecordingSoundPairing) { dataStore.edit { it[Keys.RECORDING_SOUND_PAIRING] = pairing.storageKey } }
+
+    suspend fun setRecordingVibrationEnabled(enabled: Boolean) { dataStore.edit { it[Keys.RECORDING_VIBRATION] = enabled } }
 
     suspend fun setOnboardingStep(step: Int) {
         dataStore.edit { preferences ->
@@ -238,6 +251,9 @@ internal class AppPreferences(context: Context) {
     }
 
     private object Keys {
+        val RECORDING_SOUNDS = booleanPreferencesKey("recording_sounds_enabled")
+        val RECORDING_SOUND_PAIRING = stringPreferencesKey("recording_sound_pairing")
+        val RECORDING_VIBRATION = booleanPreferencesKey("recording_vibration_enabled")
         val ONBOARDING_VERSION = intPreferencesKey("onboarding_version")
         val ONBOARDING_MOBILE_DATA = booleanPreferencesKey("onboarding_mobile_data")
         val ONBOARDING_STEP = intPreferencesKey("onboarding_step")

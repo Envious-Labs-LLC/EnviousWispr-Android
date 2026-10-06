@@ -216,6 +216,13 @@ internal class DictationSessionCoordinator(
 
     @Volatile private var sessionPreferences = SessionPreferences()
 
+    private val soundCue = com.envi.wispr.audio.RecordingSoundCue { pairing, moment -> host.playRecordingSound(take.takeId, pairing, moment) }
+    private var feedbackPreferencesReady = false
+
+    private fun recordingVibrate(cue: HapticCue) {
+        if (feedbackPreferencesReady && sessionPreferences.recordingVibrationEnabled) runCatching { host.vibrate(cue) }
+    }
+
     /**
      * Serialises the one STARTING→RECORDING publication (the CAS, the pill, the haptic, the surface) with
      * teardown's invalidation, so a live waiter that won its CAS cannot publish after `onDestroy` hid the
@@ -338,6 +345,7 @@ internal class DictationSessionCoordinator(
         // The pre-capture chain's origin (#258): the accepted start command, right after IDLE -> STARTING.
         val acceptedAtMs = host.elapsedRealtimeMs()
         val takeId = UUID.randomUUID().toString().lowercase()
+        runCatching { host.beginRecordingFeedback(takeId) }
         // The take's own log (#378), before any of its lines: it carries the id to the local log file and starts
         // this process's timing of the take.
         val takeLog = log.admitTake(takeId)
@@ -443,6 +451,10 @@ internal class DictationSessionCoordinator(
                 }
                 val policy = takePolicy(read)
                 sessionPreferences = preferences.freeze(prepared.start, matcher, policy)
+                feedbackPreferencesReady = true
+                if (sessionPreferences.recordingSoundsEnabled) runCatching { host.prepareRecordingSound(takeId, sessionPreferences.recordingSoundPairing) {
+                    if (take.takeId == takeId && !destroyed.get() && state.get() == SessionState.RECORDING) soundCue.prepared()
+                } }
                 outcome.bindRequested(sinceAccepted())
                 bindPipelineServices()
             }
@@ -593,6 +605,10 @@ internal class DictationSessionCoordinator(
             is CaptureEvent.Live -> publishLive(event.forced, event.routeKind, event.routeReason, event.liveAfterMs)
             is CaptureEvent.Tick -> onTakeTick(event.elapsedMs)
             is CaptureEvent.SilenceStatus -> publishSilenceNoticeIfNeeded(event.status)
+            is CaptureEvent.Closed -> {
+                take.log.log("Sound capture closure confirmed=${event.resourcesClosed}")
+                soundCue.captureClosed(event.resourcesClosed)
+            }
             is CaptureEvent.Ended -> onTakeEnded(event.ending)
             CaptureEvent.Silent -> onCaptureSilent()
             CaptureEvent.LiveDeadlinePassed -> onLiveDeadline()
@@ -758,7 +774,8 @@ internal class DictationSessionCoordinator(
             }
             host.updateSurfacePhase(DictationSurfaceState.Phase.LISTENING)
             surface.show()
-            host.vibrate(HapticCue.SESSION_TRANSITION)
+            recordingVibrate(HapticCue.SESSION_TRANSITION)
+            soundCue.live(sessionPreferences.recordingSoundsEnabled, sessionPreferences.recordingSoundPairing)
             current.log.log("Recording started (live after $liveAfterMs ms, forced=$forced)")
             if (forced) notices.sayEarbudsSilent()
             // Once, at live, from the pushed route kind (#115): the tip needs nothing more.
@@ -798,11 +815,12 @@ internal class DictationSessionCoordinator(
         // follows its CAS cannot run ahead of its publication.
         synchronized(publishLock) {
             if (!state.compareAndSet(SessionState.RECORDING, SessionState.PROCESSING)) return false
+            soundCue.ending()
             surface.showProcessing()
         }
         host.updateSurfacePhase(DictationSurfaceState.Phase.PROCESSING)
         host.promoteToForeground(processing = true)
-        host.vibrate(HapticCue.SESSION_TRANSITION)
+        recordingVibrate(HapticCue.SESSION_TRANSITION)
         take.log.log("Stopping recording and starting transcription")
         return true
     }
@@ -1040,10 +1058,11 @@ internal class DictationSessionCoordinator(
      * service its `finishTake` (a cancelled take leaves the earbuds warm like a finished one).
      */
     private fun cancelCaptureAndFinish(cancel: TakeArbiter.Token, cancelled: TerminalReason) {
+        soundCue.ending()
         surface.showProcessing()
         insertion.releasePinnedTarget()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
-        host.vibrate(HapticCue.SESSION_CANCELED)
+        recordingVibrate(HapticCue.SESSION_CANCELED)
         // A cancel before the capture process was even bound has nothing to stop: the quiet finish the
         // old cancelStarting always took. Committed BEFORE the draft goes (G2 D2).
         if (!capture.isBound) {
@@ -1096,7 +1115,7 @@ internal class DictationSessionCoordinator(
         surface.showProcessing()
         insertion.releasePinnedTarget()
         host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
-        host.vibrate(HapticCue.SESSION_CANCELED)
+        recordingVibrate(HapticCue.SESSION_CANCELED)
         // Committed before the draft goes (G2 D2); a destruction that revoked it owns the row instead.
         if (!take.arbiter.commit(cancel, TerminalReason.CANCELLED_PROCESSING)) return
         take.history.discard()
@@ -1217,6 +1236,8 @@ internal class DictationSessionCoordinator(
         // them (#115). The Service may stop while the last of them is still landing.
         scope.launch {
             host.postToMain {
+                soundCue.abandon()
+                runCatching { host.finishRecordingFeedback(take.takeId) }
                 polish?.cancelOpen()
                 // Both subscriptions go with the binding; nothing is called on the capture process here,
                 // which may be the unresponsive process this take just ended over (#115).
@@ -1247,6 +1268,8 @@ internal class DictationSessionCoordinator(
      * loses the arbiter to this interrupt and never enqueues.
      */
     fun destroy() {
+        soundCue.abandon()
+        runCatching { host.finishRecordingFeedback(take.takeId) }
         destroyed.set(true)
         // Invalidate a live wait or a running take BEFORE any cleanup, under the same lock the live
         // transition publishes under: after this, no pill can appear for a take being torn down.

@@ -23,6 +23,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import android.app.UiAutomation
 import android.view.KeyCharacterMap
+import android.view.inspector.WindowInspector
+import android.view.inputmethod.InputMethodManager
+import androidx.compose.ui.test.assertIsFocused
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import com.envi.wispr.feedback.FeedbackController
@@ -200,13 +203,37 @@ class AppShellNavigationTest {
             composeRule.waitUntil(5_000) {
                 automation.windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
             }
+            composeRule.waitUntil(5_000) {
+                var ready = false
+                composeRule.runOnUiThread {
+                    val root = WindowInspector.getGlobalWindowViews().singleOrNull { it.hasWindowFocus() }
+                    val focused = root?.findFocus()
+                    val input = composeRule.activity.getSystemService(InputMethodManager::class.java)
+                    ready = focused != null && input.isActive(focused) && input.isAcceptingText
+                }
+                ready && field.fetchSemanticsNode().config.getOrNull(SemanticsProperties.Focused) == true
+            }
+            field.assertIsFocused()
             val expected = "UAT #423 Android feedback with diagnostics. No reply needed."
             val events = checkNotNull(KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(expected.toCharArray()))
-            events.forEach { check(automation.injectInputEvent(it, false)) { "Keyboard event was refused" } }
-            composeRule.waitUntil(5_000) {
-                field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text == expected
+            // Keep the rapid batch, but wait for the last existing event's delivery before observing it.
+            events.forEachIndexed { index, event ->
+                check(automation.injectInputEvent(event, index == events.lastIndex)) { "Keyboard event $index was refused" }
             }
-            field.assertTextContains(expected)
+            try {
+                composeRule.waitUntil(5_000) {
+                    field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text == expected
+                }
+            } catch (failure: Throwable) {
+                val actual = field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text
+                val state = FeedbackController.of(composeRule.activity).state
+                println("Rapid keyboard mismatch: expected=${org.json.JSONObject.quote(expected)} actual=${org.json.JSONObject.quote(actual)} " +
+                    "expectedLength=${expected.length} actualLength=${actual.length} " +
+                    "controller=${org.json.JSONObject.quote(state.draft.message)} revision=${state.draft.revision} " +
+                    "presentation=${state.presentation} phase=${state.phase}")
+                throw failure
+            }
+            assertEquals(expected, field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
             field.performTextReplacement("")
             composeRule.onNodeWithText("Close").performScrollTo().performClick()
         } finally { automation.serviceInfo = originalInfo }

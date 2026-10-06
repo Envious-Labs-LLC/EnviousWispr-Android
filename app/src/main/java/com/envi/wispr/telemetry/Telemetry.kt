@@ -68,8 +68,8 @@ internal object Telemetry {
     fun bootstrap(context: Context) {
         val app = context.applicationContext
         appContext = app
-        if (SupportedPlatform.isBelowMinimum(Build.VERSION.SDK_INT, BuildConfig.MIN_SDK)) {
-            // Google's automated review sandbox (#179): neither vendor starts, no identity is minted.
+        if (SupportedPlatform.isBelowMinimum(Build.VERSION.SDK_INT, BuildConfig.MIN_SDK, SupportedPlatform.frameworkHasProbeApi())) {
+            // Google's automated review sandbox (#179, #427): neither vendor starts, no identity is minted.
             DebugLogger.log(TAG, "Telemetry off: this Android is below the app's minimum (${BuildConfig.MIN_SDK})")
             return
         }

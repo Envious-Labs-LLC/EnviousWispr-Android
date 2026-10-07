@@ -32,6 +32,79 @@ class ProviderConfigurationRepositoryTest {
         repository = ProviderConfigurationRepository(context, secrets, checker)
     }
 
+    @Test fun delayedSuccessfulTakeCannotOverwriteANewerFailedCanary() {
+        val gpu = com.envi.wispr.processing.ProcessingBackend.GPU
+        val ctx = "a".repeat(64)
+        repository.setS1Qualification(com.envi.wispr.processing.ProcessingQualification.of(ctx, setOf(gpu)))
+        val usage = com.envi.wispr.processing.ProcessingUsage(gpu, ctx, com.envi.wispr.processing.ProcessingPreference.DEFAULT, true,
+            generationStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 100))
+        val held = com.envi.wispr.processing.ProcessingObservation("held", 1, 1000, "local", com.envi.wispr.polish.PolishReason.POLISHED, com.envi.wispr.processing.ProcessingPreference.DEFAULT, usage, 1)
+        val parked = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val write = worker.submit {
+                parked.countDown(); assertTrue("Held evidence was never released", release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                repository.recordProcessing(held)
+            }
+            assertTrue(parked.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            repository.acceptQualification(com.envi.wispr.processing.ProcessingCheckResult(2, gpu, ctx, com.envi.wispr.processing.ProcessingCheckStatus.CANARY_FAILED, com.envi.wispr.processing.ProcessingEvidenceStamp(1, 200))) { true }
+            release.countDown(); write.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertFalse(gpu in repository.loadS1Qualification().backends)
+            val details = repository.loadProcessingDetails()
+            assertFalse(gpu in details.qualification.getOrThrow().backends)
+            assertEquals("held", details.observation.getOrThrow()!!.takeId)
+        } finally { release.countDown(); worker.shutdownNow() }
+    }
+    @Test fun delayedFailedLoadCannotOverwriteANewerSuccessfulCanary() {
+        val gpu = com.envi.wispr.processing.ProcessingBackend.GPU
+        val cpu = com.envi.wispr.processing.ProcessingBackend.CPU
+        val ctx = "a".repeat(64)
+        repository.setS1Qualification(com.envi.wispr.processing.ProcessingQualification.of(ctx, setOf(gpu, cpu)))
+        repository.acceptQualification(com.envi.wispr.processing.ProcessingCheckResult(2, gpu, ctx, com.envi.wispr.processing.ProcessingCheckStatus.AVAILABLE, com.envi.wispr.processing.ProcessingEvidenceStamp(1, 200))) { true }
+        val old = com.envi.wispr.processing.ProcessingUsage(cpu, ctx, com.envi.wispr.processing.ProcessingPreference.DEFAULT, true, "gpu",
+            loadStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 100), generationStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 120))
+        repository.recordProcessing(com.envi.wispr.processing.ProcessingObservation("old-fallback", 3, 1000, "local", com.envi.wispr.polish.PolishReason.POLISHED, com.envi.wispr.processing.ProcessingPreference.DEFAULT, old, 3))
+        assertTrue(gpu in repository.loadS1Qualification().backends)
+    }
+    @Test fun processingCommitFailureRestoresThePreviousReadableAndConsumedChoice_memoryChangingFake() {
+        val before = com.envi.wispr.processing.ProcessingPreference.DEFAULT.custom(listOf(com.envi.wispr.processing.ProcessingBackend.CPU))
+        repository.setS1Processing(before)
+        val real = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        val fragile = ProviderConfigurationRepository(MemoryChangingCommit(real), secrets, checker)
+        assertTrue(runCatching { fragile.setS1Processing(before.retry()) }.isFailure)
+        assertEquals(before, fragile.loadS1Processing())
+        assertEquals(before, (fragile.loadPolicy().freshPolicy as PolishPolicy.LocalS1).processing)
+    }
+    @Test fun dismissedQualificationRollsBackACommitThatWasHeldDuringDismissal_memoryChangingFake() {
+        val real = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        val entered = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        val current = java.util.concurrent.atomic.AtomicBoolean(true)
+        val fragile = ProviderConfigurationRepository(MemoryChangingCommit(real, fail = false, afterCommit = {
+            entered.countDown(); assertTrue("Held qualification was not released", release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        }), secrets, checker)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val result = worker.submit<com.envi.wispr.processing.ProcessingQualification?> {
+                fragile.acceptQualification(com.envi.wispr.processing.ProcessingCheckResult(1, com.envi.wispr.processing.ProcessingBackend.CPU, "a".repeat(64), com.envi.wispr.processing.ProcessingCheckStatus.AVAILABLE, com.envi.wispr.processing.ProcessingEvidenceStamp(1, 100)), current::get)
+            }
+            assertTrue("Qualification did not reach its commit", entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            current.set(false); release.countDown()
+            assertNull(result.get(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(com.envi.wispr.processing.ProcessingQualification.NONE, fragile.loadS1Qualification())
+        } finally { release.countDown(); worker.shutdownNow() }
+    }
+    @Test fun ordinaryFailedGpuLoadRevokesItsEvidenceAndKeepsTheSavedOrder() {
+        val contextId = "a".repeat(64)
+        val order = com.envi.wispr.processing.ProcessingPreference.DEFAULT.custom(listOf(com.envi.wispr.processing.ProcessingBackend.GPU, com.envi.wispr.processing.ProcessingBackend.CPU))
+        repository.setS1Processing(order)
+        repository.setS1Qualification(com.envi.wispr.processing.ProcessingQualification.of(contextId, setOf(com.envi.wispr.processing.ProcessingBackend.GPU, com.envi.wispr.processing.ProcessingBackend.CPU)))
+        val usage = com.envi.wispr.processing.ProcessingUsage(com.envi.wispr.processing.ProcessingBackend.CPU, contextId, order, true, "gpu", loadStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 100), generationStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 120))
+        repository.recordProcessing(com.envi.wispr.processing.ProcessingObservation("take", 1, 10, "local", com.envi.wispr.polish.PolishReason.POLISHED, com.envi.wispr.processing.ProcessingPreference.DEFAULT, usage, 20))
+        assertEquals(setOf(com.envi.wispr.processing.ProcessingBackend.CPU), repository.loadS1Qualification().backends)
+        assertEquals(order, repository.loadS1Processing())
+        repository.recordProcessing(com.envi.wispr.processing.ProcessingObservation("older", 2, 50, "off", com.envi.wispr.polish.PolishReason.OFF, com.envi.wispr.processing.ProcessingPreference.DEFAULT, null, 10))
+        assertEquals("take", repository.loadProcessingResult()!!.takeId)
+    }
     @Test fun defaultsToOfflineS1AndPersistsEachExplicitMode() {
         assertEquals(PolishMode.OFFLINE_S1, repository.loadMode())
 
@@ -380,6 +453,19 @@ private class FailingCommitPreferences(private val real: android.content.SharedP
             override fun putString(key: String?, value: String?): android.content.SharedPreferences.Editor { key?.let(keys::add); return this }
             override fun remove(key: String?): android.content.SharedPreferences.Editor { key?.let(keys::add); return this }
             override fun clear(): android.content.SharedPreferences.Editor = this
+        }
+    }
+}
+
+/** Fake failure is AFTER the real memory changes; this protects the SharedPreferences commit-failure boundary. */
+private class MemoryChangingCommit(private val real: android.content.SharedPreferences, private val fail: Boolean = true, private val afterCommit: () -> Unit = {}) : android.content.SharedPreferences by real {
+    override fun edit(): android.content.SharedPreferences.Editor {
+        val delegate = real.edit()
+        return object : android.content.SharedPreferences.Editor by delegate {
+            override fun putString(key: String?, value: String?): android.content.SharedPreferences.Editor { delegate.putString(key, value); return this }
+            override fun remove(key: String?): android.content.SharedPreferences.Editor { delegate.remove(key); return this }
+            override fun commit(): Boolean { val written = delegate.commit(); afterCommit(); return written && !fail }
+            override fun apply() { delegate.apply() }
         }
     }
 }

@@ -11,6 +11,7 @@ import com.envi.wispr.vocabulary.ui.DictionaryUiState
  */
 internal data class AppUiState(
     val shell: EnviousWisprUiState = EnviousWisprUiState(),
+    val processingWrite: ProcessingWriteUiState = ProcessingWriteUiState(),
     val readiness: ReadinessUiState = ReadinessUiState(),
     val history: HistoryUiState = HistoryUiState(),
     val dictionary: DictionaryUiState = DictionaryUiState(),

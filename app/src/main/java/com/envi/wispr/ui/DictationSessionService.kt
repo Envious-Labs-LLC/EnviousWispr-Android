@@ -233,6 +233,11 @@ class DictationSessionService : Service() {
             languageDetector = languageDetector,
             loadPolicy = { providerConfiguration.loadPolicy() },
             lastReadPolicy = { ProviderConfigurationRepository.lastProcessRead() },
+            recordProcessing = { observation ->
+                ModelBootstrapApplication.historyWrites(applicationContext).enqueue("processing_result") {
+                    providerConfiguration.recordProcessing(observation)
+                }
+            },
             pipeline = bindings,
             capturedAudio = CapturedAudioFiles.forProcess(
                 RecordingArchive(

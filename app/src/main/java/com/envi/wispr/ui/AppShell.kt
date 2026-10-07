@@ -200,6 +200,10 @@ internal fun EnviousWisprApp(
                         AppDestination.Transcription -> TranscriptionScreen(
                             speechModel = state.models.speech,
                             preferences = preferences,
+                            onProcessingChanged = actions.transcription.onProcessingChanged,
+                            processingSaving = state.processingWrite.saving,
+                            processingError = state.processingWrite.error,
+                            latestSpeechResult = providerSettings.latestProcessingResult?.speechDisplayLine(),
                             onRefreshReadiness = actions.shell.onRefreshReadiness,
                             onFillerRemovalChanged = actions.transcription.onFillerRemovalChanged,
                             onEmojiFormatterChanged = actions.transcription.onEmojiFormatterChanged,
@@ -214,6 +218,10 @@ internal fun EnviousWisprApp(
                             discovery = state.discovery,
                             onSetMode = actions.polish.onSetMode,
                             onSetS1Control = actions.polish.onSetS1Control,
+                            onSetProcessing = actions.polish.onSetProcessing,
+                            onCheckProcessing = actions.polish.onCheckProcessing,
+                            onCancelProcessingChecks = actions.polish.onCancelProcessingChecks,
+                            latestPolishResult = providerSettings.latestProcessingResult?.displayLine(),
                             onSave = { provider, model, apiKey, discoverySequence ->
                                 actions.polish.onSaveProviderSettings(provider, model, null, apiKey, SelfHostedProtocol.OPENAI_COMPATIBLE, discoverySequence)
                             },

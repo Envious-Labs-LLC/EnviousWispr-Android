@@ -51,6 +51,7 @@ class SettingsActivity : ComponentActivity() {
         PolishSettingsViewModel.Factory(
             providerRepository = ProviderConfigurationRepository(applicationContext),
             modelCache = ModelListCache(applicationContext),
+            processingClient = com.envi.wispr.polish.ProcessingCheckClient(applicationContext),
         )
     }
     private val readinessViewModel: ReadinessViewModel by viewModels {
@@ -78,6 +79,9 @@ class SettingsActivity : ComponentActivity() {
         val thirdPartyNotices = runCatching {
             assets.open("THIRD_PARTY_NOTICES.txt").bufferedReader().use { it.readText() }
         }.getOrElse { "Third-party notices are unavailable in this build." }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) { polishViewModel.observeProcessingUpdates() }
+        }
         // A finished model work refreshes readiness while the activity is started (#255).
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) { collectModelRefresh(modelWorkViewModel.finished, ::refreshReadiness) }
@@ -85,6 +89,7 @@ class SettingsActivity : ComponentActivity() {
 
         setContent {
             val shell by shellViewModel.state.collectAsStateWithLifecycle()
+            val processingWrite by shellViewModel.processingWrite.collectAsStateWithLifecycle()
             val readiness by readinessViewModel.state.collectAsStateWithLifecycle()
             val history by historyViewModel.state.collectAsStateWithLifecycle()
             val dictionary by dictionaryViewModel.state.collectAsStateWithLifecycle()
@@ -134,6 +139,7 @@ class SettingsActivity : ComponentActivity() {
                             onImport = dictionaryViewModel::importCustomTerms,
                         ),
                         transcription = TranscriptionActions(
+                            onProcessingChanged = shellViewModel::setSpeechProcessing,
                             onFillerRemovalChanged = shellViewModel::setFillerRemovalEnabled,
                             onEmojiFormatterChanged = shellViewModel::setEmojiFormatterEnabled,
                             onSpokenPunctuationChanged = shellViewModel::setSpokenPunctuationEnabled,
@@ -144,6 +150,9 @@ class SettingsActivity : ComponentActivity() {
                         polish = PolishActions(
                             onSetMode = polishViewModel::setPolishMode,
                             onSetS1Control = polishViewModel::setS1Control,
+                            onSetProcessing = polishViewModel::setS1Processing,
+                            onCheckProcessing = polishViewModel::checkProcessing,
+                            onCancelProcessingChecks = polishViewModel::cancelProcessingChecks,
                             onSaveProviderSettings = polishViewModel::saveProviderSettings,
                             onClearProvider = polishViewModel::removeProviderKey,
                             onCheckKey = polishViewModel::discoverModels,
@@ -169,6 +178,7 @@ class SettingsActivity : ComponentActivity() {
                 EnviousWisprApp(
                     state = AppUiState(
                         shell = shell,
+                        processingWrite = processingWrite,
                         readiness = readiness,
                         history = history,
                         dictionary = dictionary,

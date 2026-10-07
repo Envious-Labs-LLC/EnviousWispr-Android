@@ -1,6 +1,7 @@
 package com.envi.wispr.settings
 
 import android.content.Context
+import com.envi.wispr.processing.ProcessingPreference
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -30,6 +31,8 @@ internal data class AppPreferencesState(
     // The two defaults have to agree: this one is what the UI renders before DataStore has delivered,
     // and `mapState` is what it settles on. They disagreed once and the app flashed the wrong theme.
     val dynamicColorEnabled: Boolean = false,
+    val speechProcessing: ProcessingPreference = ProcessingPreference.DEFAULT,
+    val speechProcessingReadError: Boolean = false,
     /** How the floating button and its recorder pills look. Same default here and in `mapState`. */
     val bubbleLook: BubbleLook = BubbleLook.DEFAULT,
     val fillerRemovalEnabled: Boolean = true,
@@ -74,23 +77,26 @@ internal class AppPreferences(context: Context) {
     private val dataStore = context.applicationContext.enviousWisprDataStore
 
     val authoritativeState: Flow<AppPreferencesState> = dataStore.data
-        .map(::mapState)
+        .map { mapState(it) }
 
-    val state: Flow<AppPreferencesState> = authoritativeState
+    val state: Flow<AppPreferencesState> = dataStore.data.map { mapState(it, strictProcessing = false) }
         .catch { exception ->
             if (exception is IOException) {
-                emit(AppPreferencesState())
+                emit(AppPreferencesState(speechProcessingReadError = true))
             } else {
                 throw exception
             }
         }
 
-    private fun mapState(preferences: Preferences): AppPreferencesState = AppPreferencesState(
+    private fun mapState(preferences: Preferences, strictProcessing: Boolean = true): AppPreferencesState = AppPreferencesState(
         onboardingStep = if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0,
         onboardingMobileData = preferences[Keys.ONBOARDING_MOBILE_DATA] ?: false,
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
         onboardingDismissed = preferences[Keys.ONBOARDING_DISMISSED] ?: false,
         dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: false,
+        speechProcessing = if (strictProcessing) ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) else
+            runCatching { ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) }.getOrDefault(ProcessingPreference.DEFAULT),
+        speechProcessingReadError = runCatching { ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) }.isFailure,
         bubbleLook = BubbleLook.fromStorage(preferences[Keys.BUBBLE_LOOK]),
         fillerRemovalEnabled = preferences[Keys.FILLER_REMOVAL] ?: true,
         emojiFormatterEnabled = preferences[Keys.EMOJI_FORMATTER] ?: true,
@@ -142,6 +148,10 @@ internal class AppPreferences(context: Context) {
             preferences[Keys.ONBOARDING_COMPLETE] = true
             preferences[Keys.ONBOARDING_DISMISSED] = false
         }
+    }
+
+    suspend fun setSpeechProcessing(value: ProcessingPreference) {
+        dataStore.edit { it[Keys.SPEECH_PROCESSING] = value.encode() }
     }
 
     suspend fun setDynamicColorEnabled(enabled: Boolean) {
@@ -243,6 +253,7 @@ internal class AppPreferences(context: Context) {
         val ONBOARDING_STEP = intPreferencesKey("onboarding_step")
         val ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         val ONBOARDING_DISMISSED = booleanPreferencesKey("onboarding_dismissed")
+        val SPEECH_PROCESSING = stringPreferencesKey("speech_processing")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val BUBBLE_LOOK = stringPreferencesKey("bubble_look")
         val FILLER_REMOVAL = booleanPreferencesKey("filler_removal_enabled")

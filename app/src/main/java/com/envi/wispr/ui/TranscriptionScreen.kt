@@ -42,6 +42,10 @@ internal fun TranscriptionScreen(
     /** Parakeet's card, projected off main by `ModelWorkViewModel` (#255). */
     speechModel: ModelUiState,
     preferences: AppPreferencesState,
+    onProcessingChanged: (com.envi.wispr.processing.ProcessingPreference) -> Unit = {},
+    processingSaving: Boolean = false,
+    processingError: String? = null,
+    latestSpeechResult: String? = null,
     onRefreshReadiness: () -> Unit,
     onFillerRemovalChanged: (Boolean) -> Unit,
     onEmojiFormatterChanged: (Boolean) -> Unit,
@@ -82,6 +86,15 @@ internal fun TranscriptionScreen(
             },
             onPause = { ModelDeliveryWorker.pause(context, ModelManifest.parakeet) },
             onResume = { ModelDeliveryWorker.resume(context, ModelManifest.parakeet) },
+        )
+        ProcessingPreferenceCard(
+            model = "Parakeet", preference = preferences.speechProcessing,
+            modelReady = speechModel.health == com.envi.wispr.models.ModelHealth.READY,
+            implemented = com.envi.wispr.processing.ProcessingEnvironment.speechBackends,
+            qualified = com.envi.wispr.processing.ProcessingEnvironment.speechBackends,
+            checks = emptyMap(), enabled = !processingSaving,
+            error = processingError ?: if (preferences.speechProcessingReadError) "Processing preference could not be read. Automatic shown." else null,
+            onSave = onProcessingChanged, onCheck = null, latestResult = latestSpeechResult,
         )
         SettingsGroup("Recording") {
             SettingsToggleRow(

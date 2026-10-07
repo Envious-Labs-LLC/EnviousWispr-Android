@@ -1,6 +1,14 @@
 package com.envi.wispr.polish
 
 import com.envi.wispr.process.EngineDeadline
+import com.envi.wispr.processing.ProcessingCheckRegistry
+import com.envi.wispr.processing.ProcessingBackend
+import com.envi.wispr.processing.ProcessingEnvironment
+import com.envi.wispr.processing.ProcessingEvidenceStamp
+import com.envi.wispr.processing.ProcessingUsage
+import com.envi.wispr.processing.ProcessingCheckResult
+import com.envi.wispr.processing.ProcessingCheckStatus
+import com.envi.wispr.processing.IProcessingCheckCallback
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
@@ -65,6 +73,11 @@ class PolishService : Service() {
     private lateinit var secrets: SecretStore
     private val providerClient = ProviderPolishClient()
     private val registry = PolishRequestRegistry()
+    private val qualificationRegistry = ProcessingCheckRegistry()
+    private val activeQualifications = AtomicInteger()
+    private val resident = S1LoadedConfiguration()
+    private var lastLoadStamp: ProcessingEvidenceStamp? = null
+    private var lastLoadObservation: Pair<S1LoadConfiguration, Pair<String, Boolean>>? = null
     private val s1Runtime by lazy { S1GenieXRuntime(applicationContext) }
 
     /**
@@ -92,6 +105,7 @@ class PolishService : Service() {
 
     /** Local requests accepted and not yet finished, queued or running; counted before they reach the worker. */
     private val activeLocalRequests = AtomicInteger()
+    private val activeModelLoads = AtomicInteger()
 
     @Volatile
     private var modelReady = false
@@ -108,7 +122,7 @@ class PolishService : Service() {
      * orderly close after destruction decided there was none.
      */
     private val loadLock = Any()
-    private var destroyed = false
+    @Volatile private var destroyed = false
 
     private val binder = object : IPolishService.Stub() {
         // ---- v1, kept declared for the separately installed instrumentation APK. No caller here.
@@ -224,7 +238,7 @@ class PolishService : Service() {
 
         override fun warmUpWithPolicy(policy: PolishPolicy?) {
             // Logged here too (#236): the caller only learns that its send failed, never why the load did not start.
-            runCatching { if (policy is PolishPolicy.LocalS1) ensureModelLoaded() }
+            runCatching { if (policy is PolishPolicy.LocalS1) ensureModelLoaded(policy) }
                 .onFailure { error -> DebugLogger.warn(TAG, "Polish warm-up failed: ${error.javaClass.simpleName}") }
         }
 
@@ -232,6 +246,27 @@ class PolishService : Service() {
             registry.cancel(requestId)
             fallbackLane.cancel(requestId)
         }
+
+        override fun qualifyProcessing(operationId: Long, backend: String?, callback: IProcessingCheckCallback?) {
+            val selected = runCatching { ProcessingBackend.fromWire(backend.orEmpty()) }.getOrNull() ?: return
+            synchronized(loadLock) {
+                if (destroyed || poisoned.get()) {
+                    callback?.onChecked(ProcessingCheckResult(operationId, selected, ProcessingEnvironment.s1ContextId(), ProcessingCheckStatus.RUNTIME_FAILED))
+                    return
+                }
+                val entry = qualificationRegistry.register(operationId) ?: run {
+                    callback?.onChecked(ProcessingCheckResult(operationId, selected, ProcessingEnvironment.s1ContextId(), ProcessingCheckStatus.CANCELLED))
+                    return
+                }
+                activeQualifications.incrementAndGet()
+                try { executor.execute { qualify(entry, selected, callback) } }
+                catch (error: RuntimeException) {
+                    activeQualifications.decrementAndGet(); qualificationRegistry.release(entry)
+                    throw error
+                }
+            }
+        }
+        override fun cancelQualification(operationId: Long) = qualificationRegistry.cancel(operationId)
 
         override fun isLocalModelReady(): Boolean = modelReady
 
@@ -251,9 +286,14 @@ class PolishService : Service() {
         log: TakeLog,
     ) {
         val started = SystemClock.elapsedRealtime()
+        val timeoutUsage = if (effectivePolicy is PolishPolicy.LocalS1) {
+            val captured = configuration(effectivePolicy)
+            ProcessingUsage(resident.loaded?.takeIf { it.requested == captured }?.backend, captured.contextId, effectivePolicy.processing,
+                false, runtimeFailed = true, artifactStamp = captured.artifactStamp, artifactSha256 = checkNotNull(com.envi.wispr.models.ModelManifest.s1.files.single().sha256))
+        } else null
         // Armed only for a local generation: the cloud client bounds itself and honours cancel.
         val armed = if (effectivePolicy is PolishPolicy.LocalS1 && !poisoned.get()) {
-            deadline.arm(budget.hardMs) { expireLocal(entry, callback, requestId, raw, options, started, log) }
+            deadline.arm(budget.hardMs) { expireLocal(entry, callback, requestId, raw, options, started, log, timeoutUsage) }
         } else null
         // The count guards a WEDGED generation. It is released before a healthy delivery: the client may
         // publish and unbind before this worker's finally, and destroy must not read that as work in flight.
@@ -274,7 +314,7 @@ class PolishService : Service() {
             if (outcome.reason == PolishReason.LOCAL_TIMEOUT) {
                 // The cooperative timeout returned: same winning path as the hard timer.
                 armed?.cancel()
-                expireLocal(entry, callback, requestId, raw, options, started, log)
+                expireLocal(entry, callback, requestId, raw, options, started, log, timeoutUsage)
             } else if (armed == null || armed.cancel()) {
                 releaseLocal()
                 entry.deliverOnce { deliver(callback, outcome, log) }
@@ -308,6 +348,7 @@ class PolishService : Service() {
         options: CleanupOptions,
         started: Long,
         log: TakeLog,
+        processing: ProcessingUsage?,
     ) {
         expireOnce(
             entry,
@@ -318,7 +359,7 @@ class PolishService : Service() {
             deliver = {
                 deliver(
                     callback,
-                    fallbackOutcome(requestId, raw, options, log, PolishReason.LOCAL_TIMEOUT, SystemClock.elapsedRealtime() - started),
+                    fallbackOutcome(requestId, raw, options, log, PolishReason.LOCAL_TIMEOUT, SystemClock.elapsedRealtime() - started).copy(processing = processing?.copy(generationStamp = ProcessingEvidenceStamp.now(this))),
                     log,
                 )
             },
@@ -403,19 +444,25 @@ class PolishService : Service() {
     ): PolishOutcome {
         // What the model adapter learned about its own failure, recorded before it hands null back
         // to the pipeline, which cannot tell a thrown adapter from a blank answer.
+        val requestedLocal = (policy as? PolishPolicy.LocalS1)?.let(::configuration)
         var attempt: PolishReason? = null
         var statusCode = 0
+        var attemptedBackend: ProcessingBackend? = null
+        var generationFailed = false
         val language = detectLanguage(raw)
         // The words after each cleanup family (#378), into the local log file only.
         val trace: (String, String) -> Unit = { family, text -> log.words("cleanup_$family") { text } }
         val pipeline = when (policy) {
             PolishPolicy.Off, PolishPolicy.CloudUnconfigured -> PolishPipeline.run(raw, options, language, trace = trace)
             is PolishPolicy.LocalS1 -> PolishPipeline.run(raw, options, language, trace = trace, restoreLocalEmoji = true) { cleaned ->
-                if (!modelReady) {
+                if (!modelReady || checkNotNull(requestedLocal).artifactStamp.isEmpty() || !resident.matches(requestedLocal)) {
                     attempt = PolishReason.LOCAL_NOT_READY
                     null
                 } else {
-                    polishWithS1(cleaned, policy.control, budget.cooperativeMs, log) { reason -> attempt = reason }
+                    attemptedBackend = resident.loaded?.backend
+                    polishWithS1(cleaned, policy.control, budget.cooperativeMs, log) { reason ->
+                        attempt = reason; generationFailed = reason == PolishReason.LOCAL_FAILED
+                    }
                 }
             }
             is PolishPolicy.Cloud -> PolishPipeline.run(raw, options, language, trace = trace) { cleaned ->
@@ -452,7 +499,18 @@ class PolishService : Service() {
             log.warn("Polish fell back: reason=$reason status=$statusCode")
         }
         log.words("pipeline_result") { pipeline.text }
-        return PolishOutcome(requestId, pipeline.text, engine, reason, statusCode, SystemClock.elapsedRealtime() - started)
+        val usage = if (policy is PolishPolicy.LocalS1) {
+            val requested = checkNotNull(requestedLocal)
+            val observation = lastLoadObservation?.takeIf { it.first.contextId == requested.contextId && it.first.artifactStamp == requested.artifactStamp && it.first.preference == requested.preference }?.second
+            val failures = (resident.loaded?.takeIf { resident.matches(requested) }?.failedBackendCodes ?: observation?.first).orEmpty().split(',').filter(String::isNotEmpty).toMutableSet()
+            if (generationFailed && attemptedBackend != null) failures += attemptedBackend!!.wire
+            ProcessingUsage(
+                attemptedBackend, requested.contextId, policy.processing, pipeline.usedModel,
+                failures.joinToString(","), observation?.second == true, artifactStamp = requested.artifactStamp, artifactSha256 = checkNotNull(com.envi.wispr.models.ModelManifest.s1.files.single().sha256),
+                loadStamp = resident.loaded?.failureStamp ?: lastLoadStamp, generationStamp = if (attemptedBackend != null) ProcessingEvidenceStamp.now(this) else null, generationFailed = generationFailed,
+            )
+        } else null
+        return PolishOutcome(requestId, pipeline.text, engine, reason, statusCode, SystemClock.elapsedRealtime() - started, usage)
     }
 
     override fun onCreate() {
@@ -472,7 +530,7 @@ class PolishService : Service() {
             destroyed = true
             modelLoading
         }
-        if (mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get(), loading)) {
+        if (mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get() + activeQualifications.get(), loading)) {
             // Orderly destruction would cancel the deadline timer and queue the runtime close behind a
             // worker that may be wedged (#75). The client has already unbound; nothing is owed to it.
             val why = when {
@@ -489,6 +547,7 @@ class PolishService : Service() {
         // (#291); `close` is a no-op when no detection ever loaded a model.
         fallbackLane.close { if (::languageDetector.isInitialized) languageDetector.close() }
         registry.cancelAll()
+        qualificationRegistry.cancelAll()
         deadlineScheduler.shutdownNow()
         executor.execute {
             s1Runtime.close()
@@ -515,15 +574,16 @@ class PolishService : Service() {
      * under this method's lock or on the single worker, and read from binder threads (#236).
      */
     @Synchronized
-    private fun ensureModelLoaded() = synchronized(loadLock) {
-        if (destroyed || modelReady || modelLoading) return@synchronized
+    private fun ensureModelLoaded(policy: PolishPolicy.LocalS1) = synchronized(loadLock) {
+        if (destroyed || poisoned.get()) return@synchronized
+        activeModelLoads.incrementAndGet()
         modelLoading = true
         // A queue that refuses the load (the executor is shut down in onDestroy) must not leave loading set,
         // or no later warm-up could ever start one (#236).
         try {
-            executor.execute { loadModel() }
+            executor.execute { loadModel(policy) }
         } catch (refused: java.util.concurrent.RejectedExecutionException) {
-            modelLoading = false
+            finishWarm()
             DebugLogger.warn(TAG, "Polish model load refused: the worker is shut down")
         }
     }
@@ -534,7 +594,24 @@ class PolishService : Service() {
      * starts, so never arms its own deadline, and the owner's fail-open handles the lost process. Every exit,
      * including a throw from model selection, clears [modelLoading] and the deadline.
      */
-    private fun loadModel() {
+    private fun finishWarm() = synchronized(loadLock) {
+        modelLoading = activeModelLoads.decrementAndGet() > 0
+    }
+
+    private fun configuration(policy: PolishPolicy.LocalS1) = S1LoadConfiguration(
+        ProcessingEnvironment.s1ContextId(), policy.processing,
+        policy.qualification,
+        S1ModelSelector.installationStamp(this).orEmpty(),
+    )
+
+    private fun loadModel(policy: PolishPolicy.LocalS1) {
+        if (destroyed || poisoned.get()) { finishWarm(); return }
+        val requested = try { configuration(policy) } catch (error: Exception) { finishWarm(); throw error }
+        if (requested.artifactStamp.isNotEmpty() && resident.matches(requested)) {
+            resident.ensure(requested) { error("Matching runtime must not reload") }
+            modelReady = true; finishWarm(); return
+        }
+        modelReady = false
         // The load and its deadline race once, atomically (`EngineDeadline`, review round 1): a load that returns after
         // the timer won never publishes readiness, and a timer after a load that won never ends the process.
         val stall = runCatching {
@@ -546,6 +623,7 @@ class PolishService : Service() {
         try {
             val selection = S1ModelSelector.resolve(this)
             if (selection == null) {
+                resident.clear(); s1Runtime.close()
                 modelStatus = "${S1Config.MODEL_NAME} is not verified in app-private storage"
                 DebugLogger.warn(TAG, modelStatus)
                 return
@@ -555,22 +633,66 @@ class PolishService : Service() {
             modelStatus = "Loading ${S1Config.MODEL_NAME}"
             val started = SystemClock.elapsedRealtime()
             try {
-                val result = s1Runtime.load(selection.file.path, selection.computeUnits)
+                val resolved = requested.copy(artifactStamp = selection.installationStamp)
+                val loaded = resident.ensure(resolved, failures = { s1Runtime.failedComputeUnits.split(',').filter(String::isNotEmpty).map(ProcessingBackend::fromWire).toSet() }, failureStamp = { lastLoadStamp }, release = { s1Runtime.close() }) { candidates ->
+                    try { s1Runtime.load(selection.file.path, candidates.map { it.wire }) } finally { lastLoadStamp = ProcessingEvidenceStamp.now(this) }
+                    ProcessingBackend.fromWire(s1Runtime.activeComputeUnit)
+                }
+                lastLoadObservation = loaded.requested to (s1Runtime.failedComputeUnits to s1Runtime.initializationFailed)
+                val result = "GenieX on ${loaded.backend.wire}"
                 if (stall != null && !stall.cancel()) return
                 modelReady = true
                 val elapsed = SystemClock.elapsedRealtime() - started
-                val modelKind = if (selection.npuOptimized) "NPU model" else "compatibility model"
-                modelStatus = "Ready on ${s1Runtime.activeComputeUnit.uppercase()} in ${elapsed}ms ($modelKind)"
+                modelStatus = "Ready on ${s1Runtime.activeComputeUnit.uppercase()} in ${elapsed}ms (standard model)"
                 DebugLogger.log(TAG, "${S1Config.MODEL_NAME} loaded: $result; $modelStatus")
             } catch (exception: Throwable) {
+                lastLoadObservation = requested to (s1Runtime.failedComputeUnits to (s1Runtime.initializationFailed || exception is S1RuntimeReleaseException))
+                if (exception is S1RuntimeReleaseException) { poisoned.set(true); endProcess("model replacement release failed") }
                 modelReady = false
                 modelStatus = "S1 unavailable; deterministic fallback active"
                 DebugLogger.error(TAG, modelStatus, exception)
             }
+        } catch (release: S1RuntimeReleaseException) {
+            poisoned.set(true); endProcess("unavailable model release failed")
         } finally {
             stall?.cancel()
-            modelLoading = false
+            finishWarm()
         }
+    }
+
+    /** A separate operation namespace, sharing only the existing native worker and deadline primitive. */
+    private fun qualify(entry: ProcessingCheckRegistry.Entry, backend: ProcessingBackend, callback: IProcessingCheckCallback?) {
+        val contextId = ProcessingEnvironment.s1ContextId()
+        try {
+            ProcessingQualificationTask(
+                deadline, MODEL_LOAD_DEADLINE_MS + LocalPolishBudget.SHIPPED.hardMs, poisoned,
+                destroyed = { destroyed }, close = { s1Runtime.close() },
+                invalidate = { resident.clear(); modelReady = false },
+                released = { activeQualifications.decrementAndGet() }, endProcess = ::endProcess,
+            ).run(entry, load = {
+                if (backend !in ProcessingEnvironment.standardPolishBackends) ProcessingCheckStatus.NOT_IMPLEMENTED
+                else {
+                    val selection = S1ModelSelector.resolve(this)
+                    if (selection == null) ProcessingCheckStatus.MODEL_MISSING else {
+                        s1Runtime.load(selection.file.path, listOf(backend.wire))
+                        ProcessingCheckStatus.AVAILABLE
+                    }
+                }
+            }, canary = {
+                val input = "um please send the report tomorrow morning"
+                val generated = s1Runtime.generate(
+                    S1Config.SYSTEM_PROMPT, S1PromptBuilder.buildUserPrompt(input, S1ControlSettings.DEFAULT),
+                    S1PromptBuilder.maxOutputTokens(input), LocalPolishBudget.SHIPPED.cooperativeMs,
+                )
+                if (generated == null) ProcessingCheckStatus.EXPIRED else {
+                    val complete = s1Runtime.lastGeneration
+                    val cleaned = generated.substringAfterLast("</think>").trim()
+                    val valid = cleaned.isNotBlank() && !generated.startsWith("ERROR:") && TextSafety.refusal(input, cleaned) == null && complete != null && complete.stopReason == "eos" && !complete.reachedCap &&
+                        ProcessingBackend.fromWire(s1Runtime.activeComputeUnit) == backend
+                    if (valid) ProcessingCheckStatus.AVAILABLE else ProcessingCheckStatus.CANARY_FAILED
+                }
+            }, answer = { status -> callback?.onChecked(ProcessingCheckResult(entry.operationId, backend, contextId, status, ProcessingEvidenceStamp.now(this))) })
+        } finally { qualificationRegistry.release(entry) }
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.processing.ProcessingPreference
 import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.RecordingSoundPairing
 import com.envi.wispr.cleanup.CleanupOptions
@@ -38,6 +39,7 @@ internal data class SessionPreferences(
     val silencePauseSeconds: Float = SilenceStopDetector.DEFAULT_PAUSE_SECONDS,
     val inputDevicePick: String = InputDevicePick.AUTO,
     val keepEarbudsReady: Boolean = true,
+    val speechProcessing: ProcessingPreference = ProcessingPreference.DEFAULT,
     val showBluetoothTips: Boolean = true,
 )
 
@@ -98,6 +100,7 @@ internal data class SettingsSnapshot(
     val inputDevicePick: String = InputDevicePick.AUTO,
     val showBluetoothTips: Boolean = true,
     val keepEarbudsReady: Boolean = true,
+    val speechProcessing: ProcessingPreference = ProcessingPreference.DEFAULT,
 )
 
 /** The vocabulary reader's snapshot, the same shape: outcome and values together. */
@@ -208,6 +211,7 @@ internal class SessionPreferencesSource(
                             inputDevicePick = preferences.inputDevicePick,
                             showBluetoothTips = preferences.showBluetoothTips,
                             keepEarbudsReady = preferences.keepEarbudsReady,
+                            speechProcessing = preferences.speechProcessing,
                         ),
                     )
                     settingsAnswered.complete(Unit)
@@ -273,6 +277,7 @@ internal class SessionPreferencesSource(
             silencePauseSeconds = start.settings.silencePauseSeconds,
             inputDevicePick = start.settings.inputDevicePick,
             keepEarbudsReady = start.settings.keepEarbudsReady,
+            speechProcessing = start.settings.speechProcessing,
             showBluetoothTips = start.settings.showBluetoothTips,
         )
 }

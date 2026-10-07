@@ -105,6 +105,8 @@ internal class DictationSessionCoordinator(
      * the session scope, so a Service teardown right after a take's ending cannot cancel it (#253). A test holds it.
      */
     private val capturedAudio: CapturedAudioFiles,
+    /** Processing facts are a limb, recorded only after this owner commits the take. */
+    private val recordProcessing: (com.envi.wispr.processing.ProcessingObservation) -> Unit = {},
 ) : PipelineController.Listener {
     companion object {
         /**
@@ -932,7 +934,7 @@ internal class DictationSessionCoordinator(
     /** The controller's text, published: the engine's answer, or the deterministic fallback under its label. */
     private fun publishPrepared(prepared: PreparedText) = when (prepared) {
         is PreparedText.Polished ->
-            publishResult(prepared.text, prepared.engine, prepared.latencyMs, prepared.reason, prepared.statusCode, prepared.context)
+            publishResult(prepared.text, prepared.engine, prepared.latencyMs, prepared.reason, prepared.statusCode, prepared.context, prepared.processing, prepared.requestId)
         is PreparedText.Fallback ->
             publishResult(prepared.text, PolishEngineLabels.DETERMINISTIC, 0, prepared.reason, 0, prepared.context)
     }
@@ -952,6 +954,8 @@ internal class DictationSessionCoordinator(
         reason: PolishReason,
         statusCode: Int,
         polishContext: PolishContext,
+        processing: com.envi.wispr.processing.ProcessingUsage? = null,
+        requestId: Long = 0,
     ) {
         // The polish facts, written before the reservation so an ending committed by anyone after this
         // point carries them; the reason arrives once per take through the ledger, so the defect it may
@@ -1017,6 +1021,13 @@ internal class DictationSessionCoordinator(
                 current.log.warn("Publication revoked before the handoff; not inserting")
                 return@launch
             }
+            runCatching {
+                recordProcessing(com.envi.wispr.processing.ProcessingObservation(
+                    takeId, requestId, System.currentTimeMillis(), polishContext.encode(), reason,
+                    sessionPreferences.speechProcessing, processing, current.acceptedAtMs,
+                    localPreference = (sessionPreferences.policy as? PolishPolicy.LocalS1)?.processing,
+                ))
+            }.onFailure { current.log.warn("Processing result could not be saved: ${it.javaClass.simpleName}") }
             // The words are on this phone before they are handed anywhere (#288), bounded so a slow disk never holds them.
             finalizer.awaitRescue(current.history)
             finalizer.deliver(takeId, current.targetPin, payload, current.history, sessionPreferences.clipboard)

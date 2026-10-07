@@ -27,10 +27,18 @@ internal data class GenerationEnd(val stopReason: String, val generatedTokens: L
         "S1 generation ended: stop=$stopReason generated=$generatedTokens prompt=$promptTokens cap=$cap reachedCap=$reachedCap"
 }
 
+internal class S1RuntimeReleaseException(cause: Throwable) : IllegalStateException("Local runtime release failed", cause)
+
+internal class S1RuntimeInitializationException(cause: Throwable) : IllegalStateException("Local runtime initialization failed", cause)
+
 /** Single owner for S1 inference. PolishService serializes every call onto one worker thread. */
 internal class S1GenieXRuntime(private val context: Context) {
     private var llm: LlmWrapper? = null
 
+    var failedComputeUnits: String = ""
+        private set
+    var initializationFailed: Boolean = false
+        private set
     var activeComputeUnit: String = "unloaded"
         private set
 
@@ -44,13 +52,15 @@ internal class S1GenieXRuntime(private val context: Context) {
         private set
 
     fun load(modelPath: String, computeUnits: List<String>): String {
+        failedComputeUnits = ""; initializationFailed = false
         close()
-        initializeSdk()
+        try { initializeSdk() } catch (error: Throwable) {
+            initializationFailed = true
+            throw S1RuntimeInitializationException(error)
+        }
 
-        var lastFailure: Throwable? = null
-        for (computeUnit in computeUnits) {
-            val candidate = runCatching {
-                runBlocking {
+        val loaded = try { loadFirstS1Backend(computeUnits) { computeUnit ->
+            runBlocking {
                     LlmWrapper.builder()
                         .llmCreateInput(
                             LlmCreateInput(
@@ -71,15 +81,9 @@ internal class S1GenieXRuntime(private val context: Context) {
                         .build()
                         .getOrThrow()
                 }
-            }
-            candidate.onSuccess { loaded ->
-                llm = loaded
-                activeComputeUnit = computeUnit
-                return "GenieX 0.4.0 llama.cpp on $computeUnit"
-            }
-            lastFailure = candidate.exceptionOrNull()
-        }
-        throw IllegalStateException("No S1 compute backend could load", lastFailure)
+        } } catch (error: S1BackendLoadException) { failedComputeUnits = error.failedCodes; throw error }
+        llm = loaded.runtime; activeComputeUnit = loaded.backend; failedComputeUnits = loaded.failedCodes
+        return "GenieX 0.4.0 llama.cpp on ${loaded.backend}"
     }
 
     /**
@@ -139,7 +143,7 @@ internal class S1GenieXRuntime(private val context: Context) {
     }
 
     fun close() {
-        llm?.close()
+        try { llm?.close() } catch (error: Throwable) { throw S1RuntimeReleaseException(error) }
         llm = null
         activeComputeUnit = "unloaded"
     }

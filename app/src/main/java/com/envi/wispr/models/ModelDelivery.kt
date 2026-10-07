@@ -88,6 +88,22 @@ internal class ModelDeliveryStore(private val root: File) {
         }
     }
 
+    /** Cheap installation identity for reusing an already verified native instance. Not first-load verification. */
+    fun installationStamp(model: ModelDescriptor): String? = synchronized(lock(model)) {
+        val directory = finalDirectory(model)
+        val receipt = File(directory, RECEIPT)
+        val names = directory.listFiles()?.map { it.name }?.toSet()
+        if (!model.isAvailable || Files.isSymbolicLink(directory.toPath()) || names != model.files.map { it.name }.toSet() + RECEIPT ||
+            !receipt.isFile || receipt.readText() != receiptText(model)) return null
+        val parts = model.files.map { entry ->
+            val file = File(directory, entry.name)
+            if (!file.isFile || Files.isSymbolicLink(file.toPath()) || file.length() != entry.expectedBytes) return null
+            val attributes = Files.readAttributes(file.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java)
+            "${entry.name}:${attributes.fileKey()}:${attributes.lastModifiedTime()}:${attributes.size()}"
+        }
+        receiptText(model) + "|" + parts.joinToString("|")
+    }
+
     /** True when an admitted model belongs to an older pinned manifest revision. */
     fun needsUpdate(model: ModelDescriptor): Boolean = runCatching {
         val final = finalDirectory(model)

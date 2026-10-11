@@ -43,6 +43,7 @@ class PolishServiceDeviceTest {
 
     @Before
     fun bindPolishService() {
+        com.envi.wispr.models.FirebaseModelFixture.stageS1IfRequested(context)
         context.bindService(
             Intent(context, PolishService::class.java),
             connection,
@@ -87,7 +88,12 @@ class PolishServiceDeviceTest {
         assertEquals(1L, result.requestId)
         assertEquals(PolishReason.POLISHED, result.reason)
         assertTrue("Unexpected engine: ${result.engine}", result.engine.startsWith("S1-mini by Superwhisper"))
-        assertFalse("Filler was not removed: ${result.text}", result.text.lowercase().startsWith("uh "))
+        val words = result.text.lowercase()
+        assertTrue("Polish returned blank text", words.isNotBlank())
+        assertFalse("Filler was not removed: ${result.text}", words.startsWith("uh "))
+        assertTrue("Product name was lost: ${result.text}", Regex("envious\\s*wispr").containsMatchIn(words))
+        assertTrue("Person name was lost: ${result.text}", words.contains("saurabh"))
+        assertTrue("Meaning was lost: ${result.text}", words.contains("useful"))
         assertTrue("Expected a standard-model backend, got: ${result.engine}", result.engine.endsWith("(GPU)") || result.engine.endsWith("(CPU)"))
         DebugLogger.log("S1DeviceTest", "engine=${result.engine} latencyMs=${result.latencyMs} chars=${result.text.length}")
     }

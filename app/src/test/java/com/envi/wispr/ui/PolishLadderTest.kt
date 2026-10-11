@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.providers.ModelId
 import com.envi.wispr.providers.ui.ProviderDiscoveryUiState
 import com.envi.wispr.providers.ui.ProviderSettingsUiState
 import com.envi.wispr.models.ModelHealth
@@ -294,29 +295,29 @@ class PolishLadderTest {
      */
     @Test fun aDatedModelSnapshotFindsTheRowItIsASnapshotOf() {
         // Both vendor spellings, and only at the END.
-        assertEquals("claude-haiku-4-5", ModelNotes.withoutSnapshot("claude-haiku-4-5-20251001"))
-        assertEquals("gpt-4o", ModelNotes.withoutSnapshot("gpt-4o-2024-08-06"))
+        assertEquals("claude-haiku-4-5", ModelId.withoutSnapshot("claude-haiku-4-5-20251001"))
+        assertEquals("gpt-4o", ModelId.withoutSnapshot("gpt-4o-2024-08-06"))
         // A version that merely ENDS in digits is not a date and must survive untouched, or a real model
         // would inherit another model's notes.
-        assertNull(ModelNotes.withoutSnapshot("claude-fable-5-1"))
-        assertNull(ModelNotes.withoutSnapshot("gemini-2.5-flash"))
-        assertNull(ModelNotes.withoutSnapshot("gpt-4.1-mini"))
+        assertNull(ModelId.withoutSnapshot("claude-fable-5-1"))
+        assertNull(ModelId.withoutSnapshot("gemini-2.5-flash"))
+        assertNull(ModelId.withoutSnapshot("gpt-4.1-mini"))
         // Eight digits that are not a date, so the shape alone is not enough.
-        assertNull(ModelNotes.withoutSnapshot("model-99999999"))
-        assertNull(ModelNotes.withoutSnapshot("model-20251301"))
-        assertNull(ModelNotes.withoutSnapshot("model-20250231"))
-        assertNull(ModelNotes.withoutSnapshot("model-20250229"))
-        assertEquals("model", ModelNotes.withoutSnapshot("model-20240229"))
-        assertNull(ModelNotes.withoutSnapshot("model-20251032"))
-        assertNull(ModelNotes.withoutSnapshot("model-19991001"))
+        assertNull(ModelId.withoutSnapshot("model-99999999"))
+        assertNull(ModelId.withoutSnapshot("model-20251301"))
+        assertNull(ModelId.withoutSnapshot("model-20250231"))
+        assertNull(ModelId.withoutSnapshot("model-20250229"))
+        assertEquals("model", ModelId.withoutSnapshot("model-20240229"))
+        assertNull(ModelId.withoutSnapshot("model-20251032"))
+        assertNull(ModelId.withoutSnapshot("model-19991001"))
         // A date anywhere but the end is not a snapshot suffix.
-        assertNull(ModelNotes.withoutSnapshot("gpt-20240806-preview"))
+        assertNull(ModelId.withoutSnapshot("gpt-20240806-preview"))
         // MIXED SEPARATORS are not a shape any vendor ships, and accepting one would hand the id another
         // model's notes and ranking (review round 5). Both spellings are all-or-nothing.
-        assertNull(ModelNotes.withoutSnapshot("model-2025-1001"))
-        assertNull(ModelNotes.withoutSnapshot("model-202510-01"))
-        assertNull(ModelNotes.withoutSnapshot("model-2025-10-1"))
-        assertNull(ModelNotes.withoutSnapshot("model-202510011"))
+        assertNull(ModelId.withoutSnapshot("model-2025-1001"))
+        assertNull(ModelId.withoutSnapshot("model-202510-01"))
+        assertNull(ModelId.withoutSnapshot("model-2025-10-1"))
+        assertNull(ModelId.withoutSnapshot("model-202510011"))
         // The point of all of it: the dated id finds its row, so it carries notes and dots.
         assertEquals(
             ModelNotes.forId(Provider.CLAUDE, "claude-haiku-4-5"),

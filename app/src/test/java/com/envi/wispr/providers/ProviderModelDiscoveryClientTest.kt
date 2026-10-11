@@ -770,9 +770,9 @@ class ProviderModelDiscoveryClientTest {
      * Product Outcome, END TO END from the provider's list to the badge on screen, which is the check the
      * two halves of #103 kept passing individually while the outcome stayed broken.
      *
-     * This is the founder's own OpenAI key, 2026-09-02: `gpt-4.1-mini` from April 2025 answers the probe
-     * outright, while `gpt-5-mini` and `gpt-5-nano` from that August spend the cap thinking and answer only
-     * when asked not to.
+     * This fixture checks larger-cap retry routing. A live check on 2026-10-11 with the fixed input Hi
+     * recovered GPT-5 mini/nano under low effort: 16 tokens was inconclusive, 64 tokens returned text.
+     * That provider receipt is separate from this fixture and does not establish recovery on every input.
      *
      * The retry must make all three USABLE, so none is hidden and he can pick any of them. The badge must
      * still land on `gpt-4.1-mini`, because the two 5s are on OpenAI's deprecations list for 2026-10-23 and

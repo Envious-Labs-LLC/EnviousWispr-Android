@@ -68,7 +68,7 @@ class ProviderAdapterTest {
         assertEquals(mapOf("x-api-key" to "key-123", "anthropic-version" to "2023-06-01"), plan.headers)
         assertEquals(ProviderReplyFormat.CLAUDE, plan.responseFormat)
         assertEquals(
-            "{\"model\":\"model-x\",\"max_tokens\":8192,\"system\":${jsonQuoted(system)},\"messages\":[{\"role\":\"user\",\"content\":${jsonQuoted(user)}}]}",
+            "{\"model\":\"model-x\",\"max_tokens\":8192,\"system\":${jsonQuoted(system)},\"messages\":[{\"role\":\"user\",\"content\":${jsonQuoted(user)}}],\"thinking\":{\"type\":\"disabled\"}}",
             plan.body,
         )
     }
@@ -97,26 +97,26 @@ class ProviderAdapterTest {
         assertEquals("{\"model\":\"gpt-x\",\"input\":\"Hi\",\"max_output_tokens\":16,\"store\":false}", openAiDefault.body)
         assertEquals(URI("https://api.openai.com/v1/responses"), openAiDefault.url)
         assertEquals(
-            "{\"model\":\"gpt-x\",\"input\":\"Hi\",\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"minimal\"},\"store\":false}",
-            OpenAiAdapter.probePlan("gpt-x", "k", ProbeStyle.NO_REASONING, null).body,
+            "{\"model\":\"gpt-x\",\"input\":\"Hi\",\"max_output_tokens\":64,\"store\":false}",
+            OpenAiAdapter.probePlan("gpt-x", "k", ProbeStyle.MORE_OUTPUT, null).body,
         )
         assertEquals(
             "{\"contents\":[{\"parts\":[{\"text\":\"Hi\"}]}],\"generationConfig\":{\"maxOutputTokens\":5}}",
             GeminiAdapter.probePlan("g-x", "k", ProbeStyle.DEFAULT, null).body,
         )
         assertEquals(
-            "{\"contents\":[{\"parts\":[{\"text\":\"Hi\"}]}],\"generationConfig\":{\"maxOutputTokens\":64,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
-            GeminiAdapter.probePlan("g-x", "k", ProbeStyle.NO_REASONING, null).body,
+            "{\"contents\":[{\"parts\":[{\"text\":\"Hi\"}]}],\"generationConfig\":{\"maxOutputTokens\":64}}",
+            GeminiAdapter.probePlan("g-x", "k", ProbeStyle.MORE_OUTPUT, null).body,
         )
         assertEquals(URI("http://127.0.0.1:9/probe/g-x:generateContent"), GeminiAdapter.probePlan("g-x", "k", ProbeStyle.DEFAULT, "http://127.0.0.1:9/probe").url)
         assertEquals(
-            "{\"model\":\"c-x\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}",
+            "{\"model\":\"c-x\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"thinking\":{\"type\":\"disabled\"}}",
             ClaudeAdapter.probePlan("c-x", "k", ProbeStyle.DEFAULT, null)!!.body,
         )
-        // Claude never opted into thinking, so there is nothing to ask it not to do.
-        assertNull(ClaudeAdapter.probePlan("c-x", "k", ProbeStyle.NO_REASONING, null))
+        // Claude has no larger-cap discovery retry.
+        assertNull(ClaudeAdapter.probePlan("c-x", "k", ProbeStyle.MORE_OUTPUT, null))
         assertNull(SelfHostedAdapter.probePlan("m", "k", ProbeStyle.DEFAULT, null))
-        assertNull(SelfHostedAdapter.probePlan("m", "k", ProbeStyle.NO_REASONING, null))
+        assertNull(SelfHostedAdapter.probePlan("m", "k", ProbeStyle.MORE_OUTPUT, null))
     }
 
     // ---- The model list: URLs, paging, rows and envelope (#61, #84).

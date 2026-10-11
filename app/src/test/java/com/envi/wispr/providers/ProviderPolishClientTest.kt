@@ -20,6 +20,26 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class ProviderPolishClientTest {
+    /** Product Outcome: the real HTTP client carries the new model settings and parses their text replies. */
+    @Test fun modernCloudModelsPolishThroughTheirActualAdaptersAndTransport() {
+        data class Row(val provider: Provider, val model: String, val field: String, val setting: Map<String, String>, val response: String)
+        val rows = listOf(
+            Row(Provider.OPENAI, "gpt-6.1-sol", "reasoning", mapOf("effort" to "low"), "{\"output\":[{\"type\":\"reasoning\"},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Please send the deck today.\"}]}]}"),
+            Row(Provider.GEMINI, "gemini-3.8-flash", "thinkingConfig", mapOf("thinkingLevel" to "low"), "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Please send the deck today.\"}]}}]}"),
+            Row(Provider.CLAUDE, "claude-opus-5-5", "output_config", mapOf("effort" to "low"), "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"hidden\"},{\"type\":\"text\",\"text\":\"Please send the deck today.\"}]}"),
+        )
+        rows.forEach { row ->
+            withServer(row.response, inspect = { seen ->
+                val root = ProviderJson.parseOrNull(seen.body)!!.root as Map<*, *>
+                val fields = if (row.provider == Provider.GEMINI) root["generationConfig"] as Map<*, *> else root
+                assertEquals(row.model, row.setting, fields[row.field])
+            }) { endpoint ->
+                val result = client(endpoint, row.provider).polish(ProviderPolishRequest(row.provider, row.model, "please send the deck today", "test-key"))
+                assertEquals(row.model, ProviderPolishResult.Success("Please send the deck today."), result)
+            }
+        }
+    }
+
     @Test fun openAiResponsesRequestUsesBearerAndParsesText() = withServer(
         response = "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"clean result\"}]}]}",
         inspect = { request ->

@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.providers.ModelId
 import com.envi.wispr.providers.DiscoveredModel
 import com.envi.wispr.providers.ModelAccess
 import com.envi.wispr.providers.ModelListRules
@@ -60,7 +61,7 @@ internal object ModelListPresentation {
         // model we named by hand is one we already chose to offer, so naming it IS the qualification.
         val preferred = ModelNotes.preferred(provider)
         fun rank(id: String): Int {
-            val index = preferred.indexOfFirst { it == id || it == ModelNotes.withoutSnapshot(id) }
+            val index = preferred.indexOfFirst { it == id || it == ModelId.withoutSnapshot(id) }
             return if (index < 0) preferred.size else index
         }
         val candidates = models.filter {

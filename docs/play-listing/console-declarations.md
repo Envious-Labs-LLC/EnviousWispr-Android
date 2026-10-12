@@ -1,106 +1,54 @@
-# Play Console declarations, ready to paste
+# Submitted Play Console declarations
 
-Policy > App content. Each block is the exact answer. Grounded 2026-09-17 against
-`app/src/main/AndroidManifest.xml`, `app/src/main/res/xml/accessibility_service_config.xml`
-(`isAccessibilityTool="false"`, pinned by `AccessibilityPolicyDeclarationTest`),
-`ui/AccessibilityGuideActivity.kt` (the disclosure screen) and `docs/play-data-safety-answers.md`.
+Saved/submitted October12,2026. These are current submitted answers, not Google approval.
+[Release status](../maintenance.md) owns availability. Recheck actual form fields and candidate
+permissions before changing declarations.
 
-## 1. Foreground service permissions
+## Accessibility services
 
-The manifest declares two types. Android 14+ (targetSdk 36) requires a Console declaration per type.
-
-### FOREGROUND_SERVICE_MICROPHONE
-
-**Which service:** `ui.DictationSessionService` (`microphone|dataSync`).
-
-**Describe the feature (paste):**
-```
-EnviousWispr is a dictation app. When the user starts a dictation (by tapping the floating bubble, the Quick Settings tile, or the notification), the app records from the microphone for the length of that one dictation, transcribes it on the device, and inserts the text into the app the user was typing in. The microphone foreground service exists only while the user is dictating and stops when the dictation ends. Audio is processed on the device and never uploaded.
-```
-
-**Video:** the same video as the accessibility declaration below (it shows a dictation starting from the bubble with the recorder visible, and ending).
-
-**Why this type is required:** the user starts dictation from another app, so the recording runs while EnviousWispr is not in the foreground; Android requires the microphone foreground service type for that.
-
-### FOREGROUND_SERVICE_DATA_SYNC
-
-**Which services:** `ui.DictationSessionService` (`dataSync` half) and WorkManager's
-`SystemForegroundService` (model delivery).
-
-**Describe the feature (paste):**
-```
-On first run the app downloads its two on-device models (about 1.2 GB) so that speech recognition and text polish can run entirely on the phone. The data-sync foreground service keeps that one-time download alive with a visible notification and a cancel action, and stops when the download completes or is cancelled. The dictation service also carries the data-sync type because, when the user has connected their own cloud polish provider key, the transcript text is sent to that provider at the end of a dictation.
-```
-
-## 2. Accessibility API declaration (AccessibilityService)
-
-**Is your app an accessibility tool designed to help users with disabilities?** No.
-(`isAccessibilityTool="false"`; EnviousWispr is a general dictation app.)
-
-**Core functionality that requires the AccessibilityService API (paste):**
-```
-Inserting dictated text into the text field the user is working in, in any app. After the user starts a dictation, EnviousWispr uses the AccessibilityService API to identify the focused editable field, place the transcribed text at the cursor, and verify that it appeared. It also shows a small floating bubble beside the focused field so the user can start a dictation without switching apps. The service does not operate the phone on its own, does not read screens outside the focused field, and never sends field contents to Envious Labs.
-```
-
-**Prominent disclosure and consent:** the app shows a full-screen explanation (`Let the bubble float beside
-your text box`) with the four required statements and the choices "Agree and open Settings" / "Not now"
-BEFORE any route into Android's Accessibility settings. All three routes (the Settings "Auto-paste access"
-row, the onboarding accessibility step, the Home "Auto-paste is not connected" card) pass through it.
-
-**Video requirements (record on the emulator, see `launch-checklist-2026-09-17.md`):** the disclosure
-screen, tapping "Not now" (returns without opening Settings), the disclosure again, tapping "Agree and
-open Settings", the Android Accessibility toggle, returning to the app, then one dictation from the bubble
-inside Gmail or Chrome with the text landing in the field.
-
-## 3. Data safety
-
-Enter exactly the table in `docs/play-data-safety-answers.md` FACT: the-form-answers. One-line reminder of
-the shape: collected and shared = **Messages / Other in-app messages** (transcript text), optional,
-purpose App functionality, only under the user's own cloud polish key; collected, not shared = **App
-interactions**, **Crash logs**, **Diagnostics**, **Device or other IDs**, **Approximate location** (usage and
-crash reports, #176, required, purpose Analytics; the location is PostHog's IP-derived city or region); audio
-**not** collected; encrypted in transit; no account; no deletion request path yet (no exposed install id).
-
-## 4. Content rating (IARC questionnaire)
-
-| Question | Answer |
+| Question | Submitted answer |
 |---|---|
-| Category | Utility, Productivity, Communication, or Other |
-| Violence, sexuality, language, controlled substances | None |
-| User-generated content shared with other users | No (dictations stay on the phone) |
-| Users can communicate with each other | No |
-| Shares user location | No |
-| Purchases digital goods | No |
-| Contains ads | No |
-Expected rating: Everyone / PEGI 3.
+| Accessibility tool for disabilities | No |
+| Usage | App functionality and Analytics |
+| Collect/share sensitive data through Accessibility API | Yes |
+| Data types through this API | Installed apps, App interactions, Diagnostics |
+| Prominent disclosure video requirement | Acknowledged after actual-flow review |
 
-## 5. Ads, news, government, financial, health
+The shared consent screen explains local field/cursor processing, insertion after user-started
+dictation, target-app/outcome/timing reports to PostHog/Sentry and the random installation identifier.
+Agree opens native Settings; Not now returns. Field contents are not sent to Envious Labs.
+Source: app/src/main/java/com/envi/wispr/ui/AccessibilityGuideActivity.kt.
 
-Ads: No. News app: No. Government app: No. Financial features: None. Health: not a health app.
+## Foreground service permissions
 
-## 6. Target audience and content
-
-Target age: 18 and over (the app is not designed for children; a lower band adds Families policy work
-for no reach). "Does your app appeal to children?" No.
-
-## 7. Device catalogue (Reach and devices > Device catalogue > Manage exclusion rules)
-
-Founder decision 2026-09-16, Option A of `docs/device-support-decision.md`:
-
-| Rule | Value |
+| Type | Tasks selected |
 |---|---|
-| RAM | Exclude devices with less than 6 GB (set the RAM slider to 6144 MB minimum) |
-| Android Go | Exclude (system feature `android.hardware.ram.low`) |
-| ABI | arm64-v8a only (already enforced by the bundle; no rule needed) |
-| SoC / manufacturer | No restriction |
+| Data sync | Other network processing; Other local processing |
+| Microphone | Background audio input |
 
-## 8. App access
+Network work includes model downloads and optional cloud text; local work includes verification and
+on-device processing. Types remain microphone/dataSync for dictation and dataSync for WorkManager.
+The live form used task choices and video links, not the old prose-description fields.
 
-"All functionality is available without special access." (No login. The optional cloud polish needs a
-user's own provider key, which reviewers do not need: local polish is the default.)
+The same reviewed video serves the accessibility and three foreground-service slots:
+https://drive.google.com/file/d/1vOOgHWrk_xMO8Cqq1LSvPGHOIqYl1UZE/view
+The file was replaced in place October12 with current disclosure/refusal/acceptance/native grant,
+recording/insertion and user-started download continuing after Home. It demonstrates the API features;
+it does not prove speech accuracy or hardware qualification. Do not reuse the old September video.
 
-## 9. Government-issued ID and sensitive permissions
+## Other declarations
 
-No contacts, SMS, call log, location or file permissions are requested (manifest:
-`RECORD_AUDIO`, `INTERNET`, `VIBRATE`, `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE*`). Nothing to declare
-beyond sections 1 and 2.
+| Item | Submitted answer |
+|---|---|
+| App access | All functionality available without special access; no app account |
+| Ads | No |
+| Advertising ID | No; compiled bundle has no advertising-ID permission |
+| IARC | All Other App Types; questionnaire No answers; Everyone/PEGI3 result |
+| Target audience |18 and older; this is audience selection, not a claimed age gate |
+| Government/financial/health | Not government; no financial features; not a health app |
+| Data Safety | [Current submitted table](../play-data-safety-answers.md) |
+| Device catalogue | [Actual filter and support scope](../device-support-decision.md) |
+| Countries | Worldwide,177 countries/regions plus rest of world |
+
+The founder accepted IARC and Device Catalog terms at action time. New binding agreements still need
+their own action-time confirmation. Do not infer that saved declarations have been approved.

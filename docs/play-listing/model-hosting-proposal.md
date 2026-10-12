@@ -1,3 +1,5 @@
+> Historical hosting proposal. The R2 mirror is implemented; old prices, approval requests and source assumptions below are not current operations. See [current guidance](../maintenance.md).
+
 # Model hosting: the proposal for the founder's yes
 
 Status: SHIPPING, 2026-09-17. The founder approved option A (Cloudflare R2, `GR-NO-CLOUD-SPEND`) in chat

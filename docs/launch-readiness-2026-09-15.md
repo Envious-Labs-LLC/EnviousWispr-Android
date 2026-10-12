@@ -1,3 +1,5 @@
+> This September assessment is historical. The launch paperwork and release candidate are now submitted. See [current guidance](maintenance.md).
+
 # Launch readiness, 2026-09-15
 
 Founder question: "Anything blocking us from launching on Android? I feel the app is viable." This is the

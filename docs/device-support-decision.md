@@ -1,47 +1,35 @@
-# Device support: the launch filter
+# Device support
 
-A founder decision (`.claude/knowledge/play-store-readiness.md` RULE: device-support-is-a-decision-not-a-default).
-It changes the listing, the store filters, and the test matrix. This doc holds the options and a
-recommendation grounded in the shipping path and web research (council 2026-09-15).
-
-**Decided 2026-09-16 by the founder: Option A.** Version one ships to phones with 6 GB of RAM or more,
-Android Go excluded, arm64 only, no chipset restriction. The same day he decided there is no closed beta:
-internal testing goes straight to a public release.
+Founder decision September 16, 2026: nominal 6 GB+ memory, Android13+, arm64, Android Go excluded,
+no chipset restriction; internal testing goes directly to public release. Worldwide availability was
+chosen October12. Support promises must remain separate from the tested device sample.
 
 ## FACT: the-shipped-path-is-CPU-only-and-not-Snapdragon-locked
-The speech model (Parakeet on ONNX Runtime since #374) and the local polish model (S1-mini on llama.cpp) both run on
-the CPU with arm64 binaries. The Qualcomm GenieX NPU path is a development override, never shipped
-(`.claude/knowledge/polish-engines.md` FACT: the-npu-path-is-a-development-override). So nothing in the
-shipped path needs a Snapdragon or a Samsung phone. The manifest already restricts to `arm64-v8a` and
-`minSdk 33` (`app/build.gradle.kts`), and Play auto-excludes devices without that ABI.
 
-The real constraint is memory and storage, not the chipset: the two models need roughly 1.2 GB of storage
-and about 1 GB of RAM resident while transcribing. On a 4 GB phone with other apps active, that risks the
-system killing the app under memory pressure.
+The heading is historical. Parakeet uses CPU; S1-mini uses Qualcomm GenieX with qualified GPU/CPU
+routes. It is not the old llama.cpp-only path, and NPU is not offered. CPU and GPU were checked on the
+S26; one short standard-model CPU polish check passed on a real Pixel8. No universal portability or
+performance claim follows from that sample. Build configuration sets Android13+ and arm64.
 
 ## FACT: the-two-options
-| | Option A (recommended) | Option B |
-|---|---|---|
-| Minimum RAM | 6 GB | 4 GB |
-| Exclude Android Go / low-RAM | Yes | Yes |
-| ABI / minSdk | arm64-v8a, 33 | arm64-v8a, 33 |
-| Chipset restriction | None | None |
-| Reach | Modern mid-to-high phones | ~30% more devices |
-| Risk | Low: protects the first store reviews from out-of-memory crash loops | Higher: budget 4 GB phones can kill the app mid-dictation |
 
-Both add a runtime pre-flight that needs ~1.5 to 2 GB free storage before the first download.
+The original 6GB-versus-4GB options are historical. The founder selected the nominal6GB tier.
+Do not lower the supported tier without real lower-memory qualification and current stability evidence.
 
 ## RULE: the-recommendation
-Adopted 2026-09-16. Launch on **Option A (6 GB minimum, Android Go excluded, arm64 only, no chipset restriction)**, then lower
-to 4 GB after real 4 GB testing and Play vitals show acceptable crash and ANR rates. The device-catalog
-exclusions are revisable without adding a hardware dependency, so starting strict costs nothing but reach
-and buys clean early reviews.
 
-Do NOT restrict to Samsung or Snapdragon: the shipped path is CPU-only, so a chipset filter would be
-arbitrary and would shrink reach against the 100,000-user north star for no reliability gain.
+Keep the chosen support scope. The actual Console rule saved October12 is **exclude TotalMem <=4096 MB
+and Android Go**, with no chipset rule. Console offered discrete less-than-or-equal cutoffs; excluding
+<=6144 MB risks excluding advertised6GB phones. This approximates the nominal6GB tier and does not
+enforce exactly6GB. There is no6144MB minimum slider. Google rules use reported total memory, not
+advertised memory: https://support.google.com/googleplay/android-developer/answer/7353455
+
+Do not replace the chipset decision with an unmeasured Samsung/Snapdragon-only restriction. A new
+support promise needs its own device/runtime evidence.
 
 ## FACT: what-this-changes-once-decided
-- The Play Console device catalog exclusion rules (RAM floor, Android Go).
-- The listing's device-support line and the "works on" claim.
-- The closed-beta test matrix: the beta runs on exactly the supported class, not on "Android".
-- A runtime storage pre-flight before first download (stage 2 work, not yet built).
+
+Keep the listing, Console filters and qualification matrix aligned. Internal tester eligibility is
+separate from production device exclusions. Test actual model loading and insertion on each added
+cohort, not just installation. Approximate1.2GB model storage is a setup requirement; do not describe
+a new storage-preflight feature as implemented without source/runtime proof.

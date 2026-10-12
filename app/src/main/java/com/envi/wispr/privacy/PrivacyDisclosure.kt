@@ -18,7 +18,7 @@ internal object PrivacyDisclosures {
      * claim here is enforced by `telemetry/PayloadSanitizer.kt` (allowlist first: no words, no names, no
      * keys, no paths) and `telemetry/InstallIdentity.kt` (one random id per install, never a person).
      */
-    const val TELEMETRY_SUMMARY = "EnviousWispr sends usage and crash reports with no personal details, so problems can be found and fixed: " +
+    const val TELEMETRY_SUMMARY = "EnviousWispr sends limited usage and crash reports so problems can be found and fixed: " +
         "whether a dictation finished, how long each step took, which settings are on, which app the words went to, " +
         "and a crash report when the app fails. It never sends audio, your dictated words, names you enter, file contents, or API keys. " +
         "A crash report can include the technical location in the code where it failed. " +

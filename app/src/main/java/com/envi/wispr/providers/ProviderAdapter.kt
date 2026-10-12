@@ -83,13 +83,13 @@ internal interface ProviderAdapter {
     fun isRetryable(failure: ProviderPolishResult.Failure): Boolean
 }
 
-/** How a probe asks. The retry exists only because a reasoning model can spend the whole cap thinking. */
+/** How a probe asks. An inconclusive capped answer may get one larger-cap request. */
 internal enum class ProbeStyle {
-    /** The cheap first ask: the provider's own defaults and a tiny output cap. */
+    /** The first ask: production model settings and a tiny output cap. */
     DEFAULT,
 
-    /** The one retry: ask the model not to reason, and leave room for the answer itself. */
-    NO_REASONING,
+    /** The one retry: keep production model settings and leave more room for the answer. */
+    MORE_OUTPUT,
 }
 
 /** One page of a provider's model list. */

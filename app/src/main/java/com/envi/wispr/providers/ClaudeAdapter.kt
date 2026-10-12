@@ -23,21 +23,17 @@ internal object ClaudeAdapter : ProviderAdapter {
     override fun polishPlan(request: ProviderPolishRequest, endpointOverride: String?): RequestPlan = RequestPlan(
         url = cloudOrOverride(endpointOverride, CLAUDE_URL),
         headers = authHeaders(request.apiKey.orEmpty()),
-        body = "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}",
+        body = "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]${ProviderModelCapabilities.claudeFields(request.model)}}",
         responseFormat = ProviderReplyFormat.CLAUDE,
     )
 
-    /**
-     * Anthropic's extended thinking is OPT IN and this request does not opt in, so there is nothing to
-     * suppress and no retry to make: measured 2026-09-02, both models the founder's key reaches answer
-     * within a 5-token cap.
-     */
+    /** One tiny probe with the same model-specific thinking fields as polish; no larger-cap retry. */
     override fun probePlan(model: String, apiKey: String, style: ProbeStyle, endpointOverride: String?): RequestPlan? = when (style) {
-        ProbeStyle.NO_REASONING -> null
+        ProbeStyle.MORE_OUTPUT -> null
         ProbeStyle.DEFAULT -> RequestPlan(
             url = cloudOrOverride(endpointOverride, CLAUDE_URL),
             headers = authHeaders(apiKey),
-            body = "{\"model\":${jsonString(model)},\"max_tokens\":${ProviderAdapters.PROBE_OUTPUT_TOKENS},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(ProviderAdapters.PROBE_TEXT)}}]}",
+            body = "{\"model\":${jsonString(model)},\"max_tokens\":${ProviderAdapters.PROBE_OUTPUT_TOKENS},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(ProviderAdapters.PROBE_TEXT)}}]${ProviderModelCapabilities.claudeFields(model)}}",
             responseFormat = ProviderReplyFormat.CLAUDE,
         )
     }

@@ -29,28 +29,30 @@ internal object GeminiAdapter : ProviderAdapter {
     override fun polishPlan(request: ProviderPolishRequest, endpointOverride: String?): RequestPlan = RequestPlan(
         url = modelUrl(request.model, endpointOverride),
         headers = authHeaders(request.apiKey.orEmpty()),
-        body = "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}]}",
+        body = "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}]${generationConfig(request.model, null)}}",
         responseFormat = ProviderReplyFormat.GEMINI,
     )
 
     override fun probePlan(model: String, apiKey: String, style: ProbeStyle, endpointOverride: String?): RequestPlan {
-        val text = jsonString(ProviderAdapters.PROBE_TEXT)
-        val body = when (style) {
-            ProbeStyle.DEFAULT ->
-                "{\"contents\":[{\"parts\":[{\"text\":$text}]}],\"generationConfig\":{\"maxOutputTokens\":${ProviderAdapters.PROBE_OUTPUT_TOKENS}}}"
-            // `thinkingBudget: 0` is REJECTED with 400 by a model that cannot stop thinking
-            // ("Budget 0 is invalid. This model only works in thinking mode", measured
-            // 2026-09-02 on gemini-2.5-pro), and frees the cap on one that can.
-            ProbeStyle.NO_REASONING ->
-                "{\"contents\":[{\"parts\":[{\"text\":$text}]}],\"generationConfig\":{\"maxOutputTokens\":${ProviderAdapters.PROBE_RETRY_OUTPUT_TOKENS}," +
-                    "\"thinkingConfig\":{\"thinkingBudget\":0}}}"
+        val outputTokens = when (style) {
+            ProbeStyle.DEFAULT -> ProviderAdapters.PROBE_OUTPUT_TOKENS
+            ProbeStyle.MORE_OUTPUT -> ProviderAdapters.PROBE_RETRY_OUTPUT_TOKENS
         }
+        val body = "{\"contents\":[{\"parts\":[{\"text\":${jsonString(ProviderAdapters.PROBE_TEXT)}}]}]${generationConfig(model, outputTokens)}}"
         return RequestPlan(
             url = modelUrl(model, endpointOverride),
             headers = authHeaders(apiKey),
             body = body,
             responseFormat = ProviderReplyFormat.GEMINI,
         )
+    }
+
+    private fun generationConfig(model: String, outputTokens: Int?): String {
+        val fields = listOfNotNull(
+            outputTokens?.let { "\"maxOutputTokens\":$it" },
+            ProviderModelCapabilities.geminiThinkingConfig(model)?.let { "\"thinkingConfig\":{$it}" },
+        )
+        return if (fields.isEmpty()) "" else ",\"generationConfig\":{${fields.joinToString(",")}}"
     }
 
     override fun listUrl(listOverride: String?): URI = cloudOrOverride(listOverride, GEMINI_MODELS_URL)

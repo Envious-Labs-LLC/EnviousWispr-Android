@@ -227,18 +227,8 @@ internal class ProviderModelDiscoveryClient(
     private class ProbeAttempt(val outcome: ProbeOutcome, val status: Int?, val reply: ModelListRules.ProbeReply?)
 
     /**
-     * One probe: the polish request's own plan with the fixed word "Hi" and a tiny output cap, and ONE
-     * retry when that cap told us nothing.
-     *
-     * **The retry can only IMPROVE a verdict, never worsen one**, which is what makes it safe to send a
-     * request some models refuse outright. Both suppressions are rejected with HTTP 400 by models that
-     * cannot honour them — `reasoning.effort` on every OpenAI model that does not reason, `thinkingBudget:
-     * 0` on `gemini-2.5-pro` — and a 400 on the retry simply leaves the first answer standing.
-     *
-     * Why it is needed at all, measured 2026-09-02 against live keys: `gpt-5-nano` spends the ENTIRE output
-     * cap on reasoning at 64, 128 and 256 tokens, so no cap alone reaches it, and `gpt-5-mini` and
-     * `gpt-5-nano` are the two newest models the founder's key can reach (#103). Asked not to reason, both
-     * answer in about 30 tokens.
+     * One capped ask using production's model settings, then one larger-cap ask if it was inconclusive.
+     * A failed second ask never condemns the model; both asks share one deadline and the chosen id.
      */
     private fun probe(adapter: ProviderAdapter, model: String, apiKey: String, remainingMs: Int): ProbeOutcome {
         // ONE DEADLINE FOR THE WHOLE LOGICAL PROBE, clamped to a single `probeTimeoutMs` and fixed before
@@ -264,12 +254,8 @@ internal class ProviderModelDiscoveryClient(
         // inconclusive, so the retry doubled traffic during a rate limit or an outage and spent the
         // discovery deadline without testing another model.
         if (first.status != 200 || first.reply != ModelListRules.ProbeReply.INCONCLUSIVE) return first.outcome
-        val retry = probeOnce(adapter, model, apiKey, deadline, ProbeStyle.NO_REASONING) ?: return first.outcome
-        // A key that stopped working between the two asks is NEWS, and the one thing the retry may report
-        // that is not an improvement. It cannot be raised by the suppression being unsupported: neither
-        // "Unsupported parameter: 'reasoning.effort'" nor "This model only works in thinking mode" is a
-        // key marker to the adapters' `errorSignal`, whose OpenAI 400 branch never answers KEY_REJECTED
-        // at all and whose Gemini one requires `API_KEY_INVALID`.
+        val retry = probeOnce(adapter, model, apiKey, deadline, ProbeStyle.MORE_OUTPUT) ?: return first.outcome
+        // A key revoked between asks is news; otherwise only a text answer improves the first verdict.
         if (retry.outcome is ProbeOutcome.KeyRejected) return retry.outcome
         return if (retry.reply == ModelListRules.ProbeReply.TEXT) retry.outcome else first.outcome
     }

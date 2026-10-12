@@ -47,6 +47,23 @@ internal object DeterministicCleanup {
         "exclamation mark" to "!", "exclamation point" to "!", "full stop" to ".",
         "semicolon" to ";", "period" to ".", "comma" to ",", "colon" to ":",
     )
+    // Prepare command words before any replacement writes marks, so two explicit aliases stay two.
+    // Only identical adjacent one/two-mark runs are absorbed; ellipses and mixed runs keep their intent.
+    private val recognizerMarkPatterns = punctuation.filterValues { '\n' !in it }.map { (phrase, mark) ->
+        val literal = Regex.escape(mark)
+        val command = "(${Regex.escape(phrase)})"
+        val otherMark = "[.,;:!?…]"
+        val horizontal = "[ \t]*"
+        cleaningRegex("(?<!$otherMark)$literal{1,2}(?!$otherMark)$horizontal\\b$command\\b", RegexOption.IGNORE_CASE) to
+            cleaningRegex("\\b$command\\b$horizontal$literal{1,2}(?!$otherMark)(?=\\s|$)", RegexOption.IGNORE_CASE)
+    }
+
+    private fun prepareSpokenPunctuation(input: String): String =
+        recognizerMarkPatterns.fold(input) { text, (before, after) ->
+            val withoutBefore = before.replace(text) { " ${it.groupValues[1]}" }
+            after.replace(withoutBefore) { "${it.groupValues[1]} " }
+        }
+
     private val protectedPhrases = listOf(
         cleaningRegex("\\beleventh hour\\b", RegexOption.IGNORE_CASE),
         cleaningRegex("\\bthe whole nine yards\\b", RegexOption.IGNORE_CASE),
@@ -162,14 +179,17 @@ internal object DeterministicCleanup {
                 lastGood = value
                 trace("structured", value)
             }
-            if (options.spokenPunctuation && !skipEnglishRewrites) punctuation.forEach { (phrase, mark) ->
-                val command = if ('\n' in mark) {
-                    cleaningRegex("\\b${Regex.escape(phrase)}\\b", RegexOption.IGNORE_CASE)
-                } else {
-                    cleaningRegex("\\s*\\b${Regex.escape(phrase)}\\b\\s*", RegexOption.IGNORE_CASE)
+            if (options.spokenPunctuation && !skipEnglishRewrites) {
+                value = prepareSpokenPunctuation(value)
+                punctuation.forEach { (phrase, mark) ->
+                    val command = if ('\n' in mark) {
+                        cleaningRegex("\\b${Regex.escape(phrase)}\\b", RegexOption.IGNORE_CASE)
+                    } else {
+                        cleaningRegex("\\s*\\b${Regex.escape(phrase)}\\b\\s*", RegexOption.IGNORE_CASE)
+                    }
+                    val replacement = if ('\n' in mark) mark else "$mark "
+                    value = value.replace(command, replacement)
                 }
-                val replacement = if ('\n' in mark) mark else "$mark "
-                value = value.replace(command, replacement)
             }
             if (!skipEnglishRewrites) value = SpokenSlash.apply(value, options.spokenPunctuation)
             else value = SpokenIdentifiers.normalize(NeutralAddresses.normalize(value, neutral = true), english = false)

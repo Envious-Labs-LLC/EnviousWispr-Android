@@ -16,6 +16,13 @@ class OnboardingPolicyTest {
         assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(4, ready.copy(polishModelReady = false), AutoPasteAvailability.LIVE))
     }
 
+    @Test fun bothRequiredModelsBlockBothRestoredDemoAndPractice() {
+        for (step in listOf(OnboardingStage.DEMO.ordinal, OnboardingStage.PRACTICE.ordinal)) {
+            assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(step, ready.copy(speechModelReady = false), AutoPasteAvailability.LIVE))
+            assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(step, ready.copy(polishModelReady = false), AutoPasteAvailability.LIVE))
+        }
+    }
+
     @Test fun enabledButDisconnectedAccessibilityDoesNotAllowPractice() {
         assertEquals(OnboardingStage.PERMISSIONS, onboardingStage(4, ready, AutoPasteAvailability.PERMITTED_NOT_RUNNING))
         assertEquals(OnboardingStage.PERMISSIONS, onboardingStage(3, ready, AutoPasteAvailability.PERMITTED_NOT_RUNNING))

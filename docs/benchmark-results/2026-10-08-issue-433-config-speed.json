@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "issue": 433,
+  "date": "2026-10-08",
+  "decision": "No qualified configuration winner; production unchanged",
+  "productionBaselineVersionCode": 270,
+  "sourceCommit": "521260ac6b403e8d8792a282a427778af3a32984",
+  "device": "Samsung Galaxy S26 Ultra, Android16, arm64",
+  "build": "isolated debug native bench; not production release app timing",
+  "runtime": {
+    "onnxruntime": "1.30.0",
+    "geniex": "0.4.0"
+  },
+  "benchApkSha256": "6c0bffa158bb92e8ca1ca511457e80815ef733e64636cc853b13d45151ed54b1",
+  "benchAssetSha256": "5b4a84c52eeaa615dc46d781cc7e4598f9b432184831d57493c48adcd01371a9",
+  "asr": {
+    "acceptedPairs": 42,
+    "rejectedAttempts": 2,
+    "casesPerArmPerRepeat": 112,
+    "completeRepeats": 3,
+    "A1decision": "rejected; slower, not integrated",
+    "pairedMedianReduction": -0.06629213571792869,
+    "interval97_5": [
+      -0.07665646897646039,
+      -0.05758406017323625
+    ],
+    "allTextEqual": true,
+    "appSpeedProven": false
+  },
+  "s1": {
+    "acceptedPairs": 102,
+    "rejectedAttempts": 1,
+    "casesPerArmPerRepeat": 130,
+    "completeRepeats": 3,
+    "acceptedNativeCalls": 1560,
+    "decisions": {
+      "B1": {
+        "decision": "rejected; no material speed gain",
+        "pairedMedianReduction": 0.0012726367540580874,
+        "interval97_5": [
+          -0.002235914672225059,
+          0.0042440340424146905
+        ],
+        "medianAbsoluteMs": 0.6494530000000225,
+        "allTextEqual": true,
+        "engineTargetPass": false
+      },
+      "B2": {
+        "decision": "rejected; no material speed gain",
+        "pairedMedianReduction": -0.0019647941795289947,
+        "interval97_5": [
+          -0.005260411838923451,
+          0.0016224627460424967
+        ],
+        "medianAbsoluteMs": -0.8696874999999977,
+        "allTextEqual": true,
+        "engineTargetPass": false
+      }
+    },
+    "appSpeedProven": false
+  },
+  "appSpeedProven": false,
+  "heldOutRun": false,
+  "productionEdited": false,
+  "limits": [
+    "Development screening only",
+    "Resident native inference after one excluded warmup/load",
+    "No sustained, clock-throttling or battery-efficiency claim",
+    "No end-to-end editor measurement",
+    "S1 source shape tags are semantic categories, not short/medium/long timing strata",
+    "Controls excluded from timing; unchanged output is baseline equivalence, not independent correctness"
+  ],
+  "targets": {
+    "pairedMedianReduction": 0.2,
+    "lower97_5ReductionBound": 0.1,
+    "p95MaximumRatio": 1.05
+  },
+  "models": {
+    "encoder-model.int8.onnx": {
+      "bytes": 649524002,
+      "sha256": "019f798a42be5eee029d8591116308df8e8adf1f55a6292c15f1bd5583f04af4"
+    },
+    "decoder_joint-model.int8.onnx": {
+      "bytes": 18203490,
+      "sha256": "63a6cd892244e5dbdd8b41541514f2643c7d3c7c454f9adcdf99ca31acb802d0"
+    },
+    "vocab.txt": {
+      "bytes": 93939,
+      "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+    },
+    "s1-mini-q4_k_m.gguf": {
+      "bytes": 484219808,
+      "sha256": "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634"
+    }
+  }
+}

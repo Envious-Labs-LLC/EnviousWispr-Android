@@ -2,6 +2,16 @@ package com.envi.wispr.ui
 
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
@@ -10,6 +20,16 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import android.app.UiAutomation
+import android.view.KeyCharacterMap
+import android.view.inspector.WindowInspector
+import android.view.inputmethod.InputMethodManager
+import androidx.compose.ui.test.assertIsFocused
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.view.accessibility.AccessibilityWindowInfo
+import com.envi.wispr.feedback.FeedbackController
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -87,6 +107,136 @@ class AppShellNavigationTest {
         val count = composeRule.onAllNodes(matcher).fetchSemanticsNodes().size
         check(count <= 1) { "expected at most one node matching $matcher, found $count" }
         return count == 1
+    }
+
+    /** Product Outcome: a report draft survives dismissal/rotation and an invalid reply address cannot be submitted. */
+    @Test
+    fun feedbackKeepsItsDraftAndRefusesAnInvalidReplyAddress() {
+        composeRule.onNodeWithContentDescription("Send feedback").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onNodeWithText("Feedback message").fetchSemanticsNode().config
+                .getOrNull(SemanticsProperties.Disabled) == null
+        }
+        composeRule.onNodeWithText("Feedback message").assertIsEnabled()
+        composeRule.onNodeWithText("Send", substring = false).assertIsNotEnabled()
+        composeRule.onNodeWithText("Feedback message").performTextReplacement("UAT draft: keep my report when I close the form.")
+        composeRule.onNodeWithText("Email (optional, if you'd like a reply)").performTextReplacement("invalid-email")
+        composeRule.onNodeWithText("Please check your email address, or leave it empty.").assertExists()
+        composeRule.onNodeWithText("Send", substring = false).assertIsNotEnabled()
+        composeRule.onNodeWithText("Close").performScrollTo().performClick()
+        composeRule.onNodeWithContentDescription("Send feedback").performClick()
+        composeRule.onNodeWithText("Feedback message").assertTextContains("UAT draft: keep my report when I close the form.")
+        // Both explicit choices survive recreation, independently of this build's telemetry default.
+        composeRule.waitUntil(5_000) {
+            composeRule.onNodeWithContentDescription("Include diagnostics").fetchSemanticsNode().config
+                .getOrNull(SemanticsProperties.Disabled) == null
+        }
+        val diagnostics = composeRule.onNodeWithContentDescription("Include diagnostics")
+        if (diagnostics.fetchSemanticsNode().config[SemanticsProperties.ToggleableState] != ToggleableState.On) {
+            diagnostics.performScrollTo().performClick()
+        }
+        diagnostics.assertIsOn()
+        composeRule.activityRule.scenario.recreate()
+        composeRule.onNodeWithContentDescription("Include diagnostics").assertIsOn()
+        composeRule.onNodeWithContentDescription("Include diagnostics").performScrollTo().performClick()
+        composeRule.onNodeWithContentDescription("Include diagnostics").assertIsOff()
+        composeRule.activityRule.scenario.recreate()
+        composeRule.onNodeWithContentDescription("Include diagnostics").assertIsOff()
+        composeRule.onNodeWithText("Feedback message").assertTextContains("UAT draft: keep my report when I close the form.")
+        composeRule.onNodeWithText("Send", substring = false).assertIsNotEnabled()
+        // This is our emulator's synthetic draft, not the founder's correspondence.
+        composeRule.onNodeWithText("Feedback message").performTextReplacement("")
+        composeRule.onNodeWithText("Email (optional, if you'd like a reply)").performTextReplacement("")
+        composeRule.onNodeWithText("Close").performScrollTo().performClick()
+    }
+
+    /** Product Outcome: a stale form cannot borrow another opening's permission to edit, consent or Send. */
+    @Test
+    fun anOlderFeedbackPresentationCannotActForTheNewerOne() {
+        composeRule.onNodeWithContentDescription("Send feedback").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onNodeWithText("Feedback message").fetchSemanticsNode().config.getOrNull(SemanticsProperties.Disabled) == null
+        }
+        composeRule.onNodeWithText("Feedback message").performTextReplacement("UAT current draft.")
+        composeRule.onNodeWithText("Email (optional, if you'd like a reply)").performTextReplacement("")
+        composeRule.onNodeWithText("Send", substring = false).assertIsEnabled()
+        val controller = FeedbackController.of(composeRule.activity)
+        var newer = 0L
+        composeRule.runOnUiThread {
+            val old = controller.state.presentation
+            newer = controller.open(restoredConsent = false)
+            val expectedPhase = controller.state.phase
+            val expectedProblem = controller.state.problem
+            controller.edit(old, "UAT stale corruption.", "")
+            controller.includeDiagnostics(old, true)
+            controller.send(old)
+            assertEquals("UAT current draft.", controller.state.draft.message)
+            assertEquals(false, controller.state.includeDiagnostics)
+            assertEquals(expectedPhase, controller.state.phase)
+            assertEquals(expectedProblem, controller.state.problem)
+        }
+        composeRule.onNodeWithText("Send", substring = false).assertIsNotEnabled()
+        composeRule.runOnUiThread {
+            controller.edit(newer, "", "")
+            controller.close(newer)
+        }
+        composeRule.onNodeWithText("Close").performScrollTo().performClick()
+    }
+
+    /** Product Outcome: real rapid keyboard events cannot be overwritten by an older Flow projection. */
+    @Test
+    fun feedbackRetainsEveryCharacterFromRapidKeyboardInput() {
+        composeRule.onNodeWithContentDescription("Send feedback").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onNodeWithText("Feedback message").fetchSemanticsNode().config.getOrNull(SemanticsProperties.Disabled) == null
+        }
+        val field = composeRule.onNodeWithText("Feedback message")
+        field.performTextReplacement("")
+        field.performClick()
+        val automation = InstrumentationRegistry.getInstrumentation()
+            .getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+        val originalInfo = automation.serviceInfo
+        val info = automation.serviceInfo
+        info.flags = info.flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        automation.serviceInfo = info
+        try {
+            composeRule.waitUntil(5_000) {
+                automation.windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+            }
+            composeRule.waitUntil(5_000) {
+                var ready = false
+                composeRule.runOnUiThread {
+                    val root = WindowInspector.getGlobalWindowViews().singleOrNull { it.hasWindowFocus() }
+                    val focused = root?.findFocus()
+                    val input = composeRule.activity.getSystemService(InputMethodManager::class.java)
+                    ready = focused != null && input.isActive(focused) && input.isAcceptingText
+                }
+                ready && field.fetchSemanticsNode().config.getOrNull(SemanticsProperties.Focused) == true
+            }
+            field.assertIsFocused()
+            val expected = "UAT #423 Android feedback with diagnostics. No reply needed."
+            val events = checkNotNull(KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(expected.toCharArray()))
+            // Keep the rapid batch, but wait for the last existing event's delivery before observing it.
+            events.forEachIndexed { index, event ->
+                check(automation.injectInputEvent(event, index == events.lastIndex)) { "Keyboard event $index was refused" }
+            }
+            try {
+                composeRule.waitUntil(5_000) {
+                    field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text == expected
+                }
+            } catch (failure: Throwable) {
+                val actual = field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text
+                val state = FeedbackController.of(composeRule.activity).state
+                println("Rapid keyboard mismatch: expected=${org.json.JSONObject.quote(expected)} actual=${org.json.JSONObject.quote(actual)} " +
+                    "expectedLength=${expected.length} actualLength=${actual.length} " +
+                    "controller=${org.json.JSONObject.quote(state.draft.message)} revision=${state.draft.revision} " +
+                    "presentation=${state.presentation} phase=${state.phase}")
+                throw failure
+            }
+            assertEquals(expected, field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+            field.performTextReplacement("")
+            composeRule.onNodeWithText("Close").performScrollTo().performClick()
+        } finally { automation.serviceInfo = originalInfo }
     }
 
     @Test

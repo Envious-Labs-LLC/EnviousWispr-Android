@@ -4,6 +4,8 @@ import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.polish.S1ControlSettings
+import com.envi.wispr.processing.ProcessingPreference
+import com.envi.wispr.processing.ProcessingBackend
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.SelfHostedProtocol
@@ -74,6 +76,7 @@ internal class DictionaryActions(
 )
 
 internal class TranscriptionActions(
+    val onProcessingChanged: (ProcessingPreference) -> Unit = {},
     val onFillerRemovalChanged: (Boolean) -> Unit,
     val onEmojiFormatterChanged: (Boolean) -> Unit,
     val onSpokenPunctuationChanged: (Boolean) -> Unit,
@@ -85,6 +88,9 @@ internal class TranscriptionActions(
 internal class PolishActions(
     val onSetMode: (PolishMode) -> Int,
     val onSetS1Control: (S1ControlSettings) -> Int,
+    val onSetProcessing: (ProcessingPreference) -> Int = { 0 },
+    val onCheckProcessing: (ProcessingBackend) -> Unit = {},
+    val onCancelProcessingChecks: () -> Unit = {},
     val onSaveProviderSettings: (Provider, String, String?, String?, SelfHostedProtocol, Int?) -> Int,
     val onClearProvider: (Provider) -> Int,
     val onCheckKey: (Provider, String?) -> Int,

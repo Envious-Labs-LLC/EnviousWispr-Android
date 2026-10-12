@@ -2,6 +2,7 @@ package com.envi.wispr.polish
 
 import android.os.Parcel
 import android.os.Parcelable
+import com.envi.wispr.processing.ProcessingUsage
 
 /**
  * The whole answer to one polish request. [engine] is the History label vocabulary
@@ -14,7 +15,11 @@ internal data class PolishOutcome(
     val reason: PolishReason,
     val statusCode: Int,
     val latencyMs: Long,
+    val processing: ProcessingUsage?,
 ) : Parcelable {
+    /** Retained JVM signature for separately installed older test clients. */
+    constructor(requestId: Long, text: String, engine: String, reason: PolishReason, statusCode: Int, latencyMs: Long) :
+        this(requestId, text, engine, reason, statusCode, latencyMs, null)
     override fun describeContents(): Int = 0
 
     override fun writeToParcel(dest: Parcel, flags: Int) {
@@ -24,6 +29,8 @@ internal data class PolishOutcome(
         dest.writeString(reason.name)
         dest.writeInt(statusCode)
         dest.writeLong(latencyMs)
+        dest.writeInt(if (processing == null) 0 else 1)
+        processing?.writeToParcel(dest, flags)
     }
 
     /** Content-free on purpose: the text never reaches a log line through this. */
@@ -40,6 +47,11 @@ internal data class PolishOutcome(
                 reason = PolishReason.valueOf(checkNotNull(source.readString())),
                 statusCode = source.readInt(),
                 latencyMs = source.readLong(),
+                processing = when (source.readInt()) {
+                    0 -> null
+                    1 -> ProcessingUsage.CREATOR.createFromParcel(source)
+                    else -> throw IllegalArgumentException("Unknown processing outcome tag")
+                },
             )
 
             override fun newArray(size: Int): Array<PolishOutcome?> = arrayOfNulls(size)

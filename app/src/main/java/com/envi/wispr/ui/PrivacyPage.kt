@@ -64,6 +64,13 @@ internal fun PrivacyPage(showDetailedLog: Boolean) {
                 )
             }
         }
+        Card {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Feedback you choose to send", style = MaterialTheme.typography.titleMedium)
+                Text(PrivacyDisclosures.FEEDBACK, style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         FilledTonalButton(onClick = { uriHandler.openUri(PrivacyDisclosures.POLICY_URL) }) {
             Text("Read the privacy policy")
         }

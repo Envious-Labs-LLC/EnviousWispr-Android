@@ -16,6 +16,21 @@ import org.junit.Test
 
 /** Product Outcome: a live setting/dictionary change must not change an already admitted take. */
 class CleaningSnapshotTest {
+    @Test fun speechProcessingSurvivesAdmissionAndLaterUiChanges() = runBlocking {
+        val selected = com.envi.wispr.processing.ProcessingPreference.DEFAULT.custom(listOf(com.envi.wispr.processing.ProcessingBackend.CPU)).retry()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val preferences = MutableStateFlow(AppPreferencesState(speechProcessing = selected))
+        val source = SessionPreferencesSource(preferences, MutableStateFlow(emptyList()), {}, DictationSessionRig.FakeLog())
+        try {
+            source.start(scope)
+            val start = source.awaitAnswers(10_000)
+            assertEquals(PreferenceRead.Fresh, start.settings.read)
+            val frozen = source.freeze(start, StructuredTermRestorer.compile(emptyList()), PolishPolicy.Off)
+            preferences.value = AppPreferencesState()
+            assertEquals(selected, start.settings.speechProcessing)
+            assertEquals(selected, frozen.speechProcessing)
+        } finally { scope.cancel() }
+    }
     @Test fun onlyUserSpellingsAreProtectedAndTheChoiceIsFrozenWithTheTake() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val preferences = MutableStateFlow(AppPreferencesState(englishSpelling = EnglishSpelling.BRITISH))

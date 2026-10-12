@@ -19,6 +19,12 @@ class PolishPolicyTest {
 
     private fun decode(vararg values: Pair<String, String>) = ProviderConfigurationRepository.decodePolicy(mapOf(*values))
 
+    @Test fun wrongStoredProcessingTypeFailsTheReadAndRetainsTheLastPolicy() {
+        val reader = PolicyReader()
+        val first = reader.read { emptyMap<String, Any>() }
+        assertTrue(first is PolicyRead.Fresh)
+        assertEquals(PolicyRead.Failed((first as PolicyRead.Fresh).policy), reader.read { mapOf("s1_processing" to 42) })
+    }
     @Test fun everyModeWithNoSelectionMapsExactly() {
         assertEquals(PolishPolicy.Off, decode("mode" to PolishMode.OFF.name))
         assertEquals(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), decode("mode" to PolishMode.OFFLINE_S1.name))
@@ -91,7 +97,7 @@ class PolishPolicyTest {
             assertEquals(PolicyRead.Fresh(PolishPolicy.Off), ProviderConfigurationRepository.loadPolicyWith { stored })
             assertEquals(PolicyRead.Failed(PolishPolicy.Off), ProviderConfigurationRepository.loadPolicyWith { error("preference store unavailable") })
             val source = java.io.File("src/main/java/com/envi/wispr/providers/ProviderConfigurationRepository.kt").readText()
-            assertTrue("loadPolicy reads through the process reader", source.contains("fun loadPolicy(): PolicyRead = loadPolicyWith { preferences.all }"))
+            assertTrue("loadPolicy reads through the process reader", source.contains("fun loadPolicy(): PolicyRead = loadPolicyWith { synchronized(PROCESSING_LOCK) { preferences.all } }"))
         } finally {
             ProviderConfigurationRepository.resetProcessReaderForTest()
         }

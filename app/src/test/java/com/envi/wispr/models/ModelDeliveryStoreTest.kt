@@ -13,6 +13,20 @@ import org.junit.Test
  * that admits without verifying, or a failed update that takes the working model down with it.
  */
 class ModelDeliveryStoreTest {
+    @Test fun deletingTheReceiptOrReplacingAFileInvalidatesTheResidentInstallationStamp() {
+        val bytes = "tiny verified model".toByteArray()
+        val model = descriptor(bytes)
+        val root = Files.createTempDirectory("installation-stamp").toFile()
+        val store = ModelDeliveryStore(root)
+        assertEquals(DownloadState.READY, store.download(model, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(bytes), false) }).state)
+        assertTrue(store.isVerified(model))
+        val original = requireNotNull(store.installationStamp(model))
+        val file = java.io.File(root, "demo/model.bin")
+        assertTrue(file.delete()); file.writeBytes(bytes)
+        assertFalse(original == store.installationStamp(model))
+        assertTrue(java.io.File(root, "demo/.verified-receipt").delete())
+        assertEquals(null, store.installationStamp(model))
+    }
     @Test fun pauseCanBeWrittenWhileTheNetworkReadIsBlocked() {
         val payload = "model payload".toByteArray()
         val model = descriptor(payload)

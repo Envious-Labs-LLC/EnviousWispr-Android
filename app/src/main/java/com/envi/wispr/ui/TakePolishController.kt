@@ -33,6 +33,8 @@ internal sealed interface PreparedText {
         val reason: PolishReason,
         val statusCode: Int,
         override val context: PolishContext,
+        val processing: com.envi.wispr.processing.ProcessingUsage? = null,
+        val requestId: Long = 0,
     ) : PreparedText
 
     data class Fallback(
@@ -352,6 +354,7 @@ internal class TakePolishController(
                     outcome.reason,
                     outcome.statusCode,
                     PolishContext.from(takePreferences.policy),
+                    outcome.processing, outcome.requestId,
                 )
             }
         }

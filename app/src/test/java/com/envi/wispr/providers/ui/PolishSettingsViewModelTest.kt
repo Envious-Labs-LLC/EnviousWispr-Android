@@ -116,6 +116,28 @@ class PolishSettingsViewModelTest {
     private fun awaitSettings(predicate: (ProviderSettingsUiState) -> Boolean): ProviderSettingsUiState =
         runBlocking { withTimeout(DEADLINE_MS) { viewModel.settings.first(predicate) } }
 
+    @Test fun refreshKeepsQualificationAndLastResultFromOneProcessingSnapshot() {
+        val gpu = com.envi.wispr.processing.ProcessingBackend.GPU
+        val cpu = com.envi.wispr.processing.ProcessingBackend.CPU
+        val ctx = "a".repeat(64)
+        val pref = com.envi.wispr.processing.ProcessingPreference.DEFAULT
+        val oldUsage = com.envi.wispr.processing.ProcessingUsage(gpu, ctx, pref, true, generationStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 100))
+        val old = com.envi.wispr.processing.ProcessingObservation("old", 1, 100, "local", com.envi.wispr.polish.PolishReason.POLISHED, pref, oldUsage, 1)
+        settingsPrefs.values["s1_processing_qualification"] = com.envi.wispr.processing.ProcessingQualification.of(ctx, setOf(gpu, cpu)).encode()
+        settingsPrefs.values["latest_processing_result"] = old.encode()
+        // The fourth store read belongs to a later, non-processing projection. The processing snapshot is already captured.
+        val laterRead = settingsPrefs.holdRead(4)
+        val load = build()
+        laterRead.awaitEntered()
+        val repository = ProviderConfigurationRepository(settingsPrefs, secrets) { _, _ -> ProviderKeyCheck.Accepted }
+        val failed = com.envi.wispr.processing.ProcessingUsage(cpu, ctx, pref, true, "gpu", loadStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 200), generationStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 210))
+        repository.recordProcessing(com.envi.wispr.processing.ProcessingObservation("new", 2, 200, "local", com.envi.wispr.polish.PolishReason.POLISHED, pref, failed, 2))
+        laterRead.release(); awaitDone(load)
+        val ui = viewModel.settings.value
+        assertEquals("old", ui.latestProcessingResult!!.takeId)
+        assertTrue(gpu in ui.s1Qualification.backends)
+        assertFalse("The world changed, so an old result/new qualification pair would be torn", gpu in repository.loadS1Qualification().backends)
+    }
     @Test fun theInitialLoadPublishesBeforeTheFirstWriteItRacedWith() {
         val read = settingsPrefs.holdNextRead()
         val load = build()
@@ -356,9 +378,12 @@ class PolishSettingsViewModelTest {
     private class FakePreferences : SharedPreferences {
         val values = ConcurrentHashMap<String, Any>()
         private var nextRead: Hold? = null
+        private var readNumber = 0
+        private var numberedRead: Pair<Int, Hold>? = null
         private var nextCommit: Hold? = null
         private val holds = ConcurrentLinkedQueue<Hold>()
 
+        @Synchronized fun holdRead(number: Int): Hold = Hold().also { numberedRead = number to it; holds.add(it) }
         @Synchronized fun holdNextRead(): Hold = Hold().also { nextRead = it; holds.add(it) }
         @Synchronized fun holdNextCommit(): Hold = Hold().also { nextCommit = it; holds.add(it) }
         fun releaseAll() = holds.forEach { it.release() }
@@ -367,6 +392,8 @@ class PolishSettingsViewModelTest {
         @Synchronized private fun takeCommit(): Hold? = nextCommit.also { nextCommit = null }
 
         override fun getAll(): MutableMap<String, *> {
+            val numbered = synchronized(this) { readNumber++; numberedRead?.takeIf { it.first == readNumber }?.second }
+            numbered?.enter()
             takeRead()?.enter()
             return HashMap(values)
         }

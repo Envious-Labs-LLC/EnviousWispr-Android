@@ -36,11 +36,8 @@ class DevelopmentPolishModelFactsTest {
             "and must not hash the file again either",
             selector.contains("MessageDigest"),
         )
-        assertTrue(
-            "the selector must ask the owner",
-            selector.contains("DevelopmentPolishModel.isSupported(context)") &&
-                selector.contains("DevelopmentPolishModel.selectable(context)"),
-        )
+        assertFalse("Automatic must not silently select development weights", selector.contains("DevelopmentPolishModel"))
+        assertTrue("standard model remains verified", selector.contains("ModelStorage.isReady(context, ModelManifest.s1)"))
     }
 
     @Test

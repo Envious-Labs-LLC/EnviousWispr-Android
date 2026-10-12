@@ -149,6 +149,7 @@ internal fun AppScaffold(
     onBack: () -> Unit,
     onSelectDestination: (AppDestination) -> Unit,
     onStartDictation: () -> Unit,
+    onFeedback: () -> Unit,
     topBarBadge: (@Composable () -> Unit)? = null,
     content: @Composable (Modifier) -> Unit,
 ) {
@@ -172,6 +173,10 @@ internal fun AppScaffold(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onFeedback,
+                        modifier = Modifier.semantics { contentDescription = "Send feedback"; role = Role.Button }) {
+                        FeedbackBugGlyph()
+                    }
                     if (page == null) {
                         topBarBadge?.invoke()
                         IconButton(

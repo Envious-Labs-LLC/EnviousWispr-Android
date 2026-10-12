@@ -77,16 +77,16 @@ class WarmUpOffMainTest {
     /** Row 4a. MUTATION: drop the catch in the service's warm-up. */
     @Test fun theServiceLogsAFailedWarmUp() {
         val warmUp = body(read("polish/PolishService.kt"), "override fun warmUpWithPolicy(policy: PolishPolicy?)")
-        assertTrue(warmUp.contains("runCatching { if (policy is PolishPolicy.LocalS1) ensureModelLoaded() }"))
+        assertTrue(warmUp.contains("runCatching { if (policy is PolishPolicy.LocalS1) ensureModelLoaded(policy) }"))
         assertTrue(warmUp.contains("DebugLogger.warn(TAG, \"Polish warm-up failed:"))
     }
 
     /** Row 4b. MUTATION: drop the reset of `modelLoading` when the queue refuses the load. */
     @Test fun aRefusedLoadNeverLeavesLoadingStuck() {
-        val ensure = body(read("polish/PolishService.kt"), "private fun ensureModelLoaded()")
+        val ensure = body(read("polish/PolishService.kt"), "private fun ensureModelLoaded(policy: PolishPolicy.LocalS1)")
         val refusal = ensure.substringAfter("catch (refused: java.util.concurrent.RejectedExecutionException)")
         assertTrue("the refusal is caught", ensure.contains("catch (refused: java.util.concurrent.RejectedExecutionException)"))
-        assertTrue("and resets loading", refusal.substringBefore("}").contains("modelLoading = false"))
+        assertTrue("and resets loading", refusal.substringBefore("}").contains("finishWarm()"))
     }
 
     /** Row 3b (setup). MUTATION: send the setup warm-up outside the IO block, or never cancel it on stop. */

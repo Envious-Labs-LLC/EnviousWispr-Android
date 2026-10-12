@@ -3,6 +3,7 @@ package com.envi.wispr.polish;
 import com.envi.wispr.polish.IPolishCallback;
 import com.envi.wispr.polish.PolishPolicy;
 import com.envi.wispr.polish.CleanupRequestOptions;
+import com.envi.wispr.processing.IProcessingCheckCallback;
 
 // Append-only (architecture-rules.md RULE: aidl-is-append-only). The v1 transactions below stay
 // declared because the instrumentation APK is a separately installed client of this service; every
@@ -67,4 +68,7 @@ interface IPolishService {
         String takeId,
         IPolishCallback callback
     );
+    // Appended for #429. Qualification is not a user polish request.
+    void qualifyProcessing(long operationId, String backend, IProcessingCheckCallback callback);
+    oneway void cancelQualification(long operationId);
 }

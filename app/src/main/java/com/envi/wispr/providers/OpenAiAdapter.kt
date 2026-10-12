@@ -32,22 +32,16 @@ internal object OpenAiAdapter : ProviderAdapter {
     override fun polishPlan(request: ProviderPolishRequest, endpointOverride: String?): RequestPlan = RequestPlan(
         url = cloudOrOverride(endpointOverride, OPENAI_URL),
         headers = authHeaders(request.apiKey.orEmpty()),
-        body = "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"input\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))},\"store\":false}",
+        body = "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"input\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))},\"store\":false${ProviderModelCapabilities.openAiFields(request.model)}}",
         responseFormat = ProviderReplyFormat.OPENAI_RESPONSES,
     )
 
     override fun probePlan(model: String, apiKey: String, style: ProbeStyle, endpointOverride: String?): RequestPlan {
-        val modelJson = jsonString(model)
-        val body = when (style) {
-            ProbeStyle.DEFAULT ->
-                "{\"model\":$modelJson,\"input\":${jsonString(ProviderAdapters.PROBE_TEXT)},\"max_output_tokens\":$OPENAI_PROBE_OUTPUT_TOKENS,\"store\":false}"
-            // `reasoning.effort` is REJECTED with 400 by every model that does not reason
-            // (measured 2026-09-02 on gpt-4.1-mini, gpt-4o-mini and gpt-3.5-turbo), which is
-            // exactly why it is only ever sent on a retry that cannot make a verdict worse.
-            ProbeStyle.NO_REASONING ->
-                "{\"model\":$modelJson,\"input\":${jsonString(ProviderAdapters.PROBE_TEXT)},\"max_output_tokens\":${ProviderAdapters.PROBE_RETRY_OUTPUT_TOKENS}," +
-                    "\"reasoning\":{\"effort\":\"minimal\"},\"store\":false}"
+        val outputTokens = when (style) {
+            ProbeStyle.DEFAULT -> OPENAI_PROBE_OUTPUT_TOKENS
+            ProbeStyle.MORE_OUTPUT -> ProviderAdapters.PROBE_RETRY_OUTPUT_TOKENS
         }
+        val body = "{\"model\":${jsonString(model)},\"input\":${jsonString(ProviderAdapters.PROBE_TEXT)},\"max_output_tokens\":$outputTokens,\"store\":false${ProviderModelCapabilities.openAiFields(model)}}"
         return RequestPlan(
             url = cloudOrOverride(endpointOverride, OPENAI_URL),
             headers = authHeaders(apiKey),

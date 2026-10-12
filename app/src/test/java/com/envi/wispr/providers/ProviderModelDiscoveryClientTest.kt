@@ -674,25 +674,16 @@ class ProviderModelDiscoveryClientTest {
     }
 
     /**
-     * Product Outcome, measured 2026-09-02 against live OpenAI and Gemini keys.
-     *
-     * A model that spent the whole probe cap reasoning gets ONE retry that asks it not to. `gpt-5-nano`
-     * burns the entire cap at 64, 128 and 256 tokens, so no cap alone reaches it, and it and `gpt-5-mini`
-     * are the two newest models the founder's key can reach (#103). Asked not to reason, both answer.
-     *
-     * **The retry may only improve a verdict.** The suppression is refused outright by models that cannot
-     * honour it — `reasoning.effort` by every OpenAI model that does not reason, `thinkingBudget: 0` by
-     * `gemini-2.5-pro` — so a retry that fails must leave the first answer standing. When this fails, a
-     * working model is either hidden or, worse, condemned by a request it never asked for.
+     * Product Outcome: a token-capped reply gets one larger-cap retry, keeping the model settings.
+     * A failed retry leaves the first answer unverified; normal empty replies and refusals are not retried.
      */
-    @Test fun aModelThatSpentTheProbeCapThinkingIsAskedOnceMoreNotTo() {
+    @Test fun anInconclusiveProbeGetsOneLargerCapAndAFailedRetryKeepsItsVerdict() {
         val thinking = "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}"
         val answered = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"Hello there\"}]}]}"
         val silent = "{\"status\":\"completed\",\"output\":[{\"content\":[{\"text\":\"\"}]}]}"
         val refusedParameter = "{\"error\":{\"message\":\"Unsupported parameter: 'reasoning.effort'\"}}"
-        // The retry is told apart from the first ask by the suppression it carries, exactly as the real
-        // provider sees it.
-        fun isRetry(body: String) = body.contains("\"reasoning\"")
+        // The retry differs by output room, not by a blanket unsupported thinking setting.
+        fun isRetry(body: String) = body.contains("\"max_output_tokens\":64")
         ScriptedServer({ request ->
             if (request.path.startsWith("/models")) 200 to openAiList("gpt-reasoner", "gpt-stubborn", "gpt-plain", "gpt-mute", "gpt-denied")
             else when (probedModel(request)) {
@@ -700,10 +691,9 @@ class ProviderModelDiscoveryClientTest {
                 // made, so there is nothing a retry could add and none is spent.
                 "gpt-denied" -> 403 to "{}"
 
-                // Thinks on the first ask, answers when told not to.
+                // First cap is inconclusive, the larger cap answers.
                 "gpt-reasoner" -> if (isRetry(request.body)) 200 to answered else 200 to thinking
-                // Thinks on the first ask, and REFUSES the suppression. This is the shape that must not be
-                // turned into a refusal by the retry itself.
+                // The larger-cap request fails; that must not condemn an inconclusive model.
                 "gpt-stubborn" -> if (isRetry(request.body)) 400 to refusedParameter else 200 to thinking
                 // Finished and wrote nothing: refused on the first ask, and never retried.
                 "gpt-mute" -> 200 to silent
@@ -725,9 +715,9 @@ class ProviderModelDiscoveryClientTest {
             assertEquals(1, asks["gpt-plain"]?.size)
             assertEquals(1, asks["gpt-mute"]?.size)
             assertEquals(1, asks["gpt-denied"]?.size)
-            // The retry really does carry the suppression and more room, or it is the same ask twice.
+            // The larger cap is sent without adding a thinking field to this unknown non-reasoning id.
             val retry = asks["gpt-reasoner"]!!.single { isRetry(it.body) }.body
-            assertTrue(retry, retry.contains("\"effort\":\"minimal\""))
+            assertFalse(retry, retry.contains("\"reasoning\""))
             assertTrue(retry, retry.contains("\"max_output_tokens\":${ProviderAdapters.PROBE_RETRY_OUTPUT_TOKENS}"))
         }
     }
@@ -768,7 +758,7 @@ class ProviderModelDiscoveryClientTest {
         val thinking = "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}"
         ScriptedServer({ request ->
             if (request.path.startsWith("/models")) 200 to openAiList("gpt-reasoner")
-            else if (request.body.contains("\"reasoning\"")) 401 to "{\"error\":{\"message\":\"Incorrect API key\"}}"
+            else if (request.body.contains("\"max_output_tokens\":64")) 401 to "{\"error\":{\"message\":\"Incorrect API key\"}}"
             else 200 to thinking
         }).use { server ->
             val result = discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k")
@@ -780,9 +770,9 @@ class ProviderModelDiscoveryClientTest {
      * Product Outcome, END TO END from the provider's list to the badge on screen, which is the check the
      * two halves of #103 kept passing individually while the outcome stayed broken.
      *
-     * This is the founder's own OpenAI key, 2026-09-02: `gpt-4.1-mini` from April 2025 answers the probe
-     * outright, while `gpt-5-mini` and `gpt-5-nano` from that August spend the cap thinking and answer only
-     * when asked not to.
+     * This fixture checks larger-cap retry routing. A live check on 2026-10-11 with the fixed input Hi
+     * recovered GPT-5 mini/nano under low effort: 16 tokens was inconclusive, 64 tokens returned text.
+     * That provider receipt is separate from this fixture and does not establish recovery on every input.
      *
      * The retry must make all three USABLE, so none is hidden and he can pick any of them. The badge must
      * still land on `gpt-4.1-mini`, because the two 5s are on OpenAI's deprecations list for 2026-10-23 and
@@ -800,7 +790,7 @@ class ProviderModelDiscoveryClientTest {
         ).joinToString(",") { (id, epochDay) -> "{\"id\":\"$id\",\"created\":${epochDay * day}}" } + "]}"
         ScriptedServer({ request ->
             if (request.path.startsWith("/models")) 200 to list
-            else if (probedModel(request)!!.startsWith("gpt-5") && !request.body.contains("\"reasoning\"")) 200 to thinking
+            else if (probedModel(request)!!.startsWith("gpt-5") && request.body.contains("\"max_output_tokens\":16")) 200 to thinking
             else 200 to answered
         }).use { server ->
             val models = (discoverer(server, Provider.OPENAI).discoverModels(Provider.OPENAI, "k") as ProviderDiscovery.Listed).models
@@ -819,8 +809,8 @@ class ProviderModelDiscoveryClientTest {
         }
     }
 
-    /** Claude opts in to thinking and this request does not, so there is nothing to suppress and no retry. */
-    @Test fun claudeIsNeverAskedTwiceBecauseItWasNeverAskedToThink() {
+    /** Claude has one capped probe and no larger-cap retry. */
+    @Test fun claudeIsNeverAskedTwiceAfterAnInconclusiveProbe() {
         val thinking = "{\"stop_reason\":\"max_tokens\",\"content\":[]}"
         ScriptedServer({ request ->
             if (request.path.startsWith("/models")) 200 to "{\"data\":[{\"id\":\"claude-quiet\"}],\"has_more\":false}"

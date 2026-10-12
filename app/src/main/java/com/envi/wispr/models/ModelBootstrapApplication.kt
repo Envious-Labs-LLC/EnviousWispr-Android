@@ -104,6 +104,7 @@ class ModelBootstrapApplication : Application() {
         // After Sentry's handler exists, so the local log's crash flush wraps it and calls it exactly once.
         LocalLog.installCrashHook()
         if (!isMain) return
+        com.envi.wispr.feedback.FeedbackDelivery.recover(this)
         // Main owns the switches: repair the flag files from DataStore before the adb door serves a call.
         DeveloperSwitches.of(this).coldStartRepair()
         DeveloperLogs.of(this).startup()

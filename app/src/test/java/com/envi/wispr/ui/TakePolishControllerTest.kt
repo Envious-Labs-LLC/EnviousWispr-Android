@@ -166,6 +166,16 @@ class TakePolishControllerTest {
 
     private fun protocolShapes() = defects.filter { it.first == AppDefect.PolishProtocolViolation }.map { it.second["shape"] }
 
+    @Test fun structuredBackendFactsReachTheOwnerWithTheirOwnRequest() {
+        controller.prepare("hello world", preferences)
+        val listener = link.awaitRequest()
+        val usage = com.envi.wispr.processing.ProcessingUsage(com.envi.wispr.processing.ProcessingBackend.CPU, "a".repeat(64), com.envi.wispr.processing.ProcessingPreference.DEFAULT.retry(), true, "gpu", artifactStamp = "verified-file")
+        listener.onOutcome(link.outcome("Hello world.").copy(processing = usage))
+        val answer = awaitHandedBack() as PreparedText.Polished
+        assertEquals(usage, answer.processing)
+        assertEquals(link.requestId, answer.requestId)
+    }
+
     @Test fun aFailedLargeOptionTransportKeepsTheCompleteLocalSpellingProtection() {
         val subject = newController(detector = com.envi.wispr.cleanup.LanguageDetector { com.envi.wispr.cleanup.DetectedLanguage("en", 1.0f) })
         link.throwOnRequest = true

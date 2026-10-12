@@ -4,6 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.envi.wispr.audio.InputDevicePick
+import com.envi.wispr.processing.ProcessingPreference
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.settings.AppPreferencesState
@@ -34,10 +38,15 @@ internal data class EnviousWisprUiState(
             !preferences.onboardingDismissed
 }
 
+internal data class ProcessingWriteUiState(val saving: Boolean = false, val error: String? = null)
+
 /** Owns the app's preferences (#218): the settings writes with their telemetry, and onboarding. */
 internal class EnviousWisprViewModel(
     private val appPreferences: AppPreferences,
 ) : ViewModel() {
+    private val processingWriteState = MutableStateFlow(ProcessingWriteUiState())
+    val processingWrite: StateFlow<ProcessingWriteUiState> = processingWriteState
+    private val processingMutex = Mutex()
     val state: StateFlow<EnviousWisprUiState> = appPreferences.state.map { preferences ->
         EnviousWisprUiState(loaded = true, preferences = preferences)
     }.stateIn(
@@ -45,6 +54,16 @@ internal class EnviousWisprViewModel(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = EnviousWisprUiState(),
     )
+
+    fun setSpeechProcessing(value: ProcessingPreference) {
+        viewModelScope.launch {
+            processingMutex.withLock {
+                processingWriteState.value = ProcessingWriteUiState(saving = true)
+                val saved = runCatching { appPreferences.setSpeechProcessing(value) }
+                processingWriteState.value = ProcessingWriteUiState(error = saved.exceptionOrNull()?.let { "Processing preference could not be saved. Previous selection retained." })
+            }
+        }
+    }
 
     fun setOnboardingStep(step: Int) {
         viewModelScope.launch {

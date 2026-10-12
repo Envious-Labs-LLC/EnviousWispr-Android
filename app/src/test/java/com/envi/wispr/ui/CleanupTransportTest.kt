@@ -28,6 +28,8 @@ class CleanupTransportTest {
             override fun cancel(id: Long) = Unit
             override fun isLocalModelReady() = false
             override fun localModelStatus() = "unused"
+            override fun qualifyProcessing(id: Long, backend: String?, callback: com.envi.wispr.processing.IProcessingCheckCallback?) = error("unused qualification")
+            override fun cancelQualification(id: Long) = Unit
         }
         val options = CleanupOptions(false, false, true, EnglishSpelling.BRITISH, setOf("center", "kennedy"))
         val proxy = PipelineBindings.polishProxy(service) { it.run() }

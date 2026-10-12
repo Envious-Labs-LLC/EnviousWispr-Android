@@ -115,23 +115,25 @@ class EngineDeadlineTest {
     @Test fun theLoadIsBoundedAndDestructionSeesIt() {
         val source = java.io.File("src/main/java/com/envi/wispr/polish/PolishService.kt").readText()
         val destroy = source.substringAfter("override fun onDestroy()").substringBefore("\n    }\n")
-        assertTrue(destroy.contains("mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get(), loading)"))
+        assertTrue(destroy.contains("mustKillEngineOnDestroy(poisoned.get(), activeLocalRequests.get() + activeQualifications.get(), loading)"))
         assertTrue(destroy.contains("synchronized(loadLock)") && destroy.contains("destroyed = true"))
-        val ensure = source.substringAfter("private fun ensureModelLoaded()").substringBefore("\n    }\n")
-        assertTrue(ensure.contains("synchronized(loadLock)") && ensure.contains("if (destroyed || modelReady || modelLoading)"))
-        val load = source.substringAfter("private fun loadModel()").substringBefore("\n    /**")
+        val ensure = source.substringAfter("private fun ensureModelLoaded(policy: PolishPolicy.LocalS1)").substringBefore("\n    }\n")
+        assertTrue(ensure.contains("synchronized(loadLock)") && ensure.contains("if (destroyed || poisoned.get())"))
+        val load = source.substringAfter("private fun loadModel(policy: PolishPolicy.LocalS1)").substringBefore("\n    /**")
         // The constant is the armed budget, not only a word in the log line.
         val deadline = load.indexOf("deadline.arm(MODEL_LOAD_DEADLINE_MS)")
         val selection = load.indexOf("S1ModelSelector.resolve(this)")
         assertTrue("the deadline is armed before selection", deadline in 0 until selection)
         val finally = load.lastIndexOf("} finally {")
         assertTrue("one finally after selection clears the flag and the deadline", finally > selection &&
-            load.substring(finally).contains("modelLoading = false") && load.substring(finally).contains("stall?.cancel()"))
+            load.substring(finally).contains("finishWarm()") && load.substring(finally).contains("stall?.cancel()"))
         // Review round 1: the load's return and the timer race once; readiness is published only by a load that won.
         // MUTATION m5: readiness before the cancel.
-        val won = load.indexOf("if (stall != null && !stall.cancel()) return")
-        assertTrue("a load that lost the race never publishes readiness", won in 0 until load.indexOf("modelReady = true"))
-        assertEquals("the flag is cleared only in that finally", 1, Regex("""modelLoading = false""").findAll(load).count())
+        val fresh = load.substring(selection)
+        val won = fresh.indexOf("if (stall != null && !stall.cancel()) return")
+        assertTrue("a fresh load that lost the race never publishes readiness", won in 0 until fresh.indexOf("modelReady = true"))
+        assertTrue("reuse is configuration-specific", load.contains("resident.matches(requested)"))
+        assertTrue("every completed queued warm-up decrements its count", source.contains("modelLoading = activeModelLoads.decrementAndGet() > 0"))
     }
 
     /**

@@ -1,5 +1,12 @@
 package com.envi.wispr.providers
 
+import com.envi.wispr.processing.*
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
+import com.envi.wispr.polish.PolishReason
+import com.envi.wispr.processing.ProcessingPreference
+import com.envi.wispr.processing.ProcessingQualification
+
 import android.content.Context
 import android.content.SharedPreferences
 import com.envi.wispr.polish.PolishPolicy
@@ -138,10 +145,100 @@ internal class ProviderConfigurationRepository internal constructor(
      * preference map, so a commit landing between two reads cannot assemble a policy from two states,
      * and the credential is never read here. A store that cannot be read is [PolicyRead.Failed] (#278).
      */
-    fun loadPolicy(): PolicyRead = loadPolicyWith { preferences.all }
+    fun loadPolicy(): PolicyRead = loadPolicyWith { synchronized(PROCESSING_LOCK) { preferences.all } }
 
     /** The persisted S1-mini picks for the screen (#152). The engine never calls this; it reads [loadPolicy]. */
     fun loadS1Control(): S1ControlSettings = decodeS1Control(preferences.all)
+
+    fun loadS1Processing(): ProcessingPreference = synchronized(PROCESSING_LOCK) { ProcessingPreference.decode(storedProcessingString(preferences.all, KEY_S1_PROCESSING)) }
+    fun loadS1Qualification(): ProcessingQualification = synchronized(PROCESSING_LOCK) { ProcessingQualification.decode(storedProcessingString(preferences.all, KEY_S1_QUALIFICATION)) }
+    fun loadProcessingDetails(): ProcessingDetails = synchronized(PROCESSING_LOCK) {
+        val values = preferences.all
+        ProcessingDetails(
+            runCatching { ProcessingPreference.decode(storedProcessingString(values, KEY_S1_PROCESSING)) },
+            runCatching { ProcessingQualification.decode(storedProcessingString(values, KEY_S1_QUALIFICATION)) },
+            runCatching { ProcessingObservation.decode(storedProcessingString(values, KEY_PROCESSING_RESULT)) },
+        )
+    }
+    fun loadProcessingResult(): ProcessingObservation? = synchronized(PROCESSING_LOCK) { ProcessingObservation.decode(storedProcessingString(preferences.all, KEY_PROCESSING_RESULT)) }
+    fun processingChanges() = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == KEY_S1_QUALIFICATION || key == KEY_PROCESSING_RESULT) trySend(Unit)
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        trySend(Unit)
+        awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    fun setS1Processing(value: ProcessingPreference) = synchronized(PROCESSING_LOCK) {
+        writeProcessing(mapOf(KEY_S1_PROCESSING to value.encode()))
+    }
+    fun setS1Qualification(value: ProcessingQualification) = synchronized(PROCESSING_LOCK) {
+        writeProcessing(mapOf(KEY_S1_QUALIFICATION to value.encode()))
+    }
+    /** Cancellation can win while the store is suspended; readers see either the previous or accepted snapshot. */
+    fun acceptQualification(result: ProcessingCheckResult, stillCurrent: () -> Boolean): ProcessingQualification? = synchronized(PROCESSING_LOCK) {
+        if (!stillCurrent()) return null
+        val previous = loadS1Qualification().takeIf { it.contextId == result.contextId }
+            ?: ProcessingQualification.of(result.contextId, emptySet())
+        val stamp = result.evidenceStamp ?: return previous
+        val revision = runCatching { loadS1Processing().retryRevision }.getOrDefault(0)
+        val next = when (result.status) {
+            ProcessingCheckStatus.AVAILABLE -> previous.observed(setOf(result.backend), emptySet(), false, revision, stamp)
+            ProcessingCheckStatus.RUNTIME_FAILED -> previous.observed(emptySet(), emptySet(), true, revision, stamp)
+            ProcessingCheckStatus.MODEL_MISSING, ProcessingCheckStatus.NOT_IMPLEMENTED, ProcessingCheckStatus.LOAD_FAILED,
+            ProcessingCheckStatus.CANARY_FAILED, ProcessingCheckStatus.CANCELLED, ProcessingCheckStatus.EXPIRED -> previous.observed(emptySet(), setOf(result.backend), false, revision, stamp)
+        }
+        if (!writeProcessing(mapOf(KEY_S1_QUALIFICATION to next.encode()), stillCurrent)) null else next
+    }
+    /** Called by the existing application write queue, never before a take's publication commit. */
+    fun recordProcessing(observation: ProcessingObservation): Unit = synchronized(PROCESSING_LOCK) {
+        val previousResult = runCatching { loadProcessingResult() }.getOrNull()
+        val olderUserTake = previousResult != null && previousResult.processEpoch == observation.processEpoch && previousResult.takeAcceptedAtMs > observation.takeAcceptedAtMs
+        val values = mutableMapOf<String, String>()
+        if (!olderUserTake) values[KEY_PROCESSING_RESULT] = observation.encode()
+        observation.local?.let { usage ->
+            var evidence = runCatching { loadS1Qualification() }.getOrNull()?.takeIf { it.contextId == usage.contextId } ?: ProcessingQualification.of(usage.contextId, emptySet())
+            val generationFailure = if (usage.generationFailed && usage.backend != null) setOf(usage.backend) else emptySet()
+            usage.loadStamp?.let { stamp -> evidence = evidence.observed(emptySet(), usage.failedBackends - generationFailure, usage.runtimeFailed && usage.generationStamp == null, usage.preferenceRevision, stamp) }
+            usage.generationStamp?.let { stamp ->
+                val success = if (usage.acceptedLocalText && usage.backend != null && observation.reason == PolishReason.POLISHED) setOf(usage.backend) else emptySet()
+                evidence = evidence.observed(success, generationFailure, usage.runtimeFailed, usage.preferenceRevision, stamp)
+            }
+            values[KEY_S1_QUALIFICATION] = evidence.encode()
+        }
+        if (values.isEmpty()) return
+        writeProcessing(values)
+        Unit
+    }
+    /** SharedPreferences changes memory even when commit fails. Roll back before releasing our readers. */
+    private fun writeProcessing(values: Map<String, String>, stillCurrent: () -> Boolean = { true }): Boolean {
+        val previous = preferences.all
+        val editor = preferences.edit()
+        values.forEach { (key, value) -> editor.putString(key, value) }
+        val commit = runCatching { editor.commit() }
+        val committed = commit.getOrDefault(false)
+        val accepted = committed && stillCurrent()
+        if (!accepted) {
+            val restore = preferences.edit()
+            values.keys.forEach { key ->
+                val old = previous[key]
+                when (old) {
+                    null -> restore.remove(key)
+                    is String -> restore.putString(key, old)
+                    is Boolean -> restore.putBoolean(key, old)
+                    is Int -> restore.putInt(key, old)
+                    is Long -> restore.putLong(key, old)
+                    is Float -> restore.putFloat(key, old)
+                    is Set<*> -> restore.putStringSet(key, old.map { require(it is String); it }.toSet())
+                    else -> error("Unknown preference value type")
+                }
+            }
+            check(restore.commit()) { "Could not confirm processing settings restoration" }
+        }
+        commit.exceptionOrNull()?.let { throw it }
+        check(committed) { "Could not save processing settings" }
+        return accepted
+    }
 
     /**
      * All three axes in ONE commit, so a session snapshot can never see two of the new picks with one
@@ -300,7 +397,11 @@ internal class ProviderConfigurationRepository internal constructor(
          */
         fun decodePolicy(values: Map<String, *>): PolishPolicy = when (decodeMode(values)) {
             PolishMode.OFF -> PolishPolicy.Off
-            PolishMode.OFFLINE_S1 -> PolishPolicy.LocalS1(decodeS1Control(values))
+            PolishMode.OFFLINE_S1 -> PolishPolicy.LocalS1(
+                decodeS1Control(values),
+                ProcessingPreference.decode(storedProcessingString(values, KEY_S1_PROCESSING)),
+                ProcessingQualification.decode(storedProcessingString(values, KEY_S1_QUALIFICATION)),
+            )
             PolishMode.PROVIDER -> decodeSelection(values)?.let { selection ->
                 PolishPolicy.Cloud(selection.provider, selection.model, selection.endpoint, selection.protocol)
             } ?: PolishPolicy.CloudUnconfigured
@@ -342,12 +443,22 @@ internal class ProviderConfigurationRepository internal constructor(
             return StoredSelection(provider, model, endpoint, protocol)
         }
 
+        private fun storedProcessingString(values: Map<String, *>, key: String): String? {
+            val value = values[key] ?: return null
+            require(value is String) { "Invalid processing preference type" }
+            return value
+        }
+
         private const val PREFERENCES = "envious_wispr_provider_configuration"
         private const val KEY_MODE = "mode"
         private const val KEY_PROVIDER = "provider"
         private const val KEY_MODEL = "model"
         private const val KEY_ENDPOINT = "endpoint"
         private const val KEY_PROTOCOL = "protocol"
+        private val PROCESSING_LOCK = Any()
+        private const val KEY_PROCESSING_RESULT = "latest_processing_result"
+        private const val KEY_S1_PROCESSING = "s1_processing"
+        private const val KEY_S1_QUALIFICATION = "s1_processing_qualification"
         private const val KEY_S1_STYLING = "s1_styling"
         private const val KEY_S1_STRUCTURE = "s1_structure"
         private const val KEY_S1_CONTEXT = "s1_context"
@@ -387,3 +498,10 @@ internal data class SelectedProviderConfiguration(
  */
 internal class InconsistentProviderStorageException(val provider: Provider, cause: Throwable?) :
     IllegalStateException("provider storage is inconsistent for ${provider.name}", cause)
+
+/** Three processing projections decoded from the same repository snapshot, with explicit per-field failures. */
+internal data class ProcessingDetails(
+    val preference: Result<ProcessingPreference>,
+    val qualification: Result<ProcessingQualification>,
+    val observation: Result<ProcessingObservation?>,
+)

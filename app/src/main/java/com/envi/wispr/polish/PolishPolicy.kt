@@ -2,6 +2,8 @@ package com.envi.wispr.polish
 
 import android.os.Parcel
 import android.os.Parcelable
+import com.envi.wispr.processing.ProcessingPreference
+import com.envi.wispr.processing.ProcessingQualification
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.SelfHostedProtocol
 
@@ -26,7 +28,14 @@ internal sealed class PolishPolicy : Parcelable {
      * No default argument on purpose: the one place that supplies [S1ControlSettings.DEFAULT] is
      * `ProviderConfigurationRepository.decodePolicy`, so every other constructor call is visible.
      */
-    data class LocalS1(val control: S1ControlSettings) : PolishPolicy()
+    data class LocalS1(
+        val control: S1ControlSettings,
+        val processing: ProcessingPreference,
+        val qualification: ProcessingQualification,
+    ) : PolishPolicy() {
+        /** Binary entry point used by older installed instrumentation clients. */
+        constructor(control: S1ControlSettings) : this(control, ProcessingPreference.DEFAULT, ProcessingQualification.NONE)
+    }
 
     /** The user chose a cloud mode but no valid provider selection exists. Fails open to rules. */
     object CloudUnconfigured : PolishPolicy()
@@ -48,6 +57,8 @@ internal sealed class PolishPolicy : Parcelable {
                 dest.writeString(control.styling.token)
                 dest.writeString(control.structure.token)
                 dest.writeString(control.context.token)
+                dest.writeString(processing.encode())
+                dest.writeString(qualification.encode())
             }
             CloudUnconfigured -> dest.writeByte(TAG_CLOUD_UNCONFIGURED)
             is Cloud -> {
@@ -82,6 +93,8 @@ internal sealed class PolishPolicy : Parcelable {
                         structure = S1Structure.fromToken(source.readString()),
                         context = S1Context.fromToken(source.readString()),
                     ),
+                    ProcessingPreference.decode(checkNotNull(source.readString())),
+                    ProcessingQualification.decode(checkNotNull(source.readString())),
                 )
                 TAG_CLOUD_UNCONFIGURED -> CloudUnconfigured
                 TAG_CLOUD -> Cloud(

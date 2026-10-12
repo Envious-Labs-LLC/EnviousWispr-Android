@@ -3,6 +3,12 @@ package com.envi.wispr.providers.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.envi.wispr.polish.ProcessingCheckClient
+import com.envi.wispr.processing.ProcessingBackend
+import com.envi.wispr.processing.ProcessingCheckStatus
+import com.envi.wispr.processing.ProcessingEnvironment
+import com.envi.wispr.processing.ProcessingPreference
+import com.envi.wispr.processing.ProcessingQualification
 import com.envi.wispr.polish.PolishContext
 import com.envi.wispr.polish.PolishFailure
 import com.envi.wispr.polish.S1ControlSettings
@@ -52,6 +58,11 @@ internal data class ProviderSettingsUiState(
     val storedProviders: Set<Provider> = emptySet(),
     /** The PERSISTED S1-mini picks (#152); the chips never show an unsaved draft. */
     val s1Control: S1ControlSettings = S1ControlSettings.DEFAULT,
+    val s1Processing: ProcessingPreference = ProcessingPreference.DEFAULT,
+    val s1Qualification: ProcessingQualification = ProcessingQualification.NONE,
+    val processingReadError: String? = null,
+    val processingChecks: Map<ProcessingBackend, ProcessingCheckStatus?> = emptyMap(),
+    val latestProcessingResult: com.envi.wispr.processing.ProcessingObservation? = null,
     val message: String = "",
     val error: String? = null,
     /** The request sequence of the LAST COMPLETED write, success or failure; 0 before any write (#67). */
@@ -89,7 +100,57 @@ internal class PolishSettingsViewModel(
     /** The live model list (#84): the discoverer and the per-provider cache, both replaceable by a test. */
     private val discoverer: ProviderModelDiscoverer = ProviderModelDiscoveryClient(),
     private val modelCache: ModelListCache,
+    private val processingClient: ProcessingCheckClient? = null,
 ) : ViewModel() {
+    private val processingCheckGeneration = java.util.concurrent.atomic.AtomicLong()
+    fun cancelProcessingChecks() {
+        processingCheckGeneration.incrementAndGet()
+        processingClient?.cancelAll()
+        setChecks(providerSettings.value.processingChecks.mapValues { (_, status) -> status ?: ProcessingCheckStatus.CANCELLED })
+    }
+    private fun setChecks(value: Map<ProcessingBackend, ProcessingCheckStatus?>) {
+        providerSettings.value = providerSettings.value.copy(processingChecks = value)
+    }
+
+    fun setS1Processing(value: ProcessingPreference): Int = updateProviderSettings {
+        providerRepository.setS1Processing(value)
+        "Processing preference saved"
+    }
+    fun checkProcessing(backend: ProcessingBackend) {
+        if (backend !in ProcessingEnvironment.standardPolishBackends || providerSettings.value.processingChecks.containsKey(backend) && providerSettings.value.processingChecks[backend] == null) return
+        setChecks(providerSettings.value.processingChecks + (backend to null))
+        val client = processingClient
+        if (client == null) {
+            setChecks(providerSettings.value.processingChecks + (backend to ProcessingCheckStatus.RUNTIME_FAILED))
+            return
+        }
+        val generation = processingCheckGeneration.get()
+        client.check(backend) { result ->
+            viewModelScope.launch {
+                if (generation != processingCheckGeneration.get() || result.contextId != ProcessingEnvironment.s1ContextId()) return@launch
+                providerSettingsMutex.withLock {
+                    if (generation != processingCheckGeneration.get()) return@withLock
+                    val checked = withContext(Dispatchers.IO) { runCatching {
+                        providerRepository.acceptQualification(result) { generation == processingCheckGeneration.get() && result.contextId == ProcessingEnvironment.s1ContextId() }
+                            ?.let { providerRepository.loadProcessingDetails() }
+                    } }
+                    if (generation != processingCheckGeneration.get() || result.contextId != ProcessingEnvironment.s1ContextId()) return@withLock
+                    checked.onSuccess { next -> if (next != null) providerSettings.value = providerSettings.value.copy(
+                        s1Qualification = next.qualification.getOrElse { providerSettings.value.s1Qualification },
+                        s1Processing = next.preference.getOrElse { providerSettings.value.s1Processing },
+                        latestProcessingResult = next.observation.getOrElse { providerSettings.value.latestProcessingResult },
+                        processingChecks = providerSettings.value.processingChecks + (backend to result.status),
+                    ) }
+                        .onFailure { setChecks(providerSettings.value.processingChecks + (backend to ProcessingCheckStatus.LOAD_FAILED)) }
+                }
+            }
+        }
+    }
+    override fun onCleared() {
+        processingClient?.close()
+        super.onCleared()
+    }
+
     private val providerDiscoveryState = MutableStateFlow(ProviderDiscoveryUiState())
     /** The setup page's live model list; separate from [settings] because it is per page, not per app. */
     val providerDiscovery: StateFlow<ProviderDiscoveryUiState> = providerDiscoveryState.asStateFlow()
@@ -109,6 +170,28 @@ internal class PolishSettingsViewModel(
     private val providerSettingsMutex = Mutex()
     /** The persisted AI Polish settings and the sequence of the last completed write. */
     val settings: StateFlow<ProviderSettingsUiState> = providerSettings.asStateFlow()
+
+    suspend fun observeProcessingUpdates() {
+        providerRepository.processingChanges().collect {
+                providerSettingsMutex.withLock {
+                    val read = withContext(Dispatchers.IO) { runCatching { providerRepository.loadProcessingDetails() } }
+                    read.onSuccess { details ->
+                        val qualification = details.qualification.getOrElse { providerSettings.value.s1Qualification }
+                        val observation = details.observation.getOrElse { providerSettings.value.latestProcessingResult }
+                        var checks = providerSettings.value.processingChecks
+                        if (observation != providerSettings.value.latestProcessingResult) observation?.local?.let { usage ->
+                            val failures = if (usage.runtimeFailed) ProcessingEnvironment.standardPolishBackends else usage.failedBackends
+                            failures.forEach { backend ->
+                                if (!checks.containsKey(backend) || checks[backend] != null) checks = checks + (backend to if (usage.runtimeFailed) ProcessingCheckStatus.RUNTIME_FAILED else ProcessingCheckStatus.LOAD_FAILED)
+                            }
+                        }
+                        providerSettings.value = providerSettings.value.copy(s1Qualification = qualification, latestProcessingResult = observation, processingChecks = checks,
+                            s1Processing = details.preference.getOrElse { providerSettings.value.s1Processing },
+                            processingReadError = if (details.preference.isFailure || details.qualification.isFailure || details.observation.isFailure) "Processing details could not be read. Previous details retained." else null)
+                    }.onFailure { providerSettings.value = providerSettings.value.copy(processingReadError = "Processing details could not be read. Previous details retained.") }
+                }
+        }
+    }
 
     init {
         // Routed through the same mutex as every write, not called bare: without this, the initial
@@ -359,6 +442,10 @@ internal class PolishSettingsViewModel(
         sequence: Int = providerSettings.value.writeSequence,
     ) {
         val mode = providerRepository.loadMode()
+        val processingDetails = runCatching { providerRepository.loadProcessingDetails() }
+        val processingRead = processingDetails.mapCatching { it.preference.getOrThrow() }
+        val qualificationRead = processingDetails.mapCatching { it.qualification.getOrThrow() }
+        val observationRead = processingDetails.mapCatching { it.observation.getOrThrow() }
         val selected = providerRepository.load()
         providerSettings.value = ProviderSettingsUiState(
             loading = false,
@@ -371,6 +458,11 @@ internal class PolishSettingsViewModel(
             configured = selected != null,
             storedProviders = providerRepository.storedProviders(),
             s1Control = providerRepository.loadS1Control(),
+            processingChecks = providerSettings.value.processingChecks,
+            latestProcessingResult = observationRead.getOrElse { providerSettings.value.latestProcessingResult },
+            s1Processing = processingRead.getOrElse { providerSettings.value.s1Processing },
+            s1Qualification = qualificationRead.getOrElse { providerSettings.value.s1Qualification },
+            processingReadError = if (processingRead.isFailure || qualificationRead.isFailure || observationRead.isFailure) "Processing preference could not be read. Previous selection retained." else null,
             message = message,
             error = error,
             writeSequence = sequence,
@@ -437,11 +529,12 @@ internal class PolishSettingsViewModel(
     class Factory(
         private val providerRepository: ProviderConfigurationRepository,
         private val modelCache: ModelListCache,
+        private val processingClient: ProcessingCheckClient? = null,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             require(modelClass.isAssignableFrom(PolishSettingsViewModel::class.java))
-            return PolishSettingsViewModel(providerRepository, modelCache = modelCache) as T
+            return PolishSettingsViewModel(providerRepository, modelCache = modelCache, processingClient = processingClient) as T
         }
     }
 }

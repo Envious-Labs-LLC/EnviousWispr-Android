@@ -38,7 +38,7 @@ import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 
 /** Which write the tab is waiting on, so its failure lands under the rung that started it. */
-internal enum class WriteKind { MODE, KEY, MODEL, REMOVE, S1_CONTROL }
+internal enum class WriteKind { MODE, KEY, MODEL, REMOVE, S1_CONTROL, S1_PROCESSING }
 
 /**
  * The AI Polish tab as the founder's Ladder (#81): four numbered rungs on one page, each unlocking the
@@ -57,6 +57,10 @@ internal fun PolishScreen(
     discovery: ProviderDiscoveryUiState,
     onSetMode: (PolishMode) -> Int,
     onSetS1Control: (S1ControlSettings) -> Int,
+    onSetProcessing: (com.envi.wispr.processing.ProcessingPreference) -> Int = { 0 },
+    onCheckProcessing: (com.envi.wispr.processing.ProcessingBackend) -> Unit = {},
+    latestPolishResult: String? = null,
+    onCancelProcessingChecks: () -> Unit = {},
     onSave: (Provider, String, String?, Int?) -> Int,
     onClearProvider: (Provider) -> Int,
     onCheckKey: (Provider, String?) -> Int,
@@ -150,6 +154,22 @@ internal fun PolishScreen(
                 RungOne.OFF -> QuietCard("No language model runs. Deterministic cleanup still removes obvious filler and spacing issues.")
                 RungOne.THIS_PHONE -> {
                     S1Card(s1State, onRefreshReadiness)
+                    ProcessingPreferenceCard(
+                        model = "S1-mini", preference = settings.s1Processing,
+                        modelReady = s1State.health == com.envi.wispr.models.ModelHealth.READY,
+                        implemented = com.envi.wispr.processing.ProcessingEnvironment.standardPolishBackends,
+                        qualified = settings.s1Qualification.takeIf { it.contextId == com.envi.wispr.processing.ProcessingEnvironment.s1ContextId() }?.backends ?: emptySet(),
+                        checks = settings.processingChecks, enabled = !saving,
+                        error = settings.processingReadError ?: writeError?.takeIf { errorKind == WriteKind.S1_PROCESSING },
+                        onSave = { next -> start(WriteKind.S1_PROCESSING) { onSetProcessing(next) } },
+                        onCheck = onCheckProcessing, latestResult = latestPolishResult,
+                        onRetry = if (s1State.health == com.envi.wispr.models.ModelHealth.READY &&
+                            (settings.s1Processing.automatic || settings.s1Qualification.contextId == com.envi.wispr.processing.ProcessingEnvironment.s1ContextId() &&
+                                (settings.s1Qualification.backends + settings.s1Qualification.failedAtRevision.keys).any { it in com.envi.wispr.processing.ProcessingEnvironment.standardPolishBackends })) {
+                            { next -> start(WriteKind.S1_PROCESSING) { onSetProcessing(next) } }
+                        } else null,
+                        onCloseChecks = onCancelProcessingChecks,
+                    )
                     S1ControlCard(
                         control = settings.s1Control,
                         enabled = !saving,

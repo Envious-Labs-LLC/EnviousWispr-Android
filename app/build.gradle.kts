@@ -132,6 +132,8 @@ dependencies {
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
     implementation("androidx.work:work-runtime-ktx:2.10.1")
+    // Explicitly own feedback call cancellation, whole-call timeout and redirect refusal.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     // On-device language identification, model BUNDLED in the APK. Deliberately not the
     // `play-services-mlkit-language-id` variant, which downloads its model at runtime: stage 1 has no

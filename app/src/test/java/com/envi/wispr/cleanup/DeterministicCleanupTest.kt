@@ -35,6 +35,78 @@ class DeterministicCleanupTest {
         assertTrue(!result.recovered)
     }
 
+    /** Product Outcome: recognizer marks beside a spoken command must not insert doubled punctuation. */
+    @Test fun spokenCommandsAbsorbOnlyTheirIdenticalAdjacentRecognizerMarks() {
+        val cases = listOf(
+            "Hello, comma world full stop." to "Hello, world.",
+            "Hello,, comma world full stop.." to "Hello, world.",
+            "Hello comma, world" to "Hello, world",
+            "Hello? question mark" to "Hello?",
+            "Hello question mark?" to "Hello?",
+            "Hello! exclamation mark!" to "Hello!",
+            "Hello exclamation point!" to "Hello!",
+            "Hello; semicolon world" to "Hello; world",
+            "Hello semicolon; world" to "Hello; world",
+            "Hello: colon world" to "Hello: world",
+            "Hello colon: world" to "Hello: world",
+            "Hello. period." to "Hello.",
+            "HELLO,\tCOMMA WORLD FULL STOP." to "HELLO, WORLD.",
+            "Heading\nHello comma, world full stop." to "Heading\nHello, world.",
+        )
+        cases.forEach { (input, expected) ->
+            assertEquals(input, expected, DeterministicCleanup.apply(input, CleanupOptions(spokenPunctuation = true)).text)
+        }
+    }
+
+    @Test fun recognizerMarkPreparationDoesNotMergeExplicitCommandsOrTheirAliases() {
+        val cases = listOf(
+            "Hello period full stop" to "Hello..",
+            "Hello full stop period" to "Hello..",
+            "Hello comma comma" to "Hello,,",
+            "The report is ready exclamation mark exclamation point" to "The report is ready!!",
+            "The report is ready exclamation point exclamation mark" to "The report is ready!!",
+        )
+        cases.forEach { (input, expected) ->
+            assertEquals(input, expected, DeterministicCleanup.apply(input, CleanupOptions(spokenPunctuation = true)).text)
+        }
+    }
+
+    @Test fun spokenCommandPreparationPreservesEllipsesMixedMarksAndUnrelatedText() {
+        val cases = listOf(
+            "Hello... period" to "Hello....",
+            "Hello period..." to "Hello....",
+            "Hello… period" to "Hello….",
+            "Hello?! question mark" to "Hello?!?",
+            "Hello question mark?!" to "Hello??!",
+            "Hello. comma world" to "Hello., world",
+            "Hello, period" to "Hello,.",
+            "commander periodical" to "commander periodical",
+            "Hello... world?!" to "Hello... World?!",
+        )
+        cases.forEach { (input, expected) ->
+            assertEquals(input, expected, DeterministicCleanup.apply(input, CleanupOptions(spokenPunctuation = true)).text)
+        }
+    }
+
+    @Test fun recognizerMarkPreparationDoesNotCrossLineOrSuffixWordBoundaries() {
+        val cases = listOf(
+            "Hello,\ncomma world" to "Hello,, world",
+            "Hello comma\n, world" to "Hello,, world",
+            "Hello comma,world" to "Hello,,world",
+            "Hello, commas" to "Hello, commas",
+        )
+        cases.forEach { (input, expected) ->
+            // These controls retain the existing conversion behavior; preparation is narrower.
+            assertEquals(input, expected, DeterministicCleanup.apply(input, CleanupOptions(spokenPunctuation = true)).text)
+        }
+    }
+
+    @Test fun punctuationOffAndEstablishedForeignLanguageKeepRecognizerCommands() {
+        val input = "Hello, comma world full stop."
+        assertEquals(input, DeterministicCleanup.apply(input, CleanupOptions(spokenPunctuation = false)).text)
+        assertEquals(input, DeterministicCleanup.apply(input, CleanupOptions(spokenPunctuation = true), CleanupLanguage.Known("de")).text)
+    }
+
     @Test fun disabledOptionsLeaveCommandsAlone() {
         val result = DeterministicCleanup.apply("uh hello comma", CleanupOptions(false, false, false))
         assertEquals("uh hello comma", result.text)

@@ -15,9 +15,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -94,132 +94,141 @@ internal fun OnboardingScreen(
     val practiceBox = remember { FocusRequester() }
     // Test tags are exported as accessibility view ids so the service can name the practice box.
     Surface(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }, color = background, contentColor = foreground) {
-        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()
-            .padding(horizontal = 24.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            // In a short window (landscape, a split screen) the demo gives its height to the scenes.
-            val shortWindow = LocalConfiguration.current.screenHeightDp < 560
-            if (!(stage == OnboardingStage.DEMO && shortWindow)) OnboardingLips(Modifier.size(if (stage == OnboardingStage.PRACTICE || stage == OnboardingStage.DEMO) 84.dp else 140.dp),
-                energetic = stage == OnboardingStage.DOWNLOADS || model.practicePhase == RecordingOverlayState.Phase.RECORDING)
-            if (stage == OnboardingStage.DEMO) {
-                Box(Modifier.weight(1f).widthIn(max = 480.dp).fillMaxWidth().padding(top = 8.dp)) {
-                    OnboardingDemo(demoIcons, look, DemoPalette(background, surface, foreground, muted, accent, border)) {
-                        onStepChange(OnboardingStage.PRACTICE.ordinal)
-                    }
-                }
-            } else Column(Modifier.weight(1f).widthIn(max = 480.dp).fillMaxWidth().verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.CenterHorizontally) {
-                when (stage) {
-                    OnboardingStage.DEMO -> Unit
-                    OnboardingStage.WELCOME -> {
-                        SetupHeading("Speak naturally.\nGet polished text.", "Turn messy speech into clear, ready-to-send writing.", muted)
-                        OnboardingWelcomeStory(surface, foreground, muted, accent)
-                        if (model.downloadMessage.isNotBlank()) Text(model.downloadMessage, Modifier.padding(top = 12.dp), color = muted, textAlign = TextAlign.Center)
-                    }
-                    OnboardingStage.DOWNLOADS -> {
-                        val index = if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0
-                        val state = downloads.getOrNull(index)
-                        val descriptor = if (index == 0) ModelManifest.parakeet else ModelManifest.s1
-                        SetupHeading(if (index == 0) "First, get your\nwords right." else "Less cleanup.\nMore ready to send.",
-                            if (index == 0) "Parakeet recognizes your speech in 25 languages, even offline. The foundation for polished text."
-                            else "S1-mini turns your spoken thoughts into polished text, with punctuation, paragraphs and less filler.", muted)
-                        Surface(color = surface, shape = RoundedCornerShape(16.dp)) {
-                            Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Text(if (index == 0) "Speech recognition" else "AI polish", fontWeight = FontWeight.Bold)
-                                Text("${descriptor.displayName} · ${formatModelBytes(descriptor.files.sumOf { it.expectedBytes })}", color = muted, fontSize = 12.sp)
-                                if (state != null && state.total > 0 && state.action in listOf(ModelUiAction.PAUSE, ModelUiAction.RESUME)) {
-                                    LinearProgressIndicator(progress = { (state.bytes.toFloat() / state.total).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth(), color = accent)
-                                    Text("${formatModelBytes(state.bytes)} of ${formatModelBytes(state.total)}", fontSize = 12.sp, color = muted)
-                                } else if (state?.action == ModelUiAction.PAUSE) {
-                                    LinearProgressIndicator(Modifier.fillMaxWidth(), color = accent)
+        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()
+            .padding(horizontal = 24.dp, vertical = 14.dp)) {
+            // Use the actual room left after insets/keyboard, including short portrait and split windows.
+            val shortWindow = maxHeight < 560.dp
+            key(stage) {
+                val pageScroll = rememberScrollState()
+                val bodyScroll = rememberScrollState()
+                val wholePageScroll = shortWindow && stage != OnboardingStage.DEMO
+                Column(Modifier.fillMaxSize().then(if (wholePageScroll) Modifier.verticalScroll(pageScroll) else Modifier),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (!shortWindow) OnboardingLips(Modifier.size(if (stage == OnboardingStage.PRACTICE || stage == OnboardingStage.DEMO) 84.dp else 140.dp),
+                        energetic = stage == OnboardingStage.DOWNLOADS || model.practicePhase == RecordingOverlayState.Phase.RECORDING)
+                    if (stage == OnboardingStage.DEMO) {
+                        Box(Modifier.weight(1f).widthIn(max = 480.dp).fillMaxWidth().padding(top = 8.dp)) {
+                            OnboardingDemo(demoIcons, look, DemoPalette(background, surface, foreground, muted, accent, border)) {
+                                onStepChange(OnboardingStage.PRACTICE.ordinal)
+                            }
+                        }
+                    } else Column((if (wholePageScroll) Modifier else Modifier.weight(1f).verticalScroll(bodyScroll))
+                        .widthIn(max = 480.dp).fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally) {
+                        when (stage) {
+                            OnboardingStage.DEMO -> Unit
+                            OnboardingStage.WELCOME -> {
+                                SetupHeading("Speak naturally.\nGet polished text.", "Turn messy speech into clear, ready-to-send writing.", muted)
+                                OnboardingWelcomeStory(surface, foreground, muted, accent)
+                                if (model.downloadMessage.isNotBlank()) Text(model.downloadMessage, Modifier.padding(top = 12.dp), color = muted, textAlign = TextAlign.Center)
+                            }
+                            OnboardingStage.DOWNLOADS -> {
+                                val index = if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0
+                                val state = downloads.getOrNull(index)
+                                val descriptor = if (index == 0) ModelManifest.parakeet else ModelManifest.s1
+                                SetupHeading(if (index == 0) "First, get your\nwords right." else "Less cleanup.\nMore ready to send.",
+                                    if (index == 0) "Parakeet recognizes your speech in 25 languages, even offline. The foundation for polished text."
+                                    else "S1-mini turns your spoken thoughts into polished text, with punctuation, paragraphs and less filler.", muted)
+                                Surface(color = surface, shape = RoundedCornerShape(16.dp)) {
+                                    Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        Text(if (index == 0) "Speech recognition" else "AI polish", fontWeight = FontWeight.Bold)
+                                        Text("${descriptor.displayName} · ${formatModelBytes(descriptor.files.sumOf { it.expectedBytes })}", color = muted, fontSize = 12.sp)
+                                        if (state != null && state.total > 0 && state.action in listOf(ModelUiAction.PAUSE, ModelUiAction.RESUME)) {
+                                            LinearProgressIndicator(progress = { (state.bytes.toFloat() / state.total).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth(), color = accent)
+                                            Text("${formatModelBytes(state.bytes)} of ${formatModelBytes(state.total)}", fontSize = 12.sp, color = muted)
+                                        } else if (state?.action == ModelUiAction.PAUSE) {
+                                            LinearProgressIndicator(Modifier.fillMaxWidth(), color = accent)
+                                        }
+                                        Text(state?.label ?: "Checking your models…", color = muted, fontSize = 13.sp)
+                                        state?.reason?.let { Text(it, fontSize = 12.sp, color = muted) }
+                                    }
                                 }
-                                Text(state?.label ?: "Checking your models…", color = muted, fontSize = 13.sp)
-                                state?.reason?.let { Text(it, fontSize = 12.sp, color = muted) }
+                                Text(if (index == 0) "Both models will be ready before we continue." else "Speech recognition is ready. Finishing AI polish.", Modifier.padding(top = 16.dp), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                                if (model.downloadMessage.isNotEmpty()) Text(model.downloadMessage, Modifier.padding(top = 12.dp), color = muted)
+                            }
+                            OnboardingStage.PERMISSIONS -> {
+                                // No picture of the lips here: the founder's phone pass (2026-09-14) called the mock's
+                                // fake text box on a permissions page terrible. The lips are introduced where they are
+                                // real, beside the practice box.
+                                SetupHeading("Your models are ready.\nLet’s try them.", "Allow EnviousWispr to hear your words and put the polished text where you need it.", muted)
+                                PermissionRow("Microphone", "To hear your voice for transcription.", SetupPermission.MICROPHONE, readiness.microphoneGranted, surface, muted, accent, green, onRequestMicrophone)
+                                PermissionRow("Accessibility", accessibilityRowCopy(autoPaste), SetupPermission.ACCESSIBILITY, autoPaste == AutoPasteAvailability.LIVE, surface, muted, accent, green, onOpenAccessibility)
+                                PermissionRow("Notifications", "Recording controls in your notification panel.", SetupPermission.NOTIFICATIONS, readiness.notificationsGranted, surface, muted, accent, green, onRequestNotifications)
+                                if (!readiness.notificationsGranted) Text("Notifications are optional. You can enable them later.", Modifier.padding(top = 14.dp), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                            }
+                            OnboardingStage.PRACTICE -> {
+                                val hold = model.lesson == PracticeLesson.HOLD
+                                val outcome = model.practiceOutcome
+                                val landed = outcome == PracticeOutcome.LANDED || outcome == PracticeOutcome.LANDED_BY_TAP
+                                // While a take runs, the instruction follows the gesture actually in use, not the lesson: a
+                                // held take has no check to tap, and a tapped take does not stop on release.
+                                val holding = model.takeHeld == true
+                                val (title, line) = when (model.practicePhase) {
+                                    RecordingOverlayState.Phase.STARTING -> "Getting ready to listen…" to (if (holding) "Keep holding." else "One moment.")
+                                    RecordingOverlayState.Phase.RECORDING ->
+                                        if (holding) "Keep holding. We’re listening." to "Let go when you’re done."
+                                        else "Go ahead. We’re listening." to "Speak naturally. Tap the check when you’re done."
+                                    RecordingOverlayState.Phase.PROCESSING -> "Tidying your words…" to "Your words will appear in the text box."
+                                    RecordingOverlayState.Phase.IDLE -> when (outcome) {
+                                        PracticeOutcome.WORKING -> "Tidying your words…" to "Your words will appear in the text box."
+                                        PracticeOutcome.LANDED -> "Nice, that worked!" to
+                                            (if (hold) "You can tap to dictate or hold to talk." else "Your words are in the box. Try holding the bubble next.")
+                                        PracticeOutcome.LANDED_BY_TAP -> "Nice, that worked!" to "That was a tap. Now hold the bubble while you talk, and let go when you are done."
+                                        PracticeOutcome.NOTHING_LANDED -> "No words landed in the box." to
+                                            (if (hold) "Hold the bubble and speak, then let go." else "Tap the bubble and speak, then tap the check.")
+                                        null -> if (hold) "Try holding the bubble." to "Now hold the bubble and talk; let go when you are done."
+                                            else "Try your first dictation." to "Tap the bubble and say…"
+                                    }
+                                }
+                                SetupHeading(title, line, muted)
+                                if (!model.practicing && !landed) {
+                                    Text(if (hold) "“And, um, let her know I miss her.”" else "“Um, tell Grandma, uh, I’ll call her on Sunday.”",
+                                        color = muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 12.dp))
+                                }
+                                OutlinedTextField(value = model.draft, onValueChange = model::editDraft,
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 150.dp).focusRequester(practiceBox).testTag(OnboardingViewModel.PRACTICE_FIELD_ID),
+                                    placeholder = { Text("Your words will appear here.") }, shape = RoundedCornerShape(15.dp),
+                                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = surface, unfocusedContainerColor = surface))
+                                if (landed) Text("In any app, the bubble appears when a text box is active, just above the keyboard at the edge you chose.",
+                                    Modifier.padding(top = 14.dp), color = muted, fontSize = 12.sp, lineHeight = 18.sp, textAlign = TextAlign.Center)
+                                // The lips appear beside a FOCUSED box. Ask for focus once the box is on screen.
+                                LaunchedEffect(Unit) { practiceBox.requestFocus() }
                             }
                         }
-                        Text(if (index == 0) "Both models will be ready before we continue." else "Speech recognition is ready. Finishing AI polish.", Modifier.padding(top = 16.dp), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
-                        if (model.downloadMessage.isNotEmpty()) Text(model.downloadMessage, Modifier.padding(top = 12.dp), color = muted)
                     }
-                    OnboardingStage.PERMISSIONS -> {
-                        // No picture of the lips here: the founder's phone pass (2026-09-14) called the mock's
-                        // fake text box on a permissions page terrible. The lips are introduced where they are
-                        // real, beside the practice box.
-                        SetupHeading("Your models are ready.\nLet’s try them.", "Allow EnviousWispr to hear your words and put the polished text where you need it.", muted)
-                        PermissionRow("Microphone", "To hear your voice for transcription.", SetupPermission.MICROPHONE, readiness.microphoneGranted, surface, muted, accent, green, onRequestMicrophone)
-                        PermissionRow("Accessibility", accessibilityRowCopy(autoPaste), SetupPermission.ACCESSIBILITY, autoPaste == AutoPasteAvailability.LIVE, surface, muted, accent, green, onOpenAccessibility)
-                        PermissionRow("Notifications", "Recording controls in your notification panel.", SetupPermission.NOTIFICATIONS, readiness.notificationsGranted, surface, muted, accent, green, onRequestNotifications)
-                        if (!readiness.notificationsGranted) Text("Notifications are optional. You can enable them later.", Modifier.padding(top = 14.dp), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
-                    }
-                    OnboardingStage.PRACTICE -> {
-                        val hold = model.lesson == PracticeLesson.HOLD
-                        val outcome = model.practiceOutcome
-                        val landed = outcome == PracticeOutcome.LANDED || outcome == PracticeOutcome.LANDED_BY_TAP
-                        // While a take runs, the instruction follows the gesture actually in use, not the lesson: a
-                        // held take has no check to tap, and a tapped take does not stop on release.
-                        val holding = model.takeHeld == true
-                        val (title, line) = when (model.practicePhase) {
-                            RecordingOverlayState.Phase.STARTING -> "Getting ready to listen…" to (if (holding) "Keep holding." else "One moment.")
-                            RecordingOverlayState.Phase.RECORDING ->
-                                if (holding) "Keep holding. We’re listening." to "Let go when you’re done."
-                                else "Go ahead. We’re listening." to "Speak naturally. Tap the check when you’re done."
-                            RecordingOverlayState.Phase.PROCESSING -> "Tidying your words…" to "Your words will appear in the text box."
-                            RecordingOverlayState.Phase.IDLE -> when (outcome) {
-                                PracticeOutcome.WORKING -> "Tidying your words…" to "Your words will appear in the text box."
-                                PracticeOutcome.LANDED -> "Nice, that worked!" to
-                                    (if (hold) "You can tap to dictate or hold to talk." else "Your words are in the box. Try holding the bubble next.")
-                                PracticeOutcome.LANDED_BY_TAP -> "Nice, that worked!" to "That was a tap. Now hold the bubble while you talk, and let go when you are done."
-                                PracticeOutcome.NOTHING_LANDED -> "No words landed in the box." to
-                                    (if (hold) "Hold the bubble and speak, then let go." else "Tap the bubble and speak, then tap the check.")
-                                null -> if (hold) "Try holding the bubble." to "Now hold the bubble and talk; let go when you are done."
-                                    else "Try your first dictation." to "Tap the bubble and say…"
+                    Column(Modifier.widthIn(max = 480.dp).fillMaxWidth().padding(top = 12.dp)) {
+                        when (stage) {
+                            OnboardingStage.DEMO -> Unit
+                            OnboardingStage.WELCOME -> SetupButton("Get Started!", fill, action = model::startSetup)
+                            OnboardingStage.DOWNLOADS -> {
+                                val active = downloads.getOrNull(if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0)
+                                val action = active?.action
+                                SetupButton(when (action) { ModelUiAction.PAUSE -> "Pause download"; ModelUiAction.RESUME -> "Resume download"; ModelUiAction.DOWNLOAD, ModelUiAction.RETRY, ModelUiAction.REPAIR, ModelUiAction.REMOVE, ModelUiAction.UPDATE, ModelUiAction.CANCEL, ModelUiAction.NONE, null -> "Retry download" }, fill, active != null) {
+                                    if (action == ModelUiAction.PAUSE) model.pauseDownloads() else model.resumeDownloads()
+                                }
+                                TextButton(onClick = { model.resumeDownloads(mobileData = true) }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Use mobile data", color = accent, fontSize = 12.sp) }
+                            }
+                            OnboardingStage.PERMISSIONS -> {
+                                val ready = readiness.microphoneGranted && autoPaste == AutoPasteAvailability.LIVE
+                                SetupButton("See how it works", fill, ready) { onStepChange(OnboardingStage.DEMO.ordinal) }
+                                if (!ready) Text("Enable Microphone and Accessibility to continue.", Modifier.padding(top = 10.dp).align(Alignment.CenterHorizontally), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Set up later", color = accent, fontSize = 12.sp) }
+                            }
+                            OnboardingStage.PRACTICE -> {
+                                val settled = !model.practicing
+                                if (model.practiceComplete && model.lesson == PracticeLesson.TAP && settled) {
+                                    OutlinedButton(onClick = model::startHoldLesson, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(vertical = 14.dp)) {
+                                        Text("Try press and hold", color = accent, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                                SetupButton("Finish setup", fill, model.practiceComplete && settled, onComplete)
+                                if (!model.practiceComplete) {
+                                    TextButton(onClick = onComplete, enabled = settled, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Skip practice", color = accent, fontSize = 12.sp) }
+                                }
+                                // The lips sit just above the keyboard at the screen's edge; keep the buttons clear of them.
+                                Spacer(Modifier.height(60.dp))
                             }
                         }
-                        SetupHeading(title, line, muted)
-                        if (!model.practicing && !landed) {
-                            Text(if (hold) "“And, um, let her know I miss her.”" else "“Um, tell Grandma, uh, I’ll call her on Sunday.”",
-                                color = muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 12.dp))
-                        }
-                        OutlinedTextField(value = model.draft, onValueChange = model::editDraft,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 150.dp).focusRequester(practiceBox).testTag(OnboardingViewModel.PRACTICE_FIELD_ID),
-                            placeholder = { Text("Your words will appear here.") }, shape = RoundedCornerShape(15.dp),
-                            colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = surface, unfocusedContainerColor = surface))
-                        if (landed) Text("In any app, the bubble appears when a text box is active, just above the keyboard at the edge you chose.",
-                            Modifier.padding(top = 14.dp), color = muted, fontSize = 12.sp, lineHeight = 18.sp, textAlign = TextAlign.Center)
-                        // The lips appear beside a FOCUSED box. Ask for focus once the box is on screen.
-                        LaunchedEffect(Unit) { practiceBox.requestFocus() }
-                    }
-                }
-            }
-            Column(Modifier.widthIn(max = 480.dp).fillMaxWidth().padding(top = 12.dp)) {
-                when (stage) {
-                    OnboardingStage.DEMO -> Unit
-                    OnboardingStage.WELCOME -> SetupButton("Get Started!", fill, action = model::startSetup)
-                    OnboardingStage.DOWNLOADS -> {
-                        val active = downloads.getOrNull(if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0)
-                        val action = active?.action
-                        SetupButton(when (action) { ModelUiAction.PAUSE -> "Pause download"; ModelUiAction.RESUME -> "Resume download"; ModelUiAction.DOWNLOAD, ModelUiAction.RETRY, ModelUiAction.REPAIR, ModelUiAction.REMOVE, ModelUiAction.UPDATE, ModelUiAction.CANCEL, ModelUiAction.NONE, null -> "Retry download" }, fill, active != null) {
-                            if (action == ModelUiAction.PAUSE) model.pauseDownloads() else model.resumeDownloads()
-                        }
-                        TextButton(onClick = { model.resumeDownloads(mobileData = true) }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Use mobile data", color = accent, fontSize = 12.sp) }
-                    }
-                    OnboardingStage.PERMISSIONS -> {
-                        val ready = readiness.microphoneGranted && autoPaste == AutoPasteAvailability.LIVE
-                        SetupButton("See how it works", fill, ready) { onStepChange(OnboardingStage.DEMO.ordinal) }
-                        if (!ready) Text("Enable Microphone and Accessibility to continue.", Modifier.padding(top = 10.dp).align(Alignment.CenterHorizontally), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
-                        TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Set up later", color = accent, fontSize = 12.sp) }
-                    }
-                    OnboardingStage.PRACTICE -> {
-                        val settled = !model.practicing
-                        if (model.practiceComplete && model.lesson == PracticeLesson.TAP && settled) {
-                            OutlinedButton(onClick = model::startHoldLesson, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(vertical = 14.dp)) {
-                                Text("Try press and hold", color = accent, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                        SetupButton("Finish setup", fill, model.practiceComplete && settled, onComplete)
-                        if (!model.practiceComplete) {
-                            TextButton(onClick = onComplete, enabled = settled, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Skip practice", color = accent, fontSize = 12.sp) }
-                        }
-                        // The lips sit just above the keyboard at the screen's edge; keep the buttons clear of them.
-                        Spacer(Modifier.height(60.dp))
                     }
                 }
             }
@@ -251,7 +260,7 @@ private fun PermissionRow(title: String, description: String, kind: SetupPermiss
                 } }
                 Text("Granted", color = green, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
-            else FilledTonalButton(onClick = action, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp), shape = RoundedCornerShape(10.dp)) { Text("Grant", fontSize = 12.sp) }
+            else FilledTonalButton(onClick = action, modifier = Modifier.semantics { contentDescription = "Grant $title" }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp), shape = RoundedCornerShape(10.dp)) { Text("Grant", fontSize = 12.sp) }
         }
     }
 }

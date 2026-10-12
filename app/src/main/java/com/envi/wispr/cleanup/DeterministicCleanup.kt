@@ -498,7 +498,7 @@ internal object DeterministicCleanup {
         val words = it.value.trim().split(cleaningRegex("\\s+")).toMutableList()
         var trailingAnd = false
         if (words.lastOrNull()?.equals("and", ignoreCase = true) == true) {
-            words.removeLast()
+            words.removeAt(words.lastIndex)
             trailingAnd = true
         }
         val cardinalText = words.joinToString(" ")

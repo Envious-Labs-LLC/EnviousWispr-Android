@@ -864,6 +864,7 @@ class AudioCaptureService : Service() {
 
     private fun releaseSession(active: CaptureSession) {
         var holding = false
+        var resourcesClosed = false
         synchronized(sessionLock) {
             if (session !== active) return
             active.route.stopWatching()
@@ -873,14 +874,16 @@ class AudioCaptureService : Service() {
             // may keep the earbuds warm; an error ending and teardown release everything.
             holding = warmHoldOwner.eligible(active.route, active.endingClaim.ending, active.keepEarbudsReady, destroyed) &&
                 warmHoldOwner.start(active.route)
-            closeResources(active, keepRoute = holding)
+            resourcesClosed = closeResources(active, keepRoute = holding)
             lastSilenceStatus = active.detector.status
             session = null
             if (captureThread === Thread.currentThread()) captureThread = null
             currentAmplitude = 0f
         }
 
-        // Audio and the PCM file are already closed above. Detector cleanup therefore cannot delay the
+        takeEvents.publishCaptureClosed(active.takeId, resourcesClosed)
+
+        // Audio and the PCM file have been closed or their cleanup attempted above. Detector cleanup therefore cannot delay the
         // file becoming ready, which is what the user is waiting for. Nothing here blocks: each owner's
         // close tells its thread to stop and abandons it (#188); the feeder unbinds as it exits.
         active.detector.close(unbindNow = false)
@@ -912,16 +915,16 @@ class AudioCaptureService : Service() {
      * With [keepRoute] only the recorder's listener goes (it dies with the `AudioRecord`); the
      * communication ownership stays in the `RouteHold` the warm hold now carries.
      */
-    private fun closeResources(active: CaptureSession, keepRoute: Boolean) {
+    private fun closeResources(active: CaptureSession, keepRoute: Boolean): Boolean {
         active.route.close(keepRoute)
-        closeResources(active.record, active.output, active.token, active.log)
+        return closeResources(active.record, active.output, active.token, active.log)
     }
 
-    private fun closeResources(record: AudioRecord?, output: FileOutputStream?, token: Long, log: TakeLog) {
-        runCatching { output?.flush() }
-            .onFailure { log.warn("Failed to flush audio file: ${it.javaClass.simpleName}") }
-        runCatching { output?.close() }
-            .onFailure { log.warn("Failed to close audio file: ${it.javaClass.simpleName}") }
+    private fun closeResources(record: AudioRecord?, output: FileOutputStream?, token: Long, log: TakeLog): Boolean {
+        val flushed = runCatching { output?.flush() }
+            .onFailure { log.warn("Failed to flush audio file: ${it.javaClass.simpleName}") }.isSuccess
+        val fileClosed = runCatching { output?.close() }
+            .onFailure { log.warn("Failed to close audio file: ${it.javaClass.simpleName}") }.isSuccess
         runCatching { record?.stop() }
             .onFailure {
                 if (it !is IllegalStateException) log.warn("Failed to stop AudioRecord: ${it.javaClass.simpleName}")
@@ -940,6 +943,7 @@ class AudioCaptureService : Service() {
             RecorderLease.PROCESS.releaseFailed(token)
             log.warn("Recorder release failed; the process's recorder lease stays held")
         }
+        return flushed && fileClosed && released
     }
 
     /** Wait for the capture thread to finish writing and close the file. */

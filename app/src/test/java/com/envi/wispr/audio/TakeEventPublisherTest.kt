@@ -47,6 +47,7 @@ class TakeEventPublisherTest {
             events += line
             latch.countDown()
         }
+        override fun onCaptureClosed(takeId: String?, resourcesClosed: Boolean) = record("$takeId:closed($resourcesClosed)")
         override fun onLive(takeId: String?, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) = record("$takeId:live($forced,$routeKind,$routeReason,$liveAfterMs)")
         override fun onTick(takeId: String?, elapsedMs: Long) {
             record("$takeId:tick($elapsedMs)")
@@ -91,6 +92,17 @@ class TakeEventPublisherTest {
         publisher.offerTick("t1", 0L)
         recorder.await()
         assertEquals(listOf("t1:tick(0)", "t1:tick(0)"), recorder.events.toList())
+    }
+
+    /** Harness Contract: closure truth crosses the real publisher before the unchanged ending callback. */
+    @Test fun closureSuccessAndFailurePrecedeTheirOwnEndingWithoutChangingIt() {
+        recorder.expect(4)
+        publisher.publishCaptureClosed("t1", true)
+        publisher.publishEnded("t1", 1, 0, "/tmp/one.pcm", 0, 0f, "Phone")
+        publisher.publishCaptureClosed("t2", false)
+        publisher.publishEnded("t2", 1, 0, "/tmp/two.pcm", 0, 0f, "Phone")
+        recorder.await()
+        assertEquals(listOf("t1:closed(true)", "t1:ended(1,0,/tmp/one.pcm,0,0.0,Phone)", "t2:closed(false)", "t2:ended(1,0,/tmp/two.pcm,0,0.0,Phone)"), recorder.events.toList())
     }
 
     @Test

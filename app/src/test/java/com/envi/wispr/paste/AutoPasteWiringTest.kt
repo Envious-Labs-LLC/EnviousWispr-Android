@@ -536,9 +536,9 @@ class AutoPasteWiringTest {
             cues.contains("FAILURE(45L, 180, honoursSystemHapticSetting = true)"),
         )
         assertEquals(
-            "Recording started and recording stopped are the two cues that must always fire",
+            "Recording started and recording stopped are the two cues controlled by recording vibration",
             2,
-            Regex("host\\.vibrate\\(HapticCue\\.SESSION_TRANSITION\\)").findAll(SessionSources.all).count(),
+            Regex("recordingVibrate\\(HapticCue\\.SESSION_TRANSITION\\)").findAll(SessionSources.all).count(),
         )
     }
 

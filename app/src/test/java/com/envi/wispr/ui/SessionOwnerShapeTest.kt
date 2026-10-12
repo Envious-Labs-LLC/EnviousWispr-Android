@@ -218,7 +218,7 @@ class SessionOwnerShapeTest {
 
         // (d) The capture side reports exactly these facts.
         val members = Regex("""\b(?:data class|data object|class|object)\s+(\w+)[^\n{]*:\s*CaptureEvent\b""").findAll(controller).map { it.groupValues[1] }.toSet()
-        assertEquals(setOf("Live", "Tick", "SilenceStatus", "Ended", "Silent", "LiveDeadlinePassed", "StartFailed"), members)
+        assertEquals(setOf("Live", "Tick", "SilenceStatus", "Ended", "Closed", "Silent", "LiveDeadlinePassed", "StartFailed"), members)
 
         // (e) The take is fixed once built: every constructor property a `val`, no `var` anywhere.
         val parameters = context.substringAfter("class TakeContext(").substringBefore(") {")

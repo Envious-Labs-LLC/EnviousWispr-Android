@@ -106,7 +106,8 @@ class CaptureBinderAdaptersTest {
         val first = adapters.forTake(slots.openTakeEpoch("a")) as IAudioTakeService.Stub
         slots.closeTakeEpoch("a")
         val late = object : ITakeListener.Stub() {
-            override fun onLive(takeId: String?, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) = Unit
+            override fun onCaptureClosed(takeId: String?, resourcesClosed: Boolean) = Unit
+        override fun onLive(takeId: String?, forced: Boolean, routeKind: Int, routeReason: Int, liveAfterMs: Long) = Unit
             override fun onTick(takeId: String?, elapsedMs: Long) = Unit
             override fun onSilenceStatus(takeId: String?, status: Int) = Unit
             override fun onEnded(takeId: String?, terminalReason: Int, startFailure: Int, audioFilePath: String?, silenceStatus: Int, takePeakAmplitude: Float, effectiveInputDevice: String?) = Unit

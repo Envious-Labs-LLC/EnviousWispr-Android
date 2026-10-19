@@ -78,7 +78,12 @@ class PolishService : Service() {
     private val resident = S1LoadedConfiguration()
     private var lastLoadStamp: ProcessingEvidenceStamp? = null
     private var lastLoadObservation: Pair<S1LoadConfiguration, Pair<String, Boolean>>? = null
-    private val s1Runtime by lazy { S1GenieXRuntime(applicationContext) }
+    /** One runtime per process, chosen before any native polish code loads (#449). */
+    private val s1Runtime: S1Runtime by lazy {
+        S1Runtime.create(S1RuntimeKind.current, applicationContext, deadlineScheduler).also {
+            DebugLogger.log(TAG, "Local S1 runtime: ${S1RuntimeKind.current.identity}")
+        }
+    }
 
     /**
      * Reads the dictation's language off the finished transcript so deterministic cleanup does not apply
@@ -599,7 +604,7 @@ class PolishService : Service() {
     }
 
     private fun configuration(policy: PolishPolicy.LocalS1) = S1LoadConfiguration(
-        ProcessingEnvironment.s1ContextId(), policy.processing,
+        ProcessingEnvironment.s1ContextId(), ProcessingEnvironment.standardPolishBackends, policy.processing,
         policy.qualification,
         S1ModelSelector.installationStamp(this).orEmpty(),
     )
@@ -639,7 +644,7 @@ class PolishService : Service() {
                     ProcessingBackend.fromWire(s1Runtime.activeComputeUnit)
                 }
                 lastLoadObservation = loaded.requested to (s1Runtime.failedComputeUnits to s1Runtime.initializationFailed)
-                val result = "GenieX on ${loaded.backend.wire}"
+                val result = "${S1RuntimeKind.current.identity} on ${loaded.backend.wire}"
                 if (stall != null && !stall.cancel()) return
                 modelReady = true
                 val elapsed = SystemClock.elapsedRealtime() - started

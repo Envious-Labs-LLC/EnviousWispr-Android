@@ -32,14 +32,14 @@ internal class S1RuntimeReleaseException(cause: Throwable) : IllegalStateExcepti
 internal class S1RuntimeInitializationException(cause: Throwable) : IllegalStateException("Local runtime initialization failed", cause)
 
 /** Single owner for S1 inference. PolishService serializes every call onto one worker thread. */
-internal class S1GenieXRuntime(private val context: Context) {
+internal class S1GenieXRuntime(private val context: Context) : S1Runtime {
     private var llm: LlmWrapper? = null
 
-    var failedComputeUnits: String = ""
+    override var failedComputeUnits: String = ""
         private set
-    var initializationFailed: Boolean = false
+    override var initializationFailed: Boolean = false
         private set
-    var activeComputeUnit: String = "unloaded"
+    override var activeComputeUnit: String = "unloaded"
         private set
 
     /**
@@ -48,10 +48,10 @@ internal class S1GenieXRuntime(private val context: Context) {
      * generation completes; [generate] clears it first, so a timed-out or failed call leaves it null.
      */
     @Volatile
-    var lastGeneration: GenerationEnd? = null
+    override var lastGeneration: GenerationEnd? = null
         private set
 
-    fun load(modelPath: String, computeUnits: List<String>): String {
+    override fun load(modelPath: String, computeUnits: List<String>): String {
         failedComputeUnits = ""; initializationFailed = false
         close()
         try { initializeSdk() } catch (error: Throwable) {
@@ -91,7 +91,7 @@ internal class S1GenieXRuntime(private val context: Context) {
      * cancels the collecting coroutine at a suspension point and cannot prove the native generation
      * stopped, so the caller treats null exactly like a hard expiry and never reuses this runtime (#75).
      */
-    fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int, timeoutMs: Long): String? {
+    override fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int, timeoutMs: Long): String? {
         val active = checkNotNull(llm) { "S1 runtime is not loaded" }
         lastGeneration = null
         val output = StringBuilder()
@@ -142,7 +142,7 @@ internal class S1GenieXRuntime(private val context: Context) {
         return if (completed == true) output.toString() else null
     }
 
-    fun close() {
+    override fun close() {
         try { llm?.close() } catch (error: Throwable) { throw S1RuntimeReleaseException(error) }
         llm = null
         activeComputeUnit = "unloaded"

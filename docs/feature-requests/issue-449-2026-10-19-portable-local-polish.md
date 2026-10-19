@@ -1,7 +1,7 @@
 # Issue #449 — Local polish that runs on every supported phone — 2026-10-19
 
 GitHub issue: `#449`. Tier: LARGE (a second local runtime beside the shipped one, native packaging, the
-`:polish` engine). Status: DRAFT (grounded review PROCEED-AS-PLANNED, round 5, 2026-10-19; awaiting Gate 2).
+`:polish` engine). Status: DRAFT (grounded review PROCEED-AS-PLANNED, round 7, 2026-10-19, including §16; awaiting Gate 2).
 
 Builds on [`issue-449-2026-10-18-compatibility-research.md`](issue-449-2026-10-18-compatibility-research.md),
 which stays the source for regional chip variety, catalog access and the vendor 0.9.1 inspection.
@@ -123,11 +123,17 @@ long 21.6–21.9 s. Fewer threads is slower; thread tuning does not rescue this 
 3. Phones that run GenieX today keep today's route, speed and behaviour (S26 graphics processor first).
 4. Budgets unchanged (`LocalPolishBudget`); a take that exceeds them returns the last good text, as today.
 5. Remote qualification through the real polish service on A05s, A34, A35 and Pixel 8 before release.
+6. (Founder 2026-10-19, §16.) Low-end phones are not offered the app; mid-tier phones keep every feature and
+   see a one-time notice that it is slower on their phone; a suggested-phone list ships with the listing.
+
+**Chunks.** Chunk 1: the runtime gate and portable runtime (goals 1-5); this is the crash fix for mid-tier
+phones and ships first. Chunk 2: §16, the in-app low-end backstop and mid-tier notice. Chunk 3: the Play
+exclusion rule and listing text, each applied only with founder approval at action time.
 
 ### 2.2 Non-goals
 - No crash journal, quarantine, persistent attempt protocol or retry policy (founder 2026-10-18).
 - No new model, no NPU, no automatic cloud switch, no chooser, no budget change.
-- No Play device-rule change in this change.
+- The memory rule in Play stays as it is; the only Play change is the §16 chip exclusion (chunk 3).
 - Not fixing the qualification-route bookkeeping gaps named on the issue (2026-10-18 comment): they matter
   only while a crash is possible, which this removes. Follow-up issue if still wanted.
 - No GPU acceleration on non-Adreno phones; no thread tuning beyond what §14 decides.
@@ -375,6 +381,9 @@ today's behaviour (GenieX everywhere).
 - [ ] No phone in the remote set runs any GenieX library unless it passes both gates.
 
 ## 14. Open questions (founder)
+
+Question 1 is SUPERSEDED by §16 (founder 2026-10-19: block the low end). Kept for the record.
+
 1. **The A23 processor class (Armv8.0, oldest cores).** Polish runs there now without crashing, but takes
    7–20 s, so most takes would hit the 10 s budget and fall back to basic cleanup, after paying the cost.
    Options: (a) run it anyway and let the budget decide per take; (b) do not offer local AI polish on that
@@ -426,6 +435,108 @@ chunk 1 must establish dispatch or require the crypto capabilities, and stops if
 PROCEED-WITH-REVISIONS, three wording findings, all adopted: baseline claims now name the MTE exception;
 cross-process and probe agreement stated as required validation; fallback terminal corrected to
 `PolishFallback.deterministicOrWords`. No direction blockers.
+
+## 16. Device tiers and suggested phones (founder 2026-10-19)
+
+Founder direction 2026-10-19: block low-end budget phones, warn on mid-tier phones while keeping them
+working, and publish a suggested phone list. This supersedes §14 question 1 (options a/b).
+
+Tier rule: the chip's fastest processor core design. Measured phones are marked; every other placement comes
+from public chip specifications and is an expectation, not a test. Counts are phone MODELS in Google Play's
+device catalog export of 2026-10-18 (phones, 64-bit, Android 13+, more than 4 GB), never users. Regenerate with
+`python3 -I docs/internal/p0-polish-hardware/2026-10-19/soc_tiers.py <catalog.csv>` (private folder; output
+`soc-tiers.txt` beside it).
+
+| Tier | Rule | Models | What the user gets |
+|---|---|---|---|
+| **Blocked** | big cores older than Cortex-A76 (A53/A55-only, A73, A75) | 671 | not offered in Play; in-app notice if installed anyway |
+| **Mid tier** | A76, A77, A78, X1 class | 1,402 (642 of them borderline A76 at 2.0-2.4 GHz) | works on the portable engine; one-time "slower on this phone" notice |
+| **Recommended** | Armv9 cores (A710/X2 and newer) | 597 | today's fastest path |
+| Unclassified | chips not in the table or unsourced | 124 | in-app check decides |
+
+**Pre-A76 exclusion is a proposed support policy.** Measurements establish poor performance on the A05s only,
+not on every pre-A76 chip, and clock speed does not establish performance across core designs. Before the
+chunk 3 exclusion is finalized, representative A75 (Unisoc T606 `lion` (external) moto g04s or Helio G85 `fogorow` (external) moto
+g24 power) and borderline A76 (Helio G99 `a15` (external) Galaxy A15) phones are measured with the same two tests on free
+Test Lab allowance; any exclusion not backed by those runs is recorded as precautionary. Samsung custom-core
+chips (Exynos 9810/9815/9825, Exynos 990's custom cores) stay unclassified until sourced or measured, and
+QCM4290 is described as Kryo 260 with A73-class performance cores; counts are regenerated after these fixes.
+
+### 16.1 Measured (remote physical phones, 2026-10-19, synthetic speech and text)
+
+Transcript column: warm prerecorded-file transcription, request to callback through the real speech service
+(`AsrSpeedDeviceTest`, research harness on this branch, matrix 6337789428120909812); it excludes the capture
+stop and insertion. AI polish column: portable engine (§1.4) except the S26 row.
+
+| Phone | Tier | Transcript, 3 s / 19 s / 57 s of speech | AI polish, line / paragraph |
+|---|---|---|---|
+| Galaxy S26 Ultra (owned) | Recommended | ~0.7 s for a short take; ~3 s for 40 s (`polish-engines.md`, 2026-09-01) | 0.2 s / 1.6 s on the graphics chip |
+| Pixel 8 | Recommended | not run | 1.1 s / 5-6 s |
+| Galaxy A35 (Exynos 1380) | Mid | 2.0 s / 3.6-4.6 s / 8.7 s | 0.9 s / 5 s |
+| Galaxy A34 (Dimensity 1080) | Mid | 2.7-2.9 s / 5.8 s / 14.5 s | 2.4-2.8 s / 8 s |
+| Galaxy A05s (Snapdragon 680, the A23's chip) | Blocked | 8 s / 16.5 s / 40 s | 7-20 s |
+
+Cold first request (binding, model initialization and inference together, not an isolated load time):
+8.1-8.4 s mid tier, 15 s on the A05s.
+Not yet measured: the borderline A76 chips (Helio G99 in Galaxy A15/A16, Dimensity 6100+/6300). They are
+the most common mid-tier chips, so one run on a Galaxy A15 (`a15`, Helio G99) decides whether they stay mid
+tier or move to blocked. It runs on the next free daily Test Lab allowance, before chunk 3.
+
+### 16.2 Suggested phones (DRAFT, not for publication yet; copy review pending)
+
+Before publication (chunk 3): list exact models with their regional chip variant and RAM, mark every untested
+entry "expected", avoid blanket series claims (a Dimensity 8000/8100 phone is mid tier; a Tecno Spark 30 5G on
+Dimensity 6300 is mid tier, not blocked), and describe the Pixel 8 evidence as local-polish testing only.
+The working draft below follows that rule loosely and is replaced, not edited, at chunk 3.
+
+
+- **Works best:** Galaxy S26, S25, S24, S23 and S22 series; Galaxy Z Fold and Z Flip 4 and newer; Pixel 8 and
+  newer, including 8a; recent Snapdragon 8 and Dimensity 8000/9000 phones. Tested: Galaxy S26 Ultra, Pixel 8.
+- **Works, a little slower:** Galaxy A55, A54, A35, A34, A25; Galaxy S21 and S20 FE; Pixel 6, 6a, 7, 7a; phones
+  with Snapdragon 6 and 7 Gen or Dimensity 7000-series chips. Tested: Galaxy A35, A34. Pending: Galaxy A15/A16.
+- **Not supported:** entry phones such as Galaxy A05, A05s, A04, A14 4G and A23 4G; Redmi 10, 12C and 13C;
+  Tecno Spark and Infinix Smart; Moto g04 and g24; phones with Helio G85/G88, Snapdragon 680/662 or Unisoc
+  T606/T615/T616 chips. Tested: Galaxy A05s.
+
+Public wording rule (`content-brand.md`): a phone is "tested" only with a receipt; every other name is
+"expected" and the list says so.
+
+### 16.3 Play exclusion (chunk 3, founder approval at action time)
+
+One Device Catalog exclusion rule per Blocked chip in `soc-tiers.txt` (led by Unisoc T606, Helio G85/G88,
+Snapdragon 680, Unisoc T615/T616, Helio P35). Catalog chip names hide regional variants and miss new chips,
+so §16.4 is required, not optional.
+
+### 16.4 In-app backstop and mid-tier notice (chunk 2)
+
+`DeviceTier` (proposed) reads per-processor implementer, part and variant records from `/proc/cpuinfo` and
+blocks only from complete, nonempty identification: Linux lists online processors only, so a snapshot with
+offline performance cores could show A55 records alone. Missing, malformed, unknown or incomplete topology
+(fewer records than `/sys/devices/system/cpu/possible` reports) means allow. Vendor parts are mapped with a
+cited table (for example pytorch/cpuinfo `src/arm/uarch.c`). If every core is on a closed list of old designs (Arm A53 `0xd03`, A55 `0xd05`, A73 `0xd09`, A75 `0xd0a`, and
+the Qualcomm and Samsung cores built on them, listed with sources at build time), the phone is low-end:
+setup shows one screen saying this phone is not supported and why, and stops there: no model downloads and no
+dictation (measured transcription alone is 8 s for a one-line sentence on this class, §16.1). This matches the
+Play block for phones it missed. Enforcement is one tier decision applied before onboarding download
+scheduling, background model work, and every dictation admission path, including existing installations and the
+shortcut, tile, notification and service entries; blocked work is refused before model initialization or
+microphone capture, and stored models and user data are kept. Candidate call sites (contents not yet read):
+`OnboardingPolicy.kt`, `OnboardingViewModel.kt`, `ModelWorkViewModel.kt`, `ModelBootstrapApplication.kt`,
+`ModelDelivery.kt`, `ModelDeliveryWorker.kt`, `VoiceInputActivity.kt`, `DictationTileService.kt`,
+`DictationSessionService.kt`, `DictationSessionCoordinator.kt`, and `PolishService.kt:239-241` (warm-up accepted
+independently of setup). Chunk 2 gets its own grounded plan and review with these sites mapped before build.
+An unrecognised core design is never blocked: the Play rule covers known chips, and a wrong block is worse
+than a slow phone. Mid-tier phones (decided by `DeviceTier`, independently of `S1RuntimeKind`, which stays governed by the
+instruction mask and OpenCL probe) see one notice in setup and a line under
+"This phone" in AI polish settings: works on this phone, a little slower than on newer phones. Copy goes
+through `content-brand.md` review. Tests: literal `/proc/cpuinfo` fixtures from the four measured phones.
+
+## 14g. Grounded round 6 (Codex, 2026-10-19, new scope) adjudication
+
+PROCEED-WITH-REVISIONS; chunk 1 has no new blocker. All seven adopted: pre-A76 cutoff stated as policy with A75
+and A76 phones measured before chunk 3 (1); custom-core chips unclassified, QCM4290 corrected (2); cpuinfo
+completeness rule (3); enforcement points named, chunk 2 gets its own plan and review (4); tier decided apart
+from runtime kind (5); phone list held as a draft with publication rules (6); timing labels corrected (7).
 
 ## 15. Related
 #418, #234, #429, #431, research doc 2026-10-18, matrices 8271984804397284036, 8721408296902179664,

@@ -1,0 +1,197 @@
+[
+ {
+  "name": "01-speak",
+  "screen": "raw/demo-landed-crop.png",
+  "phone": "left",
+  "eyebrow": "Works in your apps",
+  "head": "Speak. <em>It types.</em>",
+  "sub": "Tap the bubble beside your keyboard and polished words land right where you're typing.",
+  "callouts": [
+   {
+    "text": "Clean text, right at your cursor",
+    "x": 0.8,
+    "y": 0.33,
+    "ty": -40
+   },
+   {
+    "text": "Your recording bubble sits beside the keyboard",
+    "x": 0.88,
+    "y": 0.42,
+    "ty": 150
+   }
+  ],
+  "steps": [
+   "Tap the bubble",
+   "Speak",
+   "Words land"
+  ]
+ },
+ {
+  "name": "02-tap-or-hold",
+  "screen": "raw/demo-pill-crop.png",
+  "phone": "left",
+  "eyebrow": "Tap or hold",
+  "head": "Tap, or <em>hold to talk</em>",
+  "sub": "Tap to start and tap the check to finish, or hold the bubble and let go.",
+  "callouts": [
+   {
+    "text": "Tap the check to finish",
+    "x": 0.87,
+    "y": 0.448,
+    "ty": -150
+   },
+   {
+    "text": "Changed your mind? Cancel",
+    "x": 0.74,
+    "y": 0.448,
+    "ty": 120
+   }
+  ],
+  "steps": [
+   "Tap to start",
+   "Speak",
+   "Tap the check"
+  ]
+ },
+ {
+  "name": "03-polish",
+  "screen": "raw/polish-1.png",
+  "phone": "right",
+  "eyebrow": "AI polish",
+  "head": "Polish <em>on your phone</em>",
+  "sub": "Superwhisper's S1-mini runs right on your phone, or use your own OpenAI, Claude or Gemini key.",
+  "callouts": [
+   {
+    "text": "Pick where polish runs: off, this phone or cloud",
+    "x": 0.46,
+    "y": 0.218,
+    "ty": -60
+   },
+   {
+    "text": "S1-mini by Superwhisper, ready offline",
+    "x": 0.05,
+    "y": 0.335,
+    "ty": 110
+   }
+  ]
+ },
+ {
+  "name": "04-style",
+  "screen": "raw/polish-3.png",
+  "phone": "right",
+  "eyebrow": "Writing style",
+  "head": "Your tone. <em>Your format.</em>",
+  "sub": "Choose casual to formal, turn spoken lists into bullets, and lay out emails for you.",
+  "callouts": [
+   {
+    "text": "Casual to formal",
+    "x": 0.05,
+    "y": 0.503
+   },
+   {
+    "text": "Spoken lists become bullets",
+    "x": 0.05,
+    "y": 0.67
+   },
+   {
+    "text": "Email greetings and sign-offs",
+    "x": 0.05,
+    "y": 0.79,
+    "ty": 20
+   }
+  ]
+ },
+ {
+  "name": "05-cleanup",
+  "screen": "raw/transcription-3.png",
+  "phone": "left",
+  "eyebrow": "Cleanup",
+  "head": "Cleans up <em>as you speak</em>",
+  "sub": "Filler words gone, spoken emoji and punctuation turned into the real thing, your spelling.",
+  "callouts": [
+   {
+    "text": "No more um and uh",
+    "x": 0.86,
+    "y": 0.208,
+    "ty": -50
+   },
+   {
+    "text": "Say “thumbs up emoji”",
+    "x": 0.86,
+    "y": 0.291,
+    "ty": 60
+   },
+   {
+    "text": "British or American spelling",
+    "x": 0.53,
+    "y": 0.519
+   }
+  ]
+ },
+ {
+  "name": "06-dictionary",
+  "screen": "raw/dictionary.png",
+  "phone": "right",
+  "eyebrow": "Your dictionary",
+  "head": "Teach it <em>your names</em>",
+  "sub": "Add names and terms, plus the ways they get misheard, to help it recognize your words.",
+  "callouts": [
+   {
+    "text": "Add names and terms",
+    "x": 0.03,
+    "y": 0.149,
+    "ty": -20
+   },
+   {
+    "text": "Aliases catch how a word gets misheard",
+    "x": 0.03,
+    "y": 0.3,
+    "ty": 60
+   }
+  ]
+ },
+ {
+  "name": "07-history",
+  "screen": "raw/history.png",
+  "phone": "left",
+  "eyebrow": "History",
+  "head": "Every dictation, <em>saved on your phone</em>",
+  "sub": "Search what you said and copy it again any time. History stays on this phone.",
+  "callouts": [
+   {
+    "text": "Search everything you said",
+    "x": 0.85,
+    "y": 0.196,
+    "ty": -30
+   },
+   {
+    "text": "Open any dictation to copy it again",
+    "x": 0.965,
+    "y": 0.333,
+    "ty": 70
+   }
+  ]
+ },
+ {
+  "name": "08-privacy",
+  "screen": "raw/privacy-1.png",
+  "phone": "right",
+  "eyebrow": "Private by design",
+  "head": "Your voice <em>never leaves your phone</em>",
+  "sub": "Speech turns into text on your phone. Cloud polish is optional and sends text only, under your own key.",
+  "callouts": [
+   {
+    "text": "Audio stays on this phone",
+    "x": 0.04,
+    "y": 0.378,
+    "ty": -40
+   },
+   {
+    "text": "Cloud polish only with your own key",
+    "x": 0.04,
+    "y": 0.45,
+    "ty": 90
+   }
+  ]
+ }
+]

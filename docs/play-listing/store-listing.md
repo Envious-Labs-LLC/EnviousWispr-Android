@@ -53,8 +53,8 @@ EnviousWispr uses Android's Accessibility access to find the focused editable fi
 | Default language | English (United States) |
 | Icon | app-icon-512.png,512x512 |
 | Feature graphic | [Submitted graphic](graphics/feature-graphic-1024x500.png),1024x500 |
-| Phone screenshots | Dictionary and History,1080x1920 |
-| Promotional video | None; declaration video is separate |
+| Phone screenshots | Eight v2 shots ([screenshots/v2](screenshots/v2/README.md)), 1080x1920, submitted for review October 19, 2026; live only after Google approves. October 12 set: Dictionary and History |
+| Promotional video | https://www.youtube.com/watch?v=DdDj-2Bambw (EnviousLabs channel, public), submitted for review October 19, 2026. AI asset declaration: not labeled (founder 2026-10-19: stylized cartoon and narration, not realistic synthetic content). Declaration video is separate |
 | Release notes | Welcome to EnviousWispr. |
 
 ## Claim owners

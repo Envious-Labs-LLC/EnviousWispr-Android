@@ -19,6 +19,7 @@ android {
         buildConfigField("int", "BENCHMARK_UBATCH_SIZE", "512")
         buildConfigField("String", "BENCHMARK_SPEC_TYPE", "\"\"")
         buildConfigField("int", "BENCHMARK_SPEC_MAX", "0")
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     flavorDimensions += "engine"
@@ -129,6 +130,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     "cpuImplementation"(project(":llama-android"))
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
     "geniexGpuImplementation"("com.qualcomm.qti:geniex-android:0.4.0")
     "geniexNpuImplementation"("com.qualcomm.qti:geniex-android:0.4.0")
     "geniexQairtImplementation"("com.qualcomm.qti:geniex-android:0.4.0")

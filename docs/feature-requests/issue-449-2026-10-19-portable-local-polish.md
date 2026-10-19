@@ -250,6 +250,12 @@ provides no dispatch evidence because the apparent SVE word is data. Before fina
 capability-guarded dispatch or unreachability for excluded instruction families (the OpenSSL block's
 `OPENSSL_armcap_P` (external) checks, located by disassembly), or conservatively require their capabilities
 (aes, pmull, sha1, sha2, sha3, sha512). Stop if neither can be established while preserving the S26 route.
+**Established 2026-10-19 (chunk 1, disassembly of the shipped `libgeniex.so`):** the crypto block is
+capability-dispatched. At `0x34b654-0x34b680` it calls `getauxval(AT_HWCAP)` and folds HWCAP bits into a cached
+capability word (for example `(hwcap >> 17) & 0x10` is HWCAP bit 21, SHA512; `(hwcap >> 1) & 0x4` is bit 3, AES);
+the SHA-512 entry at `0x352e28-0x352e34` reads that word with `ldar` and takes the hardware routine
+(`0x369b40`) only on `tbnz w8, #4`, otherwise the software routine (`0x368d00`). So the crypto families are
+excluded from the mask by evidence, not by assumption. Receipt: `docs/internal/p0-polish-hardware/2026-10-19/`.
 The Pixel 8 Features line already shows all eight present, and all six crypto capabilities. Receipts: `docs/internal/p0-polish-hardware/2026-10-19/`.
 
 The `GENIEX_REQUIRED_FEATURES` (proposed) set lives beside the GenieX version, with the census command as its

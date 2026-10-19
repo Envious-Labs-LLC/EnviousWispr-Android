@@ -84,7 +84,7 @@ internal data class ProcessingQualification private constructor(
         val available = backends.toMutableSet()
         val history = failureHighWater.toMutableMap()
         val stamps = evidenceStamps.toMutableMap()
-        val failing = if (runtimeFailed) ProcessingEnvironment.standardPolishBackends else failures
+        val failing = if (runtimeFailed) ProcessingEnvironment.allStandardPolishBackends else failures
         (success + failing).forEach { backend ->
             if (!stamp.newerThan(stamps[backend])) return@forEach
             stamps[backend] = stamp

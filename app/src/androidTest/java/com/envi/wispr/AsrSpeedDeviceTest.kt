@@ -9,13 +9,13 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
-import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.envi.wispr.asr.AsrService
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
+import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.models.DownloadState
 import com.envi.wispr.models.ModelDeliveryStore
 import com.envi.wispr.models.ModelManifest
@@ -113,7 +113,7 @@ class AsrSpeedDeviceTest {
     }
 
     private fun report(key: String, value: String) {
-        Log.i(TAG, "$key: $value")
+        DebugLogger.log(TAG, "$key: $value")
         InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply { putString("asr.$key", value) })
     }
 

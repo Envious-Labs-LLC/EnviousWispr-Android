@@ -1,7 +1,6 @@
 package com.envi.wispr.polish
 
 import com.envi.wispr.processing.ProcessingEvidenceStamp
-import com.envi.wispr.processing.ProcessingEnvironment
 import com.envi.wispr.processing.ProcessingBackend
 import com.envi.wispr.processing.ProcessingPreference
 import com.envi.wispr.processing.ProcessingQualification
@@ -9,12 +8,14 @@ import com.envi.wispr.processing.ProcessingQualification
 /** Prompt controls are deliberately absent: they do not change the created native runtime. */
 internal data class S1LoadConfiguration(
     val contextId: String,
+    /** The backends this phone's runtime can run (`ProcessingEnvironment.standardPolishBackends`, #449). */
+    val implemented: Set<ProcessingBackend>,
     val preference: ProcessingPreference,
     val qualification: ProcessingQualification,
     val artifactStamp: String = "",
 ) {
     val candidates: List<ProcessingBackend> get() = preference.candidates(
-        ProcessingEnvironment.standardPolishBackends,
+        implemented,
         if (qualification.contextId == contextId) qualification.eligible(preference.retryRevision) else emptySet(),
     )
 }

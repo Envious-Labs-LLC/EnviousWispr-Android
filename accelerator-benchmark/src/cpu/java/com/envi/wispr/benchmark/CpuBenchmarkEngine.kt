@@ -13,6 +13,7 @@ internal class FlavorBenchmarkEngine(
 
     override suspend fun load(modelPath: String): String = withContext(Dispatchers.IO) {
         val systemInfo = S1Native.initialize(context.applicationInfo.nativeLibraryDir)
+        if (systemInfo.startsWith("ERROR:")) error(systemInfo)
         val status = S1Native.loadModel(modelPath, CONTEXT_SIZE, THREAD_COUNT)
         if (status.startsWith("ERROR:")) error(status)
         "$status | $systemInfo"

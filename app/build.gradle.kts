@@ -115,6 +115,8 @@ tasks.withType<Test>().configureEach {
 
 dependencies {
     implementation("com.qualcomm.qti:geniex-android:0.4.0")
+    // The portable S1 runtime for phones GenieX cannot run on (#449); its native names never clash with GenieX's.
+    implementation(project(":llama-android"))
     // Speech (Parakeet) and silence detection (Silero) on one ONNX Runtime (#374). Replaced the sherpa-onnx AAR,
     // whose bundled ORT 1.17.1 cannot run the SmoothQuant model (8-bit MatMulNBits).
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.30.0")

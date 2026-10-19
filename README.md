@@ -4,7 +4,9 @@ On-device voice-to-text for Android. Press, speak, and finished text lands in th
 typing in. Transcription and AI polish both run on the phone.
 
 Sister project to EnviousWispr for macOS, which is shipping.
-**Android is an early native product. It is not released yet.**
+**V1 is submitted for worldwide Google Play review. Public availability awaits approval.**
+The project now focuses on reliable updates, customer support and ongoing maintenance.
+[Release status and maintenance](docs/maintenance.md).
 
 ## What works today
 
@@ -23,13 +25,17 @@ EnviousWispr never replaces your keyboard. The recorder floats over whatever you
 **Your audio never leaves the phone.** Transcription is always local.
 
 If you turn on cloud polish, the transcribed **text** goes to the provider you picked, under your own API
-key. There is no Envious Labs server in that path. Envious Labs receives no dictated content.
+key. There is no Envious Labs server in that path. Automatic usage/crash reports exclude dictated
+content. Voluntary feedback sends the message, optional reply email and diagnostics you choose through
+Sentry. [Privacy policy](https://enviouswispr.com/privacy-policy/).
 
 ## Requirements
 
 - Android 13 (API 33) or later, 64-bit ARM.
-- The on-device polish path currently targets Qualcomm Snapdragon hardware.
-- Developed and tested on a Samsung Galaxy S26 Ultra.
+- Nominal support: 6 GB memory or more; Android Go excluded; about 1.2 GB model storage.
+- No chipset restriction. Local polish uses qualified GPU/CPU routes.
+- Extensive S26 use and a short real Pixel 8 CPU check; this is not every-phone qualification.
+- [Device support and actual store filter](docs/device-support-decision.md).
 
 ## Building
 
@@ -70,5 +76,6 @@ NVIDIA Parakeet (CC-BY-4.0), S1-mini (Apache 2.0), ONNX Runtime, onnx-asr, and l
 
 ## Status
 
-Third-party model and runtime licences, release signing, and the Play Store listing are all outstanding.
-See the issue tracker.
+The signed release and store paperwork are submitted. Google review is pending.
+Use [the maintenance guide](docs/maintenance.md) and the issue tracker for current work.
+Recording sounds, local history, dictionary and privacy disclosures are included in v1.

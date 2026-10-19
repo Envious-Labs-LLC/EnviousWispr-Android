@@ -1,3 +1,5 @@
+> Historical policy draft. It predates voluntary feedback and the current published privacy wording. Do not paste it into the live policy. See [current guidance](../play-data-safety-answers.md).
+
 # Privacy policy: the Android addendum
 
 Play requires a public, non-PDF privacy policy URL; the app requests the Accessibility API and, since #176,

@@ -1,7 +1,11 @@
 #include <android/log.h>
+#include <dirent.h>
+#include <dlfcn.h>
 #include <jni.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstring>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -9,6 +13,7 @@
 
 #include "chat.h"
 #include "common.h"
+#include "ggml-backend.h"
 #include "llama.h"
 #include "sampling.h"
 
@@ -16,14 +21,30 @@ namespace {
 
 constexpr const char * LOG_TAG = "S1Native";
 constexpr int BATCH_SIZE = 512;
+// The CPU variant modules this library builds (CMakeLists.txt keeps their names; only the shared libraries are
+// renamed). The app APK also carries GenieX's libggml-cpu.so, libggml-opencl.so and libggml-hexagon.so, which are
+// compiled for newer processors, so the loader below never looks at anything but these names (#449).
+constexpr const char * CPU_VARIANT_PREFIX = "libggml-cpu-android_";
+
+// How the last generation ended (#449), read by S1Native.lastEnd. Codes match S1PortableRuntime; END_NONE means
+// the call failed before it could end (an ERROR: string), never a timeout.
+constexpr int END_NONE = -1;
+constexpr int END_EOS = 0;
+constexpr int END_LENGTH = 1;
+constexpr int END_ABORTED = 2;
 
 std::mutex g_mutex;
 bool g_backend_initialized = false;
+std::string g_cpu_variant;
 int g_context_size = 2048;
 llama_model * g_model = nullptr;
 llama_context * g_context = nullptr;
 llama_batch g_batch{};
 common_chat_templates_ptr g_templates;
+// Set by S1Native.abort from the deadline thread WITHOUT g_mutex (generation holds it); cleared by resetAbort
+// before the deadline is armed. Checked between steps and, through the llama abort callback, inside a decode.
+std::atomic<bool> g_abort{false};
+int g_last_end[3] = {END_NONE, 0, 0};
 
 void log_info(const std::string & message) {
     __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", message.c_str());
@@ -33,6 +54,42 @@ void log_info(const std::string & message) {
 // whatever a later version adds); none of it reaches logcat (#194, the same silence the GenieX runtime keeps). A failed load still reports
 // through the fixed JNI error strings below and a healthy one through log_info's summary line.
 void llama_log_callback(ggml_log_level, const char *, void *) {
+}
+
+bool abort_requested(void *) {
+    return g_abort.load(std::memory_order_relaxed);
+}
+
+// Picks the best CPU variant this processor can run by each module's own ggml_backend_score (which reads the
+// processor's feature report), then registers only that one. Never ggml_backend_load_all_from_path: with no
+// variant of a name it falls back to a base libggml-<name>.so, which in this APK is GenieX's (#449).
+bool load_cpu_backend(const std::string & directory) {
+    DIR * dir = opendir(directory.c_str());
+    if (dir == nullptr) return false;
+    int best_score = 0;
+    std::string best_path;
+    std::string best_name;
+    const size_t prefix_length = std::strlen(CPU_VARIANT_PREFIX);
+    while (dirent * entry = readdir(dir)) {
+        const std::string name = entry->d_name;
+        if (name.compare(0, prefix_length, CPU_VARIANT_PREFIX) != 0) continue;
+        if (name.size() < 3 || name.compare(name.size() - 3, 3, ".so") != 0) continue;
+        const std::string path = directory + "/" + name;
+        void * handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (handle == nullptr) continue;
+        auto score = reinterpret_cast<int (*)()>(dlsym(handle, "ggml_backend_score"));
+        const int value = score == nullptr ? 0 : score();
+        if (value > best_score) {
+            best_score = value;
+            best_path = path;
+            best_name = name;
+        }
+        dlclose(handle);
+    }
+    closedir(dir);
+    if (best_score == 0 || ggml_backend_load(best_path.c_str()) == nullptr) return false;
+    g_cpu_variant = best_name;
+    return true;
 }
 
 std::string from_jstring(JNIEnv * env, jstring value) {
@@ -63,9 +120,11 @@ void free_model() {
     }
 }
 
-bool decode_tokens(const llama_tokens & tokens, std::string & error) {
+// 0 decoded, 1 failed, 2 aborted.
+int decode_tokens(const llama_tokens & tokens) {
     int position = 0;
     for (int offset = 0; offset < static_cast<int>(tokens.size()); offset += BATCH_SIZE) {
+        if (g_abort.load()) return 2;
         const int count = std::min(BATCH_SIZE, static_cast<int>(tokens.size()) - offset);
         common_batch_clear(g_batch);
         for (int index = 0; index < count; ++index) {
@@ -73,20 +132,27 @@ bool decode_tokens(const llama_tokens & tokens, std::string & error) {
             common_batch_add(g_batch, tokens[offset + index], position++, {0}, needs_logits);
         }
         const int result = llama_decode(g_context, g_batch);
-        if (result != 0) {
-            error = "Prompt decode failed: " + std::to_string(result);
-            return false;
-        }
+        if (g_abort.load()) return 2;
+        if (result != 0) return 1;
     }
-    return true;
+    return 0;
+}
+
+std::string aborted(int prompt_tokens, int generated) {
+    g_last_end[0] = END_ABORTED;
+    g_last_end[1] = generated;
+    g_last_end[2] = prompt_tokens;
+    return "ERROR: S1 generation aborted";
 }
 
 std::string generate_text(const std::string & system_prompt,
                           const std::string & user_prompt,
                           int requested_tokens) {
+    g_last_end[0] = END_NONE; g_last_end[1] = 0; g_last_end[2] = 0;
     if (g_model == nullptr || g_context == nullptr || !g_templates) {
         return "ERROR: S1-mini is not loaded";
     }
+    if (g_abort.load()) return aborted(0, 0);
 
     common_chat_templates_inputs inputs;
     inputs.messages = {
@@ -100,21 +166,23 @@ std::string generate_text(const std::string & system_prompt,
     std::string prompt;
     try {
         prompt = common_chat_templates_apply(g_templates.get(), inputs).prompt;
-    } catch (const std::exception & exception) {
-        return std::string("ERROR: Chat template failed: ") + exception.what();
+    } catch (const std::exception &) {
+        // Never the exception's text: a template error can quote the prompt (#449).
+        return "ERROR: Chat template failed";
     }
 
     llama_memory_clear(llama_get_memory(g_context), true);
     const llama_tokens prompt_tokens = common_tokenize(g_context, prompt, true, true);
     if (prompt_tokens.empty()) return "ERROR: S1 prompt tokenization failed";
+    const int prompt_count = static_cast<int>(prompt_tokens.size());
 
-    const int available_tokens =
-        g_context_size - static_cast<int>(prompt_tokens.size()) - 8;
+    const int available_tokens = g_context_size - prompt_count - 8;
     if (available_tokens <= 0) return "ERROR: S1 prompt exceeds the mobile context limit";
     const int max_tokens = std::max(1, std::min(requested_tokens, available_tokens));
 
-    std::string error;
-    if (!decode_tokens(prompt_tokens, error)) return "ERROR: " + error;
+    const int decoded = decode_tokens(prompt_tokens);
+    if (decoded == 2) return aborted(prompt_count, 0);
+    if (decoded != 0) return "ERROR: Prompt decode failed";
 
     common_params_sampling sampling;
     sampling.temp = 0.0f;
@@ -126,25 +194,42 @@ std::string generate_text(const std::string & system_prompt,
     if (sampler == nullptr) return "ERROR: S1 sampler initialization failed";
 
     std::string output;
-    int position = static_cast<int>(prompt_tokens.size());
+    int position = prompt_count;
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
+    int end = END_LENGTH;
+    int generated = 0;
 
-    for (int generated = 0; generated < max_tokens; ++generated) {
+    for (; generated < max_tokens; ++generated) {
+        if (g_abort.load()) {
+            common_sampler_free(sampler);
+            return aborted(prompt_count, generated);
+        }
         const llama_token token = common_sampler_sample(sampler, g_context, -1);
         common_sampler_accept(sampler, token, true);
-        if (llama_vocab_is_eog(vocab, token)) break;
+        if (llama_vocab_is_eog(vocab, token)) {
+            end = END_EOS;
+            break;
+        }
 
         output += common_token_to_piece(g_context, token);
 
         common_batch_clear(g_batch);
         common_batch_add(g_batch, token, position++, {0}, true);
-        if (llama_decode(g_context, g_batch) != 0) {
+        const int result = llama_decode(g_context, g_batch);
+        if (g_abort.load()) {
+            common_sampler_free(sampler);
+            return aborted(prompt_count, generated + 1);
+        }
+        if (result != 0) {
             common_sampler_free(sampler);
             return "ERROR: S1 generation decode failed";
         }
     }
 
     common_sampler_free(sampler);
+    g_last_end[0] = end;
+    g_last_end[1] = end == END_EOS ? generated : max_tokens;
+    g_last_end[2] = prompt_count;
     return output;
 }
 
@@ -156,12 +241,13 @@ Java_com_envi_wispr_llama_S1Native_initialize(
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_backend_initialized) {
         llama_log_set(llama_log_callback, nullptr);
-        const std::string directory = from_jstring(env, native_library_dir);
-        ggml_backend_load_all_from_path(directory.c_str());
+        if (!load_cpu_backend(from_jstring(env, native_library_dir))) {
+            return to_jstring(env, "ERROR: No CPU backend could load");
+        }
         llama_backend_init();
         g_backend_initialized = true;
     }
-    return to_jstring(env, llama_print_system_info());
+    return to_jstring(env, g_cpu_variant + " | " + llama_print_system_info());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -186,6 +272,8 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     context_params.n_ubatch = BATCH_SIZE;
     context_params.n_threads = threads;
     context_params.n_threads_batch = threads;
+    context_params.abort_callback = abort_requested;
+    context_params.abort_callback_data = nullptr;
     g_context = llama_init_from_model(g_model, context_params);
     if (g_context == nullptr) {
         free_model();
@@ -215,6 +303,24 @@ Java_com_envi_wispr_llama_S1Native_generate(
         from_jstring(env, system_prompt),
         from_jstring(env, user_prompt),
         static_cast<int>(max_tokens)));
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_envi_wispr_llama_S1Native_lastEnd(JNIEnv * env, jobject) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    jintArray result = env->NewIntArray(3);
+    if (result != nullptr) env->SetIntArrayRegion(result, 0, 3, g_last_end);
+    return result;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_envi_wispr_llama_S1Native_resetAbort(JNIEnv *, jobject) {
+    g_abort.store(false);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_envi_wispr_llama_S1Native_abort(JNIEnv *, jobject) {
+    g_abort.store(true);
 }
 
 extern "C" JNIEXPORT void JNICALL

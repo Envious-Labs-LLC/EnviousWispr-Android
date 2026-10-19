@@ -8,19 +8,19 @@ import org.junit.Test
 class S1LoadedConfigurationTest {
     private val context = "a".repeat(64)
     private val qualification = ProcessingQualification.of(context, setOf(ProcessingBackend.GPU, ProcessingBackend.CPU))
-    private fun config(pref: ProcessingPreference = ProcessingPreference.DEFAULT, ctx: String = context) = S1LoadConfiguration(ctx, pref, qualification)
+    private fun config(pref: ProcessingPreference = ProcessingPreference.DEFAULT, ctx: String = context) = S1LoadConfiguration(ctx, GENIEX_BACKENDS, pref, qualification)
     @Test fun aNewerGpuCheckInvalidatesAnOlderFailedGpuDecisionInACpuFallback() {
         val pref = ProcessingPreference.DEFAULT.custom(listOf(ProcessingBackend.GPU, ProcessingBackend.CPU))
         val resident = S1LoadedConfiguration()
         resident.ensure(config(pref), failures = { setOf(ProcessingBackend.GPU) }, failureStamp = { ProcessingEvidenceStamp(1, 100) }) { ProcessingBackend.CPU }
         val restored = qualification.observed(setOf(ProcessingBackend.GPU), emptySet(), false, 0, ProcessingEvidenceStamp(1, 200))
-        assertFalse(resident.matches(S1LoadConfiguration(context, pref, restored)))
+        assertFalse(resident.matches(S1LoadConfiguration(context, GENIEX_BACKENDS, pref, restored)))
     }
     @Test fun emptyEligibleOrderClosesTheOldInstanceWithoutConstructingAnother() {
         val pref = ProcessingPreference.DEFAULT.custom(listOf(ProcessingBackend.GPU))
         val resident = S1LoadedConfiguration(); var instances = 0; var closes = 0; var loads = 0
         resident.ensure(config(pref)) { loads++; instances++; ProcessingBackend.GPU }
-        val absent = S1LoadConfiguration(context, pref, ProcessingQualification.of(context, emptySet()))
+        val absent = S1LoadConfiguration(context, GENIEX_BACKENDS, pref, ProcessingQualification.of(context, emptySet()))
         assertTrue(runCatching { resident.ensure(absent, release = { closes++; instances-- }) { loads++; instances++; ProcessingBackend.CPU } }.isFailure)
         assertEquals(1, closes); assertEquals(1, loads); assertEquals(0, instances); assertNull(resident.loaded)
         assertFalse(resident.matches(absent))
@@ -28,10 +28,10 @@ class S1LoadedConfigurationTest {
     @Test fun customRetryRevisitsAProvenFailedGpuButNotAnUnseenGpu() {
         val pref = ProcessingPreference.DEFAULT.custom(listOf(ProcessingBackend.GPU, ProcessingBackend.CPU))
         val failed = qualification.observed(setOf(ProcessingBackend.CPU), setOf(ProcessingBackend.GPU), false, 0, ProcessingEvidenceStamp(1, 100))
-        assertEquals(listOf(ProcessingBackend.CPU), S1LoadConfiguration(context, pref, failed).candidates)
-        assertEquals(listOf(ProcessingBackend.GPU, ProcessingBackend.CPU), S1LoadConfiguration(context, pref.retry(), failed).candidates)
+        assertEquals(listOf(ProcessingBackend.CPU), S1LoadConfiguration(context, GENIEX_BACKENDS, pref, failed).candidates)
+        assertEquals(listOf(ProcessingBackend.GPU, ProcessingBackend.CPU), S1LoadConfiguration(context, GENIEX_BACKENDS, pref.retry(), failed).candidates)
         val unseen = ProcessingQualification.of(context, setOf(ProcessingBackend.CPU)).observed(emptySet(), setOf(ProcessingBackend.GPU), false, 0, ProcessingEvidenceStamp(1, 100))
-        assertEquals(listOf(ProcessingBackend.CPU), S1LoadConfiguration(context, pref.retry(), unseen).candidates)
+        assertEquals(listOf(ProcessingBackend.CPU), S1LoadConfiguration(context, GENIEX_BACKENDS, pref.retry(), unseen).candidates)
         assertEquals(failed, ProcessingQualification.decode(failed.encode()))
     }
     @Test fun recordingAProviderFailureDoesNotReloadItsHealthyFallbackUntilRetry() {
@@ -39,7 +39,7 @@ class S1LoadedConfigurationTest {
         val resident = S1LoadedConfiguration()
         resident.ensure(config(pref), failures = { setOf(ProcessingBackend.GPU) }) { ProcessingBackend.CPU }
         val failed = qualification.observed(setOf(ProcessingBackend.CPU), setOf(ProcessingBackend.GPU), false, 0, ProcessingEvidenceStamp(1, 100))
-        val next = S1LoadConfiguration(context, pref, failed)
+        val next = S1LoadConfiguration(context, GENIEX_BACKENDS, pref, failed)
         assertTrue(resident.matches(next))
         resident.ensure(next) { fail("Reloaded a healthy fallback after recording its failure"); ProcessingBackend.CPU }
         assertFalse(resident.matches(next.copy(preference = pref.retry())))
@@ -47,7 +47,7 @@ class S1LoadedConfigurationTest {
     @Test fun newlyProvenHigherPriorityBackendCannotHideBehindAnOldCpuInstance() {
         val pref = ProcessingPreference.DEFAULT.custom(listOf(ProcessingBackend.GPU, ProcessingBackend.CPU))
         val resident = S1LoadedConfiguration()
-        resident.ensure(S1LoadConfiguration(context, pref, ProcessingQualification.of(context, setOf(ProcessingBackend.CPU)))) { ProcessingBackend.CPU }
+        resident.ensure(S1LoadConfiguration(context, GENIEX_BACKENDS, pref, ProcessingQualification.of(context, setOf(ProcessingBackend.CPU)))) { ProcessingBackend.CPU }
         assertFalse(resident.matches(config(pref)))
     }
     @Test fun replacingAnInstallationForbidsReuseOfItsOldNativeInstance() {
@@ -107,4 +107,7 @@ class S1LoadedConfigurationTest {
         assertEquals(ProcessingBackend.GPU, loaded.requested.candidates.first())
         assertEquals(ProcessingBackend.CPU, loaded.backend)
     }
+
+    // These rows describe a phone that runs GenieX (graphics processor and processor), whatever the test host is.
+    private val GENIEX_BACKENDS = S1RuntimeKind.GENIEX.backends
 }

@@ -1,6 +1,7 @@
 package com.envi.wispr.polish
 
 import android.content.Context
+import java.util.concurrent.ScheduledExecutorService
 
 /**
  * The one surface `PolishService` drives for local S1 inference (#449). Two implementations, chosen once per
@@ -26,9 +27,10 @@ internal interface S1Runtime {
     fun close()
 
     companion object {
-        fun create(kind: S1RuntimeKind, context: Context): S1Runtime = when (kind) {
+        /** [deadlines] is the caller's own deadline thread; the caller shuts it down, never the runtime. */
+        fun create(kind: S1RuntimeKind, context: Context, deadlines: ScheduledExecutorService): S1Runtime = when (kind) {
             S1RuntimeKind.GENIEX -> S1GenieXRuntime(context)
-            S1RuntimeKind.PORTABLE_CPU -> S1PortableRuntime(context)
+            S1RuntimeKind.PORTABLE_CPU -> S1PortableRuntime(context, deadlines)
         }
     }
 }

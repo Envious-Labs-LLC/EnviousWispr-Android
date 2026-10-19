@@ -2,15 +2,21 @@ package com.envi.wispr.polish
 
 import android.content.Context
 import com.envi.wispr.llama.S1Native
-import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
  * S1 on the repository's own llama.cpp build (#449), for phones whose processor or vendor libraries cannot run
  * GenieX. Same model file, system prompt, control line and greedy sampling; processor only. The native side picks
  * the processor variant (`s1_jni.cpp` `load_cpu_backend`) and keeps every vendor log line silent.
+ *
+ * [abortTimer] fires the cooperative abort from its own thread (the worker is inside native code while it waits). It
+ * is `PolishService`'s deadline thread, which the service shuts down in `onDestroy`, so this runtime starts none.
  */
-internal class S1PortableRuntime(private val context: Context) : S1Runtime {
+internal class S1PortableRuntime(
+    private val context: Context,
+    private val abortTimer: ScheduledExecutorService,
+) : S1Runtime {
     override var failedComputeUnits: String = ""
         private set
     override var initializationFailed: Boolean = false
@@ -22,11 +28,6 @@ internal class S1PortableRuntime(private val context: Context) : S1Runtime {
         private set
 
     private var initialized = false
-
-    /** Fires the cooperative abort from its own thread: the worker is inside native code while it waits. */
-    private val abortTimer = Executors.newSingleThreadScheduledExecutor { runnable ->
-        Thread(runnable, "S1PortableAbort").apply { isDaemon = true }
-    }
 
     override fun load(modelPath: String, computeUnits: List<String>): String {
         failedComputeUnits = ""; initializationFailed = false

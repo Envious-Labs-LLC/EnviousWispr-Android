@@ -80,7 +80,7 @@ class PolishService : Service() {
     private var lastLoadObservation: Pair<S1LoadConfiguration, Pair<String, Boolean>>? = null
     /** One runtime per process, chosen before any native polish code loads (#449). */
     private val s1Runtime: S1Runtime by lazy {
-        S1Runtime.create(S1RuntimeKind.current, applicationContext).also {
+        S1Runtime.create(S1RuntimeKind.current, applicationContext, deadlineScheduler).also {
             DebugLogger.log(TAG, "Local S1 runtime: ${S1RuntimeKind.current.identity}")
         }
     }

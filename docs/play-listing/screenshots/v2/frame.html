@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Store Screenshot Frame</title>
+<style>
+/* Play Store phone screenshot, 1080x1920: headline, one line of explanation, the real app screen in a phone
+   frame, and callout tags. Content per shot lives in shots.json; render.mjs writes one PNG per shot. */
+@font-face{font-family:Jakarta;font-weight:400;src:url(../../../../app/src/main/res/font/plus_jakarta_sans_regular.ttf)}
+@font-face{font-family:Jakarta;font-weight:600;src:url(../../../../app/src/main/res/font/plus_jakarta_sans_semibold.ttf)}
+@font-face{font-family:Jakarta;font-weight:700 800;src:url(../../../../app/src/main/res/font/plus_jakarta_sans_bold.ttf)}
+:root{--text:#fff;--text-2:#d7cff0;--accent:#a78bfa;--green:#6ee7b7;--grad:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#e879f9 100%)}
+html,body{margin:0;background:#0d0a1a}
+#shot{position:relative;width:1080px;height:1920px;overflow:hidden;font-family:Jakarta,sans-serif;color:var(--text);
+  background:radial-gradient(900px 700px at 50% 0%,#33246a 0%,rgba(51,36,106,0) 70%),linear-gradient(180deg,#171030 0%,#0d0a1a 100%)}
+.blob{position:absolute;border-radius:50%;filter:blur(110px)}
+#eyebrow{position:absolute;left:0;right:0;top:96px;text-align:center;font:800 30px Jakarta;letter-spacing:.2em;color:var(--accent);text-transform:uppercase}
+#head{position:absolute;left:70px;right:70px;top:150px;text-align:center;font:800 84px/1.06 Jakarta;letter-spacing:-.035em}
+#head em{font-style:normal;background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+#sub{position:absolute;left:90px;right:90px;top:350px;text-align:center;font:600 38px/1.35 Jakarta;color:var(--text-2)}
+#phone{position:absolute;width:600px;top:560px;border-radius:78px;padding:16px;background:#1d1830;overflow:hidden;
+  box-shadow:0 0 0 3px rgba(255,255,255,.16),0 60px 140px rgba(0,0,0,.6)}
+#screen{display:block;width:600px;border-radius:64px}
+.tag{position:absolute;width:300px;padding:20px 26px;border-radius:26px;background:rgba(19,14,38,.92);border:3px solid rgba(167,139,250,.85);
+  box-sizing:border-box;font:800 33px/1.2 Jakarta;box-shadow:0 20px 50px rgba(0,0,0,.5);z-index:5}
+.line{position:absolute;height:4px;background:rgba(167,139,250,.9);z-index:4}
+.dot{position:absolute;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;background:#c4b5fd;box-shadow:0 0 0 9px rgba(167,139,250,.32);z-index:6}
+</style>
+</head>
+<body>
+<div id="shot">
+  <div class="blob" style="width:700px;height:700px;background:#6d28d9;left:-300px;top:-200px;opacity:.45"></div>
+  <div class="blob" style="width:600px;height:600px;background:#2563eb;right:-260px;top:900px;opacity:.25"></div>
+  <div id="eyebrow"></div>
+  <div id="head"></div>
+  <div id="sub"></div>
+  <div id="phone"><img id="screen" alt=""></div>
+</div>
+<script>
+// The phone sits on one side; explanation tags sit in the free column on the other, never over the app.
+// A callout's x and y are fractions of the screen image; ty (optional) moves the tag up or down in pixels.
+async function draw(shot) {
+  document.getElementById('eyebrow').textContent = shot.eyebrow || '';
+  document.getElementById('head').innerHTML = shot.head;
+  document.getElementById('sub').textContent = shot.sub;
+  const phone = document.getElementById('phone'), img = document.getElementById('screen');
+  const left = shot.phone !== 'right';
+  phone.style.left = left ? '56px' : (1080 - 56 - 632) + 'px';
+  img.src = shot.screen; await img.decode();
+  if (shot.cropTop) img.style.marginTop = (-shot.cropTop * img.height) + 'px';
+  const sc = img.getBoundingClientRect(), root = document.getElementById('shot');
+  const colX = left ? 1080 - 40 - 300 : 40;
+  for (const c of shot.callouts || []) {
+    const x = sc.left + c.x * sc.width, y = sc.top + c.y * sc.height;
+    const tag = document.createElement('div'); tag.className = 'tag'; tag.innerHTML = c.text; root.appendChild(tag);
+    const th = tag.getBoundingClientRect().height, ty = y + (c.ty || 0);
+    tag.style.left = colX + 'px'; tag.style.top = (ty - th / 2) + 'px';
+    const dot = document.createElement('div'); dot.className = 'dot'; dot.style.left = x + 'px'; dot.style.top = y + 'px'; root.appendChild(dot);
+    // an elbow: from the dot level to the column, then up or down to the tag's middle
+    const edge = left ? colX : colX + 300, midX = left ? Math.max(x + 30, colX - 34) : Math.min(x - 30, edge + 34);
+    const seg = (x1, y1, x2, y2) => { const l = document.createElement('div'); l.className = 'line';
+      if (y1 === y2) { l.style.left = Math.min(x1, x2) + 'px'; l.style.top = (y1 - 2) + 'px'; l.style.width = Math.abs(x2 - x1) + 'px'; }
+      else { l.style.left = (x1 - 2) + 'px'; l.style.top = Math.min(y1, y2) + 'px'; l.style.width = '4px'; l.style.height = Math.abs(y2 - y1) + 'px'; }
+      root.appendChild(l); };
+    seg(x, y, midX, y); if (ty !== y) seg(midX, y, midX, ty); seg(midX, ty, edge, ty);
+  }
+  if (shot.steps) {
+    const row = document.createElement('div');
+    row.style.cssText = 'position:absolute;left:40px;right:40px;display:flex;justify-content:center;gap:18px;z-index:5';
+    row.innerHTML = shot.steps.map((t, i) => `<div style="display:flex;align-items:center;gap:14px;padding:18px 26px;border-radius:999px;background:rgba(255,255,255,.08);border:2px solid rgba(255,255,255,.14);font:800 32px Jakarta;white-space:nowrap"><span style="width:44px;height:44px;border-radius:50%;background:var(--grad);color:#0d0a1a;display:flex;align-items:center;justify-content:center;font:800 26px Jakarta">${i + 1}</span>${t}</div>`).join('');
+    root.appendChild(row);
+    const bottom = document.getElementById('phone').getBoundingClientRect().bottom;
+    row.style.top = (bottom + (1920 - bottom) / 2 - row.getBoundingClientRect().height / 2) + 'px';
+  }
+  window.READY = true;
+}
+window.draw = draw;
+</script>
+</body>
+</html>

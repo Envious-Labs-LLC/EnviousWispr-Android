@@ -7,7 +7,10 @@ chosen October12. Support promises must remain separate from the tested device s
 ## FACT: the-shipped-path-is-CPU-only-and-not-Snapdragon-locked
 
 The heading is historical. Parakeet uses CPU; S1-mini uses Qualcomm GenieX with qualified GPU/CPU
-routes. It is not the old llama.cpp-only path, and NPU is not offered. CPU and GPU were checked on the
+routes where the processor and OpenCL allow it, and the repository llama.cpp build on the processor everywhere
+else (#449; owner `.claude/knowledge/polish-engines.md` FACT: two-runtimes-chosen-by-processor). NPU is not
+offered. Founder direction 2026-10-19: block low-end phones and warn on mid-tier phones; tiers, evidence and the
+pending Play exclusion are in `docs/feature-requests/issue-449-2026-10-19-portable-local-polish.md` §16. CPU and GPU were checked on the
 S26; one short standard-model CPU polish check passed on a real Pixel8. No universal portability or
 performance claim follows from that sample. Build configuration sets Android13+ and arm64.
 

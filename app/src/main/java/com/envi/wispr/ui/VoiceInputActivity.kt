@@ -45,6 +45,12 @@ class VoiceInputActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         configureLauncherWindow()
+        // #449 chunk 2: before the microphone check, so a blocked phone is never sent to grant a permission it cannot use.
+        if (com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.BLOCKED) {
+            Toast.makeText(this, UnsupportedPhoneCopy.START_REFUSED, Toast.LENGTH_LONG).show()
+            finishWithoutAnimation()
+            return
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {

@@ -40,6 +40,10 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             // finished download by reading this.
             return@withContext if (removed) Result.success(Data.Builder().putBoolean(KEY_REMOVED, true).build()) else failure("model removal failed")
         }
+        // #449 chunk 2: a blocked phone downloads, adopts and repairs nothing; removal above still runs.
+        if (com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.BLOCKED) {
+            return@withContext failure(UNSUPPORTED_PHONE)
+        }
         if (inputData.getBoolean(KEY_REPAIR, false)) {
             if (!store.repair(model)) return@withContext failure("model repair cleanup failed", DownloadState.REPAIR_NEEDED)
         }
@@ -256,6 +260,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
     }
 
     companion object {
+        /** The failure reason on a phone `DeviceTier` blocks (#449). */
+        internal const val UNSUPPORTED_PHONE = "unsupported phone"
         private const val TAG = "ModelDelivery"
         internal const val KEY_MODEL_ID = "model_id"
         internal const val KEY_REMOVE = "remove"

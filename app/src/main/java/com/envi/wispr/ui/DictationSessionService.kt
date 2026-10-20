@@ -147,16 +147,17 @@ class DictationSessionService : Service() {
             stopSelf()
         }
 
+        // The hold is a limb: nothing it throws may stop the take's own unbind or its polish.
         override fun speechModelTakeStarted(takeId: String) {
-            com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.takeStarted(takeId)
+            runCatching { com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.takeStarted(takeId) }
         }
 
         override fun speechModelUsed(takeId: String) {
-            com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.transcriptArrived(takeId)
+            runCatching { com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.transcriptArrived(takeId) }
         }
 
         override fun speechModelTakeEnded(takeId: String) {
-            com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.takeEnded(takeId)
+            runCatching { com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.takeEnded(takeId) }
         }
 
         override fun postToMain(runnable: Runnable) {

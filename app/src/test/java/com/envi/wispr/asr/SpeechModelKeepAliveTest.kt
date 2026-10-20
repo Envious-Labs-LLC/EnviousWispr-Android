@@ -124,12 +124,15 @@ class SpeechModelKeepAliveTest {
 
     @Test fun aStaleOrRepeatedEndChangesNothing() {
         val h = holder(SpeechModelUnload.TWO_MINUTES)
-        h.take("a")
+        h.take("a") // deadline at 120 s
+        advance(60_000)
         h.takeStarted("b")
         h.takeEnded("a") // a late finish from the earlier take
+        advance(60_000)
+        assertTrue("B is still running, so A's old deadline must not fire", h.holding)
         h.transcriptArrived("b"); h.takeEnded("b"); h.takeEnded("b")
         assertTrue(h.holding)
-        assertEquals(Deadline.At(120_000), h.currentDeadline)
+        assertEquals(Deadline.At(240_000), h.currentDeadline)
     }
 
     @Test fun theSpeechProcessDyingReleasesAndNothingRebinds() {
@@ -165,15 +168,38 @@ class SpeechModelKeepAliveTest {
         assertTrue(h.holding)
     }
 
-    @Test fun lowMemoryReleasesBetweenTakesButNotDuringOne() {
+    @Test fun lowMemoryReleasesTheHoldEvenDuringATake() {
         val h = holder()
         h.take("a")
         h.takeStarted("b")
         h.memoryCritical()
-        assertTrue("a running take is protected", h.holding)
+        assertFalse("the take's own binding protects it; the hold goes now", h.holding)
         h.transcriptArrived("b"); h.takeEnded("b")
-        h.memoryCritical()
-        assertFalse(h.holding)
+        assertFalse("the take's end does not bring the hold back", h.holding)
         assertNull(h.currentDeadline)
+        assertTrue(binds.single().unbound)
+    }
+
+    @Test fun aSettingChangeDuringATakeAppliesToTheEarlierHold() {
+        val h = holder()
+        h.take("a") // held forever
+        h.takeStarted("b")
+        h.settingChanged(SpeechModelUnload.TWO_MINUTES)
+        assertTrue("no timer while B runs", scheduled.isEmpty())
+        h.takeEnded("b") // cancelled, no transcript
+        assertEquals(Deadline.At(120_000), h.currentDeadline)
+        advance(120_000)
+        assertFalse(h.holding)
+    }
+
+    @Test fun choosingImmediatelyDuringATakeReleasesTheHoldAtOnce() {
+        val h = holder()
+        h.take("a")
+        h.takeStarted("b")
+        h.settingChanged(SpeechModelUnload.IMMEDIATELY)
+        assertFalse(h.holding)
+        h.transcriptArrived("b"); h.takeEnded("b")
+        assertFalse(h.holding)
+        assertEquals(1, binds.size)
     }
 }

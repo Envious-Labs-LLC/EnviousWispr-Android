@@ -102,21 +102,18 @@ internal class SpeechModelKeepAlive(
         if (activeTake != null && takeDeadline != null) {
             takeDeadline = value.holdMillis?.let { Deadline.At(clock() + it) } ?: Deadline.Forever
         }
+        // A running take keeps its own binding, so the hold can go at once.
+        if (value == SpeechModelUnload.IMMEDIATELY) return release("Immediately")
         if (registration == null) return
-        when (value.holdMillis) {
-            null -> if (value == SpeechModelUnload.IMMEDIATELY) {
-                if (activeTake == null) release("Immediately")
-            } else {
-                cancelTimer()
-                if (activeTake == null) deadline = Deadline.Forever
-            }
-            else -> if (activeTake == null) apply(Deadline.At(clock() + value.holdMillis))
-        }
+        val target = value.holdMillis?.let { Deadline.At(clock() + it) } ?: Deadline.Forever
+        cancelTimer()
+        // An earlier hold suspended by a running take takes the new choice too, still without a timer.
+        if (activeTake == null) apply(target) else if (deadline != null) deadline = target
     }
 
-    /** Android says the process is about to go; let the model go with it. */
+    /** Android says the process is about to go; let the model go with it. A running take keeps its own binding. */
     fun memoryCritical() {
-        if (activeTake == null) release("low memory")
+        release("low memory")
     }
 
     private fun apply(target: Deadline) {

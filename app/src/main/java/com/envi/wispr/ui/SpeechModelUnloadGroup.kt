@@ -32,7 +32,12 @@ internal const val SPEECH_MODEL_UNLOAD_IMMEDIATELY_LINE = "Expect a reload delay
 @Composable
 internal fun SpeechModelUnloadGroup(selected: SpeechModelUnload, onSelected: (SpeechModelUnload) -> Unit) {
     val view = LocalView.current
-    SettingsGroup("Unload model after") {
+    SettingsGroup("Speech model") {
+        Text(
+            "Unload model after",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(horizontal = 18.dp),
+        )
         Text(
             SPEECH_MODEL_UNLOAD_LINE,
             style = MaterialTheme.typography.bodySmall,

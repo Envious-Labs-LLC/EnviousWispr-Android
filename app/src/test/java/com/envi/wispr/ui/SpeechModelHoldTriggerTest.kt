@@ -34,7 +34,7 @@ class SpeechModelHoldTriggerTest {
         rig.polish.awaitRequest { "log: ${rig.log.lines}" }
         rig.polish.listener!!.onOutcome(rig.polish.outcome("Hello world."))
         rig.host.awaitStopped()
-        assertEquals(listOf("started", "used", "ended"), rig.host.speechHold.map { it.substringBefore(':') }.distinct())
+        assertEquals(listOf("started", "used", "ended"), rig.host.speechHold.map { it.substringBefore(':') })
         assertEquals("one take id across the three calls", 1, takeIds().size)
     }
 

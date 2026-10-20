@@ -51,6 +51,12 @@ internal fun EnviousWisprApp(
         return
     }
 
+    // #449 chunk 2: a blocked phone gets one screen and nothing that can start a download, a load or a take.
+    if (com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.BLOCKED) {
+        UnsupportedPhoneScreen()
+        return
+    }
+
     val preferences = state.shell.preferences
     val readiness = state.readiness.readiness
     val autoPaste = state.readiness.autoPaste

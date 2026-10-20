@@ -62,7 +62,17 @@ class DictationSessionService : Service() {
          */
         internal const val EXTRA_TRIGGER_SOURCE = "trigger_source"
 
+        /** Only a start or toggle is refused, and only on a blocked phone; stop and cancel always pass. */
+        internal fun startRefused(action: String, tier: com.envi.wispr.device.DeviceTier): Boolean =
+            tier == com.envi.wispr.device.DeviceTier.BLOCKED && (action == ACTION_START || action == ACTION_TOGGLE)
+
         internal fun sendCommand(context: Context, action: String, requestToken: String? = null, trigger: TriggerSource? = null) {
+            // #449 chunk 2: every surface starts a take through here, so a blocked phone is refused BEFORE the
+            // foreground service exists (a refusal inside the service would still owe Android a notification).
+            if (startRefused(action, com.envi.wispr.device.DeviceTier.current)) {
+                Toast.makeText(context, UnsupportedPhoneCopy.START_REFUSED, Toast.LENGTH_LONG).show()
+                return
+            }
             val intent = Intent(context, DictationSessionService::class.java).setAction(action)
             if (requestToken != null) intent.putExtra(EXTRA_REQUEST, requestToken)
             if (trigger != null) intent.putExtra(EXTRA_TRIGGER_SOURCE, trigger.wire)

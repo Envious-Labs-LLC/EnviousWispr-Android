@@ -153,6 +153,7 @@ internal fun PolishScreen(
             when (rungOne) {
                 RungOne.OFF -> QuietCard("No language model runs. Deterministic cleanup still removes obvious filler and spacing issues.")
                 RungOne.THIS_PHONE -> {
+                    if (com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.MID) QuietCard(UnsupportedPhoneCopy.MID_TIER_NOTICE)
                     S1Card(s1State, onRefreshReadiness)
                     ProcessingPreferenceCard(
                         model = "S1-mini", preference = settings.s1Processing,

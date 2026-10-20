@@ -120,6 +120,9 @@ internal fun OnboardingScreen(
                             OnboardingStage.WELCOME -> {
                                 SetupHeading("Speak naturally.\nGet polished text.", "Turn messy speech into clear, ready-to-send writing.", muted)
                                 OnboardingWelcomeStory(surface, foreground, muted, accent)
+                                if (com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.MID) {
+                                    Text(UnsupportedPhoneCopy.MID_TIER_NOTICE, Modifier.padding(top = 12.dp), color = muted, textAlign = TextAlign.Center)
+                                }
                                 if (model.downloadMessage.isNotBlank()) Text(model.downloadMessage, Modifier.padding(top = 12.dp), color = muted, textAlign = TextAlign.Center)
                             }
                             OnboardingStage.DOWNLOADS -> {

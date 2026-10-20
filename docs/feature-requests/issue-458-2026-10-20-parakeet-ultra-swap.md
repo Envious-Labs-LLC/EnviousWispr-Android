@@ -251,9 +251,12 @@ No fallback model by design (§3 rejected a). The heart's existing floor for "no
 - **Chunk 1, hosting:** upload the three Ultra files to `enviouslabs-models` under
   `parakeet-ultra/3b80a92332b5d34c364a35a880ef049c7fede9f2/` with a mint-use-revoke bucket token
   (`model-delivery.md`; `cloudflare.md` RULE r2-shared-across-projects: additive, new prefix; over-300 MiB path
-  per the same file). Verify each object by ranged GET plus full SHA-256 of a full GET. Edge cache rule for the
-  new prefix per `cloudflare.md` FACT model-delivery-edge-caching (small files; the encoder is over the 512 MB
-  cap, like `parakeet-sq`'s). Cost: about 0.67 GB of R2, under one cent a month; founder approval (§14).
+  per the same file). Verify each object by ranged GET plus full SHA-256 of a full GET. Cost: about 0.67 GB of
+  R2, under one cent a month; founder approval (§14). DONE 2026-10-20: uploaded with a revoked bucket-scoped
+  token, full-GET SHA-256 of all three files matches. No edge cache rule added (deviation): the shipped
+  `parakeet-sq` files on the same host are also uncached (ranged GET `cf-cache-status: DYNAMIC`), R2 egress is
+  free, and the encoder is over the 512 MB cache cap anyway; caching the two small files is a separate
+  speed-up, not a correctness need.
 - **Chunk 2, app:** `ModelManifest.kt`, `LegacyModelSweep.kt`, `ModelDeliveryWorker.kt` (remove branch),
   `ModelBootstrapApplication.kt` (IO trigger), `ModelDeliveryNotification.kt`, `AsrService.kt` (log line),
   `THIRD_PARTY_NOTICES.txt`, comments naming SmoothQuant in `TdtModel.kt`, `TdtRecipe.kt`, `AsrService.kt`;

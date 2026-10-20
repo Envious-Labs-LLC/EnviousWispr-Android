@@ -1,6 +1,8 @@
 # Submitted Google Play listing
 
-Exact text read from Console October12,2026 for the first public submission. Status and upgrade work:
+Exact text read from Console October12,2026 for the first public submission. October 20, 2026: the
+full description's WHAT YOU NEED paragraph changed (founder-approved, #449) and was sent for review with
+production build 283; live only after Google approves. Status and upgrade work:
 [maintenance](../maintenance.md). Updating this file does not edit the submitted listing. Reconcile
 changes with the application, privacy policy and Data Safety before the next Console update.
 
@@ -36,7 +38,7 @@ FREE TO USE
 No app subscription, trial, account or ads. Start from the floating bubble, Quick Settings tile or notification. Use the phone microphone or connected earbuds with automatic microphone selection.
 
 WHAT YOU NEED
-Android 13 or newer, a 64-bit ARM phone with at least 6 GB of memory, and about 1.2 GB of free storage for the two on-device models. Wi-Fi is recommended for setup. Performance varies by device.
+Android 13 or newer, a 64-bit ARM phone with at least 6 GB of memory, and about 1.2 GB of free storage for the two on-device models. Works best on recent flagship phones such as the Galaxy S26 Ultra and Pixel 8. Many mid-range phones work, with dictation and AI polish taking a few seconds longer. Entry-level phones with older processors are not supported. Wi-Fi is recommended for setup.
 
 ACCESSIBILITY ACCESS
 EnviousWispr uses Android's Accessibility access to find the focused editable field, show the floating bubble and insert text after you start dictation. It does not operate your phone on its own or send field contents to Envious Labs. It is a general dictation app. You can turn this access off in Android Settings.
@@ -53,8 +55,8 @@ EnviousWispr uses Android's Accessibility access to find the focused editable fi
 | Default language | English (United States) |
 | Icon | app-icon-512.png,512x512 |
 | Feature graphic | [Submitted graphic](graphics/feature-graphic-1024x500.png),1024x500 |
-| Phone screenshots | Eight v2 shots ([screenshots/v2](screenshots/v2/README.md)), 1080x1920, submitted for review October 19, 2026; live only after Google approves. October 12 set: Dictionary and History |
-| Promotional video | https://www.youtube.com/watch?v=DdDj-2Bambw (EnviousLabs channel, public), submitted for review October 19, 2026. AI asset declaration: not labeled (founder 2026-10-19: stylized cartoon and narration, not realistic synthetic content). Declaration video is separate |
+| Phone screenshots | Eight v2 shots ([screenshots/v2](screenshots/v2/README.md)), 1080x1920, submitted for review October 19, 2026, review restarted October 20 with build 283; live only after Google approves. October 12 set: Dictionary and History |
+| Promotional video | https://www.youtube.com/watch?v=DdDj-2Bambw (EnviousLabs channel, public), submitted for review October 19, 2026, review restarted October 20 with build 283. AI asset declaration: not labeled (founder 2026-10-19: stylized cartoon and narration, not realistic synthetic content). Declaration video is separate |
 | Release notes | Welcome to EnviousWispr. |
 
 ## Claim owners

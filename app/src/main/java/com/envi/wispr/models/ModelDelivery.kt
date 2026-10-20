@@ -45,6 +45,21 @@ internal class ModelDeliveryControlStore(private val root: File) {
         File(directory(), "${model.id}.state").delete()
     }
 
+    /**
+     * #458: carries a user's Pause or Cancel from a retired model id over to [model], under the same lock as every
+     * read and write. The retired value is inherited only when [model] has no record of its own (an explicit Resume,
+     * Download or Update on the current card wins), and the retired record is deleted either way, so a run interrupted
+     * between the two steps finishes on the next call and an obsolete stop can never come back after a Resume.
+     */
+    fun inheritRetired(retiredId: String, model: ModelDescriptor) = synchronized(MODEL_CONTROL_LOCK) {
+        val retired = File(directory(), "$retiredId.state")
+        if (!retired.exists()) return@synchronized
+        val state = runCatching { ModelDeliveryControlState.valueOf(retired.readText().trim()) }.getOrNull()
+        val stopped = state == ModelDeliveryControlState.PAUSED || state == ModelDeliveryControlState.CANCELLED
+        if (stopped && !File(directory(), "${model.id}.state").exists()) write(model, state!!)
+        retired.delete()
+    }
+
     private fun directory() = File(root, ".model-controls")
 }
 

@@ -35,6 +35,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         if (inputData.getBoolean(KEY_REMOVE, false)) {
             val removed = store.remove(model)
             controls.clear(model)
+            // #458: removing the speech model also frees the retired one, so the upgrade check stops fetching Ultra.
+            SpeechModelUpgrade.afterRemove(root, model)
             ModelDeliveryNotification.clear(applicationContext, model)
             // Says so in its result: the control is cleared above, so the card tells a finished removal from a
             // finished download by reading this.
@@ -292,8 +294,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         internal const val BYTES_LT_1GB = "lt_1gb"
         internal const val BYTES_GE_1GB = "ge_1gb"
         internal val BYTES_BUCKETS: Set<String> = setOf(BYTES_NONE, BYTES_LT_10MB, BYTES_LT_100MB, BYTES_LT_500MB, BYTES_LT_1GB, BYTES_GE_1GB)
-        private const val DOWNLOAD_PREFIX = "model-download-"
-        private const val ADOPT_PREFIX = "model-adopt-"
+        internal const val DOWNLOAD_PREFIX = "model-download-"
+        internal const val ADOPT_PREFIX = "model-adopt-"
 
         internal fun downloadWorkName(model: ModelDescriptor): String = "$DOWNLOAD_PREFIX${model.id}"
         internal fun adoptionWorkName(model: ModelDescriptor): String = "$ADOPT_PREFIX${model.id}"

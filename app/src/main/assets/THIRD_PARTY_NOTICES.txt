@@ -6,12 +6,13 @@ Model repository: https://huggingface.co/superwhisper/s1-mini-GGUF
 Pinned revision: 34add00a48a2e5d24e5a4ee5405a99620a3a240c
 License: Apache License 2.0
 
-"Parakeet TDT 0.6b v3" by "NVIDIA", SmoothQuant int8 ONNX export by Olicorne
-Model ID: parakeet-sq
-Model repository: https://huggingface.co/Olicorne/parakeet-tdt-0.6b-v3-smoothquant-onnx
-Pinned revision: 9d104194420cfe48c3374385bb42b42a788b9225
+"Parakeet Ultra" by "moondream", a post-train of "Parakeet TDT 0.6b v3" by "NVIDIA", int8 ONNX export by Olicorne
+Model ID: parakeet-ultra
+Model repository: https://huggingface.co/Olicorne/parakeet-tdt-0.6b-v3-ultra-onnx
+Base models: https://huggingface.co/moondream/parakeet-ultra, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+Pinned revision: 3b80a92332b5d34c364a35a880ef049c7fede9f2
 License: CC-BY-4.0
-Changes: quantised to int8 with SmoothQuant by Olicorne from NVIDIA's weights; used unmodified here.
+Changes: exported to ONNX and quantised to int8 (MatMulNBits) by Olicorne, with the <unk> output bias lowered and padded frames masked; used unmodified here.
 
 onnx-asr audio front end (nemo128.onnx)
 Source repository: https://github.com/istupakov/onnx-asr

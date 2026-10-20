@@ -17,6 +17,7 @@ import android.os.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /** Enqueues idempotent model bootstrap before any launcher or side-button activity can run. */
 class ModelBootstrapApplication : Application() {
@@ -47,6 +48,9 @@ class ModelBootstrapApplication : Application() {
         internal fun historyRecovery(context: Context): com.envi.wispr.history.HistoryRecoveryCoordinator =
             (context.applicationContext as ModelBootstrapApplication).historyRecovery
     }
+
+    /** Application-owned: the upgrade check outlives no process, and a process that dies before it runs re-checks on its next start. */
+    private val speechUpgradeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val historyRecovery: com.envi.wispr.history.HistoryRecoveryCoordinator by lazy {
         com.envi.wispr.history.HistoryRecoveryCoordinator(
@@ -110,5 +114,8 @@ class ModelBootstrapApplication : Application() {
         DeveloperLogs.of(this).startup()
         ModelDeliveryWorker.enqueueBootstrap(this, ModelManifest.parakeet)
         ModelDeliveryWorker.enqueueBootstrap(this, ModelManifest.s1)
+        // #458: a phone still holding the retired speech model gets the current one on Wi-Fi; file checks off main.
+        val app = this
+        speechUpgradeScope.launch { SpeechModelUpgrade.run(app) }
     }
 }

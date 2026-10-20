@@ -20,7 +20,7 @@ import java.util.concurrent.Executors
  * ASR service running in a separate process (:asr).
  *
  * Accepts audio via file path (not byte array) to avoid AIDL size limits.
- * Runs [ParakeetEngine]: Parakeet TDT (SmoothQuant int8) on ONNX Runtime through the macOS batch recipe (#374).
+ * Runs [ParakeetEngine]: Parakeet Ultra (int8, #458) on ONNX Runtime through the macOS batch recipe (#374).
  * Returns raw text so the isolated polish service can run S1-mini or a safe fallback.
  */
 class AsrService : Service() {
@@ -281,7 +281,7 @@ class AsrService : Service() {
             }
             val preprocessor = assets.open(ParakeetEngine.PREPROCESSOR_ASSET).use { it.readBytes() }
             val engine = ParakeetEngine.open(ModelStorage.directory(this, ModelManifest.parakeet), preprocessor)
-            DebugLogger.log(TAG, "Speech engine initialized in ${SystemClock.elapsedRealtime() - t0}ms")
+            DebugLogger.log(TAG, "Speech engine initialized in ${SystemClock.elapsedRealtime() - t0}ms (${ModelManifest.parakeet.id})")
             engine
         } catch (e: Throwable) {
             // The class name only: an ONNX Runtime message can quote paths or model internals.

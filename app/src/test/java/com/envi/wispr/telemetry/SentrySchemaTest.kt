@@ -163,9 +163,9 @@ class SentrySchemaTest {
      * the manifest's (the id is then redacted).
      */
     @Test fun aSpeechModelDeliveryBreadcrumbKeepsItsModel() {
-        val crumb = Breadcrumb("terminal").apply { category = "model_delivery"; setData("model", "parakeet-sq") }
-        assertEquals("parakeet-sq", SentryBootstrap.sanitize(crumb).data["model"])
-        val bad = Breadcrumb("terminal").apply { category = "model_delivery"; setData("model", "parakeet-sq-x") }
+        val crumb = Breadcrumb("terminal").apply { category = "model_delivery"; setData("model", "parakeet-ultra") }
+        assertEquals("parakeet-ultra", SentryBootstrap.sanitize(crumb).data["model"])
+        val bad = Breadcrumb("terminal").apply { category = "model_delivery"; setData("model", "parakeet-sq") }
         assertEquals("[REDACTED]", SentryBootstrap.sanitize(bad).data["model"])
     }
 

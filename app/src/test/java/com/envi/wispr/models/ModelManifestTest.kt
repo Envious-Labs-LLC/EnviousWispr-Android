@@ -9,21 +9,31 @@ class ModelManifestTest {
     @Test fun productionDescriptorsCarryPinnedVerifiedReceipts() {
         assertTrue(ModelManifest.parakeet.isAvailable)
         assertTrue(ModelManifest.s1.isAvailable)
-        assertEquals("9d104194420cfe48c3374385bb42b42a788b9225", ModelManifest.parakeet.pinnedRevision)
+        assertEquals("3b80a92332b5d34c364a35a880ef049c7fede9f2", ModelManifest.parakeet.pinnedRevision)
         assertEquals("34add00a48a2e5d24e5a4ee5405a99620a3a240c", ModelManifest.s1.pinnedRevision)
     }
 
     /**
-     * #374: the speech model is the SmoothQuant set in the onnx-asr layout, under its own storage id, from our host.
-     * MUTATIONS: reuse the retired `parakeet` id (it would share the sherpa model's folder); drop a file.
+     * #458: the speech model is Parakeet Ultra in the onnx-asr layout, under its own storage id, from our host. The
+     * pins are the files the endings gate measured (0 of 288 lost endings) and the founder approved.
+     * MUTATIONS: reuse a retired id (`parakeet`, `parakeet-sq`: it would share a swept folder); change a byte count or
+     * hash; drop a file.
      */
-    @Test fun theSpeechModelIsTheSmoothQuantSetUnderItsOwnId() {
+    @Test fun theSpeechModelIsParakeetUltraUnderItsOwnId() {
         val speech = ModelManifest.parakeet
-        assertEquals("parakeet-sq", speech.id)
-        assertEquals("Parakeet", speech.displayName)
+        assertEquals("parakeet-ultra", speech.id)
+        assertEquals("Parakeet Ultra", speech.displayName)
         assertEquals(listOf("encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "vocab.txt"), speech.files.map { it.name })
-        assertEquals(667_821_431L, speech.files.sumOf { it.expectedBytes })
-        assertTrue(speech.files.all { it.sourceUrl.startsWith("https://models.enviouslabs.co/parakeet-sq/9d104194420cfe48c3374385bb42b42a788b9225/") })
+        assertEquals(listOf(649_537_325L, 18_203_490L, 93_939L), speech.files.map { it.expectedBytes })
+        assertEquals(
+            listOf(
+                "8a2b47169cf3f1b114010e12c0221bc6f07203289477a65a44847b9e3f1e01ed",
+                "667ffde2242a560923cba6bc7f69ef03d736f8a36ca9588f2e6f9fa818cf2fc1",
+                "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+            ),
+            speech.files.map { it.sha256 },
+        )
+        assertTrue(speech.files.all { it.sourceUrl.startsWith("https://models.enviouslabs.co/parakeet-ultra/3b80a92332b5d34c364a35a880ef049c7fede9f2/") })
         assertFalse(ModelManifest.all.any { it.id in LegacyModelSweep.LEGACY })
     }
 
@@ -96,7 +106,7 @@ class ModelManifestTest {
             }
         }
         val withoutFallback = ModelManifest.all.flatMap { m -> m.files.filter { it.fallbackUrl == null }.map { "${m.id}/${it.name}" } }
-        assertEquals(listOf("parakeet-sq/encoder-model.int8.onnx", "parakeet-sq/decoder_joint-model.int8.onnx"), withoutFallback)
+        assertEquals(listOf("parakeet-ultra/encoder-model.int8.onnx", "parakeet-ultra/decoder_joint-model.int8.onnx"), withoutFallback)
     }
 
     /** #284: a source that carries the revision in the wrong place, or a revision that is not a full hash, makes the model unavailable. */

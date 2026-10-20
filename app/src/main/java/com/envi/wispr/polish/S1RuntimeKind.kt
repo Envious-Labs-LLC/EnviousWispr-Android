@@ -86,8 +86,24 @@ internal data class CpuFeatures(val hwcap: Long, val hwcap2: Long) {
         private const val AT_HWCAP = 16L
         private const val AT_HWCAP2 = 26L
 
-        /** Null when the auxiliary vector cannot be read or does not carry `AT_HWCAP`: the caller treats that as unknown. */
-        fun read(): CpuFeatures? = try { parse(File("/proc/self/auxv").readBytes()) } catch (error: Exception) { null }
+        /**
+         * The kernel's words through `getauxval` (`cpp/capability_probe.cpp`); null when they cannot be had, which the
+         * caller treats as unknown. Not `/proc/self/auxv`: a release build is not dumpable, so that file belongs to
+         * root and the read fails (measured on the founder's S26, build 282, 2026-10-20, while every debug build
+         * passed). The file is kept only as the fallback when the native library itself cannot load.
+         */
+        fun read(): CpuFeatures? {
+            val native = try {
+                System.loadLibrary("enviouswispr-capability")
+                nativeHwcaps()
+            } catch (error: Throwable) {
+                null
+            }
+            if (native != null && native.size == 2 && native[0] != 0L) return CpuFeatures(native[0], native[1])
+            return try { parse(File("/proc/self/auxv").readBytes()) } catch (error: Exception) { null }
+        }
+
+        private external fun nativeHwcaps(): LongArray?
 
         /** Parses the 64-bit little-endian (type, value) pairs of an arm64 auxiliary vector. */
         internal fun parse(bytes: ByteArray): CpuFeatures? {

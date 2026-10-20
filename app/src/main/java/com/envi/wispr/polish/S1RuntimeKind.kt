@@ -21,7 +21,27 @@ internal enum class S1RuntimeKind(val identity: String, val backends: Set<Proces
 
     companion object {
         /** This process's answer. A `val`: processor features cannot change while the process lives. */
-        val current: S1RuntimeKind by lazy { decide(CpuFeatures.read(), OpenClProbe::available) }
+        val current: S1RuntimeKind by lazy {
+            decide(CpuFeatures.read(), { OpenClProbe.openError().also { openClError = it } == null })
+        }
+
+        /**
+         * Why [current] is what it is, for the one local log line `PolishService` writes (#449: on one S26 the choice
+         * was the portable runtime although its processor passes, and nothing said why). Library and bit names only.
+         */
+        val reason: String by lazy {
+            val features = CpuFeatures.read()
+            when {
+                features == null -> "processor features unreadable"
+                features.hwcap and GENIEX_REQUIRED_HWCAP != GENIEX_REQUIRED_HWCAP ->
+                    "missing hwcap 0x" + java.lang.Long.toHexString(GENIEX_REQUIRED_HWCAP and features.hwcap.inv())
+                features.hwcap2 and GENIEX_REQUIRED_HWCAP2 != GENIEX_REQUIRED_HWCAP2 -> "missing i8mm"
+                current == PORTABLE_CPU -> "OpenCL: " + (openClError ?: "not checked")
+                else -> "all checks passed"
+            }
+        }
+
+        @Volatile private var openClError: String? = null
 
         internal fun decide(features: CpuFeatures?, openClAvailable: () -> Boolean): S1RuntimeKind = when {
             features == null -> PORTABLE_CPU
@@ -91,12 +111,13 @@ internal data class CpuFeatures(val hwcap: Long, val hwcap2: Long) {
 
 /** Whether the vendor OpenCL library opens in this app's linker namespace (see `cpp/capability_probe.cpp`). */
 internal object OpenClProbe {
-    fun available(): Boolean = try {
+    /** Null when `libOpenCL.so` opens; otherwise why not (the linker's text, or the failure's class name). */
+    fun openError(): String? = try {
         System.loadLibrary("enviouswispr-capability")
-        nativeAvailable()
+        nativeOpenError()
     } catch (error: Throwable) {
-        false
+        error.javaClass.simpleName
     }
 
-    private external fun nativeAvailable(): Boolean
+    private external fun nativeOpenError(): String?
 }

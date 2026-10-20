@@ -10,7 +10,7 @@ import java.nio.LongBuffer
 
 /**
  * Parakeet TDT 0.6b v3 on ONNX Runtime (#374): the onnx-asr layout of three sessions, the audio front end
- * (`nemo128.onnx`, shipped in the APK), the SmoothQuant int8 encoder and the combined decoder/joint.
+ * (`nemo128.onnx`, shipped in the APK), the int8 encoder and the combined decoder/joint of the shipped speech model (`ModelManifest.parakeet`).
  *
  * Every tensor and result is closed; the three sessions are closed by [close]. A partial construction closes what it
  * created before rethrowing, so a failed load never leaks a session.

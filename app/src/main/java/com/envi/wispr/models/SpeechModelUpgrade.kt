@@ -32,7 +32,9 @@ internal object SpeechModelUpgrade {
             controls.inheritRetired(RETIRED_ID, current)
             // No hashing here: the cheap structural check answers "installed"; full verification still gates loading.
             val installed = ModelDeliveryStore(root).installationStamp(current) != null
-            if (owed(File(root, RETIRED_ID).isDirectory, installed, controls.read(current))) {
+            // A blocked phone (#449) downloads nothing; the worker would refuse the job at every start.
+            val blocked = com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.BLOCKED
+            if (!blocked && owed(File(root, RETIRED_ID).isDirectory, installed, controls.read(current))) {
                 ModelDeliveryWorker.enqueueSetup(context, current, mobileData = false)
                 DebugLogger.log(TAG, "Speech model upgrade queued for an unmetered connection")
             }

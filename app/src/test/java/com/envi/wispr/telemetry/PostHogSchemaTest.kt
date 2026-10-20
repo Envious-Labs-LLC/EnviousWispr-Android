@@ -102,7 +102,7 @@ class PostHogSchemaTest {
     /** #374: the speech model's download row keeps its model id. MUTATION: an allowlist that is not the manifest's. */
     @Test
     fun theSpeechModelIdLeaves() {
-        assertKept("model", "parakeet-sq")
+        assertKept("model", "parakeet-ultra")
         assertKept("model", "s1-mini")
         assertFalse("the retired id is dropped", kept("model", "parakeet"))
     }

@@ -21,13 +21,19 @@ Do not lower the supported tier without real lower-memory qualification and curr
 
 ## RULE: the-recommendation
 
-Keep the chosen support scope. The actual Console rule saved October12 is **exclude TotalMem <=4096 MB
-and Android Go**, with no chipset rule. Console offered discrete less-than-or-equal cutoffs; excluding
+Keep the chosen support scope. Console rules, as saved: **exclude TotalMem <=4096 MB and Android Go**
+(October12) **OR System on Chip in a 726-chip list** (October20, founder-approved, #449: every chip whose
+cores Play lists are all A53, A55, A73, A75, A35 or older 32-bit designs, or Qualcomm Kryo 2xx/360 or
+Krait/Scorpion; chips Play lists without cores stay allowed and the in-app `DeviceTier` block covers them).
+Play reported 1,589 more models excluded, 21,685 in total. Checked after saving: Galaxy A23 4G, A05s and
+Moto g04s excluded; Galaxy A15 only partially (its 4 GB variants); A35, S26 Ultra and Pixel 8 supported.
+List and receipts: `docs/internal/p0-polish-hardware/2026-10-20/` (private). Lifting a tier needs #453's evidence.
+The memory rule alone was the October12 state. Console offered discrete less-than-or-equal cutoffs; excluding
 <=6144 MB risks excluding advertised6GB phones. This approximates the nominal6GB tier and does not
 enforce exactly6GB. There is no6144MB minimum slider. Google rules use reported total memory, not
 advertised memory: https://support.google.com/googleplay/android-developer/answer/7353455
 
-Do not replace the chipset decision with an unmeasured Samsung/Snapdragon-only restriction. A new
+Do not replace the core-design rule with a brand or Samsung/Snapdragon-only restriction. A new
 support promise needs its own device/runtime evidence.
 
 ## FACT: what-this-changes-once-decided

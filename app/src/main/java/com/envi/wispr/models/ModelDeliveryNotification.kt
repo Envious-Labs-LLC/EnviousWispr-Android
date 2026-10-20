@@ -17,11 +17,11 @@ internal object ModelDeliveryNotification {
     const val ACTION_RESUME = "com.envi.wispr.models.RESUME_DELIVERY"
     const val EXTRA_WORK_NAME = "work_name"
     const val EXTRA_MODEL_ID = "model_id"
-    private const val CHANNEL_PREFIX = "model_delivery_"
+    internal const val CHANNEL_PREFIX = "model_delivery_"
     private const val NOTIFICATION_BASE = 43_000
 
     fun notificationId(model: ModelDescriptor): Int = NOTIFICATION_BASE + when (model.id) {
-        "parakeet-sq" -> 1
+        "parakeet-ultra" -> 1
         "s1-mini" -> 2
         else -> (model.id.hashCode() and 0x7fff)
     }

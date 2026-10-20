@@ -28,8 +28,9 @@ import kotlinx.coroutines.withContext
  * connect the session owner does, only earlier: while the user reads the permissions and grants them.
  *
  * Held only while setup's permissions and practice screens are on screen, then released; setup is the
- * user acting, not idle (`architecture-rules.md` RULE: no-idle-cost), and the session owner keeps both
- * models resident after a take anyway (RULE: isolate-limbs, #72).
+ * user acting, not idle (`architecture-rules.md` RULE: no-idle-cost). A take holds both models only while it
+ * runs (RULE: isolate-limbs, #72); after it, only the speech model can stay, for the user's "Unload model after"
+ * choice (`asr/SpeechModelKeepAlive`, #37).
  */
 internal class EngineWarmUp(private val context: Context, private val scope: CoroutineScope) {
     private var speechBound = false

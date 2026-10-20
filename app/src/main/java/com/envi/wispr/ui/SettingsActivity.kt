@@ -146,6 +146,7 @@ class SettingsActivity : ComponentActivity() {
                             onEnglishSpellingChanged = shellViewModel::setEnglishSpelling,
                             onAutoStopOnSilenceChanged = shellViewModel::setAutoStopOnSilenceEnabled,
                             onSilencePauseSecondsChanged = shellViewModel::setSilencePauseSeconds,
+                            onSpeechModelUnloadChanged = shellViewModel::setSpeechModelUnload,
                         ),
                         polish = PolishActions(
                             onSetMode = polishViewModel::setPolishMode,

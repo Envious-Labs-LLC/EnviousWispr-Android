@@ -83,6 +83,7 @@ internal class TranscriptionActions(
     val onEnglishSpellingChanged: (com.envi.wispr.cleanup.EnglishSpelling) -> Unit,
     val onAutoStopOnSilenceChanged: (Boolean) -> Unit,
     val onSilencePauseSecondsChanged: (Float) -> Unit,
+    val onSpeechModelUnloadChanged: (com.envi.wispr.settings.SpeechModelUnload) -> Unit = {},
 )
 
 internal class PolishActions(

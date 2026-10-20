@@ -147,6 +147,18 @@ class DictationSessionService : Service() {
             stopSelf()
         }
 
+        override fun speechModelTakeStarted(takeId: String) {
+            com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.takeStarted(takeId)
+        }
+
+        override fun speechModelUsed(takeId: String) {
+            com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.transcriptArrived(takeId)
+        }
+
+        override fun speechModelTakeEnded(takeId: String) {
+            com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.takeEnded(takeId)
+        }
+
         override fun postToMain(runnable: Runnable) {
             mainHandler.post(runnable)
         }

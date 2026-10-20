@@ -59,6 +59,8 @@ internal data class AppPreferencesState(
      * at once (founder 2026-09-18). Frozen per take; crosses the binder on the start call. On by default.
      */
     val keepEarbudsReady: Boolean = true,
+    /** "Unload model after" for the speech model (#37). Read live by `SpeechModelKeepAlive`; same default in `mapState`. */
+    val speechModelUnload: SpeechModelUnload = SpeechModelUnload.DEFAULT,
 )
 
 /** The Developer page's stored values (#378); a null switch was never set. */
@@ -105,6 +107,7 @@ internal class AppPreferences(context: Context) {
             runCatching { ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) }.getOrDefault(ProcessingPreference.DEFAULT),
         speechProcessingReadError = runCatching { ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) }.isFailure,
         bubbleLook = BubbleLook.fromStorage(preferences[Keys.BUBBLE_LOOK]),
+        speechModelUnload = SpeechModelUnload.fromStorage(preferences[Keys.SPEECH_MODEL_UNLOAD]),
         fillerRemovalEnabled = preferences[Keys.FILLER_REMOVAL] ?: true,
         emojiFormatterEnabled = preferences[Keys.EMOJI_FORMATTER] ?: true,
         spokenPunctuationEnabled = preferences[Keys.SPOKEN_PUNCTUATION] ?: false,
@@ -171,6 +174,10 @@ internal class AppPreferences(context: Context) {
         dataStore.edit { preferences ->
             preferences[Keys.DYNAMIC_COLOR] = enabled
         }
+    }
+
+    suspend fun setSpeechModelUnload(choice: SpeechModelUnload) {
+        dataStore.edit { preferences -> preferences[Keys.SPEECH_MODEL_UNLOAD] = choice.storageKey }
     }
 
     suspend fun setBubbleLook(look: BubbleLook) {
@@ -272,6 +279,7 @@ internal class AppPreferences(context: Context) {
         val SPEECH_PROCESSING = stringPreferencesKey("speech_processing")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val BUBBLE_LOOK = stringPreferencesKey("bubble_look")
+        val SPEECH_MODEL_UNLOAD = stringPreferencesKey("speech_model_unload")
         val FILLER_REMOVAL = booleanPreferencesKey("filler_removal_enabled")
         val EMOJI_FORMATTER = booleanPreferencesKey("emoji_formatter_enabled")
         val ENGLISH_SPELLING = stringPreferencesKey("english_spelling")

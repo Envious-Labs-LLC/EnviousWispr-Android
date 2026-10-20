@@ -82,11 +82,18 @@ class SpeechModelUpgradeTest {
         assertFalse(File(folder.root, "parakeet-sq").exists())
     }
 
-    /** Harness contract on the source: the worker's Remove calls the rule, and the app start runs the check off main. */
+    /**
+     * Drift guard on the source: the worker's Remove calls the rule, and the app start runs the check on the IO
+     * dispatcher (the check reads files; on main it would delay every cold start).
+     */
     @Test fun theWorkerAndTheAppStartCallTheRule() {
         val worker = File("src/main/java/com/envi/wispr/models/ModelDeliveryWorker.kt").readText()
         assertTrue(worker.contains("SpeechModelUpgrade.afterRemove(root, model)"))
         val app = File("src/main/java/com/envi/wispr/models/ModelBootstrapApplication.kt").readText()
         assertTrue(app.contains("speechUpgradeScope.launch { SpeechModelUpgrade.run(app) }"))
+        assertTrue(
+            "startup file checks must run on IO",
+            app.contains("private val speechUpgradeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)"),
+        )
     }
 }

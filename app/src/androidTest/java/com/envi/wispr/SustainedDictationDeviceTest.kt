@@ -60,6 +60,8 @@ class SustainedDictationDeviceTest {
         val takes = InstrumentationRegistry.getArguments().getString("takes")?.toInt() ?: 40
         val totalRam = ActivityManager.MemoryInfo().also { activityManager.getMemoryInfo(it) }.totalMem / MB
         report("device", "${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT} soc=${Build.SOC_MANUFACTURER}/${Build.SOC_MODEL} ram=${totalRam}MB takes=$takes")
+        // #464: the main process's runtime choice, to compare with `:polish`'s "Local S1 runtime" log line.
+        report("runtime", "${com.envi.wispr.polish.S1RuntimeKind.current.identity} (${com.envi.wispr.polish.S1RuntimeKind.reason})")
         stageParakeet()
         FirebaseModelFixture.stageS1IfRequested(context)
         val clips = listOf("asr-short", "asr-medium", "asr-long").map { copyFromTmp("$it.pcm", context.cacheDir) }

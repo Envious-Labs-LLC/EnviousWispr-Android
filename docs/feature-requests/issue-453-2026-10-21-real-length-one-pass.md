@@ -109,11 +109,11 @@ today; buckets were slower.
 
 The arena-off build (§1.1) then made a dense 60 s windowed take slower on four of five phones in an unpaired run
 (S24 4223 to 6411 ms), and unpaired runs proved too noisy (different physical units). So the next rounds ran every
-arm on the SAME phone in counterbalanced blocks (`SpeedArmsDeviceTest`, experiment only: the arm is read at model
+arm on the SAME phone in counterbalanced blocks (a SpeedArmsDeviceTest experiment class (never committed), experiment only: the arm is read at model
 open; blocks ABCD, DCBA, BADC), six clips per arm per block. Round 3 confirmed arena-off costs 1 to 10% at 60 s
 and that 14 s was never slower (unpaired noise). Round 4 added arena SHRINKAGE: arena kept, run option
 `memory.enable_memory_arena_shrinkage = cpu:0` (external, ORT `RunOptions.addRunConfigEntry`, confirmed with
-`javap`) on the preprocessor and encoder runs only, so the decoder-joint keeps its arena for its per-frame steps.
+javap) on the preprocessor and encoder runs only, so the decoder-joint keeps its arena for its per-frame steps.
 Median ms, 3 blocks (A35: 2 blocks, it reached Test Lab's 45 min limit):
 
 | Phone | Arm | 3 s | 8 s | 14 s | 26 s | 30 s | 60 s | `:asr` peak MB |
@@ -161,7 +161,7 @@ evidence), the macOS recipe.
 ### 1. Producer to consumer
 Audio file → `AsrService` worker (`asr/AsrService.kt`, `transcribeFileForTake`) → `ParakeetEngine.transcribe`
 (`asr/ParakeetEngine.kt:12`) → `TdtRecipe.transcribe` → `decodeWindow` → `TdtRunner.encode(samples, length)`
-(`asr/TdtModel.kt:32`, passes the tensor and the real length to the preprocessor and encoder) → greedy TDT
+(`app/src/main/java/com/envi/wispr/asr/TdtModel.kt` (`encode`), passes the tensor and the real length to the preprocessor and encoder) → greedy TDT
 loop → `Result(text, windows, repairs)` → back to `AsrService` for the callback. Nothing else calls
 `TdtRecipe`: `grep -rln TdtRecipe app/src` lists `ParakeetEngine.kt`, `TdtRunner.kt`, `TdtRecipe.kt` and
 `TdtRecipeTest.kt` (plus `scripts/eval/asr-recipe/golden/Probe.kt`, the host harness). The other

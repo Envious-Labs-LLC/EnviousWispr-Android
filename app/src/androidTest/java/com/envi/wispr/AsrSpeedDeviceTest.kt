@@ -32,7 +32,7 @@ import org.junit.runner.RunWith
 
 /**
  * Harness Contract, #449 research: wall time from request to transcript through the REAL `:asr` service on a
- * remote Test Lab phone. Test Lab uploads the pinned Parakeet files and five synthetic speech clips (3 to 30 s) to
+ * remote Test Lab phone. Test Lab uploads the pinned Parakeet files and six synthetic speech clips (3 to 60 s) to
  * /data/local/tmp; production admission verifies the model. The first request includes the model load.
  * Synthetic speech only; nothing personal.
  */
@@ -45,7 +45,7 @@ class AsrSpeedDeviceTest {
         report("device", "${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT} soc=${Build.SOC_MANUFACTURER}/${Build.SOC_MODEL}")
         report("cpuFeatures", File("/proc/cpuinfo").readLines().filter { it.startsWith("Features") }.distinct().joinToString(" || "))
         stageParakeet()
-        val names = listOf("asr-short", "asr-medium", "asr-long", "asr-xlong", "asr-30s")
+        val names = listOf("asr-short", "asr-medium", "asr-long", "asr-xlong", "asr-30s", "asr-60s")
         val clips = names.associateWith { copyFromTmp("$it.pcm", context.cacheDir) }
 
         val connected = CountDownLatch(1)

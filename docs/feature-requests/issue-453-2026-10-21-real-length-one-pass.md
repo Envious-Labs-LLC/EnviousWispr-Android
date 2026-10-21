@@ -76,15 +76,48 @@ medium figures (slower than the real-length build on identical code) measure a d
 not the change: A15 numbers vary by about 1.5x between allocated phones. Speech memory (`:asr` PSS) during a
 26 s one-pass request: 1316 / 1325 / 1371 MB on S24 / A35 / A15 against 1181 / 1195 / 1236 MB windowed.
 
+## 1.1 Second measurement round: variable lengths need the memory arena off (2026-10-21)
+
+The real-length build, run with five clips (3, 8, 14, 26, 30 s) in a different order each round on five phones,
+grew `:asr` from about 1.15 GB to about 1.63 GB and made 14 s clips slower than padded on the S24 (813 to 1059 ms)
+and A15 (3170 to 3861 ms): ONNX Runtime's CPU arena and memory-pattern planner grow and re-plan for every new input
+shape, which a fixed 15 s tensor never caused. Three fixes on the same five phones, same order (median ms, peak MB):
+
+| Phone | Arm | 3 s | 8 s | 14 s | 26 s | 30 s | `:asr` peak |
+|---|---|---|---|---|---|---|---|
+| Galaxy S24 | today (padded) | 785 | 802 | 813 | 2509 | 2444 | 1144 |
+| | real length | 271 | 627 | 1059 | 2029 | 2351 | 1628 |
+| | **arena and pattern off** | 192 | 460 | 781 | 1582 | 1845 | 1099 |
+| | pattern off only | 189 | 446 | 775 | 1459 | 1761 | 1319 |
+| | 4/8/15/30 s buckets | 329 | 946 | 953 | 2116 | 2075 | 1550 |
+| Galaxy A15 | today | 2960 | 3096 | 3170 | 9467 | 9426 | 1202 |
+| | **arena and pattern off** | 768 | 1731 | 3173 | 6277 | 6524 | 867 |
+| Galaxy A35 | today | 1506 | 1615 | 1628 | 4839 | 4891 | 1149 |
+| | **arena and pattern off** | 486 | 1086 | 1744 | 3358 | 3947 | 952 |
+| Galaxy A36 (SD 6 Gen 3) | today | 1385 | 1931 | 1729 | 4444 | 4421 | 1162 |
+| | **arena and pattern off** | 344 | 799 | 1401 | 2760 | 3210 | 958 |
+| Pixel 8 (Tensor G3) | today | 2085 | 2083 | 2311 | 5925 | 5711 | 1128 |
+| | **arena and pattern off** | 635 | 1358 | 1906 | 4791 | 5207 | 824 |
+
+Transcripts were identical in every arm except the 30 s clip, where every one-pass arm read the cut final word as
+"vines" (the source clip's word) against "vine" windowed. Chosen: arena and pattern off. It is faster than today on
+every clip and phone except the A35 at 14 s (+7%), and `:asr` holds 100 to 380 MB LESS than today, which matters
+now that the speech model stays loaded by default (#37) and may relieve #465. Pattern-only kept 170 MB more than
+today; buckets were slower.
+
 ## 2. Goals & non-goals
 
 ### 2.1 Goals
 1. Takes under 15 s encode at their real length (frame-aligned). Verified by the unit test and the speed run.
 2. Takes from 15 s up to 30 s decode in one pass, no seam. Same verification.
-3. Takes over 30 s keep today's windowed path byte for byte: same schedule, merge and repair, and every
+3. Takes over 30 s keep today's windowed recipe: same schedule, merge and repair, and every
    window, final chunk and repair probe still padded to 15 s (review r1 finding 1: those windows are
-   238,080 or 239,360 samples, so unpadding them would have changed long takes too).
+   238,080 or 239,360 samples, so unpadding them would have changed long takes too). Above 30 seconds,
+   scheduling, tensors and recipe behaviour remain unchanged; all three sessions use the new allocator
+   settings at every length (review r4).
 4. Lost-words gate: 0/288 lost endings, 0/84 raw lost, no new lost starts, WER increase at most 0.005.
+
+5. `TdtModel.open` sessions run with the CPU memory arena and memory-pattern planning off (§1.1).
 
 ### 2.2 Non-goals
 Thread counts, quantisation, other execution providers, other engines, warm-up changes (the model now stays
@@ -147,6 +180,13 @@ token alike.
 Rejected: keeping a padded minimum of 8 or 12 s (slower, no accuracy gain in the gate); one pass for every
 length (memory grows with length and 60 s of audio was not measured); changing threads (measured slower).
 
+`TdtModel.open` adds `setCPUArenaAllocator(false)` and `setMemoryPatternOptimization(false)` (external, ONNX
+Runtime 1.30 `OrtSession.SessionOptions`, confirmed with `javap` on the pinned AAR) to the one `SessionOptions` its
+three sessions share. This disables ORT arena retention and pattern planning; buffers are freed when their
+lifetimes end. System-allocator retention and PSS remain measurement-dependent (review r4). The causal story in
+§1.1 (arena growth and re-planning per shape) is the documented behaviour of those two options; the table, not
+the story, is the evidence for the choice.
+
 ## 3b. Ownership
 Stays in `TdtRecipe` because it already owns windowing; the alternative, a padding decision in `TdtModel`,
 would split one rule across two files.
@@ -159,7 +199,7 @@ call chooses real length.
 
 ## 5. Lifecycle audit
 - Takes by length: under the minimum (unchanged, empty), under 15 s (real length), 15 to 30 s (one pass),
-  over 30 s (windowed, unchanged). Enumerated from `transcribe`'s branches.
+  over 30 s (windowed recipe unchanged, new allocator settings). Enumerated from `transcribe`'s branches.
 - Process death mid-decode, cancellation, watchdog: unchanged paths in `AsrService`; enumerated, none touched.
 
 ## 6. Consumer matrix
@@ -167,6 +207,8 @@ call chooses real length.
 |---|---|---|---|---|---|
 | `windows` = 1 up to 30 s | `AsrService` log line `windows=` | logs 2 for 15-30 s | logs 1 | no | log read in UAT |
 | real-length tensor | `TdtModel.encode` | 15 s tensor plus length | shorter tensor plus same length | no | phone runs |
+| arena and pattern off | the preprocessor, encoder and decoder-joint sessions | arena grows to the largest shape seen and is kept | buffers freed when their lifetimes end; PSS measured, not promised | yes (`TdtModel.open`) | §1.1 table, soak |
+| arena and pattern off | the golden host harness (`Golden.kt` calls `TdtModel.open`) | same | same | no | gate run |
 
 ## 7. Failure modes
 | Failure | Origin | Caller | User sees | State | Retry |
@@ -185,6 +227,7 @@ Not present in this change: no new failure branch; existing ones keep their fall
 
 ## 10. Files
 - `app/src/main/java/com/envi/wispr/asr/TdtRecipe.kt`: the edits in §3, comments updated.
+- `app/src/main/java/com/envi/wispr/asr/TdtModel.kt`: the two session options, with a comment citing §1.1.
 - `app/src/test/java/com/envi/wispr/asr/TdtRecipeTest.kt`: assert the encoded tensor size the fake runner
   receives (it records it today and ignores it): real length for a 3 s and a 30 s take, padded 240,000 for
   every window of a 31 s take including its final chunk; one window and zero repairs at 30 s, more than one at
@@ -201,15 +244,20 @@ Not present in this change: no new failure branch; existing ones keep their fall
    unpad a windowed call (31 s row); one-pass limit back to 15 s (one-window row); fixed cap of 150 (both cap
    rows); denominator 188 instead of 187 (the 375-frame row: 299 instead of 300); the repair caller alone set to
    real length (the repair-probe row).
-3. Not tested by unit tests: real encoder accuracy (the host gate and phones own it).
+3. Not tested by unit tests: real encoder accuracy (the host gate and phones own it), and the session options
+   (no JVM test can observe ORT's allocator; the phone table and the soak's memory column own them).
 
 Gate on every change: `scripts/eval/asr-recipe/golden/` host run of the 288 stress cuts and 84 raw clips,
 scored by `endings/score_endings.py` against today's code.
 
 ### 11.1 Hardware UAT
 - Subsystem: heart path (ASR).
-- Recipe: `AsrSpeedDeviceTest` on Test Lab A15, A35, S24 with this build, clips of 3, 8, 14, 26 and exactly
-  30 s, three requests each back to back in mixed order; the 40-take `SustainedDictationDeviceTest` on the
+- Recipe: `AsrSpeedDeviceTest` on Test Lab A15, A35, A36, S24 and Pixel 8 with this build AND with today's
+  recipe and options (same run, same phones), clips of 3, 8, 14, 26, exactly 30 s and a dense 60 s take (the
+  windowed path, about 600 tokens), three requests each back to back in mixed order. The 60 s row compares total
+  latency and peak memory against today; decoder-joint time is not isolated (review r4 asked for run count and
+  time: the total includes every decoder step, so a per-step allocation regression shows there as a slower 60 s
+  take, which is the ship blocker); the 40-take `SustainedDictationDeviceTest` on the
   same phones; the founder's S26 through Play.
 - Oracle: transcripts identical to the measurement run's real-length arm per clip; the speed table reproduced
   within device noise; `:asr` PSS at 30 s reported and no process death, allocation failure or request past
@@ -222,7 +270,8 @@ scored by `endings/score_endings.py` against today's code.
 | unit suite count | — | nothing else broke | — |
 
 ## 12. Blast radius
-`:asr` decode of takes up to 30 s only. Not touched: the windowed path above 30 s, capture, polish, insertion,
+`:asr` only: the recipe changes for takes up to 30 s, the allocator settings for every take. Not touched: the
+windowed recipe above 30 s, capture, polish, insertion,
 setup, models, settings. Rollback trigger: any lost ending reported by the founder or a later gate run, any
 `:asr` death in a 15 to 30 s take, or the phone run missing its oracle. Revert the one commit (no data
 migrates), then rerun the gate to confirm today's numbers return.

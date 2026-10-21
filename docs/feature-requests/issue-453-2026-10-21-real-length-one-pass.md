@@ -76,12 +76,12 @@ medium figures (slower than the real-length build on identical code) measure a d
 not the change: A15 numbers vary by about 1.5x between allocated phones. Speech memory (`:asr` PSS) during a
 26 s one-pass request: 1316 / 1325 / 1371 MB on S24 / A35 / A15 against 1181 / 1195 / 1236 MB windowed.
 
-## 1.1 Second measurement round: variable lengths need the memory arena off (2026-10-21)
+## 1.1 Second measurement round: arena off (2026-10-21; its choice is superseded by §1.2)
 
 The real-length build, run with five clips (3, 8, 14, 26, 30 s) in a different order each round on five phones,
 grew `:asr` from about 1.15 GB to about 1.63 GB and made 14 s clips slower than padded on the S24 (813 to 1059 ms)
-and A15 (3170 to 3861 ms): ONNX Runtime's CPU arena and memory-pattern planner grow and re-plan for every new input
-shape, which a fixed 15 s tensor never caused. Three fixes on the same five phones, same order (median ms, peak MB):
+and A15 (3170 to 3861 ms) in an unpaired run, with ONNX Runtime's CPU arena and memory-pattern optimizations on
+(the 14 s slowdown later proved to be unit-to-unit noise, §1.2). Three fixes on the same five phones, same order (median ms, peak MB):
 
 | Phone | Arm | 3 s | 8 s | 14 s | 26 s | 30 s | `:asr` peak |
 |---|---|---|---|---|---|---|---|
@@ -100,10 +100,41 @@ shape, which a fixed 15 s tensor never caused. Three fixes on the same five phon
 | | **arena and pattern off** | 635 | 1358 | 1906 | 4791 | 5207 | 824 |
 
 Transcripts were identical in every arm except the 30 s clip, where every one-pass arm read the cut final word as
-"vines" (the source clip's word) against "vine" windowed. Chosen: arena and pattern off. It is faster than today on
+"vines" (the source clip's word) against "vine" windowed. Chosen then: arena and pattern off (superseded by §1.2). It is faster than today on
 every clip and phone except the A35 at 14 s (+7%), and `:asr` holds 100 to 380 MB LESS than today, which matters
 now that the speech model stays loaded by default (#37) and may relieve #465. Pattern-only kept 170 MB more than
 today; buckets were slower.
+
+## 1.2 Third and fourth rounds: paired arms on one phone, and arena shrinkage (2026-10-21)
+
+The arena-off build (§1.1) then made a dense 60 s windowed take slower on four of five phones in an unpaired run
+(S24 4223 to 6411 ms), and unpaired runs proved too noisy (different physical units). So the next rounds ran every
+arm on the SAME phone in counterbalanced blocks (`SpeedArmsDeviceTest`, experiment only: the arm is read at model
+open; blocks ABCD, DCBA, BADC), six clips per arm per block. Round 3 confirmed arena-off costs 1 to 10% at 60 s
+and that 14 s was never slower (unpaired noise). Round 4 added arena SHRINKAGE: arena kept, run option
+`memory.enable_memory_arena_shrinkage = cpu:0` (external, ORT `RunOptions.addRunConfigEntry`, confirmed with
+`javap`) on the preprocessor and encoder runs only, so the decoder-joint keeps its arena for its per-frame steps.
+Median ms, 3 blocks (A35: 2 blocks, it reached Test Lab's 45 min limit):
+
+| Phone | Arm | 3 s | 8 s | 14 s | 26 s | 30 s | 60 s | `:asr` peak MB |
+|---|---|---|---|---|---|---|---|---|
+| Galaxy S24 | today | 850 | 822 | 880 | 2456 | 2649 | 4249 | 1160 |
+| | real, arena on | 188 | 467 | 750 | 1500 | 1727 | 4019 | 1337 |
+| | **real, shrink** | 198 | 459 | 760 | 1527 | 1759 | 4340 | 1137 |
+| | real, arena off | 201 | 450 | 790 | 1541 | 1791 | 4210 | 1159 |
+| Galaxy A15 | today | 2957 | 3084 | 3136 | 9073 | 9124 | 15628 | 1190 |
+| | **real, shrink** | 706 | 1771 | 2933 | 5500 | 6421 | 15238 | 1062 |
+| Galaxy A35 | today | 1632 | 1820 | 1815 | 4769 | 4586 | 7740 | 1151 |
+| | **real, shrink** | 360 | 876 | 1454 | 3016 | 3460 | 7884 | 905 |
+| Galaxy A36 | today | 1374 | 1400 | 1495 | 4482 | 4335 | 7158 | 1174 |
+| | **real, shrink** | 334 | 804 | 1364 | 2635 | 3142 | 7273 | 921 |
+| Pixel 8 | today | 2214 | 2345 | 2300 | 7091 | 6854 | 12411 | 1135 |
+| | **real, shrink** | 481 | 1078 | 1905 | 3581 | 4310 | 10729 | 822 |
+
+**Chosen: real length with arena shrinkage on the preprocessor and encoder runs**, replacing §1.1's arena-off. It
+keeps the real-length speed, holds `:asr` below today on every phone (by 23 to 313 MB), and the 60 s windowed
+take is within 2% of today on four phones (the paired-run noise level) and 14% faster on the Pixel 8. Transcripts
+were identical across arms (the 30 s clip's cut final word excepted, as in §1.1).
 
 ## 2. Goals & non-goals
 
@@ -113,11 +144,12 @@ today; buckets were slower.
 3. Takes over 30 s keep today's windowed recipe: same schedule, merge and repair, and every
    window, final chunk and repair probe still padded to 15 s (review r1 finding 1: those windows are
    238,080 or 239,360 samples, so unpadding them would have changed long takes too). Above 30 seconds,
-   scheduling, tensors and recipe behaviour remain unchanged; all three sessions use the new allocator
-   settings at every length (review r4).
+   scheduling, tensors and recipe behaviour remain unchanged. At every length, only preprocessor and
+   encoder runs request CPU-arena shrinkage; session options and decoder-joint runs retain today's settings.
 4. Lost-words gate: 0/288 lost endings, 0/84 raw lost, no new lost starts, WER increase at most 0.005.
 
-5. `TdtModel.open` sessions run with the CPU memory arena and memory-pattern planning off (§1.1).
+5. The preprocessor and encoder runs shrink ORT's CPU arena after each run; session options stay default
+   (§1.2, superseding §1.1's arena-off).
 
 ### 2.2 Non-goals
 Thread counts, quantisation, other execution providers, other engines, warm-up changes (the model now stays
@@ -180,12 +212,13 @@ token alike.
 Rejected: keeping a padded minimum of 8 or 12 s (slower, no accuracy gain in the gate); one pass for every
 length (memory grows with length and 60 s of audio was not measured); changing threads (measured slower).
 
-`TdtModel.open` adds `setCPUArenaAllocator(false)` and `setMemoryPatternOptimization(false)` (external, ONNX
-Runtime 1.30 `OrtSession.SessionOptions`, confirmed with `javap` on the pinned AAR) to the one `SessionOptions` its
-three sessions share. This disables ORT arena retention and pattern planning; buffers are freed when their
-lifetimes end. System-allocator retention and PSS remain measurement-dependent (review r4). The causal story in
-§1.1 (arena growth and re-planning per shape) is the documented behaviour of those two options; the table, not
-the story, is the evidence for the choice.
+`TdtModel` holds one `OrtSession.RunOptions` (external) with `memory.enable_memory_arena_shrinkage` = `cpu:0`,
+passed to the preprocessor and encoder `run` calls in `encode`; the decoder-joint `step` runs keep the default
+(no shrinkage), and session options are unchanged from today. `close` closes the run options with the sessions.
+Each flagged run scans eligible unused arena regions. Live outputs can retain regions during that scan; closing
+outputs afterward does not trigger another shrink. Encoder outputs are copied and closed inside encode. The
+initial arena region remains retained; PSS is measured. Track RunOptions during open; close it on every failed
+construction, transfer ownership only on success, and close it during model teardown (review r6).
 
 ## 3b. Ownership
 Stays in `TdtRecipe` because it already owns windowing; the alternative, a padding decision in `TdtModel`,
@@ -207,8 +240,9 @@ call chooses real length.
 |---|---|---|---|---|---|
 | `windows` = 1 up to 30 s | `AsrService` log line `windows=` | logs 2 for 15-30 s | logs 1 | no | log read in UAT |
 | real-length tensor | `TdtModel.encode` | 15 s tensor plus length | shorter tensor plus same length | no | phone runs |
-| arena and pattern off | the preprocessor, encoder and decoder-joint sessions | arena grows to the largest shape seen and is kept | buffers freed when their lifetimes end; PSS measured, not promised | yes (`TdtModel.open`) | §1.1 table, soak |
-| arena and pattern off | the golden host harness (`Golden.kt` calls `TdtModel.open`) | same | same | no | gate run |
+| arena shrink after each preprocessor and encoder run | those two sessions | arena grows to the largest shape seen and is kept | unused arena returned after each run; PSS measured, not promised | yes (`TdtModel`) | §1.2 table, soak |
+| decoder-joint runs | the decoder-joint session | default | unchanged | no | §1.2 60 s column |
+| the same `TdtModel` | the golden host harness (`Golden.kt` calls `TdtModel.open`) | same | same | no | gate run |
 
 ## 7. Failure modes
 | Failure | Origin | Caller | User sees | State | Retry |
@@ -227,7 +261,8 @@ Not present in this change: no new failure branch; existing ones keep their fall
 
 ## 10. Files
 - `app/src/main/java/com/envi/wispr/asr/TdtRecipe.kt`: the edits in §3, comments updated.
-- `app/src/main/java/com/envi/wispr/asr/TdtModel.kt`: the two session options, with a comment citing §1.1.
+- `app/src/main/java/com/envi/wispr/asr/TdtModel.kt`: the shrinking run options on the preprocessor and encoder
+  runs, closed in `close`, with a comment citing §1.2; the §1.1 session options removed.
 - `app/src/test/java/com/envi/wispr/asr/TdtRecipeTest.kt`: assert the encoded tensor size the fake runner
   receives (it records it today and ignores it): real length for a 3 s and a 30 s take, padded 240,000 for
   every window of a 31 s take including its final chunk; one window and zero repairs at 30 s, more than one at
@@ -244,8 +279,8 @@ Not present in this change: no new failure branch; existing ones keep their fall
    unpad a windowed call (31 s row); one-pass limit back to 15 s (one-window row); fixed cap of 150 (both cap
    rows); denominator 188 instead of 187 (the 375-frame row: 299 instead of 300); the repair caller alone set to
    real length (the repair-probe row).
-3. Not tested by unit tests: real encoder accuracy (the host gate and phones own it), and the session options
-   (no JVM test can observe ORT's allocator; the phone table and the soak's memory column own them).
+3. Not tested by unit tests: real encoder accuracy (the host gate and phones own it), and the shrinkage RunOptions
+   (no JVM test can observe ORT's allocator; the phone tables and the soak's memory column own them).
 
 Gate on every change: `scripts/eval/asr-recipe/golden/` host run of the 288 stress cuts and 84 raw clips,
 scored by `endings/score_endings.py` against today's code.

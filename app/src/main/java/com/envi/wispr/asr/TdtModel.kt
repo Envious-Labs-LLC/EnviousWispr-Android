@@ -12,14 +12,22 @@ import java.nio.LongBuffer
  * Parakeet TDT 0.6b v3 on ONNX Runtime (#374): the onnx-asr layout of three sessions, the audio front end
  * (`nemo128.onnx`, shipped in the APK), the int8 encoder and the combined decoder/joint of the shipped speech model (`ModelManifest.parakeet`).
  *
- * Every tensor and result is closed; the three sessions are closed by [close]. A partial construction closes what it
- * created before rethrowing, so a failed load never leaks a session.
+ * Every tensor and result is closed; the three sessions and [shrinking] are closed by [close]. A partial construction
+ * closes what it created before rethrowing, so a failed load never leaks a session or the run options.
  */
 internal class TdtModel private constructor(
     private val environment: OrtEnvironment,
     private val preprocessor: OrtSession,
     private val encoder: OrtSession,
     private val decoderJoint: OrtSession,
+    /**
+     * Run options for the preprocessor and encoder: shrink ORT's CPU arena after each run (#453). Every take has its
+     * own length since #453; with the arena kept as it grew, `:asr` held about 170 MB more than with the old fixed
+     * 15 s tensor. With shrinking it held 23 to 313 MB less than the old tensor on five Test Lab phones, at the same
+     * speed (plan docs/feature-requests/issue-453-2026-10-21-real-length-one-pass.md §1.2). The decoder-joint runs once
+     * per frame on one fixed shape, so its runs keep the arena as it is.
+     */
+    private val shrinking: OrtSession.RunOptions,
     override val vocab: List<String>,
 ) : TdtRunner {
 
@@ -32,12 +40,13 @@ internal class TdtModel private constructor(
     override fun encode(samples: FloatArray, length: Int): Encoded {
         OnnxTensor.createTensor(environment, FloatBuffer.wrap(samples), longArrayOf(1, samples.size.toLong())).use { wave ->
             OnnxTensor.createTensor(environment, LongBuffer.wrap(longArrayOf(length.toLong())), longArrayOf(1)).use { waveLength ->
-                preprocessor.run(mapOf("waveforms" to wave, "waveforms_lens" to waveLength)).use { features ->
+                preprocessor.run(mapOf("waveforms" to wave, "waveforms_lens" to waveLength), shrinking).use { features ->
                     val encoded = encoder.run(
                         mapOf(
                             "audio_signal" to features.get("features").get() as OnnxTensor,
                             "length" to features.get("features_lens").get() as OnnxTensor,
                         ),
+                        shrinking,
                     )
                     try {
                         val output = encoded.get("outputs").get() as OnnxTensor
@@ -92,6 +101,7 @@ internal class TdtModel private constructor(
         runCatching { decoderJoint.close() }
         runCatching { encoder.close() }
         runCatching { preprocessor.close() }
+        runCatching { shrinking.close() }
     }
 
     private class Window(val values: FloatArray, val dims: Int, val total: Int, override val frames: Int) : Encoded {
@@ -109,21 +119,18 @@ internal class TdtModel private constructor(
             val options = OrtSession.SessionOptions().apply {
                 setIntraOpNumThreads(threads)
                 setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-                // Every take has its own length since #453. With ORT's CPU arena and memory-pattern optimizations
-                // enabled, :asr grew to about 1.6 GB and 14 s takes slowed on five Test Lab phones; with them off it
-                // held 100 to 380 MB less than the old fixed 15 s tensor and beat it on every phone and clip but one
-                // (A35, 14 s, +7%). Plan: docs/feature-requests/issue-453-2026-10-21-real-length-one-pass.md §1.1.
-                setCPUArenaAllocator(false)
-                setMemoryPatternOptimization(false)
             }
             val opened = ArrayList<OrtSession>(3)
+            var shrinking: OrtSession.RunOptions? = null
             try {
+                shrinking = OrtSession.RunOptions().apply { addRunConfigEntry("memory.enable_memory_arena_shrinkage", "cpu:0") }
                 val front = environment.createSession(preprocessor, options).also { opened += it }
                 val encoder = environment.createSession(File(modelDirectory, ENCODER).path, options).also { opened += it }
                 val joint = environment.createSession(File(modelDirectory, DECODER_JOINT).path, options).also { opened += it }
-                return TdtModel(environment, front, encoder, joint, readVocab(File(modelDirectory, VOCAB)))
+                return TdtModel(environment, front, encoder, joint, shrinking, readVocab(File(modelDirectory, VOCAB)))
             } catch (failure: Throwable) {
                 opened.asReversed().forEach { runCatching { it.close() } }
+                shrinking?.let { runCatching { it.close() } }
                 throw failure
             } finally {
                 options.close()

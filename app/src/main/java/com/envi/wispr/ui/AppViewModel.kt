@@ -144,6 +144,10 @@ internal class EnviousWisprViewModel(
         changeSetting(AppLaunchFacts.SHOW_BLUETOOTH_TIPS, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.showBluetoothTips) }) { appPreferences.setShowBluetoothTips(enabled) }
 
     /** Spelling is a local preference; no new telemetry field is introduced. */
+    fun setSpeechModelUnload(choice: com.envi.wispr.settings.SpeechModelUnload) {
+        viewModelScope.launch { appPreferences.setSpeechModelUnload(choice) }
+    }
+
     fun setEnglishSpelling(spelling: com.envi.wispr.cleanup.EnglishSpelling) {
         viewModelScope.launch { appPreferences.setEnglishSpelling(spelling) }
     }

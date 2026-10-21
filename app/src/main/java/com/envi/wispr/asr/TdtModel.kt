@@ -24,8 +24,8 @@ internal class TdtModel private constructor(
      * Run options for the preprocessor and encoder: shrink ORT's CPU arena after each run (#453). Every take has its
      * own length since #453; with the arena kept as it grew, `:asr` held about 170 MB more than with the old fixed
      * 15 s tensor. With shrinking it held 23 to 313 MB less than the old tensor on five Test Lab phones, at the same
-     * speed (plan docs/feature-requests/issue-453-2026-10-21-real-length-one-pass.md §1.2). The decoder-joint runs once
-     * per frame on one fixed shape, so its runs keep the arena as it is.
+     * speed (plan docs/feature-requests/issue-453-2026-10-21-real-length-one-pass.md §1.2). The decoder-joint uses fixed
+     * input shapes and does not receive these run options.
      */
     private val shrinking: OrtSession.RunOptions,
     override val vocab: List<String>,
@@ -123,7 +123,8 @@ internal class TdtModel private constructor(
             val opened = ArrayList<OrtSession>(3)
             var shrinking: OrtSession.RunOptions? = null
             try {
-                shrinking = OrtSession.RunOptions().apply { addRunConfigEntry("memory.enable_memory_arena_shrinkage", "cpu:0") }
+                shrinking = OrtSession.RunOptions()
+                shrinking.addRunConfigEntry("memory.enable_memory_arena_shrinkage", "cpu:0")
                 val front = environment.createSession(preprocessor, options).also { opened += it }
                 val encoder = environment.createSession(File(modelDirectory, ENCODER).path, options).also { opened += it }
                 val joint = environment.createSession(File(modelDirectory, DECODER_JOINT).path, options).also { opened += it }

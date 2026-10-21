@@ -41,8 +41,9 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         val n = samples.size
         if (n < MIN_SAMPLES) return Result("", 0, 0)
         // Up to 30 s: one pass at the take's real length (#453). The macOS encoder has a fixed 15 s input, so the
-        // recipe pads; this one runs on the CPU, where padding a 3 s take to 15 s made it 2 to 5x slower on Test Lab
-        // phones, and two overlapping windows made a 26 s take 35% slower. Longer takes keep the windowed path below.
+        // recipe pads; this one runs on the CPU, where padding a 3 s take to 15 s made it 3 to 5x slower on Test Lab
+        // phones (A15, A35, S24, 2026-10-21), and at 26 s one pass took 35 to 38% less time than two windows on the
+        // S24 and A35. Longer takes keep the windowed path below.
         if (n <= ONE_PASS_SAMPLES) {
             val aligned = if (n % FRAME == 0) samples else samples.copyOf(n + FRAME - n % FRAME)
             return Result(text(decodeWindow(aligned, context = 0, offsetSample = 0, isLast = true, padToWindow = false)), 1, 0)

@@ -53,6 +53,7 @@ internal fun TranscriptionScreen(
     onEnglishSpellingChanged: (com.envi.wispr.cleanup.EnglishSpelling) -> Unit,
     onAutoStopOnSilenceChanged: (Boolean) -> Unit,
     onSilencePauseSecondsChanged: (Float) -> Unit,
+    onSpeechModelUnloadChanged: (com.envi.wispr.settings.SpeechModelUnload) -> Unit = {},
 ) {
     val context = LocalContext.current
     val view = LocalView.current
@@ -96,6 +97,7 @@ internal fun TranscriptionScreen(
             error = processingError ?: if (preferences.speechProcessingReadError) "Processing preference could not be read. Automatic shown." else null,
             onSave = onProcessingChanged, onCheck = null, latestResult = latestSpeechResult,
         )
+        SpeechModelUnloadGroup(selected = preferences.speechModelUnload, onSelected = onSpeechModelUnloadChanged)
         SettingsGroup("Recording") {
             SettingsToggleRow(
                 title = "Stop recording on silence",

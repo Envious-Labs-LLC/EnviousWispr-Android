@@ -217,6 +217,7 @@ internal fun EnviousWisprApp(
                             onEnglishSpellingChanged = actions.transcription.onEnglishSpellingChanged,
                             onAutoStopOnSilenceChanged = actions.transcription.onAutoStopOnSilenceChanged,
                             onSilencePauseSecondsChanged = actions.transcription.onSilencePauseSecondsChanged,
+                            onSpeechModelUnloadChanged = actions.transcription.onSpeechModelUnloadChanged,
                         )
                         AppDestination.Polish -> PolishScreen(
                             settings = providerSettings,

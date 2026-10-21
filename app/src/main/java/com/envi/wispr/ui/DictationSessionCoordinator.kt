@@ -489,11 +489,15 @@ internal class DictationSessionCoordinator(
     private fun bindPipelineServices() {
         val outcome = pipeline.bind(this)
         when (outcome.result) {
-            PipelineController.BindResult.BOUND -> if (!outcome.polishBound) {
-                // Polish is a limb (#234): the take records and transcribes, and publishes the deterministic
-                // text with the polish notice. The refusal is a defect, so it gets fixed rather than counted.
-                take.log.warn("Polish service did not bind; this take publishes the deterministic text")
-                polish?.bindRefused()
+            PipelineController.BindResult.BOUND -> {
+                // #37: only after the take's own speech bind succeeded, so the hold never creates `:asr` itself.
+                host.speechModelTakeStarted(take.takeId)
+                if (!outcome.polishBound) {
+                    // Polish is a limb (#234): the take records and transcribes, and publishes the deterministic
+                    // text with the polish notice. The refusal is a defect, so it gets fixed rather than counted.
+                    take.log.warn("Polish service did not bind; this take publishes the deterministic text")
+                    polish?.bindRefused()
+                }
             }
             PipelineController.BindResult.AUDIO_BIND_FAILED -> {
                 pipeline.stopAudioService()
@@ -887,6 +891,8 @@ internal class DictationSessionCoordinator(
                         current.log.words("raw_arrived") { text.orEmpty() }
                         current.log.mark("result_received")
                         outcome.asrDone()
+                        // #37: an accepted transcript with words starts the "Unload model after" countdown.
+                        if (!text.isNullOrBlank()) host.speechModelUsed(current.takeId)
                         polishAndPublish(text.orEmpty())
                     }
 
@@ -1253,6 +1259,7 @@ internal class DictationSessionCoordinator(
                 // Both subscriptions go with the binding; nothing is called on the capture process here,
                 // which may be the unresponsive process this take just ended over (#115).
                 capture.disarm()
+                host.speechModelTakeEnded(take.takeId)
                 pipeline.unbind()
                 host.removeForegroundAndDismiss()
                 // IDLE is published at the last moment this instance can still refuse a start: the
@@ -1331,6 +1338,7 @@ internal class DictationSessionCoordinator(
         // for.
         if (sessionWasOpen) pipeline.stopAudioService()
         polish?.cancelOpen()
+        host.speechModelTakeEnded(take.takeId)
         pipeline.unbind()
         // No further command is accepted; the stop above, if queued, still runs on the lane's own thread.
         capture.shutdown()

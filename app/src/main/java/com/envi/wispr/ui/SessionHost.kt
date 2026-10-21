@@ -43,6 +43,15 @@ internal interface SessionHost {
     /** `stopForeground(STOP_FOREGROUND_REMOVE)` then dismiss the notification. */
     fun removeForegroundAndDismiss()
 
+    /**
+     * #37 "Unload model after": the take's own speech bind succeeded ([speechModelTakeStarted]), its transcript arrived
+     * with text ([speechModelUsed]), and it ended by any path ([speechModelTakeEnded]). The application's
+     * `SpeechModelKeepAlive` decides; the host only forwards, with the take's id.
+     */
+    fun speechModelTakeStarted(takeId: String)
+    fun speechModelUsed(takeId: String)
+    fun speechModelTakeEnded(takeId: String)
+
     /** `stopSelf()`. Separate from [removeForegroundAndDismiss] because the owner resets state between them. */
     fun stopSelfNow()
 

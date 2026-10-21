@@ -18,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 /** Enqueues idempotent model bootstrap before any launcher or side-button activity can run. */
 class ModelBootstrapApplication : Application() {
@@ -44,10 +46,20 @@ class ModelBootstrapApplication : Application() {
         internal fun rescuedWords(context: Context): RescuedWords =
             (context.applicationContext as ModelBootstrapApplication).rescuedWords
 
+        /**
+         * The process's one speech-model hold (#37), main process only: it must outlive each take's Service, which
+         * stops after every take. Null in every other process and before `onCreate` reached the main-process gate.
+         */
+        internal fun speechKeepAlive(context: Context): com.envi.wispr.asr.SpeechModelKeepAlive? =
+            (context.applicationContext as ModelBootstrapApplication).speechKeepAlive
+
         /** The process's one start-up History recovery (#346), shared by the session owner and the History screen. */
         internal fun historyRecovery(context: Context): com.envi.wispr.history.HistoryRecoveryCoordinator =
             (context.applicationContext as ModelBootstrapApplication).historyRecovery
     }
+
+    /** Set once in `onCreate`, behind the main-process gate; read only on the main thread. */
+    private var speechKeepAlive: com.envi.wispr.asr.SpeechModelKeepAlive? = null
 
     /** Application-owned: the upgrade check outlives no process, and a process that dies before it runs re-checks on its next start. */
     private val speechUpgradeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -114,8 +126,28 @@ class ModelBootstrapApplication : Application() {
         DeveloperLogs.of(this).startup()
         ModelDeliveryWorker.enqueueBootstrap(this, ModelManifest.parakeet)
         ModelDeliveryWorker.enqueueBootstrap(this, ModelManifest.s1)
+        // #37: the speech-model hold follows "Unload model after" live; collected on main, where it is confined.
+        val keepAlive = com.envi.wispr.asr.SpeechModelKeepAlive.create(this)
+        speechKeepAlive = keepAlive
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
+            com.envi.wispr.settings.AppPreferences(this@ModelBootstrapApplication).state
+                .map { it.speechModelUnload }
+                .distinctUntilChanged()
+                .collect { keepAlive.settingChanged(it) }
+        }
         // #458: a phone still holding the retired speech model gets the current one on Wi-Fi; file checks off main.
         val app = this
         speechUpgradeScope.launch { SpeechModelUpgrade.run(app) }
+    }
+
+    /**
+     * #37: release the speech-model hold only when Android says this process is about to go
+     * (`TRIM_MEMORY_COMPLETE`) or, below API 34 where it is still delivered, running memory is critical. Never on
+     * UI_HIDDEN or BACKGROUND: the app is in the background during almost every dictation.
+     */
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_COMPLETE || level == TRIM_MEMORY_RUNNING_CRITICAL) speechKeepAlive?.memoryCritical()
     }
 }

@@ -354,6 +354,12 @@ internal class DictationSessionRig {
         }
         override fun autoPasteAvailability(): AutoPasteAvailability = autoPaste
         override fun removeForegroundAndDismiss() { events += "foreground-removed" }
+        /** #37 calls, in order, kept apart from [events] so existing event-order assertions are unchanged. */
+        val speechHold = mutableListOf<String>()
+        override fun speechModelTakeStarted(takeId: String) { speechHold += "started:$takeId" }
+        override fun speechModelUsed(takeId: String) { speechHold += "used:$takeId" }
+        override fun speechModelTakeEnded(takeId: String) { speechHold += "ended:$takeId" }
+
         override fun stopSelfNow() {
             events += "stopSelf"
             timeline += "owner-stop"

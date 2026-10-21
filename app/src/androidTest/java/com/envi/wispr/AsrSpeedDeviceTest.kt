@@ -32,7 +32,7 @@ import org.junit.runner.RunWith
 
 /**
  * Harness Contract, #449 research: wall time from request to transcript through the REAL `:asr` service on a
- * remote Test Lab phone. Test Lab uploads the pinned Parakeet files and three synthetic speech clips to
+ * remote Test Lab phone. Test Lab uploads the pinned Parakeet files and five synthetic speech clips (3 to 30 s) to
  * /data/local/tmp; production admission verifies the model. The first request includes the model load.
  * Synthetic speech only; nothing personal.
  */
@@ -45,7 +45,8 @@ class AsrSpeedDeviceTest {
         report("device", "${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT} soc=${Build.SOC_MANUFACTURER}/${Build.SOC_MODEL}")
         report("cpuFeatures", File("/proc/cpuinfo").readLines().filter { it.startsWith("Features") }.distinct().joinToString(" || "))
         stageParakeet()
-        val clips = listOf("asr-short", "asr-medium", "asr-long").associateWith { copyFromTmp("$it.pcm", context.cacheDir) }
+        val names = listOf("asr-short", "asr-medium", "asr-long", "asr-xlong", "asr-30s")
+        val clips = names.associateWith { copyFromTmp("$it.pcm", context.cacheDir) }
 
         val connected = CountDownLatch(1)
         var service: IAsrService? = null
@@ -60,8 +61,9 @@ class AsrSpeedDeviceTest {
             val asr = checkNotNull(service)
             // Cold: the first request queues behind the model load started in onCreate.
             report("cold.short", "${transcribe(asr, clips.getValue("asr-short")) { SystemClock.elapsedRealtime() - bindStarted }}")
-            for (name in listOf("asr-short", "asr-medium", "asr-long")) repeat(2) { run ->
-                report("$name#$run", transcribe(asr, clips.getValue(name)))
+            // Three rounds back to back, each in a different order, so long and short requests follow each other (#453).
+            repeat(3) { run ->
+                for (name in names.drop(run) + names.take(run)) report("$name#$run", "${transcribe(asr, clips.getValue(name))} asrMB=${asrPss()}")
             }
         } finally {
             context.unbindService(connection)
@@ -85,6 +87,13 @@ class AsrSpeedDeviceTest {
         val words = assertNotNull(text).let { text!! }
         val audioSec = clip.length() / 32_000.0
         return "${elapsed?.invoke(wall) ?: wall}ms audio=${"%.1f".format(audioSec)}s rtf=${"%.2f".format(wall / 1000.0 / audioSec)} chars=${words.length} text=${words.take(160)}"
+    }
+
+    /** The speech process's memory after a request, in MB; null when it is not running. */
+    private fun asrPss(): Long? {
+        val am = context.getSystemService(android.app.ActivityManager::class.java)
+        val pid = am.runningAppProcesses?.firstOrNull { it.processName == "com.envi.wispr:asr" }?.pid ?: return null
+        return am.getProcessMemoryInfo(intArrayOf(pid)).single().totalPss / 1024L
     }
 
     private fun stageParakeet() {

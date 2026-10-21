@@ -40,9 +40,12 @@ internal class TdtRecipe(private val runner: TdtRunner) {
     fun transcribe(samples: FloatArray): Result {
         val n = samples.size
         if (n < MIN_SAMPLES) return Result("", 0, 0)
-        if (n <= WINDOW_SAMPLES) {
+        // Up to 30 s: one pass at the take's real length (#453). The macOS encoder has a fixed 15 s input, so the
+        // recipe pads; this one runs on the CPU, where padding a 3 s take to 15 s made it 2 to 5x slower on Test Lab
+        // phones, and two overlapping windows made a 26 s take 35% slower. Longer takes keep the windowed path below.
+        if (n <= ONE_PASS_SAMPLES) {
             val aligned = if (n % FRAME == 0) samples else samples.copyOf(n + FRAME - n % FRAME)
-            return Result(text(decodeWindow(aligned, context = 0, offsetSample = 0, isLast = true)), 1, 0)
+            return Result(text(decodeWindow(aligned, context = 0, offsetSample = 0, isLast = true, padToWindow = false)), 1, 0)
         }
         val speechEnd = speechEnd(samples)
         val outputs = ArrayList<List<Token>>()
@@ -60,9 +63,9 @@ internal class TdtRecipe(private val runner: TdtRunner) {
             val segment = samples.copyOfRange(contextStart, audioEnd)
             outputs += if (warmup > 0) {
                 // Final chunk backfilled with real audio: decode from frame 0, emit only from `start` (ChunkProcessor :528-565).
-                decodeWindow(segment, 0, contextStart, isLast, emitAfterFrame = start / FRAME, startFrame = 0)
+                decodeWindow(segment, 0, contextStart, isLast, padToWindow = true, emitAfterFrame = start / FRAME, startFrame = 0)
             } else {
-                decodeWindow(segment, context, start, isLast)
+                decodeWindow(segment, context, start, isLast, padToWindow = true)
             }
             index++
             if (isLast) break
@@ -84,18 +87,21 @@ internal class TdtRecipe(private val runner: TdtRunner) {
     /**
      * One window through the greedy TDT loop with a FRESH decoder state. [samples] includes any [context] prefix;
      * timestamps are local frames plus [offsetSample] / [FRAME]. Only frames of real audio are decoded.
+     * [padToWindow] pads a shorter window to [WINDOW_SAMPLES] as the macOS recipe does (every windowed and repair
+     * call); false encodes [samples] as they are, which the one-pass call has already aligned to a frame.
      */
     internal fun decodeWindow(
         samples: FloatArray,
         context: Int,
         offsetSample: Int,
         isLast: Boolean,
+        padToWindow: Boolean,
         emitAfterFrame: Int? = null,
         startFrame: Int? = null,
     ): List<Token> {
         val n = samples.size
         if (n == 0) return emptyList()
-        val padded = if (n >= WINDOW_SAMPLES) samples else samples.copyOf(WINDOW_SAMPLES)
+        val padded = if (!padToWindow || n >= WINDOW_SAMPLES) samples else samples.copyOf(WINDOW_SAMPLES)
         runner.encode(padded, n).use { encoded ->
             val actualFrames = ceilDiv(n - context, FRAME)
             val frames = min(encoded.frames, actualFrames)
@@ -108,6 +114,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
             var lastEmit = -1
             var atFrame = 0
             var count = 0
+            val tokenLimit = tokenLimit(frames)
             while (t < frames) {
                 val step = runner.step(encoded, t, history.lastOrNull() ?: blank, state)
                 var duration = DURATION_BINS[step.durationBin]
@@ -121,7 +128,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
                     // the phone's SmoothQuant model it cut "intended" to "intend" and "Friday" to "Frida" on 9 of 26
                     // clips (#421). The last window keeps it; earlier windows still drop it, because the next
                     // window's overlap owns those frames.
-                    if (isLast && step.token != blank && current < frames && ++count <= MAX_TOKENS_PER_WINDOW) {
+                    if (isLast && step.token != blank && current < frames && ++count <= tokenLimit) {
                         val global = current + offset
                         if (emitAfterFrame == null || global >= emitAfterFrame) out += Token(step.token, global, duration)
                         history += step.token
@@ -130,7 +137,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
                     break
                 }
                 if (step.token == blank) continue
-                if (++count > MAX_TOKENS_PER_WINDOW) break
+                if (++count > tokenLimit) break
                 val global = current + offset
                 if (emitAfterFrame == null || global >= emitAfterFrame) out += Token(step.token, global, duration)
                 history += step.token
@@ -345,7 +352,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
                     val windowStart = max(0, min(placement, n - REPAIR_WINDOW)) / FRAME * FRAME
                     val windowEnd = min(windowStart + REPAIR_WINDOW, n)
                     if (windowEnd <= windowStart) continue
-                    val window = decodeWindow(samples.copyOfRange(windowStart, windowEnd), 0, windowStart, windowEnd >= n)
+                    val window = decodeWindow(samples.copyOfRange(windowStart, windowEnd), 0, windowStart, windowEnd >= n, padToWindow = true)
                     val candidate = window.filter { it.frame in (gapStart + 1) until (gapEnd - 1) }.toMutableList()
                     while (candidate.isNotEmpty() && candidate.first().id !in spliceSafe) candidate.removeAt(0)
                     val lead = neighbour(working, i, -1)
@@ -362,6 +369,9 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         return working
     }
 
+    /** 150 tokens per 15 s window, scaled up for a one-pass take of up to 30 s; never below 150. */
+    internal fun tokenLimit(frames: Int): Int = max(MAX_TOKENS_PER_WINDOW, frames * MAX_TOKENS_PER_WINDOW / FRAMES_PER_WINDOW)
+
     internal fun text(tokens: List<Token>): String = tokens.joinToString("") { vocab[it.id] }.replace(BOUNDARY, " ").trim()
 
     internal companion object {
@@ -369,6 +379,8 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         const val FRAME = 1_280
         const val SECONDS_PER_FRAME = 0.08
         const val WINDOW_SAMPLES = 240_000
+        const val FRAMES_PER_WINDOW = WINDOW_SAMPLES / FRAME
+        const val ONE_PASS_SAMPLES = 30 * SAMPLE_RATE
         const val CHUNK = 238_080
         const val OVERLAP = 32_000
         const val STRIDE = CHUNK - OVERLAP

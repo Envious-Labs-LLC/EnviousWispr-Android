@@ -110,8 +110,9 @@ internal class TdtModel private constructor(
                 setIntraOpNumThreads(threads)
                 setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                 // Every take has its own length since #453. With ORT's CPU arena and memory-pattern optimizations
-                // enabled, :asr grew to about 1.6 GB and 14 s takes slowed on five Test Lab phones; with them off it held 100 to 380 MB less than the old fixed 15 s tensor and beat it on every
-                // phone and clip but one (A35, 14 s, +7%) (plan docs/feature-requests/issue-453-2026-10-21-real-length-one-pass.md §1.1).
+                // enabled, :asr grew to about 1.6 GB and 14 s takes slowed on five Test Lab phones; with them off it
+                // held 100 to 380 MB less than the old fixed 15 s tensor and beat it on every phone and clip but one
+                // (A35, 14 s, +7%). Plan: docs/feature-requests/issue-453-2026-10-21-real-length-one-pass.md §1.1.
                 setCPUArenaAllocator(false)
                 setMemoryPatternOptimization(false)
             }

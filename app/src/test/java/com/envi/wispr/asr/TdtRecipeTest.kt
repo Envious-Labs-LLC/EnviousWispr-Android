@@ -55,12 +55,60 @@ class TdtRecipeTest {
         assertTrue(runner.encodes.isEmpty())
     }
 
-    /** One window up to 15 s: frame-aligned real length, padded to the model window (AsrManager+Transcription :15-37). */
-    @Test fun aShortTakeIsOneFrameAlignedPaddedWindow() {
+    /**
+     * A short take is one frame-aligned window encoded at its REAL length (#453), not padded to 15 s as on macOS.
+     * MUTATION: pad the one-pass call again (the tensor becomes 240,000).
+     */
+    @Test fun aShortTakeIsOneFrameAlignedWindowAtItsRealLength() {
         val runner = FakeRunner()
         TdtRecipe(runner).transcribe(loud(3.0) + FloatArray(100))
         // 48,100 samples round up to 38 whole frames = 48,640.
-        assertEquals(listOf(240_000 to 48_640), runner.encodes)
+        assertEquals(listOf(48_640 to 48_640), runner.encodes)
+    }
+
+    /** Up to 30 s is one pass, no seam (#453). MUTATION: the one-pass limit back to 15 s (two windows). */
+    @Test fun aThirtySecondTakeIsOnePassAtItsRealLength() {
+        val runner = FakeRunner()
+        val result = TdtRecipe(runner).transcribe(loud(30.0))
+        assertEquals(listOf(480_000 to 480_000), runner.encodes)
+        assertEquals(1, result.windows)
+        assertEquals(0, result.repairs)
+    }
+
+    /**
+     * Past 30 s the windowed path is today's, byte for byte: every window, the final chunk included, is padded to 15 s.
+     * MUTATION: encode one windowed call at its real length.
+     */
+    @Test fun aTakeJustOverThirtySecondsKeepsPaddedWindows() {
+        val runner = FakeRunner()
+        val result = TdtRecipe(runner).transcribe(loud(30.0) + loud(0.08))
+        assertTrue(result.windows > 1)
+        assertEquals(List(runner.encodes.size) { 240_000 }, runner.encodes.map { it.first })
+    }
+
+    /**
+     * The token limit is 150 per 15 s window and scales for a one-pass take (#453): 187 frames still allow 150, 375
+     * (30 s) allow 300. MUTATIONS: a fixed 150 (the 30 s rows); a denominator of 188 (299 at 375 frames).
+     */
+    @Test fun theTokenLimitScalesWithAOnePassTake() {
+        assertEquals(150, recipe.tokenLimit(150))
+        assertEquals(150, recipe.tokenLimit(187))
+        assertEquals(150, recipe.tokenLimit(188))
+        assertEquals(300, recipe.tokenLimit(375))
+        // A 30 s take where the joint emits "▁the" on every frame: exactly 300 reach the transcript.
+        val every = FakeRunner { _, _, _ -> 0 to 1 }
+        assertEquals(300, TdtRecipe(every).transcribe(loud(30.0)).text.split(" ").count { it == "the" })
+    }
+
+    /** The kept end token counts against the scaled limit too: at 30 s the 301st token is refused. */
+    @Test fun theKeptEndTokenRespectsTheScaledLimit() {
+        val frames = 375
+        val runner = FakeRunner { _, frame, _ -> if (frame < 300) 0 to 1 else if (frame == frames - 1) 2 to 4 else blank to 1 }
+        val words = TdtRecipe(runner).transcribe(loud(30.0)).text.split(" ").filter { it.isNotEmpty() }
+        assertEquals(300, words.size)
+        assertTrue(words.none { it == "cat" })
+        val under = FakeRunner { _, frame, _ -> if (frame < 299) 0 to 1 else if (frame == frames - 1) 2 to 4 else blank to 1 }
+        assertEquals("cat", TdtRecipe(under).transcribe(loud(30.0)).text.split(" ").last())
     }
 
     /**
@@ -179,6 +227,8 @@ class TdtRecipeTest {
         val runner = FakeRunner { _, frame, _ -> if (frame == 17) 5 to 1 else blank to 1 }
         val repaired = TdtRecipe(runner).repairSeamGaps(samples, listOf(Token(2, 0, 1), Token(7, 35, 1)))
         assertEquals("cat sat mat", TdtRecipe(runner).text(repaired))
+        // MUTATION (#453): the repair probe encoded at its real length instead of the 15 s window.
+        assertEquals(List(runner.encodes.size) { 240_000 }, runner.encodes.map { it.first })
         val quiet = FakeRunner { _, frame, _ -> if (frame == 17) 5 to 1 else blank to 1 }
         val untouched = TdtRecipe(quiet).repairSeamGaps(silence(3.0), listOf(Token(2, 0, 1), Token(7, 35, 1)))
         assertEquals("a gap with no speech is left alone", "cat mat", TdtRecipe(quiet).text(untouched))

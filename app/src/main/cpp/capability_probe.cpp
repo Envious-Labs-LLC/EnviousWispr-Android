@@ -4,7 +4,8 @@
 
 // #449: GenieX's llama plugin links libggml-opencl.so, which links libOpenCL.so, so GenieX cannot start (not even
 // on the processor) on a phone whose vendor does not offer that library to apps. This opens it in the app's own
-// linker namespace, the one GenieX's loader uses, and closes it again. It touches nothing of GenieX's.
+// linker namespace, the one GenieX's loader uses. The probe opens and closes the vendor OpenCL library, then
+// GenieX's OpenCL library.
 // The processor's feature words straight from the kernel's auxiliary vector (#449). A release build cannot read its
 // own /proc/self/auxv: the process is not dumpable, so the kernel gives that file to root. getauxval reads the copy
 // the process already holds in memory, which is what the Android NDK recommends. Returns {AT_HWCAP, AT_HWCAP2};
@@ -20,11 +21,9 @@ Java_com_envi_wispr_polish_CpuFeatures_00024Companion_nativeHwcaps(JNIEnv* env, 
 // Returns null when both libraries opened, otherwise the linker's own error text (library and symbol names only, never
 // user content) so the runtime choice can say why in the local log.
 //
-// #464: libOpenCL.so opening is not enough. On a Pixel 8 it opens (the Mali driver answers every OpenCL lookup through
-// it), yet GenieX's own libggml-opencl.so cannot bind "clGetDeviceInfo" and GenieX never starts, so local polish fell
-// back on every take. Opening libggml-opencl.so is the exact load GenieX's llama plugin needs; Test Lab 2026-10-21 it
-// failed on the Pixel 8 and loaded on a Galaxy S24 and A36. Both processes that read the choice run this same check,
-// so they agree (plan docs/feature-requests/issue-464-2026-10-21-pixel-geniex-probe.md).
+// #464: On the measured Pixel 8, libOpenCL.so opened but libggml-opencl.so failed to bind clGetDeviceInfo.
+// Test Lab 2026-10-21: the latter loaded on Galaxy S24 and A36.
+// Each process that reads the runtime choice performs this check.
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_envi_wispr_polish_OpenClProbe_nativeOpenError(JNIEnv* env, jobject) {
     void* handle = dlopen("libOpenCL.so", RTLD_NOW | RTLD_LOCAL);

@@ -10,7 +10,7 @@ mixed_pr: true — Docs/dev-tooling for this plan and the knowledge update; obli
 **PAR rows closed:** none (device compatibility under P0 #449).
 
 **Hardware UAT:** Y. Success: on a Pixel 8 a dictation with local polish on comes back polished by S1-mini on the
-processor instead of falling back to basic cleanup; a Galaxy S24 and A36 still polish on GenieX.
+processor instead of falling back to basic cleanup; a Galaxy S24 still polishes on GenieX.
 
 ## Preface — User Rubric
 
@@ -52,7 +52,9 @@ passed)`, then `GenieXSdk: dlopen failed: cannot locate symbol "clGetDeviceInfo"
 
 ### 2.1 Goals
 1. A phone where `libggml-opencl.so` cannot load runs the portable runtime (Pixel 8: 40/40 POLISHED in the soak).
-2. Phones where it loads keep GenieX (S24, A36: log line names GenieX; soak 40/40).
+2. Phones where it loads keep GenieX (S24: log line names GenieX; soak 40/40). The A36 is not a GenieX control: its
+   processor lacks the required features (`missing hwcap 0x4004000` in the soak), so it ran the portable runtime
+   before and after this change.
 3. The runtime log line says why: `OpenCL: <linker text>`.
 
 ### 2.2 Non-goals
@@ -173,7 +175,7 @@ The runtime choice only. Not touched: GenieX, the portable runtime, prompts, spe
 
 ## 13. Ship criteria
 - [ ] A Pixel 8 polishes 40 of 40 on the portable runtime.
-- [ ] A Galaxy S24 and A36 stay on GenieX, 40 of 40.
+- [ ] A Galaxy S24 stays on GenieX, 40 of 40.
 
 ## 14. Open questions
 None for the founder.

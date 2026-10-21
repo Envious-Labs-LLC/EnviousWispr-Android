@@ -10,7 +10,8 @@ import java.nio.ByteOrder
  *
  * - [GENIEX]: Qualcomm GenieX 0.4.0, graphics processor then processor. Its libraries are compiled for newer Arm
  *   processors and its plugin links the vendor OpenCL library, so it is chosen only when the processor reports
- *   every feature in [GENIEX_REQUIRED_HWCAP] / [GENIEX_REQUIRED_HWCAP2] AND `libOpenCL.so` opens for this app.
+ *   every feature in [GENIEX_REQUIRED_HWCAP] / [GENIEX_REQUIRED_HWCAP2] AND both `libOpenCL.so` and GenieX's own
+ *   `libggml-opencl.so` open for this app (#464: on a Pixel 8 the first opens and the second cannot bind).
  * - [PORTABLE_CPU]: the repository's own llama.cpp build (`:llama-android`), which picks a processor variant at
  *   runtime. Same model file, prompts and sampling; processor only. Anything unknown lands here: it cannot run
  *   an instruction the phone lacks, so failing toward it is the safe direction.
@@ -125,9 +126,9 @@ internal data class CpuFeatures(val hwcap: Long, val hwcap2: Long) {
     }
 }
 
-/** Whether the vendor OpenCL library opens in this app's linker namespace (see `cpp/capability_probe.cpp`). */
+/** Whether GenieX's OpenCL side loads in this app's linker namespace (see `cpp/capability_probe.cpp`). */
 internal object OpenClProbe {
-    /** Null when `libOpenCL.so` opens; otherwise why not (the linker's text, or the failure's class name). */
+    /** Null when `libOpenCL.so` and `libggml-opencl.so` both open; otherwise why not (the linker's text, or the failure's class name). */
     fun openError(): String? = try {
         System.loadLibrary("enviouswispr-capability")
         nativeOpenError()

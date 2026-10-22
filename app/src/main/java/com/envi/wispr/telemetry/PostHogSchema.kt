@@ -121,6 +121,9 @@ internal object PostHogSchema {
         "route" to ValueRule.Closed(InsertionRouteKind.entries.map { it.wire }.toSet()),
         "clipboard_outcome" to ValueRule.Closed(lower(ClipboardOutcome.entries)),
 
+        // app.launched
+        "install_source" to ValueRule.Closed(InstallSource.entries.map { it.wire }.toSet()),
+
         // settings.changed
         "setting" to ValueRule.Closed(AppLaunchFacts.SETTING_NAMES.toSet()),
         "from" to settingChangeValue,

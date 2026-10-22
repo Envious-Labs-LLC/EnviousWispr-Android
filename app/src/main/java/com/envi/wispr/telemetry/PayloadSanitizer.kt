@@ -45,7 +45,7 @@ internal object PayloadSanitizer {
         "handoff", "route", "target_app", "latency_ms", "clipboard_outcome", "recovered",
         // app.launched and settings
         "device_model", "os_version", "is_fresh_install", "models_ready", "accessibility_granted",
-        "mic_granted", "onboarding_complete", "custom_words_count", "install_source", "filler_removal", "emoji_formatter",
+        "mic_granted", "onboarding_complete", "custom_words_count", "install_source", "test_lab", "filler_removal", "emoji_formatter",
         "spoken_punctuation", "auto_copy_to_clipboard", "restore_clipboard_after_paste", "smart_insertion",
         "auto_stop_on_silence", "silence_pause_seconds", "show_bluetooth_tips", "keep_earbuds_ready",
         "dynamic_color", "bubble_look", "polish_policy", "setting", "from", "to",

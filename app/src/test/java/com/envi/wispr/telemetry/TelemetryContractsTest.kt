@@ -234,7 +234,7 @@ class TelemetryContractsTest {
             "settings.changed", "api_key.changed", "api_key.validation_completed",
         )
         val built = listOf(
-            AnalyticsEvent.AppLaunched("m", "16", false, true, true, true, true, 0, InstallSource.PLAY, emptyMap()).name,
+            AnalyticsEvent.AppLaunched("m", "16", false, true, true, true, true, 0, InstallSource.PLAY, false, emptyMap()).name,
             AnalyticsEvent.DictationTerminal("t", TerminalReason.COMPLETED, null, TriggerSource.APP, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null).name,
             AnalyticsEvent.InsertionTerminal("t", null, InsertionResultKind.PASTED, InsertionRouteKind.PASTE, null, null, null, false).name,
             AnalyticsEvent.DictationInterrupted("t", TakeStage.RECORDING, "tile").name,

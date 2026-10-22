@@ -108,7 +108,7 @@ internal object AppLaunchFacts {
 }
 
 /**
- * The installer of record (#468), so a reader can tell a Play install from one Play never delivered. A closed
+ * The current installer of record (#468), including whether that record names Google Play. A closed
  * token: the installer's own package name never leaves the phone. The record is mutable and says nothing about
  * where an APK file was downloaded. [NONE] means no installer of record: adb, a system app, or an installer since
  * removed. A test device is told apart by `test_lab`, not by this token.

@@ -38,6 +38,9 @@ internal object AppLaunchFacts {
             micGranted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
             onboardingComplete = preferences?.onboardingComplete ?: false,
             customWordsCount = customWords,
+            installSource = runCatching {
+                InstallSource.from(context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName)
+            }.getOrDefault(InstallSource.UNKNOWN),
             settings = settingsProjection(preferences, policy),
         )
     }
@@ -97,4 +100,26 @@ internal object AppLaunchFacts {
 
     /** Every name a `settings.changed` row can carry. */
     val SETTING_NAMES: List<String> = SETTING_KEYS + POLISH_POLICY
+}
+
+/**
+ * Which installer put this build on the phone (#468), so a reader can tell a Play install from a copied APK or
+ * a test lab. A closed token: the installer's own package name never leaves the phone. [NONE] is adb or the
+ * shell, which is how Firebase Test Lab installs (its logcat reads `installer = null`).
+ */
+internal enum class InstallSource {
+    PLAY, GALAXY_STORE, PACKAGE_INSTALLER, NONE, OTHER, UNKNOWN;
+
+    val wire: String get() = name.lowercase()
+
+    companion object {
+        /** [installer] is `InstallSourceInfo.installingPackageName`; an installer we do not name is [OTHER]. */
+        fun from(installer: String?): InstallSource = when (installer) {
+            null -> NONE
+            "com.android.vending" -> PLAY
+            "com.sec.android.app.samsungapps" -> GALAXY_STORE
+            "com.google.android.packageinstaller", "com.android.packageinstaller" -> PACKAGE_INSTALLER
+            else -> OTHER
+        }
+    }
 }

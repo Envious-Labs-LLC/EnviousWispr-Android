@@ -49,6 +49,7 @@ internal sealed class AnalyticsEvent(val name: String) {
         val onboardingComplete: Boolean,
         /** Null when the store could not be read: absent, never a sentinel. */
         val customWordsCount: Int?,
+        val installSource: InstallSource,
         /** Persisted settings as projections; a failed read is the `unknown` token, never a UI default. */
         val settings: Map<String, Any>,
     ) : AnalyticsEvent("app.launched") {
@@ -61,6 +62,7 @@ internal sealed class AnalyticsEvent(val name: String) {
             "mic_granted" to micGranted,
             "onboarding_complete" to onboardingComplete,
             "custom_words_count" to customWordsCount,
+            "install_source" to installSource.wire,
         ) + settings
     }
 

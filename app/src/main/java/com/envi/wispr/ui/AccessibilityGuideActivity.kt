@@ -22,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -142,14 +141,14 @@ private fun AccessibilityDisclosure(onAgree: () -> Unit, onDecline: () -> Unit) 
 }
 
 /** One frame of the illustrated path: the screen's title, the row to tap, and an optional note under it. */
-private data class GuideFrame(val step: String, val screen: String, val row: String, val note: String? = null, val crossedOut: Boolean = false, val allow: Boolean = false)
+private data class GuideFrame(val step: String, val screen: String, val row: String, val note: String? = null, val allow: Boolean = false)
 
 private fun guideFrames(samsung: Boolean, appLabel: String, reconnect: Boolean): List<GuideFrame> =
     (if (samsung) listOf(GuideFrame("Tap Installed apps", "Accessibility", "Installed apps    ›")) else emptyList()) + listOf(
         GuideFrame("Choose $appLabel", if (samsung) "Installed apps" else "Accessibility", "$appLabel    ${if (reconnect) "On" else "Off"}"),
         if (reconnect) GuideFrame("Turn it off, then on again", appLabel, "On  →  Off  →  On")
         else GuideFrame("Turn on the service", appLabel, "Off    ○"),
-        GuideFrame("Leave the shortcut off", appLabel, "$appLabel shortcut    Off", note = "Its floating button switches auto-paste off when tapped", crossedOut = true),
+        GuideFrame("Leave the shortcut off", appLabel, "$appLabel shortcut    Off  ○", note = "Leave this one off. Its floating button switches auto-paste off when tapped."),
         GuideFrame("Review access, then Allow", "Review Android’s prompt", "Allow", allow = true),
         GuideFrame("Come back to EnviousWispr", appLabel, "On    ✓"),
     )
@@ -195,8 +194,7 @@ private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHisto
                     else -> frame.step
                 }
                 Text(text, fontSize = 15.sp, fontWeight = FontWeight.Bold, lineHeight = 18.sp)
-                if (!reduced) Text(frame.row, Modifier.fillMaxWidth().background(Color(0xFFE7DFFC), RoundedCornerShape(5.dp)).padding(6.dp), fontSize = 11.sp, color = Color(0xFF17171B),
-                    textDecoration = if (frame.crossedOut) TextDecoration.LineThrough else null)
+                if (!reduced) Text(frame.row, Modifier.fillMaxWidth().background(Color(0xFFE7DFFC), RoundedCornerShape(5.dp)).padding(6.dp), fontSize = 11.sp, color = Color(0xFF17171B))
             }
         }
         return
@@ -212,8 +210,7 @@ private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHisto
                 Surface(color = Color(0xFFF3F3F6), contentColor = Color(0xFF17171B), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(frame.screen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text(frame.row, Modifier.fillMaxWidth().background(Color(0xFFE7DFFC), RoundedCornerShape(7.dp)).padding(10.dp), fontSize = 11.sp,
-                            textDecoration = if (frame.crossedOut) TextDecoration.LineThrough else null)
+                        Text(frame.row, Modifier.fillMaxWidth().background(Color(0xFFE7DFFC), RoundedCornerShape(7.dp)).padding(10.dp), fontSize = 11.sp)
                         frame.note?.let { Text(it, fontSize = 11.sp) }
                     }
                 }

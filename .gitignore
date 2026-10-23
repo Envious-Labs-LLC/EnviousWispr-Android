@@ -29,8 +29,6 @@ AGENTS.md
 AGENTS/
 .mcp.json
 .mcp/
-.beads/
-.dolt/
 *.db
 
 # Local device and bridge tooling — belongs to the phone-workstation project, not the app
@@ -40,7 +38,6 @@ mac-bridge/
 mac-mcp/
 capabilities.json
 capabilities/
-scripts/brain-*
 
 # Internal-only documents. One directory, so a new internal doc is private by
 # default instead of needing its own line here.

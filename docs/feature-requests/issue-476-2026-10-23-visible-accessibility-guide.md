@@ -173,19 +173,27 @@ windows from the visible-window background-start exemption (2026-06 security bul
 accessibility service may carry its own background-start allowance (AOSP `AccessibilityServiceConnection` (external)),
 NOT VERIFIED for our case. So: on completion the guide attempts to start the app shell
 (`SettingsActivity`, `FLAG_ACTIVITY_NEW_TASK` | `FLAG_ACTIVITY_SINGLE_TOP` (external)) and then finishes;
-if Android blocks the start, nothing breaks and the user returns by hand, guided by the last frame
-"Come back to EnviousWispr". Automatic return is a UAT observation, not a promise. No
+if Android blocks the start, nothing breaks and the user returns by hand. Because the guide may already be
+gone by then, the guide says before handoff (round 2 finding 3): "After you allow access, if EnviousWispr
+does not reopen, open it from Recents or its app icon." No fallback text is assumed to stay visible after
+completion. Automatic return is a UAT observation, not a promise. No
 `ActivityManager.moveTaskToFront` (it needs `REORDER_TASKS` (external)); if Settings fails to launch after PiP entry,
 the compact frame says "Tap to open the guide" and the user expands it to reach the error and retry controls.
 
 **PiP branch, conditional on Chunk 0 = PASS (grounded finding 3).** Open Settings first enters native PiP
 (restored pre-#417 mechanism, compact renderer showing the current step in large type), then starts Settings.
 The PiP closes with the activity when granted+bound (G4). On the Allow step the compact frame reads "Tap
-Allow". Eligibility is a measured allowlist, not a maker name: Samsung AND an Android SDK level we measured
-on a Samsung phone (Samsung's Settings code ships per One UI release, which tracks the Android version;
-initially SDK 36 from the S26, plus the S22's if measured) AND `FEATURE_PICTURE_IN_PICTURE` (external).
-Every other phone, including unmeasured Samsung software, gets the full-screen guide only. A new Samsung
-Android version joins the list only after its own human-touch measurement. If Chunk 0 = FAIL, the list stays
+Allow". Eligibility is a measured allowlist, not a maker name (round 2 finding 1): Samsung AND the One UI
+version we measured (Samsung's `Build.VERSION.SEM_PLATFORM_INT` (external), read by reflection; absent or
+unreadable means not eligible; readable on Samsung builds is NOT VERIFIED until Chunk 0 reads it on the S26)
+AND `FEATURE_PICTURE_IN_PICTURE` (external). The key is the One UI version, not the Android SDK (One UI 6.0,
+6.1 and 6.1.1 all ran Android 14) and not `Build.FINGERPRINT` (external), which changes with every monthly
+security patch and would switch the guide off on the founder's own phone each month. Each measurement records
+model, fingerprint, SDK and One UI version so a later regression can be traced. Every other phone, including
+unmeasured One UI versions, gets the full-screen guide only. A new One UI version joins the list only after
+its own human-touch measurement. Residual risk, accepted: a monthly patch inside a measured One UI version
+changes the dialog; the user then sees Samsung's "obscuring" toast and can close the floating guide.
+If Chunk 0 = FAIL, the list stays
 empty and every phone gets the floor. Reduced motion keeps PiP with static frames (the pre-#417 compact
 numbered list).
 
@@ -226,7 +234,8 @@ would split completion and recreation across two tasks for no user benefit.
 | Exits | Decline; Back/Return (finish); granted+bound (finish, closes PiP); Settings launch failure (`launchFailed` text); process death while in Settings (recreated full screen, no PiP). |
 | Recreation | `GuidePhase` saved; `compact` re-derived; rotation handled by existing `configChanges`. |
 | PiP lifecycle | Entered only from Open Settings on Samsung; user may close it via PiP X (activity stops; task remains; next open restarts guide full screen); expanding PiP returns to full-screen guide. |
-| Stale completion | Granted but unbound: guide stays until bound (unchanged). Bound before Agree: onResume does not finish unless agreed (unchanged). |
+| Stale completion | `LIVE` on entry or on any resume completes immediately. Granted but unbound keeps the recovery controls until bound. No transition reads the removed `agreed` or `launchFailed` flags. |
+| Recreation of transient phases (round 2 finding 2) | `Launching(history)` restores as `Ready(history)` without relaunching Settings; `AwaitingSettings` on return without `LIVE` becomes `Ready(Opened)`; `Complete` finishes immediately. |
 | Re-entry (coverage gap 3) | `singleTask` reuses the live guide: reopening from any caller while it exists keeps the current `GuidePhase` and does not relaunch Settings by itself; repeated Open Settings taps start Settings again (idempotent, same task); Home, lock/unlock and process death return to the guide full screen in its saved phase. Each is a UAT step. |
 
 ## 6. Consumer matrix

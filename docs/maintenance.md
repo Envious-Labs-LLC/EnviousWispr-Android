@@ -21,7 +21,6 @@ Keep the accepted device sample and limitations explicit.
 | Submitted listing and claims | [Listing](play-listing/store-listing.md) |
 | Data Safety and declarations | [Data Safety](play-data-safety-answers.md), [declarations](play-listing/console-declarations.md) |
 | Optional test repeatability and API lint | Issue440 |
-| Publisher/public-review separation | Issue447 |
 | More device qualification and speed work | Issues418 and433 |
 | Model replacement and interruption recovery | Issues108 and43 |
 
@@ -33,9 +32,11 @@ never overwrite the Play app with a debug APK or wipe installed data. Verify sou
 installation and actual behavior separately. Documentation-only changes need documentation checks,
 not a new tester release.
 
-Before publishing a tester update while production changes exist, inspect Console: the current
-publisher commit can submit other pending changes and cancel/resubmit an existing review. Issue447
-owns correcting that boundary. Do not assume an internal-track update leaves the review untouched.
+A tester publish never cancels a production review (#447): the publisher commits with
+`changesInReviewBehavior=ERROR_IF_IN_REVIEW`, so while a review is in progress the run fails with
+Google's reason; push again after the review clears. It also refuses to run while another track holds
+a draft release, which the commit would send for review. Store-listing drafts are not visible to that
+check, so inspect Console before a tester publish while listing changes are saved but not submitted.
 
 For later production updates, promote the tested signed bundle, inspect Play validation, confirm
 the intended countries and release behavior, then submit the reviewed candidate. Preserve settings,

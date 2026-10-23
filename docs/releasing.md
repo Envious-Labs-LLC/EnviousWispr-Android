@@ -29,6 +29,8 @@ Use this workflow for tester releases across Claude Code and Codex. Coordinate a
 
 A failed build cannot publish. Read the failing job before starting another run. If upload/commit has an uncertain result, check Play first: the publisher reads back the track before declaring success and never blindly retries a commit.
 
+While a production update is in Google review, the publish fails with Google's reason instead of cancelling that review; push a new commit after the review clears. A draft release on another track also stops the run before upload, naming the track: resolve it in Play Console first.
+
 A rerun after successful publication is rejected as a reused version. Push a new reviewed commit for a new release. Do not reset workflow numbering or reuse a version. If numbering ever resets, choose and review a new version offset greater than all previously uploaded codes before enabling publication again; update both build and publisher validation together.
 
 Expired/missing federation or Play permission should be fixed through the account configuration. Do not add broad owner rights, print credentials or bypass checks. A newer code uploaded only as a draft may not appear on current tracks; Google will still reject reuse, so inspect bundle history when diagnosing such an error.

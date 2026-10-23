@@ -160,28 +160,38 @@ The disclosure button becomes "Agree" (was "Agree and open Settings"; coverage g
 unchanged, the label no longer promises an immediate handoff. The frames are illustrations on a timer, not
 detected Settings progress; detecting Settings screens is excluded.
 
-**Entry states (coverage gap 5).** The guide is opened from callers in four auto-paste states
-(`AutoPasteAvailability`): not permitted (normal path above); permitted but not yet running (the guide
-shows a "Connecting..." line, no steps, and finishes when bound); switched off unexpectedly (steps, headed
-"Turn EnviousWispr back on"); live (callers do not route here today; if reached, the guide finishes at once
-via the existing completion path). Exact copy is drafted in the build chunk under `content-brand.md`.
+**Entry states (coverage gap 5, grounded finding 5).** On entry the guide reads readiness
+(`AutoPasteAvailability`): `LIVE` closes immediately (no disclosure, no steps); `NOT_PERMITTED` takes the
+normal path above; `SWITCHED_OFF_UNEXPECTEDLY` shows the same steps headed "Turn EnviousWispr back on";
+`PERMITTED_NOT_RUNNING` keeps the off/on recovery steps and the exit controls while it waits for binding,
+because a stuck connection is fixed by switching the service off and on. Exact copy is drafted in the build
+chunk under `content-brand.md`.
 
-**Return after grant (coverage gap 4).** Today `finish()` closes the guide task but leaves the user in
-Settings. When completion fires while the guide is in PiP (visible, so Android allows the start), it first
-brings `SettingsActivity` (the app shell, `FLAG_ACTIVITY_REORDER_TO_FRONT` (external)) forward, then
-finishes. Without PiP the guide is hidden behind Settings and may not start activities, so the user returns
-via Recents or the app icon as today, and the last frame still says "Come back to EnviousWispr".
+**Return after grant (coverage gap 4, grounded findings 1-2).** Today `finish()` closes the guide task but
+leaves the user in Settings. PiP visibility alone does not authorize activity starts: AOSP excludes pinned
+windows from the visible-window background-start exemption (2026-06 security bulletin). A bound
+accessibility service may carry its own background-start allowance (AOSP `AccessibilityServiceConnection` (external)),
+NOT VERIFIED for our case. So: on completion the guide attempts to start the app shell
+(`SettingsActivity`, `FLAG_ACTIVITY_NEW_TASK` | `FLAG_ACTIVITY_SINGLE_TOP` (external)) and then finishes;
+if Android blocks the start, nothing breaks and the user returns by hand, guided by the last frame
+"Come back to EnviousWispr". Automatic return is a UAT observation, not a promise. No
+`ActivityManager.moveTaskToFront` (it needs `REORDER_TASKS` (external)); if Settings fails to launch after PiP entry,
+the compact frame says "Tap to open the guide" and the user expands it to reach the error and retry controls.
 
-**Samsung branch, conditional on Chunk 0 = PASS:** Open Settings first enters native PiP (restored pre-#417
-mechanism, compact renderer showing the current step in large type), then starts Settings. The PiP finishes
-with the activity when granted+bound (G4), which is exactly what the existing completion path does. On the
-Allow step the compact frame reads "Tap Allow". If Chunk 0 = FAIL, the Samsung branch is dropped and every
-phone gets the floor only; nothing else changes.
+**PiP branch, conditional on Chunk 0 = PASS (grounded finding 3).** Open Settings first enters native PiP
+(restored pre-#417 mechanism, compact renderer showing the current step in large type), then starts Settings.
+The PiP closes with the activity when granted+bound (G4). On the Allow step the compact frame reads "Tap
+Allow". Eligibility is a measured allowlist, not a maker name: Samsung AND an Android SDK level we measured
+on a Samsung phone (Samsung's Settings code ships per One UI release, which tracks the Android version;
+initially SDK 36 from the S26, plus the S22's if measured) AND `FEATURE_PICTURE_IN_PICTURE` (external).
+Every other phone, including unmeasured Samsung software, gets the full-screen guide only. A new Samsung
+Android version joins the list only after its own human-touch measurement. If Chunk 0 = FAIL, the list stays
+empty and every phone gets the floor. Reduced motion keeps PiP with static frames (the pre-#417 compact
+numbered list).
 
-**Non-Samsung phones never get PiP** because P2 says their Allow would refuse the tap while it overlaps.
-
-Gate for PiP: `Build.MANUFACTURER` is Samsung AND `FEATURE_PICTURE_IN_PICTURE` (external). Reduced motion
-keeps PiP with static frames (the pre-#417 compact numbered list).
+**Prior decision (grounded finding 6).** This supersedes #416's blanket PiP removal only for measured
+configurations. Unobstructed consent, single ownership in this activity and no additional user-facing
+permission remain binding.
 
 Rejected:
 - PiP everywhere (Wispr Flow parity): blocks Allow on AOSP Settings by P2.
@@ -197,23 +207,27 @@ for every route; the alternative, a second PiP activity like Flow's `Accessibili
 would split completion and recreation across two tasks for no user benefit.
 
 ## 4. Contract deltas
-- `agreed`: unchanged meaning (consent given). No longer implies Settings was opened.
-- `settingsOpened` (proposed, saved state): Settings has been launched at least once this guide session;
-  selects "Open Settings" vs "Open Settings again" copy only.
-- `compact` (proposed, restored): true while in PiP; derived from `isInPictureInPictureMode` and
-  `onPictureInPictureModeChanged`; never persisted.
-- Manifest: `supportsPictureInPicture="true"` returns on the guide activity (Samsung branch only; harmless
-  where never entered).
+- `GuidePhase` (proposed) (sealed, saved in instance state; grounded finding 4) replaces the `agreed` and
+  `launchFailed` flags: `Disclosure` (proposed); `Ready(history)`; `Launching(history)`; `AwaitingSettings` (proposed);
+  `LaunchFailed(history)`; `Complete`. `history` is `NeverOpened` (proposed) or `Opened` and selects "Open Settings"
+  vs "Open Settings again". Every `when` over it is exhaustive with no `else`.
+- Presentation (`compact`) is derived from `isInPictureInPictureMode` and
+  `onPictureInPictureModeChanged`, never stored, so "disclosure while compact" cannot be represented:
+  PiP is entered only from `Launching`.
+- Permission (`AccessibilityPermission.isGranted`) and binding (`PasteAccessibilityService.isBound`) stay
+  separate observations, not phase fields; granted-without-bound and bound-without-granted remain
+  representable as `AutoPasteAvailability` already models them.
+- Manifest: `supportsPictureInPicture="true"` returns on the guide activity; harmless where never entered.
 
 ## 5. State and lifecycle audit
 | Population | Enumerated |
 |---|---|
 | Entry routes | 5 call sites in §2.5.1, all one launcher; all get the new order. |
 | Exits | Decline; Back/Return (finish); granted+bound (finish, closes PiP); Settings launch failure (`launchFailed` text); process death while in Settings (recreated full screen, no PiP). |
-| Recreation | `agreed`, `settingsOpened` saved; `compact` re-derived; rotation handled by existing `configChanges`. |
+| Recreation | `GuidePhase` saved; `compact` re-derived; rotation handled by existing `configChanges`. |
 | PiP lifecycle | Entered only from Open Settings on Samsung; user may close it via PiP X (activity stops; task remains; next open restarts guide full screen); expanding PiP returns to full-screen guide. |
 | Stale completion | Granted but unbound: guide stays until bound (unchanged). Bound before Agree: onResume does not finish unless agreed (unchanged). |
-| Re-entry (coverage gap 3) | `singleTask` reuses the live guide: reopening from any caller while it exists keeps `agreed` and the current screen and does not relaunch Settings by itself; repeated Open Settings taps start Settings again (idempotent, same task); Home, lock/unlock and process death return to the guide full screen with `agreed` kept. Each is a UAT step. |
+| Re-entry (coverage gap 3) | `singleTask` reuses the live guide: reopening from any caller while it exists keeps the current `GuidePhase` and does not relaunch Settings by itself; repeated Open Settings taps start Settings again (idempotent, same task); Home, lock/unlock and process death return to the guide full screen in its saved phase. Each is a UAT step. |
 
 ## 6. Consumer matrix
 | Contract delta | Consumer | Current | Required | Code change? | Verified by |
@@ -236,7 +250,7 @@ would split completion and recreation across two tasks for no user benefit.
 Copy follows `content-brand.md`; no em dashes.
 
 ## 8. Signals audit
-`settingsOpened` presence changes button copy only. `compact` changes layout only. No telemetry fields.
+`GuidePhase` history changes button copy only. `compact` changes layout only. No telemetry fields.
 
 ## 9. Fallback source of truth
 | Branch | Expression | Source | Why | Predicate | If none | Consumer |
@@ -247,7 +261,7 @@ Copy follows `content-brand.md`; no em dashes.
 - `app/src/main/java/com/envi/wispr/ui/AccessibilityGuideActivity.kt`: split Agree from Settings launch;
   Open Settings button; shortcut frame; Samsung-gated PiP entry and compact renderer restored from
   `bb7fdf35^`.
-- `app/src/main/AndroidManifest.xml`: `supportsPictureInPicture="true"` on the guide (Samsung branch only).
+- `app/src/main/AndroidManifest.xml`: `supportsPictureInPicture="true"` on the guide.
 - `.claude/knowledge/device-testing.md` or `docs/internal/android-onboarding-tracker.md`: Chunk 0 result.
 
 ## 11. Testing

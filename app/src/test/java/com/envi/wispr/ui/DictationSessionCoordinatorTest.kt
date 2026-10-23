@@ -443,6 +443,7 @@ class DictationSessionCoordinatorTest {
         polish.listener!!.onOutcome(polish.outcome("Hello world."))
         assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
         rig.host.awaitStopped()
+        rig.capture.awaitFinishTake()
         assertEquals(listOf("listenForTake", "start", "listen", "stop", "finishTake"), rig.capture.events.toList())
         // The bound was pending through the whole healthy take; it goes with the binding.
         // REVERT: drop the cancel from `disarmSilenceBound`.
@@ -551,6 +552,7 @@ class DictationSessionCoordinatorTest {
         assertEquals(TerminalReason.CANCELLED_RECORDING, rig.endings.awaitOne())
         rig.host.awaitStopped()
         assertTrue("the draft row is discarded", rig.dao.rows.isEmpty())
+        rig.capture.awaitFinishTake()
         assertTrue("the take is handed back to capture", rig.capture.events.contains("finishTake"))
         assertTrue("no sentence for a cancel the user asked for", rig.host.events.none { it.startsWith("toast") })
     }

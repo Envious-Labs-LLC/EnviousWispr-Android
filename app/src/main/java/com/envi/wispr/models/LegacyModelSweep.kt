@@ -1,7 +1,6 @@
 package com.envi.wispr.models
 
 import java.io.File
-import java.nio.file.Files
 
 /**
  * Removes the speech models later swaps replaced, each about 670 MB: the sherpa-onnx set (#374, storage id `parakeet`)
@@ -30,19 +29,9 @@ internal object LegacyModelSweep {
         val targets = LEGACY.map { File(root, it) } +
             (root.listFiles()?.filter { it.name.startsWith(QUARANTINE_PREFIX) } ?: emptyList())
         var removed = 0L
-        for (target in targets) {
-            if (!target.exists() && !Files.isSymbolicLink(target.toPath())) continue
-            // A link in a retired name's place is removed as a link: walking it could reach a live model.
-            if (Files.isSymbolicLink(target.toPath())) {
-                target.delete()
-                continue
-            }
-            // Bottom-up, one entry at a time, never following a link out of the folder.
-            target.walkBottomUp().onEnter { !Files.isSymbolicLink(it.toPath()) }.forEach { entry ->
-                val size = if (entry.isFile) entry.length() else 0L
-                if (entry.delete()) removed += size
-            }
-        }
-        if (targets.any { it.exists() }) 0L else removed
+        // Every target is attempted; a link, in a retired name's place or nested inside one, goes as a link,
+        // because following it could reach a live model.
+        val allGone = targets.map { target -> ModelTree.delete(target) { bytes -> removed += bytes } }.all { it }
+        if (allGone) removed else 0L
     }.getOrDefault(0L)
 }

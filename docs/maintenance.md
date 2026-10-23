@@ -2,15 +2,10 @@
 
 ## Release status
 
-On October 12, 2026, version 0.1.0, build 277 was submitted for public Google Play review worldwide
-(177 countries/regions plus rest of world). It is not confirmed publicly available. Managed publishing
-is off, so approved changes publish automatically. Verify Console and the public listing before
-changing this status to live. Application ID: com.envi.wispr.
-
-The reviewed application fixes duplicate spoken punctuation, landscape permission rows, accessibility
-telemetry disclosure and Android 13/14 number-cleanup compatibility (PRs439,443,445). Recording sounds
-are included (PR425). Main app-code snapshot fd406273, tested277 and internal278 have identical app
-source. Internal publication is not Google approval or installation proof.
+Build 277 (version 0.1.0) is live worldwide on Google Play: Google approved it and Console reads "Last
+published on October 18, 2026" (read 2026-10-19). Managed publishing is off, so an approved update
+publishes on its own. Refresh Console before calling any later build live. Internal publication is not Google approval or installation proof. Application
+ID: com.envi.wispr.
 
 ## Ongoing priorities
 
@@ -26,7 +21,6 @@ Keep the accepted device sample and limitations explicit.
 | Submitted listing and claims | [Listing](play-listing/store-listing.md) |
 | Data Safety and declarations | [Data Safety](play-data-safety-answers.md), [declarations](play-listing/console-declarations.md) |
 | Optional test repeatability and API lint | Issue440 |
-| Completed-setup navigation | Issue441 |
 | Publisher/public-review separation | Issue447 |
 | More device qualification and speed work | Issues418 and433 |
 | Model replacement and interruption recovery | Issues108 and43 |
@@ -46,8 +40,9 @@ owns correcting that boundary. Do not assume an internal-track update leaves the
 For later production updates, promote the tested signed bundle, inspect Play validation, confirm
 the intended countries and release behavior, then submit the reviewed candidate. Preserve settings,
 history, vocabulary, keys and models across upgrades. Qualify an intentional required-model replacement
-before changing its manifest; v1 has one speech model, so the future replacement issue was not a
-first-release blocker.
+before changing its manifest. The Parakeet Ultra swap (#458) accepted that an upgraded phone cannot
+dictate until the new model lands over Wi-Fi (founder-approved, 2026-10-20); Issue108 owns removing
+that gap before the next replacement.
 
 ## Historical material
 

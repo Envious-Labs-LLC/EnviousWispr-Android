@@ -46,6 +46,25 @@ BEFORE Settings instead of behind it, with Open Settings as its primary button, 
 
 ---
 
+## Build outcome (2026-10-23): guide-first shipped, floating guide moved to a follow-up
+
+Chunk 0 on the S26 (SM-S948U1, One UI 9, `ro.build.version.oneui` 90000, fingerprint
+`samsung/m3quew/m3q:17/CP2A.260605.016/S948U1UES4BZIG_OYM4BZIG`), driven with the Preview build:
+- The PiP guide appeared over Samsung Accessibility settings and advanced through its frames.
+- Android placed it bottom right at `[560,1716,1035,2160]`, fully over Allow `[712,2026,984,2127]`, so a
+  new user cannot see Allow without dragging it (screenshots kept in the local `.codex/issue-476-records/`,
+  which is not part of the repository).
+- Dragged to `[560,1267,1035,1711]` (over the dialog body, off the button), an injected tap on Allow was
+  ACCEPTED on One UI 9: no obscured-touch refusal, the Preview service was enabled.
+- On grant the PiP guide finished and the app came to the front by itself (setup showed Granted).
+- Without PiP (emulator, API 36) the hidden guide does not react until the user returns; the app shows
+  Ready on return.
+
+Founder decision: ship the guide-first floor now; the floating guide (with a "drag me up" line and a
+measured `SEM_PLATFORM_INT` value) is a follow-up issue. The PiP code was removed from this change
+rather than shipped switched off. §3's PiP branch, §4's manifest delta and §11.1 Chunk 0 describe that
+follow-up, not this PR.
+
 ## 0. TL;DR
 
 The accessibility setup guide never appears: after "Agree and open Settings" the app swaps to the guide and

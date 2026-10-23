@@ -1,6 +1,6 @@
 # Issue #476 — Visible accessibility setup guide — 2026-10-23
 
-GitHub issue: `#476`. Tier: MEDIUM (permissions surface, one activity, manifest). Status: DRAFT.
+GitHub issue: `#476`. Tier: MEDIUM (permissions surface, one activity, manifest). Status: APPROVED (Gate 2, founder 2026-10-23).
 
 ## Preface — Lane + Hardware UAT declaration
 

@@ -191,8 +191,17 @@ AND `FEATURE_PICTURE_IN_PICTURE` (external). The key is the One UI version, not 
 security patch and would switch the guide off on the founder's own phone each month. Each measurement records
 model, fingerprint, SDK and One UI version so a later regression can be traced. Every other phone, including
 unmeasured One UI versions, gets the full-screen guide only. A new One UI version joins the list only after
-its own human-touch measurement. Residual risk, accepted: a monthly patch inside a measured One UI version
-changes the dialog; the user then sees Samsung's "obscuring" toast and can close the floating guide.
+its own human-touch measurement. The raw `SEM_PLATFORM_INT` value is compared exactly (public decoders keep only
+major and minor, so whether point releases differ in the raw value is NOT VERIFIED); Chunk 0 logs the raw
+value and the `ro.build.version.oneui` (external) property beside it. Residual risk, accepted: a monthly
+patch or point release inside a measured raw value changes the dialog; the user then sees Samsung's
+"obscuring" toast and can close the floating guide.
+
+Eligibility keys enumerated and rejected (independent refutation, `.codex/issue-476-eligibility-refutation.md`):
+maker only; Android SDK or the Android 16 minor SDK (vendor-blind); model; `Build.FINGERPRINT` and security
+patch level (monthly churn); Settings app version (unknown churn); a runtime probe (no public signal before
+the tap); keep-clear areas (best effort, declared by the app under the PiP); an overlay window instead of
+PiP (the dialog hides non-system overlays and it needs a fourth permission); PiP stashing (user-triggered).
 If Chunk 0 = FAIL, the list stays
 empty and every phone gets the floor. Reduced motion keeps PiP with static frames (the pre-#417 compact
 numbered list).

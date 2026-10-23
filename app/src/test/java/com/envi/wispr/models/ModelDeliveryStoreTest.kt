@@ -253,6 +253,25 @@ class ModelDeliveryStoreTest {
         root.deleteRecursively()
     }
 
+    /**
+     * #461. MUTATION: put `File.deleteRecursively` back in `remove`; it walks through the link and empties the
+     * folder outside the models root.
+     */
+    @Test fun removeDeletesALinkInsideTheModelFolderWithoutFollowingIt() {
+        val bytes = "tiny verified model".toByteArray()
+        val model = descriptor(bytes)
+        val root = Files.createTempDirectory("remove-link").toFile()
+        val outside = Files.createTempDirectory("outside-models").toFile()
+        val precious = java.io.File(outside, "photo.jpg").apply { writeBytes(ByteArray(7)) }
+        val store = ModelDeliveryStore(root)
+        assertEquals(DownloadState.READY, store.download(model, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(bytes), false) }).state)
+        Files.createSymbolicLink(java.io.File(root, "demo/nested").toPath(), outside.toPath())
+
+        assertTrue(store.remove(model))
+        assertFalse(Files.exists(java.io.File(root, "demo").toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        assertTrue("the file outside the models folder survives", precious.isFile)
+    }
+
     private fun descriptor(bytes: ByteArray, revision: String = R1) = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", revision, listOf(ModelFile("model.bin", bytes.size.toLong(), hash(bytes), "https://huggingface.co/test/model/resolve/$revision/model.bin")))
 
     private fun twoHostDescriptor(bytes: ByteArray) = ModelDescriptor("demo", "test", "Demo", "Test", "Test", "", R1, listOf(

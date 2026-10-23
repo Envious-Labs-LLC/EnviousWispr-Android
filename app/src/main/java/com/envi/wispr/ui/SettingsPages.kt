@@ -258,11 +258,22 @@ internal fun ClipboardPage(
 internal fun PermissionsPage(
     readiness: AppReadiness,
     autoPaste: AutoPasteAvailability,
+    onboardingComplete: Boolean,
     onContinueSetup: () -> Unit,
+    onOpenTab: (AppDestination) -> Unit,
     onRequestMicrophone: () -> Unit,
     onRequestNotifications: () -> Unit,
     onOpenAccessibility: () -> Unit,
 ) {
+    val onContinue = {
+        when (setupContinue(onboardingComplete, readiness)) {
+            SetupContinue.GUIDED_SETUP -> onContinueSetup()
+            SetupContinue.SPEECH_MODEL -> onOpenTab(AppDestination.Transcription)
+            SetupContinue.POLISH_MODEL -> onOpenTab(AppDestination.Polish)
+            SetupContinue.MICROPHONE -> onRequestMicrophone()
+            SetupContinue.AUTO_PASTE -> onOpenAccessibility()
+        }
+    }
     ScreenContainer(subtitle = SettingsPage.Permissions.subtitle) {
         if (setupCardShows(readiness, autoPaste)) {
             Card(
@@ -283,7 +294,7 @@ internal fun PermissionsPage(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
-                    FilledTonalButton(onClick = onContinueSetup) {
+                    FilledTonalButton(onClick = onContinue) {
                         Text("Continue")
                     }
                 }
@@ -353,20 +364,44 @@ internal fun PermissionsPage(
                 statusDescription = autoPaste.statusDescription(),
                 onClick = onOpenAccessibility,
             )
-            HorizontalDivider()
-            SettingsActionRow(
-                title = "Continue guided setup",
-                subtitle = "Resume from your saved step",
-                ready = null,
-                onClick = onContinueSetup,
-            )
+            // Completed setup cannot be resumed, so the row would do nothing there (#441).
+            if (!onboardingComplete) {
+                HorizontalDivider()
+                SettingsActionRow(
+                    title = "Continue guided setup",
+                    subtitle = "Resume from your saved step",
+                    ready = null,
+                    onClick = onContinueSetup,
+                )
+            }
         }
     }
 }
 
-/** The red "Setup needs attention" card: core setup unfinished, or auto-paste never set up. */
+/**
+ * The red "Setup needs attention" card: core setup unfinished, or auto-paste never set up. A model the file
+ * check has not answered for yet is not a missing model, so it never raises the card (#403).
+ */
 internal fun setupCardShows(readiness: AppReadiness, autoPaste: AutoPasteAvailability): Boolean =
-    !readiness.coreReady || autoPaste == AutoPasteAvailability.NOT_PERMITTED
+    !readiness.microphoneGranted ||
+        (readiness.modelsChecked && !readiness.requiredModelsReady) ||
+        autoPaste == AutoPasteAvailability.NOT_PERMITTED
+
+/** Where the setup card's Continue takes the user (#406). */
+internal enum class SetupContinue { GUIDED_SETUP, SPEECH_MODEL, POLISH_MODEL, MICROPHONE, AUTO_PASTE }
+
+/**
+ * Unfinished guided setup resumes it. Once setup was completed, the guided flow cannot reopen, so Continue
+ * goes straight to the first unmet need, in the guided flow's own order: downloads, then permissions. Only
+ * called while [setupCardShows], so with every model and the microphone in place the unmet need is auto-paste.
+ */
+internal fun setupContinue(onboardingComplete: Boolean, readiness: AppReadiness): SetupContinue = when {
+    !onboardingComplete -> SetupContinue.GUIDED_SETUP
+    readiness.modelsChecked && !readiness.speechModelReady -> SetupContinue.SPEECH_MODEL
+    readiness.modelsChecked && !readiness.polishModelReady -> SetupContinue.POLISH_MODEL
+    !readiness.microphoneGranted -> SetupContinue.MICROPHONE
+    else -> SetupContinue.AUTO_PASTE
+}
 
 /** The calm card, only once core setup is done, so the page never carries two alarm cards. */
 internal fun calmAutoPasteNotice(readiness: AppReadiness, autoPaste: AutoPasteAvailability): AutoPasteNotice? =

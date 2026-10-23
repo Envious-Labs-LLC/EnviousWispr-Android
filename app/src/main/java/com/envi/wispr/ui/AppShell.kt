@@ -264,7 +264,12 @@ internal fun EnviousWisprApp(
                         SettingsPage.Permissions -> PermissionsPage(
                             readiness = readiness,
                             autoPaste = autoPaste,
+                            onboardingComplete = preferences.onboardingComplete,
                             onContinueSetup = actions.onboarding.onResume,
+                            onOpenTab = { tab ->
+                                destinationName = tab.name
+                                closePages()
+                            },
                             onRequestMicrophone = actions.permissions.onRequestMicrophone,
                             onRequestNotifications = actions.permissions.onRequestNotifications,
                             onOpenAccessibility = actions.permissions.onOpenAccessibility,

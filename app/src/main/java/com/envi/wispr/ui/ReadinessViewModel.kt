@@ -28,6 +28,12 @@ internal data class AppReadiness(
     val accessibility: AccessibilityPermissionCheck = AccessibilityPermissionCheck.UNCHECKED,
     val speechModelReady: Boolean = false,
     val polishModelReady: Boolean = false,
+    /**
+     * False until the first file check answers (#403). The two model fields hold their `false` defaults
+     * until then, which is "not checked yet", never "missing"; a surface that alarms on a missing model
+     * waits for this.
+     */
+    val modelsChecked: Boolean = false,
 ) {
     val requiredModelsReady: Boolean
         get() = speechModelReady && polishModelReady
@@ -124,5 +130,6 @@ internal fun readAppReadiness(context: Context): AppReadiness {
         accessibility = accessibility,
         speechModelReady = speechModelReady,
         polishModelReady = ModelStorage.isReady(context, ModelManifest.s1),
+        modelsChecked = true,
     )
 }

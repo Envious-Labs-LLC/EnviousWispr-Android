@@ -139,7 +139,7 @@ internal class ModelDeliveryStore(private val root: File) {
         // hash, having spent the whole transfer (#36 review rounds 4 and 5, 2026-09-02).
         val stamp = File(staging, STAGING_REVISION)
         if (staging.exists() && runCatching { stamp.readText() }.getOrNull() != model.pinnedRevision) {
-            staging.deleteRecursively()
+            ModelTree.delete(staging)
         }
         try {
             staging.mkdirs()
@@ -218,13 +218,13 @@ internal class ModelDeliveryStore(private val root: File) {
             File(staging, RECEIPT).writeText(receiptText(model))
             val final = finalDirectory(model)
             val old = File(root, ".${model.id}.old")
-            if (old.exists()) old.deleteRecursively()
+            ModelTree.delete(old)
             if (final.exists() && !final.renameTo(old)) throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not stage existing model")
             if (!staging.renameTo(final)) {
                 old.renameTo(final)
                 throw ModelDeliveryException(DeliveryFailureReason.ADMISSION_FAILED, "could not admit model atomically")
             }
-            old.deleteRecursively()
+            ModelTree.delete(old)
             DownloadStatus(DownloadState.READY, model.files.sumOf { it.expectedBytes }, model.files.sumOf { it.expectedBytes })
         } catch (e: IOException) {
             // Transport and storage interruptions keep the .part file for a later range resume. The
@@ -234,7 +234,7 @@ internal class ModelDeliveryStore(private val root: File) {
     }
 
     fun remove(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
-        val removedFinal = !finalDirectory(model).exists() || finalDirectory(model).deleteRecursively()
+        val removedFinal = ModelTree.delete(finalDirectory(model))
         removedFinal && cleanupArtifacts(model)
     }
     fun repair(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
@@ -251,33 +251,33 @@ internal class ModelDeliveryStore(private val root: File) {
         val names = legacyDirectory.listFiles()?.map { it.name }?.toSet() ?: emptySet()
         if (names != model.files.map { it.name }.toSet()) return DownloadStatus(DownloadState.REPAIR_NEEDED, message = "legacy model file set is incomplete")
         val staging = File(root, ".${model.id}.adopt")
-        if (staging.exists()) staging.deleteRecursively()
+        ModelTree.delete(staging)
         try {
             staging.mkdirs()
             for (entry in model.files) {
                 val source = File(legacyDirectory, entry.name)
                 if (!source.isFile || Files.isSymbolicLink(source.toPath()) || source.length() != entry.expectedBytes || sha256(source) != entry.sha256!!.lowercase()) {
-                    staging.deleteRecursively()
+                    ModelTree.delete(staging)
                     return DownloadStatus(DownloadState.REPAIR_NEEDED, message = "legacy model integrity check failed")
                 }
                 Files.copy(source.toPath(), File(staging, entry.name).toPath())
             }
             File(staging, RECEIPT).writeText(receiptText(model))
             val final = finalDirectory(model); val old = File(root, ".${model.id}.old")
-            if (old.exists()) old.deleteRecursively()
+            ModelTree.delete(old)
             if (final.exists() && !final.renameTo(old)) throw IOException("could not stage existing model")
             if (!staging.renameTo(final)) { old.renameTo(final); throw IOException("could not admit model atomically") }
-            old.deleteRecursively()
+            ModelTree.delete(old)
             DownloadStatus(DownloadState.READY, model.files.sumOf { it.expectedBytes }, model.files.sumOf { it.expectedBytes })
         } catch (_: IOException) {
-            staging.deleteRecursively()
+            ModelTree.delete(staging)
             DownloadStatus(DownloadState.FAILED, message = "legacy model adoption failed")
         }
     }
 
     private fun cleanupArtifacts(model: ModelDescriptor): Boolean {
         val candidates = root.listFiles()?.filter { it.name.startsWith(".${model.id}.") } ?: return true
-        return candidates.all { it.deleteRecursively() }
+        return candidates.all { ModelTree.delete(it) }
     }
 
     private fun receiptText(model: ModelDescriptor) = model.pinnedRevision + "\n" + model.files.joinToString("\n") { "${it.name}=${it.expectedBytes}:${it.sha256}" }

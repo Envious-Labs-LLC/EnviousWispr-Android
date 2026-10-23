@@ -86,4 +86,5 @@ internal fun onboardingStage(step: Int, readiness: AppReadiness, autoPaste: Auto
 internal fun AppReadiness.withVerifiedModels(checked: AppReadiness): AppReadiness = copy(
     speechModelReady = checked.speechModelReady,
     polishModelReady = checked.polishModelReady,
+    modelsChecked = checked.modelsChecked,
 )

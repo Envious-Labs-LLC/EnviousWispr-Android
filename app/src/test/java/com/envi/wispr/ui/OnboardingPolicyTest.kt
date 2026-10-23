@@ -60,8 +60,11 @@ class OnboardingPolicyTest {
 
     @Test fun anOlderModelCheckCannotRevokeANewerPermissionAnswer() {
         val granted = AppReadiness(microphoneGranted = true, notificationsGranted = true, accessibility = AccessibilityPermissionCheck.GRANTED)
-        val checkedBeforeGrant = AppReadiness(speechModelReady = true, polishModelReady = true)
-        assertEquals(granted.copy(speechModelReady = true, polishModelReady = true), granted.withVerifiedModels(checkedBeforeGrant))
+        val checkedBeforeGrant = AppReadiness(speechModelReady = true, polishModelReady = true, modelsChecked = true)
+        assertEquals(
+            granted.copy(speechModelReady = true, polishModelReady = true, modelsChecked = true),
+            granted.withVerifiedModels(checkedBeforeGrant),
+        )
     }
 
     // ---- practice is judged from the row the owner named for the take, and nothing else ----

@@ -156,6 +156,21 @@ The guide's steps (Samsung: Installed apps → EnviousWispr → turn it on → A
 find EnviousWispr → turn it on → Allow → come back) gain a dedicated frame "Leave 'EnviousWispr shortcut'
 off" with a crossed-out shortcut row, instead of a 10sp footnote. "Return to EnviousWispr" and Back still
 close. After Settings, returning without a grant shows the same guide with "Open Settings again".
+The disclosure button becomes "Agree" (was "Agree and open Settings"; coverage gap 7): consent text is
+unchanged, the label no longer promises an immediate handoff. The frames are illustrations on a timer, not
+detected Settings progress; detecting Settings screens is excluded.
+
+**Entry states (coverage gap 5).** The guide is opened from callers in four auto-paste states
+(`AutoPasteAvailability`): not permitted (normal path above); permitted but not yet running (the guide
+shows a "Connecting..." line, no steps, and finishes when bound); switched off unexpectedly (steps, headed
+"Turn EnviousWispr back on"); live (callers do not route here today; if reached, the guide finishes at once
+via the existing completion path). Exact copy is drafted in the build chunk under `content-brand.md`.
+
+**Return after grant (coverage gap 4).** Today `finish()` closes the guide task but leaves the user in
+Settings. When completion fires while the guide is in PiP (visible, so Android allows the start), it first
+brings `SettingsActivity` (the app shell, `FLAG_ACTIVITY_REORDER_TO_FRONT` (external)) forward, then
+finishes. Without PiP the guide is hidden behind Settings and may not start activities, so the user returns
+via Recents or the app icon as today, and the last frame still says "Come back to EnviousWispr".
 
 **Samsung branch, conditional on Chunk 0 = PASS:** Open Settings first enters native PiP (restored pre-#417
 mechanism, compact renderer showing the current step in large type), then starts Settings. The PiP finishes
@@ -198,6 +213,7 @@ would split completion and recreation across two tasks for no user benefit.
 | Recreation | `agreed`, `settingsOpened` saved; `compact` re-derived; rotation handled by existing `configChanges`. |
 | PiP lifecycle | Entered only from Open Settings on Samsung; user may close it via PiP X (activity stops; task remains; next open restarts guide full screen); expanding PiP returns to full-screen guide. |
 | Stale completion | Granted but unbound: guide stays until bound (unchanged). Bound before Agree: onResume does not finish unless agreed (unchanged). |
+| Re-entry (coverage gap 3) | `singleTask` reuses the live guide: reopening from any caller while it exists keeps `agreed` and the current screen and does not relaunch Settings by itself; repeated Open Settings taps start Settings again (idempotent, same task); Home, lock/unlock and process death return to the guide full screen with `agreed` kept. Each is a UAT step. |
 
 ## 6. Consumer matrix
 | Contract delta | Consumer | Current | Required | Code change? | Verified by |
@@ -210,7 +226,10 @@ would split completion and recreation across two tasks for no user benefit.
 | Failure | Origin | Caller | User sees | Persisted | Retry |
 |---|---|---|---|---|---|
 | Settings intent fails | `startActivity` | Open Settings | "Open your phone's Settings, then Accessibility." (existing) | none | Open Settings again |
-| PiP entry throws | `enterPictureInPictureMode` (external) | Open Settings | Settings opens without floating guide | none | n/a |
+| PiP entry throws, returns false, or the user disabled PiP for the app | `enterPictureInPictureMode` (external) | Open Settings | Settings opens without floating guide | none | n/a |
+| Settings launch fails after PiP was entered | `startActivity` | Open Settings | the guide leaves PiP (`moveTaskToFront` (external)) so the error text and Open Settings again / Return are reachable full screen | none | Open Settings again |
+| Another app's overlay blocks Allow (screen filters, chat heads) | other app | user tap | Samsung/Android toast | none | out of scope; guide text does not claim to fix it |
+| Enabling is restricted by the device (work profile policy, sideload "restricted setting") | Settings | user | Settings explains it | none | out of scope (Play installs are not restricted) |
 | Allow refused (P2 on a Samsung variant Chunk 0 missed) | Settings | user tap | Samsung toast; guide still floats | none | Close PiP, tap Allow; mitigated by "Tap Allow" only if Chunk 0 PASS |
 | User declines Allow | Settings | user | back in Settings, guide floats | none | Toggle again |
 
@@ -244,7 +263,12 @@ Copy follows `content-brand.md`; no em dashes.
 - Chunk 0 (before building the branch): a throwaway probe APK (separate package, debug, uninstalled after)
   enters PiP over Accessibility Settings; on the S26 the founder (or wispr-eyes) turns EnviousWispr off and
   on and taps Allow while the PiP overlaps the dialog. PASS = granted with no "obscuring" toast; FAIL =
-  toast or no grant. Restore: EnviousWispr accessibility back on and bound, probe uninstalled.
+  toast or no grant. Restore: EnviousWispr accessibility back on and bound, probe uninstalled. Record the
+  Android and One UI versions and whether the tap was a human touch (the founder) or injected input; only a
+  human touch counts. An S26 PASS does not verify other Samsung models or One UI versions; the S22 stays NOT
+  VERIFIED until checked (coverage gap 1).
+- Readability (coverage gap 6): pause/step state across PiP expansion, reduced motion, largest font size,
+  TalkBack reading the guide, and a short landscape window, on the emulator.
 - Final: Play internal build on the S26, fresh setup path via the Permissions page (no data wipe): guide
   visible, Open Settings, floating guide (if PASS), Allow first try, back to Granted, guide gone.
 
@@ -255,7 +279,8 @@ Copy follows `content-brand.md`; no em dashes.
 | Emulator UAT: Agree shows guide; Open Settings opens Settings; grant returns | product outcome (emulator, no PiP there) | G1, G5 | restoring Settings-on-Agree |
 
 ## 12. Blast radius & rollback
-Touched: one activity, one manifest attribute. Not touched: disclosure text, service, readiness, insertion.
+Touched: one activity (including the disclosure button label), one manifest attribute. Not touched:
+disclosure body text, service, readiness, insertion.
 Rollback: revert the PR; behavior returns to today's.
 
 ## 13. Ship criteria

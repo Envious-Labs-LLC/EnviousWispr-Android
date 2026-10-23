@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.paste.AccessibilityPermission
@@ -38,9 +39,16 @@ internal object AppLaunchFacts {
             micGranted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
             onboardingComplete = preferences?.onboardingComplete ?: false,
             customWordsCount = customWords,
+            installSource = runCatching {
+                InstallSource.from(context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName)
+            }.getOrDefault(InstallSource.UNKNOWN),
+            testLab = runCatching { Settings.System.getString(context.contentResolver, FIREBASE_TEST_LAB) == "true" }.getOrDefault(false),
             settings = settingsProjection(preferences, policy),
         )
     }
+
+    /** Firebase's documented marker on Test Lab and Play pre-launch report devices (#468). */
+    private const val FIREBASE_TEST_LAB = "firebase.test.lab"
 
     /** Pure, so the projection is testable against a literal without a phone. */
     fun settingsProjection(state: AppPreferencesState?, polishPolicy: String): Map<String, Any> {
@@ -97,4 +105,27 @@ internal object AppLaunchFacts {
 
     /** Every name a `settings.changed` row can carry. */
     val SETTING_NAMES: List<String> = SETTING_KEYS + POLISH_POLICY
+}
+
+/**
+ * The current installer of record (#468), including whether that record names Google Play. A closed
+ * token: the installer's own package name never leaves the phone. The record is mutable and says nothing about
+ * where an APK file was downloaded. [NONE] means no installer of record: adb, a system app, or an installer since
+ * removed. A test device is told apart by `test_lab`, not by this token.
+ */
+internal enum class InstallSource {
+    PLAY, GALAXY_STORE, PACKAGE_INSTALLER, NONE, OTHER, UNKNOWN;
+
+    val wire: String get() = name.lowercase()
+
+    companion object {
+        /** [installer] is `InstallSourceInfo.installingPackageName`; an installer we do not name is [OTHER]. */
+        fun from(installer: String?): InstallSource = when (installer) {
+            null -> NONE
+            "com.android.vending" -> PLAY
+            "com.sec.android.app.samsungapps" -> GALAXY_STORE
+            "com.google.android.packageinstaller", "com.android.packageinstaller" -> PACKAGE_INSTALLER
+            else -> OTHER
+        }
+    }
 }

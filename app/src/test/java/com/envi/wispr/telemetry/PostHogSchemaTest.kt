@@ -43,7 +43,7 @@ class PostHogSchemaTest {
         "settings_answer_ms", "matcher_ready_ms", "policy_loaded_ms", "admission_observed_ms", "bind_requested_ms",
         "live_received_ms", "latency_ms", "recovered",
         "is_fresh_install", "models_ready", "accessibility_granted", "mic_granted", "onboarding_complete",
-        "custom_words_count", "elapsed_s", "duration_s", "first_run",
+        "custom_words_count", "test_lab", "elapsed_s", "duration_s", "first_run",
         "\$is_emulator", "\$process_person_profile", "\$sample_threshold",
     )
 
@@ -53,8 +53,8 @@ class PostHogSchemaTest {
         assertEquals("the two lists are disjoint", emptySet<String>(), numberOrBooleanKeys intersect ruled)
         assertEquals("every rule is for an allowed key", emptySet<String>(), ruled - PayloadSanitizer.allowedKeys)
         assertEquals("every allowed key is one or the other", PayloadSanitizer.allowedKeys, numberOrBooleanKeys + ruled)
-        assertEquals(89, PayloadSanitizer.allowedKeys.size)
-        assertEquals(29, numberOrBooleanKeys.size)
+        assertEquals(91, PayloadSanitizer.allowedKeys.size)
+        assertEquals(30, numberOrBooleanKeys.size)
     }
 
     @Test
@@ -164,6 +164,25 @@ class PostHogSchemaTest {
             "every launch setting is a `settings.changed` name",
             AppLaunchFacts.SETTING_NAMES.toSet(), projections.last().keys,
         )
+    }
+
+    @Test
+    fun theInstallSourceLeavesAsATokenAndTheInstallersPackageNeverDoes() {
+        // Built by the real producer from each installer the classifier names and an unnamed one; UNKNOWN is the
+        // token a failed read sends, appended here, not produced by a failing read.
+        val installers = listOf(
+            "com.android.vending", "com.sec.android.app.samsungapps", "com.google.android.packageinstaller",
+            "com.android.packageinstaller", null, "com.apkpure.aegon",
+        )
+        val sent = installers.map { InstallSource.from(it).wire } + InstallSource.UNKNOWN.wire
+        assertEquals(listOf("play", "galaxy_store", "package_installer", "package_installer", "none", "other", "unknown"), sent)
+        for (token in sent) assertKept("install_source", token)
+        assertNull("an installer's package never rides under the key", PayloadSanitizer.sanitizeValue("install_source", "com.apkpure.aegon"))
+        val row = PayloadSanitizer.sanitizeProperties(
+            AnalyticsEvent.AppLaunched("m", "16", false, true, true, true, true, 0, InstallSource.PLAY, true, emptyMap()).properties(),
+        )
+        assertEquals("play", row["install_source"])
+        assertEquals(true, row["test_lab"])
     }
 
     @Test

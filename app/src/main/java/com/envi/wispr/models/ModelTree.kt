@@ -20,7 +20,8 @@ internal object ModelTree {
     /** True when nothing is left at [target], including when nothing was there. [onDeleted] gets each removed file's size. */
     fun delete(target: File, onDeleted: (bytes: Long) -> Unit = {}): Boolean {
         val path = target.toPath()
-        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return true
+        // `notExists`, never `!exists`: an existence the filesystem cannot answer is not an absence.
+        if (Files.notExists(path, LinkOption.NOFOLLOW_LINKS)) return true
         runCatching {
             Files.walkFileTree(path, object : SimpleFileVisitor<Path>() {
                 override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
@@ -38,6 +39,6 @@ internal object ModelTree {
                 }
             })
         }
-        return !Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+        return Files.notExists(path, LinkOption.NOFOLLOW_LINKS)
     }
 }

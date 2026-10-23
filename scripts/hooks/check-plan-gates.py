@@ -56,7 +56,8 @@ LANES = ["Code", "Benchmark", "CI/workflow", "Docs/dev-tooling"]
 PLAN = re.compile(r"docs/feature-requests/(issue-(\d+)|plan)-[\w.-]+\.md$")
 
 
-def resulting_document(tool_input: dict, full_path: str) -> str | None:
+# Quoted: the hook can run under macOS /usr/bin/python3 3.9, where an unquoted `str | None` raises.
+def resulting_document(tool_input: dict, full_path: str) -> "str | None":
     """The document as it will EXIST after this call, never the fragment the call carries.
 
     Write hands over the whole file in `content`. Edit and MultiEdit hand over pieces, and judging a piece

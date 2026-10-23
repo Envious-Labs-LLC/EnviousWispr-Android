@@ -1,11 +1,8 @@
 package com.envi.wispr.ui
 
-import android.app.PictureInPictureParams
 import android.content.Intent
-import android.content.res.Configuration
 import android.os.Bundle
 import android.provider.Settings
-import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -27,7 +24,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.paste.AccessibilityPermission
 import com.envi.wispr.paste.AccessibilityPermissionCheck
 import com.envi.wispr.paste.AutoPasteAvailability
@@ -41,13 +37,9 @@ import kotlinx.coroutines.launch
 class AccessibilityGuideActivity : ComponentActivity() {
     private var phase by mutableStateOf<GuidePhase>(GuidePhase.Disclosure)
     private var entry by mutableStateOf(AutoPasteAvailability.NOT_PERMITTED)
-    /** Presentation only, never stored: true while Android shows the guide in picture-in-picture. */
-    private var compact by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        compact = isInPictureInPictureMode
-        DebugLogger.log("AccessibilityGuide", "One UI raw=${FloatingGuideEligibility.oneUiRaw()} floating=${FloatingGuideEligibility.allows(this)}")
         phase = GuidePhase.decode(savedInstanceState?.getString(KEY_PHASE))?.let(GuidePhase::restored) ?: GuidePhase.Disclosure
         PasteAccessibilityService.loadStopMarker(this)
         entry = availability()
@@ -61,10 +53,10 @@ class AccessibilityGuideActivity : ComponentActivity() {
             EnviousWisprTheme(dynamicColor = false) {
                 when (val current = phase) {
                     GuidePhase.Disclosure -> AccessibilityDisclosure(onAgree = { phase = GuidePhase.Ready(GuideHistory.NeverOpened) }, onDecline = ::finish)
-                    is GuidePhase.Ready -> AccessibilityGuide(entry, current.history, compact, launchFailed = false, ::openSettings, ::finish)
-                    is GuidePhase.LaunchFailed -> AccessibilityGuide(entry, current.history, compact, launchFailed = true, ::openSettings, ::finish)
-                    is GuidePhase.Launching -> AccessibilityGuide(entry, current.history, compact, launchFailed = false, {}, ::finish)
-                    GuidePhase.AwaitingSettings -> AccessibilityGuide(entry, GuideHistory.Opened, compact, launchFailed = false, ::openSettings, ::finish)
+                    is GuidePhase.Ready -> AccessibilityGuide(entry, current.history, launchFailed = false, ::openSettings, ::finish)
+                    is GuidePhase.LaunchFailed -> AccessibilityGuide(entry, current.history, launchFailed = true, ::openSettings, ::finish)
+                    is GuidePhase.Launching -> AccessibilityGuide(entry, current.history, launchFailed = false, {}, ::finish)
+                    GuidePhase.AwaitingSettings -> AccessibilityGuide(entry, GuideHistory.Opened, launchFailed = false, ::openSettings, ::finish)
                     GuidePhase.Complete -> Unit
                 }
             }
@@ -84,11 +76,6 @@ class AccessibilityGuideActivity : ComponentActivity() {
             GuidePhase.Disclosure, is GuidePhase.Launching, GuidePhase.Complete -> return
         }
         phase = GuidePhase.Launching(history)
-        // Float the guide over Settings only where a human tap on Allow was measured to work (#476). A refused or
-        // failed entry leaves the full-screen guide behind Settings, as on every other phone.
-        if (FloatingGuideEligibility.allows(this)) runCatching {
-            enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational(230, 215)).build())
-        }
         phase = runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             .fold(onSuccess = { GuidePhase.AwaitingSettings }, onFailure = { GuidePhase.LaunchFailed(history) })
     }
@@ -114,11 +101,6 @@ class AccessibilityGuideActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) { outState.putString(KEY_PHASE, GuidePhase.encode(phase)); super.onSaveInstanceState(outState) }
-
-    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
-        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        compact = isInPictureInPictureMode
-    }
 }
 
 private const val KEY_PHASE = "guide_phase"
@@ -141,7 +123,7 @@ private fun AccessibilityDisclosure(onAgree: () -> Unit, onDecline: () -> Unit) 
 }
 
 /** One frame of the illustrated path: the screen's title, the row to tap, and an optional note under it. */
-private data class GuideFrame(val step: String, val screen: String, val row: String, val note: String? = null, val allow: Boolean = false)
+private data class GuideFrame(val step: String, val screen: String, val row: String, val note: String? = null)
 
 private fun guideFrames(samsung: Boolean, appLabel: String, reconnect: Boolean): List<GuideFrame> =
     (if (samsung) listOf(GuideFrame("Tap Installed apps", "Accessibility", "Installed apps    ›")) else emptyList()) + listOf(
@@ -149,12 +131,12 @@ private fun guideFrames(samsung: Boolean, appLabel: String, reconnect: Boolean):
         if (reconnect) GuideFrame("Turn it off, then on again", appLabel, "On  →  Off  →  On")
         else GuideFrame("Turn on the service", appLabel, "Off    ○"),
         GuideFrame("Leave the shortcut off", appLabel, "$appLabel shortcut    Off  ○", note = "Leave this one off. Its floating button switches auto-paste off when tapped."),
-        GuideFrame("Review access, then Allow", "Review Android’s prompt", "Allow", allow = true),
+        GuideFrame("Review access, then Allow", "Review Android’s prompt", "Allow"),
         GuideFrame("Come back to EnviousWispr", appLabel, "On    ✓"),
     )
 
 @Composable
-private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHistory, compact: Boolean, launchFailed: Boolean, openSettings: () -> Unit, close: () -> Unit) {
+private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHistory, launchFailed: Boolean, openSettings: () -> Unit, close: () -> Unit) {
     val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val reduced = onboardingReducedMotion()
     var step by remember { mutableIntStateOf(0) }
@@ -178,27 +160,6 @@ private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHisto
         }
     }
     BackHandler(onBack = close)
-    if (compact) {
-        // The floating copy over Settings: the current step in large type, nothing to tap (PiP content takes no
-        // input). On the Allow step it says so plainly; after a failed hand-off it points to the full guide.
-        Surface(Modifier.fillMaxSize(), color = Color(0xFF251F37), contentColor = Color(0xFFE8E4F1)) {
-            Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OnboardingLips(Modifier.size(22.dp))
-                    Text("${step + 1} / ${frames.size}", fontSize = 11.sp, modifier = Modifier.padding(start = 6.dp))
-                }
-                val frame = frames[step]
-                val text = when {
-                    launchFailed -> "Tap to open the guide"
-                    frame.allow -> "Tap Allow"
-                    else -> frame.step
-                }
-                Text(text, fontSize = 15.sp, fontWeight = FontWeight.Bold, lineHeight = 18.sp)
-                if (!reduced) Text(frame.row, Modifier.fillMaxWidth().background(Color(0xFFE7DFFC), RoundedCornerShape(5.dp)).padding(6.dp), fontSize = 11.sp, color = Color(0xFF17171B))
-            }
-        }
-        return
-    }
     Surface(Modifier.fillMaxSize(), color = Color(0xFF251F37), contentColor = Color(0xFFE8E4F1)) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

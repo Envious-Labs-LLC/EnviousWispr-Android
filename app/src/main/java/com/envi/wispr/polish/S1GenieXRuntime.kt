@@ -152,6 +152,13 @@ internal class S1GenieXRuntime(private val context: Context) : S1Runtime {
         // GenieX can emit full prompts at debug/verbose levels. Disable its logger before init;
         // EnviousWispr keeps its own content-free timing and backend diagnostics.
         Os.setenv("GENIEX_LOG", "none", true)
+        // #473: on a Galaxy S22 (v69 DSP) GenieX 0.4.0 exposes a NULL Hexagon device after its DSP session fails,
+        // and llama.cpp aborts this process during the model load. Offered routes are GPU and CPU only
+        // (`ProcessingEnvironment.standardPolishBackends`). In this binary NDEV=0 alone does not remove the device
+        // on the S22; ARCH=75 with NDEV=0 exposes none (Test Lab SC-51C, 2026-10-23). Set both before the SDK and
+        // the native logger below. Verified against GenieX 0.4.0 only: revalidate on a GenieX upgrade.
+        Os.setenv("GGML_HEXAGON_ARCH", "75", true)
+        Os.setenv("GGML_HEXAGON_NDEV", "0", true)
         val completed = CountDownLatch(1)
         val failure = AtomicReference<String?>(null)
         val sdk = GenieXSdk.getInstance()

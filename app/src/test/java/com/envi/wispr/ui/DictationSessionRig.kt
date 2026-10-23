@@ -615,7 +615,17 @@ internal class DictationSessionRig {
         override fun finishTake(): Boolean {
             events += "finishTake"
             commandThreads += Thread.currentThread().name
+            takeFinished.countDown()
             return false
+        }
+        private val takeFinished = CountDownLatch(1)
+
+        /**
+         * The owner's `finishTake` reached this fake (#455). It travels the owner's capture command lane, which
+         * nothing else in a finished take waits on: the Service can stop and History drain before it lands.
+         */
+        fun awaitFinishTake() {
+            check(takeFinished.await(10, TimeUnit.SECONDS)) { "finishTake never reached capture; events so far: $events" }
         }
 
         /**

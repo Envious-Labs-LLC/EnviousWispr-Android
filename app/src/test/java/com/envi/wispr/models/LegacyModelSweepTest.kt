@@ -77,6 +77,21 @@ class LegacyModelSweepTest {
         assertTrue(File(folder.root, "parakeet-ultra/encoder-model.int8.onnx").exists())
     }
 
+    /**
+     * #461: a link NESTED inside a retired folder goes as a link, and the folder goes with it. Before, the walk
+     * skipped the link, so the folder could never be emptied and stayed.
+     * MUTATION: follow the link (the live model it points at is emptied), or skip it (the folder stays).
+     */
+    @Test fun aLinkInsideARetiredFolderIsRemovedWithoutTouchingItsTarget() {
+        write("parakeet-ultra/encoder-model.int8.onnx", 800)
+        write("parakeet-sq/encoder-model.int8.onnx", 700)
+        Files.createSymbolicLink(File(folder.root, "parakeet-sq/nested").toPath(), File(folder.root, "parakeet-ultra").toPath())
+
+        assertEquals(700L, LegacyModelSweep.sweep(folder.root))
+        assertFalse(Files.exists(File(folder.root, "parakeet-sq").toPath(), LinkOption.NOFOLLOW_LINKS))
+        assertTrue(File(folder.root, "parakeet-ultra/encoder-model.int8.onnx").exists())
+    }
+
     private class Callback(val throws: Boolean) : IAsrCallback {
         val results = ArrayList<String>()
         override fun onResult(text: String) { if (throws) throw IllegalStateException("binder died"); results += text }

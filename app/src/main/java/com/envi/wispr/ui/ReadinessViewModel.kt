@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.paste.AccessibilityPermission
+import com.envi.wispr.paste.AccessibilityShortcut
 import com.envi.wispr.paste.AccessibilityPermissionCheck
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.AutoPasteReadiness
@@ -34,12 +35,31 @@ internal data class AppReadiness(
      * waits for this.
      */
     val modelsChecked: Boolean = false,
+    /** An Android accessibility shortcut is assigned to our service (#475); using it switches auto-paste off. */
+    val accessibilityShortcutOn: Boolean = false,
 ) {
     val requiredModelsReady: Boolean
         get() = speechModelReady && polishModelReady
 
     val coreReady: Boolean
         get() = microphoneGranted && requiredModelsReady
+
+    /**
+     * The facts `refreshPermissions` reads on every resume, so a change made in Android Settings shows on return; the
+     * model fields stay as the file check left them. Every permission-side field goes through here (#475: the
+     * shortcut fact once missed this path and never reached the screen).
+     */
+    fun withPermissionFacts(
+        microphoneGranted: Boolean,
+        notificationsGranted: Boolean,
+        accessibility: AccessibilityPermissionCheck,
+        accessibilityShortcutOn: Boolean,
+    ): AppReadiness = copy(
+        microphoneGranted = microphoneGranted,
+        notificationsGranted = notificationsGranted,
+        accessibility = accessibility,
+        accessibilityShortcutOn = accessibilityShortcutOn,
+    )
 }
 
 /** The platform facts every screen reads (#218): permissions, models, and the live auto-paste answer. */
@@ -88,10 +108,11 @@ internal class ReadinessViewModel(
     }
 
     fun refreshPermissions() {
-        readiness.value = readiness.value.copy(
+        readiness.value = readiness.value.withPermissionFacts(
             microphoneGranted = ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
             notificationsGranted = ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED,
             accessibility = AccessibilityPermissionCheck.of(AccessibilityPermission.isGranted(appContext)),
+            accessibilityShortcutOn = AccessibilityShortcut.assignedToUs(appContext),
         )
     }
 

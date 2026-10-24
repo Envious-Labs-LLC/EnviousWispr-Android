@@ -358,22 +358,6 @@ internal class TakePolishController(
                 )
             }
         }
-
-        // v1 answers are never produced for a v2 request. If one ever arrives it is an engine defect, and the
-        // session still fails open to the deterministic text.
-        override fun onResult(text: String?, engine: String?, latencyMs: Long) {
-            if (claim(requestId)) {
-                report(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_result"))
-                fallBack(rawText, takePreferences, PolishReason.CALL_FAILED)
-            }
-        }
-
-        override fun onError(message: String?) {
-            if (claim(requestId)) {
-                report(AppDefect.PolishProtocolViolation, mapOf("take_id" to takeId, "shape" to "v1_error"))
-                fallBack(rawText, takePreferences, PolishReason.CALL_FAILED)
-            }
-        }
     }
 
     /** Latches this take's polish loss (the first reason wins) and reports it once (#234). */

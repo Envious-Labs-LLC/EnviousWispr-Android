@@ -83,10 +83,6 @@ class PolishServiceCleanupOptionsDeviceTest {
                     outcome = delivered
                     completed.countDown()
                 }
-
-                override fun onResult(text: String?, engine: String?, latencyMs: Long) = Unit
-
-                override fun onError(message: String?) = Unit
             },
         )
         assertTrue("Polish callback timed out", completed.await(10, TimeUnit.SECONDS))
@@ -106,8 +102,6 @@ class PolishServiceCleanupOptionsDeviceTest {
             options, PolishPolicy.Off, "cleanup-parity-device",
             object : com.envi.wispr.ui.PolishListener {
                 override fun onOutcome(value: PolishOutcome?) { outcome = value; completed.countDown() }
-                override fun onResult(text: String?, engine: String?, latencyMs: Long) = Unit
-                override fun onError(message: String?) { completed.countDown() }
             })
         assertTrue("new cleanup request did not answer", completed.await(10, TimeUnit.SECONDS))
         val value = checkNotNull(outcome)
@@ -158,10 +152,6 @@ class PolishServiceCleanupOptionsDeviceTest {
                     outcome = delivered
                     completed.countDown()
                 }
-
-                override fun onResult(text: String?, engine: String?, latencyMs: Long) = Unit
-
-                override fun onError(message: String?) = Unit
             },
         )
         assertTrue("Polish callback timed out", completed.await(10, TimeUnit.SECONDS))

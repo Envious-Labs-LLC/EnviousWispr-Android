@@ -39,9 +39,7 @@ internal object AppLaunchFacts {
             micGranted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
             onboardingComplete = preferences?.onboardingComplete ?: false,
             customWordsCount = customWords,
-            installSource = runCatching {
-                InstallSource.from(context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName)
-            }.getOrDefault(InstallSource.UNKNOWN),
+            installSource = InstallSource.of(context),
             testLab = runCatching { Settings.System.getString(context.contentResolver, FIREBASE_TEST_LAB) == "true" }.getOrDefault(false),
             settings = settingsProjection(preferences, policy),
         )
@@ -119,6 +117,11 @@ internal enum class InstallSource {
     val wire: String get() = name.lowercase()
 
     companion object {
+        /** This copy's installer, read once per call; a read that fails is [UNKNOWN]. Also read by What's New (#38). */
+        fun of(context: Context): InstallSource = runCatching {
+            from(context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName)
+        }.getOrDefault(UNKNOWN)
+
         /** [installer] is `InstallSourceInfo.installingPackageName`; an installer we do not name is [OTHER]. */
         fun from(installer: String?): InstallSource = when (installer) {
             null -> NONE

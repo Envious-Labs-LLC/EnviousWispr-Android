@@ -23,11 +23,12 @@ class PermissionsPageCopyTest {
             ),
             AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY to AutoPasteNotice(
                 "Auto-paste was switched off",
-                "This can happen when the app is stopped. Turn EnviousWispr back on in Accessibility settings.",
+                "This can happen when the app is stopped, or when Android’s floating accessibility button is tapped. " +
+                    "Turn EnviousWispr back on in Accessibility settings, and leave the EnviousWispr shortcut off.",
             ),
         )
         assertEquals(AutoPasteAvailability.entries.toSet(), cards.keys)
-        cards.forEach { (autoPaste, card) -> assertEquals("card for $autoPaste", card, autoPasteNotice(autoPaste)) }
+        cards.forEach { (autoPaste, card) -> assertEquals("card for $autoPaste", card, autoPasteNotice(autoPaste, shortcutOn = false)) }
 
         val rows = mapOf(
             AutoPasteAvailability.LIVE to "Ready for side-button dictation",
@@ -39,6 +40,35 @@ class PermissionsPageCopyTest {
         assertEquals(AutoPasteAvailability.entries.toSet(), rows.keys)
         rows.forEach { (autoPaste, row) -> assertEquals("row for $autoPaste", row, autoPasteRowSubtitle(autoPaste)) }
         assertEquals("Needs attention", AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY.statusDescription())
+    }
+
+    /**
+     * #475: with an accessibility shortcut assigned to us, the switched-off card names it as a fact, and only that
+     * card changes. REVERT: drop the `shortcutOn` branch, or stop `calmAutoPasteNotice` passing the readiness fact.
+     */
+    @Test
+    fun anAssignedShortcutIsNamedOnlyOnTheSwitchedOffCard() {
+        val named = AutoPasteNotice(
+            "Auto-paste was switched off",
+            "The EnviousWispr accessibility shortcut is on, and using it can switch auto-paste off. " +
+                "Turn the shortcut off and EnviousWispr back on in Accessibility settings.",
+        )
+        assertEquals(named, autoPasteNotice(AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY, shortcutOn = true))
+        AutoPasteAvailability.entries.filter { it != AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY }.forEach { state ->
+            assertEquals("$state ignores the shortcut", autoPasteNotice(state, shortcutOn = false), autoPasteNotice(state, shortcutOn = true))
+        }
+        val ready = AppReadiness(microphoneGranted = true, speechModelReady = true, polishModelReady = true, modelsChecked = true)
+        // The resume path's own step (Codex round 1: the fact was read but dropped there). REVERT: leave the
+        // shortcut field out of `withPermissionFacts`, and this goes red.
+        val refreshed = ready.withPermissionFacts(
+            microphoneGranted = true,
+            notificationsGranted = false,
+            accessibility = com.envi.wispr.paste.AccessibilityPermissionCheck.REVOKED,
+            accessibilityShortcutOn = true,
+        )
+        assertEquals("the model facts survive a permission refresh", true, refreshed.requiredModelsReady && refreshed.modelsChecked)
+        assertEquals(named, calmAutoPasteNotice(refreshed, AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY))
+        assertEquals(false, ready.withPermissionFacts(true, false, com.envi.wispr.paste.AccessibilityPermissionCheck.REVOKED, false).accessibilityShortcutOn)
     }
 
     /** Plan §3.2: with core setup unfinished the red card shows as today and the calm card does not. */

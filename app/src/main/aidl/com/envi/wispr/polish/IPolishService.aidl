@@ -5,28 +5,11 @@ import com.envi.wispr.polish.PolishPolicy;
 import com.envi.wispr.polish.CleanupRequestOptions;
 import com.envi.wispr.processing.IProcessingCheckCallback;
 
-// Append-only (architecture-rules.md RULE: aidl-is-append-only). The v1 transactions below stay
-// declared because the instrumentation APK is a separately installed client of this service; every
-// caller in this repository uses the v2 methods that follow them. The current instrumentation APK
-// defines neither the policy parcel nor these generated classes (#330): its calls use the installed
-// app's classes on both sides of the Binder, so an older test APK breaks only on a method it calls
-// that is gone. Recheck this assumption if tests or another client package their own copies.
+// Append-only (architecture-rules.md RULE: aidl-is-append-only). The v1 transactions (polish, isReady,
+// getStatus, warmUp) were removed in #70: the current instrumentation APK calls none of them and defines
+// neither the policy parcel nor these generated classes (#330), so both sides of the Binder are the
+// installed app's. Recheck that assumption if tests or another client package their own copies.
 interface IPolishService {
-    // v1: polishes with the deterministic rules only. No caller in this repository.
-    void polish(
-        String rawText,
-        boolean removeFillers,
-        boolean spokenEmoji,
-        boolean spokenPunctuation,
-        IPolishCallback callback
-    );
-    // v1: the local model's readiness. No caller in this repository.
-    boolean isReady();
-    // v1: the local model's status line. No caller in this repository.
-    String getStatus();
-    // v1: no-op. The engine holds no policy, so it cannot decide what to warm.
-    void warmUp();
-
     // v2: the policy rides on every request; the engine never reads a preference.
     void polishRequest(
         long requestId,

@@ -130,38 +130,6 @@ class PolishService : Service() {
     @Volatile private var destroyed = false
 
     private val binder = object : IPolishService.Stub() {
-        // ---- v1, kept declared for the separately installed instrumentation APK. No caller here.
-
-        override fun polish(
-            rawText: String?,
-            removeFillers: Boolean,
-            spokenEmoji: Boolean,
-            spokenPunctuation: Boolean,
-            callback: IPolishCallback?,
-        ) {
-            val raw = rawText.orEmpty().trim()
-            val options = CleanupOptions(removeFillers, spokenEmoji, spokenPunctuation)
-            if (raw.isBlank()) {
-                runCatching { callback?.onResult(raw, PolishEngineLabels.NO_SPEECH, 0) }
-                return
-            }
-            executor.execute {
-                val started = SystemClock.elapsedRealtime()
-                val text = fallbackText(raw, options, null)
-                runCatching {
-                    callback?.onResult(text, PolishEngineLabels.DETERMINISTIC, SystemClock.elapsedRealtime() - started)
-                }
-            }
-        }
-
-        override fun isReady(): Boolean = modelReady
-
-        override fun getStatus(): String = modelStatus
-
-        override fun warmUp() = Unit
-
-        // ---- v2
-
         override fun polishRequest(
             requestId: Long,
             rawText: String?,

@@ -1,6 +1,9 @@
 package com.envi.wispr.ui
 
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsOff
@@ -49,6 +52,9 @@ import org.junit.runner.RunWith
  * (`testing-philosophy.md`: a unit test that stubs the service is a Harness Contract test, whatever it
  * is named). `createAndroidComposeRule` launches what the user launches.
  */
+/** A fresh process re-verifies the downloaded models (about 1.1 GB) before setup offers "Set up later". */
+private const val MODEL_CHECK_BOUND_MS = 120_000L
+
 @RunWith(AndroidJUnit4::class)
 class AppShellNavigationTest {
 
@@ -72,6 +78,13 @@ class AppShellNavigationTest {
     @Before
     fun reachTheShell() {
         composeRule.waitForIdle()
+        // Since the guide-first setup (#476), "Set up later" shows only on the permissions step, after both models
+        // are verified, and a fresh process re-verifies them on the downloads step first. Wait on the screen's own
+        // semantics for either way forward; the bound only fails the row, naming what it saw.
+        val onward = hasText("Set up later") or hasContentDescription("Open settings menu")
+        composeRule.waitUntil("setup's permissions step or the shell (are both models downloaded on this device?)", MODEL_CHECK_BOUND_MS) {
+            composeRule.onAllNodes(onward).fetchSemanticsNodes().isNotEmpty()
+        }
         if (present(hasText("Set up later"))) {
             composeRule.onNodeWithText("Set up later").performClick()
             composeRule.waitForIdle()
@@ -305,18 +318,34 @@ class AppShellNavigationTest {
     }
 
     /**
-     * The Transcription tab, used only to move OFF the landing tab so the app is not sitting on its
-     * default while a row runs.
+     * #48: leaving a settings page returns to the tab that was selected before it, not to the landing tab.
      *
-     * **"Back returns you to the tab you left" is deliberately NOT asserted, because two attempts to
-     * bind it both failed a control (#48).** Review was right that asserting the tab BAR is back proves
-     * nothing about WHICH tab, so `assertIsSelected` was added on this matcher. A control that makes
-     * `closePages` also reset the destination to History did NOT turn the row red, on a run whose report
-     * timestamp advanced, so the assertion is not reading the selection it appears to read. Shipping it
-     * would be shipping a comment.
-     *
-     * The next author needs a matcher that provably reads `NavigationBarItem`'s selected state, and the
-     * control above is the one it has to fail.
+     * The matcher is the bar item itself (role Tab), so no screen heading or drawer row with the same word can
+     * answer. Selection is read on BOTH tabs, before leaving and after returning: the precondition proves the
+     * matcher sees the selection move off History, so the final read cannot pass on a node that never reports
+     * it. REVERT: make `closePages` in `AppShell` also set the destination to History; the last two reads go red.
      */
-    private val transcriptionTab = hasText("Transcription") and hasClickAction()
+    @Test
+    fun leavingASettingsPageReturnsToTheTabYouLeft() {
+        composeRule.onNode(tab("Transcription")).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNode(tab("Transcription")).assertIsSelected()
+        composeRule.onNode(tab("History")).assertIsNotSelected()
+
+        composeRule.onNodeWithContentDescription("Open settings menu").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Storage").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("Back").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNode(tab("Transcription")).assertIsSelected()
+        composeRule.onNode(tab("History")).assertIsNotSelected()
+    }
+
+    /** A bottom-bar item by its label: the node with role Tab, which `NavigationBarItem` merges its label into. */
+    private fun tab(label: String) = hasText(label) and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)
+
+    /** The Transcription tab, used to move OFF the landing tab so the app is not sitting on its default while a row runs. */
+    private val transcriptionTab = tab("Transcription")
 }

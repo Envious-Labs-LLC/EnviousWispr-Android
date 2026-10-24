@@ -25,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -87,6 +88,11 @@ internal fun PolishScreen(
     var browsedName by rememberSaveable { mutableStateOf<String?>(null) }
     val browsed = browsedName?.let { name -> CloudProviders.firstOrNull { it.name == name } }
     val displayed = PolishLadder.displayedProvider(browsed, settings)
+    // `start` reaches the cloud rungs as `::start`. Two references to one local function compare equal whatever
+    // they captured, so a callback built on an earlier one is kept, and it must read the tile shown NOW through
+    // state rather than this composition's `displayed` (#95: pick Gemini, then Remove on the self-hosted card,
+    // and the stale value dropped the Gemini tile).
+    val displayedNow by rememberUpdatedState(displayed)
     var writeError by remember { mutableStateOf<String?>(null) }
     var errorKind by remember { mutableStateOf<WriteKind?>(null) }
     // Counts completed KEY writes, so rung 3 can drop its draft exactly once per save.
@@ -112,7 +118,7 @@ internal fun PolishScreen(
         // the write lands the settings no longer name the provider that was removed. Safe on a FAILED
         // write too: nothing was cleared, so the mode is still PROVIDER and both values agree with it.
         if (kind == WriteKind.REMOVE) {
-            val nav = PolishLadder.navigationAfterRemove(displayed)
+            val nav = PolishLadder.navigationAfterRemove(displayedNow)
             cloudSetup = nav.cloudSetup
             browsedName = nav.browsedName
         }

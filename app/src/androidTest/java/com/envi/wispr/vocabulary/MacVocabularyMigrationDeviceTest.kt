@@ -13,7 +13,6 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -30,7 +29,8 @@ class MacVocabularyMigrationDeviceTest {
     fun importPrivateMacVocabularyAndVerifyEveryAuthorityField() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val source = File(context.filesDir, SOURCE_NAME)
-        assumeTrue("Private Mac vocabulary source is not staged", source.isFile)
+        // A manual bridge: absent its private source it is NOT RUN, logged so, never a pass (#225).
+        com.envi.wispr.DeviceNotRun.skipUnless(source.isFile, "importPrivateMacVocabularyAndVerifyEveryAuthorityField", "the private Mac vocabulary source is not staged")
 
         var verified = false
         try {

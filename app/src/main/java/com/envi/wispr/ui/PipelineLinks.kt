@@ -83,8 +83,6 @@ internal interface SpeechLink {
 /** The answer to one `IPolishService.polishRequestWithCleanupForTake`; the engine answers once. */
 internal interface PolishListener {
     fun onOutcome(outcome: PolishOutcome?)
-    fun onResult(text: String?, engine: String?, latencyMs: Long)
-    fun onError(message: String?)
 }
 
 /** `IPolishService`, the members the owner uses. */

@@ -311,21 +311,8 @@ class TakePolishControllerTest {
         assertEquals(listOf("mismatched"), protocolShapes())
     }
 
-    /** Row f3. MUTATION: drop the defect on a legacy `onResult`. */
-    @Test fun aLegacyResultFallsBackAndIsNamed() {
-        controller.prepare("hello world", preferences)
-        link.awaitRequest().onResult("Hello world.", "engine", 5)
-        assertEquals(PolishReason.CALL_FAILED, (awaitHandedBack() as PreparedText.Fallback).reason)
-        assertEquals(listOf("v1_result"), protocolShapes())
-    }
-
-    /** Row f4. MUTATION: drop the defect on a legacy `onError`. */
-    @Test fun aLegacyErrorFallsBackAndIsNamed() {
-        controller.prepare("hello world", preferences)
-        link.awaitRequest().onError("gone")
-        assertEquals(PolishReason.CALL_FAILED, (awaitHandedBack() as PreparedText.Fallback).reason)
-        assertEquals(listOf("v1_error"), protocolShapes())
-    }
+    // Rows f3 and f4 (a legacy `onResult` / `onError`) left with those callback transactions (#70): the engine and
+    // this listener ship in one APK and the callback interface no longer declares them, so neither can arrive.
 
     /**
      * Row h. The watchdog's cancel and a binder-thread disconnect's fallback are sent and handed back with the

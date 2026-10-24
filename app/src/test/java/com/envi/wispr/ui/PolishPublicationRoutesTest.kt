@@ -11,7 +11,8 @@ import org.junit.Test
  * outcome callback and the fallback are the only two routes into `publishResult` (since #237 both reach it
  * as a `PreparedText` from `TakePolishController`, through the owner's `publishPrepared`); the polish facts
  * are derived exactly once, there; the notice is posted before the persistence coroutine starts; the
- * nine fallback producers carry the reasons the plans enumerated (#77's eight, plus #214's blank answer); and the ready-row insert stores all
+ * seven fallback producers carry the reasons the plans enumerated (#77's eight, plus #214's blank answer, less the two
+ * legacy callback producers #70 removed); and the ready-row insert stores all
  * three facts. When this fails, a new direct publisher, a second derivation, or a dropped fact has
  * appeared and the History row and the completion surface can disagree about one dictation.
  */
@@ -40,7 +41,7 @@ class PolishPublicationRoutesTest {
         // the outcome callback and its fallback.
         assertEquals(1, Regex("""(^|[^A-Za-z0-9_.])onPrepared\(""").findAll(polish).count())
         assertEquals(1, Regex("""\bonPrepared\(""").findAll(section("private fun handBack(", "\n    }\n", polish)).count())
-        val outcome = section("override fun onOutcome", "override fun onResult", polish)
+        val outcome = section("override fun onOutcome", "/** Latches this take's polish loss", polish)
         val fallback = section("private fun fallBack", "private fun handBack(", polish)
         assertEquals(1, Regex("""\bhandBack \{""").findAll(outcome).count())
         assertEquals(1, Regex("""\bhandBack \{""").findAll(fallback).count())
@@ -97,14 +98,15 @@ class PolishPublicationRoutesTest {
         assertTrue("the notice is posted before the continuation coroutine starts", notice >= 0 && notice < continuation)
     }
 
-    @Test fun theNineFallbackProducersCarryTheirReasonsAndTheReadyInsertStoresAllThreeFacts() {
+    @Test fun theSevenFallbackProducersCarryTheirReasonsAndTheReadyInsertStoresAllThreeFacts() {
         assertEquals(2, Regex("""fallBack\([^\n]*PolishReason\.SERVICE_DIED\)""").findAll(polish).count())
         // Since #234 the lost-polish producer publishes the take's latched reason: SERVICE_UNAVAILABLE (refused
         // at bind, or never connected) or SERVICE_DIED (its process died before the request was sent).
         assertEquals(1, Regex("""fallBack\(rawText, takePreferences, checkNotNull\(fallback\)\)""").findAll(polish).count())
         assertEquals(1, Regex("""fallBack\([^\n]*PolishReason\.WATCHDOG_TIMEOUT\)""").findAll(polish).count())
-        // Five since #214: the four protocol violations and the call that threw, plus a blank answer over real words.
-        assertEquals(5, Regex("""fallBack\([^\n]*PolishReason\.CALL_FAILED\)""").findAll(polish).count())
+        // Three since #70: the call that threw, a null or mismatched outcome, and a blank answer over real words (#214).
+        // The legacy onResult and onError producers left with those callback transactions.
+        assertEquals(3, Regex("""fallBack\([^\n]*PolishReason\.CALL_FAILED\)""").findAll(polish).count())
         val ready = section("private suspend fun TranscriptRepository.insertSavedTranscript", "/** @return whether", finalizer)
         assertTrue(ready.contains("polishReason = polishFacts.reasonToken"))
         assertTrue(ready.contains("polishStatus = polishFacts.statusCode"))

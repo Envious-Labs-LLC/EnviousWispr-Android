@@ -419,7 +419,7 @@ internal fun setupContinue(onboardingComplete: Boolean, readiness: AppReadiness)
 
 /** The calm card, only once core setup is done, so the page never carries two alarm cards. */
 internal fun calmAutoPasteNotice(readiness: AppReadiness, autoPaste: AutoPasteAvailability): AutoPasteNotice? =
-    if (readiness.coreReady) autoPasteNotice(autoPaste) else null
+    if (readiness.coreReady) autoPasteNotice(autoPaste, readiness.accessibilityShortcutOn) else null
 
 /** The words of the Permissions page's calm auto-paste card. */
 internal data class AutoPasteNotice(val title: String, val body: String)
@@ -427,8 +427,9 @@ internal data class AutoPasteNotice(val title: String, val body: String)
 /**
  * The calm card for a known auto-paste state with one way out, or null where there is none. Neither state
  * is the setup a new user still has to do, so routing either back to the guided checks would be wrong.
+ * [shortcutOn] is the measured `AccessibilityShortcut` fact (#475).
  */
-internal fun autoPasteNotice(autoPaste: AutoPasteAvailability): AutoPasteNotice? = when (autoPaste) {
+internal fun autoPasteNotice(autoPaste: AutoPasteAvailability, shortcutOn: Boolean): AutoPasteNotice? = when (autoPaste) {
     AutoPasteAvailability.PERMITTED_NOT_RUNNING -> AutoPasteNotice(
         title = "Auto-paste is not connected",
         // No destination named here. `autoCopyToClipboard` decides whether that is the clipboard or
@@ -438,10 +439,16 @@ internal fun autoPasteNotice(autoPaste: AutoPasteAvailability): AutoPasteNotice?
     )
     // The stop marker proves only that no orderly stop was recorded, not who switched it off, so the
     // body says how it CAN happen and never states a cause (#131). The floating button: a customer S22+ (#475).
+    // With a shortcut assigned to us, that much is measured and named; it is still not stated as the cause.
     AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AutoPasteNotice(
         title = "Auto-paste was switched off",
-        body = "This can happen when the app is stopped, or when Android’s floating accessibility button is tapped. " +
-            "Turn EnviousWispr back on in Accessibility settings, and leave the EnviousWispr shortcut off.",
+        body = if (shortcutOn) {
+            "The EnviousWispr accessibility shortcut is on, and using it can switch auto-paste off. " +
+                "Turn the shortcut off and EnviousWispr back on in Accessibility settings."
+        } else {
+            "This can happen when the app is stopped, or when Android’s floating accessibility button is tapped. " +
+                "Turn EnviousWispr back on in Accessibility settings, and leave the EnviousWispr shortcut off."
+        },
     )
     AutoPasteAvailability.NOT_PERMITTED,
     AutoPasteAvailability.LIVE,

@@ -8,6 +8,7 @@ import struct
 import subprocess
 import tempfile
 import time
+from urllib.parse import quote
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -19,7 +20,42 @@ TRACK = 'internal'
 PROJECT = 'ageless-domain-493017-j8'
 CERTIFICATE = 'effeb59b8fbd6a4295bb732a58d43918e12c843bf57fa72a5ae258fd56d01184'
 ROOT = f'https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PACKAGE}/edits'
+RELEASES = f'https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PACKAGE}/tracks/{{track}}/releases'
 DIST = Path('dist')
+# The commit's default, CANCEL_IN_REVIEW_AND_SUBMIT, cancels a production review in progress and resubmits
+# everything with this tester build (#447). Refuse instead; the review keeps its place in Google's queue.
+# https://developers.google.com/android-publisher/api-ref/rest/v3/edits/commit
+COMMIT_QUERY = 'changesInReviewBehavior=ERROR_IF_IN_REVIEW'
+
+
+def api_error(result):
+    """Google's own refusal, short: the HTTP code plus the error's status and message. Never the request."""
+    try:
+        error = result.json().get('error', {})
+        reason = ' '.join(str(part) for part in (error.get('status'), error.get('message')) if part)[:300]
+    except Exception:
+        reason = ''
+    return f'HTTP {result.status_code}' + (f' {reason}' if reason else '')
+
+
+def other_track_drafts(tracks):
+    """Tracks other than ours holding a draft release: a commit would send it for review with this build (#447)."""
+    return sorted({
+        track.get('track', '?') for track in tracks if track.get('track') != TRACK
+        for release in track.get('releases', []) if release.get('status') == 'draft'
+    })
+
+
+def unsent_releases(summaries):
+    """Release summaries saved in Console as ready but not yet sent for review: a commit would send them (#447).
+
+    Edit status cannot show this; a ready production release reads 'completed' there.
+    https://developers.google.com/android-publisher/api-ref/rest/v3/applications.tracks.releases
+    """
+    return sorted({
+        summary.get('track', '?') for summary in summaries
+        if summary.get('releaseLifecycleState') == 'RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW'
+    })
 
 
 def command(args, **kwargs):
@@ -32,7 +68,7 @@ def command(args, **kwargs):
 def api(session, method, url, **kwargs):
     result = session.request(method, url, timeout=240, **kwargs)
     if not result.ok:
-        raise RuntimeError(f'Google API {method} failed with HTTP {result.status_code}')
+        raise RuntimeError(f'Google API {method} failed with {api_error(result)}')
     return result.json() if result.content else {}
 
 
@@ -129,6 +165,14 @@ def main():
         codes = [int(code) for track in tracks for release in track.get('releases', []) for code in release.get('versionCodes', [])]
         if codes and version <= max(codes):
             raise RuntimeError('Stale version code; push a new run, do not rerun an old publication')
+        drafts = other_track_drafts(tracks)
+        if drafts:
+            raise RuntimeError(f'Draft release on {", ".join(drafts)}; publishing would send it for review. Resolve it in Play Console first')
+        others = sorted({track['track'] for track in tracks if track.get('track') and track['track'] != TRACK})
+        summaries = [summary for name in others for summary in api(session, 'GET', RELEASES.format(track=quote(name, safe=''))).get('releases', [])]
+        unsent = unsent_releases(summaries)
+        if unsent:
+            raise RuntimeError(f'Release on {", ".join(unsent)} is ready but not sent for review; publishing would send it. Resolve it in Play Console first')
         secret = api(session, 'GET', f'https://secretmanager.googleapis.com/v1/projects/{PROJECT}/secrets/enviouswispr-android-upload-signing/versions/latest:access')
         material = json.loads(base64.b64decode(secret['payload']['data'], validate=True))
         sign(source, signed, material)
@@ -142,11 +186,13 @@ def main():
         release = {'name': f'Internal build {version} ({receipt["commit"][:7]})', 'versionCodes': [str(version)], 'status': 'completed'}
         api(session, 'PUT', f'{ROOT}/{edit}/tracks/{TRACK}', json={'track': TRACK, 'releases': [release]})
         api(session, 'POST', f'{ROOT}/{edit}:validate')
-        # A lost response may still have committed. Reconcile through a new edit, never retry blindly.
+        # A lost response may still have committed. Reconcile through a new edit, never retry blindly; keep the
+        # refusal so an unconfirmed publication says why (a review in progress reads as Google's own reason).
+        commit_error = ''
         try:
-            api(session, 'POST', f'{ROOT}/{edit}:commit')
-        except Exception:
-            pass
+            api(session, 'POST', f'{ROOT}/{edit}:commit?{COMMIT_QUERY}')
+        except Exception as error:
+            commit_error = str(error)
         verification = read_api(session, 'POST', ROOT, json={})['id']
         try:
             state = read_api(session, 'GET', f'{ROOT}/{verification}/tracks/{TRACK}')
@@ -159,7 +205,8 @@ def main():
             except Exception:
                 pass
         if not committed:
-            raise RuntimeError('Publication not confirmed; inspect Play before retrying')
+            reason = f' (commit: {commit_error})' if commit_error else ''
+            raise RuntimeError(f'Publication not confirmed{reason}; inspect Play before retrying')
         published = dict(receipt, package=PACKAGE, track=TRACK, signed_sha256=signed_hash, status='completed')
         (DIST / 'published.json').write_text(json.dumps(published, indent=2) + '\n')
         print(f'Confirmed {PACKAGE} version {version} on Google Play internal testing')

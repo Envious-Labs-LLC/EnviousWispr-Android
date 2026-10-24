@@ -67,6 +67,9 @@ class WordsNeverLostTest {
         assertEquals(1, rescued().size)
         assertEquals("1000\nKeep these words.", rescued().single().readText())
         assertTrue("never the words in a log", rig.log.lines.none { it.contains("Keep these words") })
+        // The take's own save runs on the History queue, which nothing above waits for (#483): let it fail first, or
+        // it succeeds once inserts work, settles the words, and recovery has nothing left to write.
+        rig.awaitHistoryIdle()
         rig.dao.failInserts = false
         awaitUntil("recovered into History") { runBlocking { rig.rescuedWords.recover(rig.transcripts) } == 1 }
         val row = rig.dao.rows.values.single()
@@ -96,6 +99,8 @@ class WordsNeverLostTest {
         rig.endings.awaitOne()
         rig.host.awaitServiceStopped()
         assertEquals(1, rescued().size)
+        // As in row 1 (#483): the save fails before inserts work again, or it settles the words itself.
+        rig.awaitHistoryIdle()
         rig.dao.failInserts = false
         awaitUntil("recovered into History") { runBlocking { rig.rescuedWords.recover(rig.transcripts) } == 1 }
         assertEquals("Keep these words.", rig.dao.rows.values.single().finalText)

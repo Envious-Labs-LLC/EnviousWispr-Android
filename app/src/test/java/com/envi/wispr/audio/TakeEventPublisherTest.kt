@@ -286,6 +286,33 @@ class TakeEventPublisherTest {
     }
 
     /**
+     * #480, staged: the capture thread publishes two Lives while the worker is between its two slot claims, the first
+     * into the slot the worker just emptied. Every Live still arrives in publish order. MUTATION m7: one claim per
+     * slot per pass, so C (claimed in this pass) overtakes B (left for the next one).
+     */
+    @Test
+    fun livesPublishedBetweenTheWorkersClaimsStillArriveInOrder() {
+        val armed = java.util.concurrent.atomic.AtomicBoolean(false)
+        lateinit var staged: TakeEventPublisher
+        staged = TakeEventPublisher(slot, "test", nowNanos = { now.get() }, betweenLiveClaims = {
+            if (armed.getAndSet(false)) {
+                staged.publishLive("tB", false, 1, 2, 2L)
+                staged.publishLive("tC", false, 1, 2, 3L)
+            }
+        })
+        try {
+            staged.start()
+            recorder.expect(3)
+            armed.set(true)
+            staged.publishLive("tA", false, 1, 2, 1L)
+            recorder.await()
+            assertEquals(listOf("tA:live(false,1,2,1)", "tB:live(false,1,2,2)", "tC:live(false,1,2,3)"), recorder.events.toList())
+        } finally {
+            staged.close()
+        }
+    }
+
+    /**
      * #327, #343: many takes back to back while the worker runs. Every Live that arrives precedes its take's ending
      * and arrives in publish order; a stale Live may be superseded, but the newest take's never is.
      */

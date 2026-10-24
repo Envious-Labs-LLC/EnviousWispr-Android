@@ -75,6 +75,11 @@ internal class TakeEventPublisher(
      * 1); production passes the no-op. A test uses it to let the worker empty both slots in exactly that gap.
      */
     private val afterFreePass: () -> Unit = {},
+    /**
+     * Runs on the worker inside `deliverLives`, after it claims the first slot and before the second (#480);
+     * production passes the no-op. A test uses it to publish new Lives in exactly that gap.
+     */
+    private val betweenLiveClaims: () -> Unit = {},
 ) {
     companion object {
         /** Heartbeats are throttled by WALL-CLOCK second: elapsed is 0 before live and would send one. */
@@ -150,6 +155,9 @@ internal class TakeEventPublisher(
     /** The two Live slots (#343), and the capture thread's own publish counter (one producer). */
     private val liveSlots = arrayOf(LiveSlot(), LiveSlot())
     private var liveSeq = 0L
+
+    /** The worker's own scratch list for [deliverLives]; never touched by the capture thread. */
+    private val claimedLives = ArrayList<LiveCopy>(4)
     private val worker = Thread({ drain() }, "TakeEventPublisher").apply { isDaemon = true }
 
     /** Starts the worker; called once by the service's `onCreate`, before any event can be offered. */
@@ -332,19 +340,23 @@ internal class TakeEventPublisher(
 
     /**
      * The worker's side of the Live slots (#343): claim and copy each waiting slot, releasing it before the next,
-     * THEN deliver the copies in the order the capture thread published them. Choosing a slot before claiming it
-     * would race a replace (coverage round).
+     * until a pass over both claims nothing, THEN deliver the copies in the order the capture thread published them.
+     * One pass is not enough (#480): the capture thread can refill the slot just released and then fill the other,
+     * and a pass that claims only the second would deliver it ahead of the first. Every Live published before the
+     * last empty pass is claimed, and any later one has a higher sequence. Choosing a slot before claiming it would
+     * race a replace (coverage round).
      */
     private fun deliverLives() {
-        val first = claimLive(liveSlots[0])
-        val second = claimLive(liveSlots[1])
-        if (first != null && second != null && second.seq < first.seq) {
-            deliverLive(second)
-            deliverLive(first)
-        } else {
-            first?.let(::deliverLive)
-            second?.let(::deliverLive)
+        while (true) {
+            val before = claimedLives.size
+            claimLive(liveSlots[0])?.let(claimedLives::add)
+            betweenLiveClaims()
+            claimLive(liveSlots[1])?.let(claimedLives::add)
+            if (claimedLives.size == before) break
         }
+        claimedLives.sortBy { it.seq }
+        claimedLives.forEach(::deliverLive)
+        claimedLives.clear()
     }
 
     /** READY to READING, copy, IDLE; null when the slot holds no waiting Live. */

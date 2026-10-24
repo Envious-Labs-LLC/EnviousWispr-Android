@@ -23,7 +23,8 @@ class PermissionsPageCopyTest {
             ),
             AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY to AutoPasteNotice(
                 "Auto-paste was switched off",
-                "This can happen when the app is stopped. Turn EnviousWispr back on in Accessibility settings.",
+                "This can happen when the app is stopped, or when Android’s floating accessibility button is tapped. " +
+                    "Turn EnviousWispr back on in Accessibility settings, and leave the EnviousWispr shortcut off.",
             ),
         )
         assertEquals(AutoPasteAvailability.entries.toSet(), cards.keys)

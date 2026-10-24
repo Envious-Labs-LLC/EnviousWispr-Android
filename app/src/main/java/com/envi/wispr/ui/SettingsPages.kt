@@ -423,10 +423,11 @@ internal fun autoPasteNotice(autoPaste: AutoPasteAvailability): AutoPasteNotice?
             "turn EnviousWispr off and then on in Accessibility settings.",
     )
     // The stop marker proves only that no orderly stop was recorded, not who switched it off, so the
-    // body says how it CAN happen and never states a cause (#131).
+    // body says how it CAN happen and never states a cause (#131). The floating button: a customer S22+ (#475).
     AutoPasteAvailability.SWITCHED_OFF_UNEXPECTEDLY -> AutoPasteNotice(
         title = "Auto-paste was switched off",
-        body = "This can happen when the app is stopped. Turn EnviousWispr back on in Accessibility settings.",
+        body = "This can happen when the app is stopped, or when Android’s floating accessibility button is tapped. " +
+            "Turn EnviousWispr back on in Accessibility settings, and leave the EnviousWispr shortcut off.",
     )
     AutoPasteAvailability.NOT_PERMITTED,
     AutoPasteAvailability.LIVE,

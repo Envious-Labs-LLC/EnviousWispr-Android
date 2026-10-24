@@ -153,8 +153,6 @@ class SustainedDictationDeviceTest {
         service.warmUpWithPolicy(policy)
         service.polishRequest(requestId, text, true, true, false, policy, object : IPolishCallback.Stub() {
             override fun onOutcome(delivered: PolishOutcome?) { outcome = delivered; done.countDown() }
-            override fun onResult(text: String?, usedEngine: String?, measuredLatencyMs: Long) = Unit
-            override fun onError(message: String?) = Unit
         })
         assertTrue("No polish outcome within 90 s for request $requestId", done.await(90, TimeUnit.SECONDS))
         return outcome

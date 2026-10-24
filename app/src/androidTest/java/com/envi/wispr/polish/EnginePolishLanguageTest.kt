@@ -101,24 +101,15 @@ class EnginePolishLanguageTest {
     /** Runs one request through the real engine with polish OFF and returns its text. */
     private fun polish(requestId: Long, raw: String): String {
         val answered = CountDownLatch(1)
-        var text = ""
-        var failure = ""
+        var delivered: PolishOutcome? = null
         engine?.polishRequest(requestId, raw, true, true, false, PolishPolicy.Off, object : IPolishCallback.Stub() {
             override fun onOutcome(outcome: PolishOutcome?) {
-                text = outcome?.text.orEmpty()
-                answered.countDown()
-            }
-
-            override fun onResult(t: String?, e: String?, latencyMs: Long) = Unit
-
-            override fun onError(message: String?) {
-                failure = message.orEmpty()
+                delivered = outcome
                 answered.countDown()
             }
         })
-        // Same reasoning as `bindEngine`: an engine that hangs or errors is the subject failing.
+        // Same reasoning as `bindEngine`: an engine that hangs or answers nothing is the subject failing.
         assertTrue("The engine never answered request $requestId", answered.await(60, TimeUnit.SECONDS))
-        assertTrue("The engine reported an error: $failure", failure.isEmpty())
-        return text
+        return checkNotNull(delivered) { "The engine answered request $requestId with no outcome" }.text
     }
 }

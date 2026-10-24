@@ -38,15 +38,13 @@ class PipelineProxyTest {
     @Test fun polishCallbacksReachTheListenerOnlyThroughThePost() {
         val listener = object : PolishListener {
             override fun onOutcome(outcome: PolishOutcome?) { heard += "outcome on ${Thread.currentThread().name}" }
-            override fun onResult(text: String?, engine: String?, latencyMs: Long) { heard += "result on ${Thread.currentThread().name}" }
-            override fun onError(message: String?) { heard += "error on ${Thread.currentThread().name}" }
         }
         val posting = PostingPolishListener({ posted += it }, listener)
-        onForeignThread { posting.onOutcome(null); posting.onResult("t", "e", 1L); posting.onError("x") }
+        onForeignThread { posting.onOutcome(null) }
         assertTrue("nothing reached the listener on the binder thread: $heard", heard.isEmpty())
-        assertEquals(3, posted.size)
+        assertEquals(1, posted.size)
         posted.forEach { it.run() }
-        assertEquals(3, heard.size)
+        assertEquals(listOf("outcome"), heard.map { it.substringBefore(" on ") })
         assertTrue("the listener ran where the post ran", heard.none { it.endsWith("binder-1") })
     }
 }

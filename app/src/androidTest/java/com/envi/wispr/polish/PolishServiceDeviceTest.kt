@@ -76,10 +76,6 @@ class PolishServiceDeviceTest {
                     outcome = delivered
                     completed.countDown()
                 }
-
-                override fun onResult(text: String?, usedEngine: String?, measuredLatencyMs: Long) = Unit
-
-                override fun onError(message: String?) = Unit
             }
         )
 
@@ -118,8 +114,6 @@ class PolishServiceDeviceTest {
         val literal = "please send the report tomorrow morning"
         checkNotNull(service).polishRequest(8, literal, true, true, false, policy, object : IPolishCallback.Stub() {
             override fun onOutcome(result: PolishOutcome?) { answer = result; received.countDown() }
-            override fun onResult(text: String?, engine: String?, latencyMs: Long) = Unit
-            override fun onError(message: String?) = Unit
         })
         assertTrue("Captured explicit policy did not return words", received.await(90, TimeUnit.SECONDS))
         val outcome = checkNotNull(answer)

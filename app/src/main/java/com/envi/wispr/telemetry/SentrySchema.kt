@@ -156,7 +156,7 @@ internal object SentrySchema {
         "model" to Shape.OneOf(ModelManifest.all.map { it.id }.toSet()),
         "outcome" to Shape.OneOf(DownloadState.entries.map { it.name.lowercase() }.toSet()),
         "source_host" to Shape.OneOf(ModelSourceHost.entries.map { it.wire }.toSet()),
-        "shape" to Shape.OneOf(setOf("null", "mismatched", "blank", "v1_result", "v1_error")),
+        "shape" to Shape.OneOf(setOf("null", "mismatched", "blank")),
         "count" to Shape.Number,
         // The owner's polish preparation step that threw (#252), or the take's start preparation (#290).
         "step" to Shape.OneOf(com.envi.wispr.ui.TakePolishController.PREPARATION_STEPS + com.envi.wispr.ui.DictationSessionCoordinator.STEP_MATCHER),

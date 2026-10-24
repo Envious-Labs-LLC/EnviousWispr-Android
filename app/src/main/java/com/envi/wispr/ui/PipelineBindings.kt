@@ -200,8 +200,6 @@ internal class PipelineBindings(
                 takeId,
                 object : IPolishCallback.Stub() {
                     override fun onOutcome(outcome: PolishOutcome?) = posting.onOutcome(outcome)
-                    override fun onResult(text: String?, engine: String?, latencyMs: Long) = posting.onResult(text, engine, latencyMs)
-                    override fun onError(message: String?) = posting.onError(message)
                 },
             )
         }
@@ -224,6 +222,4 @@ internal class PostingSpeechListener(private val post: (Runnable) -> Unit, priva
 /** A polish callback's values, posted to main before the owner's listener sees them (#253). */
 internal class PostingPolishListener(private val post: (Runnable) -> Unit, private val listener: PolishListener) : PolishListener {
     override fun onOutcome(outcome: PolishOutcome?) = post(Runnable { listener.onOutcome(outcome) })
-    override fun onResult(text: String?, engine: String?, latencyMs: Long) = post(Runnable { listener.onResult(text, engine, latencyMs) })
-    override fun onError(message: String?) = post(Runnable { listener.onError(message) })
 }

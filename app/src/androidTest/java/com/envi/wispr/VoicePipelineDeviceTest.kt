@@ -183,10 +183,6 @@ class VoicePipelineDeviceTest {
                     latencyMs = outcome?.latencyMs ?: -1L
                     polishFinished.countDown()
                 }
-
-                override fun onResult(text: String?, usedEngine: String?, measuredLatencyMs: Long) = Unit
-
-                override fun onError(message: String?) = Unit
             })
             assertTrue("Polish callback timed out", polishFinished.await(30, TimeUnit.SECONDS))
             assertTrue("Unexpected engine: $engine", engine.startsWith("S1-mini by Superwhisper"))

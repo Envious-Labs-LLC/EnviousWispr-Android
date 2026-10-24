@@ -40,19 +40,33 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.BuildConfig
+import com.envi.wispr.about.PlayStoreLink
 import com.envi.wispr.about.ReleaseNotes
+import com.envi.wispr.telemetry.InstallSource
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.settings.AppPreferencesState
 
 @Composable
 internal fun WhatsNewPage() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val installNote = androidx.compose.runtime.remember { PlayStoreLink.installNote(InstallSource.of(context)) }
+    var playUnavailable by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
     ScreenContainer(subtitle = SettingsPage.WhatsNew.subtitle) {
         Text(
             "You are running version ${BuildConfig.VERSION_NAME}.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // #38: Play's own listing shows Update when a newer version exists; the app reads no update state itself.
+        FilledTonalButton(onClick = { playUnavailable = !PlayStoreLink.open(context) }, modifier = Modifier.fillMaxWidth()) {
+            Text("Check for updates on Google Play")
+        }
+        listOfNotNull(installNote, if (playUnavailable) "Google Play could not be opened on this phone." else null).forEach { line ->
+            Text(line, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         ReleaseNotes.entries.forEach { note ->
             ElevatedCard {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

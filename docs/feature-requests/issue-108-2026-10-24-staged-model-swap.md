@@ -130,7 +130,7 @@ a descriptor. New authority proposed: `ModelDescriptor.previous` (proposed) and
   `MODEL_OPERATION_LOCKS`, `:21`) is PROCESS-LOCAL. It is held for the whole transfer, and it is released before
   any native open. So `:asr` and `:polish` can race main-process admission, and a main-process readiness read
   can block behind a running download (a pre-existing behaviour). Final-folder access is therefore
-  synchronized by a cross-process lease (§13d). Stamps support resident reuse only.
+  owned by the engine's process: only the owner mutates it (§13e). Stamps support resident reuse only.
 
 ### 5. High-risk premises, with evidence
 - "The old files stay intact during the download": staging is `File(root, ".${model.id}.download")`
@@ -148,8 +148,8 @@ a descriptor. New authority proposed: `ModelDescriptor.previous` (proposed) and
    descriptors for the SAME id that the current engine code loads unchanged. A unit test requires every
    previous descriptor to have the same `id` and `engineId` as its parent, the same file-name set, and a
    different `pinnedRevision`, with no nesting.
-2. `ModelDeliveryStore.usableDescriptor(model): ModelDescriptor?` (proposed), under the shared lease (§13d), never
-   the staging mutex: the current descriptor when it fully verifies, otherwise the first of `model.previous` that
+2. `ModelDeliveryStore.usableDescriptor(model): ModelDescriptor?` (proposed), run on the owner's model-operation queue
+   (§13e), never under the staging mutex: the current descriptor when it fully verifies, otherwise the first of `model.previous` that
    passes the same full verification, otherwise null. `isVerified` keeps meaning "the CURRENT revision is admitted".
    `installationStamp` and `receiptText` are already per-descriptor.
 3. `ModelStorage.usable(context, model)` (proposed) wraps it. The loaders switch to it:
@@ -176,8 +176,8 @@ Rejected alternatives:
 - **Keep the old model until a manual Update:** the user then has to act, which is the opposite of the goal.
 
 ## 3b. Ownership
-This lives on `ModelDeliveryStore` because it already owns verification and admission; it also owns the lease
-(§13d). The
+Verification stays on `ModelDeliveryStore`, which already owns it. Mutation of the final folder moves to the
+engine's owning process (§13e), because that process is the only one that opens the engine. The
 alternative, each loader trying descriptors itself, would duplicate the verification rules in three places.
 
 ## 4. Contract deltas
@@ -187,8 +187,9 @@ alternative, each loader trying descriptors itself, would duplicate the verifica
   verified, current preferred".
 - `ModelStorage.isReady` keeps its meaning (current revision admitted) and stays the API for cards, downloads and
   updates. The "can dictate or polish" readers move to `usable`.
-- Final-folder access contract: any reader of the final folder holds the shared lease, and any writer holds the
-  exclusive lease (§13d).
+- Final-folder contract: only the owning process mutates it (install, admission, adoption, Remove, Repair), on
+  one process-scoped queue. Main-process reads are observations or decision reads that use the explicit states
+  of §16 (§13e).
 
 ## 5. State and lifecycle audit
 - **Populations of model state on disk:** nothing; staging only; final at current; final at previous; final
@@ -212,7 +213,7 @@ alternative, each loader trying descriptors itself, would duplicate the verifica
 | current (unchanged) | `OnboardingViewModel.modelFlow` cards | current only | unchanged; practice and navigation gates get usability separately | yes (gates) | unit |
 | current (unchanged) | `ModelWorkViewModel` cards | current only | unchanged, fed separately from usability | yes | unit |
 | usable | `AppLaunchFacts.modelsReady` | current only | usable | yes | unit |
-| lease | `PolishService` normal and qualification opens | stamp only | shared lease through open | yes | instrumented |
+| owner queue | `PolishService` normal and qualification opens | stamp only | on the owner queue, after any pending admission | yes | instrumented |
 | current plus usable | `ModelDeliveryUi` | Repair on staging failure | Update retry while previous is usable (§13c.6) | yes | unit |
 | isVerified (unchanged) | `ModelDeliveryWorker:53` | skip when current | unchanged | no | existing tests |
 | needsUpdate (unchanged) | card "Update available" | shown | unchanged, shown while previous runs | no | unit |
@@ -237,13 +238,14 @@ can nominate itself.
 
 ## 10. File-by-file
 - `models/ModelManifest.kt`: `previous` field.
-- `models/ModelDelivery.kt`: `usableDescriptor`, the lease owner and its protected helpers (§13d), and the
-  admission, Remove and Repair writers under the exclusive lease.
+- `models/ModelDelivery.kt`: `usableDescriptor`; write-once staged generations; admission, Remove and Repair
+  callable only from the owner queue (§13e).
 - `models/ModelStorage.kt`: `usable`.
 - `asr/RecognizerOwner.kt`: worker-confined replacement (§13c.2).
-- `asr/AsrService.kt`: load via usable under the shared lease, plus the per-take resident check.
-- `polish/S1ModelSelection.kt`, `polish/PolishService.kt`: usable under the shared lease for normal and
-  qualification opens, with the selected artifact identity carried through (§13b.5).
+- `asr/AsrService.kt`: load via usable on the process-scoped owner queue, plus the per-take resident check and
+  owner admission.
+- `polish/S1ModelSelection.kt`, `polish/PolishService.kt`: usable on the owner queue for normal and
+  qualification opens, with owner admission, with the selected artifact identity carried through (§13b.5).
 - `ui/ReadinessViewModel.kt` and the practice and navigation gates: usability. `ui/ModelWorkViewModel.kt` and
   `ui/OnboardingViewModel.kt` cards: current, fed separately.
 - `models/ModelDeliveryUi.kt`: Update retry while previous is usable.
@@ -281,7 +283,8 @@ can nominate itself.
 
 Every gap was adopted. The design changes each one makes:
 
-1. **Cross-process races (P1).** Each loader brackets with `installationStamp` of the selected descriptor:
+1. **Cross-process races (P1).** SUPERSEDED by §13e (owner-only mutation). Original text, kept for the record:
+   each loader brackets with `installationStamp` of the selected descriptor:
    stamp, full verify, stamp (equal or abort), native open, stamp again (equal or release and retry once). This
    extends to `:asr` the pattern `S1ModelSelector.resolve` already uses. No lock is assumed across processes.
    Pinned verification and the ASR load bound are unchanged.
@@ -330,7 +333,7 @@ Every gap was adopted. The design changes each one makes:
 
 These supersede §3 step 5 and §13b.1, 13b.4 and 13b.8 where they differ.
 
-1. **Cross-process lease (P1).** A file lock, `java.nio.channels.FileChannel.lock` (external) on
+1. **Cross-process lease (P1).** DELETED by §13e; kept for the record. A file lock, `java.nio.channels.FileChannel.lock` (external) on
    `<root>/.<id>.lease` (proposed), works across `:asr`, `:polish` and the main process.
    - Both loaders hold a SHARED lease through selection, full verification and native open.
    - Admission (the two renames), Remove and Repair take the EXCLUSIVE lease.
@@ -365,7 +368,7 @@ These supersede §3 step 5 and §13b.1, 13b.4 and 13b.8 where they differ.
    - admission raced against both loaders across processes (an instrumented row);
    - each mutation run with its failure recorded before any protection is claimed.
 
-## 13d. The final-folder concurrency protocol (the class, enumerated after two same-shape rounds)
+## 13d. (DELETED by §13e; kept for the record) The final-folder concurrency protocol
 
 Round 2 repeated round 1's class: concurrency of final-folder access. Its members are enumerated here from the
 producers (every caller of `ModelDeliveryStore` that touches the final folder, `grep -n "fun " ModelDelivery.kt`
@@ -474,8 +477,8 @@ the rollback. §12 and §14.2 are corrected by this note.
 
 ## 14. Open questions
 1. Should Storage show that an older model is in use? Proposed: no new copy; "Update available" already says it.
-2. Whether the first real use waits for the next revision bump, or ships now with an empty `previous` (inert)
-   so the next bump only adds a descriptor. Proposed: ship inert now.
+2. Build now or defer to the next planned revision bump (§16). An empty `previous` disables only fallback;
+   owner admission, the explicit states and engine replacement stay active, so shipping early is not inert.
 
 ## 15. Related
 #36, #458, #37, `docs/maintenance.md`, `LegacyModelSweep`, `SpeechModelUpgrade`.
@@ -492,8 +495,10 @@ of the work:
 - **One process-scoped model-operation queue** in each owner, outliving service instances.
 - **Explicit decision states:** Downloaded, Applying, Ready, Missing, Interrupted. Readers keep their last proven
   result while Applying.
-- Stale text from the lease era (§2.5, §3.2, §3b, §4, §6, §10, §13b.1, §5, §12, §14.2) still needs rewriting to
-  §13e.
+- The lease-era text in §2.5, §3.2, §3b, §4, §6, §10 and §14.2 has been rewritten to §13e. §13b.1, §13c.1 and
+  §13d are marked superseded or deleted and kept for the record. The round-4 items (owner-only mutation
+  including first install, write-once staging, the process-scoped queue, explicit states) are the remaining
+  plan work if the founder chooses to build.
 
 The decision before more planning: build this (about REFACTOR tier, AIDL plus both engines), or defer it until a
 model revision bump is actually planned and accept the gap for that bump as #458 did.

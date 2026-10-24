@@ -8,6 +8,7 @@ import struct
 import subprocess
 import tempfile
 import time
+from urllib.parse import quote
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -19,6 +20,7 @@ TRACK = 'internal'
 PROJECT = 'ageless-domain-493017-j8'
 CERTIFICATE = 'effeb59b8fbd6a4295bb732a58d43918e12c843bf57fa72a5ae258fd56d01184'
 ROOT = f'https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PACKAGE}/edits'
+RELEASES = f'https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PACKAGE}/tracks/{{track}}/releases'
 DIST = Path('dist')
 # The commit's default, CANCEL_IN_REVIEW_AND_SUBMIT, cancels a production review in progress and resubmits
 # everything with this tester build (#447). Refuse instead; the review keeps its place in Google's queue.
@@ -41,6 +43,18 @@ def other_track_drafts(tracks):
     return sorted({
         track.get('track', '?') for track in tracks if track.get('track') != TRACK
         for release in track.get('releases', []) if release.get('status') == 'draft'
+    })
+
+
+def unsent_releases(summaries):
+    """Release summaries saved in Console as ready but not yet sent for review: a commit would send them (#447).
+
+    Edit status cannot show this; a ready production release reads 'completed' there.
+    https://developers.google.com/android-publisher/api-ref/rest/v3/applications.tracks.releases
+    """
+    return sorted({
+        summary.get('track', '?') for summary in summaries
+        if summary.get('releaseLifecycleState') == 'RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW'
     })
 
 
@@ -154,6 +168,11 @@ def main():
         drafts = other_track_drafts(tracks)
         if drafts:
             raise RuntimeError(f'Draft release on {", ".join(drafts)}; publishing would send it for review. Resolve it in Play Console first')
+        others = sorted({track['track'] for track in tracks if track.get('track') and track['track'] != TRACK})
+        summaries = [summary for name in others for summary in api(session, 'GET', RELEASES.format(track=quote(name, safe=''))).get('releases', [])]
+        unsent = unsent_releases(summaries)
+        if unsent:
+            raise RuntimeError(f'Release on {", ".join(unsent)} is ready but not sent for review; publishing would send it. Resolve it in Play Console first')
         secret = api(session, 'GET', f'https://secretmanager.googleapis.com/v1/projects/{PROJECT}/secrets/enviouswispr-android-upload-signing/versions/latest:access')
         material = json.loads(base64.b64decode(secret['payload']['data'], validate=True))
         sign(source, signed, material)

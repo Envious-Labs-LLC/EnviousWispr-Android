@@ -54,6 +54,17 @@ check('a production and a beta draft are named, sorted', publish.other_track_dra
 check('our own track and live releases are not drafts', publish.other_track_drafts(tracks[:1] + tracks[2:3]) == [])
 check('no tracks, no drafts', publish.other_track_drafts([]) == [])
 
+# A release saved ready in Console but not sent for review reads 'completed' in the edit; only its lifecycle
+# state shows that the commit would send it.
+summaries = [
+    {'track': 'production', 'releaseLifecycleState': 'RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW'},
+    {'track': 'production', 'releaseLifecycleState': 'RELEASE_LIFECYCLE_STATE_PUBLISHED'},
+    {'track': 'beta', 'releaseLifecycleState': 'RELEASE_LIFECYCLE_STATE_IN_REVIEW'},
+    {'track': 'alpha', 'releaseLifecycleState': 'RELEASE_LIFECYCLE_STATE_DRAFT'},
+]
+check('a ready, unsent production release is named', publish.unsent_releases(summaries) == ['production'])
+check('published, in-review and draft releases are not unsent', publish.unsent_releases(summaries[1:]) == [])
+
 # Google's refusal reaches the log in short form.
 refusal = Result(400, {'error': {'code': 400, 'status': 'FAILED_PRECONDITION', 'message': 'Changes are currently in review.'}})
 check('a JSON refusal gives code, status and message', publish.api_error(refusal) == 'HTTP 400 FAILED_PRECONDITION Changes are currently in review.')

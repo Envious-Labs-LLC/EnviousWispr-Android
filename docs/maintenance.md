@@ -35,8 +35,9 @@ not a new tester release.
 A tester publish never cancels a production review (#447): the publisher commits with
 `changesInReviewBehavior=ERROR_IF_IN_REVIEW`, so while a review is in progress the run fails with
 Google's reason; push again after the review clears. It also refuses to run while another track holds
-a draft release, which the commit would send for review. Store-listing drafts are not visible to that
-check, so inspect Console before a tester publish while listing changes are saved but not submitted.
+a draft release or a release saved ready but not sent for review, either of which the commit could
+send for review. Store-listing and declaration changes are not visible to those checks, so inspect
+Console before a tester publish while such changes are saved but not submitted.
 
 For later production updates, promote the tested signed bundle, inspect Play validation, confirm
 the intended countries and release behavior, then submit the reviewed candidate. Preserve settings,

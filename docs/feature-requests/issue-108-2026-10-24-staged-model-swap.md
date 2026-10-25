@@ -663,3 +663,17 @@ unregister are `PipelineBindings`, `EngineWarmUp`, `SpeechModelKeepAlive` and `P
   control only). The prompt shows once per revision off Wi-Fi; "Download now" approves that revision only. A
   queued download held to Wi-Fi while off it shows "Waiting for Wi-Fi" with "Download now on mobile data". A
   changed rule re-queues only ENQUEUED work, as its own kind (tag), never clearing Pause or Cancel.
+- **Chunk 3, the swap.** `ModelSwapGate` (main process) admits a take atomically with IDLE to STARTING and releases
+  it after the take's unbind (or at teardown). Its `ifOpen` guards every engine bind, which now all go through
+  `EngineBindings` (the four owners), and `revokeAll` unbinds them for a swap and tells each owner.
+  `ModelSwap.exclusive` closes the gate only when idle, revokes the bindings, links death recipients to the live
+  engine binders, kills `:asr` and `:polish`, and needs every linked death plus absence from the process list
+  within 5 s before it runs the write. On a timeout nothing changes. A process with no binding has no service
+  instance (bound-only), so absence alone is its evidence (a reading of §19.1's "unidentified instance": it is
+  stopped and must be gone, not deferred forever). Download and adoption stage, then admit through it; while a take
+  runs they end `STAGED` and the worker waits for the gate to be idle (up to 10 minutes, then WorkManager retries),
+  with no refetch. Remove and Repair run inside it too. Recovery never replaces a final that holds a previous
+  revision; only start-up recovery admits a finished folder itself. The gate opens at start right away when no
+  `.old` exists, else after recovery (closes #492's deferred P2). A refused start says "A model is updating. Try
+  again in a moment." (names no model, since either may be applying) and records `dictation.refused` `updating`.
+  A qualification refused or revoked by a swap answers CANCELLED, never a failure.

@@ -650,3 +650,16 @@ unregister are `PipelineBindings`, `EngineWarmUp`, `SpeechModelKeepAlive` and `P
   to chunk 3 by design: the swap gate stays closed until startup reconciliation completes, and engines are
   bound-only from the main process, so a closed gate keeps `:asr` and `:polish` from starting. Until chunk 3 the
   window exists only in the crash state, where a take already fails today.
+- **Chunk 1, previous revision keeps working.** `ModelDescriptor.previous` and `usableDescriptor` feed the loaders
+  and readiness; cards, downloads and updates still read current verification. S1's configuration helpers
+  (`S1ModelSelector.loadConfiguration`, `resolvedConfiguration`, `qualificationContextId`) name the installed
+  revision, so a resident engine on the previous revision is reused and polish is allowed until the swap. Codex
+  ALL-CLEAR after three rounds.
+- **Chunk 2, download policy and prompt.** `ModelDownloadPolicy` is the one network rule for every enqueue path
+  (download, setup, update, repair, resume, the #458 upgrade, the new owed update). Wi-Fi only uses
+  `setRequiredNetworkRequest` (WIFI plus INTERNET) and the transfer opens through the worker's `Network`; any
+  network uses CONNECTED. The "Download models on mobile data" switch sits on the Storage page and reuses setup's
+  stored key, so a setup choice carries over. `ModelUpdates.run` queues an owed update at start (KEEP, ACTIVE
+  control only). The prompt shows once per revision off Wi-Fi; "Download now" approves that revision only. A
+  queued download held to Wi-Fi while off it shows "Waiting for Wi-Fi" with "Download now on mobile data". A
+  changed rule re-queues only ENQUEUED work, as its own kind (tag), never clearing Pause or Cancel.

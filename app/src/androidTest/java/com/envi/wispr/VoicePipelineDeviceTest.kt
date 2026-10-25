@@ -53,7 +53,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -326,15 +325,18 @@ class VoicePipelineDeviceTest {
      */
     @Test
     fun aDictationWithNoFieldToInsertIntoIsNotReportedToTheUserAsAFailure() {
-        assumeTrue(
-            "Notifications are not permitted, so an announcement could not be posted either way " +
-                "and this row could not tell silence from a blocked notification",
+        // NOT RUN, never a pass, when the harness has not granted these (#225): DeviceNotRun logs the reason first.
+        DeviceNotRun.skipUnless(
             NotificationManagerCompat.from(context).areNotificationsEnabled(),
+            "aDictationWithNoFieldToInsertIntoIsNotReportedToTheUserAsAFailure",
+            "notifications are not permitted, so an announcement could not be posted either way " +
+                "and this row could not tell silence from a blocked notification",
         )
-        assumeTrue(
-            "The accessibility service is not enabled",
+        DeviceNotRun.skipUnless(
             shell("settings get secure enabled_accessibility_services")
                 .contains("com.envi.wispr/com.envi.wispr.paste.PasteAccessibilityService"),
+            "aDictationWithNoFieldToInsertIntoIsNotReportedToTheUserAsAFailure",
+            "the accessibility service is not enabled",
         )
         val notificationManager = context.getSystemService(NotificationManager::class.java)
         // The session's own notification is dismissed when the session ends, so an empty tray at

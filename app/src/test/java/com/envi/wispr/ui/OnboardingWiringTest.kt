@@ -31,8 +31,8 @@ class OnboardingWiringTest {
         assertTrue(screen.contains("if (warming) model.warmEngines()"))
         assertTrue(screen.contains("onStopOrDispose { if (warming) model.coolEngines() }"))
         // Both engines, by binding, in their own processes; the polish load follows the user's policy.
-        assertTrue(warmUp.contains("Intent(context, AsrService::class.java)"))
-        assertTrue(warmUp.contains("Intent(context, PolishService::class.java)"))
+        assertTrue(warmUp.contains("EngineBindings.bind(context, EngineBindings.Engine.SPEECH, speech, Context.BIND_AUTO_CREATE)"))
+        assertTrue(warmUp.contains("EngineBindings.bind(context, EngineBindings.Engine.POLISH, polish, Context.BIND_AUTO_CREATE)"))
         assertTrue(warmUp.contains("warmUpWithPolicy(policy)"))
     }
 

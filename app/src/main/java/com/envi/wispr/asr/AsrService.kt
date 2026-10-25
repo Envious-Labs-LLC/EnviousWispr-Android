@@ -275,7 +275,8 @@ class AsrService : Service() {
     private fun initRecognizer(): ParakeetEngine? {
         return try {
             val t0 = SystemClock.elapsedRealtime()
-            if (!ModelStorage.isReady(this, ModelManifest.parakeet)) {
+            // The current revision or a previous one this engine loads (#108): an update in progress keeps dictating.
+            if (ModelStorage.usable(this, ModelManifest.parakeet) == null) {
                 DebugLogger.warn(TAG, "Parakeet model is not verified in app-private storage")
                 return null
             }

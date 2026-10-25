@@ -90,7 +90,12 @@ class SpeechModelUpgradeTest {
         val worker = File("src/main/java/com/envi/wispr/models/ModelDeliveryWorker.kt").readText()
         assertTrue(worker.contains("SpeechModelUpgrade.afterRemove(root, model)"))
         val app = File("src/main/java/com/envi/wispr/models/ModelBootstrapApplication.kt").readText()
-        assertTrue(app.contains("speechUpgradeScope.launch { SpeechModelUpgrade.run(app) }"))
+        val launch = app.indexOf("speechUpgradeScope.launch {")
+        val reconcile = app.indexOf(".reconcile(model)")
+        val run = app.indexOf("SpeechModelUpgrade.run(app)")
+        assertTrue("the upgrade runs in the startup scope", launch in 0 until run)
+        // #492: an interrupted admission is settled first, or the upgrade reads a missing model as not installed.
+        assertTrue("startup reconciles before the upgrade decides", reconcile in launch until run)
         assertTrue(
             "startup file checks must run on IO",
             app.contains("private val speechUpgradeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)"),

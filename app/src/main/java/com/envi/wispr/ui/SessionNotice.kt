@@ -36,6 +36,12 @@ internal enum class SessionNotice(val line: String, val timing: NoticeTiming) {
      * Shown on the recorder in the last minute of a take, so the user can finish the sentence
      * they are in rather than discover the cap by losing the end of it.
      */
+    /**
+     * A start refused while a model update is applied (#108): dictation pauses for those few seconds. It names no
+     * model because the one applying may be the speech or the polish model.
+     */
+    MODEL_UPDATING("A model is updating. Try again in a moment.", NoticeTiming.AFTER_RECORDER),
+
     DURATION_WARNING(
         "Recording stops in under a minute " +
             "(${RecordingLimits.MAX_DURATION_MINUTES} minute limit)",

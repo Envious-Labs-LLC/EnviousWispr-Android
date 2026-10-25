@@ -136,7 +136,9 @@ internal class ReadinessViewModel(
 internal fun readAppReadiness(context: Context): AppReadiness {
     val accessibility = AccessibilityPermissionCheck.of(AccessibilityPermission.isGranted(context))
 
-    val speechModelReady = ModelStorage.isReady(context, ModelManifest.parakeet)
+    // "Can I dictate" (#108): a previous revision still verifies while its update downloads. The model cards keep
+    // reading the current revision through ModelWorkViewModel, so they still offer the update.
+    val speechModelReady = ModelStorage.usable(context, ModelManifest.parakeet) != null
 
     return AppReadiness(
         microphoneGranted = ContextCompat.checkSelfPermission(
@@ -150,7 +152,7 @@ internal fun readAppReadiness(context: Context): AppReadiness {
             ) == PackageManager.PERMISSION_GRANTED,
         accessibility = accessibility,
         speechModelReady = speechModelReady,
-        polishModelReady = ModelStorage.isReady(context, ModelManifest.s1),
+        polishModelReady = ModelStorage.usable(context, ModelManifest.s1) != null,
         modelsChecked = true,
     )
 }

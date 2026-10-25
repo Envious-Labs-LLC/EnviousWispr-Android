@@ -25,6 +25,12 @@ internal data class ModelDescriptor(
     val notice: String,
     val pinnedRevision: String,
     val files: List<ModelFile>,
+    /**
+     * Older pinned revisions of this same model that this build's engine still loads unchanged (#108): while a new
+     * revision downloads, the one already on the phone keeps dictating, verified exactly as strictly against its own
+     * descriptor. Same id, engine and file names, a different revision, no nesting (`ModelManifestTest`).
+     */
+    val previous: List<ModelDescriptor> = emptyList(),
 ) {
     val isAvailable: Boolean
         get() = id.isSafeFileName() && files.isNotEmpty() && files.all {

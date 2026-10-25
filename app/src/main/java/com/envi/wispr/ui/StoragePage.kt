@@ -11,6 +11,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import com.envi.wispr.models.ModelDeliveryWorker
+import com.envi.wispr.settings.AppPreferences
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -64,6 +70,7 @@ internal fun StoragePage() {
     }
 
     ScreenContainer(subtitle = SettingsPage.Storage.subtitle) {
+        ModelDownloadsSetting()
         when (val state = reading) {
             StorageReading.Measuring -> Text(
                 "Measuring what is on this phone.",
@@ -105,6 +112,31 @@ internal fun StoragePage() {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+    }
+}
+
+/**
+ * "Download models" (#108): Wi-Fi only by default, or Wi-Fi or mobile data. It governs first downloads, updates and
+ * repairs (`ModelDownloadPolicy`), and a download already waiting is queued again under the new choice.
+ */
+@Composable
+private fun ModelDownloadsSetting() {
+    val context = LocalContext.current
+    val preferences = remember { AppPreferences(context) }
+    val state by preferences.state.collectAsState(initial = null)
+    val scope = rememberCoroutineScope()
+    val mobileData = state?.modelDownloadsOnMobileData ?: return
+    SettingsGroup("Downloads") {
+        SettingsToggleRow(
+            title = "Download models on mobile data",
+            subtitle = if (mobileData) "Models download on Wi-Fi or mobile data." else "Models download on Wi-Fi only.",
+            checked = mobileData,
+        ) { allowed ->
+            scope.launch {
+                preferences.setModelDownloadsOnMobileData(allowed)
+                ModelDeliveryWorker.reapplyNetwork(context)
             }
         }
     }

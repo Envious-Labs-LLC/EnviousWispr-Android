@@ -6,9 +6,11 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.URI
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.security.MessageDigest
 
-internal enum class DownloadState { DOWNLOADING, PAUSED, VERIFYING, READY, FAILED, CANCELLED, REPAIR_NEEDED }
+/** STAGED (#108): the new revision is complete and verified in staging, and applying it waits for an idle moment. */
+internal enum class DownloadState { DOWNLOADING, PAUSED, VERIFYING, READY, FAILED, CANCELLED, REPAIR_NEEDED, STAGED }
 internal data class DownloadStatus(
     val state: DownloadState,
     val bytes: Long = 0,
@@ -94,13 +96,83 @@ internal class ModelDeliveryStore(private val root: File) {
     }.getOrDefault(0L)
 
     /** Full receipt verification. Call from a worker or service executor, never the UI thread. */
-    fun isVerified(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
-        val receipt = File(finalDirectory(model), RECEIPT)
-        val names = finalDirectory(model).listFiles()?.map { it.name }?.toSet()
-        model.isAvailable && !Files.isSymbolicLink(finalDirectory(model).toPath()) && names == (model.files.map { it.name }.toSet() + RECEIPT) && receipt.isFile && receipt.readText() == receiptText(model) && model.files.all { entry ->
-            val file = File(finalDirectory(model), entry.name)
+    fun isVerified(model: ModelDescriptor): Boolean = synchronized(lock(model)) { verifies(finalDirectory(model), model) }
+
+    /**
+     * Which pinned descriptor the installed files fully verify against, the current one first, then each of
+     * [ModelDescriptor.previous] (#108); null when none does. Nothing is relaxed: the same names, receipt, sizes and
+     * hashes, against a descriptor compiled into this build. "Can I dictate" reads this; download and update decisions
+     * keep reading [isVerified], which means the CURRENT revision.
+     */
+    fun usableDescriptor(model: ModelDescriptor): ModelDescriptor? = synchronized(lock(model)) {
+        (listOf(model) + model.previous).firstOrNull { verifies(finalDirectory(model), it) }
+    }
+
+    /** [directory] holds exactly [model]'s files plus its receipt, every size and hash matching. */
+    private fun verifies(directory: File, model: ModelDescriptor): Boolean {
+        val receipt = File(directory, RECEIPT)
+        val names = directory.listFiles()?.map { it.name }?.toSet()
+        // A linked receipt could borrow another folder's (#492 review round 2), so it is refused like a linked model file.
+        return model.isAvailable && !Files.isSymbolicLink(directory.toPath()) && names == (model.files.map { it.name }.toSet() + RECEIPT) && receipt.isFile && !Files.isSymbolicLink(receipt.toPath()) && receipt.readText() == receiptText(model) && model.files.all { entry ->
+            val file = File(directory, entry.name)
             file.isFile && !Files.isSymbolicLink(file.toPath()) && file.length() == entry.expectedBytes && sha256(file) == entry.sha256!!.lowercase()
         }
+    }
+
+    /**
+     * Finishes or undoes an admission a process death interrupted (#492). Admission renames final to `.<id>.old`,
+     * then staging to final, then deletes `.old`; a death between the renames left final absent with the previous
+     * model in `.old` and the new one in staging, and the next download used to delete `.old` first and staging after
+     * it, losing both. Main process only (app start, and before any download or adoption); returns whether it changed
+     * anything.
+     *
+     * Final is judged without following links, and only a final that fully verifies counts as a finished admission:
+     * - final verifies: a leftover `.old` is removed;
+     * - final missing, or present but not verifying (a corrupt folder, a file, a dangling link): a staging or adoption
+     *   folder that fully verifies against [model] replaces it, and `.old` then goes;
+     * - final missing and nothing verified to replace it: `.old` is put back, unverified, since every reader verifies
+     *   final before trusting it;
+     * - anything else is left exactly as found: nothing here deletes the only copy of a model.
+     *
+     * #108: a final holding a previous revision is in use, never broken; its update waits in staging for the gated
+     * admission. Only start-up recovery (before the swap gate opens, so before any engine binds) admits a finished
+     * folder itself; a download or adoption leaves it for its own gated admission.
+     */
+    fun reconcile(model: ModelDescriptor): Boolean = synchronized(lock(model)) { reconcileLocked(model, admitFinished = true) }
+
+    /**
+     * Whether start-up must recover [model] before the swap gate opens (cheap, no hashing): an admission left `.old`
+     * behind, or a staging or adoption folder holds a receipt (written only once every file verified), which recovery
+     * may admit.
+     */
+    fun interruptedAdmission(model: ModelDescriptor): Boolean =
+        listOf(".${model.id}.old", ".${model.id}.download/$RECEIPT", ".${model.id}.adopt/$RECEIPT")
+            .any { Files.exists(File(root, it).toPath(), LinkOption.NOFOLLOW_LINKS) }
+
+    /** A complete, verified download waits in staging for its admission (#108): only the renames remain. */
+    fun hasVerifiedDownload(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
+        verifies(File(root, ".${model.id}.download"), model)
+    }
+
+    private fun reconcileLocked(model: ModelDescriptor, admitFinished: Boolean): Boolean {
+        val final = finalDirectory(model)
+        val old = File(root, ".${model.id}.old")
+        val oldPresent = Files.exists(old.toPath(), LinkOption.NOFOLLOW_LINKS)
+        val finalPresent = Files.exists(final.toPath(), LinkOption.NOFOLLOW_LINKS)
+        if (finalPresent && (listOf(model) + model.previous).any { verifies(final, it) }) return oldPresent && ModelTree.delete(old)
+        val finished = if (!admitFinished) null else listOf(File(root, ".${model.id}.download"), File(root, ".${model.id}.adopt"))
+            .firstOrNull { verifies(it, model) }
+        if (finished != null) {
+            // The verified copy is the one kept; whatever sits at final (broken, or nothing) makes way for it.
+            if (finalPresent && !ModelTree.delete(final)) return false
+            if (!finished.renameTo(final)) return false
+            if (oldPresent) ModelTree.delete(old)
+            return true
+        }
+        if (finalPresent) return false
+        // Outside the gate on purpose: final is missing, so no engine can hold it open, and every reader verifies what
+        // appears there; a download in this state keeps the previous model dictating even if its transfer fails (#492).
+        return Files.isDirectory(old.toPath(), LinkOption.NOFOLLOW_LINKS) && old.renameTo(final)
     }
 
     /** Cheap installation identity for reusing an already verified native instance. Not first-load verification. */
@@ -127,10 +199,27 @@ internal class ModelDeliveryStore(private val root: File) {
             runCatching { receipt.readText() != receiptText(model) }.getOrDefault(false)
     }.getOrDefault(false)
 
-    fun download(model: ModelDescriptor, transport: ModelTransport, control: DownloadControl = object : DownloadControl {}, now: () -> Long = { System.currentTimeMillis() }, onProgress: (DownloadStatus) -> Unit = {}, onSource: (file: String, host: String) -> Unit = { _, _ -> }): DownloadStatus = synchronized(lock(model)) {
+    /**
+     * [admission] runs the final-folder renames: the worker passes `ModelSwap.exclusive` (#108), which pauses dictation
+     * and stops the engines first, and answers null when that cannot happen now; the download then ends STAGED, with
+     * the complete new revision kept in staging for the next attempt.
+     */
+    fun download(model: ModelDescriptor, transport: ModelTransport, control: DownloadControl = object : DownloadControl {}, now: () -> Long = { System.currentTimeMillis() }, onProgress: (DownloadStatus) -> Unit = {}, onSource: (file: String, host: String) -> Unit = { _, _ -> }, admission: (mutation: () -> Boolean) -> Boolean? = { it() }): DownloadStatus = synchronized(lock(model)) {
         if (!model.isAvailable) return DownloadStatus(DownloadState.FAILED, message = "model manifest is unavailable", reason = DeliveryFailureReason.MANIFEST_UNAVAILABLE)
         root.mkdirs()
+        // An interrupted admission is settled before anything below deletes `.old` or the staging folder (#492);
+        // when that completed the current model there is nothing left to fetch.
+        if (reconcileLocked(model, admitFinished = false) && verifies(finalDirectory(model), model)) {
+            val total = model.files.sumOf { it.expectedBytes }
+            return DownloadStatus(DownloadState.READY, total, total)
+        }
         val staging = File(root, ".${model.id}.download")
+        // A revision an earlier attempt finished but could not apply (#108): nothing to fetch, only the admission.
+        if (verifies(staging, model)) {
+            return try { admitStaged(model, staging, admission) } catch (e: IOException) {
+                DownloadStatus(DownloadState.FAILED, message = "model download interrupted", reason = DeliveryFailureReason.of(e))
+            }
+        }
         // A revision bump keeps the model id and every staging file name, so the PREVIOUS revision's
         // partials are still sitting here. Resuming them mixes two revisions' bytes into one file. The
         // stamp closes that window at the source rather than reasoning about each partial's length:
@@ -216,6 +305,18 @@ internal class ModelDeliveryStore(private val root: File) {
             // otherwise perfect model read as not ready.
             stamp.delete()
             File(staging, RECEIPT).writeText(receiptText(model))
+            admitStaged(model, staging, admission)
+        } catch (e: IOException) {
+            // Transport and storage interruptions keep the .part file for a later range resume. The
+            // reason is read off the exception, which was typed where the cause was decided (#176).
+            DownloadStatus(DownloadState.FAILED, message = "model download interrupted", reason = DeliveryFailureReason.of(e))
+        }
+    }
+
+    /** The complete [staging] folder replaces final through [admission]; STAGED when the admission could not run now. */
+    private fun admitStaged(model: ModelDescriptor, staging: File, admission: (mutation: () -> Boolean) -> Boolean?): DownloadStatus {
+        val total = model.files.sumOf { it.expectedBytes }
+        val admitted = admission {
             val final = finalDirectory(model)
             val old = File(root, ".${model.id}.old")
             ModelTree.delete(old)
@@ -225,12 +326,9 @@ internal class ModelDeliveryStore(private val root: File) {
                 throw ModelDeliveryException(DeliveryFailureReason.ADMISSION_FAILED, "could not admit model atomically")
             }
             ModelTree.delete(old)
-            DownloadStatus(DownloadState.READY, model.files.sumOf { it.expectedBytes }, model.files.sumOf { it.expectedBytes })
-        } catch (e: IOException) {
-            // Transport and storage interruptions keep the .part file for a later range resume. The
-            // reason is read off the exception, which was typed where the cause was decided (#176).
-            DownloadStatus(DownloadState.FAILED, message = "model download interrupted", reason = DeliveryFailureReason.of(e))
-        }
+            true
+        } ?: return DownloadStatus(DownloadState.STAGED, total, total)
+        return if (admitted) DownloadStatus(DownloadState.READY, total, total) else DownloadStatus(DownloadState.STAGED, total, total)
     }
 
     fun remove(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
@@ -244,12 +342,13 @@ internal class ModelDeliveryStore(private val root: File) {
     }
 
     /** Verifies and copies an existing legacy model without modifying its source. */
-    fun adoptExisting(model: ModelDescriptor, legacyDirectory: File, now: () -> Long = { System.currentTimeMillis() }): DownloadStatus = synchronized(lock(model)) {
+    fun adoptExisting(model: ModelDescriptor, legacyDirectory: File, now: () -> Long = { System.currentTimeMillis() }, admission: (mutation: () -> Boolean) -> Boolean? = { it() }): DownloadStatus = synchronized(lock(model)) {
         if (!model.isAvailable || !legacyDirectory.isDirectory || Files.isSymbolicLink(legacyDirectory.toPath())) {
             return DownloadStatus(DownloadState.REPAIR_NEEDED, message = "legacy model is unavailable")
         }
         val names = legacyDirectory.listFiles()?.map { it.name }?.toSet() ?: emptySet()
         if (names != model.files.map { it.name }.toSet()) return DownloadStatus(DownloadState.REPAIR_NEEDED, message = "legacy model file set is incomplete")
+        reconcileLocked(model, admitFinished = false)
         val staging = File(root, ".${model.id}.adopt")
         ModelTree.delete(staging)
         try {
@@ -263,12 +362,8 @@ internal class ModelDeliveryStore(private val root: File) {
                 Files.copy(source.toPath(), File(staging, entry.name).toPath())
             }
             File(staging, RECEIPT).writeText(receiptText(model))
-            val final = finalDirectory(model); val old = File(root, ".${model.id}.old")
-            ModelTree.delete(old)
-            if (final.exists() && !final.renameTo(old)) throw IOException("could not stage existing model")
-            if (!staging.renameTo(final)) { old.renameTo(final); throw IOException("could not admit model atomically") }
-            ModelTree.delete(old)
-            DownloadStatus(DownloadState.READY, model.files.sumOf { it.expectedBytes }, model.files.sumOf { it.expectedBytes })
+            // The same gated admission as a download (#108); after STAGED, a later attempt copies again.
+            admitStaged(model, staging, admission)
         } catch (_: IOException) {
             ModelTree.delete(staging)
             DownloadStatus(DownloadState.FAILED, message = "legacy model adoption failed")

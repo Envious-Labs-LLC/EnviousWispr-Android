@@ -130,7 +130,9 @@ internal class ModelWorkViewModel(
             return ModelWorkViewModel(
                 work = { name -> workManager.getWorkInfosForUniqueWorkFlow(name) },
                 readiness = readiness,
-                project = { info, ready, model -> workUiState(info, ready, model, appContext) },
+                // The card shows the CURRENT revision (#108): readiness now means "can dictate", which a previous
+                // revision mid-update satisfies, so it only triggers the refresh and the card reads current on io.
+                project = { info, _, model -> workUiState(info, com.envi.wispr.models.ModelStorage.isReady(appContext, model), model, appContext) },
             ) as T
         }
     }

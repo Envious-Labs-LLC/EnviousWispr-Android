@@ -52,17 +52,20 @@ internal fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
         model = ModelManifest.s1,
         onAction = {
             // Exhaustive with no `else`, for the reason given at the same `when` in `TranscriptionScreen`.
-            when (s1State.action) {
-                ModelUiAction.REMOVE -> ModelDeliveryWorker.enqueueRemove(context, ModelManifest.s1)
-                ModelUiAction.REPAIR -> ModelDeliveryWorker.enqueueRepair(context, ModelManifest.s1)
-                ModelUiAction.UPDATE -> ModelDeliveryWorker.enqueueUpdate(context, ModelManifest.s1)
-                ModelUiAction.DOWNLOAD, ModelUiAction.RETRY -> ModelDeliveryWorker.enqueue(context, ModelManifest.s1)
-                ModelUiAction.PAUSE, ModelUiAction.RESUME, ModelUiAction.CANCEL, ModelUiAction.NONE -> Unit
+            val action = s1State.action
+            ModelDeliveryWorker.launch {
+                when (action) {
+                    ModelUiAction.REMOVE -> ModelDeliveryWorker.enqueueRemove(context, ModelManifest.s1)
+                    ModelUiAction.REPAIR -> ModelDeliveryWorker.enqueueRepair(context, ModelManifest.s1)
+                    ModelUiAction.UPDATE -> ModelDeliveryWorker.enqueueUpdate(context, ModelManifest.s1)
+                    ModelUiAction.DOWNLOAD, ModelUiAction.RETRY -> ModelDeliveryWorker.enqueue(context, ModelManifest.s1)
+                    ModelUiAction.PAUSE, ModelUiAction.RESUME, ModelUiAction.CANCEL, ModelUiAction.NONE -> Unit
+                }
             }
             onRefreshReadiness()
         },
         onPause = { ModelDeliveryWorker.pause(context, ModelManifest.s1) },
-        onResume = { ModelDeliveryWorker.resume(context, ModelManifest.s1) },
+        onResume = { ModelDeliveryWorker.launch { ModelDeliveryWorker.resume(context, ModelManifest.s1) } },
     )
 }
 

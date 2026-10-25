@@ -1,6 +1,6 @@
 # Issue #108 — Keep dictating on the previous model while its update downloads — 2026-10-24
 
-GitHub issue: `#108`. Tier: LARGE (model delivery and both engines). Status: DRAFT.
+GitHub issue: `#108`. Tier: LARGE (model delivery and both engines). Status: DRAFT, grounded review PROCEED-AS-PLANNED (round 7, 2026-10-25); awaiting Gate 2.
 
 Gate 1 note: the founder set the session goal "keep banging out issues back to back till I tell you to stop"
 (2026-10-24). That goal is taken as the go-ahead to PLAN only. Gate 2 still stops before any code.
@@ -502,3 +502,142 @@ of the work:
 
 The decision before more planning: build this (about REFACTOR tier, AIDL plus both engines), or defer it until a
 model revision bump is actually planned and accept the gap for that bump as #458 did.
+
+## 17. Founder direction, 2026-10-25, and the revised design (supersedes §13e where they differ)
+
+**Founder, verbatim.**
+- "pause dictation during any engine swaps" (phones have less storage than Macs).
+- "We need to add a setting for download over wifi only vs download over any setting. When an update needs a new
+  model, if we detect they aren't on wifi, we should prompt them via a pop up, new model available, download now
+  or wait for wifi. i'm sure there must be industry best practices here."
+
+**Industry practice (researched 2026-10-25).**
+- Google Play Asset Delivery parks large packs in `WAITING_FOR_WIFI`, both off Wi-Fi and when the user's Play
+  setting is Wi-Fi-only. The app then shows Play's confirmation dialog, `showConfirmationDialog` (external;
+  `showCellularDataConfirmation` before 2.2.0), and accepting lets the download continue on mobile data.
+- Apple warns before large cellular downloads, around 200 MB.
+- Chrome's built-in AI guidance: tell the user the size and time, and show progress.
+- Common pattern: keep the existing capability working while the new model downloads.
+
+Sources:
+- https://developer.android.com/reference/com/google/android/play/core/assetpacks/AssetPackManager
+- https://developer.chrome.com/docs/ai/inform-users-of-model-download
+- https://www.sitepoint.com/ux-patterns-large-model-downloads/
+
+**Already in the app.** `ModelDeliveryWorker.enqueueSetup(…, mobileData)` picks `CONNECTED` or `UNMETERED`
+(`ModelDeliveryWorker.kt:308-314`). Setup has a one-off "Use mobile data" button (`OnboardingScreen.kt:212`) that
+stores a setup-only choice (`OnboardingViewModel.kt:118-119`, `setOnboardingMobileData`). Updates are always
+Wi-Fi only (`SpeechModelUpgrade.kt:38`, `ModelDeliveryWorker.kt:329,338`).
+
+**Revised design.**
+1. **Setting "Download models" (proposed):** "Wi-Fi only" (default) or "Wi-Fi or mobile data". It lives on the
+   Storage page beside the models it governs. It replaces the setup-only flag, and a user who tapped "Use mobile
+   data" in setup keeps that choice. It covers first downloads, updates and repairs.
+2. **Update prompt (proposed).** When the app opens, an update is needed, the phone is on mobile data, and the
+   setting is Wi-Fi only, show one dialog per model revision. Draft copy, for `content-brand.md` review:
+
+   > **New speech model available** (670 MB)
+   > Download now on mobile data, or wait for Wi-Fi. You can keep dictating with your current model meanwhile.
+   > [Download now] [Wait for Wi-Fi]
+
+   "Download now" queues this download on any network; it does not change the setting. "Wait for Wi-Fi" queues it
+   Wi-Fi only. The card keeps both actions afterwards.
+3. **The old model keeps working during the download:** `previous` descriptors and `usableDescriptor`, with the
+   same strict checks (§3).
+4. **Dictation pauses during the swap itself (founder).** The swap is two folder renames plus the engines picking
+   up new files. It runs in the main process (where the download worker and the session owner live) under a
+   **swap gate** (proposed) owned by the main process:
+   - the gate closes only when no take is active;
+   - while it is closed, a new dictation is refused with one calm line ("Updating the speech model. Try again in a
+     moment.", draft), and polish qualification is refused;
+   - Remove and Repair run under the same gate.
+
+   An engine already resident keeps its open files (renames do not disturb open handles). The next take loads
+   the new files: S1 by its existing per-load stamp, `:asr` by the per-take stamp check plus `RecognizerOwner`
+   replacement (§13c.2, 13c.3).
+5. **What this removes from §13e and round 4:**
+   - owner-process admission;
+   - the new cross-process commands (no AIDL change);
+   - the process-scoped owner queue.
+
+   One process owns every write, and the explicit "Applying" state comes from the gate, never from folder
+   absence.
+6. **Storage.** The prompt and card name the size. Downloads keep `setRequiresStorageNotLow`, and the download is
+   refused with a clear line when free space is below the new model's size plus a margin. The previous model is
+   deleted as soon as the new one is in place.
+
+**Still to ground before Gate 2.**
+- Whether `:asr` or `:polish` ever opens model files outside a take or qualification. Candidates are the connect
+  warm-up and the "Unload model after" timer.
+- Where the session owner checks the gate on every start path: side button, bubble, tile, in-app microphone,
+  practice.
+- How a gate held across process death is reset.
+
+**Grounding note.** `ui/EngineWarmUp.kt:65,79,82` binds `:asr` and `:polish` and calls `warmUpWithPolicy` outside
+a take, so the swap gate also refuses (or defers) engine warm-up while closed.
+
+## 18. Round 5 dispositions (PROCEED-WITH-REVISIONS; all adopted, with one design choice)
+
+1. **Draining remote engine work (P1): the swap stops the engine processes.** Refusing new work does not drain
+   loads already admitted inside `:asr` and `:polish` (`AsrService.kt:262`, `EngineWarmUp.kt:65,79,87`,
+   `TakePolishController.kt:168`, `PolishService.kt:214,235`), and service recreation reloads ASR on its own.
+   Instead of new completion callbacks (AIDL), the swap does this:
+   - closes the gate, so no new take, warm-up, qualification or bind starts;
+   - unbinds every engine binding the main process holds;
+   - stops `:asr` and `:polish` (same UID; `android.os.Process.killProcess` (external) on pids read from
+     `ActivityManager.getRunningAppProcesses` (external));
+   - confirms both are absent before any rename.
+
+   Nothing can then open, read or re-initialize model files. The engines start cold on the next permitted take
+   (about 2 to 3 s once, measured `Speech engine initialized in 2779ms` on the emulator). Process absence, not
+   binder return or unbind, is the completion evidence. This keeps the no-AIDL property.
+2. **Atomic admission (P1).** Gate admission and IDLE→STARTING become one atomic owner transition in
+   `beginSession` (`DictationSessionCoordinator.kt:345`), before feedback, target pinning or binds. Every path
+   converges there: tile (`DictationTileService.kt:42,46`), side button and app (`VoiceInputActivity.kt:78`,
+   `SettingsActivity.kt:105`), bubble (`PasteAccessibilityService.kt:264`), practice (`OnboardingViewModel.kt:181`).
+   The swap may close the gate only from IDLE, and a take's permit is released only after its engine work ends.
+3. **One writer gate, stable reads (P1).** First install, adoption, update admission, Remove and Repair all hold
+   the gate exclusively. Main readiness and card decisions read either a stable snapshot or "Applying". Remote
+   stamp reads (`S1ModelSelection.kt:14`, `PolishService.kt:263,577`) cannot run because their processes are
+   stopped (item 1). Keep-alive timer expiry is never taken as quiescence.
+4. **Native files (P2).** ONNX sessions and the eager vocabulary load (`TdtModel.kt:129-148`) need no later path
+   reads. Mappings survive renames, but deleting `.old` does not reclaim mapped space while an old engine lives.
+   Item 1 ends those engines first, so space is reclaimed at the swap. GenieX's pathname behaviour after load is
+   to be confirmed on the phone, though item 1 makes it moot for the swap.
+5. **One download policy (P2).** One effective policy (setting plus any per-revision "Download now" override)
+   feeds every enqueue path (`ModelDeliveryWorker.kt:308,329,338`, `SpeechModelUpgrade.kt:38`). The setup flag is
+   migrated once. Overrides persist across retries and process recreation. Queued work is re-enqueued with new
+   constraints without dropping valid partials or overriding an explicit Pause or Cancel (KEEP policy reviewed).
+6. **Wi-Fi is not "unmetered" (P2).** The founder's "Wi-Fi only" is enforced as a transport check
+   (`NetworkCapabilities.TRANSPORT_WIFI` (external)) for prompting and before each transfer, with `UNMETERED` kept
+   as a scheduling hint. The prompt's model name, size and "keep dictating" line come from the descriptor and
+   from verified usability. The line is shown only when the previous model actually verifies.
+7. **Stale text and crash state (P2).** §2.2's "no constraint changes", the owner queues in §3.2, §3b, §4, §6 and
+   §10, §13e, and §16's cross-process commands are historical; §17 and §18 are the active design. After
+   main-process death the in-memory gate is gone, so at app start, before any engine work is admitted, the store
+   reconciles final, staging and `.old` (#492 owns that recovery and becomes a dependency of this plan).
+
+**Pre-committed consequence for round 6.** If round 6 finds another member of the "engine work during the swap"
+class, the swap moves to app start only: before any engine process runs, and never mid-session. The only cost is
+that an update applies at the next app start.
+
+## 19. Round 6 dispositions (PROCEED-WITH-REVISIONS; all adopted; the startup-only consequence did not trigger)
+
+Round 6 found no further restart actor: the engine services are bound-only. The four binding owners that must
+unregister are `PipelineBindings`, `EngineWarmUp`, `SpeechModelKeepAlive` and `ProcessingCheckClient`.
+
+1. **Termination evidence (P1).** Before unbinding, the swap links a death recipient to each engine binder it
+   holds (`IBinder.linkToDeath` (external), no new AIDL method), then stops the processes. It requires a bounded
+   Binder-death acknowledgement for every tracked instance before any rename. Process-list absence alone never
+   authorizes a mutation, and an unidentified or still-starting instance defers admission. On timeout, final and
+   staging are preserved and the gate reopens; the next idle moment retries.
+2. **Permit lifetime (P1).** A take's permit is released at its terminal transition to IDLE. The swap then
+   closes the gate atomically from IDLE and ends any remaining engine work by item 1. Nothing on disk changes
+   before verified termination.
+3. **Wi-Fi routing (P2).** Wi-Fi-only work uses WorkManager's `setRequiredNetworkRequest` (external, available
+   in the pinned 2.10.1) with a WIFI plus INTERNET request, falling back to CONNECTED. Transfers open through the
+   worker's assigned `Network`. On network loss the transfer closes and keeps its partials. An any-network override
+   uses CONNECTED. This supersedes §18.6's "UNMETERED as a hint".
+4. **No resident replacement (P2).** Every final-folder mutation stops both engine processes first, and later
+   services cold-load through `usableDescriptor`. The per-take `:asr` stamp check and the `RecognizerOwner`
+   replacement (§13c.2, 13c.3, §17.4's last sentence) are REMOVED from this change. S1's existing behaviour stays.

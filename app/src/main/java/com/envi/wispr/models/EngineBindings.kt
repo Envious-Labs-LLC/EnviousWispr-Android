@@ -58,11 +58,16 @@ internal object EngineBindings {
                     record.binder = null
                     connection.onServiceDisconnected(name)
                 }
+                // Terminal: no connection follows, so the record goes before the owner hears, whichever came first.
                 override fun onBindingDied(name: ComponentName?) {
-                    if (record.releaseWhenConnected) forget(connection, record) else connection.onBindingDied(name)
+                    val notify = !record.releaseWhenConnected
+                    forget(connection, record)
+                    if (notify) connection.onBindingDied(name)
                 }
                 override fun onNullBinding(name: ComponentName?) {
-                    if (record.releaseWhenConnected) forget(connection, record) else connection.onNullBinding(name)
+                    val notify = !record.releaseWhenConnected
+                    forget(connection, record)
+                    if (notify) connection.onNullBinding(name)
                 }
             }
             record = Held(context, wrapper, onRevoked)

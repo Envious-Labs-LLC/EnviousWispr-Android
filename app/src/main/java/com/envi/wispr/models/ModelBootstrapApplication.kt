@@ -137,7 +137,15 @@ class ModelBootstrapApplication : Application() {
         }
         // #458: a phone still holding the retired speech model gets the current one on Wi-Fi; file checks off main.
         val app = this
-        speechUpgradeScope.launch { SpeechModelUpgrade.run(app) }
+        speechUpgradeScope.launch {
+            // #492: an admission a process death interrupted is finished or undone before anything decides the
+            // model is missing. Never throws; serialized with the worker by the store's per-model lock.
+            ModelManifest.all.forEach { model ->
+                runCatching { ModelDeliveryStore(ModelStorage.root(app)).reconcile(model) }
+                    .onSuccess { if (it) com.envi.wispr.debug.DebugLogger.log("ModelDelivery", "Recovered an interrupted model admission (${model.id})") }
+            }
+            SpeechModelUpgrade.run(app)
+        }
     }
 
     /**

@@ -94,13 +94,42 @@ internal class ModelDeliveryStore(private val root: File) {
     }.getOrDefault(0L)
 
     /** Full receipt verification. Call from a worker or service executor, never the UI thread. */
-    fun isVerified(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
-        val receipt = File(finalDirectory(model), RECEIPT)
-        val names = finalDirectory(model).listFiles()?.map { it.name }?.toSet()
-        model.isAvailable && !Files.isSymbolicLink(finalDirectory(model).toPath()) && names == (model.files.map { it.name }.toSet() + RECEIPT) && receipt.isFile && receipt.readText() == receiptText(model) && model.files.all { entry ->
-            val file = File(finalDirectory(model), entry.name)
+    fun isVerified(model: ModelDescriptor): Boolean = synchronized(lock(model)) { verifies(finalDirectory(model), model) }
+
+    /** [directory] holds exactly [model]'s files plus its receipt, every size and hash matching. */
+    private fun verifies(directory: File, model: ModelDescriptor): Boolean {
+        val receipt = File(directory, RECEIPT)
+        val names = directory.listFiles()?.map { it.name }?.toSet()
+        return model.isAvailable && !Files.isSymbolicLink(directory.toPath()) && names == (model.files.map { it.name }.toSet() + RECEIPT) && receipt.isFile && receipt.readText() == receiptText(model) && model.files.all { entry ->
+            val file = File(directory, entry.name)
             file.isFile && !Files.isSymbolicLink(file.toPath()) && file.length() == entry.expectedBytes && sha256(file) == entry.sha256!!.lowercase()
         }
+    }
+
+    /**
+     * Finishes or undoes an admission a process death interrupted (#492). Admission renames final to `.<id>.old`,
+     * then staging to final, then deletes `.old`; a death between the renames left final absent with the previous
+     * model in `.old` and the new one in staging, and the next download used to delete `.old` first and staging after
+     * it, losing both. Main process only (app start, and before any download or adoption); returns whether it changed
+     * anything.
+     *
+     * Final present: admission finished, so a leftover `.old` is removed. Final absent: a staging or adoption folder
+     * that fully verifies against [model] completes the admission; otherwise `.old` is put back. Putting back needs no
+     * verification here, since every reader verifies final before trusting it.
+     */
+    fun reconcile(model: ModelDescriptor): Boolean = synchronized(lock(model)) { reconcileLocked(model) }
+
+    private fun reconcileLocked(model: ModelDescriptor): Boolean {
+        val final = finalDirectory(model)
+        val old = File(root, ".${model.id}.old")
+        if (final.exists()) return old.exists() && ModelTree.delete(old)
+        val finished = listOf(File(root, ".${model.id}.download"), File(root, ".${model.id}.adopt"))
+            .firstOrNull { verifies(it, model) }
+        if (finished != null && finished.renameTo(final)) {
+            ModelTree.delete(old)
+            return true
+        }
+        return old.isDirectory && old.renameTo(final)
     }
 
     /** Cheap installation identity for reusing an already verified native instance. Not first-load verification. */
@@ -130,6 +159,12 @@ internal class ModelDeliveryStore(private val root: File) {
     fun download(model: ModelDescriptor, transport: ModelTransport, control: DownloadControl = object : DownloadControl {}, now: () -> Long = { System.currentTimeMillis() }, onProgress: (DownloadStatus) -> Unit = {}, onSource: (file: String, host: String) -> Unit = { _, _ -> }): DownloadStatus = synchronized(lock(model)) {
         if (!model.isAvailable) return DownloadStatus(DownloadState.FAILED, message = "model manifest is unavailable", reason = DeliveryFailureReason.MANIFEST_UNAVAILABLE)
         root.mkdirs()
+        // An interrupted admission is settled before anything below deletes `.old` or the staging folder (#492);
+        // when that completed the current model there is nothing left to fetch.
+        if (reconcileLocked(model) && verifies(finalDirectory(model), model)) {
+            val total = model.files.sumOf { it.expectedBytes }
+            return DownloadStatus(DownloadState.READY, total, total)
+        }
         val staging = File(root, ".${model.id}.download")
         // A revision bump keeps the model id and every staging file name, so the PREVIOUS revision's
         // partials are still sitting here. Resuming them mixes two revisions' bytes into one file. The
@@ -250,6 +285,7 @@ internal class ModelDeliveryStore(private val root: File) {
         }
         val names = legacyDirectory.listFiles()?.map { it.name }?.toSet() ?: emptySet()
         if (names != model.files.map { it.name }.toSet()) return DownloadStatus(DownloadState.REPAIR_NEEDED, message = "legacy model file set is incomplete")
+        reconcileLocked(model)
         val staging = File(root, ".${model.id}.adopt")
         ModelTree.delete(staging)
         try {

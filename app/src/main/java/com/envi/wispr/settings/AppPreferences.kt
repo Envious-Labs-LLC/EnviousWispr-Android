@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.insertion.ClipboardInsertionPolicy
@@ -28,7 +29,16 @@ internal data class AppPreferencesState(
     val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
     val recordingVibrationEnabled: Boolean = true,
     val onboardingStep: Int = 0,
-    val onboardingMobileData: Boolean = false,
+    /**
+     * "Download models": false is Wi-Fi only (the default), true is Wi-Fi or mobile data (#108). It governs every
+     * model download through `ModelDownloadPolicy`; setup's "Use mobile data" sets it, under the key that held that
+     * setup-only choice, so the choice carries over.
+     */
+    val modelDownloadsOnMobileData: Boolean = false,
+    /** Model revisions (`ModelDownloadPolicy.revisionKey`) the user chose to download now on mobile data (#108). */
+    val mobileDataApprovedRevisions: Set<String> = emptySet(),
+    /** Model revisions whose update prompt was answered either way, so it shows once per revision (#108). */
+    val answeredUpdatePrompts: Set<String> = emptySet(),
     val onboardingComplete: Boolean = false,
     val onboardingDismissed: Boolean = false,
     // OFF by default, so what a user sees out of the box is EnviousWispr rather than their wallpaper.
@@ -99,7 +109,9 @@ internal class AppPreferences(context: Context) {
         recordingSoundPairing = RecordingSoundPairing.fromStorage(preferences[Keys.RECORDING_SOUND_PAIRING]),
         recordingVibrationEnabled = preferences[Keys.RECORDING_VIBRATION] ?: true,
         onboardingStep = if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0,
-        onboardingMobileData = preferences[Keys.ONBOARDING_MOBILE_DATA] ?: false,
+        modelDownloadsOnMobileData = preferences[Keys.MODEL_DOWNLOADS_ON_MOBILE_DATA] ?: false,
+        mobileDataApprovedRevisions = preferences[Keys.MOBILE_DATA_APPROVED_REVISIONS] ?: emptySet(),
+        answeredUpdatePrompts = preferences[Keys.ANSWERED_UPDATE_PROMPTS] ?: emptySet(),
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
         onboardingDismissed = preferences[Keys.ONBOARDING_DISMISSED] ?: false,
         dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: false,
@@ -143,8 +155,18 @@ internal class AppPreferences(context: Context) {
         }
     }
 
-    suspend fun setOnboardingMobileData(allowed: Boolean) {
-        dataStore.edit { it[Keys.ONBOARDING_MOBILE_DATA] = allowed }
+    suspend fun setModelDownloadsOnMobileData(allowed: Boolean) {
+        dataStore.edit { it[Keys.MODEL_DOWNLOADS_ON_MOBILE_DATA] = allowed }
+    }
+
+    /** One answer to a revision's update prompt: [downloadNow] also lets that revision use mobile data (#108). */
+    suspend fun answerUpdatePrompt(revisionKey: String, downloadNow: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[Keys.ANSWERED_UPDATE_PROMPTS] = (preferences[Keys.ANSWERED_UPDATE_PROMPTS] ?: emptySet()) + revisionKey
+            if (downloadNow) {
+                preferences[Keys.MOBILE_DATA_APPROVED_REVISIONS] = (preferences[Keys.MOBILE_DATA_APPROVED_REVISIONS] ?: emptySet()) + revisionKey
+            }
+        }
     }
 
     suspend fun dismissOnboarding() {
@@ -272,7 +294,10 @@ internal class AppPreferences(context: Context) {
         val RECORDING_SOUND_PAIRING = stringPreferencesKey("recording_sound_pairing")
         val RECORDING_VIBRATION = booleanPreferencesKey("recording_vibration_enabled")
         val ONBOARDING_VERSION = intPreferencesKey("onboarding_version")
-        val ONBOARDING_MOBILE_DATA = booleanPreferencesKey("onboarding_mobile_data")
+        // The setup-only key since before #108; its stored value is the setting's, so it keeps its name on disk.
+        val MODEL_DOWNLOADS_ON_MOBILE_DATA = booleanPreferencesKey("onboarding_mobile_data")
+        val MOBILE_DATA_APPROVED_REVISIONS = stringSetPreferencesKey("model_mobile_data_approved_revisions")
+        val ANSWERED_UPDATE_PROMPTS = stringSetPreferencesKey("model_update_prompts_answered")
         val ONBOARDING_STEP = intPreferencesKey("onboarding_step")
         val ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         val ONBOARDING_DISMISSED = booleanPreferencesKey("onboarding_dismissed")

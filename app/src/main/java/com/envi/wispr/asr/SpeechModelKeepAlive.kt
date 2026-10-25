@@ -162,14 +162,12 @@ internal class SpeechModelKeepAlive(
                         override fun onNullBinding(name: ComponentName?) = onGone()
                     }
                     val flags = Context.BIND_AUTO_CREATE or Context.BIND_WAIVE_PRIORITY
-                    val bound = runCatching { app.bindService(Intent(app, AsrService::class.java), connection, flags) }
-                        .getOrDefault(false)
-                    if (!bound) {
-                        // Android asks for an unbind even when the bind was refused or threw.
-                        runCatching { app.unbindService(connection) }
-                        return null
+                    // Through the engine registry (#108): a model swap revokes the hold and reports it as gone.
+                    val bound = com.envi.wispr.models.EngineBindings.bind(app, com.envi.wispr.models.EngineBindings.Engine.SPEECH, connection, flags) {
+                        onGone()
                     }
-                    return Registration { app.unbindService(connection) }
+                    if (!bound) return null
+                    return Registration { com.envi.wispr.models.EngineBindings.unbind(connection) }
                 }
             }
             val timers = object : Timers {

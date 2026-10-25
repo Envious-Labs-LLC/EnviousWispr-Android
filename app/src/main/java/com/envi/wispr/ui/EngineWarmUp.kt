@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
+import com.envi.wispr.models.EngineBindings
 import com.envi.wispr.asr.AsrService
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.polish.IPolishService
@@ -75,12 +76,13 @@ internal class EngineWarmUp(private val context: Context, private val scope: Cor
     /** Idempotent: a second call while bound does nothing. */
     fun start() {
         if (speechBound || polishBound) return
-        speechBound = runCatching {
-            context.bindService(Intent(context, AsrService::class.java), speech, Context.BIND_AUTO_CREATE)
-        }.getOrDefault(false)
-        polishBound = runCatching {
-            context.bindService(Intent(context, PolishService::class.java), polish, Context.BIND_AUTO_CREATE)
-        }.getOrDefault(false)
+        // Refused while a model swap holds the gate (#108); a swap that starts later revokes both.
+        speechBound = EngineBindings.bind(context, EngineBindings.Engine.SPEECH, speech, Context.BIND_AUTO_CREATE) { speechBound = false }
+        polishBound = EngineBindings.bind(context, EngineBindings.Engine.POLISH, polish, Context.BIND_AUTO_CREATE) {
+            polishBound = false
+            warming?.cancel()
+            warming = null
+        }
     }
 
     fun stop() {
@@ -90,8 +92,8 @@ internal class EngineWarmUp(private val context: Context, private val scope: Cor
         polishBound = false
         warming?.cancel()
         warming = null
-        if (speechBound) runCatching { context.unbindService(speech) }
-        if (wasPolishBound) runCatching { context.unbindService(polish) }
+        if (speechBound) EngineBindings.unbind(speech)
+        if (wasPolishBound) EngineBindings.unbind(polish)
         speechBound = false
     }
 

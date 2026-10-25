@@ -92,6 +92,7 @@ internal fun EnviousWisprApp(
     var expandedTranscriptId by rememberSaveable { mutableStateOf<Long?>(null) }
     var feedbackOpen by rememberSaveable { mutableStateOf(false) }
     if (feedbackOpen) FeedbackScreen(onDismiss = { feedbackOpen = false })
+    ModelUpdatePrompt()
     // The hidden Developer page (#378 D1): the switches' owner says whether it is unlocked; seven taps on the
     // drawer's version line within three seconds unlock it. A saved Developer route resolves to nothing while
     // locked, so the tab beneath shows.

@@ -109,16 +109,15 @@ internal class OnboardingViewModel(application: Application, private val saved: 
             preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)
             Telemetry.capture(AnalyticsEvent.OnboardingStageReached(OnboardingStage.DOWNLOADS.name.lowercase(), Telemetry.secondsSinceProcessStart()))
             downloadAction {
-                val mobile = preferences.authoritativeState.first().onboardingMobileData
-                ModelManifest.all.forEach { ModelDeliveryWorker.enqueueSetup(context, it, mobile) }
+                ModelManifest.all.forEach { ModelDeliveryWorker.enqueueSetup(context, it) }
             }
         }
     }
 
     fun resumeDownloads(mobileData: Boolean? = null) = downloadAction {
-        if (mobileData != null) preferences.setOnboardingMobileData(mobileData)
-        val mobile = preferences.authoritativeState.first().onboardingMobileData
-        ModelManifest.all.forEach { ModelDeliveryWorker.enqueueSetup(context, it, mobile, restart = true) }
+        // "Use mobile data" is the "Download models" setting itself (#108), so later updates follow the same choice.
+        if (mobileData != null) preferences.setModelDownloadsOnMobileData(mobileData)
+        ModelManifest.all.forEach { ModelDeliveryWorker.enqueueSetup(context, it, restart = true) }
     }
 
     fun pauseDownloads() = downloadAction {

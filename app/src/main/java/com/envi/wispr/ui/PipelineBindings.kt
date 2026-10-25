@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Handler
 import android.os.IBinder
+import com.envi.wispr.models.EngineBindings
 import com.envi.wispr.asr.AsrService
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
@@ -96,14 +97,11 @@ internal class PipelineBindings(
         }.getOrDefault(false)
         if (!audioBound) return PipelineController.BindOutcome(PipelineController.BindResult.AUDIO_BIND_FAILED, polishBound = false)
 
-        asrBound = runCatching {
-            appContext.bindService(Intent(appContext, AsrService::class.java), asrConnection, Context.BIND_AUTO_CREATE)
-        }.getOrDefault(false)
+        // Through the engine registry (#108): a take holds a swap permit, so these are never refused for a swap.
+        asrBound = EngineBindings.bind(appContext, EngineBindings.Engine.SPEECH, asrConnection, Context.BIND_AUTO_CREATE) { asrBound = false }
         if (!asrBound) return PipelineController.BindOutcome(PipelineController.BindResult.ASR_BIND_FAILED, polishBound = false)
 
-        polishBound = runCatching {
-            appContext.bindService(Intent(appContext, PolishService::class.java), polishConnection, Context.BIND_AUTO_CREATE)
-        }.getOrDefault(false)
+        polishBound = EngineBindings.bind(appContext, EngineBindings.Engine.POLISH, polishConnection, Context.BIND_AUTO_CREATE) { polishBound = false }
         // A refused polish bind does not stop the take (#234): the owner records it and publishes the
         // deterministic text; unbind skips what never bound.
         return PipelineController.BindOutcome(PipelineController.BindResult.BOUND, polishBound)
@@ -111,8 +109,8 @@ internal class PipelineBindings(
 
     override fun unbind() {
         if (audioBound) runCatching { appContext.unbindService(audioConnection) }
-        if (asrBound) runCatching { appContext.unbindService(asrConnection) }
-        if (polishBound) runCatching { appContext.unbindService(polishConnection) }
+        if (asrBound) EngineBindings.unbind(asrConnection)
+        if (polishBound) EngineBindings.unbind(polishConnection)
         audioBound = false
         asrBound = false
         polishBound = false

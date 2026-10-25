@@ -16,10 +16,15 @@ internal object ProcessingEnvironment {
     /** The S1 backends this phone's runtime can run (#449): graphics processor and processor on GenieX, processor only otherwise. */
     val standardPolishBackends: Set<ProcessingBackend> get() = S1RuntimeKind.current.backends
     val speechBackends = setOf(ProcessingBackend.CPU)
-    fun s1ContextId(): String = identity(
+    /**
+     * The identity qualification evidence is recorded under. [model] is the pinned S1 revision actually loaded (#108):
+     * evidence gathered on a previous revision carries that revision's identity, so the main process, which accepts
+     * only the current identity, never files it under the current model.
+     */
+    fun s1ContextId(model: com.envi.wispr.models.ModelDescriptor = ModelManifest.s1): String = identity(
         listOf(
-            ModelManifest.s1.pinnedRevision,
-            ModelManifest.s1.files.joinToString { checkNotNull(it.sha256) },
+            model.pinnedRevision,
+            model.files.joinToString { checkNotNull(it.sha256) },
             S1RuntimeKind.current.identity, Build.FINGERPRINT, Build.VERSION.SDK_INT.toString(),
             "${S1Config.CONTEXT_SIZE}:${S1Config.THREAD_COUNT}:${S1Config.BATCH_SIZE}:${S1Config.UBATCH_SIZE}",
         ).joinToString("|"),

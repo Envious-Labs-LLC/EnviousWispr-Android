@@ -107,6 +107,8 @@ internal class DictationSessionCoordinator(
     private val capturedAudio: CapturedAudioFiles,
     /** Processing facts are a limb, recorded only after this owner commits the take. */
     private val recordProcessing: (com.envi.wispr.processing.ProcessingObservation) -> Unit = {},
+    /** The main process's model-swap gate (#108); a test passes its own. */
+    private val swapGate: com.envi.wispr.models.ModelSwapGate = com.envi.wispr.models.ModelSwapGate.main,
 ) : PipelineController.Listener {
     companion object {
         /**
@@ -342,8 +344,28 @@ internal class DictationSessionCoordinator(
     private fun bubbleTrigger(request: BubbleRequestToken): TriggerSource =
         if (request.held) TriggerSource.BUBBLE_HOLD else TriggerSource.BUBBLE_TAP
 
+    /** Released once, at the take's end or the Service's teardown (#108). */
+    private val swapPermit = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun releaseSwapPermit() {
+        if (swapPermit.compareAndSet(true, false)) swapGate.releaseTake()
+    }
+
     private fun beginSession() {
-        if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return
+        // IDLE to STARTING and the swap permit are one step (#108 plan §18.2): a model swap never starts under a take.
+        when (swapGate.admitTake { state.compareAndSet(SessionState.IDLE, SessionState.STARTING) }) {
+            com.envi.wispr.models.ModelSwapGate.Admission.ADMITTED -> swapPermit.set(true)
+            com.envi.wispr.models.ModelSwapGate.Admission.NOT_IDLE -> return
+            com.envi.wispr.models.ModelSwapGate.Admission.UPDATING -> {
+                log.log("Start refused: a model update is being applied")
+                Telemetry.capture(AnalyticsEvent.DictationRefused(AnalyticsEvent.DictationRefused.UPDATING, admittedRequest?.let(::bubbleTrigger) ?: pendingTrigger))
+                runCatching { notices.say(SessionNotice.MODEL_UPDATING) }
+                admittedRequest = null
+                stopAfterRecording = false
+                stopIfIdle()
+                return
+            }
+        }
         // The pre-capture chain's origin (#258): the accepted start command, right after IDLE -> STARTING.
         val acceptedAtMs = host.elapsedRealtimeMs()
         val takeId = UUID.randomUUID().toString().lowercase()
@@ -1261,6 +1283,8 @@ internal class DictationSessionCoordinator(
                 capture.disarm()
                 host.speechModelTakeEnded(take.takeId)
                 pipeline.unbind()
+                // The take's engine work and bindings have ended: a waiting model swap may now run (#108).
+                releaseSwapPermit()
                 host.removeForegroundAndDismiss()
                 // IDLE is published at the last moment this instance can still refuse a start: the
                 // next command creates a fresh instance whose state begins IDLE.
@@ -1340,6 +1364,9 @@ internal class DictationSessionCoordinator(
         polish?.cancelOpen()
         host.speechModelTakeEnded(take.takeId)
         pipeline.unbind()
+        // The engine bindings are gone; a model swap may run (#108). A swap stops the engine processes itself, so a
+        // call still in flight in one of them cannot outlive it into the folder change.
+        releaseSwapPermit()
         // No further command is accepted; the stop above, if queued, still runs on the lane's own thread.
         capture.shutdown()
     }

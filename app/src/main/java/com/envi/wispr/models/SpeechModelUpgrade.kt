@@ -11,8 +11,8 @@ import java.io.File
  *
  * Runs once per main-process start, off the main thread. When the old model's folder is on disk, the current model is
  * not installed and the user has not paused or cancelled speech delivery, it enqueues the current model's download on
- * an unmetered connection with the storage-not-low constraint (`ModelDeliveryWorker.enqueueSetup`, KEEP, so a running
- * download is never restarted). It also retires the old id's leftovers that live outside the models folder: its two
+ * the network `ModelDownloadPolicy` allows (#108) with the storage-not-low constraint (`ModelDeliveryWorker.enqueueSetup`,
+ * KEEP, so a running download is never restarted). It also retires the old id's leftovers that live outside the models folder: its two
  * unique work names and its notification channel. The old files themselves leave through `LegacyModelSweep`, after
  * the current model's first delivered result or the user's Remove.
  */
@@ -24,7 +24,7 @@ internal object SpeechModelUpgrade {
         retiredFolderPresent && !currentInstalled && currentControl == ModelDeliveryControlState.ACTIVE
 
     /** Call from a background thread; never throws. */
-    fun run(context: Context) {
+    suspend fun run(context: Context) {
         runCatching {
             val root = ModelStorage.root(context)
             val current = ModelManifest.parakeet
@@ -35,8 +35,8 @@ internal object SpeechModelUpgrade {
             // A blocked phone (#449) downloads nothing; the worker would refuse the job at every start.
             val blocked = com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.BLOCKED
             if (!blocked && owed(File(root, RETIRED_ID).isDirectory, installed, controls.read(current))) {
-                ModelDeliveryWorker.enqueueSetup(context, current, mobileData = false)
-                DebugLogger.log(TAG, "Speech model upgrade queued for an unmetered connection")
+                ModelDeliveryWorker.enqueueSetup(context, current)
+                DebugLogger.log(TAG, "Speech model upgrade queued")
             }
             val work = WorkManager.getInstance(context)
             work.cancelUniqueWork(ModelDeliveryWorker.DOWNLOAD_PREFIX + RETIRED_ID)

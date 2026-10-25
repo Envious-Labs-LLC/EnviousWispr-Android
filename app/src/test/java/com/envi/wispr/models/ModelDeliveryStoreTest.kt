@@ -315,6 +315,182 @@ class ModelDeliveryStoreTest {
         assertEquals("both refusals collapse into the same interrupted state as one host did before", DownloadState.FAILED, status.state)
     }
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    // ---- #108: the previous revision keeps dictating while its update downloads
+
+    /**
+     * Product Outcome: after a revision bump, the files already on the phone are usable through their own pinned
+     * descriptor, while the current revision is not "verified" (so the update is still offered).
+     * REVERT: make `usableDescriptor` try only the current descriptor.
+     */
+    @Test fun thePreviousRevisionIsUsableWhileTheCurrentIsNot() {
+        val root = Files.createTempDirectory("previous").toFile()
+        try {
+            val previous = descriptor(oldBytes, R1)
+            assertEquals(DownloadState.READY, ModelDeliveryStore(root).download(previous, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(oldBytes), false) }).state)
+            val current = descriptor(newBytes, R2).copy(previous = listOf(previous))
+            val store = ModelDeliveryStore(root)
+            assertFalse("the current revision is not installed", store.isVerified(current))
+            assertTrue("so the update is offered", store.needsUpdate(current))
+            assertEquals("the previous revision dictates", previous, store.usableDescriptor(current))
+            assertEquals("with no previous listed, nothing is usable", null, store.usableDescriptor(descriptor(newBytes, R2)))
+        } finally { root.deleteRecursively() }
+    }
+
+    /**
+     * Verification is not relaxed for the previous revision: same-size corrupted bytes under its exact receipt are
+     * refused. REVERT: skip the hash for a previous descriptor.
+     */
+    @Test fun aCorruptedPreviousRevisionIsNotUsable() {
+        val root = Files.createTempDirectory("previous-corrupt").toFile()
+        try {
+            val previous = descriptor(oldBytes, R1)
+            assertEquals(DownloadState.READY, ModelDeliveryStore(root).download(previous, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(oldBytes), false) }).state)
+            java.io.File(root, "demo/model.bin").writeBytes(ByteArray(oldBytes.size) { 'x'.code.toByte() })
+            assertEquals(null, ModelDeliveryStore(root).usableDescriptor(descriptor(newBytes, R2).copy(previous = listOf(previous))))
+        } finally { root.deleteRecursively() }
+    }
+
+    /** The current revision wins when both would verify: current first. */
+    @Test fun theCurrentRevisionIsPreferred() {
+        val root = Files.createTempDirectory("current-first").toFile()
+        try {
+            val current = descriptor(newBytes, R2).copy(previous = listOf(descriptor(oldBytes, R1)))
+            assertEquals(DownloadState.READY, ModelDeliveryStore(root).download(current, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(newBytes), false) }).state)
+            assertEquals(current, ModelDeliveryStore(root).usableDescriptor(current))
+        } finally { root.deleteRecursively() }
+    }
+
+    // ---- #492: an admission a process death interrupted between its two renames
+
+    private val oldBytes = "previous model".toByteArray()
+    private val newBytes = "current model".toByteArray()
+
+    /** A death after `final → .demo.old` and before `staging → final`: final absent, both other folders present. */
+    private fun interruptedAdmission(stagingComplete: Boolean): Pair<java.io.File, ModelDescriptor> {
+        val root = Files.createTempDirectory("interrupted").toFile()
+        val previous = descriptor(oldBytes, R1)
+        val current = descriptor(newBytes, R2)
+        val store = ModelDeliveryStore(root)
+        assertEquals(DownloadState.READY, store.download(previous, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(oldBytes), false) }).state)
+        assertTrue(java.io.File(root, "demo").renameTo(java.io.File(root, ".demo.old")))
+        val staging = java.io.File(root, ".demo.download")
+        if (stagingComplete) {
+            // A real admitted copy of the current model, moved into the staging name the way admission leaves it.
+            val elsewhere = Files.createTempDirectory("current").toFile()
+            assertEquals(DownloadState.READY, ModelDeliveryStore(elsewhere).download(current, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(newBytes), false) }).state)
+            assertTrue(java.io.File(elsewhere, "demo").renameTo(staging))
+            elsewhere.deleteRecursively()
+        } else {
+            staging.mkdirs(); java.io.File(staging, "model.bin.part").writeBytes(newBytes.copyOf(4))
+        }
+        assertFalse(java.io.File(root, "demo").exists())
+        return root to current
+    }
+
+    /** Staging finished verifying before the death: the admission completes and `.old` goes. REVERT: drop the staging branch. */
+    @Test fun aCompleteStagedModelIsAdmittedAfterTheDeath() {
+        val (root, current) = interruptedAdmission(stagingComplete = true)
+        try {
+            assertTrue(ModelDeliveryStore(root).reconcile(current))
+            assertTrue(ModelDeliveryStore(root).isVerified(current))
+            assertEquals("current model", java.io.File(root, "demo/model.bin").readText())
+            assertFalse(java.io.File(root, ".demo.old").exists())
+        } finally { root.deleteRecursively() }
+    }
+
+    /** Staging was not complete: the previous model is put back, never deleted. REVERT: drop the `.old` restore. */
+    @Test fun anIncompleteStagedModelPutsThePreviousOneBack() {
+        val (root, current) = interruptedAdmission(stagingComplete = false)
+        try {
+            assertTrue(ModelDeliveryStore(root).reconcile(current))
+            assertEquals("previous model", java.io.File(root, "demo/model.bin").readText())
+            assertTrue("the restored previous model is still verifiable as itself", ModelDeliveryStore(root).isVerified(descriptor(oldBytes, R1)))
+            assertFalse(java.io.File(root, ".demo.old").exists())
+        } finally { root.deleteRecursively() }
+    }
+
+    /**
+     * The defect itself: a download started in the interrupted state used to delete `.old` first. Now the previous
+     * model is back in place before the transfer, and a transfer that fails leaves it there.
+     * REVERT: remove the `reconcileLocked` call at the top of `download`.
+     */
+    @Test fun aDownloadAfterTheDeathNeverLosesThePreviousModel() {
+        val (root, current) = interruptedAdmission(stagingComplete = false)
+        try {
+            val status = ModelDeliveryStore(root).download(current, ModelTransport { _, _ -> throw java.io.IOException("network gone") })
+            assertEquals(DownloadState.FAILED, status.state)
+            assertEquals("previous model", java.io.File(root, "demo/model.bin").readText())
+        } finally { root.deleteRecursively() }
+    }
+
+    /** A download that finds the admission already complete after reconciling fetches nothing. */
+    @Test fun aDownloadAfterACompleteStagedModelFetchesNothing() {
+        val (root, current) = interruptedAdmission(stagingComplete = true)
+        try {
+            val status = ModelDeliveryStore(root).download(current, ModelTransport { _, _ -> error("must not fetch") })
+            assertEquals(DownloadState.READY, status.state)
+            assertTrue(ModelDeliveryStore(root).isVerified(current))
+        } finally { root.deleteRecursively() }
+    }
+
+    /**
+     * Codex round 1 (P1): a final that exists but does not verify is not a finished admission, so a working `.old`
+     * beside it must survive. REVERT: delete `.old` whenever final exists.
+     */
+    @Test fun aBrokenFinalNeverCostsTheWorkingOld() {
+        val (root, current) = interruptedAdmission(stagingComplete = false)
+        try {
+            val final = java.io.File(root, "demo"); final.mkdirs(); java.io.File(final, "model.bin").writeText("garbage")
+            assertFalse(ModelDeliveryStore(root).reconcile(current))
+            assertEquals("previous model", java.io.File(root, ".demo.old/model.bin").readText())
+        } finally { root.deleteRecursively() }
+    }
+
+    /** A dangling link at final does not block a complete staged model; the link makes way. REVERT: follow links. */
+    @Test fun aDanglingLinkAtFinalMakesWayForTheVerifiedStagedModel() {
+        val (root, current) = interruptedAdmission(stagingComplete = true)
+        try {
+            Files.createSymbolicLink(java.io.File(root, "demo").toPath(), java.io.File(root, "nowhere").toPath())
+            assertTrue(ModelDeliveryStore(root).reconcile(current))
+            assertTrue(ModelDeliveryStore(root).isVerified(current))
+            assertFalse(Files.isSymbolicLink(java.io.File(root, "demo").toPath()))
+        } finally { root.deleteRecursively() }
+    }
+
+    /**
+     * Codex round 2: a staged copy whose receipt is a link into `.old` must not verify, or `.old` and the receipt it
+     * lends would both be deleted. REVERT: drop the receipt link check in `verifies`.
+     */
+    @Test fun aLinkedReceiptNeverVerifiesOrCostsTheOld() {
+        val (root, current) = interruptedAdmission(stagingComplete = true)
+        try {
+            val staging = java.io.File(root, ".demo.download")
+            val oldReceipt = java.io.File(root, ".demo.old/.verified-receipt")
+            // The old folder lends the CURRENT receipt text, so only the link check can refuse it.
+            oldReceipt.writeText(java.io.File(staging, ".verified-receipt").readText())
+            assertTrue(java.io.File(staging, ".verified-receipt").delete())
+            Files.createSymbolicLink(java.io.File(staging, ".verified-receipt").toPath(), oldReceipt.toPath())
+            ModelDeliveryStore(root).reconcile(current)
+            // Refused, so the staged copy does not complete the admission and the previous model is put back.
+            assertEquals("the previous model survives, put back at final", "previous model", java.io.File(root, "demo/model.bin").readText())
+            assertFalse("the linked copy was not admitted as current", ModelDeliveryStore(root).isVerified(current))
+        } finally { root.deleteRecursively() }
+    }
+
+    /** Admission finished but its `.old` delete was lost: only the leftover goes; nothing else is touched. */
+    @Test fun aLeftoverOldBesideAFinalModelIsRemoved() {
+        val root = Files.createTempDirectory("leftover").toFile()
+        try {
+            val model = descriptor(newBytes, R2)
+            assertEquals(DownloadState.READY, ModelDeliveryStore(root).download(model, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(newBytes), false) }).state)
+            java.io.File(root, ".demo.old").mkdirs()
+            assertTrue(ModelDeliveryStore(root).reconcile(model))
+            assertFalse(java.io.File(root, ".demo.old").exists())
+            assertTrue(ModelDeliveryStore(root).isVerified(model))
+            assertFalse("nothing to do the second time", ModelDeliveryStore(root).reconcile(model))
+        } finally { root.deleteRecursively() }
+    }
 }
 
 /** Pinned revisions in the shape the manifest requires (#284): full 40-character commit hashes. */

@@ -121,6 +121,12 @@ internal fun ModelCard(
                 ModelUiAction.CANCEL -> TextButton(onClick = onPause) { Text("Pause") }
                 ModelUiAction.NONE -> Unit
             }
+            if (state.offersMobileData && model != null) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                TextButton(onClick = { ModelDeliveryWorker.launch { com.envi.wispr.models.ModelDownloadPolicy.allowMobileData(context, model) } }) {
+                    Text("Download now on mobile data")
+                }
+            }
             state.reason?.let { reason ->
                 Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
@@ -141,7 +147,9 @@ internal fun workUiState(info: WorkInfo?, ready: Boolean, model: com.envi.wispr.
     // directory being gone, which a successful download never leaves (it succeeds only once verified in place).
     val removed = info?.outputData?.getBoolean(ModelDeliveryWorker.KEY_REMOVED, false) == true ||
         !com.envi.wispr.models.ModelDeliveryStore(com.envi.wispr.models.ModelStorage.root(context)).finalDirectory(model).exists()
-    return modelUiState(ready, info?.state?.name, progressState, bytes, total, reason, controls.name, stale, removed)
+    val waitingForWifi = info?.state == WorkInfo.State.ENQUEUED &&
+        com.envi.wispr.models.ModelDownloadPolicy.requiresWifi(info.constraints) && !com.envi.wispr.models.ModelDownloadPolicy.onWifi(context)
+    return modelUiState(ready, info?.state?.name, progressState, bytes, total, reason, controls.name, stale, removed, waitingForWifi)
 }
 
 internal fun preferredModelWork(download: List<WorkInfo>, adoption: List<WorkInfo>): WorkInfo? {

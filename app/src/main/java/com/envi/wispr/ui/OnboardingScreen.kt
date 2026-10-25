@@ -126,7 +126,8 @@ internal fun OnboardingScreen(
                                 if (model.downloadMessage.isNotBlank()) Text(model.downloadMessage, Modifier.padding(top = 12.dp), color = muted, textAlign = TextAlign.Center)
                             }
                             OnboardingStage.DOWNLOADS -> {
-                                val index = if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0
+                                // Current-only card health (#108): a previous speech revision mid-update must not hide its card.
+                                val index = if (downloads.firstOrNull()?.health == ModelHealth.READY) 1 else 0
                                 val state = downloads.getOrNull(index)
                                 val descriptor = if (index == 0) ModelManifest.parakeet else ModelManifest.s1
                                 SetupHeading(if (index == 0) "First, get your\nwords right." else "Less cleanup.\nMore ready to send.",
@@ -204,7 +205,7 @@ internal fun OnboardingScreen(
                             OnboardingStage.DEMO -> Unit
                             OnboardingStage.WELCOME -> SetupButton("Get Started!", fill, action = model::startSetup)
                             OnboardingStage.DOWNLOADS -> {
-                                val active = downloads.getOrNull(if (downloads.firstOrNull()?.health == ModelHealth.READY || readiness.speechModelReady) 1 else 0)
+                                val active = downloads.getOrNull(if (downloads.firstOrNull()?.health == ModelHealth.READY) 1 else 0)
                                 val action = active?.action
                                 SetupButton(when (action) { ModelUiAction.PAUSE -> "Pause download"; ModelUiAction.RESUME -> "Resume download"; ModelUiAction.DOWNLOAD, ModelUiAction.RETRY, ModelUiAction.REPAIR, ModelUiAction.REMOVE, ModelUiAction.UPDATE, ModelUiAction.CANCEL, ModelUiAction.NONE, null -> "Retry download" }, fill, active != null) {
                                     if (action == ModelUiAction.PAUSE) model.pauseDownloads() else model.resumeDownloads()

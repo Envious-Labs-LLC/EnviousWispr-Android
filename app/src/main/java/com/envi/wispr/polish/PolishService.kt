@@ -262,7 +262,7 @@ class PolishService : Service() {
         val timeoutUsage = if (effectivePolicy is PolishPolicy.LocalS1) {
             val captured = configuration(effectivePolicy)
             ProcessingUsage(resident.loaded?.takeIf { it.requested == captured }?.backend, captured.contextId, effectivePolicy.processing,
-                false, runtimeFailed = true, artifactStamp = captured.artifactStamp, artifactSha256 = checkNotNull(com.envi.wispr.models.ModelManifest.s1.files.single().sha256))
+                false, runtimeFailed = true, artifactStamp = captured.artifactStamp, artifactSha256 = installedS1Sha256())
         } else null
         // Armed only for a local generation: the cloud client bounds itself and honours cancel.
         val armed = if (effectivePolicy is PolishPolicy.LocalS1 && !poisoned.get()) {
@@ -479,7 +479,7 @@ class PolishService : Service() {
             if (generationFailed && attemptedBackend != null) failures += attemptedBackend!!.wire
             ProcessingUsage(
                 attemptedBackend, requested.contextId, policy.processing, pipeline.usedModel,
-                failures.joinToString(","), observation?.second == true, artifactStamp = requested.artifactStamp, artifactSha256 = checkNotNull(com.envi.wispr.models.ModelManifest.s1.files.single().sha256),
+                failures.joinToString(","), observation?.second == true, artifactStamp = requested.artifactStamp, artifactSha256 = installedS1Sha256(),
                 loadStamp = resident.loaded?.failureStamp ?: lastLoadStamp, generationStamp = if (attemptedBackend != null) ProcessingEvidenceStamp.now(this) else null, generationFailed = generationFailed,
             )
         } else null
@@ -571,11 +571,11 @@ class PolishService : Service() {
         modelLoading = activeModelLoads.decrementAndGet() > 0
     }
 
-    private fun configuration(policy: PolishPolicy.LocalS1) = S1LoadConfiguration(
-        ProcessingEnvironment.s1ContextId(), ProcessingEnvironment.standardPolishBackends, policy.processing,
-        policy.qualification,
-        S1ModelSelector.installationStamp(this).orEmpty(),
-    )
+    /** The hash of the S1 revision actually installed (#108), so processing evidence never mixes two revisions. */
+    private fun installedS1Sha256(): String =
+        checkNotNull((S1ModelSelector.installedDescriptor(this) ?: com.envi.wispr.models.ModelManifest.s1).files.single().sha256)
+
+    private fun configuration(policy: PolishPolicy.LocalS1) = S1ModelSelector.loadConfiguration(com.envi.wispr.models.ModelStorage.root(this), policy)
 
     private fun loadModel(policy: PolishPolicy.LocalS1) {
         if (destroyed || poisoned.get()) { finishWarm(); return }
@@ -607,7 +607,7 @@ class PolishService : Service() {
             val started = SystemClock.elapsedRealtime()
             val faultsBefore = MajorFaults.read()
             try {
-                val resolved = requested.copy(artifactStamp = selection.installationStamp)
+                val resolved = S1ModelSelector.resolvedConfiguration(requested, selection)
                 val loaded = resident.ensure(resolved, failures = { s1Runtime.failedComputeUnits.split(',').filter(String::isNotEmpty).map(ProcessingBackend::fromWire).toSet() }, failureStamp = { lastLoadStamp }, release = { s1Runtime.close() }) { candidates ->
                     try { s1Runtime.load(selection.file.path, candidates.map { it.wire }) } finally { lastLoadStamp = ProcessingEvidenceStamp.now(this) }
                     ProcessingBackend.fromWire(s1Runtime.activeComputeUnit)
@@ -638,7 +638,8 @@ class PolishService : Service() {
 
     /** A separate operation namespace, sharing only the existing native worker and deadline primitive. */
     private fun qualify(entry: ProcessingCheckRegistry.Entry, backend: ProcessingBackend, callback: IProcessingCheckCallback?) {
-        val contextId = ProcessingEnvironment.s1ContextId()
+        // The loaded revision's identity once selection has run (#108); the current one before that.
+        var contextId = S1ModelSelector.qualificationContextId(null)
         try {
             ProcessingQualificationTask(
                 deadline, MODEL_LOAD_DEADLINE_MS + LocalPolishBudget.SHIPPED.hardMs, poisoned,
@@ -650,6 +651,7 @@ class PolishService : Service() {
                 else {
                     val selection = S1ModelSelector.resolve(this)
                     if (selection == null) ProcessingCheckStatus.MODEL_MISSING else {
+                        contextId = S1ModelSelector.qualificationContextId(selection)
                         s1Runtime.load(selection.file.path, listOf(backend.wire))
                         ProcessingCheckStatus.AVAILABLE
                     }

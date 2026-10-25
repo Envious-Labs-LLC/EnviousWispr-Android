@@ -23,6 +23,8 @@ internal object EngineBindings {
 
     private class Held(val context: Context, val wrapper: ServiceConnection, val onRevoked: () -> Unit) {
         @Volatile var binder: IBinder? = null
+        /** The owner unbound before the connection arrived: Android may still create the service, so it is kept until then. */
+        @Volatile var releaseWhenConnected = false
     }
 
     private val held = ConcurrentHashMap<ServiceConnection, Held>()
@@ -39,19 +41,29 @@ internal object EngineBindings {
      */
     fun bind(context: Context, engine: Engine, connection: ServiceConnection, flags: Int, onRevoked: () -> Unit = {}): Boolean =
         ModelSwapGate.main.ifOpen {
+            // A connection still waiting on its earlier bind's arrival is not reused until that one is released.
+            if (held.containsKey(connection)) return@ifOpen false
             lateinit var record: Held
             val wrapper = object : ServiceConnection {
                 override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                     record.binder = binder
                     binder?.let { observed.add(it) }
+                    if (record.releaseWhenConnected) {
+                        unbind(connection)
+                        return
+                    }
                     connection.onServiceConnected(name, binder)
                 }
                 override fun onServiceDisconnected(name: ComponentName?) {
                     record.binder = null
                     connection.onServiceDisconnected(name)
                 }
-                override fun onBindingDied(name: ComponentName?) = connection.onBindingDied(name)
-                override fun onNullBinding(name: ComponentName?) = connection.onNullBinding(name)
+                override fun onBindingDied(name: ComponentName?) {
+                    if (record.releaseWhenConnected) forget(connection, record) else connection.onBindingDied(name)
+                }
+                override fun onNullBinding(name: ComponentName?) {
+                    if (record.releaseWhenConnected) forget(connection, record) else connection.onNullBinding(name)
+                }
             }
             record = Held(context, wrapper, onRevoked)
             held[connection] = record
@@ -66,8 +78,17 @@ internal object EngineBindings {
 
     /** The owner's own unbind; a binding a swap already revoked is a no-op. */
     fun unbind(connection: ServiceConnection) {
-        val record = held.remove(connection) ?: return
-        runCatching { record.context.unbindService(record.wrapper) }
+        val record = held[connection] ?: return
+        if (record.binder == null) {
+            // Unbinding now would not stop Android creating the service; release it when the connection arrives.
+            record.releaseWhenConnected = true
+            return
+        }
+        forget(connection, record)
+    }
+
+    private fun forget(connection: ServiceConnection, record: Held) {
+        if (held.remove(connection, record)) runCatching { record.context.unbindService(record.wrapper) }
     }
 
     /**

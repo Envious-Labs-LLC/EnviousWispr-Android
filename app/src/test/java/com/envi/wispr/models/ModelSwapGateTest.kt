@@ -87,7 +87,7 @@ class ModelSwapGateTest {
         store.download(current, transport(newBytes), admission = { null })
         assertFalse("start-up recovery leaves it", store.reconcile(current))
         assertEquals("previous model", installed(root))
-        assertFalse("no half-done admission to recover", store.interruptedAdmission(current))
+        assertTrue("a waiting update keeps the gate shut at start until recovery has looked", store.interruptedAdmission(current))
     }
 
     /**
@@ -102,7 +102,8 @@ class ModelSwapGateTest {
         val worker = File("src/main/java/com/envi/wispr/models/ModelDeliveryWorker.kt").readText()
         assertTrue(worker.contains("ModelSwap.exclusive(applicationContext) { store.remove(model) }"))
         assertTrue(worker.contains("ModelSwap.exclusive(applicationContext) { store.repair(model) }"))
-        assertEquals("download and adoption admit through the swap", 2, Regex("""admission = \{ mutation -> ModelSwap\.exclusive\(applicationContext, mutation\) \}""").findAll(worker).count())
+        assertEquals("download and adoption admit through the swap", 2, Regex("""admission = \{ mutation -> gatedAdmission\(model, controls, mutation\) \}""").findAll(worker).count())
+        assertTrue(worker.contains("ModelSwap.exclusive(applicationContext) {\n            if (isStopped || controls.read(model) != ModelDeliveryControlState.ACTIVE) false else mutation()"))
         val registry = File("src/main/java/com/envi/wispr/models/EngineBindings.kt").readText()
         assertTrue(registry.contains("ModelSwapGate.main.ifOpen {"))
         val start = File("src/main/java/com/envi/wispr/models/ModelBootstrapApplication.kt").readText()

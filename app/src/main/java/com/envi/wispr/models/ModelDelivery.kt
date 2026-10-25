@@ -140,9 +140,19 @@ internal class ModelDeliveryStore(private val root: File) {
      */
     fun reconcile(model: ModelDescriptor): Boolean = synchronized(lock(model)) { reconcileLocked(model, admitFinished = true) }
 
-    /** Whether start-up must recover [model] before the swap gate opens: an admission left `.old` behind (cheap, no hashing). */
+    /**
+     * Whether start-up must recover [model] before the swap gate opens (cheap, no hashing): an admission left `.old`
+     * behind, or a staging or adoption folder holds a receipt (written only once every file verified), which recovery
+     * may admit.
+     */
     fun interruptedAdmission(model: ModelDescriptor): Boolean =
-        Files.exists(File(root, ".${model.id}.old").toPath(), LinkOption.NOFOLLOW_LINKS)
+        listOf(".${model.id}.old", ".${model.id}.download/$RECEIPT", ".${model.id}.adopt/$RECEIPT")
+            .any { Files.exists(File(root, it).toPath(), LinkOption.NOFOLLOW_LINKS) }
+
+    /** A complete, verified download waits in staging for its admission (#108): only the renames remain. */
+    fun hasVerifiedDownload(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
+        verifies(File(root, ".${model.id}.download"), model)
+    }
 
     private fun reconcileLocked(model: ModelDescriptor, admitFinished: Boolean): Boolean {
         val final = finalDirectory(model)
@@ -160,6 +170,8 @@ internal class ModelDeliveryStore(private val root: File) {
             return true
         }
         if (finalPresent) return false
+        // Outside the gate on purpose: final is missing, so no engine can hold it open, and every reader verifies what
+        // appears there; a download in this state keeps the previous model dictating even if its transfer fails (#492).
         return Files.isDirectory(old.toPath(), LinkOption.NOFOLLOW_LINKS) && old.renameTo(final)
     }
 

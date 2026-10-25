@@ -80,7 +80,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 return@withContext failure("not enough storage to adopt ${model.displayName}")
             }
             val adopted = whenIdle {
-                store.adoptExisting(model, legacy, admission = { mutation -> ModelSwap.exclusive(applicationContext, mutation) })
+                store.adoptExisting(model, legacy, admission = { mutation -> gatedAdmission(model, controls, mutation) })
                     .takeUnless { it.state == DownloadState.STAGED }
             } ?: return@withContext Result.retry()
             ModelDeliveryNotification.clear(applicationContext, model)
@@ -91,7 +91,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         enterForeground(model, 0, totalBytes)
         val staging = java.io.File(root, ".${model.id}.download")
         val partial = model.files.sumOf { entry -> java.io.File(staging, entry.name + ".part").takeIf { it.isFile }?.length() ?: 0L }
-        val required = (model.files.sumOf { it.expectedBytes } - partial).coerceAtLeast(0L) + 128L * 1024L * 1024L
+        // A complete download waiting to be applied needs no more space: only renames remain (#108).
+        val required = if (store.hasVerifiedDownload(model)) 0L else (model.files.sumOf { it.expectedBytes } - partial).coerceAtLeast(0L) + 128L * 1024L * 1024L
         val firstRun = !store.finalDirectory(model).exists()
         val startedAtMs = System.currentTimeMillis()
         if (StatFs(ModelStorage.root(applicationContext).path).availableBytes < required) {
@@ -139,7 +140,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             // Which roof served the bytes (#168). The log, never the screen: a user does not choose hosts.
             DebugLogger.log(TAG, "Model source: ${model.id}/$file from ${ModelSourceHost.of(host).wire}")
             lastHost = host
-        }, admission = { mutation -> ModelSwap.exclusive(applicationContext, mutation) }).let { status ->
+        }, admission = { mutation -> gatedAdmission(model, controls, mutation) }).let { status ->
             if (status.state != DownloadState.STAGED) return@let status
             setProgressAsync(Data.Builder().putString(KEY_STATE, status.state.name).putLong(KEY_BYTES, totalBytes).putLong(KEY_TOTAL, totalBytes).build())
             null
@@ -174,6 +175,12 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
     }
 
+    /** The final-folder renames, with dictation paused; never for work WorkManager stopped or the user paused or cancelled. */
+    private fun gatedAdmission(model: ModelDescriptor, controls: ModelDeliveryControlStore, mutation: () -> Boolean): Boolean? =
+        ModelSwap.exclusive(applicationContext) {
+            if (isStopped || controls.read(model) != ModelDeliveryControlState.ACTIVE) false else mutation()
+        }
+
     /**
      * Tries [attempt] until it answers, waiting for the swap gate to be idle between tries (#108): a take in progress
      * finishes first. Gives up after [IDLE_WAIT_MS] or when WorkManager stops the work; WorkManager then retries.
@@ -181,6 +188,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
     private suspend fun <T : Any> whenIdle(attempt: () -> T?): T? {
         val until = android.os.SystemClock.elapsedRealtime() + IDLE_WAIT_MS
         while (true) {
+            if (isStopped) return null
             attempt()?.let { return it }
             do {
                 if (isStopped || android.os.SystemClock.elapsedRealtime() >= until) return null

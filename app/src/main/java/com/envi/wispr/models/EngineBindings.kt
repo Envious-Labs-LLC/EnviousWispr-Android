@@ -28,6 +28,12 @@ internal object EngineBindings {
     private val held = ConcurrentHashMap<ServiceConnection, Held>()
 
     /**
+     * Every engine binder seen, kept after its owner unbinds: an engine may still be finishing work then
+     * (`AsrService.onDestroy` queues its release behind it), and the swap waits for that binder's death too.
+     */
+    private val observed = ConcurrentHashMap.newKeySet<IBinder>()
+
+    /**
      * Binds [connection] to [engine] unless a swap holds the gate. [onRevoked] runs on the main thread when a swap
      * unbinds it, so the owner can forget the binding (an explicit unbind never calls `onServiceDisconnected`).
      */
@@ -37,6 +43,7 @@ internal object EngineBindings {
             val wrapper = object : ServiceConnection {
                 override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                     record.binder = binder
+                    binder?.let { observed.add(it) }
                     connection.onServiceConnected(name, binder)
                 }
                 override fun onServiceDisconnected(name: ComponentName?) {
@@ -64,15 +71,18 @@ internal object EngineBindings {
     }
 
     /**
-     * The swap, with the gate closed: unbinds every holder, posts each owner's [Held.onRevoked], and returns the binders
-     * still alive, for the death acknowledgement the swap waits on.
+     * The swap, with the gate closed: unbinds every holder, posts each owner's [Held.onRevoked], and returns every engine
+     * binder still alive, for the death acknowledgement the swap waits on. Null, revoking nothing, while a bind is still
+     * connecting: its process cannot be identified yet, so the swap waits for the next idle moment.
      */
-    fun revokeAll(post: (Runnable) -> Unit): List<IBinder> {
+    fun revokeAll(post: (Runnable) -> Unit): List<IBinder>? {
+        if (held.values.any { it.binder == null }) return null
         val records = held.keys.toList().mapNotNull { held.remove(it) }
         records.forEach { record ->
             runCatching { record.context.unbindService(record.wrapper) }
             post(Runnable { record.onRevoked() })
         }
-        return records.mapNotNull { record -> record.binder?.takeIf { it.isBinderAlive } }.distinct()
+        observed.removeIf { !it.isBinderAlive }
+        return observed.toList()
     }
 }

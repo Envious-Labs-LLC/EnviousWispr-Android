@@ -34,7 +34,7 @@ internal object ModelSwap {
         if (!gate.beginSwap()) return null
         try {
             val main = Handler(Looper.getMainLooper())
-            val binders = EngineBindings.revokeAll(post = { main.post(it) })
+            val binders = EngineBindings.revokeAll(post = { main.post(it) }) ?: return null
             if (!stopEngines(context, binders)) {
                 DebugLogger.warn(TAG, "Engines did not stop in time; the model change waits")
                 return null

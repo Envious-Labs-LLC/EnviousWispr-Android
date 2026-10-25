@@ -8,8 +8,6 @@ import androidx.work.WorkerParameters
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.envi.wispr.debug.DebugLogger
-import androidx.work.Constraints
-import androidx.work.NetworkType
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import com.envi.wispr.telemetry.AnalyticsEvent
@@ -20,6 +18,7 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class ModelDeliveryWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
@@ -98,7 +97,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         var lastProgressTime = 0L
         var completedBytes = 0L
         var lastHost: String? = null
-        val result = store.download(model, HttpsRangeTransport(), object : DownloadControl {
+        // Through the network WorkManager assigned (#108): a Wi-Fi-only download never falls over to mobile data.
+        val result = store.download(model, HttpsRangeTransport(network), object : DownloadControl {
             override fun isStopped() = this@ModelDeliveryWorker.isStopped
             override fun isPaused() = controls.read(model) == ModelDeliveryControlState.PAUSED
             override fun isCancelled() = controls.read(model) == ModelDeliveryControlState.CANCELLED
@@ -214,12 +214,13 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             .build(),
     )
 
-    private class HttpsRangeTransport : ModelTransport {
+    private class HttpsRangeTransport(private val network: android.net.Network?) : ModelTransport {
         override fun open(url: String, offset: Long): TransportResponse {
             var current = URI(url)
             repeat(4) {
                 require(current.scheme == "https" && !current.host.isNullOrBlank()) { "model source must use HTTPS" }
-                val connection = (URL(current.toString()).openConnection() as HttpURLConnection).apply {
+                val url = URL(current.toString())
+                val connection = ((network?.openConnection(url) ?: url.openConnection()) as HttpURLConnection).apply {
                     instanceFollowRedirects = false
                     connectTimeout = 15_000
                     readTimeout = 60_000
@@ -271,6 +272,12 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         internal const val KEY_REMOVED = "removed"
         internal const val KEY_REPAIR = "repair"
         internal const val KEY_UPDATE = "update"
+        internal const val KIND_TAG_PREFIX = "model-kind:"
+        internal const val KIND_DOWNLOAD = "download"
+        internal const val KIND_SETUP = "setup"
+        internal const val KIND_UPDATE = "update"
+        internal const val KIND_REPAIR = "repair"
+        internal val KINDS = setOf(KIND_DOWNLOAD, KIND_SETUP, KIND_UPDATE, KIND_REPAIR)
         internal const val KEY_ADOPT_ONLY = "adopt_only"
         internal const val KEY_STATE = "state"
         internal const val KEY_BYTES = "bytes"
@@ -300,44 +307,77 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         internal fun downloadWorkName(model: ModelDescriptor): String = "$DOWNLOAD_PREFIX${model.id}"
         internal fun adoptionWorkName(model: ModelDescriptor): String = "$ADOPT_PREFIX${model.id}"
 
-        internal fun enqueue(context: Context, model: ModelDescriptor) {
-            enqueueDownload(context, model, update = false)
+        /**
+         * Every download, setup, update and repair takes its network from `ModelDownloadPolicy` (#108), so no path
+         * can choose its own. Each request carries its kind as a tag, so a changed setting can re-queue it as itself.
+         */
+        internal suspend fun enqueue(context: Context, model: ModelDescriptor) {
+            enqueueDownload(context, model, KIND_DOWNLOAD)
         }
 
         /** Explicit setup action. KEEP makes recreation/repeated Get Started idempotent. */
-        internal fun enqueueSetup(context: Context, model: ModelDescriptor, mobileData: Boolean, restart: Boolean = false) {
-            val root = ModelStorage.root(context)
-            if (restart) ModelDeliveryControlStore(root).clear(model)
-            val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
-                .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id).build())
-                .setConstraints(Constraints.Builder()
-                    .setRequiredNetworkType(if (mobileData) NetworkType.CONNECTED else NetworkType.UNMETERED)
-                    .setRequiresStorageNotLow(true).build())
-                .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model),
-                if (restart) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, request)
+        internal suspend fun enqueueSetup(context: Context, model: ModelDescriptor, restart: Boolean = false) {
+            if (restart) ModelDeliveryControlStore(ModelStorage.root(context)).clear(model)
+            submit(context, model, KIND_SETUP, if (restart) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP)
         }
 
-        internal fun enqueueUpdate(context: Context, model: ModelDescriptor) {
-            enqueueDownload(context, model, update = true)
+        internal suspend fun enqueueUpdate(context: Context, model: ModelDescriptor) {
+            enqueueDownload(context, model, KIND_UPDATE)
         }
 
-        private fun enqueueDownload(context: Context, model: ModelDescriptor, update: Boolean) {
+        /**
+         * An update owed at app start (#108): KEEP, so a queued or running download is never restarted, and the
+         * user's Pause or Cancel is never cleared (the caller queues only for an ACTIVE control).
+         */
+        internal suspend fun enqueueOwedUpdate(context: Context, model: ModelDescriptor) {
+            submit(context, model, KIND_UPDATE, ExistingWorkPolicy.KEEP)
+        }
+
+        internal suspend fun enqueueRepair(context: Context, model: ModelDescriptor) {
+            enqueueDownload(context, model, KIND_REPAIR)
+        }
+
+        private val requests = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+        /** For callers with no coroutine (card buttons, the notification's Resume): the policy read suspends. */
+        internal fun launch(block: suspend () -> Unit): kotlinx.coroutines.Job = requests.launch {
+            try { block() } catch (error: kotlinx.coroutines.CancellationException) { throw error } catch (error: Exception) {
+                DebugLogger.warn(TAG, "Model request failed: ${error.javaClass.simpleName}")
+            }
+        }
+
+        private suspend fun enqueueDownload(context: Context, model: ModelDescriptor, kind: String) {
             ModelDeliveryControlStore(ModelStorage.root(context)).clear(model)
-            val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
-                .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id).putBoolean(KEY_UPDATE, update).build())
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).setRequiresStorageNotLow(true).build())
-                .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request)
+            submit(context, model, kind, ExistingWorkPolicy.REPLACE)
         }
 
-        internal fun enqueueRepair(context: Context, model: ModelDescriptor) {
-            ModelDeliveryControlStore(ModelStorage.root(context)).clear(model)
-            val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
-                .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id).putBoolean(KEY_REPAIR, true).build())
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).setRequiresStorageNotLow(true).build())
-                .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request)
+        private suspend fun submit(context: Context, model: ModelDescriptor, kind: String, policy: ExistingWorkPolicy) {
+            WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model), policy, request(model, kind, ModelDownloadPolicy.anyNetwork(context, model)))
+        }
+
+        private fun request(model: ModelDescriptor, kind: String, anyNetwork: Boolean) = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
+            .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id)
+                .putBoolean(KEY_UPDATE, kind == KIND_UPDATE).putBoolean(KEY_REPAIR, kind == KIND_REPAIR).build())
+            .setConstraints(ModelDownloadPolicy.constraints(anyNetwork))
+            .addTag(KIND_TAG_PREFIX + kind)
+            .build()
+
+        /**
+         * After the network rule changes (the setting, or a revision's "Download now"): a download still WAITING is
+         * queued again as itself under the new rule. Its partial files stay on disk and the transfer resumes from them;
+         * a running download already has its network, and a paused or cancelled one is left alone.
+         */
+        internal suspend fun reapplyNetwork(context: Context) = withContext(Dispatchers.IO) {
+            val manager = WorkManager.getInstance(context)
+            val controls = ModelDeliveryControlStore(ModelStorage.root(context))
+            ModelManifest.all.forEach { model ->
+                if (controls.read(model) != ModelDeliveryControlState.ACTIVE) return@forEach
+                val waiting = manager.getWorkInfosForUniqueWork(downloadWorkName(model)).get()
+                    .firstOrNull { it.state == androidx.work.WorkInfo.State.ENQUEUED } ?: return@forEach
+                val kind = waiting.tags.firstOrNull { it.startsWith(KIND_TAG_PREFIX) }?.removePrefix(KIND_TAG_PREFIX) ?: return@forEach
+                if (kind !in KINDS) return@forEach
+                manager.enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request(model, kind, ModelDownloadPolicy.anyNetwork(context, model)))
+            }
         }
 
         internal fun enqueueBootstrap(context: Context, model: ModelDescriptor) {
@@ -373,7 +413,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             manager.cancelUniqueWork(adoptionWorkName(model))
         }
 
-        internal fun resume(context: Context, model: ModelDescriptor) {
+        internal suspend fun resume(context: Context, model: ModelDescriptor) {
             enqueue(context, model)
         }
 

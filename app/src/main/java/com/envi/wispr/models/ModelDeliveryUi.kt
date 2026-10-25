@@ -15,6 +15,8 @@ internal data class ModelUiState(
     val total: Long = 0L,
     val reason: String? = null,
     val action: ModelUiAction = ModelUiAction.NONE,
+    /** A queued download waits for Wi-Fi while the phone is off it; the card offers mobile data beside Pause (#108). */
+    val offersMobileData: Boolean = false,
 )
 
 /** Maps persisted WorkManager and model-control values to honest lifecycle controls. */
@@ -29,6 +31,8 @@ internal fun modelUiState(
     staleInstalled: Boolean = false,
     /** The finished work left no installed model: a removal (`ModelDeliveryWorker.KEY_REMOVED`), not a download. */
     removed: Boolean = false,
+    /** The queued work requires Wi-Fi and the phone is not on Wi-Fi now (#108). */
+    waitingForWifi: Boolean = false,
 ): ModelUiState {
     val normalizedWork = workState?.uppercase()
     val normalizedProgress = progressState?.uppercase()
@@ -40,6 +44,8 @@ internal fun modelUiState(
     return when (normalizedWork) {
         "ENQUEUED", "RUNNING" -> if (paused) {
             ModelUiState("Paused", ModelHealth.NOT_READY, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RESUME)
+        } else if (normalizedWork == "ENQUEUED" && waitingForWifi) {
+            ModelUiState("Waiting for Wi-Fi", ModelHealth.NOT_READY, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.PAUSE, offersMobileData = true)
         } else ModelUiState(
             label = if (normalizedProgress == DownloadState.VERIFYING.name) "Verifying" else if (normalizedWork == "ENQUEUED") "Queued" else "Downloading",
             health = ModelHealth.NOT_READY,

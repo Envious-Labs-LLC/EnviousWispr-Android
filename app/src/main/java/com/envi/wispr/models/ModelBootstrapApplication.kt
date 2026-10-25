@@ -145,6 +145,7 @@ class ModelBootstrapApplication : Application() {
                     .onSuccess { if (it) com.envi.wispr.debug.DebugLogger.log("ModelDelivery", "Recovered an interrupted model admission (${model.id})") }
             }
             SpeechModelUpgrade.run(app)
+            ModelUpdates.run(app)
         }
     }
 

@@ -122,7 +122,11 @@ class ModelDeliveryCancelReceiver : BroadcastReceiver() {
         val model = ModelManifest.all.firstOrNull { it.id == modelId } ?: return
         when (intent.action) {
             ModelDeliveryNotification.ACTION_PAUSE -> ModelDeliveryWorker.pause(context, model)
-            ModelDeliveryNotification.ACTION_RESUME -> ModelDeliveryWorker.resume(context, model)
+            ModelDeliveryNotification.ACTION_RESUME -> {
+                // The network rule is a preference read (#108); the receiver stays alive until the request is queued.
+                val pending = goAsync()
+                ModelDeliveryWorker.launch { ModelDeliveryWorker.resume(context, model) }.invokeOnCompletion { pending.finish() }
+            }
             ModelDeliveryNotification.ACTION_CANCEL -> ModelDeliveryWorker.cancel(context, model)
         }
     }

@@ -74,19 +74,22 @@ internal fun TranscriptionScreen(
                 // Exhaustive with no `else`, so a new ModelUiAction is a compile error here rather
                 // than a silent download. The four inert members are the ones `ModelCard` routes to
                 // onPause, onResume, or to no button at all, so this lambda never sees them.
-                when (parakeetState.action) {
-                    ModelUiAction.REMOVE -> ModelDeliveryWorker.enqueueRemove(context, ModelManifest.parakeet)
-                    ModelUiAction.REPAIR -> ModelDeliveryWorker.enqueueRepair(context, ModelManifest.parakeet)
-                    ModelUiAction.UPDATE -> ModelDeliveryWorker.enqueueUpdate(context, ModelManifest.parakeet)
-                    ModelUiAction.DOWNLOAD, ModelUiAction.RETRY ->
-                        ModelDeliveryWorker.enqueue(context, ModelManifest.parakeet)
-                    ModelUiAction.PAUSE, ModelUiAction.RESUME, ModelUiAction.CANCEL,
-                    ModelUiAction.NONE -> Unit
+                val action = parakeetState.action
+                ModelDeliveryWorker.launch {
+                    when (action) {
+                        ModelUiAction.REMOVE -> ModelDeliveryWorker.enqueueRemove(context, ModelManifest.parakeet)
+                        ModelUiAction.REPAIR -> ModelDeliveryWorker.enqueueRepair(context, ModelManifest.parakeet)
+                        ModelUiAction.UPDATE -> ModelDeliveryWorker.enqueueUpdate(context, ModelManifest.parakeet)
+                        ModelUiAction.DOWNLOAD, ModelUiAction.RETRY ->
+                            ModelDeliveryWorker.enqueue(context, ModelManifest.parakeet)
+                        ModelUiAction.PAUSE, ModelUiAction.RESUME, ModelUiAction.CANCEL,
+                        ModelUiAction.NONE -> Unit
+                    }
                 }
                 onRefreshReadiness()
             },
             onPause = { ModelDeliveryWorker.pause(context, ModelManifest.parakeet) },
-            onResume = { ModelDeliveryWorker.resume(context, ModelManifest.parakeet) },
+            onResume = { ModelDeliveryWorker.launch { ModelDeliveryWorker.resume(context, ModelManifest.parakeet) } },
         )
         ProcessingPreferenceCard(
             model = "Parakeet", preference = preferences.speechProcessing,

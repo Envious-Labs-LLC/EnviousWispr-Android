@@ -37,8 +37,8 @@ class DevelopmentPolishModelFactsTest {
             selector.contains("MessageDigest"),
         )
         assertFalse("Automatic must not silently select development weights", selector.contains("DevelopmentPolishModel"))
-        // Through `usable` since #108: the same full verification, against the current or a previous pinned revision.
-        assertTrue("standard model remains verified", selector.contains("ModelStorage.usable(context, ModelManifest.s1)"))
+        // Through `usableDescriptor` since #108: the same full verification, against the current or a previous revision.
+        assertTrue("standard model remains verified", selector.contains("ModelDeliveryStore(root).usableDescriptor(model)"))
     }
 
     @Test

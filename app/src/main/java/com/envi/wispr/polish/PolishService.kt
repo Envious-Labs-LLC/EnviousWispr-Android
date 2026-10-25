@@ -262,7 +262,7 @@ class PolishService : Service() {
         val timeoutUsage = if (effectivePolicy is PolishPolicy.LocalS1) {
             val captured = configuration(effectivePolicy)
             ProcessingUsage(resident.loaded?.takeIf { it.requested == captured }?.backend, captured.contextId, effectivePolicy.processing,
-                false, runtimeFailed = true, artifactStamp = captured.artifactStamp, artifactSha256 = checkNotNull(com.envi.wispr.models.ModelManifest.s1.files.single().sha256))
+                false, runtimeFailed = true, artifactStamp = captured.artifactStamp, artifactSha256 = installedS1Sha256())
         } else null
         // Armed only for a local generation: the cloud client bounds itself and honours cancel.
         val armed = if (effectivePolicy is PolishPolicy.LocalS1 && !poisoned.get()) {
@@ -479,7 +479,7 @@ class PolishService : Service() {
             if (generationFailed && attemptedBackend != null) failures += attemptedBackend!!.wire
             ProcessingUsage(
                 attemptedBackend, requested.contextId, policy.processing, pipeline.usedModel,
-                failures.joinToString(","), observation?.second == true, artifactStamp = requested.artifactStamp, artifactSha256 = checkNotNull(com.envi.wispr.models.ModelManifest.s1.files.single().sha256),
+                failures.joinToString(","), observation?.second == true, artifactStamp = requested.artifactStamp, artifactSha256 = installedS1Sha256(),
                 loadStamp = resident.loaded?.failureStamp ?: lastLoadStamp, generationStamp = if (attemptedBackend != null) ProcessingEvidenceStamp.now(this) else null, generationFailed = generationFailed,
             )
         } else null
@@ -570,6 +570,10 @@ class PolishService : Service() {
     private fun finishWarm() = synchronized(loadLock) {
         modelLoading = activeModelLoads.decrementAndGet() > 0
     }
+
+    /** The hash of the S1 revision actually installed (#108), so processing evidence never mixes two revisions. */
+    private fun installedS1Sha256(): String =
+        checkNotNull((S1ModelSelector.installedDescriptor(this) ?: com.envi.wispr.models.ModelManifest.s1).files.single().sha256)
 
     private fun configuration(policy: PolishPolicy.LocalS1) = S1LoadConfiguration(
         ProcessingEnvironment.s1ContextId(S1ModelSelector.installedDescriptor(this) ?: com.envi.wispr.models.ModelManifest.s1),

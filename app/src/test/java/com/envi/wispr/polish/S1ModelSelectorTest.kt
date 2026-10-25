@@ -79,8 +79,10 @@ class S1ModelSelectorTest {
     /**
      * The service's own configuration helpers: a resident engine on the previous revision is reused while it stays
      * installed, reloads exactly once when the current revision replaces it, and is reused again after; a qualification
-     * on the previous revision is filed under its identity.
-     * REVERT: build `loadConfiguration`'s identity from the manifest only (previous-revision requests then never match).
+     * on the previous revision is filed under its identity. The polish gate (`PolishService`'s `resident.matches` before
+     * each request) must pass on the previous revision, and the full hash verification runs only on a real load.
+     * REVERT: build `loadConfiguration`'s identity from the manifest only (every polish request is then refused as not
+     * ready, and every warm-up re-hashes the model).
      */
     @Test fun aResidentEngineIsReusedOnPreviousReloadsOnceAtTheSwapAndIsReusedAfter() {
         val root = Files.createTempDirectory("s1-resident").toFile()
@@ -88,19 +90,26 @@ class S1ModelSelectorTest {
             val policy = PolishPolicy.LocalS1(S1ControlSettings.DEFAULT)
             val resident = S1LoadedConfiguration()
             var loads = 0
+            var verifies = 0
             fun load() {
                 val requested = S1ModelSelector.loadConfiguration(root, policy, current)
                 if (resident.matches(requested)) return
+                verifies++
                 val selection = checkNotNull(S1ModelSelector.resolve(root, current))
                 resident.ensure(S1ModelSelector.resolvedConfiguration(requested, selection)) { candidates -> loads++; candidates.first() }
             }
+            fun polishAllowed() = resident.matches(S1ModelSelector.loadConfiguration(root, policy, current))
             install(root, previous, oldBytes)
             load(); load()
             assertEquals("one load, then reuse, on the previous revision", 1, loads)
+            assertEquals("one full verification, then the cheap check", 1, verifies)
+            assertTrue("polish runs on the previous revision", polishAllowed())
             assertEquals(ProcessingEnvironment.s1ContextId(previous), S1ModelSelector.qualificationContextId(S1ModelSelector.resolve(root, current)))
             install(root, current, newBytes)
             load(); load()
             assertEquals("exactly one more load at the swap, then reuse", 2, loads)
+            assertEquals(2, verifies)
+            assertTrue("polish runs on the current revision", polishAllowed())
             assertEquals(ProcessingEnvironment.s1ContextId(current), S1ModelSelector.qualificationContextId(S1ModelSelector.resolve(root, current)))
         } finally { root.deleteRecursively() }
     }

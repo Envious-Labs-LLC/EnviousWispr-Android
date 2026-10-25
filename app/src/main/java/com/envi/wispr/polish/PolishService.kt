@@ -605,6 +605,7 @@ class PolishService : Service() {
 
             modelStatus = "Loading ${S1Config.MODEL_NAME}"
             val started = SystemClock.elapsedRealtime()
+            val faultsBefore = MajorFaults.read()
             try {
                 val resolved = requested.copy(artifactStamp = selection.installationStamp)
                 val loaded = resident.ensure(resolved, failures = { s1Runtime.failedComputeUnits.split(',').filter(String::isNotEmpty).map(ProcessingBackend::fromWire).toSet() }, failureStamp = { lastLoadStamp }, release = { s1Runtime.close() }) { candidates ->
@@ -617,7 +618,9 @@ class PolishService : Service() {
                 modelReady = true
                 val elapsed = SystemClock.elapsedRealtime() - started
                 modelStatus = "Ready on ${s1Runtime.activeComputeUnit.uppercase()} in ${elapsed}ms (standard model)"
-                DebugLogger.log(TAG, "${S1Config.MODEL_NAME} loaded: $result; $modelStatus")
+                // Major faults during the load (#465): a reload read back from flash shows here, not in the status line.
+                val faults = MajorFaults.read()?.let { after -> faultsBefore?.let { after - it } }
+                DebugLogger.log(TAG, "${S1Config.MODEL_NAME} loaded: $result; $modelStatus; majorFaults=${faults ?: "unknown"}")
             } catch (exception: Throwable) {
                 lastLoadObservation = requested to (s1Runtime.failedComputeUnits to (s1Runtime.initializationFailed || exception is S1RuntimeReleaseException))
                 if (exception is S1RuntimeReleaseException) { poisoned.set(true); endProcess("model replacement release failed") }

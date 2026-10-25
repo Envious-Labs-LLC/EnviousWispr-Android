@@ -98,7 +98,15 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         var completedBytes = 0L
         var lastHost: String? = null
         // Through the network WorkManager assigned (#108): a Wi-Fi-only download never falls over to mobile data.
-        val result = store.download(model, HttpsRangeTransport(network), object : DownloadControl {
+        // WorkManager's in-process scheduler can start work without naming a network; a Wi-Fi-only download then
+        // finds a validated Wi-Fi network itself, or waits, and never rides the default (possibly mobile) one.
+        val transferNetwork = network ?: if (inputData.getBoolean(KEY_WIFI_ONLY, false)) {
+            ModelDownloadPolicy.wifiNetwork(applicationContext) ?: run {
+                ModelDeliveryNotification.clear(applicationContext, model)
+                return@withContext Result.retry()
+            }
+        } else null
+        val result = store.download(model, HttpsRangeTransport(transferNetwork), object : DownloadControl {
             override fun isStopped() = this@ModelDeliveryWorker.isStopped
             override fun isPaused() = controls.read(model) == ModelDeliveryControlState.PAUSED
             override fun isCancelled() = controls.read(model) == ModelDeliveryControlState.CANCELLED
@@ -272,6 +280,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         internal const val KEY_REMOVED = "removed"
         internal const val KEY_REPAIR = "repair"
         internal const val KEY_UPDATE = "update"
+        internal const val KEY_WIFI_ONLY = "wifi_only"
         internal const val KIND_TAG_PREFIX = "model-kind:"
         internal const val KIND_DOWNLOAD = "download"
         internal const val KIND_SETUP = "setup"
@@ -355,9 +364,11 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model), policy, request(model, kind, ModelDownloadPolicy.anyNetwork(context, model)))
         }
 
-        private fun request(model: ModelDescriptor, kind: String, anyNetwork: Boolean) = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
+        private fun request(model: ModelDescriptor, kind: String, anyNetwork: Boolean, id: java.util.UUID = java.util.UUID.randomUUID()) = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
+            .setId(id)
             .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id)
-                .putBoolean(KEY_UPDATE, kind == KIND_UPDATE).putBoolean(KEY_REPAIR, kind == KIND_REPAIR).build())
+                .putBoolean(KEY_UPDATE, kind == KIND_UPDATE).putBoolean(KEY_REPAIR, kind == KIND_REPAIR)
+                .putBoolean(KEY_WIFI_ONLY, !anyNetwork).build())
             .setConstraints(ModelDownloadPolicy.constraints(anyNetwork))
             .addTag(KIND_TAG_PREFIX + kind)
             .build()
@@ -374,9 +385,10 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 if (controls.read(model) != ModelDeliveryControlState.ACTIVE) return@forEach
                 val waiting = manager.getWorkInfosForUniqueWork(downloadWorkName(model)).get()
                     .firstOrNull { it.state == androidx.work.WorkInfo.State.ENQUEUED } ?: return@forEach
-                val kind = waiting.tags.firstOrNull { it.startsWith(KIND_TAG_PREFIX) }?.removePrefix(KIND_TAG_PREFIX) ?: return@forEach
-                if (kind !in KINDS) return@forEach
-                manager.enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request(model, kind, ModelDownloadPolicy.anyNetwork(context, model)))
+                // Untagged work was queued by a build before #108; it resumes as a download, never repeating a cleanup.
+                val kind = waiting.tags.firstOrNull { it.startsWith(KIND_TAG_PREFIX) }?.removePrefix(KIND_TAG_PREFIX)?.takeIf { it in KINDS } ?: KIND_DOWNLOAD
+                // The captured request, by its id: a Remove or a newer request queued meanwhile is never replaced.
+                runCatching { manager.updateWork(request(model, kind, ModelDownloadPolicy.anyNetwork(context, model), waiting.id)).get() }
             }
         }
 

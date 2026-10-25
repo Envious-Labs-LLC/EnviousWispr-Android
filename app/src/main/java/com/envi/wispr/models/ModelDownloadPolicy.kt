@@ -62,6 +62,18 @@ internal object ModelDownloadPolicy {
     fun requiresWifi(constraints: Constraints): Boolean =
         constraints.requiredNetworkRequest?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
 
+    /** A validated Wi-Fi network with internet, for a Wi-Fi-only transfer WorkManager started without one. */
+    @Suppress("DEPRECATION") // `allNetworks` is the synchronous answer; a callback request would outlive the worker.
+    fun wifiNetwork(context: Context): android.net.Network? = runCatching {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return null
+        connectivity.allNetworks.firstOrNull { network ->
+            connectivity.getNetworkCapabilities(network)?.let {
+                it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    it.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            } == true
+        }
+    }.getOrNull()
+
     fun onWifi(context: Context): Boolean = runCatching {
         val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return false
         connectivity.getNetworkCapabilities(connectivity.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true

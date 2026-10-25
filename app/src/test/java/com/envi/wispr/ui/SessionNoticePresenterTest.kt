@@ -81,6 +81,7 @@ class SessionNoticePresenterTest {
             Triple(SessionNotice.EARBUDS_SILENT, "Earbuds are not sending sound.", NoticeTiming.WHILE_RECORDING),
             Triple(SessionNotice.SILENCE_UNAVAILABLE, "Auto-stop on silence is unavailable right now", NoticeTiming.WHILE_RECORDING),
             Triple(SessionNotice.BLUETOOTH_TIP, "Recording through your earbuds", NoticeTiming.WHILE_RECORDING),
+            Triple(SessionNotice.MODEL_UPDATING, "A model is updating. Try again in a moment.", NoticeTiming.AFTER_RECORDER),
             Triple(SessionNotice.DURATION_WARNING, "Recording stops in under a minute (10 minute limit)", NoticeTiming.WHILE_RECORDING),
         )
         assertEquals(SessionNotice.entries.toList(), expected.map { it.first })
@@ -140,8 +141,8 @@ class SessionNoticePresenterTest {
         assertEquals(1, Regex("""\bnotices\.sayPolishFailureIfAny\(payload\.polishFacts\)""").findAll(owner).count())
         assertEquals(1, Regex("""\bnotices\.sayFailure\(line\)""").findAll(owner).count())
         // Since #309 the owner says only the cap-reached line directly; the four once-per-take lines are said inside the
-        // presenter's own methods. Together the two files say every notice.
-        assertEquals(1, Regex("""\bnotices\.say\(SessionNotice\.""").findAll(owner).count())
+        // presenter's own methods. Together the two files say every notice. #108 adds the refused start's line.
+        assertEquals(2, Regex("""\bnotices\.say\(SessionNotice\.""").findAll(owner).count())
         val presenterSource = java.io.File("src/main/java/com/envi/wispr/ui/SessionNotice.kt").readText()
         val said = Regex("""\bsay\(SessionNotice\.([A-Z_]+)\)""").findAll(owner + presenterSource).map { it.groupValues[1] }.toSet()
         assertEquals(SessionNotice.entries.map { it.name }.toSet(), said)

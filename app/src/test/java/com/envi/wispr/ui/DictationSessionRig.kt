@@ -208,7 +208,11 @@ internal class DictationSessionRig {
         admitTake = admit,
         preparationBoundMs = preparationBoundMs,
         compileMatcher = compileMatcher,
+        swapGate = swapGate,
     )
+
+    /** The rig's own model-swap gate (#108), recovered so takes are admitted unless a test begins a swap. */
+    val swapGate = com.envi.wispr.models.ModelSwapGate().apply { recovered() }
 
     /** When set, the owner's defect sink throws (#252: a broken report must never stop the words). */
     @Volatile var throwOnDefect = false

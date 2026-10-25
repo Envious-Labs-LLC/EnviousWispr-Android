@@ -175,7 +175,9 @@ internal sealed class AnalyticsEvent(val name: String) {
             const val BUSY = "busy"
             /** A bubble start the request ledger had already retired. */
             const val STALE = "stale"
-            val REASONS: Set<String> = setOf(BUSY, STALE)
+            /** A model update was being applied, with dictation paused (#108). */
+            const val UPDATING = "updating"
+            val REASONS: Set<String> = setOf(BUSY, STALE, UPDATING)
         }
     }
 

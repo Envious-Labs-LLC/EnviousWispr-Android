@@ -259,8 +259,9 @@ class SessionOwnerShapeTest {
     @Test
     fun anOwnerAdmitsExactlyOneTake() {
         val owner = SessionSources.coordinator
-        val begin = owner.substringAfter("private fun beginSession() {\n").substringBefore("\n")
-        assertEquals("admission is only from IDLE", "        if (!state.compareAndSet(SessionState.IDLE, SessionState.STARTING)) return", begin)
+        // Since #108 the step runs inside the swap gate's admission, under its lock, and is still the method's first act.
+        val begin = owner.substringAfter("private fun beginSession() {\n").lines().first { !it.trimStart().startsWith("//") }
+        assertEquals("admission is only from IDLE", "        when (swapGate.admitTake { state.compareAndSet(SessionState.IDLE, SessionState.STARTING) }) {", begin)
         assertEquals("one admission", 1, Regex("""SessionState\.STARTING\)""").findAll(owner).count { it.range.first > 0 && owner.substring(0, it.range.first).endsWith(", ") })
         assertFalse("nothing writes IDLE again", Regex("""(set|compareAndSet\([^,]+,|getAndSet)\s*\(?\s*SessionState\.IDLE\)""").containsMatchIn(owner))
         assertEquals("the initial IDLE is the only other one", 1, Regex("""AtomicReference\(SessionState\.IDLE\)""").findAll(owner).count())

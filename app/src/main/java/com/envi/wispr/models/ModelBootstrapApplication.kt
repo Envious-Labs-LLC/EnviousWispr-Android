@@ -137,6 +137,10 @@ class ModelBootstrapApplication : Application() {
         }
         // #458: a phone still holding the retired speech model gets the current one on Wi-Fi; file checks off main.
         val app = this
+        // #108: the swap gate opens once no admission is left half done (a cheap check for `.old`, no hashing), so
+        // no engine binds while recovery could still move a model folder. The common start opens it right here.
+        val interrupted = runCatching { ModelManifest.all.any { ModelDeliveryStore(ModelStorage.root(app)).interruptedAdmission(it) } }.getOrDefault(true)
+        if (!interrupted) ModelSwapGate.main.recovered()
         speechUpgradeScope.launch {
             // #492: an admission a process death interrupted is finished or undone before anything decides the
             // model is missing. Never throws; serialized with the worker by the store's per-model lock.
@@ -144,6 +148,7 @@ class ModelBootstrapApplication : Application() {
                 runCatching { ModelDeliveryStore(ModelStorage.root(app)).reconcile(model) }
                     .onSuccess { if (it) com.envi.wispr.debug.DebugLogger.log("ModelDelivery", "Recovered an interrupted model admission (${model.id})") }
             }
+            ModelSwapGate.main.recovered()
             SpeechModelUpgrade.run(app)
             ModelUpdates.run(app)
         }

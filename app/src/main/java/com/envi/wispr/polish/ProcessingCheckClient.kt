@@ -45,24 +45,39 @@ internal class ProcessingCheckClient(context: Context) : Closeable {
         val id = ids.incrementAndGet()
         val request = Pending(backend, answer)
         var rejected = false
+        var updating = false
         val ready = synchronized(lock) {
             check(!closed)
             pending[id] = request
             if (binding == null) {
                 val created = Binding()
                 binding = created
-                if (!runCatching { app.bindService(Intent(app, PolishService::class.java), created, Context.BIND_AUTO_CREATE) }.getOrDefault(false)) {
+                // A model swap refuses the bind (#108): that check did not run, so it is cancelled, never failed.
+                updating = !com.envi.wispr.models.ModelSwapGate.main.open
+                if (!com.envi.wispr.models.EngineBindings.bind(app, com.envi.wispr.models.EngineBindings.Engine.POLISH, created, Context.BIND_AUTO_CREATE) { revoked(created) }) {
                     binding = null; pending.remove(id); rejected = true
                 }
             }
             binding?.service
         }
-        if (rejected) answer(failed(id, request)) else if (ready != null) send(ready, id, request)
+        if (rejected) answer(if (updating) cancelled(id, request) else failed(id, request)) else if (ready != null) send(ready, id, request)
         return id
     }
     private fun failed(id: Long, request: Pending) = ProcessingCheckResult(
         id, request.backend, ProcessingEnvironment.s1ContextId(), ProcessingCheckStatus.RUNTIME_FAILED,
     )
+    private fun cancelled(id: Long, request: Pending) = ProcessingCheckResult(
+        id, request.backend, ProcessingEnvironment.s1ContextId(), ProcessingCheckStatus.CANCELLED,
+    )
+    /** A model swap revoked the binding (#108): every check still waiting is cancelled, not failed. */
+    private fun revoked(source: Binding) {
+        val lost = synchronized(lock) {
+            if (binding !== source) return
+            binding = null
+            pending.toList().also { pending.clear() }
+        }
+        lost.forEach { (id, request) -> request.answer(cancelled(id, request)) }
+    }
     private fun send(target: IPolishService, id: Long, request: Pending) {
         runCatching { calls.execute {
             if (synchronized(lock) { closed || pending[id] !== request }) return@execute
@@ -82,7 +97,7 @@ internal class ProcessingCheckClient(context: Context) : Closeable {
             if (accepted && pending.isEmpty()) { released = binding; binding = null }
             accepted
         }
-        released?.let { runCatching { app.unbindService(it) } }
+        released?.let { com.envi.wispr.models.EngineBindings.unbind(it) }
         if (accepted) request.answer(result)
     }
     private fun fail(source: Binding) {
@@ -91,7 +106,7 @@ internal class ProcessingCheckClient(context: Context) : Closeable {
             binding = null
             pending.toList().also { pending.clear() }
         }
-        runCatching { app.unbindService(source) }
+        com.envi.wispr.models.EngineBindings.unbind(source)
         lost.forEach { (id, request) -> request.answer(failed(id, request)) }
     }
     fun cancelAll() {
@@ -101,7 +116,7 @@ internal class ProcessingCheckClient(context: Context) : Closeable {
             snapshot
         }
         runCatching { calls.execute { state.second.forEach { id -> runCatching { state.first?.service?.cancelQualification(id) } } } }
-        state.first?.let { runCatching { app.unbindService(it) } }
+        state.first?.let { com.envi.wispr.models.EngineBindings.unbind(it) }
     }
     override fun close() {
         val state = synchronized(lock) {
@@ -112,7 +127,7 @@ internal class ProcessingCheckClient(context: Context) : Closeable {
             snapshot
         }
         calls.execute { state.second.forEach { id -> runCatching { state.first?.service?.cancelQualification(id) } } }
-        state.first?.let { runCatching { app.unbindService(it) } }
+        state.first?.let { com.envi.wispr.models.EngineBindings.unbind(it) }
         calls.shutdown()
     }
 }

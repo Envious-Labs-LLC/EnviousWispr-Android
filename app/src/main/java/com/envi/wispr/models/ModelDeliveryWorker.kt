@@ -32,7 +32,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             return@withContext failure("model storage is unavailable")
         }
         if (inputData.getBoolean(KEY_REMOVE, false)) {
-            val removed = store.remove(model)
+            // With dictation paused and the engines stopped (#108); a take in progress finishes first.
+            val removed = whenIdle { ModelSwap.exclusive(applicationContext) { store.remove(model) } } ?: return@withContext Result.retry()
             controls.clear(model)
             // #458: removing the speech model also frees the retired one, so the upgrade check stops fetching Ultra.
             SpeechModelUpgrade.afterRemove(root, model)
@@ -46,7 +47,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             return@withContext failure(UNSUPPORTED_PHONE)
         }
         if (inputData.getBoolean(KEY_REPAIR, false)) {
-            if (!store.repair(model)) return@withContext failure("model repair cleanup failed", DownloadState.REPAIR_NEEDED)
+            val cleaned = whenIdle { ModelSwap.exclusive(applicationContext) { store.repair(model) } } ?: return@withContext Result.retry()
+            if (!cleaned) return@withContext failure("model repair cleanup failed", DownloadState.REPAIR_NEEDED)
         }
         setProgressAsync(Data.Builder().putString(KEY_STATE, DownloadState.VERIFYING.name).build())
         if (store.isVerified(model)) {
@@ -77,7 +79,10 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 ModelDeliveryNotification.clear(applicationContext, model)
                 return@withContext failure("not enough storage to adopt ${model.displayName}")
             }
-            val adopted = store.adoptExisting(model, legacy)
+            val adopted = whenIdle {
+                store.adoptExisting(model, legacy, admission = { mutation -> ModelSwap.exclusive(applicationContext, mutation) })
+                    .takeUnless { it.state == DownloadState.STAGED }
+            } ?: return@withContext Result.retry()
             ModelDeliveryNotification.clear(applicationContext, model)
             if (adopted.state == DownloadState.READY) return@withContext Result.success()
             return@withContext failure(adopted.message ?: adopted.state.name)
@@ -106,7 +111,10 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 return@withContext Result.retry()
             }
         } else null
-        val result = store.download(model, HttpsRangeTransport(transferNetwork), object : DownloadControl {
+        val transport = HttpsRangeTransport(transferNetwork)
+        // A finished download is applied with dictation paused and the engines stopped (#108). While a take runs it
+        // ends STAGED, the complete revision waits in staging, and the next idle moment applies it without a refetch.
+        val result = whenIdle { store.download(model, transport, object : DownloadControl {
             override fun isStopped() = this@ModelDeliveryWorker.isStopped
             override fun isPaused() = controls.read(model) == ModelDeliveryControlState.PAUSED
             override fun isCancelled() = controls.read(model) == ModelDeliveryControlState.CANCELLED
@@ -131,7 +139,14 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             // Which roof served the bytes (#168). The log, never the screen: a user does not choose hosts.
             DebugLogger.log(TAG, "Model source: ${model.id}/$file from ${ModelSourceHost.of(host).wire}")
             lastHost = host
-        })
+        }, admission = { mutation -> ModelSwap.exclusive(applicationContext, mutation) }).let { status ->
+            if (status.state != DownloadState.STAGED) return@let status
+            setProgressAsync(Data.Builder().putString(KEY_STATE, status.state.name).putLong(KEY_BYTES, totalBytes).putLong(KEY_TOTAL, totalBytes).build())
+            null
+        } } ?: run {
+            ModelDeliveryNotification.clear(applicationContext, model)
+            return@withContext Result.retry()
+        }
         reportDelivery(model, result.state, result.reason, ModelSourceHost.of(lastHost), completedBytes + result.bytes, startedAtMs, firstRun)
         when (result.state) {
             DownloadState.READY -> {
@@ -155,7 +170,22 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state, result.message)
                 failure(result.message ?: "model download failed", result.state)
             }
-            DownloadState.DOWNLOADING, DownloadState.VERIFYING -> failure(result.state.name, result.state)
+            DownloadState.DOWNLOADING, DownloadState.VERIFYING, DownloadState.STAGED -> failure(result.state.name, result.state)
+        }
+    }
+
+    /**
+     * Tries [attempt] until it answers, waiting for the swap gate to be idle between tries (#108): a take in progress
+     * finishes first. Gives up after [IDLE_WAIT_MS] or when WorkManager stops the work; WorkManager then retries.
+     */
+    private suspend fun <T : Any> whenIdle(attempt: () -> T?): T? {
+        val until = android.os.SystemClock.elapsedRealtime() + IDLE_WAIT_MS
+        while (true) {
+            attempt()?.let { return it }
+            do {
+                if (isStopped || android.os.SystemClock.elapsedRealtime() >= until) return null
+                kotlinx.coroutines.delay(1_000)
+            } while (!ModelSwapGate.main.idle)
         }
     }
 
@@ -281,6 +311,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         internal const val KEY_REPAIR = "repair"
         internal const val KEY_UPDATE = "update"
         internal const val KEY_WIFI_ONLY = "wifi_only"
+        /** How long a model change waits in the worker for dictation to go idle before WorkManager retries it. */
+        private const val IDLE_WAIT_MS = 10L * 60L * 1000L
         internal const val KIND_TAG_PREFIX = "model-kind:"
         internal const val KIND_DOWNLOAD = "download"
         internal const val KIND_SETUP = "setup"

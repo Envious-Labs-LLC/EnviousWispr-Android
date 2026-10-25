@@ -49,6 +49,7 @@ internal object ModelDeliveryNotification {
         val boundedBytes = bytes.coerceIn(0L, total.coerceAtLeast(0L)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         val text = when (state) {
             DownloadState.VERIFYING -> "Verifying model files"
+            DownloadState.STAGED -> "Downloaded. Applies when dictation is idle"
             DownloadState.READY -> "Model ready"
             DownloadState.REPAIR_NEEDED -> reason ?: "Model needs repair"
             DownloadState.FAILED -> reason ?: "Model download failed"
@@ -69,7 +70,7 @@ internal object ModelDeliveryNotification {
         val transferAction = when (state) {
             DownloadState.PAUSED -> "Resume" to actionPendingIntent(ACTION_RESUME, notificationId(model) + 11)
             DownloadState.DOWNLOADING, DownloadState.VERIFYING -> "Pause" to actionPendingIntent(ACTION_PAUSE, notificationId(model) + 11)
-            DownloadState.READY, DownloadState.FAILED, DownloadState.CANCELLED, DownloadState.REPAIR_NEEDED -> null
+            DownloadState.READY, DownloadState.FAILED, DownloadState.CANCELLED, DownloadState.REPAIR_NEEDED, DownloadState.STAGED -> null
         }
         return NotificationCompat.Builder(context, channelId(model))
             .setSmallIcon(android.R.drawable.stat_sys_download)

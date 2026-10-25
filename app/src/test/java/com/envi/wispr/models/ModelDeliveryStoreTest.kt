@@ -413,6 +413,26 @@ class ModelDeliveryStoreTest {
         } finally { root.deleteRecursively() }
     }
 
+    /**
+     * Codex round 2: a staged copy whose receipt is a link into `.old` must not verify, or `.old` and the receipt it
+     * lends would both be deleted. REVERT: drop the receipt link check in `verifies`.
+     */
+    @Test fun aLinkedReceiptNeverVerifiesOrCostsTheOld() {
+        val (root, current) = interruptedAdmission(stagingComplete = true)
+        try {
+            val staging = java.io.File(root, ".demo.download")
+            val oldReceipt = java.io.File(root, ".demo.old/.verified-receipt")
+            // The old folder lends the CURRENT receipt text, so only the link check can refuse it.
+            oldReceipt.writeText(java.io.File(staging, ".verified-receipt").readText())
+            assertTrue(java.io.File(staging, ".verified-receipt").delete())
+            Files.createSymbolicLink(java.io.File(staging, ".verified-receipt").toPath(), oldReceipt.toPath())
+            ModelDeliveryStore(root).reconcile(current)
+            // Refused, so the staged copy does not complete the admission and the previous model is put back.
+            assertEquals("the previous model survives, put back at final", "previous model", java.io.File(root, "demo/model.bin").readText())
+            assertFalse("the linked copy was not admitted as current", ModelDeliveryStore(root).isVerified(current))
+        } finally { root.deleteRecursively() }
+    }
+
     /** Admission finished but its `.old` delete was lost: only the leftover goes; nothing else is touched. */
     @Test fun aLeftoverOldBesideAFinalModelIsRemoved() {
         val root = Files.createTempDirectory("leftover").toFile()

@@ -101,7 +101,8 @@ internal class ModelDeliveryStore(private val root: File) {
     private fun verifies(directory: File, model: ModelDescriptor): Boolean {
         val receipt = File(directory, RECEIPT)
         val names = directory.listFiles()?.map { it.name }?.toSet()
-        return model.isAvailable && !Files.isSymbolicLink(directory.toPath()) && names == (model.files.map { it.name }.toSet() + RECEIPT) && receipt.isFile && receipt.readText() == receiptText(model) && model.files.all { entry ->
+        // A linked receipt could borrow another folder's (#492 review round 2), so it is refused like a linked model file.
+        return model.isAvailable && !Files.isSymbolicLink(directory.toPath()) && names == (model.files.map { it.name }.toSet() + RECEIPT) && receipt.isFile && !Files.isSymbolicLink(receipt.toPath()) && receipt.readText() == receiptText(model) && model.files.all { entry ->
             val file = File(directory, entry.name)
             file.isFile && !Files.isSymbolicLink(file.toPath()) && file.length() == entry.expectedBytes && sha256(file) == entry.sha256!!.lowercase()
         }

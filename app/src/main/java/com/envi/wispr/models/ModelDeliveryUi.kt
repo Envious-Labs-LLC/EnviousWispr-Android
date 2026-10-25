@@ -86,6 +86,10 @@ internal fun modelUiState(
             ModelUiState("Cancelled", ModelHealth.NOT_READY, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RETRY)
         } else if (verifiedReady) {
             ModelUiState("Ready", ModelHealth.READY, safeBytes, safeTotal, action = ModelUiAction.REMOVE)
+        } else if (normalizedProgress == DownloadState.REPAIR_NEEDED.name && staleInstalled) {
+            // An update's download failed its check while the previous revision is still installed (#108): Repair
+            // would delete the model still dictating, so offer the update again instead.
+            ModelUiState("Update failed", ModelHealth.BROKEN, safeBytes, safeTotal, reason, ModelUiAction.UPDATE)
         } else if (normalizedProgress == DownloadState.REPAIR_NEEDED.name) {
             ModelUiState("Repair needed", ModelHealth.BROKEN, safeBytes, safeTotal, reason, ModelUiAction.REPAIR)
         } else if (staleInstalled) {

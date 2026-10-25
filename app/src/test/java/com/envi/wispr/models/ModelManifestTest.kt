@@ -6,6 +6,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelManifestTest {
+    /**
+     * Drift guard (#108): every previous revision a model keeps loadable is the same model at a different pin, with
+     * the same file names the engine opens, itself pinned and verifiable, and no deeper chain.
+     * REVERT: list a previous revision with a different id, a renamed file, or the current revision.
+     */
+    @Test fun previousRevisionsAreTheSameModelAtAnotherPin() {
+        ModelManifest.all.forEach { model ->
+            model.previous.forEach { old ->
+                assertEquals("${model.id}: id", model.id, old.id)
+                assertEquals("${model.id}: engine", model.engineId, old.engineId)
+                assertEquals("${model.id}: file names", model.files.map { it.name }.toSet(), old.files.map { it.name }.toSet())
+                assertFalse("${model.id}: a previous revision is not the current one", old.pinnedRevision == model.pinnedRevision)
+                assertTrue("${model.id}: pinned and verifiable", old.isAvailable)
+                assertTrue("${model.id}: no nesting", old.previous.isEmpty())
+            }
+        }
+    }
+
     @Test fun productionDescriptorsCarryPinnedVerifiedReceipts() {
         assertTrue(ModelManifest.parakeet.isAvailable)
         assertTrue(ModelManifest.s1.isAvailable)

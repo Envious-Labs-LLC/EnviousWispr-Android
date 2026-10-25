@@ -34,7 +34,8 @@ internal object AppLaunchFacts {
             deviceModel = Build.MODEL.orEmpty(),
             osVersion = Build.VERSION.RELEASE.orEmpty(),
             isFreshInstall = freshInstall,
-            modelsReady = runCatching { ModelStorage.isReady(context, ModelManifest.parakeet) && ModelStorage.isReady(context, ModelManifest.s1) }.getOrDefault(false),
+            // Whether the phone can dictate and polish now (#108), so a previous revision mid-update counts as ready.
+            modelsReady = runCatching { ModelStorage.usable(context, ModelManifest.parakeet) != null && ModelStorage.usable(context, ModelManifest.s1) != null }.getOrDefault(false),
             accessibilityGranted = runCatching { AccessibilityPermission.isGranted(context) }.getOrDefault(false),
             micGranted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
             onboardingComplete = preferences?.onboardingComplete ?: false,

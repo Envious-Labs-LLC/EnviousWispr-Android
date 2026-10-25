@@ -572,7 +572,8 @@ class PolishService : Service() {
     }
 
     private fun configuration(policy: PolishPolicy.LocalS1) = S1LoadConfiguration(
-        ProcessingEnvironment.s1ContextId(), ProcessingEnvironment.standardPolishBackends, policy.processing,
+        ProcessingEnvironment.s1ContextId(S1ModelSelector.installedDescriptor(this) ?: com.envi.wispr.models.ModelManifest.s1),
+        ProcessingEnvironment.standardPolishBackends, policy.processing,
         policy.qualification,
         S1ModelSelector.installationStamp(this).orEmpty(),
     )
@@ -607,7 +608,10 @@ class PolishService : Service() {
             val started = SystemClock.elapsedRealtime()
             val faultsBefore = MajorFaults.read()
             try {
-                val resolved = requested.copy(artifactStamp = selection.installationStamp)
+                val resolved = requested.copy(
+                    artifactStamp = selection.installationStamp,
+                    contextId = ProcessingEnvironment.s1ContextId(selection.descriptor),
+                )
                 val loaded = resident.ensure(resolved, failures = { s1Runtime.failedComputeUnits.split(',').filter(String::isNotEmpty).map(ProcessingBackend::fromWire).toSet() }, failureStamp = { lastLoadStamp }, release = { s1Runtime.close() }) { candidates ->
                     try { s1Runtime.load(selection.file.path, candidates.map { it.wire }) } finally { lastLoadStamp = ProcessingEvidenceStamp.now(this) }
                     ProcessingBackend.fromWire(s1Runtime.activeComputeUnit)
@@ -638,7 +642,8 @@ class PolishService : Service() {
 
     /** A separate operation namespace, sharing only the existing native worker and deadline primitive. */
     private fun qualify(entry: ProcessingCheckRegistry.Entry, backend: ProcessingBackend, callback: IProcessingCheckCallback?) {
-        val contextId = ProcessingEnvironment.s1ContextId()
+        // The loaded revision's identity once selection has run (#108); the current one before that.
+        var contextId = ProcessingEnvironment.s1ContextId()
         try {
             ProcessingQualificationTask(
                 deadline, MODEL_LOAD_DEADLINE_MS + LocalPolishBudget.SHIPPED.hardMs, poisoned,
@@ -650,6 +655,7 @@ class PolishService : Service() {
                 else {
                     val selection = S1ModelSelector.resolve(this)
                     if (selection == null) ProcessingCheckStatus.MODEL_MISSING else {
+                        contextId = ProcessingEnvironment.s1ContextId(selection.descriptor)
                         s1Runtime.load(selection.file.path, listOf(backend.wire))
                         ProcessingCheckStatus.AVAILABLE
                     }

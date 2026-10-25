@@ -97,6 +97,16 @@ internal class ModelDeliveryStore(private val root: File) {
     /** Full receipt verification. Call from a worker or service executor, never the UI thread. */
     fun isVerified(model: ModelDescriptor): Boolean = synchronized(lock(model)) { verifies(finalDirectory(model), model) }
 
+    /**
+     * Which pinned descriptor the installed files fully verify against, the current one first, then each of
+     * [ModelDescriptor.previous] (#108); null when none does. Nothing is relaxed: the same names, receipt, sizes and
+     * hashes, against a descriptor compiled into this build. "Can I dictate" reads this; download and update decisions
+     * keep reading [isVerified], which means the CURRENT revision.
+     */
+    fun usableDescriptor(model: ModelDescriptor): ModelDescriptor? = synchronized(lock(model)) {
+        (listOf(model) + model.previous).firstOrNull { verifies(finalDirectory(model), it) }
+    }
+
     /** [directory] holds exactly [model]'s files plus its receipt, every size and hash matching. */
     private fun verifies(directory: File, model: ModelDescriptor): Boolean {
         val receipt = File(directory, RECEIPT)

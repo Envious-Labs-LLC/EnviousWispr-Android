@@ -316,6 +316,51 @@ class ModelDeliveryStoreTest {
     }
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
+    // ---- #108: the previous revision keeps dictating while its update downloads
+
+    /**
+     * Product Outcome: after a revision bump, the files already on the phone are usable through their own pinned
+     * descriptor, while the current revision is not "verified" (so the update is still offered).
+     * REVERT: make `usableDescriptor` try only the current descriptor.
+     */
+    @Test fun thePreviousRevisionIsUsableWhileTheCurrentIsNot() {
+        val root = Files.createTempDirectory("previous").toFile()
+        try {
+            val previous = descriptor(oldBytes, R1)
+            assertEquals(DownloadState.READY, ModelDeliveryStore(root).download(previous, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(oldBytes), false) }).state)
+            val current = descriptor(newBytes, R2).copy(previous = listOf(previous))
+            val store = ModelDeliveryStore(root)
+            assertFalse("the current revision is not installed", store.isVerified(current))
+            assertTrue("so the update is offered", store.needsUpdate(current))
+            assertEquals("the previous revision dictates", previous, store.usableDescriptor(current))
+            assertEquals("with no previous listed, nothing is usable", null, store.usableDescriptor(descriptor(newBytes, R2)))
+        } finally { root.deleteRecursively() }
+    }
+
+    /**
+     * Verification is not relaxed for the previous revision: same-size corrupted bytes under its exact receipt are
+     * refused. REVERT: skip the hash for a previous descriptor.
+     */
+    @Test fun aCorruptedPreviousRevisionIsNotUsable() {
+        val root = Files.createTempDirectory("previous-corrupt").toFile()
+        try {
+            val previous = descriptor(oldBytes, R1)
+            assertEquals(DownloadState.READY, ModelDeliveryStore(root).download(previous, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(oldBytes), false) }).state)
+            java.io.File(root, "demo/model.bin").writeBytes(ByteArray(oldBytes.size) { 'x'.code.toByte() })
+            assertEquals(null, ModelDeliveryStore(root).usableDescriptor(descriptor(newBytes, R2).copy(previous = listOf(previous))))
+        } finally { root.deleteRecursively() }
+    }
+
+    /** The current revision wins when both would verify: current first. */
+    @Test fun theCurrentRevisionIsPreferred() {
+        val root = Files.createTempDirectory("current-first").toFile()
+        try {
+            val current = descriptor(newBytes, R2).copy(previous = listOf(descriptor(oldBytes, R1)))
+            assertEquals(DownloadState.READY, ModelDeliveryStore(root).download(current, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(newBytes), false) }).state)
+            assertEquals(current, ModelDeliveryStore(root).usableDescriptor(current))
+        } finally { root.deleteRecursively() }
+    }
+
     // ---- #492: an admission a process death interrupted between its two renames
 
     private val oldBytes = "previous model".toByteArray()

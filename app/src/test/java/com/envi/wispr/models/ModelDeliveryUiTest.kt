@@ -45,6 +45,16 @@ class ModelDeliveryUiTest {
         assertEquals(ModelUiAction.REPAIR, state.action)
     }
 
+    /**
+     * #108: an update whose download failed its check, with the previous revision still installed, must not offer
+     * Repair, which deletes the model still dictating. REVERT: drop the `staleInstalled` branch before Repair.
+     */
+    @Test fun aFailedUpdateNeverOffersRepairOverTheInstalledModel() {
+        val state = modelUiState(false, null, "REPAIR_NEEDED", reason = "integrity check failed", staleInstalled = true)
+        assertEquals("Update failed", state.label)
+        assertEquals(ModelUiAction.UPDATE, state.action)
+    }
+
     @Test fun persistedPauseOffersResume() {
         val state = modelUiState(false, "CANCELLED", controlState = ModelDeliveryControlState.PAUSED.name)
         assertEquals("Paused", state.label)

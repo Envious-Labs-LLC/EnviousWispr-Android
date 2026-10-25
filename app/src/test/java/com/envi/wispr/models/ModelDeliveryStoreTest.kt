@@ -389,6 +389,30 @@ class ModelDeliveryStoreTest {
         } finally { root.deleteRecursively() }
     }
 
+    /**
+     * Codex round 1 (P1): a final that exists but does not verify is not a finished admission, so a working `.old`
+     * beside it must survive. REVERT: delete `.old` whenever final exists.
+     */
+    @Test fun aBrokenFinalNeverCostsTheWorkingOld() {
+        val (root, current) = interruptedAdmission(stagingComplete = false)
+        try {
+            val final = java.io.File(root, "demo"); final.mkdirs(); java.io.File(final, "model.bin").writeText("garbage")
+            assertFalse(ModelDeliveryStore(root).reconcile(current))
+            assertEquals("previous model", java.io.File(root, ".demo.old/model.bin").readText())
+        } finally { root.deleteRecursively() }
+    }
+
+    /** A dangling link at final does not block a complete staged model; the link makes way. REVERT: follow links. */
+    @Test fun aDanglingLinkAtFinalMakesWayForTheVerifiedStagedModel() {
+        val (root, current) = interruptedAdmission(stagingComplete = true)
+        try {
+            Files.createSymbolicLink(java.io.File(root, "demo").toPath(), java.io.File(root, "nowhere").toPath())
+            assertTrue(ModelDeliveryStore(root).reconcile(current))
+            assertTrue(ModelDeliveryStore(root).isVerified(current))
+            assertFalse(Files.isSymbolicLink(java.io.File(root, "demo").toPath()))
+        } finally { root.deleteRecursively() }
+    }
+
     /** Admission finished but its `.old` delete was lost: only the leftover goes; nothing else is touched. */
     @Test fun aLeftoverOldBesideAFinalModelIsRemoved() {
         val root = Files.createTempDirectory("leftover").toFile()

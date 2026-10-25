@@ -641,3 +641,12 @@ unregister are `PipelineBindings`, `EngineWarmUp`, `SpeechModelKeepAlive` and `P
 4. **No resident replacement (P2).** Every final-folder mutation stops both engine processes first, and later
    services cold-load through `usableDescriptor`. The per-take `:asr` stamp check and the `RecognizerOwner`
    replacement (§13c.2, 13c.3, §17.4's last sentence) are REMOVED from this change. S1's existing behaviour stays.
+
+## 20. Build log
+
+- **Chunk 0, #492 recovery.** `ModelDeliveryStore.reconcile` runs at main-process start and at the top of
+  download and adoption. Codex round 1 P1 (a broken final cost the working `.old`) is fixed, with two rows added.
+  Round 1 P2 (startup recovery is asynchronous, so a bound `:asr` can check final before it finishes) is deferred
+  to chunk 3 by design: the swap gate stays closed until startup reconciliation completes, and engines are
+  bound-only from the main process, so a closed gate keeps `:asr` and `:polish` from starting. Until chunk 3 the
+  window exists only in the crash state, where a take already fails today.

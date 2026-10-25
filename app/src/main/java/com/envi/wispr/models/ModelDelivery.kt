@@ -6,6 +6,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.URI
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.security.MessageDigest
 
 internal enum class DownloadState { DOWNLOADING, PAUSED, VERIFYING, READY, FAILED, CANCELLED, REPAIR_NEEDED }
@@ -113,23 +114,33 @@ internal class ModelDeliveryStore(private val root: File) {
      * it, losing both. Main process only (app start, and before any download or adoption); returns whether it changed
      * anything.
      *
-     * Final present: admission finished, so a leftover `.old` is removed. Final absent: a staging or adoption folder
-     * that fully verifies against [model] completes the admission; otherwise `.old` is put back. Putting back needs no
-     * verification here, since every reader verifies final before trusting it.
+     * Final is judged without following links, and only a final that fully verifies counts as a finished admission:
+     * - final verifies: a leftover `.old` is removed;
+     * - final missing, or present but not verifying (a corrupt folder, a file, a dangling link): a staging or adoption
+     *   folder that fully verifies against [model] replaces it, and `.old` then goes;
+     * - final missing and nothing verified to replace it: `.old` is put back, unverified, since every reader verifies
+     *   final before trusting it;
+     * - anything else is left exactly as found: nothing here deletes the only copy of a model.
      */
     fun reconcile(model: ModelDescriptor): Boolean = synchronized(lock(model)) { reconcileLocked(model) }
 
     private fun reconcileLocked(model: ModelDescriptor): Boolean {
         val final = finalDirectory(model)
         val old = File(root, ".${model.id}.old")
-        if (final.exists()) return old.exists() && ModelTree.delete(old)
+        val oldPresent = Files.exists(old.toPath(), LinkOption.NOFOLLOW_LINKS)
+        val finalPresent = Files.exists(final.toPath(), LinkOption.NOFOLLOW_LINKS)
+        if (finalPresent && verifies(final, model)) return oldPresent && ModelTree.delete(old)
         val finished = listOf(File(root, ".${model.id}.download"), File(root, ".${model.id}.adopt"))
             .firstOrNull { verifies(it, model) }
-        if (finished != null && finished.renameTo(final)) {
-            ModelTree.delete(old)
+        if (finished != null) {
+            // The verified copy is the one kept; whatever sits at final (broken, or nothing) makes way for it.
+            if (finalPresent && !ModelTree.delete(final)) return false
+            if (!finished.renameTo(final)) return false
+            if (oldPresent) ModelTree.delete(old)
             return true
         }
-        return old.isDirectory && old.renameTo(final)
+        if (finalPresent) return false
+        return Files.isDirectory(old.toPath(), LinkOption.NOFOLLOW_LINKS) && old.renameTo(final)
     }
 
     /** Cheap installation identity for reusing an already verified native instance. Not first-load verification. */

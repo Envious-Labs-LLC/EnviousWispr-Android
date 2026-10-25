@@ -76,6 +76,35 @@ class S1ModelSelectorTest {
         } finally { root.deleteRecursively() }
     }
 
+    /**
+     * The service's own configuration helpers: a resident engine on the previous revision is reused while it stays
+     * installed, reloads exactly once when the current revision replaces it, and is reused again after; a qualification
+     * on the previous revision is filed under its identity.
+     * REVERT: build `loadConfiguration`'s identity from the manifest only (previous-revision requests then never match).
+     */
+    @Test fun aResidentEngineIsReusedOnPreviousReloadsOnceAtTheSwapAndIsReusedAfter() {
+        val root = Files.createTempDirectory("s1-resident").toFile()
+        try {
+            val policy = PolishPolicy.LocalS1(S1ControlSettings.DEFAULT)
+            val resident = S1LoadedConfiguration()
+            var loads = 0
+            fun load() {
+                val requested = S1ModelSelector.loadConfiguration(root, policy, current)
+                if (resident.matches(requested)) return
+                val selection = checkNotNull(S1ModelSelector.resolve(root, current))
+                resident.ensure(S1ModelSelector.resolvedConfiguration(requested, selection)) { candidates -> loads++; candidates.first() }
+            }
+            install(root, previous, oldBytes)
+            load(); load()
+            assertEquals("one load, then reuse, on the previous revision", 1, loads)
+            assertEquals(ProcessingEnvironment.s1ContextId(previous), S1ModelSelector.qualificationContextId(S1ModelSelector.resolve(root, current)))
+            install(root, current, newBytes)
+            load(); load()
+            assertEquals("exactly one more load at the swap, then reuse", 2, loads)
+            assertEquals(ProcessingEnvironment.s1ContextId(current), S1ModelSelector.qualificationContextId(S1ModelSelector.resolve(root, current)))
+        } finally { root.deleteRecursively() }
+    }
+
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }
 

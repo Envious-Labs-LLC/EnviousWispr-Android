@@ -727,15 +727,19 @@ internal class DictationSessionRig {
     class FakeSpeech : SpeechLink {
         @Volatile var listener: SpeechListener? = null
         private val requested = CountDownLatch(1)
+        val requests = CopyOnWriteArrayList<Pair<String, String>>()
+        @Volatile var requestFailure: Exception? = null
         /** When set, the request blocks until it opens and then throws, as a binder call that failed late would (#356). */
         @Volatile var throwWhenReleased: CountDownLatch? = null
         override fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener) {
             this.listener = listener
+            requests += audioFilePath to takeId
             requested.countDown()
             throwWhenReleased?.let { release ->
                 check(release.await(10, TimeUnit.SECONDS)) { "the row never released the held request" }
-                throw android.os.RemoteException("the speech process failed late")
+                throw (requestFailure ?: android.os.RemoteException("the speech process failed late"))
             }
+            requestFailure?.let { throw it }
         }
         fun awaitRequest(): SpeechListener {
             check(requested.await(10, TimeUnit.SECONDS)) { "the owner never asked the speech process" }
@@ -839,6 +843,12 @@ internal class DictationSessionRig {
             listener?.onPolishConnected()
         }
 
+        /** Reconnection installs a fresh proxy before notifying, exactly like PipelineBindings. */
+        fun reconnectSpeech(link: SpeechLink) = onMain {
+            speech = link
+            listener?.onSpeechConnected()
+        }
+
         /** The platform reconnecting polish after its process came back, on main. */
         fun reconnectPolish() = onMain { connectPolishNow() }
         override fun unbind() {
@@ -851,7 +861,10 @@ internal class DictationSessionRig {
         fun disconnect(which: String) = onMain {
             when (which) {
                 "capture" -> listener?.onCaptureDisconnected()
-                "speech" -> listener?.onSpeechDisconnected()
+                "speech" -> {
+                    speech = null
+                    listener?.onSpeechDisconnected()
+                }
                 "polish" -> {
                     polish = null
                     listener?.onPolishDisconnected()

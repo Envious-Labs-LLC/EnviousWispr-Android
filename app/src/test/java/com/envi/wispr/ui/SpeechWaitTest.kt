@@ -9,9 +9,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Product Outcome (#356): a take whose speech request is never answered ends at a bound, with a sentence, instead
- * of staying in Processing. When this fails, the user sees a recorder stuck on Processing until they cancel it.
- * The rig's recording is 32,000 bytes, one second of audio, so its bound is 20.5 s; each row names its mutation.
+ * Harness Contract (#356/#43): the real session owner with fake Android/Binder peers and a synthetic file.
+ * Protects bounded processing, one reconnect attempt and rejection of superseded replies. This does not prove
+ * microphone capture, real recognition or editor insertion. The rig's one-second file has a 20.5 s bound.
  */
 class SpeechWaitTest {
     private val rig = DictationSessionRig()
@@ -155,4 +155,216 @@ class SpeechWaitTest {
         assertNull("no polish request after the cancel", rig.polish.listener)
         assertEquals(listOf(TerminalReason.CANCELLED_PROCESSING), rig.endings.reasons.toList())
     }
+    /** Harness Contract: same owner/recording survives one helper loss, without duplicate words. */
+    @Test fun aDisconnectedRequestIsRetriedWithTheSameRecordingOnce() {
+        stopWithTheRequestOpen()
+        val original = rig.speech.listener!!
+        val audio = rig.capture.audioFile!!
+        rig.pipeline.disconnect("speech")
+        assertTrue("audio stays available during reconnect", audio.exists())
+        assertTrue("no premature ending", rig.endings.reasons.isEmpty())
+        original.onResult("superseded words")
+        original.onFailure(1, "synthetic failure")
+        original.onError("synthetic legacy answer")
+        assertTrue("stale answers do not delete the retry input", audio.exists())
+        val replacement = DictationSessionRig.FakeSpeech()
+        rig.pipeline.reconnectSpeech(replacement)
+        val reply = replacement.awaitRequest()
+        assertEquals("same file and take id", rig.speech.requests.single(), replacement.requests.single())
+        assertEquals("reconnection did not reset the deadline", 1, rig.host.postsWithDelay(20_500L))
+        rig.onMain { reply.onResult("hello world") }
+        rig.polish.awaitRequest()
+        rig.polish.listener!!.onOutcome(rig.polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+        assertEquals(listOf(TerminalReason.COMPLETED), rig.endings.reasons.toList())
+        assertFalse("audio is removed after acceptance", audio.exists())
+    }
+
+    @Test fun aSecondSpeechLossEndsTheTakeInsteadOfRetryingForever() {
+        stopWithTheRequestOpen()
+        rig.pipeline.disconnect("speech")
+        val replacement = DictationSessionRig.FakeSpeech()
+        rig.pipeline.reconnectSpeech(replacement)
+        replacement.awaitRequest()
+        rig.pipeline.disconnect("speech")
+        assertEquals(TerminalReason.ASR_PROCESS_DIED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertFalse(rig.capture.audioFile!!.exists())
+        assertEquals(listOf(TerminalReason.ASR_PROCESS_DIED), rig.endings.reasons.toList())
+    }
+
+    @Test fun reconnectDoesNotExtendExpiryAndLateReplacementCannotDeleteANewerFile() {
+        stopWithTheRequestOpen()
+        rig.pipeline.disconnect("speech")
+        val replacement = DictationSessionRig.FakeSpeech()
+        rig.pipeline.reconnectSpeech(replacement)
+        val late = replacement.awaitRequest()
+        assertEquals(1, rig.host.postsWithDelay(20_500L))
+        rig.host.fireDelayed(20_500L)
+        assertEquals(TerminalReason.ASR_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        val audio = rig.capture.audioFile!!
+        audio.writeBytes(byteArrayOf(5, 6))
+        late.onResult("too late")
+        late.onFailure(1, "too late")
+        assertTrue("the next take's file survives", audio.readBytes().contentEquals(byteArrayOf(5, 6)))
+        assertTrue(rig.insertion.pastes.isEmpty())
+    }
+
+    @Test fun cancelWhileReconnectingCannotBeRevivedByAConnection() {
+        val coordinator = stopWithTheRequestOpen()
+        rig.pipeline.disconnect("speech")
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        assertEquals(TerminalReason.CANCELLED_PROCESSING, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        val replacement = DictationSessionRig.FakeSpeech()
+        rig.pipeline.reconnectSpeech(replacement)
+        assertFalse(rig.capture.audioFile!!.exists())
+        assertTrue(rig.insertion.pastes.isEmpty())
+        assertTrue(replacement.requests.isEmpty())
+    }
+
+    @Test fun destructionWhileReconnectingCannotBeRevivedByAConnection() {
+        val coordinator = stopWithTheRequestOpen()
+        rig.pipeline.disconnect("speech")
+        rig.onMain { coordinator.destroy() }
+        rig.endings.awaitOne()
+        val replacement = DictationSessionRig.FakeSpeech()
+        rig.pipeline.reconnectSpeech(replacement)
+        assertFalse(rig.capture.audioFile!!.exists())
+        assertTrue(rig.insertion.pastes.isEmpty())
+        assertTrue(replacement.requests.isEmpty())
+    }
+
+    @Test fun anInitiallyAbsentSpeechConnectionCanDeliverAfterConnecting() {
+        rig.pipeline.speech = null
+        rig.pipeline.connectSpeech = false
+        val coordinator = rig.coordinator()
+        coordinator.onCreated()
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        rig.surface.awaitShown()
+        rig.command(coordinator, DictationSessionService.ACTION_STOP)
+        rig.log.awaitLine("Waiting for speech service connection")
+        val replacement = DictationSessionRig.FakeSpeech()
+        rig.pipeline.reconnectSpeech(replacement)
+        rig.onMain { replacement.awaitRequest().onResult("hello world") }
+        rig.polish.awaitRequest()
+        rig.polish.listener!!.onOutcome(rig.polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals(1, rig.insertion.pastes.size)
+    }
+
+    @Test fun aLateThrowFromTheFirstAttemptDoesNotCloseItsReplacement() {
+        val release = java.util.concurrent.CountDownLatch(1)
+        rig.speech.throwWhenReleased = release
+        stopWithTheRequestOpen()
+        rig.pipeline.disconnect("speech")
+        val replacement = DictationSessionRig.FakeSpeech()
+        rig.pipeline.reconnectSpeech(replacement)
+        val reply = replacement.awaitRequest()
+        release.countDown()
+        rig.log.awaitLine("Speech request threw after the take ended: RemoteException")
+        assertTrue(rig.capture.audioFile!!.exists())
+        rig.onMain { reply.onResult("hello world") }
+        rig.polish.awaitRequest()
+        rig.polish.listener!!.onOutcome(rig.polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+    }
+
+    @Test fun deadBinderThenPlatformDisconnectConsumesOnlyOneRetry() {
+        rig.speech.requestFailure = android.os.DeadObjectException()
+        stopWithTheRequestOpen()
+        rig.log.awaitLine("Speech request interrupted; waiting for one reconnect attempt")
+        rig.pipeline.disconnect("speech")
+        val replacement = DictationSessionRig.FakeSpeech()
+        rig.pipeline.reconnectSpeech(replacement)
+        val reply = replacement.awaitRequest()
+        rig.onMain { reply.onResult("hello world") }
+        rig.polish.awaitRequest()
+        rig.polish.listener!!.onOutcome(rig.polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+    }
+
+    @Test fun platformDisconnectThenLateDeadBinderDoesNotConsumeReplacement() {
+        val release = java.util.concurrent.CountDownLatch(1)
+        rig.speech.throwWhenReleased = release
+        rig.speech.requestFailure = android.os.DeadObjectException()
+        stopWithTheRequestOpen()
+        rig.pipeline.disconnect("speech")
+        val replacement = DictationSessionRig.FakeSpeech()
+        rig.pipeline.reconnectSpeech(replacement)
+        val reply = replacement.awaitRequest()
+        release.countDown()
+        // A main-queue marker after the actual loss callback proves it cannot end the replacement.
+        rig.log.awaitLine("Late speech Binder loss ignored")
+        assertTrue(rig.capture.audioFile!!.exists())
+        rig.onMain { reply.onResult("hello world") }
+        rig.polish.awaitRequest()
+        rig.polish.listener!!.onOutcome(rig.polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+    }
+
+    @Test fun attemptAdmissionRefusesClosedWaitAndFailedProxy() {
+        val wait = SpeechWait(rig.host)
+        assertTrue(wait.arm(1_000L) { error("not fired") })
+        val original = checkNotNull(wait.claimAttempt { rig.speech })
+        assertNull("duplicate connection cannot admit twice", wait.claimAttempt { rig.speech })
+        assertEquals(SpeechWait.Loss.RETRYING, wait.disconnected(original))
+        assertNull("a dead Binder cannot be reused before the platform callback", wait.claimAttempt { rig.speech })
+        assertEquals(SpeechWait.Loss.WAITING, wait.disconnected())
+        val next = DictationSessionRig.FakeSpeech()
+        val replacement = checkNotNull(wait.claimAttempt { next })
+        assertEquals(SpeechWait.Loss.FINISHED, wait.disconnected(original))
+        assertFalse(wait.answer(original))
+        assertTrue(wait.close())
+        assertNull("queued worker cannot admit after cancellation", wait.claimAttempt { next })
+        assertFalse(wait.answer(replacement))
+    }
+
+    @Test fun aReplacementThrowAfterExpiryCannotDeleteANewerFile() {
+        stopWithTheRequestOpen()
+        rig.pipeline.disconnect("speech")
+        val release = java.util.concurrent.CountDownLatch(1)
+        val replacement = DictationSessionRig.FakeSpeech().apply { throwWhenReleased = release }
+        rig.pipeline.reconnectSpeech(replacement)
+        replacement.awaitRequest()
+        rig.host.fireDelayed(20_500L)
+        assertEquals(TerminalReason.ASR_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        val audio = rig.capture.audioFile!!
+        audio.writeBytes(byteArrayOf(7, 8))
+        release.countDown()
+        rig.log.awaitLine("Speech request threw after the take ended: RemoteException")
+        assertTrue(audio.readBytes().contentEquals(byteArrayOf(7, 8)))
+        assertEquals(listOf(TerminalReason.ASR_PROCESS_UNRESPONSIVE), rig.endings.reasons.toList())
+    }
+
+    @Test fun aProxyClearedBeforeWorkerAdmissionCannotBeRequested() {
+        val wait = SpeechWait(rig.host)
+        assertTrue(wait.arm(1_000L) { error("not fired") })
+        var live: SpeechLink? = rig.speech
+        // Platform clears the proxy before calling the owner's disconnect, while a worker was queued.
+        live = null
+        assertEquals(SpeechWait.Loss.WAITING, wait.disconnected())
+        assertNull(wait.claimAttempt { live })
+        live = DictationSessionRig.FakeSpeech()
+        val accepted = checkNotNull(wait.claimAttempt { live })
+        assertTrue(wait.answer(accepted))
+    }
+
+    @Test fun expiryBeforeWorkerAdmissionCannotBeRevived() {
+        val wait = SpeechWait(rig.host)
+        var expired = false
+        assertTrue(wait.arm(1_000L) { expired = true })
+        rig.host.fireDelayed(20_500L)
+        assertTrue(expired)
+        assertNull(wait.claimAttempt { rig.speech })
+    }
+
 }

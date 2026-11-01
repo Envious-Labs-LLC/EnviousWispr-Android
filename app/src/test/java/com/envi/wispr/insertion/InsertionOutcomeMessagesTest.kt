@@ -441,7 +441,7 @@ class InsertionOutcomeMessagesTest {
                 detail,
             )
         }
-        // DRIFT GUARD. REVERT: `clipboard = ClipboardInsertionPolicy()` in promoteToForeground,
+        // DRIFT GUARD. REVERT: `clipboard = ClipboardInsertionPolicy()` in sessionNotification,
         // or dropping the `?` from the field it reads. Either restores a stand-in that reads as a
         // decided answer, and every row above stays green through both.
         // Since #186 the field lives in SessionPreferencesSource and the notification in the Service's host.
@@ -455,14 +455,14 @@ class InsertionOutcomeMessagesTest {
                 source.contains("val clipboardPolicy: ClipboardInsertionPolicy? = null,"),
         )
         val session = read("ui/DictationSessionService.kt")
-        val promote = slice(session, "private fun promoteToForeground(", "\n    private fun ")
+        val promote = slice(session, "private fun sessionNotification(", "\n    private fun ")
         assertTrue(
             "The listening notification is built from something other than the live, possibly " +
                 "unloaded clipboard field, so it can state a destination nobody has decided",
             promote.contains("clipboard = preferences.clipboardPolicy,"),
         )
         assertFalse(
-            "promoteToForeground constructs a ClipboardInsertionPolicy of its own. That default " +
+            "sessionNotification constructs a ClipboardInsertionPolicy of its own. That default " +
                 "carries autoCopyToClipboard = true and is indistinguishable from the user's " +
                 "real setting: $promote",
             promote.contains("ClipboardInsertionPolicy("),

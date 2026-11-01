@@ -5,6 +5,10 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.URI
+import java.nio.channels.FileChannel
+import java.nio.file.StandardOpenOption
+import java.nio.file.StandardCopyOption
+import java.util.UUID
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.security.MessageDigest
@@ -94,6 +98,28 @@ internal class ModelDeliveryStore(private val root: File) {
             (if (verifiedPart.isFile) verifiedPart.length() else partial.length()).coerceIn(0L, entry.expectedBytes)
         }
     }.getOrDefault(0L)
+
+    /** Worker-only space accounting: complete files must hash-verify before their bytes can be reused. */
+    fun resumableBytes(model: ModelDescriptor): Long = synchronized(lock(model)) {
+        val staging = File(root, ".${model.id}.download")
+        if (!model.isAvailable || Files.isSymbolicLink(staging.toPath()) ||
+            runCatching { File(staging, STAGING_REVISION).readText() }.getOrNull() != model.pinnedRevision) return@synchronized 0L
+        model.files.sumOf { entry ->
+            val complete = File(staging, entry.name)
+            val part = File(staging, entry.name + ".part")
+            when {
+                verifiedFile(complete, entry) -> entry.expectedBytes
+                !Files.isRegularFile(part.toPath(), LinkOption.NOFOLLOW_LINKS) -> 0L
+                part.length() in 1 until entry.expectedBytes -> part.length()
+                verifiedFile(part, entry) -> entry.expectedBytes
+                else -> 0L
+            }
+        }
+    }
+
+    private fun verifiedFile(file: File, entry: ModelFile): Boolean =
+        Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS) && file.length() == entry.expectedBytes &&
+            sha256(file) == entry.sha256!!.lowercase()
 
     /** Full receipt verification. Call from a worker or service executor, never the UI thread. */
     fun isVerified(model: ModelDescriptor): Boolean = synchronized(lock(model)) { verifies(finalDirectory(model), model) }
@@ -247,6 +273,22 @@ internal class ModelDeliveryStore(private val root: File) {
                     return status
                 }
                 val part = File(staging, entry.name + ".part")
+                val completed = File(staging, entry.name)
+                // An earlier attempt may have finished file one before file two was interrupted (#493).
+                if (verifiedFile(completed, entry)) {
+                    if (!ModelTree.delete(part)) throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not remove redundant partial")
+                    onProgress(DownloadStatus(DownloadState.VERIFYING, entry.expectedBytes, entry.expectedBytes))
+                    continue
+                }
+                if (Files.isSymbolicLink(part.toPath()) && !part.delete()) {
+                    throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not remove linked partial")
+                }
+                // A death after the last write but before rename must not refetch a verified full part.
+                if (verifiedFile(part, entry)) {
+                    if (!part.renameTo(completed)) throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not finalize model file")
+                    onProgress(DownloadStatus(DownloadState.VERIFYING, entry.expectedBytes, entry.expectedBytes))
+                    continue
+                }
                 part.parentFile?.mkdirs()
                 var offset = part.length()
                 // Belt to the stamp's braces, and a DIFFERENT question: the stamp knows which revision a
@@ -303,8 +345,10 @@ internal class ModelDeliveryStore(private val root: File) {
             // The stamp is staging-only bookkeeping and must not be admitted: `isVerified` requires the
             // directory to hold EXACTLY the manifest's files plus the receipt, so one extra file makes an
             // otherwise perfect model read as not ready.
-            stamp.delete()
+            // Keep the revision stamp until receipt writing succeeds: a death or write failure must
+            // leave enough identity to reuse the verified files on the next attempt (#493).
             File(staging, RECEIPT).writeText(receiptText(model))
+            if (!stamp.delete()) throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not finalize staging verification")
             admitStaged(model, staging, admission)
         } catch (e: IOException) {
             // Transport and storage interruptions keep the .part file for a later range resume. The
@@ -335,10 +379,69 @@ internal class ModelDeliveryStore(private val root: File) {
         val removedFinal = ModelTree.delete(finalDirectory(model))
         removedFinal && cleanupArtifacts(model)
     }
-    fun repair(model: ModelDescriptor): Boolean = synchronized(lock(model)) {
-        val removed = remove(model)
-        val cleaned = cleanupArtifacts(model)
-        removed && cleaned
+    /** Cleanup is committed once per WorkManager request, before it can write any fresh download bytes. */
+    fun repair(
+        model: ModelDescriptor,
+        requestId: UUID,
+        control: DownloadControl = object : DownloadControl {},
+        exclusive: (mutation: () -> Boolean) -> Boolean? = { it() },
+    ): Boolean? = synchronized(lock(model)) {
+        if (!model.isAvailable || repairStopped(control)) return@synchronized false
+        val record = File(root, ".model-controls/${model.id}.repair")
+        val expected = requestId.toString() + "\n" + MessageDigest.getInstance("SHA-256")
+            .digest(receiptText(model).toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        when (repairState(record, expected)) {
+            RepairState.COMPLETE -> return@synchronized runCatching { syncRepairDirectories(record.parentFile!!); true }.getOrDefault(false)
+            RepairState.UNREADABLE -> return@synchronized false
+            RepairState.PENDING -> Unit
+        }
+        // Same lock order as download admission: model first, then swap; never the reverse.
+        exclusive {
+            // Pause/Cancel can arrive while the swap is stopping engines, under its separate control lock.
+            if (repairStopped(control)) false else try {
+                Files.createDirectories(record.parentFile!!.toPath())
+                syncRepairDirectories(record.parentFile!!)
+                if (repairStopped(control) || !remove(model)) false else {
+                    val temporary = Files.createTempFile(record.parentFile!!.toPath(), ".repair-", ".tmp")
+                    try {
+                        FileOutputStream(temporary.toFile()).use { output ->
+                            output.write(expected.toByteArray(Charsets.UTF_8))
+                            output.fd.sync()
+                        }
+                        Files.move(temporary, record.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                        syncRepairDirectories(record.parentFile!!)
+                        true
+                    } finally { Files.deleteIfExists(temporary) }
+                }
+            } catch (_: IOException) { false }
+        }
+    }
+
+    private enum class RepairState { PENDING, COMPLETE, UNREADABLE }
+
+    private fun repairStopped(control: DownloadControl) = control.isStopped() || control.isPaused() || control.isCancelled()
+
+    private fun repairState(record: File, expected: String): RepairState {
+        val directory = record.parentFile!!
+        if (!Files.notExists(directory.toPath(), LinkOption.NOFOLLOW_LINKS) &&
+            !Files.isDirectory(directory.toPath(), LinkOption.NOFOLLOW_LINKS)) return RepairState.UNREADABLE
+        if (Files.notExists(record.toPath(), LinkOption.NOFOLLOW_LINKS)) return RepairState.PENDING
+        if (!Files.isRegularFile(record.toPath(), LinkOption.NOFOLLOW_LINKS)) return RepairState.UNREADABLE
+        return try {
+            val text = record.readText()
+            val fields = text.split('\n')
+            if (fields.size != 2 || runCatching { UUID.fromString(fields[0]).toString() }.getOrNull() != fields[0] ||
+                !fields[1].matches(Regex("[0-9a-f]{64}"))) RepairState.UNREADABLE
+            else if (text == expected) RepairState.COMPLETE else RepairState.PENDING
+        } catch (_: IOException) { RepairState.UNREADABLE }
+    }
+
+    private fun syncRepairDirectories(directory: File) {
+        // Persist first-use directory creation as well as the record rename. The framework owns noBackupFilesDir.
+        for (parent in listOf(root.absoluteFile.parentFile!!, root, directory)) {
+            if (!Files.isDirectory(parent.toPath(), LinkOption.NOFOLLOW_LINKS)) throw IOException("model control directory unavailable")
+            FileChannel.open(parent.toPath(), StandardOpenOption.READ).use { it.force(true) }
+        }
     }
 
     /** Verifies and copies an existing legacy model without modifying its source. */

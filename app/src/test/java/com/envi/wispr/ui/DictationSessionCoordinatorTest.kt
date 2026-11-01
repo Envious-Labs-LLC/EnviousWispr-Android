@@ -89,6 +89,82 @@ class DictationSessionCoordinatorTest {
         assertTrue(rig.host.events.indexOf("foreground-removed") < rig.host.events.indexOf("stopSelf"))
     }
 
+    @Test fun initialForegroundRefusalAdmitsNoTakeAndStartsNoCapture() {
+        rig.host.initialForeground = ForegroundPromotion.REFUSED
+        var admissions = 0
+        val coordinator = rig.coordinator(admit = { _, _ -> admissions++; null })
+        coordinator.onCreated()
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        rig.host.awaitStopped()
+        assertFalse(coordinator.hasAdmittedTake)
+        rig.host.initialForeground = ForegroundPromotion.ACTIVE
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        assertEquals("a refused owner never reopens admission", 0, admissions)
+        assertTrue(rig.capture.events.isEmpty())
+        assertTrue(rig.pipeline.events.isEmpty())
+        assertEquals(0L, rig.insertion.pins.get())
+        assertFalse(rig.host.events.contains("cue-admit"))
+        assertTrue(rig.host.events.contains("toast:Failed to start recording"))
+        assertTrue(rig.dao.rows.isEmpty())
+    }
+
+    private fun processingRefusalStillDelivers(outcome: ForegroundPromotion) {
+        rig.host.processingForeground = outcome
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        val ending = CountDownLatch(1)
+        rig.capture.endingGate = ending
+        try {
+            rig.command(coordinator, DictationSessionService.ACTION_STOP)
+            rig.capture.awaitStopRequested()
+            assertFalse("no type change until the recording is closed", rig.host.events.contains("foreground:true"))
+            ending.countDown()
+            rig.speech.awaitRequest().onResult("hello world")
+            rig.polish.awaitRequest { "processing refusal did not reach polish" }
+            rig.polish.listener!!.onOutcome(rig.polish.outcome("Hello world."))
+            assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+            rig.host.awaitStopped()
+            assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+            assertEquals(1, rig.host.events.count { it == "foreground:true" })
+            assertTrue(rig.timeline.indexOf("capture-stop") < rig.timeline.indexOf("foreground:true"))
+            assertEquals("Hello world.", theOnlyRow().finalText)
+        } finally { ending.countDown() }
+    }
+
+    @Test fun retainedMicrophoneAfterProcessingRefusalStillDeliversOnce() =
+        processingRefusalStillDelivers(ForegroundPromotion.RETAINED_MICROPHONE)
+
+    @Test fun lostForegroundAfterProcessingRefusalStillDeliversOnce() =
+        processingRefusalStillDelivers(ForegroundPromotion.BACKGROUND_CONTINUATION)
+
+    @Test fun silenceEndingStillDeliversWhenTheProcessingTypeChangeIsRefused() {
+        rig.host.processingForeground = ForegroundPromotion.RETAINED_MICROPHONE
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.capture.endOnItsOwn(AudioCaptureService.TERMINAL_REASON_SILENCE)
+        rig.speech.awaitRequest().onResult("hello world")
+        rig.polish.awaitRequest { "silence ending did not reach polish" }
+        rig.polish.listener!!.onOutcome(rig.polish.outcome("Hello world."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertFalse(rig.capture.capturing)
+        assertEquals(listOf(1L to "Hello world."), rig.insertion.pastes.toList())
+    }
+
+    @Test fun cancelAfterAProcessingForegroundRefusalStillBeatsLatePolish() {
+        rig.host.processingForeground = ForegroundPromotion.RETAINED_MICROPHONE
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        val polish = stopAndTranscribe(coordinator, "some words")
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        assertEquals(TerminalReason.CANCELLED_PROCESSING, rig.endings.awaitOne())
+        polish.listener!!.onOutcome(polish.outcome("Some words."))
+        rig.host.awaitStopped()
+        assertTrue(rig.insertion.pastes.isEmpty())
+        assertTrue(rig.dao.rows.isEmpty())
+        assertEquals(1, rig.endings.reasons.size)
+    }
+
     /** Product Outcome: disabling recording vibration does not disable the audible confirmations. */
     @Test fun recordingVibrationOffKeepsTheSoundPairAndStillDeliversText() {
         rig.preferenceStates.value = AppPreferencesState(recordingSoundsEnabled = true, recordingVibrationEnabled = false)

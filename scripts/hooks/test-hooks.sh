@@ -84,6 +84,7 @@ echo
 MAINREPO=""; STDERR=""; EDITPLAN=""; DIG_DIR=""; NOHOOKS=""; BRANCHREPO=""; DWT_REPO=""; UNGUARDED=""
 GATE_EXP=""; GATE_PAY=""; VICTIM=""; STAGE_B=""; STAGE_A=""
 HOOKREPO=""; REMOTE_W=""; NOHOOKS_B=""; DIG_REPO=""; SM_REPO=""; SM_FN=""; SM_SUB=""; SM_NEST=""
+RR_FN=""; RR_TMP=""
 SENTINEL=/tmp/.ew-android-issue-9901-context-read
 # A plan basename long enough that its recovery path exceeds the 255-byte filename limit, so the
 # preservation write fails for a real reason rather than a simulated one.
@@ -104,6 +105,8 @@ cleanup() {
     [ -n "$SM_FN" ] && rm -rf "$SM_FN"
     [ -n "$SM_SUB" ] && rm -rf "$SM_SUB"
     [ -n "$SM_NEST" ] && rm -rf "$SM_NEST"
+    [ -n "$RR_FN" ] && rm -rf "$RR_FN"
+    [ -n "$RR_TMP" ] && rm -rf "$RR_TMP"
     [ -n "$NOHOOKS_B" ]  && rm -rf "$NOHOOKS_B"
     [ -n "$STDERR" ]     && rm -rf "$STDERR"   # -rf for every mktemp resource, so the check can require it
     [ -n "$EDITPLAN" ]   && rm -f "$EDITPLAN"
@@ -1115,6 +1118,30 @@ else
     PASS=$((PASS+1)); echo "  ok    an unscoped --apply is refused"
 fi
 echo
+
+echo "cleanup-merged-worktrees.sh — rescues go to the agent artifact library, never the checkout"
+RR_FN=$(mktemp "${TMPDIR:-/tmp}/rr-fn.XXXXXX")
+sed -n '/^rescue_root() {/,/^}/p' "$PWD/scripts/cleanup-merged-worktrees.sh" > "$RR_FN"
+RR_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rr-lib.XXXXXX")
+rr_call() { bash -c '. "$1"; rescue_root' _ "$RR_FN"; }
+rr_got=$(AGENT_ARTIFACTS_ROOT="$RR_TMP" rr_call)
+# TMPDIR ends in "/", so mktemp returns a "//" path the CLI normalises: compare the normalised form.
+rr_want="$(cd "$RR_TMP" && pwd)/enviouswispr-android/rescued-worktrees"
+if [ -s "$RR_FN" ] && [ -x "$HOME/.claude/bin/artifact" ] && [ "$rr_got" = "$rr_want" ]; then
+    PASS=$((PASS+1)); echo "  ok    the rescue destination is the library's enviouswispr-android/rescued-worktrees"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL  the rescue destination is not the library folder"
+fi
+if HOME="$RR_TMP" rr_call >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); echo "  FAIL  a missing artifact CLI still produced a rescue destination"
+else
+    PASS=$((PASS+1)); echo "  ok    a missing artifact CLI refuses (no checkout fallback)"
+fi
+if grep -q '_rescued-worktrees' "$PWD/scripts/cleanup-merged-worktrees.sh"; then
+    FAIL=$((FAIL+1)); echo "  FAIL  the cleanup engine still names the in-checkout rescue folder"
+else
+    PASS=$((PASS+1)); echo "  ok    the cleanup engine no longer names the in-checkout rescue folder"
+fi
 
 echo "cleanup-merged-worktrees.sh — the submodule objection is overridden ONLY on a clean, unlocked tree"
 # A gitlink in HEAD makes `git worktree remove` refuse every tree that lists it. The predicate that

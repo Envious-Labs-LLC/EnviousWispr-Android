@@ -887,7 +887,7 @@ class DictationSessionCoordinatorTest {
     }
 
     @Test
-    fun asrNotReadyEndsProcessing() {
+    fun anAbsentSpeechConnectionEndsProcessingAtTheExistingBound() {
         rig.pipeline.speech = null
         rig.pipeline.connectSpeech = false
         // The P4 race, staged: the stop path writes `processing` then `asr_error` back to back, and the
@@ -899,9 +899,11 @@ class DictationSessionCoordinatorTest {
         startAndGoLive(coordinator)
         rig.command(coordinator, DictationSessionService.ACTION_STOP)
 
-        assertEquals(TerminalReason.ASR_NOT_READY, rig.endings.awaitOne())
+        rig.log.awaitLine("Waiting for speech service connection")
+        rig.host.fireDelayed(20_500L)
+        assertEquals(TerminalReason.ASR_PROCESS_UNRESPONSIVE, rig.endings.awaitOne())
         rig.host.awaitStopped()
-        assertTrue(rig.host.events.contains("toast:Speech model is still loading. Try again in a moment."))
+        assertTrue(rig.host.events.contains("toast:Speech service stopped answering. Try again."))
         val row = theOnlyRow()
         assertEquals("asr_error", row.status)
         assertEquals("asr_error", row.insertionResult)

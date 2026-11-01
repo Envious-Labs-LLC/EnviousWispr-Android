@@ -10,8 +10,11 @@ import com.envi.wispr.shortcuts.DictationSurfaceState
  * the host acts. A JVM test fakes this so the coordinator runs without a `Service`.
  */
 internal interface SessionHost {
-    /** `startForeground` with the listening or processing notification. */
-    fun promoteToForeground(processing: Boolean)
+    /** The actual foreground outcome; processing refusal may continue the recorded take degraded. */
+    fun promoteToForeground(processing: Boolean): ForegroundPromotion
+
+    /** Notification only, while capture is still closing. */
+    fun updateProcessingNotification()
 
     /** `DictationSurfaceState.update(context, phase)`: the tile and the notification read it. */
     fun updateSurfacePhase(phase: DictationSurfaceState.Phase)

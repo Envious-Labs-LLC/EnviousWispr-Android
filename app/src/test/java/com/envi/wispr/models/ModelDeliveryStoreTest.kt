@@ -136,8 +136,210 @@ class ModelDeliveryStoreTest {
         val bytes = "model payload".toByteArray(); val model = descriptor(bytes)
         val root = Files.createTempDirectory("models").toFile(); val store = ModelDeliveryStore(root)
         store.download(model, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(bytes), false) })
-        assertTrue(store.repair(model)); assertFalse(store.finalDirectory(model).exists())
+        assertEquals(true, store.repair(model, java.util.UUID.randomUUID())); assertFalse(store.finalDirectory(model).exists())
         root.deleteRecursively()
+    }
+
+    @Test fun repeatedRepairDoesNotDiscardDownloadedBytes() {
+        val bytes = "model payload".toByteArray()
+        val model = descriptor(bytes)
+        val root = Files.createTempDirectory("repair-restart").toFile()
+        val request = java.util.UUID.randomUUID()
+        try {
+            assertEquals(true, ModelDeliveryStore(root).repair(model, request))
+            val part = java.io.File(root, ".demo.download/model.bin.part").apply { parentFile.mkdirs(); writeBytes(bytes.copyOf(5)) }
+            java.io.File(part.parentFile, ".staging-revision").writeText(R1)
+            assertEquals(true, ModelDeliveryStore(root).repair(model, request))
+            assertEquals("a retry must retain its five downloaded bytes", 5L, part.length())
+            val resumed = ModelDeliveryStore(root).download(model, ModelTransport { _, offset ->
+                assertEquals(5L, offset)
+                TransportResponse(ByteArrayInputStream(bytes.copyOfRange(5, bytes.size)), true)
+            })
+            assertEquals(DownloadState.READY, resumed.state)
+            assertTrue(ModelDeliveryStore(root).isVerified(model))
+            assertEquals(true, ModelDeliveryStore(root).repair(model, request, exclusive = { error("completed cleanup must not stop engines again") }))
+            assertTrue("the completed model survives a replayed repair attempt", ModelDeliveryStore(root).isVerified(model))
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun aRestartReusesACompletedFileAndResumesOnlyTheInterruptedOne() {
+        val first = "first model bytes".toByteArray()
+        val second = "second model bytes".toByteArray()
+        val model = descriptor(first).copy(files = listOf(
+            ModelFile("first.bin", first.size.toLong(), hash(first), "https://huggingface.co/test/model/resolve/$R1/first.bin"),
+            ModelFile("second.bin", second.size.toLong(), hash(second), "https://huggingface.co/test/model/resolve/$R1/second.bin"),
+        ))
+        val root = Files.createTempDirectory("multi-file-restart").toFile()
+        try {
+            val interrupted = ModelDeliveryStore(root).download(model, ModelTransport { url, _ ->
+                if (url.endsWith("first.bin")) TransportResponse(ByteArrayInputStream(first), false)
+                else TransportResponse(object : java.io.InputStream() {
+                    var delivered = false
+                    override fun read(): Int = throw java.io.IOException("synthetic interruption")
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                        if (delivered) throw java.io.IOException("synthetic interruption")
+                        delivered = true
+                        second.copyInto(buffer, offset, 0, 3)
+                        return 3
+                    }
+                }, false)
+            })
+            assertEquals(DownloadState.FAILED, interrupted.state)
+            assertEquals("first model bytes", java.io.File(root, ".demo.download/first.bin").readText())
+            assertEquals(3L, java.io.File(root, ".demo.download/second.bin.part").length())
+            val requests = mutableListOf<Pair<String, Long>>()
+            val resumed = ModelDeliveryStore(root).download(model, ModelTransport { url, offset ->
+                assertTrue("completed first file must not be fetched again", url.endsWith("second.bin"))
+                requests += "second.bin" to offset
+                TransportResponse(ByteArrayInputStream(second.copyOfRange(offset.toInt(), second.size)), true)
+            })
+            assertEquals(listOf("second.bin" to 3L), requests)
+            assertEquals(DownloadState.READY, resumed.state)
+            assertTrue(ModelDeliveryStore(root).isVerified(model))
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun aNewRepairRequestReallyCleansThePreviousRequest() {
+        val model = descriptor("model payload".toByteArray())
+        val root = Files.createTempDirectory("new-repair").toFile()
+        try {
+            val store = ModelDeliveryStore(root)
+            assertEquals(true, store.repair(model, java.util.UUID.randomUUID()))
+            val partial = java.io.File(root, ".demo.download/model.bin.part").apply { parentFile.mkdirs(); writeText("saved") }
+            assertEquals(true, store.repair(model, java.util.UUID.randomUUID()))
+            assertFalse(partial.exists())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun aChangedDescriptorCannotBorrowTheOldCleanupReceipt() {
+        val model = descriptor("model payload".toByteArray())
+        val root = Files.createTempDirectory("changed-repair").toFile()
+        val request = java.util.UUID.randomUUID()
+        try {
+            assertEquals(true, ModelDeliveryStore(root).repair(model, request))
+            val partial = java.io.File(root, ".demo.download/model.bin.part").apply { parentFile.mkdirs(); writeText("saved") }
+            assertEquals(true, ModelDeliveryStore(root).repair(descriptor("new model payload".toByteArray(), R2), request))
+            assertFalse(partial.exists())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun aDeferredRepairGateLeavesDataAndRetriesTheSameCleanup() {
+        val model = descriptor("model payload".toByteArray())
+        val root = Files.createTempDirectory("deferred-repair").toFile()
+        val request = java.util.UUID.randomUUID()
+        try {
+            val partial = java.io.File(root, ".demo.download/model.bin.part").apply { parentFile.mkdirs(); writeText("saved") }
+            assertEquals(null, ModelDeliveryStore(root).repair(model, request, exclusive = { null }))
+            assertEquals("saved", partial.readText())
+            assertEquals(true, ModelDeliveryStore(root).repair(model, request))
+            assertFalse(partial.exists())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun cancellationDuringEngineStopPreventsTheFirstDeletion() {
+        val bytes = "model payload".toByteArray()
+        val model = descriptor(bytes)
+        val root = Files.createTempDirectory("cancelled-repair").toFile()
+        try {
+            val store = ModelDeliveryStore(root)
+            store.download(model, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(bytes), false) })
+            var cancelled = false
+            val control = object : DownloadControl { override fun isCancelled() = cancelled }
+            assertEquals(false, store.repair(model, java.util.UUID.randomUUID(), control, exclusive = { mutation ->
+                cancelled = true
+                mutation()
+            }))
+            assertTrue("cancelled repair preserves the installed model", store.isVerified(model))
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun malformedRepairReceiptRefusesCleanupWithoutDiscardingProgress() {
+        val root = Files.createTempDirectory("malformed-repair").toFile()
+        val model = descriptor("model payload".toByteArray())
+        try {
+            java.io.File(root, ".model-controls/demo.repair").apply { parentFile.mkdirs(); writeText("incomplete record") }
+            val partial = java.io.File(root, ".demo.download/model.bin.part").apply { parentFile.mkdirs(); writeText("saved") }
+            assertEquals(false, ModelDeliveryStore(root).repair(model, java.util.UUID.randomUUID()))
+            assertEquals("saved", partial.readText())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun linkedRepairReceiptCannotAuthorizeCleanupOrResume() {
+        val root = Files.createTempDirectory("linked-repair").toFile()
+        val model = descriptor("model payload".toByteArray())
+        val request = java.util.UUID.randomUUID()
+        try {
+            assertEquals(true, ModelDeliveryStore(root).repair(model, request))
+            val record = java.io.File(root, ".model-controls/demo.repair")
+            val outside = java.io.File(root, "saved-record").apply { writeText(record.readText()) }
+            assertTrue(record.delete())
+            Files.createSymbolicLink(record.toPath(), outside.toPath())
+            val partial = java.io.File(root, ".demo.download/model.bin.part").apply { parentFile.mkdirs(); writeText("saved") }
+            assertEquals(false, ModelDeliveryStore(root).repair(model, request))
+            assertEquals("saved", partial.readText())
+            assertTrue(outside.isFile)
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun unavailableControlDirectoryCannotDeleteTheModel() {
+        val root = Files.createTempDirectory("unavailable-repair-record").toFile()
+        val bytes = "model payload".toByteArray()
+        val model = descriptor(bytes)
+        try {
+            val store = ModelDeliveryStore(root)
+            store.download(model, ModelTransport { _, _ -> TransportResponse(ByteArrayInputStream(bytes), false) })
+            java.io.File(root, ".model-controls").writeText("not a directory")
+            assertEquals(false, store.repair(model, java.util.UUID.randomUUID()))
+            assertTrue(store.isVerified(model))
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun aVerifiedFullPartIsNotFetchedAgainAfterDeathBeforeRename() {
+        val root = Files.createTempDirectory("full-model-part").toFile()
+        val bytes = "model payload".toByteArray()
+        val model = descriptor(bytes)
+        try {
+            val part = java.io.File(root, ".demo.download/model.bin.part").apply { parentFile.mkdirs(); writeBytes(bytes) }
+            java.io.File(part.parentFile, ".staging-revision").writeText(R1)
+            val store = ModelDeliveryStore(root)
+            assertEquals(13L, store.resumableBytes(model))
+            assertEquals(DownloadState.READY, store.download(model, ModelTransport { _, _ -> error("a verified full part must not be fetched") }).state)
+            assertTrue(store.isVerified(model))
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun interruptedReceiptWritingKeepsCompletedFilesWithoutRefetching() {
+        val root = Files.createTempDirectory("unfinished-staging-receipt").toFile()
+        val bytes = "model payload".toByteArray()
+        val model = descriptor(bytes)
+        try {
+            val completed = java.io.File(root, ".demo.download/model.bin").apply { parentFile.mkdirs(); writeBytes(bytes) }
+            java.io.File(completed.parentFile, ".staging-revision").writeText(R1)
+            java.io.File(completed.parentFile, ".verified-receipt").writeText("interrupted receipt")
+            val store = ModelDeliveryStore(root)
+            val result = store.download(model, ModelTransport { _, _ -> error("verified completed files must not be fetched") })
+            assertEquals(DownloadState.READY, result.state)
+            assertTrue(store.isVerified(model))
+            assertEquals("model payload", java.io.File(root, "demo/model.bin").readText())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun corruptedCompletedBytesAreNotCountedAsReusableSpace() {
+        val root = Files.createTempDirectory("corrupt-completed-file").toFile()
+        val bytes = "model payload".toByteArray()
+        val model = descriptor(bytes)
+        try {
+            val completed = java.io.File(root, ".demo.download/model.bin").apply { parentFile.mkdirs(); writeBytes(bytes.copyOf().apply { this[0] = 0 }) }
+            java.io.File(completed.parentFile, ".staging-revision").writeText(R1)
+            val store = ModelDeliveryStore(root)
+            assertEquals(0L, store.resumableBytes(model))
+            val repaired = store.download(model, ModelTransport { _, offset ->
+                assertEquals(0L, offset)
+                TransportResponse(ByteArrayInputStream(bytes), false)
+            })
+            assertEquals(DownloadState.READY, repaired.state)
+            assertTrue(store.isVerified(model))
+        } finally { root.deleteRecursively() }
     }
 
     @Test fun controlStatePersistsInAppPrivateControlDirectory() {

@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import android.app.Notification
 import android.app.Service
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -108,6 +109,8 @@ class DictationSessionService : Service() {
         override fun promoteToForeground(processing: Boolean) =
             this@DictationSessionService.promoteToForeground(processing)
 
+        override fun updateProcessingNotification() = updateNotification(processing = true)
+
         override fun updateSurfacePhase(phase: DictationSurfaceState.Phase) {
             DictationSurfaceState.update(this@DictationSessionService, phase)
         }
@@ -177,8 +180,14 @@ class DictationSessionService : Service() {
         override fun elapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()
     }
 
-    private fun promoteToForeground(processing: Boolean) {
-        val notification = if (processing) {
+    private fun promoteToForeground(processing: Boolean): ForegroundPromotion =
+        promoteSessionForeground(AndroidForegroundPlatform(this), processing) { sessionNotification(processing) }
+
+    private fun updateNotification(processing: Boolean) =
+        updateSessionNotification(AndroidForegroundPlatform(this)) { sessionNotification(processing) }
+
+    private fun sessionNotification(processing: Boolean): Notification =
+        if (processing) {
             DictationNotificationController.processing(this)
         } else {
             DictationNotificationController.listening(
@@ -191,16 +200,6 @@ class DictationSessionService : Service() {
                 clipboard = preferences.clipboardPolicy,
             )
         }
-        startForeground(
-            DictationNotificationController.NOTIFICATION_ID,
-            notification,
-            if (processing) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            } else {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            },
-        )
-    }
 
     private fun vibrate(cue: HapticCue) {
         if (cue.honoursSystemHapticSetting &&
@@ -284,7 +283,14 @@ class DictationSessionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND_COMMAND, false) == true) {
-            promoteToForeground(coordinator.isProcessing)
+            if (!coordinator.hasAdmittedTake && foregroundServiceType == ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE) {
+                if (promoteToForeground(processing = false) == ForegroundPromotion.REFUSED) {
+                    coordinator.refuseForegroundStart()
+                    return START_NOT_STICKY
+                }
+            } else {
+                updateNotification(coordinator.isProcessing)
+            }
         }
         val request = BubbleRequestToken.parse(intent?.getStringExtra(EXTRA_REQUEST))
         val trigger = TriggerSource.fromExtra(intent?.getStringExtra(EXTRA_TRIGGER_SOURCE))

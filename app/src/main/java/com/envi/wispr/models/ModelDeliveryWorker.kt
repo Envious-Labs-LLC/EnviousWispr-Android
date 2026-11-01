@@ -47,8 +47,17 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             return@withContext failure(UNSUPPORTED_PHONE)
         }
         if (inputData.getBoolean(KEY_REPAIR, false)) {
-            val cleaned = whenIdle { ModelSwap.exclusive(applicationContext) { store.repair(model) } } ?: return@withContext Result.retry()
-            if (!cleaned) return@withContext failure("model repair cleanup failed", DownloadState.REPAIR_NEEDED)
+            val cleaned = whenIdle {
+                store.repair(model, id, control = object : DownloadControl {
+                    override fun isStopped() = this@ModelDeliveryWorker.isStopped
+                    override fun isPaused() = controls.read(model) == ModelDeliveryControlState.PAUSED
+                    override fun isCancelled() = controls.read(model) == ModelDeliveryControlState.CANCELLED
+                }, exclusive = { mutation -> ModelSwap.exclusive(applicationContext, mutation) })
+            } ?: return@withContext Result.retry()
+            if (!cleaned) {
+                if (isStopped || controls.read(model) != ModelDeliveryControlState.ACTIVE) return@withContext Result.success()
+                return@withContext failure("model repair cleanup failed", DownloadState.REPAIR_NEEDED)
+            }
         }
         setProgressAsync(Data.Builder().putString(KEY_STATE, DownloadState.VERIFYING.name).build())
         if (store.isVerified(model)) {
@@ -89,8 +98,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
         val totalBytes = model.files.sumOf { it.expectedBytes }
         enterForeground(model, 0, totalBytes)
-        val staging = java.io.File(root, ".${model.id}.download")
-        val partial = model.files.sumOf { entry -> java.io.File(staging, entry.name + ".part").takeIf { it.isFile }?.length() ?: 0L }
+        val partial = store.resumableBytes(model)
         // A complete download waiting to be applied needs no more space: only renames remain (#108).
         val required = if (store.hasVerifiedDownload(model)) 0L else (model.files.sumOf { it.expectedBytes } - partial).coerceAtLeast(0L) + 128L * 1024L * 1024L
         val firstRun = !store.finalDirectory(model).exists()

@@ -178,6 +178,18 @@ submodule_only_refusal() {
 # A move that cannot be verified, or a destination inside the tree about to be
 # deleted, refuses and the caller keeps the tree. Nothing to move is success with
 # no destination made.
+# Rescued files are agent records: they go to the agent artifact library
+# (`~/.claude/bin/artifact`, owner ~/.claude/knowledge/dev/agent-artifacts.md),
+# never into this checkout, where the old in-checkout rescue folder had grown
+# to 37 GB by 2026-11-01 (moved to the library, legacy import m20261101-android). A missing CLI or library answer
+# refuses the removal (the worktree stays), never falls back to the checkout.
+rescue_root() {
+    local root
+    root=$("$HOME/.claude/bin/artifact" root --project enviouswispr-android 2>/dev/null) || return 1
+    [ -n "$root" ] || return 1
+    printf '%s/rescued-worktrees\n' "$root"
+}
+
 rescue_submodule_repositories() {
     local wt="$1" branch="$2" dest_root="$3" gitdir moddir wt_abs dr_abs dest path
     local listing i safe_branch stamp
@@ -420,8 +432,13 @@ for r in rows:
     #    see gitignored files, so `.claude/`, `docs/internal/` and `.validation/`
     #    work carried by no commit is invisible to step 5. A PARTIAL RESCUE SKIPS
     #    THE REMOVAL.
+    local rescue_dest
+    if ! rescue_dest=$(rescue_root); then
+        echo "SKIPPED: $wt — the agent artifact library is unavailable (~/.claude/bin/artifact); keeping it so nothing is lost." >&2
+        return 1
+    fi
     if ! "$(dirname "${BASH_SOURCE[0]}")/rescue-worktree-artifacts.sh" \
-            "$wt" "$branch" "$MAIN_ROOT/.claude/_rescued-worktrees"; then
+            "$wt" "$branch" "$rescue_dest"; then
         echo "SKIPPED: $wt — could not fully rescue gitignored files. Keeping it so nothing is lost." >&2
         return 1
     fi
@@ -450,7 +467,7 @@ for r in rows:
             # would also delete the submodule repositories, so they are moved aside
             # whole first; then --force overrides exactly that objection and
             # nothing else (2026-09-18).
-            if ! rescue_submodule_repositories "$wt" "$branch" "$MAIN_ROOT/.claude/_rescued-worktrees"; then
+            if ! rescue_submodule_repositories "$wt" "$branch" "$rescue_dest"; then
                 echo "SKIPPED: $wt — could not move its submodule repositories aside. Keeping it so nothing is lost." >&2
                 return 1
             fi

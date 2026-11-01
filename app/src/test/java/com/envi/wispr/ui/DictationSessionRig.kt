@@ -321,7 +321,14 @@ internal class DictationSessionRig {
         @Volatile var clipboardWorks = true
         @Volatile var autoPaste = AutoPasteAvailability.LIVE
 
-        override fun promoteToForeground(processing: Boolean) { events += "foreground:$processing" }
+        var initialForeground = ForegroundPromotion.ACTIVE
+        var processingForeground = ForegroundPromotion.ACTIVE
+        override fun promoteToForeground(processing: Boolean): ForegroundPromotion {
+            events += "foreground:$processing"
+            timeline += "foreground:$processing"
+            return if (processing) processingForeground else initialForeground
+        }
+        override fun updateProcessingNotification() { events += "processing-notification" }
         override fun updateSurfacePhase(phase: DictationSurfaceState.Phase) { events += "phase:${phase.name}" }
         override fun beginRecordingFeedback(takeId: String) { events += "cue-admit" }
         @Volatile var soundReady: (() -> Unit)? = null

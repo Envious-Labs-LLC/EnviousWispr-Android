@@ -242,6 +242,9 @@ internal class DictationSessionCoordinator(
     /** True while a take is in PROCESSING; the Service picks the processing notification on a foreground command. */
     val isProcessing: Boolean get() = state.get() == SessionState.PROCESSING
 
+    /** An ongoing take may be finishing in the background after a denied type change. */
+    val hasAdmittedTake: Boolean get() = take !== TakeContext.NONE
+
     /** The Service's `onCreate` work that is the session's: asking for the start-up recovery, and the preference collectors. */
     fun onCreated() {
         // The application's recovery owner runs it, off the per-take queue (#115) and joined with the History screen's
@@ -366,6 +369,14 @@ internal class DictationSessionCoordinator(
                 return
             }
         }
+        // Refuse before feedback, journal admission or capture owns anything (#498).
+        if (host.promoteToForeground(processing = false) != ForegroundPromotion.ACTIVE) {
+            releaseSwapPermit()
+            admittedRequest = null
+            stopAfterRecording = false
+            refuseForegroundStart()
+            return
+        }
         // The pre-capture chain's origin (#258): the accepted start command, right after IDLE -> STARTING.
         val acceptedAtMs = host.elapsedRealtimeMs()
         val takeId = UUID.randomUUID().toString().lowercase()
@@ -404,7 +415,6 @@ internal class DictationSessionCoordinator(
             }
         }
         surface.showStarting(admittedRequest)
-        host.promoteToForeground(processing = false)
         // Kept for the whole session. Android may rebind the accessibility service while the user
         // is still speaking, so the state insertion finds minutes later cannot say whether this
         // dictation ever had a field to aim at (`InsertionJudgement.handoffToJudge`).
@@ -847,7 +857,7 @@ internal class DictationSessionCoordinator(
             surface.showProcessing()
         }
         host.updateSurfacePhase(DictationSurfaceState.Phase.PROCESSING)
-        host.promoteToForeground(processing = true)
+        host.updateProcessingNotification()
         recordingVibrate(HapticCue.SESSION_TRANSITION)
         take.log.log("Stopping recording and starting transcription")
         return true
@@ -858,6 +868,9 @@ internal class DictationSessionCoordinator(
      * take is on the event (#115). Runs on the owner's scope; nothing here asks the capture process.
      */
     private fun continueAfterEnding(ending: TakeEnding) {
+        // The closed-file ending arrived: capture no longer needs the microphone foreground type.
+        // A named platform refusal returns an explicit degraded outcome and still delivers this take.
+        host.promoteToForeground(processing = true)
         // Queued behind the draft insert, on main (#356 review round 2): a cancel, disconnect or destroy also runs on
         // main, so its own History write always queues after this one. The id is resolved on the worker (#115).
         take.history.markStatus(TranscriptEntity.STATUS_PROCESSING)
@@ -1294,6 +1307,15 @@ internal class DictationSessionCoordinator(
                 host.stopSelfNow()
             }
         }
+    }
+
+    /** Android refused the initial foreground start; no take has been admitted. */
+    fun refuseForegroundStart() {
+        // This service is ending; never reopen admission on its one-take owner.
+        state.set(SessionState.ERROR)
+        log.warn("Initial recording foreground start refused")
+        runCatching { notices.sayFailure(requireNotNull(TakeNotices.line(TerminalReason.START_EXCEPTION))) }
+        host.stopSelfNow()
     }
 
     private fun stopIfIdle() {

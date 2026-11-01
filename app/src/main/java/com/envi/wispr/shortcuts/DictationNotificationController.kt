@@ -55,6 +55,11 @@ internal object DictationNotificationController {
         )
     }
 
+    /** Replace the ongoing notification without requesting a new foreground-service type. */
+    fun update(context: Context, notification: Notification) {
+        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
+    }
+
     fun dismiss(context: Context) {
         NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
     }

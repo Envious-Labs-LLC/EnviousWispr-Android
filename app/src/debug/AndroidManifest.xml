@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <service
+            android:name=".debug.ForegroundProbeService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|dataSync" />
         <activity
             android:name=".debug.PasteProbeActivity"
             android:exported="true"

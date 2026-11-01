@@ -101,7 +101,7 @@ class ModelSwapGateTest {
         assertEquals("no engine bind outside the registry", emptyList<String>(), binders)
         val worker = File("src/main/java/com/envi/wispr/models/ModelDeliveryWorker.kt").readText()
         assertTrue(worker.contains("ModelSwap.exclusive(applicationContext) { store.remove(model) }"))
-        assertTrue(worker.contains("ModelSwap.exclusive(applicationContext) { store.repair(model) }"))
+        assertTrue(worker.contains("exclusive = { mutation -> ModelSwap.exclusive(applicationContext, mutation) }"))
         assertEquals("download and adoption admit through the swap", 2, Regex("""admission = \{ mutation -> gatedAdmission\(model, controls, mutation\) \}""").findAll(worker).count())
         assertTrue(worker.contains("ModelSwap.exclusive(applicationContext) {\n            if (isStopped || controls.read(model) != ModelDeliveryControlState.ACTIVE) false else mutation()"))
         val registry = File("src/main/java/com/envi/wispr/models/EngineBindings.kt").readText()

@@ -37,8 +37,8 @@ later. Google fixed exactly this in 2.10.2 and 2.10.3. Upgrade `androidx.work:wo
 
 ## 1. Problem
 See #501. Evidence: PostHog `model_delivery.terminal` cancels at `duration_s≈1.1` on every device class including
-the emulator, in speech/polish pairs; the 2.10.1 bytecode's `NetworkRequestConstraintController` sends
-`ConstraintsNotMet` after a 1000 ms wait for a callback; the reporter's download finished at once on the
+the emulator, in speech/polish pairs; the 2.10.1 bytecode's NetworkRequestConstraintController (WorkManager internal, read from its bytecode) sends
+ConstraintsNotMet (WorkManager internal, read from its bytecode) after a 1000 ms wait for a callback; the reporter's download finished at once on the
 `CONNECTED` path while still on Wi-Fi.
 
 Upstream fixes (release notes, https://developer.android.com/jetpack/androidx/releases/work, read 2026-11-02):
@@ -64,7 +64,7 @@ Upstream fixes (release notes, https://developer.android.com/jetpack/androidx/re
 ## 2.5 Grounding brief
 ### 1. Producer → owner → consumer
 `ModelDownloadPolicy.constraints` builds the Wi-Fi `NetworkRequest`; `ModelDeliveryWorker.request` attaches it;
-WorkManager's in-process `WorkConstraintsTracker` (`NetworkRequestConstraintController`) and JobScheduler own
+WorkManager's in-process WorkConstraintsTracker (WorkManager internal, read from its bytecode) (NetworkRequestConstraintController) and JobScheduler own
 eligibility; the worker, `ModelCards.workUiState` and `reapplyNetwork` consume it. None change.
 ### 2. Existing authority
 The pinned dependency line `app/build.gradle.kts` `implementation("androidx.work:work-runtime-ktx:2.10.1")`.

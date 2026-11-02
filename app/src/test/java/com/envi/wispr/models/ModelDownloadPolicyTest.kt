@@ -83,5 +83,25 @@ class ModelDownloadPolicyTest {
         assertTrue("setup's stored choice carries over under its key", preferences.contains("""MODEL_DOWNLOADS_ON_MOBILE_DATA = booleanPreferencesKey("onboarding_mobile_data")"""))
     }
 
+    /**
+     * Drift Guard (not product coverage): the outcome itself was measured on the emulator, 2026-11-02.
+     * #501: WorkManager before 2.10.3 reports a Wi-Fi `NetworkRequest` constraint as unmet when a second worker
+     * registers the identical request (b/427115602; also b/423403088 in 2.10.2), and stops it about a second after it
+     * starts. Setup enqueues the speech and polish downloads together with the same Wi-Fi request, so on 2.10.1 they
+     * stopped each other and crawled. MUTATION: pin 2.10.2 or older, or a prerelease, and this fails.
+     */
+    @Test fun workManagerCarriesTheIdenticalNetworkRequestFix() {
+        val build = File("build.gradle.kts").readText()
+        val versions = Regex("""androidx\.work:work-runtime(?:-ktx)?:([^"]+)"""").findAll(build).map { it.groupValues[1] }.toList()
+        assertTrue("WorkManager is declared in app/build.gradle.kts", versions.isNotEmpty())
+        versions.forEach { version ->
+            val parts = Regex("""^(\d+)\.(\d+)\.(\d+)$""").matchEntire(version)?.groupValues?.drop(1)?.map(String::toInt)
+            assertTrue("WorkManager $version must be a stable release (b/427115602 fixed in 2.10.3)", parts != null)
+            val (major, minor, patch) = parts!!
+            val atLeast = compareValues(major, 2).takeIf { it != 0 } ?: compareValues(minor, 10).takeIf { it != 0 } ?: compareValues(patch, 3)
+            assertTrue("WorkManager $version predates 2.10.3: Wi-Fi-only downloads stop after 1 s (b/427115602, #501)", atLeast >= 0)
+        }
+    }
+
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }

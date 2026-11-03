@@ -168,8 +168,8 @@ private fun guideFrames(samsung: Boolean, appLabel: String, reconnect: Boolean):
 /**
  * The floating box over Settings (#477). Every step stays listed, so the box never claims a step the user has not
  * reached; the looping demo only highlights one row at a time, and paused or reduced motion highlights nothing.
- * Android sizes the box and the text follows the user's size, so the way past Allow comes FIRST: with large text
- * the list clips at the bottom, never the recovery line (at 130% it clipped first, emulator 2026-11-02).
+ * Recovery instructions appear first. At 130% text in the measured Galaxy S24-sized box, recovery remained fully
+ * visible while the final steps clipped (emulator, 2026-11-02). Other sizes are NOT VERIFIED.
  */
 @Composable
 private fun FloatingGuideBox(frames: List<GuideFrame>, step: Int, paused: Boolean, launchFailed: Boolean) {

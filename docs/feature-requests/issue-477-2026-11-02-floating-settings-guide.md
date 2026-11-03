@@ -32,7 +32,7 @@ Consolidation: none. Restores one removed branch inside the existing owner (`Acc
 ## 0. TL;DR
 Restore the picture-in-picture guide removed in 8b67be1d (`git show bc799234`) on every phone that supports
 picture-in-picture and where the user has not switched it off for the app. The box lists every step with the looping
-demo's current step highlighted, and always ends with the drag-away and recovery line.
+demo's current step highlighted, and starts with the drag-away and recovery instructions.
 
 ## 1. Problem
 Since #417 the guide never floats over Settings; #476 shows it before Settings opens, which a non-technical user
@@ -104,7 +104,7 @@ removed it (8b67be1d) pending this issue.
    the current row is highlighted; paused or reduced motion highlights nothing. After a failed launch: "Tap this box
    and open it full screen to see the guide." Every frame STARTS with "Drag this box off Allow. Allow not working?
    Close this box, then tap Allow." The box follows the user's text size; because Android fixes the box size, the
-   recovery line comes first so large text clips the list, never the way past Allow (Codex round 1 rejected a fixed
+   recovery line comes first so large text clips the list first (Codex round 1 rejected a fixed
    text size). Names no OEM-specific control ("X", "expand"). Fit at default text measured on the emulator at a
    Galaxy S24-sized box (480 x 449 px at 450 dpi, the size Test Lab's S24 reported) with Samsung's six rows forced
    for the measurement. A near-square 230:215 aspect is kept: a 3:4 portrait box came out narrower (Android keeps
@@ -135,7 +135,7 @@ row as before.
 | A phone refuses the Allow tap with the box on screen (none measured) | box says to close it, then tap Allow |
 | User never drags on a phone where the box covers Allow | every frame says to drag it away |
 | Settings launch fails after PiP entry | box says "Tap this box and open it full screen to see the guide." |
-| Very large text | the list clips at the bottom; the recovery line stays visible at the top |
+| Very large text | At the measured 130% text size, recovery remains visible and later steps clip. Larger text and smaller boxes are NOT VERIFIED. |
 
 ## 8. Signals
 Content-free debug line: `floating=<bool>`.

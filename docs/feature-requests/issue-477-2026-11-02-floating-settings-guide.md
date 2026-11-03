@@ -67,8 +67,9 @@ removed it (8b67be1d) pending this issue.
 - Recreation: `compact` is presentation only, re-derived from `isInPictureInPictureMode`.
 - Process death in Settings loses PiP; the full-screen guide returns on recreation (accepted in #476).
 ### 5. Evidence (measured, not assumed)
-- **AOSP premise was wrong in practice.** `AccessibilityServiceWarning` filters obscured touches, yet no measured phone
-  refused the tap with the box on screen.
+- **The filter exists; the predicted refusal was not observed.** `AccessibilityServiceWarning` filters obscured
+  touches, but no phone in these injected-tap runs refused the tap with the box on screen. Human-touch behaviour
+  remains NOT VERIFIED until the S26 finger check.
 - **Emulator** (Android 16, AOSP Settings, 2026-11-02): box over Settings, Allow partly covered, tap accepted, service
   bound, box closed itself.
 - **Firebase Test Lab** (personal project `titanium-vigil-488402-s1`, 2026-11-02, matrices
@@ -100,22 +101,24 @@ removed it (8b67be1d) pending this issue.
 2. `FloatingGuideEligibility.allows`: `FEATURE_PICTURE_IN_PICTURE` AND the app's picture-in-picture permission reads
    exactly `MODE_ALLOWED` (an unreadable or default mode does not float).
 3. Compact box: every step listed by a short label (`GuideFrame.short`: "Turn on", "Allow"); while the demo plays,
-   the current row is highlighted; paused or reduced motion highlights nothing. After a failed launch: "Tap this box,
-   then tap expand to open the guide." Every frame ends with "Drag this box off Allow. Allow not working? Close this
-   box, then tap Allow." The box ignores the user's text-size setting (Android fixes the box size; the full guide
-   behind Android's expand control still follows it). Fit measured on the emulator at a Galaxy S24-sized box
-   (480 x 449 px at 450 dpi, the size Test Lab's S24 reported) with Samsung's six rows forced for the measurement:
-   all rows and the help line visible. A near-square 230:215 aspect is kept: a 3:4 portrait box came out narrower
-   (Android keeps the area) and wrapped more.
-4. Full guide before the hand-off adds "These steps stay in a small box over Settings." plus the same line, only where
-   the box will float.
+   the current row is highlighted; paused or reduced motion highlights nothing. After a failed launch: "Tap this box
+   and open it full screen to see the guide." Every frame STARTS with "Drag this box off Allow. Allow not working?
+   Close this box, then tap Allow." The box follows the user's text size; because Android fixes the box size, the
+   recovery line comes first so large text clips the list, never the way past Allow (Codex round 1 rejected a fixed
+   text size). Names no OEM-specific control ("X", "expand"). Fit at default text measured on the emulator at a
+   Galaxy S24-sized box (480 x 449 px at 450 dpi, the size Test Lab's S24 reported) with Samsung's six rows forced
+   for the measurement. A near-square 230:215 aspect is kept: a 3:4 portrait box came out narrower (Android keeps
+   the area) and wrapped more.
+4. Full guide before the hand-off, only where `allows` is true: "Your phone may keep these steps in a small box over
+   Settings. If the box covers Allow, drag it away. If Allow still doesn't respond, close the box, then tap Allow."
+   ("may", because PiP entry can still be refused at runtime.)
 
 ## 4. Contract deltas
 Manifest: one attribute on the guide activity. No AIDL, schema or preference change.
 
 ## 5. State and lifecycle audit
 `GuidePhase` unchanged. `compact` is derived. Completion path unchanged (`complete()` finishes the activity, which
-removes the PiP). A user who closes the box with X destroys the guide task; returning to the app shows the Permissions
+removes the PiP). A user who closes the box destroys the guide task; returning to the app shows the Permissions
 row as before.
 
 ## 6. Consumer matrix
@@ -129,9 +132,10 @@ row as before.
 | Failure | Result |
 |---|---|
 | PiP entry refused | full-screen guide behind Settings, as today |
-| A phone refuses the Allow tap with the box on screen (none measured) | box says to close it with X, then tap Allow |
+| A phone refuses the Allow tap with the box on screen (none measured) | box says to close it, then tap Allow |
 | User never drags on a phone where the box covers Allow | every frame says to drag it away |
-| Settings launch fails after PiP entry | box says "Tap this box, then tap expand to open the guide." |
+| Settings launch fails after PiP entry | box says "Tap this box and open it full screen to see the guide." |
+| Very large text | the list clips at the bottom; the recovery line stays visible at the top |
 
 ## 8. Signals
 Content-free debug line: `floating=<bool>`.
@@ -143,8 +147,8 @@ Guide-first floor remains whenever the box cannot float.
 - `app/src/main/AndroidManifest.xml`: `supportsPictureInPicture` on `AccessibilityGuideActivity`.
 - `app/src/main/java/com/envi/wispr/ui/FloatingGuideEligibility.kt`: feature plus permission rule.
 - `app/src/main/java/com/envi/wispr/ui/AccessibilityGuideActivity.kt`: PiP entry, mode callback, compact renderer.
-- `app/src/test/java/com/envi/wispr/ui/FloatingGuideEligibilityTest.kt`: the rule over feature and permission modes
-  (Product Outcome).
+- `app/src/test/java/com/envi/wispr/ui/FloatingGuideEligibilityTest.kt`: the decision table over feature and
+  app-operation modes (Drift Guard; does not verify permission wiring or PiP behaviour).
 
 ## 11. Testing
 Unit gate with count. Emulator: box layout over Settings (default and large font). Test Lab evidence above.

@@ -127,9 +127,9 @@ class AccessibilityGuideActivity : ComponentActivity() {
 private const val KEY_PHASE = "guide_phase"
 
 /** Shown before the hand-off: Android parks the box over Allow (#477). */
-private const val FLOATING_ALLOW_HELP = "Drag this box away from Allow. If Allow doesn’t respond, tap this box, close it with X, then tap Allow."
+private const val FLOATING_ALLOW_HELP = "Your phone may keep these steps in a small box over Settings. If the box covers Allow, drag it away. If Allow still doesn’t respond, close the box, then tap Allow."
 
-/** The same instruction sized for the box itself, which Android keeps at about 170 dp on a Galaxy S24 (#477). */
+/** The way past Allow sized for the box itself, which Android keeps at about 170 dp on a Galaxy S24 (#477). */
 private const val FLOATING_ALLOW_HELP_SHORT = "Drag this box off Allow. Allow not working? Close this box, then tap Allow."
 
 @Composable
@@ -168,13 +168,16 @@ private fun guideFrames(samsung: Boolean, appLabel: String, reconnect: Boolean):
 /**
  * The floating box over Settings (#477). Every step stays listed, so the box never claims a step the user has not
  * reached; the looping demo only highlights one row at a time, and paused or reduced motion highlights nothing.
+ * Android sizes the box and the text follows the user's size, so the way past Allow comes FIRST: with large text
+ * the list clips at the bottom, never the recovery line (at 130% it clipped first, emulator 2026-11-02).
  */
 @Composable
 private fun FloatingGuideBox(frames: List<GuideFrame>, step: Int, paused: Boolean, launchFailed: Boolean) {
     Surface(Modifier.fillMaxSize(), color = Color(0xFF251F37), contentColor = Color(0xFFE8E4F1)) {
         Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(FLOATING_ALLOW_HELP_SHORT, Modifier.padding(bottom = 3.dp), fontSize = 10.sp, lineHeight = 12.sp)
             if (launchFailed) {
-                Text("Tap this box, then tap expand to open the guide.", fontSize = 13.sp, fontWeight = FontWeight.Bold, lineHeight = 16.sp)
+                Text("Tap this box and open it full screen to see the guide.", fontSize = 13.sp, fontWeight = FontWeight.Bold, lineHeight = 16.sp)
             } else {
                 frames.forEachIndexed { index, frame ->
                     val current = !paused && index == step
@@ -187,8 +190,6 @@ private fun FloatingGuideBox(frames: List<GuideFrame>, step: Int, paused: Boolea
                     )
                 }
             }
-            Spacer(Modifier.weight(1f))
-            Text(FLOATING_ALLOW_HELP_SHORT, fontSize = 10.sp, lineHeight = 12.sp)
         }
     }
 }
@@ -222,12 +223,7 @@ private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHisto
     if (compact) {
         // The floating copy over Settings (#477). PiP content takes no input: the user drags the box, or taps it for
         // Android's own expand and close controls. Android parks it over Allow, so every frame says how to get past it.
-        // Android sizes the box, not us: at 130% text the drag-away line fell off the bottom (emulator, 2026-11-02).
-        // The box keeps a fixed text size; the full-screen guide (Android's expand control) follows the user's size.
-        val density = androidx.compose.ui.platform.LocalDensity.current
-        CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density.density, fontScale = 1f)) {
-            FloatingGuideBox(frames, step, paused, launchFailed)
-        }
+        FloatingGuideBox(frames, step, paused, launchFailed)
         return
     }
     Surface(Modifier.fillMaxSize(), color = Color(0xFF251F37), contentColor = Color(0xFFE8E4F1)) {
@@ -248,7 +244,7 @@ private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHisto
             }
             Text(frames[step].step, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Text(if (samsung) "Installed apps → $appLabel → On. Leave the $appLabel shortcut off." else "Find $appLabel in Accessibility. Your phone may group it under Downloaded apps or Installed services. Leave the $appLabel shortcut off.", Modifier.padding(top = 18.dp), fontSize = 14.sp)
-            if (floating) Text("These steps stay in a small box over Settings. $FLOATING_ALLOW_HELP", Modifier.padding(top = 12.dp), fontSize = 14.sp)
+            if (floating) Text(FLOATING_ALLOW_HELP, Modifier.padding(top = 12.dp), fontSize = 14.sp)
             Text("After you allow access, if $appLabel does not reopen, open it from Recents or its app icon.", Modifier.padding(vertical = 12.dp), fontSize = 14.sp)
             if (launchFailed) Text("Open your phone’s Settings, then Accessibility.")
             Row { TextButton(onClick = { paused = !paused }) { Text(if (paused) "Play" else "Pause") }; TextButton(onClick = { paused = true; step = (step + 1) % frames.size }) { Text("Next") } }

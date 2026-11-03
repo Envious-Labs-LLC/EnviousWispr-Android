@@ -67,13 +67,13 @@ removed it (8b67be1d) pending this issue.
 - Recreation: `compact` is presentation only, re-derived from `isInPictureInPictureMode`.
 - Process death in Settings loses PiP; the full-screen guide returns on recreation (accepted in #476).
 ### 5. Evidence (measured, not assumed)
-- **The filter exists; the predicted refusal was not observed.** `AccessibilityServiceWarning` filters obscured
+- **The filter exists; the predicted refusal was not observed.** AOSP Settings' AccessibilityServiceWarning filters obscured
   touches, but no phone in these injected-tap runs refused the tap with the box on screen. Human-touch behaviour
   remains NOT VERIFIED until the S26 finger check.
 - **Emulator** (Android 16, AOSP Settings, 2026-11-02): box over Settings, Allow partly covered, tap accepted, service
   bound, box closed itself.
 - **Firebase Test Lab** (personal project `titanium-vigil-488402-s1`, 2026-11-02, matrices
-  `matrix-365fozeso4feh` (harness defects only), run 2 `9104876244025811510`, run 3 `XVWN`, run 4
+  `matrix-365fozeso4feh` (harness defects only), run 2 `9104876244025811510`, run 3 (results folder 2026-11-02_21:58:26.955894_XVWN), run 4
   `matrix-311gptl8gf02u` and `matrix-2ges35ifdld5q`). Probe test, logs and IDs:
   `~/Developer/AgentArtifacts/enviouswispr-android/runs/2026/11/testlab-477-probe/`. Each phone: guide → Agree → Open
   Settings → PiP present → EnviousWispr page → switch → Allow → auto-paste enabled AND service bound → box finished.

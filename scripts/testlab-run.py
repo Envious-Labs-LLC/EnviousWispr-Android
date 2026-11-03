@@ -150,7 +150,10 @@ def submit(args) -> tuple[str, str]:
     try:
         return parse_submission(r.stdout + r.stderr)
     except ValueError as e:
-        say(f"SUBMISSION FAILED: {e}\n{(r.stdout + r.stderr).strip()[-1500:]}")
+        say(f"SUBMISSION UNKNOWN: {e}; check the Console before retrying.\n{(r.stdout + r.stderr).strip()[-1500:]}")
+        found = re.search(r"\b(matrix-[a-z0-9]+)\b", r.stdout + r.stderr)
+        if found:
+            say(cancel(args, found.group(1)))
         sys.exit(2)
 
 
@@ -168,7 +171,8 @@ def phone_report(project_key: str, results: str, device: dict) -> tuple[bool, st
     folder = f"{results}/{device_dir(device)}"
     r = sh(["gcloud", f"--configuration={config}", "storage", "cat", f"{folder}/test_result_1.xml"], timeout=120)
     if r.returncode != 0:
-        return False, f"no result file at {folder} ({r.stderr.strip()[-160:]})"
+        # Unreadable is not failed: a storage or sign-in error must never be reported as a red phone.
+        raise OSError(f"result unreadable at {folder}: {r.stderr.strip()[-160:]}")
     return junit_verdict(r.stdout)
 
 
@@ -235,6 +239,10 @@ def watch_loop(args, matrix: str, results: str, stop_at_first: bool) -> None:
             say(f"UNSUPPORTED: {why_not}; this runner cannot verify {matrix}. {cancel(args, matrix)}.")
             sys.exit(2)
         for ex in newly_closed(m, reported):
+            # Each result read can take up to 120 s, so the deadline is checked per read, not once per poll.
+            if time.time() >= deadline:
+                say(f"DEADLINE {args.deadline_min} min: {cancel(args, matrix)}.")
+                sys.exit(3)
             reported.add(ex["id"])
             dev = ex["environment"]["androidDevice"]
             state = ex["state"]
@@ -287,7 +295,11 @@ def main(argv: list[str]) -> None:
             p.error("--env takes key=value without commas")
         if "/" not in args.runner:
             p.error("--runner takes <test package>/<runner class>")
-        local_gate(args)
+        try:
+            local_gate(args)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+            say(f"LOCAL GATE FAILED: {type(e).__name__}: {e}; nothing was submitted.")
+            sys.exit(4)
         matrix, results = submit(args)
         say(f"SUBMITTED {matrix} results {results}")
         watch(args, matrix, results, stop_at_first=True)

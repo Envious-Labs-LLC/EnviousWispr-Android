@@ -1,0 +1,2 @@
+Raw results will be stored in your GCS bucket at [https://console.developers.google.com/storage/browser/test-lab-2crxayvf4t0aq-nvbxw8j14cj7a/2026-11-02_21:58:26.955894_XVWN/]
+Test [matrix-33kf3r2wbpc6g] has been created in the Google Cloud.

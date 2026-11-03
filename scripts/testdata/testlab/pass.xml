@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name='' hostname='localhost' tests='1' failures='0' skipped='0' errors='0' time='10.943' timestamp='2026-11-02T18:50:51'>
+    <properties />
+    <testcase name='allowAcceptsATapWhileTheGuideFloats' classname='com.envi.wispr.ui.FloatingGuideAllowProbe' time='10.943' />
+  </testsuite>
+</testsuites>

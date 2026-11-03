@@ -9,7 +9,9 @@ minutes, all red, while the session waited two hours for the eighth phone that n
   2. FIRST RESULT. `run` submits asynchronously and exits as soon as the FIRST phone finishes, printing that
      phone's verdict and failure message, and the `watch` command for the rest.
   3. DEADLINE. `watch` follows the matrix to the end; at the deadline it cancels what has not run and names it.
-  4. HONEST POLLS. An API that cannot be reached three polls in a row ends the run as UNREACHABLE, never a verdict.
+  4. HONEST POLLS. An API that cannot be reached three polls in a row ends the run as UNREACHABLE (and cancels),
+     never a verdict. Completion is only what the matrix itself reports, every execution keyed by its id.
+  5. NO GUESSING. A matrix with flaky retries or shards is refused: their results do not live in one file.
 
 Run either mode with Bash `run_in_background: true`; the exit is the notification.
 
@@ -32,6 +34,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 
 PROJECTS = {
     "personal": ("personal", "titanium-vigil-488402-s1"),
@@ -64,19 +67,30 @@ def parse_submission(text: str) -> tuple[str, str]:
 
 
 def junit_verdict(xml: str) -> tuple[bool, str]:
-    """(passed, one-line reason) from a test_result_1.xml. No testsuite, or zero tests, is a failure."""
-    suite = re.search(r"<testsuite\b[^>]*>", xml)
-    if not suite:
+    """(passed, one-line reason) from a test_result_1.xml. Anything but exactly one well-formed suite with at least
+    one test and no failure, error or skip is a failure: truncated XML, several suites, zero tests."""
+    if not xml.strip():
         return False, "no test result written"
-    # Test Lab writes single-quoted attributes (measured 2026-11-02); accept either quote.
-    attrs = {k: v for k, _, v in re.findall(r"""(\w+)=(['"])(.*?)\2""", suite.group(0))}
-    tests, failures, errors, skipped = (int(attrs.get(k, "0")) for k in ("tests", "failures", "errors", "skipped"))
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return False, "invalid XML"
+    suites = list(root.iter("testsuite"))
+    if len(suites) != 1:
+        return False, f"unsupported suite count {len(suites)}"
+    attrs = suites[0].attrib
+    try:
+        tests, failures, errors, skipped = (int(attrs.get(k, "0")) for k in ("tests", "failures", "errors", "skipped"))
+    except ValueError:
+        return False, "unreadable test counts"
     if tests == 0:
         return False, "zero tests ran"
     if failures or errors:
-        msg = re.search(r"""<(?:failure|error)\b[^>]*message=(['"])(.*?)\1""", xml)
-        body = re.search(r"<(?:failure|error)\b[^>]*>\s*([^<]{0,300})", xml)
-        text = msg.group(2) if msg else (body.group(1) if body else "")
+        # An Element with no children is falsy, so pick with an explicit None test, never `or`.
+        node = next(iter(root.iter("failure")), None)
+        if node is None:
+            node = next(iter(root.iter("error")), None)
+        text = "" if node is None else (node.get("message") or node.text or "")
         reason = (text.strip().splitlines() or ["failed"])[0]
         return False, reason[:240]
     if skipped:
@@ -109,7 +123,7 @@ def local_gate(args) -> None:
         inst += ["-e", k, v]
     r = sh(inst + [args.runner], timeout=args.local_timeout)
     out = r.stdout + r.stderr
-    if re.search(r"^OK \(\d+ tests?\)", out, re.M):
+    if r.returncode == 0 and re.search(r"^OK \([1-9]\d* tests?\)", out, re.M):
         say(f"LOCAL GATE PASSED on {args.local_serial}")
         return
     say(f"LOCAL GATE FAILED on {args.local_serial}; nothing was submitted. Last output:\n{out.strip()[-1500:]}")
@@ -121,13 +135,18 @@ def submit(args) -> tuple[str, str]:
     cmd = ["gcloud", f"--configuration={config}", f"--project={project}", "firebase", "test", "android", "run",
            "--async", "--type=instrumentation", f"--app={args.app}", f"--test={args.test}",
            f"--test-targets={args.target}", f"--timeout={args.timeout}", "--num-flaky-test-attempts=0",
-           "--no-use-orchestrator", f"--results-history-name={args.history}"]
+           "--no-use-orchestrator", f"--results-history-name={args.history}",
+           f"--test-runner-class={args.runner.split('/', 1)[1]}"]
     cmd += [f"--device={full_device(d)}" for d in args.device]
     if args.env:
         cmd.append("--environment-variables=" + ",".join(args.env))
     if args.pull:
         cmd.append(f"--directories-to-pull={args.pull}")
-    r = sh(cmd, timeout=900)
+    try:
+        r = sh(cmd, timeout=900)
+    except subprocess.TimeoutExpired:
+        say("SUBMISSION UNKNOWN: gcloud did not answer in 15 min; a matrix may exist. Check the Console before retrying.")
+        sys.exit(2)
     try:
         return parse_submission(r.stdout + r.stderr)
     except ValueError as e:
@@ -153,52 +172,87 @@ def phone_report(project_key: str, results: str, device: dict) -> tuple[bool, st
     return junit_verdict(r.stdout)
 
 
+def unsupported(m: dict) -> str:
+    """Why this matrix's results cannot be read by folder and test_result_1.xml, or "" when they can."""
+    if m.get("flakyTestAttempts", 0):
+        return "flaky-test retries write more than one result file"
+    # An unsharded execution still carries shard {"numShards": 1} (measured 2026-11-02, matrix-311gptl8gf02u).
+    if any(int((e.get("shard") or {}).get("numShards", 1)) > 1 for e in m.get("testExecutions", [])):
+        return "sharded executions split results across folders"
+    return ""
+
+
+def newly_closed(m: dict, reported: set[str]) -> list[dict]:
+    """Executions that left the open states and have not been reported, keyed by execution id (one model can run
+    on several Android versions, locales or orientations in one matrix)."""
+    return [e for e in m.get("testExecutions", []) if e.get("state") not in OPEN_STATES and e["id"] not in reported]
+
+
+def matrix_done(m: dict, reported: set[str]) -> bool:
+    """Observed completion only: the matrix says FINISHED and every one of its executions was reported."""
+    executions = m.get("testExecutions") or []
+    return m.get("state") == "FINISHED" and bool(executions) and all(e["id"] in reported for e in executions)
+
+
+def cancel(args, matrix: str) -> str:
+    try:
+        api(args.project, f"testMatrices/{matrix}:cancel", method="POST")
+        return "cancelled"
+    except Exception as e:  # noqa: BLE001 - every exit path must say what the cancel did
+        return f"CANCEL NOT CONFIRMED ({e}); cancel {matrix} in the Console"
+
+
 def watch(args, matrix: str, results: str, stop_at_first: bool) -> None:
+    try:
+        watch_loop(args, matrix, results, stop_at_first)
+    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
+        say(f"UNREACHABLE: watching {matrix} failed ({type(e).__name__}: {e}); {cancel(args, matrix)}. Nothing is known.")
+        sys.exit(5)
+
+
+def watch_loop(args, matrix: str, results: str, stop_at_first: bool) -> None:
     deadline = time.time() + args.deadline_min * 60
     reported: set[str] = set()
     any_failed = False
     misses = 0
+    open_: list[str] = ["(not read yet)"]
     while True:
+        if time.time() > deadline:
+            say(f"DEADLINE {args.deadline_min} min: {cancel(args, matrix)}. Never ran or never finished: {' '.join(open_) or 'none'}")
+            sys.exit(3)
         try:
             m = api(args.project, f"testMatrices/{matrix}")
             misses = 0
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, subprocess.TimeoutExpired) as e:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as e:
             misses += 1
             if misses >= UNREACHABLE_AFTER:
-                say(f"UNREACHABLE: could not read {matrix} {misses} times in a row ({e}). I could not check; nothing is known.")
+                say(f"UNREACHABLE: could not read {matrix} {misses} times in a row ({e}); {cancel(args, matrix)}. Nothing is known.")
                 sys.exit(5)
             time.sleep(POLL_SECS)
             continue
-        states = []
-        for ex in m.get("testExecutions", []):
+        why_not = unsupported(m)
+        if why_not:
+            say(f"UNSUPPORTED: {why_not}; this runner cannot verify {matrix}. {cancel(args, matrix)}.")
+            sys.exit(2)
+        for ex in newly_closed(m, reported):
+            reported.add(ex["id"])
             dev = ex["environment"]["androidDevice"]
-            model, version, state = dev["androidModelId"], dev["androidVersionId"], ex.get("state", "?")
-            states.append((model, version, state))
-            if state not in OPEN_STATES and model not in reported:
-                reported.add(model)
-                if state == "FINISHED":
-                    ok, why = phone_report(args.project, results, dev)
-                else:
-                    ok, why = False, f"execution {state}"
-                any_failed |= not ok
-                say(f"{'PASS' if ok else 'FAIL'} {model} (API {version}): {why}")
-        open_ = [f"{mo}={st}" for mo, _, st in states if st in OPEN_STATES]
-        if reported and (stop_at_first or not open_):
-            if open_:
-                say(f"STILL OPEN: {' '.join(open_)}")
-                say(f"KEEP WATCHING: scripts/testlab-run.py watch --project {args.project} --matrix {matrix} "
-                    f"--results {results} --deadline-min {args.deadline_min}")
-            else:
-                say(f"MATRIX DONE: {matrix}")
+            state = ex["state"]
+            ok, why = phone_report(args.project, results, dev) if state == "FINISHED" else (False, f"execution {state}")
+            any_failed |= not ok
+            say(f"{'PASS' if ok else 'FAIL'} {device_dir(dev)}: {why}")
+        open_ = [f"{device_dir(e['environment']['androidDevice'])}={e.get('state')}"
+                 for e in m.get("testExecutions", []) if e.get("state") in OPEN_STATES]
+        if reported and stop_at_first and open_:
+            say(f"STILL OPEN: {' '.join(open_)}")
+            say(f"KEEP WATCHING: scripts/testlab-run.py watch --project {args.project} --matrix {matrix} "
+                f"--results {results} --deadline-min {args.deadline_min}")
             sys.exit(10 if any_failed else 0)
-        if time.time() > deadline:
-            try:
-                api(args.project, f"testMatrices/{matrix}:cancel", method="POST")
-                cancelled = "cancelled"
-            except Exception as e:  # noqa: BLE001 - the deadline line must print whatever the cancel did
-                cancelled = f"cancel FAILED ({e}); cancel it in the Console"
-            say(f"DEADLINE {args.deadline_min} min: {cancelled}. Never ran or never finished: {' '.join(open_) or 'none'}")
-            sys.exit(3)
+        if matrix_done(m, reported):
+            summary = m.get("outcomeSummary", "missing")
+            any_failed |= summary != "SUCCESS"
+            say(f"MATRIX DONE: {matrix} outcome {summary}")
+            sys.exit(10 if any_failed else 0)
         time.sleep(POLL_SECS)
 
 
@@ -229,6 +283,10 @@ def main(argv: list[str]) -> None:
     if args.mode == "run":
         if not args.target.startswith(("class ", "package ")):
             p.error('--target must start with "class " or "package "')
+        if any("=" not in v or "," in v for v in args.env):
+            p.error("--env takes key=value without commas")
+        if "/" not in args.runner:
+            p.error("--runner takes <test package>/<runner class>")
         local_gate(args)
         matrix, results = submit(args)
         say(f"SUBMITTED {matrix} results {results}")

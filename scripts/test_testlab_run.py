@@ -29,10 +29,34 @@ class TestlabRunTest(unittest.TestCase):
             (False, "java.lang.AssertionError: RESULT=ALLOW_FULLY_COVERED"),
         )
 
-    def test_empty_or_skipped_results_never_read_as_passed(self):
+    def test_empty_truncated_split_or_skipped_results_never_read_as_passed(self):
         self.assertEqual(tl.junit_verdict(""), (False, "no test result written"))
-        self.assertEqual(tl.junit_verdict("<testsuite tests='0' failures='0'>"), (False, "zero tests ran"))
-        self.assertEqual(tl.junit_verdict('<testsuite tests="1" failures="0" skipped="1">'), (False, "1 of 1 skipped"))
+        self.assertEqual(tl.junit_verdict("<testsuite tests='1' failures='0'>"), (False, "invalid XML"))
+        self.assertEqual(tl.junit_verdict("<testsuite tests='0' failures='0'/>"), (False, "zero tests ran"))
+        self.assertEqual(tl.junit_verdict('<testsuite tests="1" failures="0" skipped="1"/>'), (False, "1 of 1 skipped"))
+        two = "<testsuites><testsuite tests='1' failures='0'/><testsuite tests='1' failures='1'/></testsuites>"
+        self.assertEqual(tl.junit_verdict(two), (False, "unsupported suite count 2"))
+
+    def test_one_model_on_two_android_versions_is_two_results(self):
+        def ex(eid, version, state):
+            return {"id": eid, "state": state, "environment": {"androidDevice": {"androidModelId": "a35x", "androidVersionId": version}}}
+        m = {"state": "FINISHED", "testExecutions": [ex("1", "34", "FINISHED"), ex("2", "35", "FINISHED")]}
+        self.assertEqual([e["id"] for e in tl.newly_closed(m, set())], ["1", "2"])
+        self.assertEqual([e["id"] for e in tl.newly_closed(m, {"1"})], ["2"])
+        self.assertFalse(tl.matrix_done(m, {"1"}))
+        self.assertTrue(tl.matrix_done(m, {"1", "2"}))
+
+    def test_completion_needs_the_matrix_to_say_finished_with_executions(self):
+        self.assertFalse(tl.matrix_done({"state": "RUNNING", "testExecutions": [{"id": "1"}]}, {"1"}))
+        self.assertFalse(tl.matrix_done({"state": "FINISHED", "testExecutions": []}, set()))
+        self.assertFalse(tl.matrix_done({"state": "FINISHED"}, {"1"}))
+
+    def test_retries_and_shards_are_refused(self):
+        self.assertEqual(tl.unsupported({"testExecutions": [{"id": "1"}]}), "")
+        # The real shape of an UNSHARDED execution (matrix-311gptl8gf02u, 2026-11-02).
+        self.assertEqual(tl.unsupported({"testExecutions": [{"id": "1", "shard": {"numShards": 1}}]}), "")
+        self.assertNotEqual(tl.unsupported({"flakyTestAttempts": 1}), "")
+        self.assertNotEqual(tl.unsupported({"testExecutions": [{"id": "1", "shard": {"shardIndex": 0, "numShards": 2}}]}), "")
 
     def test_submission_output_yields_matrix_and_results_folder(self):
         self.assertEqual(

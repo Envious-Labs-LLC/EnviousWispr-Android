@@ -133,7 +133,8 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
-    implementation("androidx.work:work-runtime-ktx:2.10.1")
+    // 2.10.3+ is required: older releases stop Wi-Fi-only downloads about 1 s in (b/427115602, #501).
+    implementation("androidx.work:work-runtime-ktx:2.10.5")
     // Explicitly own feedback call cancellation, whole-call timeout and redirect refusal.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")

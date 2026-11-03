@@ -2,7 +2,8 @@
 
 Exact text read from Console October12,2026 for the first public submission. October 20, 2026: the
 full description's WHAT YOU NEED paragraph changed (founder-approved, #449) and was sent for review with
-production build 283; live only after Google approves. Status and upgrade work:
+production build 283. November 3, 2026: short description, opening and a COMPLETELY FREE section moved
+up to second place (founder-approved; he accepted the review risk of "free" in the short description), sent for review in Console the same day; live only after Google approves. Status and upgrade work:
 [maintenance](../maintenance.md). Updating this file does not edit the submitted listing. Reconcile
 changes with the application, privacy policy and Data Safety before the next Console update.
 
@@ -15,16 +16,19 @@ EnviousWispr: Voice to Text
 ## Short description
 
 ```text
-Press, speak, done. On-device dictation and AI polish, right where you type.
+Free, private voice to text. Speak and finished text lands where you type.
 ```
 
 ## Full description
 
 ```text
-Speak naturally and put finished text where you were typing. EnviousWispr is free on-device dictation with built-in AI polish. Your voice never leaves your phone.
+Free voice to text that runs on your phone. Speak naturally and put finished text where you were typing, with built-in AI polish. No subscription, no ads, no account. Your voice never leaves your phone.
+
+COMPLETELY FREE
+EnviousWispr is free, with no subscription, trial, in-app purchases, account or ads. Dictation and AI polish on your phone cost nothing. Cloud polish is optional: connect your own OpenAI, Anthropic or Google Gemini API key. Any charges come directly from that provider under its pricing and terms. Envious Labs never charges you.
 
 HOW IT WORKS
-Tap the floating bubble beside a compatible text box, speak, and tap Stop. Speech becomes text on your phone, then AI polish helps turn it into clear writing. Finished text lands at your cursor in apps such as Gmail, WhatsApp and Chrome. Keep the keyboard you already use.
+Tap the floating bubble beside a compatible text box, speak, and tap Stop. Speech becomes text on your phone, then AI polish helps turn it into clear writing. Finished text lands at your cursor in apps such as Gmail, WhatsApp and Chrome. Keep the keyboard you already use. Start from the floating bubble, Quick Settings tile or notification. Use the phone microphone or connected earbuds with automatic microphone selection.
 
 CLEANER WRITING
 Remove filler words, tidy punctuation and choose a tone and format for your writing. Add names, product terms and aliases to your dictionary to help EnviousWispr recognize your words. Completed dictations are saved in History on your phone so you can copy them again.
@@ -33,9 +37,6 @@ ON YOUR DEVICE, ON YOUR TERMS
 Speech recognition and local AI polish run on your phone. Audio is never uploaded. You can connect your own OpenAI, Anthropic or Google Gemini key for cloud polish; selected text and your custom words then go directly to that provider. The provider's charges and terms apply.
 
 EnviousWispr sends limited usage and crash reports to PostHog and Sentry to help find and fix problems. Automatic reports exclude audio, dictated words, names you enter, file contents and API keys. They use a random installation ID, and PostHog may derive an approximate city or region from the connection. If you send feedback, your chosen message, optional reply email and any diagnostics you choose to include are sent to Envious Labs through Sentry.
-
-FREE TO USE
-No app subscription, trial, account or ads. Start from the floating bubble, Quick Settings tile or notification. Use the phone microphone or connected earbuds with automatic microphone selection.
 
 WHAT YOU NEED
 Android 13 or newer, a 64-bit ARM phone with at least 6 GB of memory, and about 1.2 GB of free storage for the two on-device models. Works best on recent flagship phones such as the Galaxy S26 Ultra and Pixel 8. Many mid-range phones work, with dictation and AI polish taking a few seconds longer. Entry-level phones with older processors are not supported. Wi-Fi is recommended for setup.

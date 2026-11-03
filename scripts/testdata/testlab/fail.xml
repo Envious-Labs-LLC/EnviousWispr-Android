@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name='' hostname='localhost' tests='1' failures='1' skipped='0' errors='0' time='27.11' timestamp='2026-11-02T19:00:33'>
+    <properties />
+    <testcase name='allowAcceptsATapWhileTheGuideFloats' classname='com.envi.wispr.ui.FloatingGuideAllowProbe' time='27.11'>
+      <failure>java.lang.AssertionError: RESULT=ALLOW_FULLY_COVERED
+	at org.junit.Assert.fail(Assert.java:89)
+	at com.envi.wispr.ui.FloatingGuideAllowProbe.allowAcceptsATapWhileTheGuideFloats(FloatingGuideAllowProbe.kt:178)
+
+      </failure>
+    </testcase>
+  </testsuite>
+</testsuites>

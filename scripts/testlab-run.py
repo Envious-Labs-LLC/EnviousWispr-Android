@@ -251,6 +251,10 @@ def watch_loop(args, matrix: str, results: str, stop_at_first: bool) -> None:
             say(f"{'PASS' if ok else 'FAIL'} {device_dir(dev)}: {why}")
         open_ = [f"{device_dir(e['environment']['androidDevice'])}={e.get('state')}"
                  for e in m.get("testExecutions", []) if e.get("state") in OPEN_STATES]
+        if time.time() >= deadline and not matrix_done(m, reported):
+            say(f"DEADLINE {args.deadline_min} min: {cancel(args, matrix)}. "
+                f"Never ran or never finished: {' '.join(open_) or 'none'}")
+            sys.exit(3)
         if reported and stop_at_first and open_:
             say(f"STILL OPEN: {' '.join(open_)}")
             say(f"KEEP WATCHING: scripts/testlab-run.py watch --project {args.project} --matrix {matrix} "

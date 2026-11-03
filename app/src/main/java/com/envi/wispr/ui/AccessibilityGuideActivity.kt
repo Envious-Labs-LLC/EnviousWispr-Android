@@ -47,7 +47,7 @@ class AccessibilityGuideActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         compact = isInPictureInPictureMode
-        DebugLogger.log("AccessibilityGuide", "One UI raw=${FloatingGuideEligibility.oneUiRaw()} floating=${FloatingGuideEligibility.allows(this)}")
+        DebugLogger.log("AccessibilityGuide", "floating=${FloatingGuideEligibility.allows(this)}")
         phase = GuidePhase.decode(savedInstanceState?.getString(KEY_PHASE))?.let(GuidePhase::restored) ?: GuidePhase.Disclosure
         PasteAccessibilityService.loadStopMarker(this)
         entry = availability()
@@ -84,8 +84,8 @@ class AccessibilityGuideActivity : ComponentActivity() {
             GuidePhase.Disclosure, is GuidePhase.Launching, GuidePhase.Complete -> return
         }
         phase = GuidePhase.Launching(history)
-        // Float the guide over Settings only where a human tap on Allow was measured to work (#476). A refused or
-        // failed entry leaves the full-screen guide behind Settings, as on every other phone.
+        // Float the guide over Settings wherever picture-in-picture is available (#477). A refused or failed entry
+        // leaves the full-screen guide behind Settings, which already told the user every step before the hand-off.
         if (FloatingGuideEligibility.allows(this)) runCatching {
             enterPictureInPictureMode(
                 PictureInPictureParams.Builder().setAspectRatio(Rational(230, 215))
@@ -126,8 +126,11 @@ class AccessibilityGuideActivity : ComponentActivity() {
 
 private const val KEY_PHASE = "guide_phase"
 
-/** Shown on every floating frame and before the hand-off: Android parks the box over Allow (#477). */
+/** Shown before the hand-off: Android parks the box over Allow (#477). */
 private const val FLOATING_ALLOW_HELP = "Drag this box away from Allow. If Allow doesn’t respond, tap this box, close it with X, then tap Allow."
+
+/** The same instruction sized for the box itself, which Android keeps at about 170 dp on a Galaxy S24 (#477). */
+private const val FLOATING_ALLOW_HELP_SHORT = "Drag this box off Allow. Allow not working? Close this box, then tap Allow."
 
 @Composable
 private fun AccessibilityDisclosure(onAgree: () -> Unit, onDecline: () -> Unit) {
@@ -146,18 +149,49 @@ private fun AccessibilityDisclosure(onAgree: () -> Unit, onDecline: () -> Unit) 
     }
 }
 
-/** One frame of the illustrated path: the screen's title, the row to tap, and an optional note under it. */
-private data class GuideFrame(val step: String, val screen: String, val row: String, val note: String? = null, val allow: Boolean = false)
+/**
+ * One frame of the illustrated path: the screen's title, the row to tap, an optional note under it, and [short], the
+ * step as the small floating box lists it.
+ */
+private data class GuideFrame(val step: String, val screen: String, val row: String, val short: String, val note: String? = null)
 
 private fun guideFrames(samsung: Boolean, appLabel: String, reconnect: Boolean): List<GuideFrame> =
-    (if (samsung) listOf(GuideFrame("Tap Installed apps", "Accessibility", "Installed apps    ›")) else emptyList()) + listOf(
-        GuideFrame("Choose $appLabel", if (samsung) "Installed apps" else "Accessibility", "$appLabel    ${if (reconnect) "On" else "Off"}"),
-        if (reconnect) GuideFrame("Turn it off, then on again", appLabel, "On  →  Off  →  On")
-        else GuideFrame("Turn on the service", appLabel, "Off    ○"),
-        GuideFrame("Leave the shortcut off", appLabel, "$appLabel shortcut    Off  ○", note = "Leave this one off. Its floating button switches auto-paste off when tapped."),
-        GuideFrame("Review access, then Allow", "Review Android’s prompt", "Allow", allow = true),
-        GuideFrame("Come back to EnviousWispr", appLabel, "On    ✓"),
+    (if (samsung) listOf(GuideFrame("Tap Installed apps", "Accessibility", "Installed apps    ›", short = "Installed apps")) else emptyList()) + listOf(
+        GuideFrame("Choose $appLabel", if (samsung) "Installed apps" else "Accessibility", "$appLabel    ${if (reconnect) "On" else "Off"}", short = appLabel),
+        if (reconnect) GuideFrame("Turn it off, then on again", appLabel, "On  →  Off  →  On", short = "Off, then on")
+        else GuideFrame("Turn on the service", appLabel, "Off    ○", short = "Turn on"),
+        GuideFrame("Leave the shortcut off", appLabel, "$appLabel shortcut    Off  ○", short = "Shortcut: leave off", note = "Leave this one off. Its floating button switches auto-paste off when tapped."),
+        GuideFrame("Review access, then Allow", "Review Android’s prompt", "Allow", short = "Allow"),
+        GuideFrame("Come back to EnviousWispr", appLabel, "On    ✓", short = "Come back"),
     )
+
+/**
+ * The floating box over Settings (#477). Every step stays listed, so the box never claims a step the user has not
+ * reached; the looping demo only highlights one row at a time, and paused or reduced motion highlights nothing.
+ */
+@Composable
+private fun FloatingGuideBox(frames: List<GuideFrame>, step: Int, paused: Boolean, launchFailed: Boolean) {
+    Surface(Modifier.fillMaxSize(), color = Color(0xFF251F37), contentColor = Color(0xFFE8E4F1)) {
+        Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            if (launchFailed) {
+                Text("Tap this box, then tap expand to open the guide.", fontSize = 13.sp, fontWeight = FontWeight.Bold, lineHeight = 16.sp)
+            } else {
+                frames.forEachIndexed { index, frame ->
+                    val current = !paused && index == step
+                    Text(
+                        "${index + 1}. ${frame.short}",
+                        Modifier.fillMaxWidth().background(if (current) Color(0xFFE7DFFC) else Color.Transparent, RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 1.dp),
+                        fontSize = 11.sp, lineHeight = 12.sp,
+                        fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
+                        color = if (current) Color(0xFF17171B) else Color.Unspecified,
+                    )
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            Text(FLOATING_ALLOW_HELP_SHORT, fontSize = 10.sp, lineHeight = 12.sp)
+        }
+    }
+}
 
 @Composable
 private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHistory, compact: Boolean, launchFailed: Boolean, openSettings: () -> Unit, close: () -> Unit) {
@@ -188,24 +222,11 @@ private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHisto
     if (compact) {
         // The floating copy over Settings (#477). PiP content takes no input: the user drags the box, or taps it for
         // Android's own expand and close controls. Android parks it over Allow, so every frame says how to get past it.
-        Surface(Modifier.fillMaxSize(), color = Color(0xFF251F37), contentColor = Color(0xFFE8E4F1)) {
-            Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OnboardingLips(Modifier.size(20.dp))
-                    if (!paused) Text("${step + 1} / ${frames.size}", fontSize = 10.sp, modifier = Modifier.padding(start = 6.dp))
-                }
-                when {
-                    launchFailed -> Text("Tap this box, then tap expand to open the guide.", fontSize = 13.sp, fontWeight = FontWeight.Bold, lineHeight = 16.sp)
-                    // Reduced motion or a paused guide never advances, so it shows every step at once.
-                    paused -> frames.forEachIndexed { index, frame -> Text("${index + 1}. ${frame.step}", fontSize = 10.sp, lineHeight = 12.sp) }
-                    else -> {
-                        val frame = frames[step]
-                        Text(if (frame.allow) "Tap Allow" else frame.step, fontSize = 15.sp, fontWeight = FontWeight.Bold, lineHeight = 18.sp)
-                        Text(frame.row, Modifier.fillMaxWidth().background(Color(0xFFE7DFFC), RoundedCornerShape(5.dp)).padding(5.dp), fontSize = 10.sp, color = Color(0xFF17171B))
-                    }
-                }
-                Text(FLOATING_ALLOW_HELP, fontSize = 10.sp, lineHeight = 12.sp)
-            }
+        // Android sizes the box, not us: at 130% text the drag-away line fell off the bottom (emulator, 2026-11-02).
+        // The box keeps a fixed text size; the full-screen guide (Android's expand control) follows the user's size.
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density.density, fontScale = 1f)) {
+            FloatingGuideBox(frames, step, paused, launchFailed)
         }
         return
     }

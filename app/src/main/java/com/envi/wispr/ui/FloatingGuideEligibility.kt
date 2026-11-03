@@ -1,31 +1,29 @@
 package com.envi.wispr.ui
 
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Build
+import android.os.Process
 
 /**
- * Whether the accessibility guide may float over Android Settings in picture-in-picture (#476).
+ * Whether the accessibility guide floats over Android Settings in picture-in-picture (#477).
  *
- * Android's own Allow dialog refuses a tap while another app's window overlaps it (AOSP
- * `AccessibilityServiceWarning.getTouchConsumingListener`), and an app cannot place its PiP window. So PiP is
- * offered only on Samsung software where a human tapped Allow with the guide floating and it worked. The key is
- * Samsung's raw One UI value (`Build.VERSION.SEM_PLATFORM_INT`, read by reflection), compared exactly: not the
- * Android version (several One UI releases share one), not the build fingerprint (it changes with every monthly
- * patch). Absent or unreadable means no PiP. The measurements behind each entry are in the #476 plan.
+ * Offered on every phone whose software supports picture-in-picture and where the user has not switched it off for
+ * this app. Measured 2026-11-02 on eight Firebase Test Lab phones (Pixel 10, Pixel 8a, Galaxy S24, A35, A16, OnePlus
+ * Nord CE 3 Lite, OPPO A79, Motorola edge 50 fusion): Android's Allow dialog accepted a test-injected tap with the box
+ * on screen, after dragging the box away where it covered Allow. A human-finger check is the founder's S26 pass. Plan: docs/feature-requests/issue-477-2026-11-02-floating-settings-guide.md.
+ * A phone that refuses anyway keeps a way through: the box tells the user to close it, then tap Allow.
  */
 internal object FloatingGuideEligibility {
-    /** Raw `SEM_PLATFORM_INT` values measured with a human tap on Allow while the guide floated. */
-    private val MEASURED_ONE_UI: Set<Int> = emptySet()
+    fun allows(context: Context): Boolean = decide(
+        hasPictureInPicture = context.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE),
+        appOpMode = runCatching {
+            context.getSystemService(AppOpsManager::class.java)
+                .unsafeCheckOpNoThrow(AppOpsManager.OPSTR_PICTURE_IN_PICTURE, Process.myUid(), context.packageName)
+        }.getOrDefault(AppOpsManager.MODE_ERRORED),
+    )
 
-    fun allows(context: Context): Boolean = isSamsung() &&
-        context.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) &&
-        oneUiRaw()?.let { it in MEASURED_ONE_UI } == true
-
-    fun isSamsung(): Boolean = Build.MANUFACTURER.equals("samsung", ignoreCase = true)
-
-    /** Samsung's One UI value, or null on other makers and on any build where the field cannot be read. */
-    fun oneUiRaw(): Int? = if (!isSamsung()) null else runCatching {
-        Build.VERSION::class.java.getDeclaredField("SEM_PLATFORM_INT").getInt(null)
-    }.getOrNull()?.takeIf { it > 0 }
+    /** Floats only when the phone supports picture-in-picture and the app's permission reads exactly allowed. */
+    fun decide(hasPictureInPicture: Boolean, appOpMode: Int): Boolean =
+        hasPictureInPicture && appOpMode == AppOpsManager.MODE_ALLOWED
 }

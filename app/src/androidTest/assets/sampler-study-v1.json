@@ -1,0 +1,220 @@
+{
+  "version": 1,
+  "model_sha256": "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634",
+  "timing": [
+    {
+      "id": "S",
+      "text": "Please send the report tomorrow morning.",
+      "reference_words": 6,
+      "sha256": "72e75e489b524fa4009e420de9fb98dc71d4f3077ba95f607c28de13b2a5be03",
+      "controls": {
+        "styling": "semi-formal",
+        "structure": "lists",
+        "context": "general"
+      },
+      "require": [
+        "\\breport\\b",
+        "\\btomorrow morning\\b"
+      ],
+      "forbid": [],
+      "user_prompt_sha256": "283e104aa281517949c5406c21b435139bad96d60d9e38ab68ea9a5c51394753",
+      "requested_cap": 128
+    },
+    {
+      "id": "M",
+      "text": "Please send the report tomorrow morning. The meeting starts at nine, and Maya will bring the revised budget. We need three copies for the design team. Keep the original schedule, and confirm the delivery address before sending the package.",
+      "reference_words": 39,
+      "sha256": "5bcf8545fb186b9dd344b396070eb6c313a6ea1c47c23843a80d0fe8a0ef78fa",
+      "controls": {
+        "styling": "semi-formal",
+        "structure": "lists",
+        "context": "general"
+      },
+      "require": [
+        "\\bMaya\\b",
+        "\\b(?:three|3) copies\\b",
+        "\\b(?:nine|9)(?::00)?\\b",
+        "\\bdelivery address\\b"
+      ],
+      "forbid": [],
+      "user_prompt_sha256": "884a6ef7305cfcdd09d98c362308c521788753b331f47df12f8eb9061c88ca63",
+      "requested_cap": 351
+    },
+    {
+      "id": "L",
+      "text": "Please send the report tomorrow morning. The meeting starts at nine, and Maya will bring the revised budget. We need three copies for the design team. Keep the original schedule, and confirm the delivery address before sending the package. After lunch, review the customer notes and write down the two remaining questions. The purple lantern is beside the quiet garden. Jordan will arrive on Thursday with the replacement parts. Please leave the blue folder on the second shelf. Before we finish, check that the invoice lists forty five dollars and that the appointment is still set for Friday afternoon.",
+      "reference_words": 99,
+      "sha256": "69b35987e60cd8bc4fe6800814ad4efd92f164d4ee540e8814244ed5c105c2f5",
+      "controls": {
+        "styling": "semi-formal",
+        "structure": "lists",
+        "context": "general"
+      },
+      "require": [
+        "\\bMaya\\b",
+        "\\bJordan\\b",
+        "\\bThursday\\b",
+        "\\bFriday\\b",
+        "\\b(?:45|forty[- ]five)\\b",
+        "\\bpurple lantern\\b",
+        "\\bquiet garden\\b",
+        "\\bsecond shelf\\b"
+      ],
+      "forbid": [],
+      "user_prompt_sha256": "20d58b691ab5727a44f0b7ccb3a8b565ef2f1d056371eb9befedf6eb679cf464",
+      "requested_cap": 789
+    }
+  ],
+  "quality": [
+    {
+      "id": "names_numbers",
+      "text": "Maya will send the invoice for forty five dollars tomorrow morning.",
+      "reference_words": 11,
+      "sha256": "88c41d1aff8399bc70c359f29e74cb066ca5e9ab08da6c82b504b27c04cf87f6",
+      "controls": {
+        "styling": "semi-formal",
+        "structure": "lists",
+        "context": "general"
+      },
+      "require": [
+        "\\bMaya\\b",
+        "\\b(?:45|forty[- ]five)\\b",
+        "\\btomorrow morning\\b"
+      ],
+      "forbid": [],
+      "user_prompt_sha256": "64dc542a03c2352f11148ac79ae487e529f60408238bf57498b9f53628c3c2c7",
+      "requested_cap": 144
+    },
+    {
+      "id": "negation",
+      "text": "Do not cancel the Friday appointment. Jordan is not available on Thursday.",
+      "reference_words": 12,
+      "sha256": "581568e11350b55b88917db5a60c84225e5c3feeb6c33f05f20af65262bd70fb",
+      "controls": {
+        "styling": "semi-formal",
+        "structure": "lists",
+        "context": "general"
+      },
+      "require": [
+        "\\b(?:do not|don['’]t) cancel\\b",
+        "\\bFriday\\b",
+        "\\bJordan\\b",
+        "\\b(?:is not|isn['’]t) available\\b|\\bis unavailable\\b",
+        "\\bThursday\\b"
+      ],
+      "forbid": [],
+      "user_prompt_sha256": "083ab1c13d7f2e734f9e362be9005f4e2a8440d693dafb70f901914afb2dfcb1",
+      "requested_cap": 153
+    },
+    {
+      "id": "unicode",
+      "text": "Zoë and José will meet in München on Friday.",
+      "reference_words": 9,
+      "sha256": "61c93087ca41535b920c92ee7d3b81cf22ff8c7e7b9953217d276b7526fa9d8a",
+      "controls": {
+        "styling": "semi-formal",
+        "structure": "lists",
+        "context": "general"
+      },
+      "require": [
+        "Zoë",
+        "José",
+        "München",
+        "\\bFriday\\b"
+      ],
+      "forbid": [],
+      "user_prompt_sha256": "bc79a97dc3618eadc111d4b680ca0261275f7ce07380a12efef14c4ff559c1b4",
+      "requested_cap": 128
+    },
+    {
+      "id": "list",
+      "text": "First bring the blue folder, second print three copies, third call Jordan.",
+      "reference_words": 12,
+      "sha256": "69c4c00e869e8e73d7f1f89aa9b4c8b7c5b0cd761576ae86197ae39aaa2f968b",
+      "controls": {
+        "styling": "semi-formal",
+        "structure": "lists",
+        "context": "general"
+      },
+      "require": [
+        "blue folder",
+        "\\b(?:three|3) copies\\b",
+        "\\bJordan\\b",
+        "(?m)^\\s*(?:[-*•]|[123][.)])\\s"
+      ],
+      "forbid": [],
+      "user_prompt_sha256": "5ee0f5e91a5f3d91b4bd6eba32d09bad8c38db22874dd77b2505a93d5a877d80",
+      "requested_cap": 153
+    },
+    {
+      "id": "casual",
+      "text": "Please tell Maya that the revised report will arrive tomorrow.",
+      "reference_words": 10,
+      "sha256": "587040902039ebfeda0c414751fc71650c07e2cbe61912858f3a650f97094ae0",
+      "controls": {
+        "styling": "casual",
+        "structure": "lists",
+        "context": "general"
+      },
+      "require": [
+        "\\bMaya\\b",
+        "revised report",
+        "\\btomorrow\\b"
+      ],
+      "forbid": [],
+      "user_prompt_sha256": "c1a01238d38febeffa0ab8e6f248760eed3925bdd48e830ab743e492d37b84c4",
+      "requested_cap": 138
+    },
+    {
+      "id": "prose",
+      "text": "First bring the blue folder, second print three copies, third call Jordan.",
+      "reference_words": 12,
+      "sha256": "69c4c00e869e8e73d7f1f89aa9b4c8b7c5b0cd761576ae86197ae39aaa2f968b",
+      "controls": {
+        "styling": "semi-formal",
+        "structure": "prose",
+        "context": "general"
+      },
+      "require": [
+        "blue folder",
+        "\\b(?:three|3) copies\\b",
+        "\\bJordan\\b"
+      ],
+      "forbid": [
+        "(?m)^\\s*(?:[-*•]|[123][.)])\\s"
+      ],
+      "user_prompt_sha256": "ad5d8ae0da683062b2297e1873120d53019109b4d9dc90a71f16d9319a2cbc82",
+      "requested_cap": 153
+    },
+    {
+      "id": "email",
+      "text": "Hi Maya, please send the revised budget tomorrow. Thank you.",
+      "reference_words": 10,
+      "sha256": "17fa32483b0d8f1b610f5ff40a0712ca9a619d4f18c0e24da2e68e3b4a8036d5",
+      "controls": {
+        "styling": "semi-formal",
+        "structure": "lists",
+        "context": "email"
+      },
+      "require": [
+        "\\bMaya\\b",
+        "revised budget",
+        "\\btomorrow\\b"
+      ],
+      "forbid": [],
+      "user_prompt_sha256": "28bfbfb6f6f82e035903adaf5971d6b0a64be3d18c5803f1f1a01033416d5194",
+      "requested_cap": 136
+    }
+  ],
+  "limitations": [
+    "English-first synthetic text; Unicode coverage is limited to the named accented BMP names.",
+    "No speech recognition, microphone, editor or broad language acceptance."
+  ],
+  "system_prompt_sha256": "6ecb6800f96b00cf612631552eff606a829feb2be8449fa95f9f150713b89327",
+  "settings": {
+    "context": 2048,
+    "threads": 4,
+    "batch": 512,
+    "ubatch": 512
+  }
+}

@@ -37,6 +37,19 @@ android {
         }
     }
 
+    buildTypes {
+        getByName("debug") {
+            externalNativeBuild {
+                cmake { arguments += listOf("-DEW_SAMPLER_STUDY=ON") }
+            }
+        }
+        getByName("release") {
+            externalNativeBuild {
+                cmake { arguments += listOf("-DEW_SAMPLER_STUDY=OFF") }
+            }
+        }
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")

@@ -35,12 +35,15 @@ internal sealed interface PreparedText {
         override val context: PolishContext,
         val processing: com.envi.wispr.processing.ProcessingUsage? = null,
         val requestId: Long = 0,
+        val diagnostics: com.envi.wispr.polish.LocalPolishDiagnostics? = null,
+        val waitMs: Long? = null,
     ) : PreparedText
 
     data class Fallback(
         override val text: String,
         val reason: PolishReason,
         override val context: PolishContext,
+        val waitMs: Long? = null,
     ) : PreparedText
 }
 
@@ -88,6 +91,7 @@ internal class TakePolishController(
     private val restore: (String, StructuredTermRestorer.Matcher) -> String = { text, matcher -> matcher.restore(text) },
     /** The deterministic cleanup with its language detection (#252: a JVM row makes it throw). */
     private val cleanup: (String, CleanupOptions, LanguageDetector) -> String = PolishFallback::deterministic,
+    private val nowMs: () -> Long = android.os.SystemClock::elapsedRealtime,
 ) {
     /**
      * Who answers this take's polish (#234), decided once under [lock]: nobody yet, a request that is open, or
@@ -102,6 +106,9 @@ internal class TakePolishController(
 
     /** Guarded by [lock]. */
     private var decision: Decision = Decision.Undecided
+    /** Written at request-open and the winning claim, then read by off-main preparation. */
+    private var localOpenedAtMs: Long? = null
+    @Volatile private var localWaitMs: Long? = null
 
     /**
      * Polish was lost for this take (#234): refused at bind, never connected, or its process died while the
@@ -184,7 +191,10 @@ internal class TakePolishController(
             text = transcript()
             when (val seen = decision) {
                 is Decision.Open -> ledger.claim(seen.requestId).also { claimed ->
-                    if (claimed) decision = Decision.Claimed
+                    if (claimed) {
+                        decision = Decision.Claimed
+                        recordWait()
+                    }
                 }
                 Decision.Undecided, Decision.Claimed -> false
             }
@@ -234,6 +244,7 @@ internal class TakePolishController(
                     return@synchronized null
                 }
                 val opened = ledger.open()
+                localOpenedAtMs = if (takePreferences.policy is PolishPolicy.LocalS1) nowMs() else null
                 decision = Decision.Open(opened)
                 // The watchdog is armed BEFORE the binder call so the call itself is inside the budget.
                 // The ledger is the only first-wins gate: an outcome that arrives first closes it.
@@ -355,6 +366,7 @@ internal class TakePolishController(
                     outcome.statusCode,
                     PolishContext.from(takePreferences.policy),
                     outcome.processing, outcome.requestId,
+                    outcome.diagnostics, localWaitMs,
                 )
             }
         }
@@ -376,7 +388,12 @@ internal class TakePolishController(
      * answer, watchdog and error exit goes through here, so a polish disconnect sees who won.
      */
     private fun claim(requestId: Long): Boolean = synchronized(lock) {
-        ledger.claim(requestId).also { claimed -> if (claimed) decision = Decision.Claimed }
+        ledger.claim(requestId).also { claimed ->
+            if (claimed) {
+                decision = Decision.Claimed
+                recordWait()
+            }
+        }
     }
 
     /**
@@ -389,7 +406,15 @@ internal class TakePolishController(
             Decision.Undecided -> NO_REQUEST
             is Decision.Open -> seen.requestId.takeIf { ledger.claim(it) }
             Decision.Claimed -> null
-        }?.also { decision = Decision.Claimed }
+        }?.also {
+            decision = Decision.Claimed
+            recordWait()
+        }
+    }
+
+    /** Called only by a winning claim under the existing decision lock. */
+    private fun recordWait() {
+        localWaitMs = localOpenedAtMs?.let { (nowMs() - it).coerceAtLeast(0L) }
     }
 
     /**
@@ -425,7 +450,7 @@ internal class TakePolishController(
      * fail-open-to-the-last-good-text), so the fallback always hands its words back.
      */
     private fun preparedFallback(rawText: String, takePreferences: SessionPreferences, reason: PolishReason): PreparedText.Fallback =
-        PreparedText.Fallback(deterministic(rawText, takePreferences), reason, PolishContext.from(takePreferences.policy))
+        PreparedText.Fallback(deterministic(rawText, takePreferences), reason, PolishContext.from(takePreferences.policy), localWaitMs)
 
     private fun deterministic(rawText: String, takePreferences: SessionPreferences): String {
         val prepared = restoreVocabulary(rawText, takePreferences, STEP_RESTORE_RAW) ?: return rawText

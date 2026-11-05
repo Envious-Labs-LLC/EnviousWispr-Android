@@ -4,11 +4,24 @@ import com.envi.wispr.processing.*
 import org.junit.Assert.*
 import org.junit.Test
 
-/** Product Outcome: the next take must use its new backend, not a cached old model. */
+/** Product Outcome: backend reuse. Observability Contract: load observations follow only that resident instance. */
 class S1LoadedConfigurationTest {
     private val context = "a".repeat(64)
     private val qualification = ProcessingQualification.of(context, setOf(ProcessingBackend.GPU, ProcessingBackend.CPU))
     private fun config(pref: ProcessingPreference = ProcessingPreference.DEFAULT, ctx: String = context) = S1LoadConfiguration(ctx, GENIEX_BACKENDS, pref, qualification)
+    @Test fun loadObservationSurvivesReuseButNeverAFailedReplacementOrClear() {
+        val resident = S1LoadedConfiguration()
+        val original = config().copy(artifactStamp = "first")
+        val observed = S1LoadTiming(123, 456, 7)
+        resident.ensure(original, loadTiming = { observed }) { ProcessingBackend.GPU }
+        assertEquals(observed, resident.ensure(original) { error("Matching runtime reloaded") }.loadTiming)
+        val replacement = original.copy(artifactStamp = "second")
+        assertTrue(runCatching { resident.ensure(replacement) { error("Load failed") } }.isFailure)
+        assertNull(resident.loaded)
+        assertNull(resident.ensure(replacement) { ProcessingBackend.GPU }.loadTiming)
+        resident.clear()
+        assertNull(resident.loaded)
+    }
     @Test fun aNewerGpuCheckInvalidatesAnOlderFailedGpuDecisionInACpuFallback() {
         val pref = ProcessingPreference.DEFAULT.custom(listOf(ProcessingBackend.GPU, ProcessingBackend.CPU))
         val resident = S1LoadedConfiguration()

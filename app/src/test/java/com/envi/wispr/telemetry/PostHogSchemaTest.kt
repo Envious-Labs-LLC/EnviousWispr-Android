@@ -42,6 +42,8 @@ class PostHogSchemaTest {
         "live_after_ms", "recording_s", "asr_ms", "asr_chars", "peak_amplitude", "polish_ms", "polish_status",
         "settings_answer_ms", "matcher_ready_ms", "policy_loaded_ms", "admission_observed_ms", "bind_requested_ms",
         "live_received_ms", "latency_ms", "recovered",
+        "polish_queue_ms", "polish_generation_ms", "polish_last_load_ms", "polish_last_load_age_ms",
+        "polish_last_load_major_faults", "polish_wait_ms",
         "is_fresh_install", "models_ready", "accessibility_granted", "mic_granted", "onboarding_complete",
         "custom_words_count", "test_lab", "elapsed_s", "duration_s", "first_run",
         "\$is_emulator", "\$process_person_profile", "\$sample_threshold",
@@ -53,8 +55,8 @@ class PostHogSchemaTest {
         assertEquals("the two lists are disjoint", emptySet<String>(), numberOrBooleanKeys intersect ruled)
         assertEquals("every rule is for an allowed key", emptySet<String>(), ruled - PayloadSanitizer.allowedKeys)
         assertEquals("every allowed key is one or the other", PayloadSanitizer.allowedKeys, numberOrBooleanKeys + ruled)
-        assertEquals(91, PayloadSanitizer.allowedKeys.size)
-        assertEquals(30, numberOrBooleanKeys.size)
+        assertEquals(99, PayloadSanitizer.allowedKeys.size)
+        assertEquals(36, numberOrBooleanKeys.size)
     }
 
     @Test

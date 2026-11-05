@@ -104,8 +104,8 @@ internal class TakeOutcomeRecorder(
     }
 
     /** Before the payload and the reservation (#176): any later ending carries the polish facts. */
-    fun polishDone(reason: PolishReason, latencyMs: Long, statusCode: Int, contextToken: String) {
-        val record = facts.recordPolish(reason, latencyMs, statusCode, contextToken)
+    fun polishDone(reason: PolishReason, latencyMs: Long, statusCode: Int, contextToken: String, diagnostics: com.envi.wispr.polish.LocalPolishDiagnostics? = null, waitMs: Long? = null, tier: com.envi.wispr.device.DeviceTier? = null) {
+        val record = facts.recordPolish(reason, latencyMs, statusCode, contextToken, diagnostics, waitMs, tier)
         breadcrumb("take", "polish_done", record.breadcrumb)
         record.defect?.let { defect(it, record.defectData) }
     }

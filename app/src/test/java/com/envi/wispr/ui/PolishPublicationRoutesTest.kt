@@ -58,14 +58,14 @@ class PolishPublicationRoutesTest {
         // The polish facts, their breadcrumb and their defect keep their place before the payload and the reservation:
         // one recorder call on the owner's side (#329), and inside it the three in their order.
         val order = listOf(
-            "current.outcome.polishDone(reason, latencyMs, statusCode, polishContext.encode())",
+            "current.outcome.polishDone(",
             "val payload = Publication(",
             "synchronized(publishLock)",
         ).map { publication.indexOf(it) }
         assertTrue("polishDone < payload < reservation: $order", order.all { it >= 0 } && order == order.sorted())
         val recorder = File("src/main/java/com/envi/wispr/telemetry/TakeOutcomeRecorder.kt").readText().substringAfter("fun polishDone(")
         val inside = listOf(
-            "facts.recordPolish(reason, latencyMs, statusCode, contextToken)",
+            "facts.recordPolish(reason, latencyMs, statusCode, contextToken, diagnostics, waitMs, tier)",
             "breadcrumb(\"take\", \"polish_done\", record.breadcrumb)",
             "record.defect?.let { defect(it, record.defectData) }",
         ).map { recorder.indexOf(it) }

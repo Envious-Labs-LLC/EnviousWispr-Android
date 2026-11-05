@@ -187,6 +187,9 @@ internal object SentryBootstrap {
         val liveTakeId = Telemetry.currentTakeId()?.takeIf { SentrySchema.judge("take_id", it) is SentrySchema.Verdict.Keep }
         val effectiveTakeId = explicitTakeId ?: liveTakeId
         if (effectiveTakeId == null) event.removeTag(TAG_TAKE_ID) else event.setTag(TAG_TAKE_ID, effectiveTakeId)
+        val deviceTier = (event.getExtra("device_tier") as? String)
+            ?.takeIf { SentrySchema.judge("device.tier", it) is SentrySchema.Verdict.Keep }
+        if (deviceTier != null) event.setTag("device.tier", deviceTier)
         event.tags?.let { tags -> event.tags = judged(tags).mapValues { (_, v) -> v.toString() }.toMutableMap() }
         event.extras?.let { extras -> event.extras = judged(extras).toMutableMap() }
         sanitizeContexts(event.contexts)

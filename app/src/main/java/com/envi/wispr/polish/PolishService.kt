@@ -78,9 +78,11 @@ class PolishService : Service() {
     private val resident = S1LoadedConfiguration()
     private var lastLoadStamp: ProcessingEvidenceStamp? = null
     private var lastLoadObservation: Pair<S1LoadConfiguration, Pair<String, Boolean>>? = null
+    private var selectedRuntime: S1RuntimeKind? = null
     /** One runtime per process, chosen before any native polish code loads (#449). */
     private val s1Runtime: S1Runtime by lazy {
         S1Runtime.create(S1RuntimeKind.current, applicationContext, deadlineScheduler).also {
+            selectedRuntime = S1RuntimeKind.current
             DebugLogger.log(TAG, "Local S1 runtime: ${S1RuntimeKind.current.identity} (${S1RuntimeKind.reason})")
         }
     }
@@ -199,9 +201,13 @@ class PolishService : Service() {
             }
             val tracksLocal = effectivePolicy is PolishPolicy.LocalS1
             if (tracksLocal) activeLocalRequests.incrementAndGet()
+            val acceptedAtMs = SystemClock.elapsedRealtime()
             try {
                 // The budget's debug override is a file read (#291): it happens on the worker, never on this binder thread.
-                executor.execute { work(entry, callback, requestId, raw, options, effectivePolicy, localBudget(), tracksLocal, log) }
+                executor.execute {
+                    val workerStartedAtMs = SystemClock.elapsedRealtime()
+                    work(entry, callback, requestId, raw, options, effectivePolicy, localBudget(), tracksLocal, log, acceptedAtMs, workerStartedAtMs)
+                }
             } catch (failure: RuntimeException) {
                 if (tracksLocal) activeLocalRequests.decrementAndGet()
                 registry.release(entry)
@@ -257,16 +263,25 @@ class PolishService : Service() {
         budget: LocalPolishBudget,
         tracksLocal: Boolean,
         log: TakeLog,
+        acceptedAtMs: Long,
+        workerStartedAtMs: Long,
     ) {
         val started = SystemClock.elapsedRealtime()
-        val timeoutUsage = if (effectivePolicy is PolishPolicy.LocalS1) {
-            val captured = configuration(effectivePolicy)
+        val captured = (effectivePolicy as? PolishPolicy.LocalS1)?.let(::configuration)
+        val timing = captured?.let {
+            LocalPolishTiming(
+                (workerStartedAtMs - acceptedAtMs).coerceAtLeast(0L), selectedRuntime,
+                resident.loaded?.takeIf { resident.matches(captured) }?.loadTiming,
+                SystemClock::elapsedRealtime,
+            )
+        }
+        val timeoutUsage = if (effectivePolicy is PolishPolicy.LocalS1 && captured != null) {
             ProcessingUsage(resident.loaded?.takeIf { it.requested == captured }?.backend, captured.contextId, effectivePolicy.processing,
                 false, runtimeFailed = true, artifactStamp = captured.artifactStamp, artifactSha256 = installedS1Sha256())
         } else null
         // Armed only for a local generation: the cloud client bounds itself and honours cancel.
         val armed = if (effectivePolicy is PolishPolicy.LocalS1 && !poisoned.get()) {
-            deadline.arm(budget.hardMs) { expireLocal(entry, callback, requestId, raw, options, started, log, timeoutUsage) }
+            deadline.arm(budget.hardMs) { expireLocal(entry, callback, requestId, raw, options, started, log, timeoutUsage, timing) }
         } else null
         // The count guards a WEDGED generation. It is released before a healthy delivery: the client may
         // publish and unbind before this worker's finally, and destroy must not read that as work in flight.
@@ -282,15 +297,15 @@ class PolishService : Service() {
             } else if (poisoned.get()) {
                 fallbackOutcome(requestId, raw, options, log, PolishReason.LOCAL_FAILED)
             } else {
-                run(requestId, raw, options, effectivePolicy, entry, started, budget, log)
+                run(requestId, raw, options, effectivePolicy, entry, started, budget, log, timing)
             }
             if (outcome.reason == PolishReason.LOCAL_TIMEOUT) {
                 // The cooperative timeout returned: same winning path as the hard timer.
                 armed?.cancel()
-                expireLocal(entry, callback, requestId, raw, options, started, log, timeoutUsage)
+                expireLocal(entry, callback, requestId, raw, options, started, log, timeoutUsage, timing)
             } else if (armed == null || armed.cancel()) {
                 releaseLocal()
-                entry.deliverOnce { deliver(callback, outcome, log) }
+                entry.deliverOnce { deliver(callback, outcome.copy(diagnostics = timing.snapshotOrNull()), log) }
             }
             // else: the hard deadline already expired and owns the delivery and the exit.
         } catch (exception: Exception) {
@@ -298,7 +313,7 @@ class PolishService : Service() {
             val fallback = fallbackOutcome(requestId, raw, options, log, PolishReason.UNEXPECTED, SystemClock.elapsedRealtime() - started)
             if (armed == null || armed.cancel()) {
                 releaseLocal()
-                entry.deliverOnce { deliver(callback, fallback, log) }
+                entry.deliverOnce { deliver(callback, fallback.copy(diagnostics = timing.snapshotOrNull()), log) }
             }
         } finally {
             releaseLocal()
@@ -322,6 +337,7 @@ class PolishService : Service() {
         started: Long,
         log: TakeLog,
         processing: ProcessingUsage?,
+        timing: LocalPolishTiming?,
     ) {
         expireOnce(
             entry,
@@ -330,9 +346,10 @@ class PolishService : Service() {
                 log.warn("Local polish deadline expired for request $requestId; engine process will end")
             },
             deliver = {
+                val diagnostics = timing.snapshotOrNull()
                 deliver(
                     callback,
-                    fallbackOutcome(requestId, raw, options, log, PolishReason.LOCAL_TIMEOUT, SystemClock.elapsedRealtime() - started).copy(processing = processing?.copy(generationStamp = ProcessingEvidenceStamp.now(this))),
+                    fallbackOutcome(requestId, raw, options, log, PolishReason.LOCAL_TIMEOUT, SystemClock.elapsedRealtime() - started).copy(processing = processing?.copy(generationStamp = ProcessingEvidenceStamp.now(this)), diagnostics = diagnostics),
                     log,
                 )
             },
@@ -414,6 +431,7 @@ class PolishService : Service() {
         started: Long,
         budget: LocalPolishBudget,
         log: TakeLog,
+        timing: LocalPolishTiming?,
     ): PolishOutcome {
         // What the model adapter learned about its own failure, recorded before it hands null back
         // to the pipeline, which cannot tell a thrown adapter from a blank answer.
@@ -433,7 +451,7 @@ class PolishService : Service() {
                     null
                 } else {
                     attemptedBackend = resident.loaded?.backend
-                    polishWithS1(cleaned, policy.control, budget.cooperativeMs, log) { reason ->
+                    polishWithS1(cleaned, policy.control, budget.cooperativeMs, log, timing) { reason ->
                         attempt = reason; generationFailed = reason == PolishReason.LOCAL_FAILED
                     }
                 }
@@ -606,10 +624,14 @@ class PolishService : Service() {
             modelStatus = "Loading ${S1Config.MODEL_NAME}"
             val started = SystemClock.elapsedRealtime()
             val faultsBefore = MajorFaults.read()
+            var loadTiming: S1LoadTiming? = null
             try {
                 val resolved = S1ModelSelector.resolvedConfiguration(requested, selection)
-                val loaded = resident.ensure(resolved, failures = { s1Runtime.failedComputeUnits.split(',').filter(String::isNotEmpty).map(ProcessingBackend::fromWire).toSet() }, failureStamp = { lastLoadStamp }, release = { s1Runtime.close() }) { candidates ->
+                val loaded = resident.ensure(resolved, failures = { s1Runtime.failedComputeUnits.split(',').filter(String::isNotEmpty).map(ProcessingBackend::fromWire).toSet() }, failureStamp = { lastLoadStamp }, release = { s1Runtime.close() }, loadTiming = { loadTiming }) { candidates ->
                     try { s1Runtime.load(selection.file.path, candidates.map { it.wire }) } finally { lastLoadStamp = ProcessingEvidenceStamp.now(this) }
+                    val completedAt = SystemClock.elapsedRealtime()
+                    val faults = MajorFaults.read()?.let { after -> faultsBefore?.let { after - it } }
+                    loadTiming = S1LoadTiming(completedAt - started, completedAt, faults)
                     ProcessingBackend.fromWire(s1Runtime.activeComputeUnit)
                 }
                 lastLoadObservation = loaded.requested to (s1Runtime.failedComputeUnits to s1Runtime.initializationFailed)
@@ -619,7 +641,7 @@ class PolishService : Service() {
                 val elapsed = SystemClock.elapsedRealtime() - started
                 modelStatus = "Ready on ${s1Runtime.activeComputeUnit.uppercase()} in ${elapsed}ms (standard model)"
                 // Major faults during the load (#465): a reload read back from flash shows here, not in the status line.
-                val faults = MajorFaults.read()?.let { after -> faultsBefore?.let { after - it } }
+                val faults = loaded.loadTiming?.majorFaults
                 DebugLogger.log(TAG, "${S1Config.MODEL_NAME} loaded: $result; $modelStatus; majorFaults=${faults ?: "unknown"}")
             } catch (exception: Throwable) {
                 lastLoadObservation = requested to (s1Runtime.failedComputeUnits to (s1Runtime.initializationFailed || exception is S1RuntimeReleaseException))
@@ -683,6 +705,7 @@ class PolishService : Service() {
         control: S1ControlSettings,
         cooperativeMs: Long,
         log: TakeLog,
+        timing: LocalPolishTiming?,
         record: (PolishReason) -> Unit,
     ): String? {
         debugStall()
@@ -690,12 +713,11 @@ class PolishService : Service() {
         val userPrompt = S1PromptBuilder.buildUserPrompt(rawText, control)
         log.words("local_prompt") { userPrompt }
         val output = try {
-            val generated = s1Runtime.generate(
-                S1Config.SYSTEM_PROMPT,
-                userPrompt,
-                S1PromptBuilder.maxOutputTokens(rawText),
-                cooperativeMs,
-            )
+            val maxTokens = S1PromptBuilder.maxOutputTokens(rawText)
+            val generate = {
+                s1Runtime.generate(S1Config.SYSTEM_PROMPT, userPrompt, maxTokens, cooperativeMs)
+            }
+            val generated = if (timing == null) generate() else timing.measureGeneration(generate)
             if (generated == null) {
                 record(PolishReason.LOCAL_TIMEOUT)
                 return null

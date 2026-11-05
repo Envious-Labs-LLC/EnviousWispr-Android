@@ -341,7 +341,7 @@ asserted nothing, it only printed. **The detector named the correct language on 
 | en | on my way | 3 | 0.973 | accepted |
 | en | yes | 1 | 0.800 | abstains |
 | en | we should ship on friday at three o clock | 9 | 1.000 | accepted |
-| en | call me at two zero three nine five four eight eight seven nine | 13 | 1.000 | accepted |
+| en | call me at two one two five five five zero one four seven | 13 | 1.000 | accepted |
 | nl | dit is ten minste duidelijk | 5 | 0.977 | accepted |
 | de | wir treffen uns um drei | 5 | 0.961 | accepted |
 | de | ich brauche hundert euro fuer das buch | 7 | 0.987 | accepted |

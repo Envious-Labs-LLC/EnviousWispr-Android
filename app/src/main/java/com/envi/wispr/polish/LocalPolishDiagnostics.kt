@@ -75,8 +75,8 @@ internal class LocalPolishTiming(
     }
 
     fun snapshot(): LocalPolishDiagnostics {
-        val seen = generation.get()
         val sampledAt = nowMs()
+        val seen = generation.get()
         val duration = when (seen) {
             Generation.NotStarted -> null
             is Generation.Running -> (sampledAt - seen.startedAtMs).coerceAtLeast(0L)

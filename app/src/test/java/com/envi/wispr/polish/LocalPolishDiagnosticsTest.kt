@@ -9,6 +9,40 @@ import org.junit.Test
 
 /** Observability Contract: timings must identify the observed phase, including a wedged native call. */
 class LocalPolishDiagnosticsTest {
+    @Test fun completionDuringClockSamplingUsesTheFinishedSpanForReturnAndThrow() {
+        for (throws in listOf(false, true)) {
+            val clock = AtomicLong(100)
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val worker = Executors.newSingleThreadExecutor()
+            val snapshotThread = Thread.currentThread()
+            lateinit var completed: java.util.concurrent.Future<Boolean>
+            val timing = LocalPolishTiming(0, S1RuntimeKind.PORTABLE_CPU, null) {
+                if (Thread.currentThread() === snapshotThread) {
+                    clock.set(125)
+                    release.countDown()
+                    assertEquals(throws, completed.get(3, TimeUnit.SECONDS))
+                    900L
+                } else clock.get()
+            }
+            try {
+                completed = worker.submit<Boolean> {
+                    runCatching {
+                        timing.measureGeneration {
+                            entered.countDown()
+                            check(release.await(3, TimeUnit.SECONDS)) { "Fixture generation was never released" }
+                            if (throws) error("fixture")
+                        }
+                    }.isFailure
+                }
+                assertTrue("Generation never reached its gate", entered.await(3, TimeUnit.SECONDS))
+                assertEquals(25L, timing.snapshot().generationMs)
+            } finally {
+                release.countDown()
+                worker.shutdownNow()
+            }
+        }
+    }
     @Test fun unstartedGenerationIsAbsentAndHistoricalLoadIsAged() {
         val timing = LocalPolishTiming(7, S1RuntimeKind.PORTABLE_CPU, S1LoadTiming(120, 200, 3)) { 250 }
         assertEquals(

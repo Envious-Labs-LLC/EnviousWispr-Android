@@ -6,9 +6,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
-#include <cmath>
-#include <memory>
-#include <optional>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -19,13 +16,6 @@
 #include "ggml-backend.h"
 #include "llama.h"
 #include "sampling.h"
-
-#ifndef EW_SAMPLER_STUDY
-#define EW_SAMPLER_STUDY 0
-#endif
-#if EW_SAMPLER_STUDY
-#include "s1_study.h"
-#endif
 
 namespace {
 
@@ -67,9 +57,6 @@ void llama_log_callback(ggml_log_level, const char *, void *) {
 }
 
 bool abort_requested(void *) {
-#if EW_SAMPLER_STUDY
-    sampler_study::native_callback(g_abort);
-#endif
     return g_abort.load(std::memory_order_relaxed);
 }
 
@@ -158,48 +145,9 @@ std::string aborted(int prompt_tokens, int generated) {
     return "ERROR: S1 generation aborted";
 }
 
-enum class SamplerMode { Baseline, LibraryGreedy };
-
-common_params_sampling s1_sampling_parameters() {
-    common_params_sampling sampling;
-    sampling.temp = 0.0f;
-    sampling.top_k = 0;
-    sampling.top_p = 1.0f;
-    sampling.min_p = 0.0f;
-    sampling.penalty_repeat = 1.0f;
-    return sampling;
-}
-
-common_sampler * make_sampler(common_params_sampling sampling, SamplerMode mode) {
-#if EW_SAMPLER_STUDY
-    if (mode == SamplerMode::LibraryGreedy) sampling.samplers.clear();
-#else
-    GGML_UNUSED(mode);
-#endif
-    common_sampler * sampler = common_sampler_init(g_model, sampling);
-#if EW_SAMPLER_STUDY
-    if (sampler != nullptr && mode == SamplerMode::LibraryGreedy) {
-        llama_sampler * chain = common_sampler_get(sampler);
-        const int count = llama_sampler_chain_n(chain);
-        if (count == 0 || std::strcmp(llama_sampler_name(llama_sampler_chain_get(chain, count - 1)), "dist") != 0) {
-            common_sampler_free(sampler);
-            return nullptr;
-        }
-        llama_sampler_free(llama_sampler_chain_remove(chain, count - 1));
-        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
-    }
-#endif
-    return sampler;
-}
-
 std::string generate_text(const std::string & system_prompt,
                           const std::string & user_prompt,
-                          int requested_tokens,
-                          SamplerMode mode = SamplerMode::Baseline) {
-#if EW_SAMPLER_STUDY
-    sampler_study::CallLifetime call;
-    sampler_study::phase(sampler_study::Before, g_abort);
-#endif
+                          int requested_tokens) {
     g_last_end[0] = END_NONE; g_last_end[1] = 0; g_last_end[2] = 0;
     if (g_model == nullptr || g_context == nullptr || !g_templates) {
         return "ERROR: S1-mini is not loaded";
@@ -231,24 +179,19 @@ std::string generate_text(const std::string & system_prompt,
     const int available_tokens = g_context_size - prompt_count - 8;
     if (available_tokens <= 0) return "ERROR: S1 prompt exceeds the mobile context limit";
     const int max_tokens = std::max(1, std::min(requested_tokens, available_tokens));
-#if EW_SAMPLER_STUDY
-    if (sampler_study::enabled.load()) {
-        sampler_study::observation.effective_cap = max_tokens;
-        sampler_study::observation.tokens.reserve(max_tokens + 1);
-    }
-    sampler_study::set_native_phase(sampler_study::PromptNative);
-#endif
 
     const int decoded = decode_tokens(prompt_tokens);
     if (decoded == 2) return aborted(prompt_count, 0);
     if (decoded != 0) return "ERROR: Prompt decode failed";
 
-    std::unique_ptr<common_sampler, decltype(&common_sampler_free)> sampler(
-        make_sampler(s1_sampling_parameters(), mode), common_sampler_free);
+    common_params_sampling sampling;
+    sampling.temp = 0.0f;
+    sampling.top_k = 0;
+    sampling.top_p = 1.0f;
+    sampling.min_p = 0.0f;
+    sampling.penalty_repeat = 1.0f;
+    common_sampler * sampler = common_sampler_init(g_model, sampling);
     if (sampler == nullptr) return "ERROR: S1 sampler initialization failed";
-#if EW_SAMPLER_STUDY
-    sampler_study::SamplerObservation sampler_observation(sampler.get());
-#endif
 
     std::string output;
     int position = prompt_count;
@@ -257,21 +200,12 @@ std::string generate_text(const std::string & system_prompt,
     int generated = 0;
 
     for (; generated < max_tokens; ++generated) {
-#if EW_SAMPLER_STUDY
-        if (generated > 0) sampler_study::phase(sampler_study::BetweenTokens, g_abort);
-#endif
         if (g_abort.load()) {
+            common_sampler_free(sampler);
             return aborted(prompt_count, generated);
         }
-        const llama_token token = common_sampler_sample(sampler.get(), g_context, -1);
-#if EW_SAMPLER_STUDY
-        if (mode == SamplerMode::LibraryGreedy &&
-            !sampler_study::valid_winner(*common_sampler_get_candidates(sampler.get(), false))) {
-            return "ERROR: S1 sampler selected an invalid logit";
-        }
-        if (sampler_study::enabled) sampler_study::observation.tokens.push_back(token);
-#endif
-        common_sampler_accept(sampler.get(), token, true);
+        const llama_token token = common_sampler_sample(sampler, g_context, -1);
+        common_sampler_accept(sampler, token, true);
         if (llama_vocab_is_eog(vocab, token)) {
             end = END_EOS;
             break;
@@ -281,18 +215,18 @@ std::string generate_text(const std::string & system_prompt,
 
         common_batch_clear(g_batch);
         common_batch_add(g_batch, token, position++, {0}, true);
-#if EW_SAMPLER_STUDY
-        sampler_study::set_native_phase(sampler_study::TokenNative);
-#endif
         const int result = llama_decode(g_context, g_batch);
         if (g_abort.load()) {
+            common_sampler_free(sampler);
             return aborted(prompt_count, generated + 1);
         }
         if (result != 0) {
+            common_sampler_free(sampler);
             return "ERROR: S1 generation decode failed";
         }
     }
 
+    common_sampler_free(sampler);
     g_last_end[0] = end;
     g_last_end[1] = end == END_EOS ? generated : max_tokens;
     g_last_end[2] = prompt_count;
@@ -365,15 +299,6 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_envi_wispr_llama_S1Native_generate(
     JNIEnv * env, jobject, jstring system_prompt, jstring user_prompt, jint max_tokens) {
     std::lock_guard<std::mutex> lock(g_mutex);
-#if EW_SAMPLER_STUDY
-    std::optional<sampler_study::Session> control;
-    if (sampler_study::pending_ordinary_phase >= 0) {
-        const int phase = sampler_study::pending_ordinary_phase;
-        sampler_study::pending_ordinary_phase = -1;
-        control.emplace(0, phase);
-        sampler_study::observation.entry = 0;
-    }
-#endif
     return to_jstring(env, generate_text(
         from_jstring(env, system_prompt),
         from_jstring(env, user_prompt),
@@ -403,7 +328,3 @@ Java_com_envi_wispr_llama_S1Native_unload(JNIEnv *, jobject) {
     std::lock_guard<std::mutex> lock(g_mutex);
     free_model();
 }
-
-#if EW_SAMPLER_STUDY
-#include "s1_study_jni.inc"
-#endif

@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.31.6)
 
 project("s1-polish" VERSION 1.0.0 LANGUAGES C CXX)
-option(EW_SAMPLER_STUDY "Build the Android debug sampler study" OFF)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -34,7 +33,6 @@ add_library(${CMAKE_PROJECT_NAME} SHARED s1_jni.cpp)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     GGML_SYSTEM_ARCH=${GGML_SYSTEM_ARCH}
     GGML_CPU_KLEIDIAI=$<BOOL:${GGML_CPU_KLEIDIAI}>
-    EW_SAMPLER_STUDY=$<BOOL:${EW_SAMPLER_STUDY}>
 )
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE

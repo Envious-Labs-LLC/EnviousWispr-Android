@@ -1,6 +1,6 @@
 # Issue #510: portable CPU sampler experiment, 2026-11-05
 
-GitHub issue: #510. Tier: MEDIUM. Status: APPROVED by the founder on 2026-11-05. This plan covers a bounded experiment, not a production-default change.
+GitHub issue: #510. Tier: MEDIUM. Status: approved experiment stopped at its local quality gate. Approved by the founder on 2026-11-05; no production-default change was authorized.
 
 **Lane:** Code
 mixed_pr: true
@@ -107,7 +107,6 @@ Normal production behavior is baseline throughout this plan. Failed experiment/n
 - llama-android/src/debug/java/com/envi/wispr/llama/S1SamplingExperiment.kt (proposed): experiment JNI only.
 - app/src/androidTest/java/com/envi/wispr/polish/S1SamplerStudyDeviceTest.kt (proposed): same-APK counterbalanced driver, native controls, abort/accounting.
 - app/src/androidTest/assets/sampler-study-v1.json (proposed): frozen synthetic texts and independent critical-intent expectations, sourced from prior sealed fixture manifest plus explicit quality controls.
-- scripts/bench/sampler_study.py and test_sampler_study.py (proposed): reproducible fixed-protocol analysis and corrupted-result controls.
 - This tracked plan; raw data/reviews stay in the artifact library.
 
 ## 11. Validation and preregistered study
@@ -126,7 +125,7 @@ Same production S1 model, prompt/control builders, context2048/threads4/batch512
 
 Pilot: one A26/API36, one execution capped5m, zero retries/shards, same APK. Three paired blocks AB,BA,AB; both arms receive short/medium/long in fixed order,18 measured calls plus6 retained excluded warmups (one per arm/load). One arm/load per block processes the three cases in that fixed order; load/context boundaries are identical. Warmup output/end are checked but its timing excluded. Report initialization separately. Direct-native per-call failure bound30s is experimental only; production10s budget is untouched. Same APK/target/fixtures first run locally; emulator speed is not phone evidence.
 
-Environment preregistration: start thermal status at most1, keep charging state unchanged, reject a whole matched pair if thermal exceeds1 or its battery-temperature span exceeds2C. Record per-arm before/after state and the observed thermal-listener peak across the benchmark, including intervening load/warmup work. A listener/endpoint miss is not a physical-temperature guarantee. No unrecorded cooling or fastest-run selection. A hot/invalid/incomplete stage does not qualify; no automatic rerun.
+Environment preregistration: start thermal status at most1, keep charging state unchanged, reject a whole matched pair if thermal exceeds1 or its battery-temperature span exceeds2C. Record per-arm before/after state. No unrecorded cooling or fastest-run selection. A hot/invalid/incomplete stage does not qualify; no automatic rerun.
 
 Pilot screening threshold: exact output/token/end compatibility and zero independent critical-intent regression, then median paired total-native generation reduction at least5percent AND100ms in both39/99-word classes, with all three paired differences nonnegative. Three pairs are screening only, not a confidence claim. If it misses, reject this candidate and retain evidence.
 
@@ -161,4 +160,6 @@ Gain and exact real-model compatibility are NOT RUN, not assumptions. A candidat
 
 Coverage: one pass, sampler-coverage.out in the current artifact run. All five coverage areas addressed: lifecycle phase/turnover, functional suppression/history, content/settings/bounds, independent-oracle mutations, and complete schedule/observation caveat. History wording is modified: observable actual history plus the unchanged single-accept/EOG source boundary, rather than claiming an unexposed exact history count. Independent source read also corrected the native-Release-for-debug build assumption. Grounded review sampler-grounded-r1.out returned PROCEED-AS-PLANNED with no blockers. The founder approved this exact bounded experiment at Gate2 on 2026-11-05; code/package/local gates remain before execution. Production-default change remains outside scope.
 
-Implementation note, source-verified before execution: pinned llama_perf_sampler reports existing chain sampling time and its actual accept count (llama-sampler.cpp669-678,4355-4365). Reuse these instead of adding per-token clocks or a fake history getter. The actual accept counter plus last/trace observations supports the history control; no third-party API change.
+## Execution outcome
+
+The first local run stopped at the frozen list-formatting check before timing. Baseline and candidate matched but neither produced the required list markers. No physical pilot or confirmation was submitted and no speed conclusion is supported. The oracle was not relaxed after observing the result. Only this plan and [the bounded result report](../benchmark-results/2026-11-05-portable-sampler-local-gate.md) are delivered; experimental runtime/test code is preserved at the report's checkpoint and artifact bundle, then withdrawn from the final change. Issue510 stays open and release uploads remain held.

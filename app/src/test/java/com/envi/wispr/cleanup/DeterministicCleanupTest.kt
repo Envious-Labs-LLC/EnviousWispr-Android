@@ -260,7 +260,7 @@ class DeterministicCleanupTest {
     }
 
     @Test fun cleanupIsStableAndFailsBackToOriginalOnMeaningLoss() {
-        val once = clean("email alice at example dot com comma call two zero three nine five four eight eight seven nine")
+        val once = clean("email alice at example dot com comma call two one two five five five zero one four seven")
         assertEquals(once, clean(once))
         val lossy = DeterministicCleanup.apply("uh ".repeat(30))
         assertTrue(lossy.recovered)

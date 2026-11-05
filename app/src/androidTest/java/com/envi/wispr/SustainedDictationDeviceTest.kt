@@ -47,6 +47,8 @@ import org.junit.runner.RunWith
  * its transcript or its polish, or when either process dies. Memory is reported per take for the reader to judge.
  * Each take mirrors the session: its own speech bind, the hold told at start, at the transcript and at the end, a
  * polish bind for the take, then both unbound. No capture or insertion (audio comes from synthetic clips).
+ * Observability Contract (#510): report each outcome's request identity and content-free timing snapshot.
+ * The last-load observations are historical context, not additive stages of the current request.
  * Arguments: `takes` (default 40), `firebaseS1Fixture=true`. Fixtures in /data/local/tmp as in [AsrSpeedDeviceTest].
  */
 @RunWith(AndroidJUnit4::class)
@@ -88,6 +90,8 @@ class SustainedDictationDeviceTest {
                         polish.close()
                     }
                     if (outcome?.reason != PolishReason.POLISHED) failures += "take $n: polish ${outcome?.reason}"
+                    if (outcome != null && outcome.requestId != n.toLong()) failures += "take $n: wrong polish request ${outcome.requestId}"
+                    if (outcome?.reason == PolishReason.POLISHED && outcome.diagnostics == null) failures += "take $n: no local polish diagnostics"
                     val asrPid = pidOf("$PACKAGE:asr")
                     if (firstAsrPid == null) firstAsrPid = asrPid
                     if (asrPid != firstAsrPid) failures += "take $n: speech process changed $firstAsrPid -> $asrPid"
@@ -99,6 +103,7 @@ class SustainedDictationDeviceTest {
                             "asrPid=$asrPid asrMB=${pss(asrPid)} polishMB=${pss(pidOf("$PACKAGE:polish"))} " +
                             "mainMB=${pss(android.os.Process.myPid())} availMB=${memory.availMem / MB} low=${memory.lowMemory}",
                     )
+                    report("timing$n", "requestId=${outcome?.requestId} diagnostics=${outcome?.diagnostics}")
                 } finally {
                     onMain { hold.takeEnded(takeId) }
                     asr.close()

@@ -99,6 +99,9 @@ internal sealed class AnalyticsEvent(val name: String) {
         val admissionObservedMs: Long?,
         val bindRequestedMs: Long?,
         val liveReceivedMs: Long?,
+        val polishDiagnostics: com.envi.wispr.polish.LocalPolishDiagnostics? = null,
+        val polishWaitMs: Long? = null,
+        val deviceTier: com.envi.wispr.device.DeviceTier? = null,
     ) : AnalyticsEvent("dictation.terminal") {
         override fun properties(): Map<String, Any?> = mapOf(
             "take_id" to takeId,
@@ -130,7 +133,7 @@ internal sealed class AnalyticsEvent(val name: String) {
             "admission_observed_ms" to admissionObservedMs,
             "bind_requested_ms" to bindRequestedMs,
             "live_received_ms" to liveReceivedMs,
-        )
+        ) + localPolishProperties(polishDiagnostics, polishWaitMs, deviceTier)
     }
 
     /** Where the words went, from whichever of the three writers recorded it. */

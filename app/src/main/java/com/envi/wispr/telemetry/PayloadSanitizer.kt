@@ -37,6 +37,8 @@ internal object PayloadSanitizer {
         "live_after_ms", "live_state", "capture_terminal", "silence_stop_status",
         "recording_s", "input_device", "asr_ms", "asr_chars", "peak_amplitude",
         "polish_provider", "polish_reason", "polish_ms", "polish_status", "history_save", "stage",
+        "polish_queue_ms", "polish_generation_ms", "polish_last_load_ms", "polish_last_load_age_ms",
+        "polish_last_load_major_faults", "polish_runtime", "polish_wait_ms", "device_tier",
         "settings_fallback",
         // #258: the pre-capture chain, ms since the owner accepted the start command.
         "settings_answer_ms", "matcher_ready_ms", "policy_loaded_ms", "admission_observed_ms", "bind_requested_ms",

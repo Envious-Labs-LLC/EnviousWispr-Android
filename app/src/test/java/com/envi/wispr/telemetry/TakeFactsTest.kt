@@ -19,6 +19,26 @@ import org.junit.Test
  * projection is a literal. Nothing here may produce a sentence or a product name.
  */
 class TakeFactsTest {
+    @Test fun localObservationsReachAllThreeSinksAndNeverRideOnCloudOutcomes() {
+        val facts = TakeFacts("t", TriggerSource.TILE)
+        val diagnostics = com.envi.wispr.polish.LocalPolishDiagnostics(1, 200, 300, 400, 5, com.envi.wispr.polish.S1RuntimeKind.PORTABLE_CPU)
+        val record = facts.recordPolish(PolishReason.LOCAL_TIMEOUT, 1000, 0, "local", diagnostics, 600, com.envi.wispr.device.DeviceTier.MID)
+        val expected = mapOf(
+            "polish_queue_ms" to 1L, "polish_generation_ms" to 200L,
+            "polish_last_load_ms" to 300L, "polish_last_load_age_ms" to 400L,
+            "polish_last_load_major_faults" to 5L, "polish_runtime" to "llama_cpp-portable-cpu",
+            "polish_wait_ms" to 600L, "device_tier" to "MID",
+        )
+        for (row in listOf(facts.terminal(TerminalReason.COMPLETED).properties(), record.breadcrumb, record.defectData)) {
+            val measured = row.filterKeys { it in expected }
+            assertEquals(expected, measured)
+            assertEquals(expected, PayloadSanitizer.sanitizeProperties(measured))
+            for ((key, value) in measured) assertEquals(SentrySchema.Verdict.Keep(value!!), SentrySchema.judge(key, value))
+        }
+        for (key in expected.keys) assertNull("No dictated prose under $key", PayloadSanitizer.sanitizeValue(key, "send my private words"))
+        facts.recordPolish(PolishReason.POLISHED, 20, 200, "cloud:GEMINI", diagnostics, 600, com.envi.wispr.device.DeviceTier.MID)
+        assertEquals(emptyMap<String, Any?>(), facts.terminal(TerminalReason.COMPLETED).properties().filterKeys { it in expected })
+    }
 
     @Test
     fun anUnmeasuredTakeReportsOnlyItsIdentityResultAndTrigger() {

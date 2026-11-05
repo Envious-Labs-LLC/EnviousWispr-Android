@@ -443,6 +443,7 @@ internal class DictationSessionCoordinator(
             onPrepared = ::publishPrepared,
             mainDispatcher = mainDispatcher,
             stillPublishable = { !destroyed.get() && take.arbiter.isOpen },
+            nowMs = host::elapsedRealtimeMs,
         )
         capture.begin(takeId, phaseView)
         teardownStarted.set(false)
@@ -1021,9 +1022,9 @@ internal class DictationSessionCoordinator(
     /** The controller's text, published: the engine's answer, or the deterministic fallback under its label. */
     private fun publishPrepared(prepared: PreparedText) = when (prepared) {
         is PreparedText.Polished ->
-            publishResult(prepared.text, prepared.engine, prepared.latencyMs, prepared.reason, prepared.statusCode, prepared.context, prepared.processing, prepared.requestId)
+            publishResult(prepared.text, prepared.engine, prepared.latencyMs, prepared.reason, prepared.statusCode, prepared.context, prepared.processing, prepared.requestId, prepared.diagnostics, prepared.waitMs)
         is PreparedText.Fallback ->
-            publishResult(prepared.text, PolishEngineLabels.DETERMINISTIC, 0, prepared.reason, 0, prepared.context)
+            publishResult(prepared.text, PolishEngineLabels.DETERMINISTIC, 0, prepared.reason, 0, prepared.context, polishWaitMs = prepared.waitMs)
     }
 
     /**
@@ -1043,13 +1044,18 @@ internal class DictationSessionCoordinator(
         polishContext: PolishContext,
         processing: com.envi.wispr.processing.ProcessingUsage? = null,
         requestId: Long = 0,
+        diagnostics: com.envi.wispr.polish.LocalPolishDiagnostics? = null,
+        polishWaitMs: Long? = null,
     ) {
         // The polish facts, written before the reservation so an ending committed by anyone after this
         // point carries them; the reason arrives once per take through the ledger, so the defect it may
         // name is raised once here, whoever ends up owning the take (issue #176, plan §3.6).
         val current = take
         val takeId = current.takeId
-        current.outcome.polishDone(reason, latencyMs, statusCode, polishContext.encode())
+        current.outcome.polishDone(
+            reason, latencyMs, statusCode, polishContext.encode(), diagnostics, polishWaitMs,
+            if (polishContext == PolishContext.Local) com.envi.wispr.device.DeviceTier.current else null,
+        )
         // The immutable payload FIRST, so the reservation and its write can be one operation below.
         val payload = Publication(
             finalText = text.ifBlank { rawTranscript },

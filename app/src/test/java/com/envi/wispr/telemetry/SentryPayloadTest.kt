@@ -17,6 +17,14 @@ import org.junit.Test
  * on thread frames alike (code review round 1, F1). The SDK types are plain Java, so this runs on the JVM.
  */
 class SentryPayloadTest {
+    /** Observability Contract: the actual shaped classification also reaches the timeout's searchable tag. */
+    @Test fun localDeviceTierBecomesATagOnlyWhenItsExtraHasAnApprovedShape() {
+        val measured = SentryEvent().apply { setExtra("device_tier", com.envi.wispr.device.DeviceTier.MID.name) }
+        assertEquals("MID", SentryBootstrap.sanitize(measured).getTag("device.tier"))
+        val words = SentryEvent().apply { setExtra("device_tier", "send my private words") }
+        assertNull(SentryBootstrap.sanitize(words).getTag("device.tier"))
+        assertEquals(PayloadSanitizer.REDACTED, words.getExtra("device_tier"))
+    }
 
     private fun frame(absPath: String?, filename: String?, pkg: String?): SentryStackFrame = SentryStackFrame().apply {
         this.absPath = absPath

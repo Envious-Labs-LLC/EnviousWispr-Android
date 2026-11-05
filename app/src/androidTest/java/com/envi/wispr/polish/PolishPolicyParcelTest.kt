@@ -33,13 +33,20 @@ class PolishPolicyParcelTest {
         val policy = PolishPolicy.LocalS1(S1ControlSettings.DEFAULT, processing, qualification)
         assertEquals(policy, roundTrip(policy))
         val usage = com.envi.wispr.processing.ProcessingUsage(com.envi.wispr.processing.ProcessingBackend.CPU, "a".repeat(64), processing, true, "gpu", artifactStamp = "receipt")
-        val outcome = PolishOutcome(9, "Kept words.", "S1-mini", PolishReason.POLISHED, 0, 5, usage)
-        val parcel = Parcel.obtain()
-        try {
-            outcome.writeToParcel(parcel, 0); parcel.setDataPosition(0)
-            assertEquals(outcome, PolishOutcome.CREATOR.createFromParcel(parcel))
-            assertEquals(0, parcel.dataAvail())
-        } finally { parcel.recycle() }
+        for (diagnostics in listOf(null, LocalPolishDiagnostics(7, 8, 9, 10, 11, S1RuntimeKind.PORTABLE_CPU))) {
+            val outcome = PolishOutcome(9, "Kept words.", "S1-mini", PolishReason.POLISHED, 0, 5, usage, diagnostics)
+            val parcel = Parcel.obtain()
+            try {
+                outcome.writeToParcel(parcel, 0); parcel.setDataPosition(0)
+                assertEquals(outcome, PolishOutcome.CREATOR.createFromParcel(parcel))
+                assertEquals(0, parcel.dataAvail())
+            } finally { parcel.recycle() }
+        }
+    }
+    @Test fun compiledClientsRetainBothOutcomeConstructorSignatures() {
+        val prefix = arrayOf(java.lang.Long.TYPE, String::class.java, String::class.java, PolishReason::class.java, Integer.TYPE, java.lang.Long.TYPE)
+        PolishOutcome::class.java.getDeclaredConstructor(*prefix)
+        PolishOutcome::class.java.getDeclaredConstructor(*prefix, com.envi.wispr.processing.ProcessingUsage::class.java)
     }
     @Test fun everyVariantSurvivesTheParcel() {
         val nonDefault = S1ControlSettings(S1Styling.CASUAL, S1Structure.PROSE, S1Context.EMAIL)

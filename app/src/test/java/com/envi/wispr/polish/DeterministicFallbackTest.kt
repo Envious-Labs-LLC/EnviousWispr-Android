@@ -171,7 +171,7 @@ class DeterministicFallbackTest {
         val accept = source.substringAfter("private fun accept(").substringBefore("\n        override fun warmUpWithPolicy(")
         assertFalse("no cleanup on the binder thread", accept.contains("fallbackText("))
         assertEquals("one budget read", 1, accept.split("localBudget(").size - 1)
-        val queued = accept.substringAfter("executor.execute {").substringBefore("\n")
+        val queued = accept.substringAfter("executor.execute {").substringBefore("\n                }")
         assertTrue("the budget is read inside the queued work, never on the binder thread", queued.contains("localBudget()"))
         assertEquals(
             "the three failure answers, each through the lane with its reason",

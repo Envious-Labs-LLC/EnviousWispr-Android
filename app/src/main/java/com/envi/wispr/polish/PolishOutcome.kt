@@ -16,7 +16,11 @@ internal data class PolishOutcome(
     val statusCode: Int,
     val latencyMs: Long,
     val processing: ProcessingUsage?,
+    val diagnostics: LocalPolishDiagnostics? = null,
 ) : Parcelable {
+    /** Retained JVM signature for clients compiled before timing diagnostics. */
+    constructor(requestId: Long, text: String, engine: String, reason: PolishReason, statusCode: Int, latencyMs: Long, processing: ProcessingUsage?) :
+        this(requestId, text, engine, reason, statusCode, latencyMs, processing, null)
     /** Retained JVM signature for separately installed older test clients. */
     constructor(requestId: Long, text: String, engine: String, reason: PolishReason, statusCode: Int, latencyMs: Long) :
         this(requestId, text, engine, reason, statusCode, latencyMs, null)
@@ -31,6 +35,8 @@ internal data class PolishOutcome(
         dest.writeLong(latencyMs)
         dest.writeInt(if (processing == null) 0 else 1)
         processing?.writeToParcel(dest, flags)
+        dest.writeInt(if (diagnostics == null) 0 else 1)
+        diagnostics?.writeToParcel(dest, flags)
     }
 
     /** Content-free on purpose: the text never reaches a log line through this. */
@@ -51,6 +57,11 @@ internal data class PolishOutcome(
                     0 -> null
                     1 -> ProcessingUsage.CREATOR.createFromParcel(source)
                     else -> throw IllegalArgumentException("Unknown processing outcome tag")
+                },
+                diagnostics = when (source.readInt()) {
+                    0 -> null
+                    1 -> LocalPolishDiagnostics.CREATOR.createFromParcel(source)
+                    else -> throw IllegalArgumentException("Unknown polish diagnostics tag")
                 },
             )
 

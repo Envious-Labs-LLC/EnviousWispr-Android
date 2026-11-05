@@ -22,7 +22,7 @@ internal data class S1LoadConfiguration(
 
 /** One native instance on PolishService's worker. A failed replacement never leaves the old key ready. */
 internal class S1LoadedConfiguration {
-    data class Loaded(val requested: S1LoadConfiguration, val backend: ProcessingBackend, val failedBackendCodes: String, val failureStamp: ProcessingEvidenceStamp?) {
+    data class Loaded(val requested: S1LoadConfiguration, val backend: ProcessingBackend, val failedBackendCodes: String, val failureStamp: ProcessingEvidenceStamp?, val loadTiming: S1LoadTiming? = null) {
         val failedBackends get() = if (failedBackendCodes.isEmpty()) emptySet() else failedBackendCodes.split(',').map(ProcessingBackend::fromWire).toSet()
     }
     @Volatile private var current: Loaded? = null
@@ -39,7 +39,7 @@ internal class S1LoadedConfiguration {
         }
     }
     fun clear() { current = null }
-    fun ensure(configuration: S1LoadConfiguration, failures: () -> Set<ProcessingBackend> = { emptySet() }, failureStamp: () -> ProcessingEvidenceStamp? = { null }, release: () -> Unit = {}, load: (List<ProcessingBackend>) -> ProcessingBackend): Loaded {
+    fun ensure(configuration: S1LoadConfiguration, failures: () -> Set<ProcessingBackend> = { emptySet() }, failureStamp: () -> ProcessingEvidenceStamp? = { null }, release: () -> Unit = {}, loadTiming: () -> S1LoadTiming? = { null }, load: (List<ProcessingBackend>) -> ProcessingBackend): Loaded {
         current?.takeIf { matches(configuration) }?.let { return it.copy(requested = configuration).also { current = it } }
         current = null
         val candidates = configuration.candidates
@@ -47,6 +47,6 @@ internal class S1LoadedConfiguration {
         require(candidates.isNotEmpty()) { "No qualified processing path" }
         val backend = load(candidates)
         check(backend in candidates) { "Unexpected processing path" }
-        return Loaded(configuration, backend, failures().sortedBy { it.ordinal }.joinToString(",") { it.wire }, failureStamp()).also { current = it }
+        return Loaded(configuration, backend, failures().sortedBy { it.ordinal }.joinToString(",") { it.wire }, failureStamp(), loadTiming()).also { current = it }
     }
 }

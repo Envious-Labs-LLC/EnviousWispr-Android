@@ -6,6 +6,9 @@ import com.envi.wispr.audio.CaptureEnding
 import com.envi.wispr.audio.InputRouteKind
 import com.envi.wispr.audio.InputRouteReason
 import com.envi.wispr.polish.PolishReason
+import com.envi.wispr.polish.LocalPolishDiagnostics
+import com.envi.wispr.polish.PolishContext
+import com.envi.wispr.device.DeviceTier
 import com.envi.wispr.ui.TerminalReason
 import com.envi.wispr.ui.TriggerSource
 
@@ -45,6 +48,9 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
     @Volatile var polishReason: PolishReason? = null
     @Volatile var polishMs: Long? = null
     @Volatile var polishStatus: Int? = null
+    @Volatile private var polishDiagnostics: LocalPolishDiagnostics? = null
+    @Volatile private var polishWaitMs: Long? = null
+    @Volatile private var deviceTier: DeviceTier? = null
     /** [HISTORY_OK], [HISTORY_FAILED] or [HISTORY_PENDING], known only on the completed route. */
     @Volatile var historySave: String? = null
     /** The speech process's typed failure; reported only on an `ASR_FAILED` ending. */
@@ -75,15 +81,20 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
      * ending carries them. Answers the `polish_done` breadcrumb and the defect the reason names, if any; the owner
      * raises both, because the defect sink is the owner's seam.
      */
-    fun recordPolish(reason: PolishReason, latencyMs: Long, statusCode: Int, provider: String): PolishRecord {
+    fun recordPolish(reason: PolishReason, latencyMs: Long, statusCode: Int, provider: String, diagnostics: LocalPolishDiagnostics? = null, waitMs: Long? = null, tier: DeviceTier? = null): PolishRecord {
         polishProvider = provider
         polishReason = reason
         polishMs = latencyMs
         polishStatus = statusCode
+        val local = provider == PolishContext.Local.encode()
+        polishDiagnostics = diagnostics.takeIf { local }
+        polishWaitMs = waitMs.takeIf { local }
+        deviceTier = tier.takeIf { local }
+        val details = localPolishProperties(polishDiagnostics, polishWaitMs, deviceTier)
         return PolishRecord(
-            breadcrumb = mapOf("take_id" to takeId, "polish_reason" to reason.name, "polish_ms" to latencyMs, "polish_provider" to provider),
+            breadcrumb = mapOf("take_id" to takeId, "polish_reason" to reason.name, "polish_ms" to latencyMs, "polish_provider" to provider) + details,
             defect = TelemetryChannels.defectOf(reason),
-            defectData = mapOf("take_id" to takeId, "polish_status" to statusCode),
+            defectData = mapOf("take_id" to takeId, "polish_status" to statusCode) + details,
         )
     }
 
@@ -116,6 +127,9 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
         admissionObservedMs = admissionObservedMs,
         bindRequestedMs = bindRequestedMs,
         liveReceivedMs = liveReceivedMs,
+        polishDiagnostics = polishDiagnostics,
+        polishWaitMs = polishWaitMs,
+        deviceTier = deviceTier,
     )
 
     companion object {
@@ -171,3 +185,8 @@ internal class TakeFacts(val takeId: String, val trigger: TriggerSource) {
         const val HISTORY_PENDING = "pending"
     }
 }
+
+/** The same shaped snapshot goes to the terminal row, breadcrumb and existing defect. */
+internal fun localPolishProperties(diagnostics: LocalPolishDiagnostics?, waitMs: Long?, tier: DeviceTier?): Map<String, Any?> =
+    (diagnostics?.properties().orEmpty() + mapOf("polish_wait_ms" to waitMs, "device_tier" to tier?.name))
+        .filterValues { it != null }

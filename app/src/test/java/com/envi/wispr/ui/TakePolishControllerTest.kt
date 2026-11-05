@@ -76,6 +76,7 @@ class TakePolishControllerTest {
     private val preparedUnderLock = CopyOnWriteArrayList<Boolean>()
     private val handedBack = CountDownLatch(1)
     private val preferences = SessionPreferences(policy = PolishPolicy.LocalS1(S1ControlSettings.DEFAULT))
+    private val clock = java.util.concurrent.atomic.AtomicLong(100)
 
     private val controller = newController()
 
@@ -109,6 +110,7 @@ class TakePolishControllerTest {
         cleanup = cleanup,
         mainDispatcher = mainDispatcher,
         stillPublishable = { publishable.get() },
+        nowMs = clock::get,
     )
 
     @After fun tearDown() {
@@ -170,10 +172,14 @@ class TakePolishControllerTest {
         controller.prepare("hello world", preferences)
         val listener = link.awaitRequest()
         val usage = com.envi.wispr.processing.ProcessingUsage(com.envi.wispr.processing.ProcessingBackend.CPU, "a".repeat(64), com.envi.wispr.processing.ProcessingPreference.DEFAULT.retry(), true, "gpu", artifactStamp = "verified-file")
-        listener.onOutcome(link.outcome("Hello world.").copy(processing = usage))
+        val diagnostics = com.envi.wispr.polish.LocalPolishDiagnostics(20, 30, 40, 50, 0, com.envi.wispr.polish.S1RuntimeKind.PORTABLE_CPU)
+        clock.set(180)
+        listener.onOutcome(link.outcome("Hello world.").copy(processing = usage, diagnostics = diagnostics))
         val answer = awaitHandedBack() as PreparedText.Polished
         assertEquals(usage, answer.processing)
         assertEquals(link.requestId, answer.requestId)
+        assertEquals(diagnostics, answer.diagnostics)
+        assertEquals(80L, answer.waitMs)
     }
 
     @Test fun aFailedLargeOptionTransportKeepsTheCompleteLocalSpellingProtection() {
@@ -194,10 +200,14 @@ class TakePolishControllerTest {
     @Test fun theWatchdogWinsAndALateAnswerIsIgnored() {
         controller.prepare("hello world", preferences)
         val listener = link.awaitRequest()
+        clock.set(250)
         timeout.fire()
         val first = awaitHandedBack()
         assertEquals(PolishReason.WATCHDOG_TIMEOUT, (first as PreparedText.Fallback).reason)
+        assertEquals(150L, first.waitMs)
+        clock.set(900)
         listener.onOutcome(link.outcome("Hello world."))
+        assertEquals(150L, first.waitMs)
         assertEquals("one text for the take", 1, prepared.size)
         assertTrue(log.lines.any { it.contains("Ignoring polish outcome") })
     }

@@ -113,6 +113,8 @@ internal object PostHogSchema {
         "capture_terminal" to ValueRule.Closed(TakeFacts.CAPTURE_ENDING_TOKENS),
         "polish_provider" to ValueRule.Closed(PolishContext.TOKENS),
         "polish_reason" to ValueRule.Closed(PolishReason.entries.map { it.name }.toSet()),
+        "polish_runtime" to ValueRule.Closed(com.envi.wispr.polish.S1RuntimeKind.entries.map { it.identity }.toSet()),
+        "device_tier" to ValueRule.Closed(com.envi.wispr.device.DeviceTier.entries.map { it.name }.toSet()),
         "history_save" to ValueRule.Closed(setOf(TakeFacts.HISTORY_OK, TakeFacts.HISTORY_FAILED, TakeFacts.HISTORY_PENDING)),
         "settings_fallback" to ValueRule.Shaped(SETTINGS_FALLBACK_SHAPE),
         // dictation.interrupted, onboarding.stage_reached

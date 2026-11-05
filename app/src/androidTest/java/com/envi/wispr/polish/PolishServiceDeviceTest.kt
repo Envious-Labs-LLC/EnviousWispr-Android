@@ -125,8 +125,9 @@ class PolishServiceDeviceTest {
             assertTrue(result.text.lowercase().contains("tomorrow"))
             val measured = checkNotNull(result.diagnostics) { "No diagnostics crossed the real service boundary" }
             assertTrue(measured.queueMs >= 0)
-            assertTrue(checkNotNull(measured.generationMs) >= 0)
-            assertTrue(checkNotNull(measured.lastLoadMs) >= 0)
+            assertTrue("The real model call must be measured", checkNotNull(measured.generationMs) > 0)
+            assertTrue("Generation cannot include pre-worker queue wait", checkNotNull(measured.generationMs) <= result.latencyMs)
+            assertTrue("The verified model must have a measured load", checkNotNull(measured.lastLoadMs) > 0)
             assertTrue(checkNotNull(measured.lastLoadAgeMs) >= 0)
             assertNotNull(measured.runtime)
             DebugLogger.log("S1DeviceTest", "request=${result.requestId} timing=${measured.properties()}")

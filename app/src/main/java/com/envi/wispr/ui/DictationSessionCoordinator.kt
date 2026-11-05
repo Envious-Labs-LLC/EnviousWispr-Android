@@ -443,6 +443,7 @@ internal class DictationSessionCoordinator(
             onPrepared = ::publishPrepared,
             mainDispatcher = mainDispatcher,
             stillPublishable = { !destroyed.get() && take.arbiter.isOpen },
+            nowMs = host::elapsedRealtimeMs,
         )
         capture.begin(takeId, phaseView)
         teardownStarted.set(false)

@@ -297,22 +297,27 @@ class RescuedWordsTest {
         assertEquals(1, dao.rows.size)
     }
 
-    @Test fun aSavedAnswerCannotSettleBeforeTheLateStructuredWrite() = runTest {
-        val entered = CompletableDeferred<Unit>()
-        val release = CompletableDeferred<Unit>()
-        val app = RescuedWords(dir, backgroundScope, wallClock = { 1L }, warn = {},
-            beforeWrite = { entered.complete(Unit); release.await() })
-        val answer = CompletableDeferred<RecoverySaveOutcome>()
-        val write = app.keepRecovered(recoveredRecord(), answer)
-        runCurrent()
-        assertTrue(entered.isCompleted)
-        answer.complete(RecoverySaveOutcome.Saved(7L))
-        runCurrent()
-        assertFalse(write.isCompleted)
-        release.complete(Unit)
-        runCurrent()
-        assertEquals(RescueOutcome.KEPT, write.await())
-        assertFalse(File(dir, "$take.recovery-words-v1").exists())
+    @Test fun aSavedAnswerCannotSettleBeforeTheLateStructuredWrite() = runBlocking {
+        val tasks = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        val dispatcher = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { tasks.add(block) }
+        }
+        val appScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val app = RescuedWords(dir, appScope, wallClock = { 1L }, warn = {})
+            val answer = CompletableDeferred<RecoverySaveOutcome>().apply { complete(RecoverySaveOutcome.Saved(7L)) }
+            val write = app.keepRecovered(recoveredRecord(), answer)
+            val writer = checkNotNull(tasks.poll()) { "Writer task not scheduled" }
+            val settlement = checkNotNull(tasks.poll()) { "Settlement task not scheduled" }
+            // The real IO pool may run settlement before the earlier-submitted writer starts.
+            settlement.run()
+            assertFalse(write.isCompleted)
+            writer.run()
+            assertEquals(RescueOutcome.KEPT, write.await())
+            assertTrue("The actual structured file must exist before settlement resumes", File(dir, "$take.recovery-words-v1").exists())
+            while (true) { val task = tasks.poll() ?: break; task.run() }
+            assertFalse(File(dir, "$take.recovery-words-v1").exists())
+        } finally { appScope.cancel() }
     }
 
     @Test fun deleteAllIncludesStructuredWordsWhoseHistorySaveIsPending() = runTest {

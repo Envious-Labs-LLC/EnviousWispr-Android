@@ -2,6 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <service
+            android:name=".asr.AsrCancellationClientProbe"
+            android:exported="false"
+            android:process=":asr_client_probe" />
+        <receiver
+            android:name=".asr.AsrCancellationProbeReceiver"
+            android:exported="false"
+            android:process=":asr" />
+        <service
             android:name=".debug.ForegroundProbeService"
             android:exported="false"
             android:foregroundServiceType="microphone|dataSync" />

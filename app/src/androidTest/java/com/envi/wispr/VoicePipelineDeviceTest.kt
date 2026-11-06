@@ -22,12 +22,16 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.envi.wispr.asr.AsrService
+import com.envi.wispr.asr.AsrProbeEvents
+import com.envi.wispr.asr.AsrRequest
+import com.envi.wispr.asr.SpeechModelKeepAlive
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.IPolishCallback
 import com.envi.wispr.polish.IPolishService
@@ -35,7 +39,10 @@ import com.envi.wispr.polish.PolishOutcome
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.polish.PolishService
+import com.envi.wispr.providers.PolishMode
+import com.envi.wispr.providers.ProviderConfigurationRepository
 import com.envi.wispr.settings.AppPreferences
+import com.envi.wispr.settings.SpeechModelUnload
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.ui.DictationSessionService
 import com.envi.wispr.vocabulary.BuiltinVocabulary
@@ -47,12 +54,14 @@ import java.io.FileInputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.json.JSONObject
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -65,6 +74,8 @@ import org.junit.runner.RunWith
  * (an ordinary tile dictation is reported as broken), and [transcribesThenPolishesWithSavedCustomWords]
  * (the polish limb drops the user's own spellings), and [aSilenceStoppedTakeLandsInTheFocusedEditorExactlyOnce]
  * (with stop-on-silence on, a take the user simply stops talking in never ends, or its words do not land).
+ *
+ * [cancellingSpeechLeavesTheEditorEmptyAndTheNextTakeInsertsOnce] protects Cancel followed by a fresh take.
  *
  * Every wait here is on a signal the SUBJECT fires, never elapsed time: the session owner's phase writes
  * (`DictationSurfaceState`, read through an `OnSharedPreferenceChangeListener`), the History row the
@@ -215,6 +226,242 @@ class VoicePipelineDeviceTest {
         assertEquals("the words appear exactly once", 1, occurrences(text, expected.trim()))
         assertEquals("the owner recorded the commit route", InsertionResults.COMMITTED, row.insertionResult)
         DebugLogger.log("VoicePipelineDeviceTest", "sideButtonTake chars=${text.length} result=${row.insertionResult}")
+    }
+
+    /**
+     * Product Outcome: Cancel during actual speech processing, then dictate again into the same editor.
+     * Run each selected row through the external driver in its own instrumentation process. The driver
+     * feeds one fixed sentence at every READY; the prior-hold row first accepts a real extra take.
+     * REVERT: omit cancellation, keep a model without an earned hold, unload an earned hold, ignore
+     * Immediately, accept the abandoned result, or duplicate the next write: the matching assertion fails.
+     * Native termination is qualified separately; these rows check actual owner lifetime and the editor.
+     */
+    @Test
+    fun cancellingSpeechLeavesTheEditorEmptyAndTheNextTakeInsertsOnce() =
+        cancelSpeechThenDictateAgain(CancelResidency.NO_PRIOR_HOLD)
+
+    @Test
+    fun cancellingSpeechPreservesAnEarlierAcceptedHoldAndTheNextTakeInsertsOnce() =
+        cancelSpeechThenDictateAgain(CancelResidency.PRIOR_ACCEPTED_HOLD)
+
+    @Test
+    fun cancellingSpeechWithImmediateUnloadReleasesTheModelAndTheNextTakeInsertsOnce() =
+        cancelSpeechThenDictateAgain(CancelResidency.IMMEDIATELY)
+
+    /** Harness Contract: a failing post-Stop observation must not leave a take or phase observer behind. */
+    @Test
+    fun aFailedRecorderPostStopAssertionStillCancelsAndClosesItsObservers() =
+        cancelSpeechThenDictateAgain(CancelResidency.ASSERTION_FAILURE_CONTROL)
+
+    private enum class CancelResidency { NO_PRIOR_HOLD, PRIOR_ACCEPTED_HOLD, IMMEDIATELY, ASSERTION_FAILURE_CONTROL }
+
+    private fun cancelSpeechThenDictateAgain(residency: CancelResidency) {
+        val policy = ProviderConfigurationRepository(context)
+        val savedMode = policy.loadMode()
+        val preferences = AppPreferences(context)
+        val savedPreferences = runBlocking { preferences.authoritativeState.first() }
+        val unload = when (residency) {
+            CancelResidency.NO_PRIOR_HOLD, CancelResidency.PRIOR_ACCEPTED_HOLD, CancelResidency.ASSERTION_FAILURE_CONTROL -> SpeechModelUnload.NEVER
+            CancelResidency.IMMEDIATELY -> SpeechModelUnload.IMMEDIATELY
+        }
+        try {
+            awaitNoSessionService()
+            // The selected-method driver restarts main. Refuse a borrowed earlier hold rather than
+            // manufacturing model-use notifications or hiding a reset in this product-outcome row.
+            assertRecorderHold(held = false, earned = false)
+            policy.setMode(PolishMode.OFF)
+            assertEquals(PolishMode.OFF, policy.loadMode())
+            runBlocking {
+                preferences.setAutoStopOnSilenceEnabled(false)
+                preferences.setSpeechModelUnload(unload)
+            }
+            val applied = runBlocking {
+                withTimeoutOrNull(5_000) { preferences.authoritativeState.first { it.speechModelUnload == unload } }
+            }
+            assertTrue("the requested unload choice did not persist before the take (staging)", applied != null)
+            assertFalse(checkNotNull(applied).autoStopOnSilenceEnabled)
+            startRig(twoFields = false)
+            AsrProbeEvents(context).use { events ->
+                events.register(5_000)
+                val expected = expectedFinal()
+                val priorModel = when (residency) {
+                    CancelResidency.NO_PRIOR_HOLD, CancelResidency.IMMEDIATELY, CancelResidency.ASSERTION_FAILURE_CONTROL -> null
+                    CancelResidency.PRIOR_ACCEPTED_HOLD -> {
+                        val prior = SideButtonRun()
+                        val take = recordIdentifiedTake(prior)
+                        val row = awaitRecorderRow(prior)
+                        assertEquals(take, row.takeId)
+                        assertEquals(InsertionResults.COMMITTED, row.insertionResult)
+                        assertEquals("the prior take must actually insert before it can earn a hold", expected, receipt(PasteTargetActivity.RECEIPT_NAME))
+                        awaitNoSessionService()
+                        assertRecorderHold(held = true, earned = true)
+                        // Real accepted-before-Cancel control: this complete inserted take supplies the
+                        // production result_received marker. The same staging guard must reject it.
+                        val acceptedWindow = prior.closeAcceptanceObservation()
+                        prior.cancelAfterStopAndAwaitIdle()
+                        val rejected = runCatching { requireUnacceptedRecorderSpeech(acceptedWindow) }.exceptionOrNull()
+                        assertTrue("the accepted-before-Cancel control did not fail staging", rejected is RecorderSpeechAlreadyAccepted)
+                        awaitNoSessionService()
+                        assertEquals(expected, receipt(PasteTargetActivity.RECEIPT_NAME))
+                        assertRecorderHold(held = true, earned = true)
+                        recorderModel(events.await("encoder", 15_000) { it.getString("take") == take })
+                    }
+                }
+                val beforeCancel = when (residency) {
+                    CancelResidency.NO_PRIOR_HOLD, CancelResidency.IMMEDIATELY, CancelResidency.ASSERTION_FAILURE_CONTROL -> ""
+                    CancelResidency.PRIOR_ACCEPTED_HOLD -> expected
+                }
+                val first = SideButtonRun()
+                val abandonedTake = recordIdentifiedTake(first)
+                var observedEncoder: JSONObject? = null
+                val postStopFailure = runCatching {
+                    withRecorderPostStopCleanup(first) {
+                        val active = events.await("encoder", 15_000) { it.getString("take") == abandonedTake }
+                        observedEncoder = active
+                        // Read actual application state; never manufacture successful-use notifications.
+                        when (residency) {
+                            CancelResidency.NO_PRIOR_HOLD -> assertRecorderHold(held = true, earned = false)
+                            CancelResidency.PRIOR_ACCEPTED_HOLD -> {
+                                assertRecorderHold(held = true, earned = true)
+                                assertEquals("the accepted hold did not retain the actual model", priorModel, recorderModel(active))
+                            }
+                            CancelResidency.IMMEDIATELY -> assertRecorderHold(held = false, earned = false)
+                            CancelResidency.ASSERTION_FAILURE_CONTROL -> {
+                                try { assertRecorderHold(held = false, earned = false) }
+                                catch (expectedFailure: AssertionError) { throw RecorderHoldProbeFailure(expectedFailure) }
+                                throw AssertionError("the deliberately wrong post-Stop hold assertion did not fail")
+                            }
+                        }
+                        first.cancelAfterStopAndAwaitIdle()
+                    }
+                }.exceptionOrNull()
+                if (residency == CancelResidency.ASSERTION_FAILURE_CONTROL) {
+                    assertTrue("the controlled assertion did not reach its guarded failure path", postStopFailure is RecorderHoldProbeFailure)
+                    assertTrue("cleanup after the controlled failure also failed", checkNotNull(postStopFailure).suppressed.isEmpty())
+                } else postStopFailure?.let { throw it }
+                val active = checkNotNull(observedEncoder)
+                // Cancel has completed on main. The complete, take-bracketed marker window rejects a
+                // speech answer that already won; a historical encoder or earlier hold cannot mask it.
+                requireUnacceptedRecorderSpeech(first.closeAcceptanceObservation())
+                val request = AsrProbeEvents.number(active, "request")
+                val pid = AsrProbeEvents.number(active, "pid")
+                val generation = AsrProbeEvents.number(active, "generation")
+                val retired = events.await("retired", 5_000) {
+                    it.getString("take") == abandonedTake && AsrProbeEvents.number(it, "request") == request && AsrProbeEvents.number(it, "pid") == pid
+                }
+                assertEquals("the recorder Cancel did not cancel its actual speech request", true, retired.get("cancelled"))
+                assertEquals(AsrRequest.Retirement.BODY_COMPLETED.name, retired.getString("outcome"))
+                assertEquals("cancelled words changed the editor", beforeCancel, receipt(PasteTargetActivity.RECEIPT_NAME))
+                awaitNoSessionService()
+                val callbacksAfterCancel = first.phaseCallbacksAfterMainBarrier()
+                when (residency) {
+                    CancelResidency.NO_PRIOR_HOLD, CancelResidency.IMMEDIATELY, CancelResidency.ASSERTION_FAILURE_CONTROL -> {
+                        assertRecorderHold(held = false, earned = false)
+                        events.await("owner_retired", 5_000) {
+                            AsrProbeEvents.number(it, "pid") == pid && AsrProbeEvents.number(it, "generation") == generation
+                        }
+                    }
+                    CancelResidency.PRIOR_ACCEPTED_HOLD -> assertRecorderHold(held = true, earned = true)
+                }
+                if (residency == CancelResidency.NO_PRIOR_HOLD) {
+                    first.cancelAfterStopAndAwaitIdle() // Repeating the ordinary Cancel after retirement remains inert.
+                    assertEquals(beforeCancel, receipt(PasteTargetActivity.RECEIPT_NAME))
+                    awaitNoSessionService()
+                }
+                val second = SideButtonRun()
+                val nextTake = recordIdentifiedTake(second)
+                val row = awaitRecorderRow(second)
+                assertEquals("the complete next take must land once", beforeCancel + expected, receipt(PasteTargetActivity.RECEIPT_NAME))
+                assertEquals(InsertionResults.COMMITTED, row.insertionResult)
+                assertEquals(nextTake, row.takeId)
+                assertTrue("the replacement row reused the abandoned identity", row.takeId != abandonedTake)
+                val next = events.await("encoder", 15_000) { it.getString("take") == nextTake }
+                when (residency) {
+                    CancelResidency.NO_PRIOR_HOLD, CancelResidency.IMMEDIATELY, CancelResidency.ASSERTION_FAILURE_CONTROL -> assertTrue(
+                        "an unretained cancelled owner was reused", recorderModel(next) != recorderModel(active),
+                    )
+                    CancelResidency.PRIOR_ACCEPTED_HOLD -> assertEquals(
+                        "the accepted earlier hold did not preserve healthy reuse", priorModel, recorderModel(next),
+                    )
+                }
+                awaitNoSessionService()
+                when (residency) {
+                    CancelResidency.NO_PRIOR_HOLD, CancelResidency.PRIOR_ACCEPTED_HOLD, CancelResidency.ASSERTION_FAILURE_CONTROL -> assertRecorderHold(held = true, earned = true)
+                    CancelResidency.IMMEDIATELY -> {
+                        assertRecorderHold(held = false, earned = false)
+                        events.await("owner_retired", 5_000) {
+                            AsrProbeEvents.number(it, "pid") == AsrProbeEvents.number(next, "pid") &&
+                                AsrProbeEvents.number(it, "generation") == AsrProbeEvents.number(next, "generation")
+                        }
+                    }
+                }
+                if (residency == CancelResidency.ASSERTION_FAILURE_CONTROL) {
+                    assertEquals("the next owner did not publish its ending", "IDLE", second.phaseNow())
+                    assertTrue("the next take did not deliver a real phase callback", second.phaseCallbacksAfterMainBarrier() > 0)
+                    assertEquals("an old ordinary or cleanup phase observer remained registered", callbacksAfterCancel, first.phaseCallbacksAfterMainBarrier())
+                }
+                val rows = runBlocking { EnviousWisprDatabase.get(context).transcriptDao().observeAll().first() }
+                assertFalse("the abandoned take returned to History", rows.any { it.takeId == abandonedTake })
+            }
+        } finally {
+            try { runBlocking { preferences.setSpeechModelUnload(savedPreferences.speechModelUnload) } }
+            finally {
+                try { runBlocking { preferences.setAutoStopOnSilenceEnabled(savedPreferences.autoStopOnSilenceEnabled) } }
+                finally { policy.setMode(savedMode) }
+            }
+        }
+    }
+
+    private class RecorderHoldProbeFailure(cause: AssertionError) : AssertionError("deliberately wrong hold assertion") {
+        init { initCause(cause) }
+    }
+
+    private class RecorderSpeechAlreadyAccepted : AssertionError("NOT STAGED: this take's speech answer was accepted before Cancel")
+
+    private fun requireUnacceptedRecorderSpeech(markers: List<String>) {
+        if ("result_received" in markers) throw RecorderSpeechAlreadyAccepted()
+    }
+
+    private fun <T> withRecorderPostStopCleanup(run: SideButtonRun, body: () -> T): T = try { body() } catch (failure: Throwable) {
+        try { run.cancelAfterStopAndAwaitIdle() } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+        throw failure
+    }
+
+    private fun assertRecorderHold(held: Boolean, earned: Boolean) {
+        var observed: Pair<Boolean, SpeechModelKeepAlive.Deadline?>? = null
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            observed = ModelBootstrapApplication.speechKeepAlive(context)?.let { it.holding to it.currentDeadline }
+        }
+        // Assert off main, including the deliberate failure control; the main callback only reads.
+        val actual = checkNotNull(observed)
+        assertEquals("actual application speech binding", held, actual.first)
+        assertEquals("actual accepted-transcript hold", if (earned) SpeechModelKeepAlive.Deadline.Forever else null, actual.second)
+    }
+
+    private fun recorderModel(event: JSONObject): Triple<Long, Long, Long> = Triple(
+        AsrProbeEvents.number(event, "pid"), AsrProbeEvents.number(event, "generation"), AsrProbeEvents.number(event, "model"),
+    )
+
+    private fun recordIdentifiedTake(run: SideButtonRun): String {
+        var take: String? = null
+        run.recordOneTake(stage = {
+            val draft = runBlocking {
+                withTimeoutOrNull(15_000) {
+                    EnviousWisprDatabase.get(context).transcriptDao().observeAll().first { rows ->
+                        rows.any { it.createdAtMs >= run.startedAtMs && it.status == TranscriptEntity.STATUS_DRAFT }
+                    }.single { it.createdAtMs >= run.startedAtMs && it.status == TranscriptEntity.STATUS_DRAFT }
+                }
+            }
+            take = draft?.takeId
+            assertTrue("the recorder did not publish its own draft/take identity before Stop", !take.isNullOrBlank())
+            run.openAcceptanceObservation()
+        })
+        return checkNotNull(take)
+    }
+
+    private fun awaitRecorderRow(run: SideButtonRun): TranscriptEntity = try { run.awaitFinalRow() } catch (failure: Throwable) {
+        try { run.cancelAfterStopAndAwaitIdle() } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+        throw failure
     }
 
     /**
@@ -412,11 +659,19 @@ class VoicePipelineDeviceTest {
         private val listening = CountDownLatch(1)
         private val idle = CountDownLatch(1)
         private val stopRequested = AtomicBoolean(false)
+        private val phaseCallbacks = AtomicInteger(0)
+        // Strong references keep a missing unregister observable in the failure control, rather than
+        // letting SharedPreferences' weak-listener registry be cleaned by GC before the next phase.
+        private val cleanupPhaseObservers = mutableListOf<SharedPreferences.OnSharedPreferenceChangeListener>()
+        private val observationNonce = java.util.UUID.randomUUID().toString().replace("-", "")
+        private val observationOpen = "recorder_observation_open_$observationNonce"
+        private val observationClose = "recorder_observation_close_$observationNonce"
         /** A take this run started and has not handed to a stop or a verdict yet; ended by [endTheTake] on failure. */
         private var takeStarted = false
         private val surfaceState = context.getSharedPreferences(SURFACE_STATE_PREFERENCES, Context.MODE_PRIVATE)
         private val phaseListener = SharedPreferences.OnSharedPreferenceChangeListener { store, key ->
             if (key != SURFACE_STATE_PHASE) return@OnSharedPreferenceChangeListener
+            phaseCallbacks.incrementAndGet()
             when (store.getString(key, null)) {
                 "LISTENING" -> listening.countDown()
                 "IDLE" -> if (stopRequested.get()) idle.countDown()
@@ -424,6 +679,65 @@ class VoicePipelineDeviceTest {
         }
 
         fun phaseNow(): String? = surfaceState.getString(SURFACE_STATE_PHASE, null)
+
+        fun phaseCallbacksAfterMainBarrier(): Int {
+            var count = -1
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { count = phaseCallbacks.get() }
+            return count
+        }
+
+        fun openAcceptanceObservation() {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                DebugLogger.mark("RecorderQualification", observationOpen)
+            }
+        }
+
+        fun closeAcceptanceObservation(): List<String> {
+            var summary: String? = null
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                DebugLogger.mark("RecorderQualification", observationClose)
+                summary = DebugLogger.pipelineSummary()
+            }
+            val markers = checkNotNull(summary).split(" | ").drop(1).map { it.substringBefore(':') }
+            // Both unique brackets are required. A reset loses the open bracket; capacity exhaustion
+            // loses the later close bracket, so absent result_received cannot pass either condition.
+            assertEquals("NOT STAGED: the take's marker window was reset or incomplete", 1, markers.count { it == observationOpen })
+            assertEquals("NOT STAGED: the marker window overflowed or closed twice", 1, markers.count { it == observationClose })
+            val start = markers.indexOf(observationOpen)
+            val end = markers.indexOf(observationClose)
+            assertTrue("NOT STAGED: the marker window is reversed", start < end)
+            val window = markers.subList(start + 1, end)
+            assertEquals("NOT STAGED: this take's speech request was not observed", 1, window.count { it == "asr_request" })
+            return window
+        }
+
+        /** Processing has already received Stop; require the owner's ending and actual capture ending. */
+        fun cancelAfterStopAndAwaitIdle() {
+            // awaitFinalRow may already have released the ordinary observer on its failure path.
+            // Own a fresh observer before issuing cleanup, including an already-published IDLE.
+            val ended = CountDownLatch(1)
+            val endingListener = SharedPreferences.OnSharedPreferenceChangeListener { store, key ->
+                if (key == SURFACE_STATE_PHASE) {
+                    phaseCallbacks.incrementAndGet()
+                    if (store.getString(key, null) == "IDLE") ended.countDown()
+                }
+            }
+            cleanupPhaseObservers += endingListener
+            surfaceState.registerOnSharedPreferenceChangeListener(endingListener)
+            try {
+                if (phaseNow() == "IDLE") ended.countDown()
+                context.startActivity(
+                    Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
+                        .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_CANCEL, true)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                )
+                assertTrue("Cancel never returned the recorder to IDLE; phase=${phaseNow()}", ended.await(30, TimeUnit.SECONDS))
+                assertEquals("the stopped take did not close capture exactly once", 1, captureEndings().size)
+            } finally {
+                surfaceState.unregisterOnSharedPreferenceChangeListener(endingListener)
+                surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
+            }
+        }
 
         /**
          * [stopByUser] false (#239): no stop is sent; the take must end by itself, and the take stays this run's

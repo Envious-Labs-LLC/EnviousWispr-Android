@@ -17,6 +17,11 @@ import kotlin.math.sqrt
  * was ported from, and the oracles it is checked against, live under `scripts/eval/asr-recipe/`.
  */
 internal class TdtRecipe(private val runner: TdtRunner) {
+    private fun checkpoint(phase: AsrObserver.Phase, index: Int = -1) {
+        runner.observer.phase(phase, index)
+        runner.cancellation.check()
+    }
+
 
     /** One emitted token: its id, its GLOBAL encoder frame (80 ms each), and its duration in frames. */
     internal data class Token(val id: Int, val frame: Int, val duration: Int)
@@ -38,6 +43,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
 
     /** Transcribe a whole take of 16 kHz mono samples. */
     fun transcribe(samples: FloatArray): Result {
+        checkpoint(AsrObserver.Phase.WINDOW)
         val n = samples.size
         if (n < MIN_SAMPLES) return Result("", 0, 0)
         // Up to 30 s: one pass at the take's real length (#453). The macOS encoder has a fixed 15 s input, so the
@@ -53,6 +59,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         var start = 0
         var index = 0
         while (start < n) {
+            checkpoint(AsrObserver.Phase.WINDOW, start)
             val warmup = lastChunkWarmup(start, n, speechEnd)
             val visible = max(FRAME, CHUNK - warmup)
             val isLast = start + visible >= n
@@ -73,7 +80,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
             start += STRIDE
         }
         var merged = outputs.first()
-        for (next in outputs.drop(1)) merged = merge(merged, next)
+        for (next in outputs.drop(1)) { checkpoint(AsrObserver.Phase.MERGE); merged = merge(merged, next) }
         merged = monotonic(merged)
         if (outputs.size > 1) merged = collapseSeamDuplicates(merged)
         var repairs = 0
@@ -100,10 +107,12 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         emitAfterFrame: Int? = null,
         startFrame: Int? = null,
     ): List<Token> {
+        checkpoint(AsrObserver.Phase.WINDOW, offsetSample)
         val n = samples.size
         if (n == 0) return emptyList()
         val padded = if (!padToWindow || n >= WINDOW_SAMPLES) samples else samples.copyOf(WINDOW_SAMPLES)
-        runner.encode(padded, n).use { encoded ->
+        runner.encode(padded, n).useAsrNative { encoded ->
+            checkpoint(AsrObserver.Phase.FRAME)
             val actualFrames = ceilDiv(n - context, FRAME)
             val frames = min(encoded.frames, actualFrames)
             if (frames <= 1) return emptyList()
@@ -117,7 +126,9 @@ internal class TdtRecipe(private val runner: TdtRunner) {
             var count = 0
             val tokenLimit = tokenLimit(frames)
             while (t < frames) {
+                checkpoint(AsrObserver.Phase.FRAME, t)
                 val step = runner.step(encoded, t, history.lastOrNull() ?: blank, state)
+                checkpoint(AsrObserver.Phase.FRAME, t)
                 var duration = DURATION_BINS[step.durationBin]
                 if (step.token != blank && duration == 0 && t == lastEmit && atFrame >= 1) duration = 1
                 if (step.token == blank && duration == 0) duration = 1
@@ -153,8 +164,10 @@ internal class TdtRecipe(private val runner: TdtRunner) {
                 var index = min(t, frames - 1)
                 val rotation = intArrayOf(index, frames - 1, max(0, frames - 2))
                 for (k in 0 until MAX_SYMBOLS_PER_STEP) {
+                    checkpoint(AsrObserver.Phase.FINALIZATION, k)
                     if (blanks >= CONSECUTIVE_BLANK_LIMIT) break
                     val step = runner.step(encoded, rotation[k % 3], history.lastOrNull() ?: blank, state)
+                    checkpoint(AsrObserver.Phase.FINALIZATION, k)
                     if (step.token == blank || !isPunctuationPiece(vocab[step.token])) {
                         blanks++
                     } else {
@@ -174,15 +187,17 @@ internal class TdtRecipe(private val runner: TdtRunner) {
     // ---- merge (ChunkProcessor.mergeChunks :952-1219)
 
     internal fun merge(left: List<Token>, right: List<Token>): List<Token> {
+        checkpoint(AsrObserver.Phase.MERGE)
         if (left.isEmpty()) return right
         if (right.isEmpty()) return left
         val leftEnd = left.last().frame * SECONDS_PER_FRAME + SECONDS_PER_FRAME
         val rightStart = right.first().frame * SECONDS_PER_FRAME
         if (leftEnd <= rightStart) return left + right
-        val overlapLeft = left.indices.filter { left[it].frame * SECONDS_PER_FRAME + SECONDS_PER_FRAME > rightStart - OVERLAP_SECONDS }
-        val overlapRight = right.indices.filter { right[it].frame * SECONDS_PER_FRAME < leftEnd + OVERLAP_SECONDS }
+        val overlapLeft = left.indices.filter { checkpoint(AsrObserver.Phase.MERGE, it); left[it].frame * SECONDS_PER_FRAME + SECONDS_PER_FRAME > rightStart - OVERLAP_SECONDS }
+        val overlapRight = right.indices.filter { checkpoint(AsrObserver.Phase.MERGE, it); right[it].frame * SECONDS_PER_FRAME < leftEnd + OVERLAP_SECONDS }
         if (overlapLeft.size < 2 || overlapRight.size < 2) return midpoint(left, right, leftEnd, rightStart)
         fun matches(p: Int, q: Int): Boolean {
+            checkpoint(AsrObserver.Phase.MERGE, p)
             val a = left[overlapLeft[p]]
             val b = right[overlapRight[q]]
             return idsMatch(a.id, b.id) && abs(a.frame - b.frame) * SECONDS_PER_FRAME < OVERLAP_SECONDS / 2
@@ -193,7 +208,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
             val current = ArrayList<Pair<Int, Int>>()
             var k = p
             var l = q
-            while (k < overlapLeft.size && l < overlapRight.size && matches(k, l)) { current += k to l; k++; l++ }
+            while (k < overlapLeft.size && l < overlapRight.size && matches(k, l)) { checkpoint(AsrObserver.Phase.MERGE, k); current += k to l; k++; l++ }
             if (current.size > best.size) best = current
         }
         if (best.size >= max(overlapLeft.size / 2, 1)) return useMatches(best, overlapLeft, overlapRight, left, right)
@@ -201,12 +216,14 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         val cols = overlapRight.size
         val dp = Array(rows + 1) { IntArray(cols + 1) }
         for (i in 1..rows) for (j in 1..cols) {
+            checkpoint(AsrObserver.Phase.MERGE, i)
             dp[i][j] = if (matches(i - 1, j - 1)) dp[i - 1][j - 1] + 1 else max(dp[i - 1][j], dp[i][j - 1])
         }
         val lcs = ArrayList<Pair<Int, Int>>()
         var i = rows
         var j = cols
         while (i > 0 && j > 0) {
+            checkpoint(AsrObserver.Phase.MERGE, i)
             when {
                 matches(i - 1, j - 1) -> { lcs += (i - 1) to (j - 1); i--; j-- }
                 dp[i - 1][j] > dp[i][j - 1] -> i--
@@ -225,11 +242,12 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         left: List<Token>,
         right: List<Token>,
     ): List<Token> {
-        val leftIndices = matches.map { overlapLeft[it.first] }
-        val rightIndices = matches.map { overlapRight[it.second] }
+        val leftIndices = matches.map { checkpoint(AsrObserver.Phase.MERGE, it.first); overlapLeft[it.first] }
+        val rightIndices = matches.map { checkpoint(AsrObserver.Phase.MERGE, it.second); overlapRight[it.second] }
         val result = ArrayList<Token>()
         if (leftIndices.first() > 0) result += left.subList(0, leftIndices.first())
         for (x in matches.indices) {
+            checkpoint(AsrObserver.Phase.MERGE, x)
             result += left[leftIndices[x]]
             if (x < matches.size - 1) {
                 val gapLeft = if (leftIndices[x + 1] > leftIndices[x] + 1) left.subList(leftIndices[x] + 1, leftIndices[x + 1]) else emptyList()
@@ -244,12 +262,12 @@ internal class TdtRecipe(private val runner: TdtRunner) {
                 val wordStart = (lastRight downTo 0).firstOrNull { right[it].id in spliceSafe }
                 val pop = (result.size - 1 downTo 0).firstOrNull { result[it].id in spliceSafe }
                 if (wordStart != null && pop != null) {
-                    while (result.size > pop) result.removeAt(result.size - 1)
+                    while (result.size > pop) { checkpoint(AsrObserver.Phase.MERGE, result.size); result.removeAt(result.size - 1) }
                     result += right.subList(wordStart, right.size)
                 } else {
                     var cursor = leftIndices.last() + 1
-                    while (cursor < left.size && left[cursor].id !in spliceSafe) result += left[cursor++]
-                    val resume = tail.indexOfFirst { it.id in spliceSafe }
+                    while (cursor < left.size && left[cursor].id !in spliceSafe) { checkpoint(AsrObserver.Phase.MERGE, cursor); result += left[cursor++] }
+                    val resume = tail.indexOfFirst { checkpoint(AsrObserver.Phase.MERGE, it.frame); it.id in spliceSafe }
                     result += if (resume >= 0) tail.subList(resume, tail.size) else tail
                 }
             } else {
@@ -261,11 +279,11 @@ internal class TdtRecipe(private val runner: TdtRunner) {
 
     private fun midpoint(left: List<Token>, right: List<Token>, leftEnd: Double, rightStart: Double): List<Token> {
         val cutoff = (leftEnd + rightStart) / 2
-        var leftStop = left.indexOfFirst { it.frame * SECONDS_PER_FRAME >= cutoff }.let { if (it < 0) left.size else it }
-        var rightFrom = right.indexOfFirst { it.frame * SECONDS_PER_FRAME >= cutoff }.let { if (it < 0) right.size else it }
-        if (leftStop > 0) while (leftStop < left.size && left[leftStop].id !in spliceSafe) leftStop++
+        var leftStop = left.indexOfFirst { checkpoint(AsrObserver.Phase.MERGE, it.frame); it.frame * SECONDS_PER_FRAME >= cutoff }.let { if (it < 0) left.size else it }
+        var rightFrom = right.indexOfFirst { checkpoint(AsrObserver.Phase.MERGE, it.frame); it.frame * SECONDS_PER_FRAME >= cutoff }.let { if (it < 0) right.size else it }
+        if (leftStop > 0) while (leftStop < left.size && left[leftStop].id !in spliceSafe) { checkpoint(AsrObserver.Phase.MERGE, leftStop); leftStop++ }
         var scan = rightFrom
-        while (scan < right.size && right[scan].id !in spliceSafe) scan++
+        while (scan < right.size && right[scan].id !in spliceSafe) { checkpoint(AsrObserver.Phase.MERGE, scan); scan++ }
         if (scan < right.size) rightFrom = scan
         return left.subList(0, leftStop) + right.subList(rightFrom, right.size)
     }
@@ -273,11 +291,13 @@ internal class TdtRecipe(private val runner: TdtRunner) {
     private fun idsMatch(a: Int, b: Int): Boolean = a == b || (caseVariant[a] != null && caseVariant[a] == caseVariant[b])
 
     internal fun monotonic(tokens: List<Token>): List<Token> {
+        checkpoint(AsrObserver.Phase.MERGE)
         if (tokens.size < 2) return tokens
         val out = ArrayList<Token>(tokens.size)
         var last = tokens[0].frame
         out += tokens[0]
         for (i in 1 until tokens.size) {
+            checkpoint(AsrObserver.Phase.MERGE, i)
             val t = tokens[i]
             if (t.frame < last) out += t.copy(frame = last) else { last = t.frame; out += t }
         }
@@ -286,15 +306,17 @@ internal class TdtRecipe(private val runner: TdtRunner) {
 
     /** Adjacent case-only duplicate words within the overlap (ChunkProcessor :857-938). */
     internal fun collapseSeamDuplicates(tokens: List<Token>): List<Token> {
+        checkpoint(AsrObserver.Phase.MERGE)
         if (tokens.size < 2) return tokens
         val overlapFrames = (OVERLAP_SECONDS / SECONDS_PER_FRAME).roundToInt()
         val words = ArrayList<MutableList<Token>>()
-        for (t in tokens) if (words.isEmpty() || isBoundary(vocab[t.id])) words += mutableListOf(t) else words.last() += t
-        val cores = words.map { w -> w.joinToString("") { vocab[it.id].removePrefix(BOUNDARY) }.trim { it.isWhitespace() || isPunctuation(it) } }
-        val endsSentence = words.map { w -> w.joinToString("") { vocab[it.id].removePrefix(BOUNDARY) }.lastOrNull()?.let { it in ".?!:" } ?: false }
+        for (t in tokens) { checkpoint(AsrObserver.Phase.MERGE, t.frame); if (words.isEmpty() || isBoundary(vocab[t.id])) words += mutableListOf(t) else words.last() += t }
+        val cores = words.map { w -> checkpoint(AsrObserver.Phase.MERGE); w.joinToString("") { vocab[it.id].removePrefix(BOUNDARY) }.trim { it.isWhitespace() || isPunctuation(it) } }
+        val endsSentence = words.map { w -> checkpoint(AsrObserver.Phase.MERGE); w.joinToString("") { vocab[it.id].removePrefix(BOUNDARY) }.lastOrNull()?.let { it in ".?!:" } ?: false }
         val keep = BooleanArray(words.size) { true }
         var lastKept = -1
         for (i in words.indices) {
+            checkpoint(AsrObserver.Phase.MERGE, i)
             if (lastKept < 0) { lastKept = i; continue }
             val previous = cores[lastKept]
             val current = cores[i]
@@ -310,9 +332,10 @@ internal class TdtRecipe(private val runner: TdtRunner) {
     // ---- seam-gap repair (ChunkProcessor.repairSeamGaps :1394-1514)
 
     internal fun repairSeamGaps(samples: FloatArray, tokens: List<Token>): List<Token> {
+        checkpoint(AsrObserver.Phase.REPAIR)
         val n = samples.size
         val frameCount = n / FRAME
-        val rms = FloatArray(frameCount) { f -> frameRms(samples, f * FRAME, FRAME) }
+        val rms = FloatArray(frameCount) { f -> frameRms(samples, f * FRAME, FRAME, AsrObserver.Phase.REPAIR) }
         val threshold = rms.filter { it > 0f }.sorted().let { sorted ->
             if (sorted.isEmpty()) SPEECH_RMS_CEILING else (sorted[min(sorted.size - 1, (sorted.size * 0.75).toInt())] * 0.3f).coerceIn(SPEECH_RMS_FLOOR, SPEECH_RMS_CEILING)
         }
@@ -320,13 +343,13 @@ internal class TdtRecipe(private val runner: TdtRunner) {
             var frames = 0
             var f = from / FRAME
             val last = ceilDiv(to, FRAME)
-            while (f < min(last, frameCount)) { if (rms[f] >= threshold) frames++; f++ }
+            while (f < min(last, frameCount)) { checkpoint(AsrObserver.Phase.REPAIR, f); if (rms[f] >= threshold) frames++; f++ }
             return frames * SECONDS_PER_FRAME
         }
         fun punctuationOnly(id: Int) = isPunctuationOrSymbol(vocab[id])
         fun neighbour(stream: List<Token>, from: Int, step: Int): Token {
             var i = from
-            while (i + step in stream.indices && punctuationOnly(stream[i].id)) i += step
+            while (i + step in stream.indices && punctuationOnly(stream[i].id)) { checkpoint(AsrObserver.Phase.REPAIR, i); i += step }
             return stream[i]
         }
         fun samePiece(a: Int, b: Int) = a == b || vocab[a].lowercase() == vocab[b].lowercase()
@@ -335,8 +358,10 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         var probes = 0
         val probed = HashSet<Int>()
         repeat(3) {
+            checkpoint(AsrObserver.Phase.REPAIR, it)
             val inserts = ArrayList<Token>()
             for (i in 0 until working.size - 1) {
+                checkpoint(AsrObserver.Phase.REPAIR, i)
                 if (probes >= MAX_REPAIRS) break
                 val current = working[i]
                 val next = working[i + 1]
@@ -350,17 +375,18 @@ internal class TdtRecipe(private val runner: TdtRunner) {
                 probes++
                 val centre = (startSample + endSample) / 2
                 for (placement in intArrayOf(startSample, centre - REPAIR_WINDOW / 2)) {
+                    checkpoint(AsrObserver.Phase.REPAIR, placement)
                     val windowStart = max(0, min(placement, n - REPAIR_WINDOW)) / FRAME * FRAME
                     val windowEnd = min(windowStart + REPAIR_WINDOW, n)
                     if (windowEnd <= windowStart) continue
                     val window = decodeWindow(samples.copyOfRange(windowStart, windowEnd), 0, windowStart, windowEnd >= n, padToWindow = true)
                     val candidate = window.filter { it.frame in (gapStart + 1) until (gapEnd - 1) }.toMutableList()
-                    while (candidate.isNotEmpty() && candidate.first().id !in spliceSafe) candidate.removeAt(0)
+                    while (candidate.isNotEmpty() && candidate.first().id !in spliceSafe) { checkpoint(AsrObserver.Phase.REPAIR, candidate.size); candidate.removeAt(0) }
                     val lead = neighbour(working, i, -1)
                     val trail = neighbour(working, i + 1, 1)
-                    while (candidate.isNotEmpty() && samePiece(candidate.first().id, lead.id) && abs(candidate.first().frame - lead.frame) <= EDGE_FRAMES) candidate.removeAt(0)
-                    while (candidate.isNotEmpty() && samePiece(candidate.last().id, trail.id) && abs(trail.frame - candidate.last().frame) <= EDGE_FRAMES) candidate.removeAt(candidate.size - 1)
-                    while (candidate.isNotEmpty() && (candidate.first().id !in spliceSafe || punctuationOnly(candidate.first().id))) candidate.removeAt(0)
+                    while (candidate.isNotEmpty() && samePiece(candidate.first().id, lead.id) && abs(candidate.first().frame - lead.frame) <= EDGE_FRAMES) { checkpoint(AsrObserver.Phase.REPAIR, candidate.size); candidate.removeAt(0) }
+                    while (candidate.isNotEmpty() && samePiece(candidate.last().id, trail.id) && abs(trail.frame - candidate.last().frame) <= EDGE_FRAMES) { checkpoint(AsrObserver.Phase.REPAIR, candidate.size); candidate.removeAt(candidate.size - 1) }
+                    while (candidate.isNotEmpty() && (candidate.first().id !in spliceSafe || punctuationOnly(candidate.first().id))) { checkpoint(AsrObserver.Phase.REPAIR, candidate.size); candidate.removeAt(0) }
                     if (candidate.isNotEmpty()) { inserts += candidate; break }
                 }
             }
@@ -373,7 +399,29 @@ internal class TdtRecipe(private val runner: TdtRunner) {
     /** 150 tokens per 15 s window, scaled up for a one-pass take of up to 30 s; never below 150. */
     internal fun tokenLimit(frames: Int): Int = max(MAX_TOKENS_PER_WINDOW, frames * MAX_TOKENS_PER_WINDOW / FRAMES_PER_WINDOW)
 
-    internal fun text(tokens: List<Token>): String = tokens.joinToString("") { vocab[it.id] }.replace(BOUNDARY, " ").trim()
+    internal fun text(tokens: List<Token>): String {
+        checkpoint(AsrObserver.Phase.TEXT)
+        return tokens.joinToString("") { checkpoint(AsrObserver.Phase.TEXT, it.frame); vocab[it.id] }.replace(BOUNDARY, " ").trim()
+    }
+
+    private fun frameRms(samples: FloatArray, from: Int, count: Int, phase: AsrObserver.Phase): Float {
+        var sum = 0.0
+        val end = min(samples.size, from + count)
+        for (i in from until end) { if ((i - from) % 256 == 0) checkpoint(phase, i); sum += samples[i] * samples[i] }
+        return if (end > from) sqrt(sum / (end - from)).toFloat() else 0f
+    }
+
+    /** Last speech-bearing sample: trailing 80 ms frames under the floor are trimmed (ChunkProcessor :112-128). */
+    private fun speechEnd(samples: FloatArray): Int {
+        var end = samples.size
+        while (end > 0) {
+            val from = max(0, end - FRAME)
+            if (frameRms(samples, from, end - from, AsrObserver.Phase.SPEECH_END) >= SPEECH_RMS_FLOOR) return end
+            end = from
+        }
+        return samples.size
+    }
+
 
     internal companion object {
         const val SAMPLE_RATE = 16_000
@@ -401,24 +449,6 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         const val BOUNDARY = "▁"
 
         fun ceilDiv(a: Int, b: Int): Int = if (a <= 0) 0 else (a + b - 1) / b
-
-        fun frameRms(samples: FloatArray, from: Int, count: Int): Float {
-            var sum = 0.0
-            val end = min(samples.size, from + count)
-            for (i in from until end) sum += samples[i] * samples[i]
-            return if (end > from) sqrt(sum / (end - from)).toFloat() else 0f
-        }
-
-        /** Last speech-bearing sample: trailing 80 ms frames under the floor are trimmed (ChunkProcessor :112-128). */
-        fun speechEnd(samples: FloatArray): Int {
-            var end = samples.size
-            while (end > 0) {
-                val from = max(0, end - FRAME)
-                if (frameRms(samples, from, end - from) >= SPEECH_RMS_FLOOR) return end
-                end = from
-            }
-            return samples.size
-        }
 
         /** A short final chunk fills its window backwards with real audio (ChunkProcessor :85-102). */
         fun lastChunkWarmup(start: Int, total: Int, speechEnd: Int): Int {

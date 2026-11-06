@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "runtime_source": "6655ddc1844a12872e1b88e41dff2e5c2610f9bc",
+  "source_checkpoint": "803a5d256bf8bc814db182523e586c56a359eac8",
+  "raw_capture_sha256": "42c28170de332050c2053fb664d2942b92f4041d9a044196a89c151596ea1435",
+  "manual_semantic_review": "ACCEPTED",
+  "frozen": true,
+  "future_comparison": "Exact code-point equality to complete text; no new normalization. Existing production outer trim only at direct-model/Binder boundary.",
+  "model_files": [
+    {
+      "name": "encoder-model.int8.onnx",
+      "bytes": 649537325,
+      "sha256": "8a2b47169cf3f1b114010e12c0221bc6f07203289477a65a44847b9e3f1e01ed"
+    },
+    {
+      "name": "decoder_joint-model.int8.onnx",
+      "bytes": 18203490,
+      "sha256": "667ffde2242a560923cba6bc7f69ef03d736f8a36ca9588f2e6f9fa818cf2fc1"
+    },
+    {
+      "name": "vocab.txt",
+      "bytes": 93939,
+      "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+    }
+  ],
+  "rows": [
+    {
+      "case": "asr-short",
+      "take_id": "29076200-b54a-41a4-8b88-4d4272159ad6",
+      "input_bytes": 68298,
+      "input_sha256": "f3dd840e4521de1cc6f0b3ac947f052cfe8fe618016eaa9f9291ed3005141077",
+      "observed_callback_count": 1,
+      "submission_returned": true,
+      "submission_failure_class": null,
+      "outcome": "WORDS",
+      "text": "Please send the report tomorrow morning.",
+      "text_utf8_sha256": "72e75e489b524fa4009e420de9fb98dc71d4f3077ba95f607c28de13b2a5be03",
+      "text_codepoints": 40
+    },
+    {
+      "case": "asr-long",
+      "take_id": "568cf927-1d90-42ea-b8da-2c7cf2e9dfa2",
+      "input_bytes": 1062142,
+      "input_sha256": "216852be522ca3ea03bf5eb8ccc3b58976e5d164290b00759e688f0972e52953",
+      "observed_callback_count": 1,
+      "submission_returned": true,
+      "submission_failure_class": null,
+      "outcome": "WORDS",
+      "text": "Please send the report tomorrow morning. The meeting starts at 9, and Maya will bring the revised budget. We need three copies for the design team. Keep the original schedule and confirm the delivery address before sending the package. After lunch, review the customer notes and write down the two remaining questions. The purple lantern is beside the quiet garden. Jordan will arrive on Thursday with the replacement parts. Please leave the blue folder on the second shelf. before we finish, check that the invoice lists $45 and that the appointment is still set for Friday afternoon.",
+      "text_utf8_sha256": "fef91e8c8b9d879929a438d8c01bc3e13e2101f7a66932ae4d4f2733506aac69",
+      "text_codepoints": 585
+    }
+  ],
+  "preprocessor_asset": "nemo128.onnx",
+  "preprocessor_sha256": "5b4a84c52eeaa615dc46d781cc7e4598f9b432184831d57493c48adcd01371a9",
+  "packaged_runtime_libraries": {
+    "libonnxruntime.so": {
+      "bytes": 32990472,
+      "sha256": "f325094bdf70c81198747e391d830fcf39dd881a6e916e3d6dd32506b6f9d1e8"
+    },
+    "libonnxruntime4j_jni.so": {
+      "bytes": 83224,
+      "sha256": "401daceca368835065ca6f3eeada2e9a659b5068adad981db600de527e7c6dd7"
+    }
+  }
+}

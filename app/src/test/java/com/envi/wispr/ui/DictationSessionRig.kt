@@ -256,6 +256,7 @@ internal class DictationSessionRig {
         // `runInterruptible`; left running, those threads pile up across a test run until the pool of 64 is exhausted
         // and a later rig's take can never be scheduled. Cancelling interrupts the wait and frees the thread.
         scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        pipeline.finishSpeechFixture()
         mainExecutor.shutdownNow()
         capture.close()
         capture.audioFile?.delete()
@@ -728,22 +729,119 @@ internal class DictationSessionRig {
         @Volatile var listener: SpeechListener? = null
         private val requested = CountDownLatch(1)
         val requests = CopyOnWriteArrayList<Pair<String, String>>()
+        val cancellations = CopyOnWriteArrayList<Pair<String, SpeechListener>>()
+        val controlFailures = CopyOnWriteArrayList<Throwable>()
         @Volatile var requestFailure: Exception? = null
-        /** When set, the request blocks until it opens and then throws, as a binder call that failed late would (#356). */
         @Volatile var throwWhenReleased: CountDownLatch? = null
-        override fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener) {
-            this.listener = listener
-            requests += audioFilePath to takeId
-            requested.countDown()
-            throwWhenReleased?.let { release ->
-                check(release.await(10, TimeUnit.SECONDS)) { "the row never released the held request" }
-                throw (requestFailure ?: android.os.RemoteException("the speech process failed late"))
-            }
-            requestFailure?.let { throw it }
+        @Volatile var cancelGate: CountDownLatch? = null
+        @Volatile var cancellationFailure: Exception? = null
+        @Volatile var onPrepared: ((SpeechSubmission) -> Unit)? = null
+        @Volatile var onIssue: ((SpeechListener) -> Unit)? = null
+        @Volatile var post: (Runnable) -> Unit = { it.run() }
+        private val lock = Any()
+        private enum class State { OPEN, CLOSED }
+        private var state = State.OPEN
+        private inner class Transport {
+            val active = mutableSetOf<PreparedSpeechSubmission>()
+            val drained = CountDownLatch(1)
+            val port = SpeechCancelPort(failed = { controlFailures += it }, drained = { drained.countDown() })
         }
+        private class Call {
+            lateinit var submission: PreparedSpeechSubmission
+            val issued = CountDownLatch(1)
+            val returned = CountDownLatch(1)
+            val cancelEntered = CountDownLatch(1)
+            val cancelReturned = CountDownLatch(1)
+        }
+        private var transport: Transport? = null
+        private val transports = mutableListOf<Transport>()
+        private val calls = CopyOnWriteArrayList<Call>()
+
+        fun reopenForBinding() = synchronized(lock) {
+            if (state == State.CLOSED) { state = State.OPEN; transport = null }
+        }
+
+        private fun prepare(audioFilePath: String, takeId: String, listener: SpeechListener): PreparedSpeechSubmission = synchronized(lock) {
+            if (state == State.CLOSED) throw android.os.DeadObjectException()
+            val owner = transport ?: Transport().also { transport = it; transports += it }
+            val registration = owner.port.lease()
+            try {
+                val tail = owner.port.lease()
+                try {
+                    val call = Call()
+                    val submission = PreparedSpeechSubmission(PostingSpeechListener(post, listener),
+                        issue = { response ->
+                            this.listener = response
+                            requests += audioFilePath to takeId
+                            call.issued.countDown()
+                            requested.countDown()
+                            try {
+                                onIssue?.invoke(response)
+                                throwWhenReleased?.let { release ->
+                                    check(release.await(10, TimeUnit.SECONDS)) { "the row never released the held request" }
+                                    throw (requestFailure ?: android.os.RemoteException("the speech process failed late"))
+                                }
+                                requestFailure?.let { throw it }
+                            } finally { call.returned.countDown() }
+                        },
+                        cancelRemote = {
+                            cancellations += takeId to call.submission
+                            call.cancelEntered.countDown()
+                            try {
+                                cancelGate?.let { check(it.await(10, TimeUnit.SECONDS)) { "the row never released the held cancel" } }
+                                cancellationFailure?.let { throw it }
+                            } finally { call.cancelReturned.countDown() }
+                        },
+                        port = owner.port, registrationLease = registration, tailLease = tail,
+                        settled = { synchronized(lock) { owner.active.remove(it) }; Unit })
+                    call.submission = submission
+                    calls += call
+                    owner.active += submission
+                    submission
+                } catch (failure: Throwable) { tail.close(); throw failure }
+            } catch (failure: Throwable) { registration.close(); throw failure }
+        }
+
+        override fun prepareFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener): SpeechSubmission =
+            prepare(audioFilePath, takeId, listener).also { onPrepared?.invoke(it) }
+
+        override fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener) {
+            val submission = prepare(audioFilePath, takeId, listener)
+            try { submission.submit() } finally { submission.releaseUnexposedHandle() }
+        }
+
+        override fun close() {
+            val current = synchronized(lock) { state = State.CLOSED; transport }
+            if (current != null) {
+                val pending = synchronized(lock) { current.active.toList() }
+                pending.forEach { runCatching { it.cancel() }.onFailure { error -> controlFailures += error } }
+                current.port.close()
+            }
+        }
+
         fun awaitRequest(): SpeechListener {
             check(requested.await(10, TimeUnit.SECONDS)) { "the owner never asked the speech process" }
             return checkNotNull(listener)
+        }
+        fun awaitCancellation(callback: SpeechListener = checkNotNull(listener)) {
+            val call = calls.single { it.submission === callback }
+            check(call.cancelReturned.await(10, TimeUnit.SECONDS)) { "the exact callback cancellation never returned" }
+        }
+        fun awaitCancelEntered(callback: SpeechListener = checkNotNull(listener)) {
+            val call = calls.single { it.submission === callback }
+            check(call.cancelEntered.await(10, TimeUnit.SECONDS)) { "the exact callback cancellation was not issued" }
+        }
+        fun closedAndDrained(): Boolean = synchronized(lock) { transports.all { it.port.closedAndDrained } }
+        fun finishFixture() {
+            close()
+            // Teardown only. Production close NEVER releases a held request/control or pretends it returned.
+            calls.forEach { runCatching { it.submission.cancel() }.onFailure { error -> controlFailures += error } }
+            throwWhenReleased?.countDown()
+            cancelGate?.countDown()
+            val all = synchronized(lock) { transports.toList() }
+            all.forEach { it.port.close() }
+            calls.filter { it.issued.count == 0L }.forEach { check(it.returned.await(10, TimeUnit.SECONDS)) { "fixture request did not return" } }
+            all.forEach { check(it.drained.await(10, TimeUnit.SECONDS)) { "fixture cancellation obligations did not drain" } }
         }
     }
 
@@ -822,9 +920,13 @@ internal class DictationSessionRig {
         @Volatile override var polish: PolishLink? = null
         @Volatile var listener: PipelineController.Listener? = null
         val events = CopyOnWriteArrayList<String>()
+        private val speechPeers = CopyOnWriteArrayList<SpeechLink>().also { peers -> speech?.let { peers += it } }
+        fun finishSpeechFixture() { speechPeers.filterIsInstance<FakeSpeech>().distinct().forEach { it.finishFixture() } }
 
         override fun bind(listener: PipelineController.Listener): PipelineController.BindOutcome {
             this.listener = listener
+            (speech as? FakeSpeech)?.reopenForBinding()
+            speech?.let { if (!speechPeers.contains(it)) speechPeers += it }
             events += "bind"
             if (bindResult != PipelineController.BindResult.BOUND) return PipelineController.BindOutcome(bindResult, polishBound = false)
             mainExecutor.execute {
@@ -845,6 +947,9 @@ internal class DictationSessionRig {
 
         /** Reconnection installs a fresh proxy before notifying, exactly like PipelineBindings. */
         fun reconnectSpeech(link: SpeechLink) = onMain {
+            speech?.close()
+            if (!speechPeers.contains(link)) speechPeers += link
+            (link as? FakeSpeech)?.reopenForBinding()
             speech = link
             listener?.onSpeechConnected()
         }
@@ -852,6 +957,7 @@ internal class DictationSessionRig {
         /** The platform reconnecting polish after its process came back, on main. */
         fun reconnectPolish() = onMain { connectPolishNow() }
         override fun unbind() {
+            speech?.close()
             events += "unbind"
             timeline += "unbind"
         }
@@ -862,7 +968,9 @@ internal class DictationSessionRig {
             when (which) {
                 "capture" -> listener?.onCaptureDisconnected()
                 "speech" -> {
+                    val old = speech
                     speech = null
+                    old?.close()
                     listener?.onSpeechDisconnected()
                 }
                 "polish" -> {

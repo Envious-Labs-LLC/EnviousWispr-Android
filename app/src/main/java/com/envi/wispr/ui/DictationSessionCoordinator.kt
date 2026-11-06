@@ -928,7 +928,7 @@ internal class DictationSessionCoordinator(
                         val attempt = wait.claimAttempt { pipeline.speech } ?: return@request
                         val speechService = attempt.peer
                         try {
-                            speechService.transcribeFileForTake(audioFilePath, takeId, object : SpeechListener {
+                            val submission = speechService.prepareFileForTake(audioFilePath, takeId, object : SpeechListener {
                                 override fun onResult(text: String?) {
                                     // An answer after the bound, a cancel or a destroy touches nothing (#356): not the file,
                                     // which whatever closed the wait already deleted, and not the take's facts.
@@ -972,6 +972,7 @@ internal class DictationSessionCoordinator(
                                     endAsFailure(TerminalReason.ASR_FAILED)
                                 }
                             })
+                            if (wait.attach(attempt, submission)) submission.submit()
                         } catch (error: Exception) {
                             if (error is android.os.DeadObjectException) {
                                 host.postToMain { onSpeechLost(attempt) }

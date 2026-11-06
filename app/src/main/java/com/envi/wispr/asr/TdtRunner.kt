@@ -5,6 +5,8 @@ package com.envi.wispr.asr
  * [TdtRecipe] (the macOS batch recipe) is pure Kotlin and testable with a fake.
  */
 internal interface TdtRunner : AutoCloseable {
+    val cancellation: AsrCancellation
+    val observer: AsrObserver
     /** Vocabulary pieces by token id, as written in `vocab.txt` (word starts carry U+2581 or a leading space). */
     val vocab: List<String>
 

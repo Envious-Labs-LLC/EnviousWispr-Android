@@ -26,14 +26,17 @@ internal object PcmAudio {
         byteCount.toFloat() / (SAMPLE_RATE * BYTES_PER_SAMPLE)
 
     /** Decode complete little-endian PCM16 samples. A trailing byte is ignored. */
-    fun toFloatSamples(pcmData: ByteArray): FloatArray {
+    fun toFloatSamples(pcmData: ByteArray, checkpoint: (Int) -> Unit): FloatArray {
+        checkpoint(0)
         val samples = FloatArray(pcmData.size / BYTES_PER_SAMPLE)
         for (i in samples.indices) {
+            if (i % (READ_CHUNK_BYTES / BYTES_PER_SAMPLE) == 0) checkpoint(i)
             val offset = i * BYTES_PER_SAMPLE
             val value = (pcmData[offset].toInt() and 0xFF) or
                 (pcmData[offset + 1].toInt() shl 8)
             samples[i] = value / 32768.0f
         }
+        checkpoint(samples.size)
         return samples
     }
 }

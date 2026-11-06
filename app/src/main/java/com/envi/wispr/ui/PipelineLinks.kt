@@ -76,8 +76,15 @@ internal interface SpeechListener {
 }
 
 /** `IAsrService`, the member the owner uses. */
-internal interface SpeechLink {
+internal interface SpeechSubmission {
+    fun submit()
+    fun cancel()
+}
+
+internal interface SpeechLink : AutoCloseable {
+    fun prepareFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener): SpeechSubmission
     fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener)
+    override fun close()
 }
 
 /** The answer to one `IPolishService.polishRequestWithCleanupForTake`; the engine answers once. */

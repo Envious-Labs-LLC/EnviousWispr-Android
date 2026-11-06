@@ -1,6 +1,7 @@
 package com.envi.wispr.polish
 
 import com.envi.wispr.process.EngineDeadline
+import com.envi.wispr.process.ManualDeadlineScheduler
 import java.util.concurrent.Callable
 import java.util.concurrent.Delayed
 import java.util.concurrent.ScheduledExecutorService
@@ -20,33 +21,7 @@ import org.junit.Test
  */
 class EngineDeadlineTest {
 
-    /**
-     * A scheduler the test advances by hand, so both orders of the race can be played. A cancelled timer is
-     * NOT removed: a real scheduler can already be running the command when `cancel(false)` arrives, so the
-     * handle's own state, not the future's cancellation, must be what stops a late timer.
-     */
-    private class ManualScheduler : ScheduledExecutorService by unsupported() {
-        val queue = mutableListOf<Pair<Long, Runnable>>()
-        var cancelled = 0
-
-        override fun schedule(command: Runnable, delay: Long, unit: TimeUnit): ScheduledFuture<*> {
-            val entry = delay to command
-            queue += entry
-            return object : ScheduledFuture<Any?> {
-                override fun cancel(mayInterruptIfRunning: Boolean): Boolean { cancelled++; return true }
-                override fun isCancelled() = false
-                override fun isDone() = false
-                override fun get(): Any? = null
-                override fun get(timeout: Long, unit: TimeUnit): Any? = null
-                override fun getDelay(unit: TimeUnit) = delay
-                override fun compareTo(other: Delayed) = 0
-            }
-        }
-
-        fun fireAll() { val due = queue.toList(); queue.clear(); due.forEach { it.second.run() } }
-    }
-
-    private fun deadline(): Pair<EngineDeadline, ManualScheduler> { val s = ManualScheduler(); return EngineDeadline(s) to s }
+    private fun deadline(): Pair<EngineDeadline, ManualDeadlineScheduler> { val s = ManualDeadlineScheduler(); return EngineDeadline(s) to s }
 
     @Test fun expiryRunsTheActionWhenTheTimerWins() {
         val (deadline, scheduler) = deadline()
@@ -167,8 +142,3 @@ class EngineDeadlineTest {
         assertTrue(LocalPolishBudget.COOPERATIVE_MS < LocalPolishBudget.HARD_MS)
     }
 }
-
-private inline fun <reified T> unsupported(): T = java.lang.reflect.Proxy.newProxyInstance(
-    T::class.java.classLoader,
-    arrayOf(T::class.java),
-) { _, method, _ -> throw UnsupportedOperationException(method.name) } as T

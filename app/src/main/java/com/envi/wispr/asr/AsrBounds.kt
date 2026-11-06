@@ -30,5 +30,8 @@ internal object AsrBounds {
     /** The native release at teardown (#357 review round 1): a release that never returns ends the process too. */
     const val RELEASE_BOUND_MS = 10_000L
 
+    /** Scheduled containment policy for separate JOB and OWNER-CLOSE scopes, not a measured kernel bound. */
+    const val RETIREMENT_GRACE_MS = 1_000L
+
     fun requestBoundMs(audioMs: Long): Long = BASE_MS + audioMs.coerceAtLeast(0L) * PER_AUDIO_SECOND_MS / 1_000L
 }

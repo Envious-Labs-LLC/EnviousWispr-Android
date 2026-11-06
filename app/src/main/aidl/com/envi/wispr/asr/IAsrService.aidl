@@ -18,4 +18,7 @@ interface IAsrService {
      * per-take UUID; the service keeps it as request context and never persists it.
      */
     void transcribeFileForTake(String audioFilePath, String takeId, IAsrCallback callback);
+
+    // Exact invocation identity: retries share a takeId but carry a fresh callback Binder.
+    void cancelTranscription(String takeId, IAsrCallback callback);
 }

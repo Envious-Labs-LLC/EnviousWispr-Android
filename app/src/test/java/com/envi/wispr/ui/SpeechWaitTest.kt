@@ -71,7 +71,9 @@ class SpeechWaitTest {
         assertTrue("no insertion", rig.insertion.pastes.isEmpty())
         assertEquals(listOf(TerminalReason.ASR_PROCESS_UNRESPONSIVE), rig.endings.reasons.toList())
         assertEquals(TranscriptEntity.STATUS_ASR_ERROR, theOnlyRow().status)
-        assertTrue(rig.log.lines.any { it.contains("Speech answer arrived after the request was closed; ignored") })
+        // The shared transport now suppresses this callback before it can reach the owner's late-answer log.
+        rig.speech.awaitCancellation()
+        assertEquals(1, rig.speech.cancellations.size)
     }
 
     /** Row 3: an answer in time removes the bound; the take completes and a later firing finds nothing. MUTATION m3: no removal on the answer. */
@@ -365,6 +367,126 @@ class SpeechWaitTest {
         rig.host.fireDelayed(20_500L)
         assertTrue(expired)
         assertNull(wait.claimAttempt { rig.speech })
+    }
+
+    private class Submission(private val cancel: () -> Unit = {}) : SpeechSubmission {
+        var submitted = 0
+        var cancelled = 0
+        override fun submit() { submitted++ }
+        override fun cancel() { cancelled++; cancel.invoke() }
+    }
+
+    @Test fun anAnsweredWaitKeepsOneTailAndCloseReturnsFalseWithoutCancellingUnderItsLock() {
+        val wait = SpeechWait(rig.host)
+        val field = SpeechWait::class.java.getDeclaredField("lock").also { it.isAccessible = true }
+        val monitor = field.get(wait)
+        val submission = Submission { assertFalse("No transport action under the acceptance lock", Thread.holdsLock(monitor)) }
+        assertTrue(wait.arm(1_000L) { error("stale expiry") })
+        val stale = rig.host.delayed.single { it.first == 20_500L }.second
+        val attempt = checkNotNull(wait.claimAttempt { rig.speech })
+        assertTrue(wait.attach(attempt, submission))
+        assertTrue(wait.answer(attempt))
+        assertEquals("An accepted answer must not immediately cancel useful cleanup", 0, submission.cancelled)
+        stale.run()
+        assertEquals(0, submission.cancelled)
+        assertFalse("PCM deletion remains owned by the accepted callback", wait.close())
+        assertEquals(1, submission.cancelled)
+        assertFalse(wait.close())
+        assertEquals(1, submission.cancelled)
+    }
+
+    @Test fun aPreparedHandleAttachedAfterCancellationIsCancelledWithoutSubmission() {
+        val wait = SpeechWait(rig.host)
+        assertTrue(wait.arm(1_000) { error("not fired") })
+        val attempt = checkNotNull(wait.claimAttempt { rig.speech })
+        assertTrue(wait.close())
+        val submission = Submission()
+        assertFalse(wait.attach(attempt, submission))
+        assertEquals(1, submission.cancelled)
+        assertEquals(0, submission.submitted)
+    }
+
+    @Test fun aLateOldAttachmentCannotReplaceOrCancelTheReconnectSubmission() {
+        val wait = SpeechWait(rig.host)
+        assertTrue(wait.arm(1_000) { error("not fired") })
+        val old = checkNotNull(wait.claimAttempt { rig.speech })
+        assertEquals(SpeechWait.Loss.RETRYING, wait.disconnected(old))
+        val replacement = DictationSessionRig.FakeSpeech()
+        val current = checkNotNull(wait.claimAttempt { replacement })
+        val fresh = Submission()
+        val stale = Submission()
+        assertTrue(wait.attach(current, fresh))
+        assertFalse(wait.attach(old, stale))
+        assertEquals(1, stale.cancelled)
+        assertEquals(0, fresh.cancelled)
+        assertEquals(1, rig.host.postsWithDelay(20_500L))
+        assertTrue(wait.close())
+        assertEquals(1, fresh.cancelled)
+    }
+
+    @Test fun anAlreadyPostedAnswerAfterCancellationCannotTouchANewerRecording() {
+        val posted = java.util.concurrent.CopyOnWriteArrayList<Runnable>()
+        rig.speech.post = { posted += it }
+        val coordinator = stopWithTheRequestOpen()
+        rig.speech.listener!!.onResult("already authorized synthetic words")
+        assertEquals(1, posted.size)
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        assertEquals(TerminalReason.CANCELLED_PROCESSING, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        val nextAudio = rig.capture.audioFile!!
+        nextAudio.writeBytes(byteArrayOf(7, 9))
+        rig.onMain { posted.single().run() }
+        assertTrue(nextAudio.readBytes().contentEquals(byteArrayOf(7, 9)))
+        assertTrue(rig.insertion.pastes.isEmpty())
+        assertTrue(rig.log.lines.any { it.contains("Speech answer arrived after the request was closed; ignored") })
+    }
+
+    @Test fun cancellingDuringPolishClosesTheAnsweredSpeechTailWithoutDeletingAudioAgain() {
+        val coordinator = stopWithTheRequestOpen()
+        val callback = rig.speech.listener!!
+        rig.onMain { callback.onResult("hello world") }
+        rig.polish.awaitRequest()
+        assertTrue(rig.speech.cancellations.isEmpty())
+        assertEquals(1, rig.host.speechHold.count { it.startsWith("used:") })
+        val nextAudio = rig.capture.audioFile!!
+        nextAudio.writeBytes(byteArrayOf(3, 8))
+        rig.command(coordinator, DictationSessionService.ACTION_CANCEL)
+        assertEquals(TerminalReason.CANCELLED_PROCESSING, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        rig.speech.awaitCancellation(callback)
+        assertEquals(1, rig.speech.cancellations.size)
+        assertTrue(rig.speech.cancellations.single().second === callback)
+        assertTrue(nextAudio.readBytes().contentEquals(byteArrayOf(3, 8)))
+        assertEquals(1, rig.host.speechHold.count { it.startsWith("used:") })
+        assertTrue(rig.insertion.pastes.isEmpty())
+    }
+
+    private fun failureAnswerClosesItsTail(answer: (SpeechListener) -> Unit) {
+        stopWithTheRequestOpen()
+        val callback = rig.speech.listener!!
+        rig.onMain { answer(callback) }
+        assertEquals(TerminalReason.ASR_FAILED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        rig.speech.awaitCancellation(callback)
+        assertEquals(1, rig.speech.cancellations.size)
+        assertTrue(rig.speech.cancellations.single().second === callback)
+        assertTrue(rig.host.speechHold.none { it.startsWith("used:") })
+    }
+
+    @Test fun anAcceptedLegacyFailureRetainsItsExactTailUntilTeardown() = failureAnswerClosesItsTail { it.onError("synthetic") }
+
+    @Test fun anAcceptedTypedFailureRetainsItsExactTailUntilTeardown() = failureAnswerClosesItsTail {
+        it.onFailure(com.envi.wispr.asr.AsrFailureReason.MODEL_NOT_LOADED.code, "synthetic")
+    }
+
+    @Test fun anOrdinarySubmissionThrowKeepsOneExactCancellationAndTheExistingFailure() {
+        rig.speech.requestFailure = IllegalStateException("synthetic")
+        stopWithTheRequestOpen()
+        assertEquals(TerminalReason.ASR_CALLBACK_EXCEPTION, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        rig.speech.awaitCancellation()
+        assertEquals(1, rig.speech.cancellations.size)
+        assertTrue(rig.insertion.pastes.isEmpty())
     }
 
 }

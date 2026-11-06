@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Handler
 import android.os.IBinder
+import android.os.DeadObjectException
+import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.models.EngineBindings
 import com.envi.wispr.asr.AsrService
 import com.envi.wispr.asr.IAsrCallback
@@ -66,14 +68,18 @@ internal class PipelineBindings(
 
     private val asrConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            clearSpeech()
             speech = speechProxy(IAsrService.Stub.asInterface(binder), mainHandler::post)
             listener?.onSpeechConnected()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            speech = null
+            clearSpeech()
             listener?.onSpeechDisconnected()
         }
+
+        override fun onBindingDied(name: ComponentName?) { clearSpeech() }
+        override fun onNullBinding(name: ComponentName?) { clearSpeech() }
     }
 
     private val polishConnection = object : ServiceConnection {
@@ -98,7 +104,7 @@ internal class PipelineBindings(
         if (!audioBound) return PipelineController.BindOutcome(PipelineController.BindResult.AUDIO_BIND_FAILED, polishBound = false)
 
         // Through the engine registry (#108): a take holds a swap permit, so these are never refused for a swap.
-        asrBound = EngineBindings.bind(appContext, EngineBindings.Engine.SPEECH, asrConnection, Context.BIND_AUTO_CREATE) { asrBound = false }
+        asrBound = EngineBindings.bind(appContext, EngineBindings.Engine.SPEECH, asrConnection, Context.BIND_AUTO_CREATE) { asrBound = false; clearSpeech() }
         if (!asrBound) return PipelineController.BindOutcome(PipelineController.BindResult.ASR_BIND_FAILED, polishBound = false)
 
         polishBound = EngineBindings.bind(appContext, EngineBindings.Engine.POLISH, polishConnection, Context.BIND_AUTO_CREATE) { polishBound = false }
@@ -108,6 +114,7 @@ internal class PipelineBindings(
     }
 
     override fun unbind() {
+        clearSpeech()
         if (audioBound) runCatching { appContext.unbindService(audioConnection) }
         if (asrBound) EngineBindings.unbind(asrConnection)
         if (polishBound) EngineBindings.unbind(polishConnection)
@@ -115,8 +122,13 @@ internal class PipelineBindings(
         asrBound = false
         polishBound = false
         capture = null
-        speech = null
         polish = null
+    }
+
+    private fun clearSpeech() {
+        val previous = speech
+        speech = null
+        previous?.close()
     }
 
     override fun stopAudioService() {
@@ -154,19 +166,56 @@ internal class PipelineBindings(
     }
 
     /**
-     * One fresh anonymous Stub per request, built synchronously inside this call after every argument is
-     * evaluated and immediately before the proxy call; never cached, the listener never stored. The Stub is
-     * transport only (#253): every callback posts its values to main through [PostingSpeechListener] and
-     * returns, so the owner's decision runs on main and the `:asr` caller is never held.
+     * Prepare one fresh callback Binder, then submit/cancel that EXACT identity. PreparedSpeechSubmission
+     * owns delivery and actual-return obligations; terminal callbacks still post through PostingSpeechListener.
      */
     internal class SpeechProxy(private val service: IAsrService, private val post: (Runnable) -> Unit) : SpeechLink {
+        private enum class State { OPEN, CLOSED }
+        private val lock = Any()
+        private var state = State.OPEN
+        private val active = mutableSetOf<PreparedSpeechSubmission>()
+        private val port = SpeechCancelPort({ DebugLogger.warn("SpeechProxy", "Speech cancellation control failed: ${it.javaClass.simpleName}") })
+
+        override fun prepareFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener): SpeechSubmission =
+            prepare(audioFilePath, takeId, listener)
+
+        private fun prepare(audioFilePath: String, takeId: String, listener: SpeechListener): PreparedSpeechSubmission = synchronized(lock) {
+            if (state == State.CLOSED) throw DeadObjectException()
+            val registration = port.lease()
+            try {
+                val tail = port.lease()
+                try {
+                    lateinit var submission: PreparedSpeechSubmission
+                    val callback = object : IAsrCallback.Stub() {
+                        override fun onResult(text: String?) = submission.onResult(text)
+                        override fun onError(message: String?) = submission.onError(message)
+                        override fun onFailure(reason: Int, detail: String?) = submission.onFailure(reason, detail)
+                    }
+                    submission = PreparedSpeechSubmission(PostingSpeechListener(post, listener),
+                        issue = { service.transcribeFileForTake(audioFilePath, takeId, callback) },
+                        cancelRemote = { service.cancelTranscription(takeId, callback) },
+                        port, registration, tail,
+                        settled = { synchronized(lock) { active.remove(it) }; Unit })
+                    active += submission
+                    submission
+                } catch (failure: Throwable) { tail.close(); throw failure }
+            } catch (failure: Throwable) { registration.close(); throw failure }
+        }
+
+        /** Observed v1 ABI, into the SAME core; no new cancellation worker for a normal legacy request. */
         override fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener) {
-            val posting = PostingSpeechListener(post, listener)
-            service.transcribeFileForTake(audioFilePath, takeId, object : IAsrCallback.Stub() {
-                override fun onResult(text: String?) = posting.onResult(text)
-                override fun onError(message: String?) = posting.onError(message)
-                override fun onFailure(reason: Int, detail: String?) = posting.onFailure(reason, detail)
-            })
+            val submission = prepare(audioFilePath, takeId, listener)
+            try { submission.submit() } finally { submission.releaseUnexposedHandle() }
+        }
+
+        override fun close() {
+            val pending = synchronized(lock) {
+                if (state == State.CLOSED) return
+                state = State.CLOSED
+                active.toList()
+            }
+            try { pending.forEach { submission -> runCatching { submission.cancel() }.onFailure(port::report) } }
+            finally { port.close() }
         }
     }
 

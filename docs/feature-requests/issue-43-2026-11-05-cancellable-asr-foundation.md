@@ -1,6 +1,6 @@
 # Issue #43: cancellable shared ASR foundation, 2026-11-05
 
-GitHub issue: #43, related #33. Tier: REFACTOR. Status: DRAFT for coverage/grounded review, not implementation approval.
+GitHub issue: #43, related #33. Tier: REFACTOR. Status: APPROVED by the owner on 2026-11-05 after confirming grounded review. Implementation and qualification follow the chunked plan.
 **Lane:** Code
 mixed_pr: true
 Docs/dev-tooling applies to the eventual tracked plan. PAR rows closed: none; full crash replay and live words remain separate subsequent slices.
@@ -238,6 +238,6 @@ Additional source grounding: foundation-speechwait-tail-grounding.md in this art
 
 ## Review record
 
-Coverage: foundation-coverage.out, exactly one pass. All six findings adopted: native/loop site controls, maximum-to-exact deadline races, real callback-death/unlink protocol, held/rejected transport, exact full-transcript oracle and executable budgets/archived-client setup. The direct-model, IPC and recorder/editor scopes remain distinct. Grounded approval and Gate2 are still pending.
+Coverage: foundation-coverage.out, exactly one pass. All six findings adopted: native/loop site controls, maximum-to-exact deadline races, real callback-death/unlink protocol, held/rejected transport, exact full-transcript oracle and executable budgets/archived-client setup. The direct-model, IPC and recorder/editor scopes remain distinct. Grounded approval and owner Gate2 approval are complete.
 
-Grounded R1: PROCEED-WITH-REVISIONS for one residency-promise mismatch. Adopted after reading all180lines of SpeechModelKeepAlive and the live host adapter153-163: warm reuse is conditional on the unchanged earned-hold/binding policy. Rubric, goals, qualification and ship criteria now share that predicate; the complete policy input classes are enumerated in section3.6. R1 found no additional retirement/generation/transport/deadline/ABI/native-evidence blocker. Confirming grounded R2 returned PROCEED-AS-PLANNED with no blocking revision; owner Gate2 approval remains pending.
+Grounded R1: PROCEED-WITH-REVISIONS for one residency-promise mismatch. Adopted after reading all180lines of SpeechModelKeepAlive and the live host adapter153-163: warm reuse is conditional on the unchanged earned-hold/binding policy. Rubric, goals, qualification and ship criteria now share that predicate; the complete policy input classes are enumerated in section3.6. R1 found no additional retirement/generation/transport/deadline/ABI/native-evidence blocker. Confirming grounded R2 returned PROCEED-AS-PLANNED with no blocking revision; owner Gate2 approval was received on 2026-11-05.

@@ -172,17 +172,44 @@ internal class PipelineBindings(
      * Prepare one fresh callback Binder, then submit/cancel that EXACT identity. PreparedSpeechSubmission
      * owns delivery and actual-return obligations; terminal callbacks still post through PostingSpeechListener.
      */
-    internal class SpeechProxy(private val service: IAsrService, private val post: (Runnable) -> Unit) : SpeechLink {
+    internal class SpeechProxy(
+        private val service: IAsrService,
+        private val post: (Runnable) -> Unit,
+        drained: () -> Unit,
+    ) : SpeechLink {
+        /** Preserve the observed constructor as well as the original factory descriptor. */
+        constructor(service: IAsrService, post: (Runnable) -> Unit) : this(service, post, {})
         private enum class State { OPEN, CLOSED }
         private val lock = Any()
         private var state = State.OPEN
         private val active = mutableSetOf<PreparedSpeechSubmission>()
-        private val port = SpeechCancelPort({ DebugLogger.warn("SpeechProxy", "Speech cancellation control failed: ${it.javaClass.simpleName}") })
+        private val port = SpeechCancelPort({ DebugLogger.warn("SpeechProxy", "Speech cancellation control failed: ${it.javaClass.simpleName}") }, drained)
 
         override fun prepareFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener): SpeechSubmission =
             prepare(audioFilePath, takeId, listener)
 
-        private fun prepare(audioFilePath: String, takeId: String, listener: SpeechListener): PreparedSpeechSubmission = synchronized(lock) {
+        private fun prepare(audioFilePath: String, takeId: String, listener: SpeechListener): PreparedSpeechSubmission =
+            prepareRequest(takeId, listener) { callback -> service.transcribeFileForTake(audioFilePath, takeId, callback) }
+
+        override fun prepareRecovery(replay: com.envi.wispr.recovery.RecoveryReplayRef, listener: RecoverySpeechListener): SpeechSubmission {
+            val typed = object : SpeechListener {
+                override fun onResult(text: String?) {
+                    val result = runCatching {
+                        com.envi.wispr.recovery.RecoveryResultCodec.decode(requireNotNull(text), replay)
+                    }.getOrNull()
+                    if (result == null) listener.onUnavailable() else listener.onResult(result)
+                }
+                override fun onError(message: String?) = listener.onUnavailable()
+                override fun onFailure(reason: Int, detail: String?) = listener.onUnavailable()
+            }
+            val ref = replay.record
+            return prepareRequest(ref.identity.takeId.toString(), typed) { callback ->
+                service.transcribeRecovery(ref.identity.takeId.toString(), ref.storeId.toString(), ref.slot,
+                    ref.identity.generation, replay.attempt.toString(), ref.identity.context.copyBytes(), callback)
+            }
+        }
+
+        private fun prepareRequest(takeId: String, listener: SpeechListener, issue: (IAsrCallback) -> Unit): PreparedSpeechSubmission = synchronized(lock) {
             if (state == State.CLOSED) throw DeadObjectException()
             val registration = port.lease()
             try {
@@ -195,7 +222,7 @@ internal class PipelineBindings(
                         override fun onFailure(reason: Int, detail: String?) = submission.onFailure(reason, detail)
                     }
                     submission = PreparedSpeechSubmission(PostingSpeechListener(post, listener),
-                        issue = { service.transcribeFileForTake(audioFilePath, takeId, callback) },
+                        issue = { issue(callback) },
                         cancelRemote = { service.cancelTranscription(takeId, callback) },
                         port, registration, tail,
                         settled = { synchronized(lock) { active.remove(it) }; Unit })
@@ -225,6 +252,9 @@ internal class PipelineBindings(
     internal companion object {
         /** The production speech proxy; `androidTest` binds the real `:asr` through it (#253). */
         fun speechProxy(service: IAsrService, post: (Runnable) -> Unit): SpeechLink = SpeechProxy(service, post)
+        /** Drain reports local RPC/control return only, never native retirement. */
+        fun recoverySpeechProxy(service: IAsrService, post: (Runnable) -> Unit, drained: () -> Unit): SpeechLink =
+            SpeechProxy(service, post, drained)
         /** The production cleanup transport, shared with the actual-boundary device test. */
         fun polishProxy(service: IPolishService, post: (Runnable) -> Unit): PolishLink = PolishProxy(service, post)
     }

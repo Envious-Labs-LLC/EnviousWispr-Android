@@ -86,7 +86,14 @@ internal interface SpeechSubmission {
 internal interface SpeechLink : AutoCloseable {
     fun prepareFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener): SpeechSubmission
     fun transcribeFileForTake(audioFilePath: String, takeId: String, listener: SpeechListener)
+    fun prepareRecovery(replay: com.envi.wispr.recovery.RecoveryReplayRef, listener: RecoverySpeechListener): SpeechSubmission
     override fun close()
+}
+
+/** Recovery results cannot be passed to ordinary text publication through this typed seam. */
+internal interface RecoverySpeechListener {
+    fun onResult(result: com.envi.wispr.recovery.RecoveryResult)
+    fun onUnavailable()
 }
 
 /** The answer to one `IPolishService.polishRequestWithCleanupForTake`; the engine answers once. */

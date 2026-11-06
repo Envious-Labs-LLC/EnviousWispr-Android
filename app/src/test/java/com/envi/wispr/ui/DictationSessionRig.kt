@@ -729,6 +729,8 @@ internal class DictationSessionRig {
 
     /** The speech process: the test answers the request by hand, as a binder thread would. */
     class FakeSpeech : SpeechLink {
+        override fun prepareRecovery(replay: com.envi.wispr.recovery.RecoveryReplayRef, listener: RecoverySpeechListener): SpeechSubmission =
+            error("ordinary dictation fixture does not stage audio recovery")
         @Volatile var listener: SpeechListener? = null
         private val requested = CountDownLatch(1)
         val requests = CopyOnWriteArrayList<Pair<String, String>>()

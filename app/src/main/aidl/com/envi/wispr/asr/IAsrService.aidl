@@ -13,7 +13,7 @@ interface IAsrService {
     // generated classes (#330), so a removed or renamed one fails when that test invokes it.
 
     /**
-     * transcribeFile plus the take's id, and the ONLY request that answers a failure with
+     * transcribeFile plus the take's id, answering a failure with
      * IAsrCallback.onFailure (a closed code) instead of onError (a sentence). takeId is the owner's
      * per-take UUID; the service keeps it as request context and never persists it.
      */
@@ -21,4 +21,8 @@ interface IAsrService {
 
     // Exact invocation identity: retries share a takeId but carry a fresh callback Binder.
     void cancelTranscription(String takeId, IAsrCallback callback);
+
+    /** One spent recovery authorization. onResult carries EWR-RESULT-1, never ordinary dictated text. */
+    void transcribeRecovery(String takeId, String storeId, int slot, long generation, String attempt,
+        in byte[] contextDigest, IAsrCallback callback);
 }

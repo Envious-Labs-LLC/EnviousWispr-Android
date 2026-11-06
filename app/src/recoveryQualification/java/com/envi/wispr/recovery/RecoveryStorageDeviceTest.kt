@@ -8,6 +8,20 @@ import android.content.pm.ApplicationInfo
 import android.os.IBinder
 import android.os.Parcel
 import android.os.Process
+import android.os.Binder
+import com.envi.wispr.asr.IAsrService
+import com.envi.wispr.asr.IAsrCallback
+import com.envi.wispr.asr.AsrFailureReason
+import com.envi.wispr.asr.ParakeetEngine
+import com.envi.wispr.cleanup.CleanupOptions
+import com.envi.wispr.models.EngineBindings
+import com.envi.wispr.models.ModelManifest
+import com.envi.wispr.models.ModelStorage
+import com.envi.wispr.ui.RecoverySpeechClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import androidx.test.platform.app.InstrumentationRegistry
 import com.envi.wispr.vocabulary.CustomTerm
 import org.junit.Assert.*
@@ -34,12 +48,14 @@ import android.security.keystore.KeyProperties
 /**
  * Product Outcome: real same-UID Android keys/claims must survive process death and prevent stale cleanup.
  * Harness Contract: the unsent-callback control checks the required deadline primitive only.
- * Only disposable fresh lab apps. No microphone, editor, native-model or complete recovery UAT claim.
+ * Only disposable lab apps. Case e uses the actual speech model with a committed file fixture;
+ * other cases do not use a model. No microphone, editor or complete recovery UAT claim.
  */
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class RecoveryStorageDeviceTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val root get() = File(context.noBackupFilesDir, "protected-recovery.v1")
+    private enum class WitnessState { NOT_REQUESTED, UNCONFIRMED, CLOSED }
 
     @Test fun aFirstPublicationCannotBePoisonedByAnEarlySnapshot() {
         assertNondebug()
@@ -100,7 +116,7 @@ class RecoveryStorageDeviceTest {
         var replacement: RecoveryAudioStore.Reservation? = null
         var old: RecoveryRecordRef? = null
         var bodyFailure: Throwable? = null
-        var oracle: KernelReleaseWitness? = null
+        var witnessState = WitnessState.NOT_REQUESTED
         try {
             val intent = Intent(context, RecoveryQualificationService::class.java)
                 .setIdentifier(nonce).putExtra("nonce", nonce)
@@ -133,7 +149,6 @@ class RecoveryStorageDeviceTest {
             // Observe the actual resources before asserting the guard's return value.
             assertContext(original)
             assertTrue("Cleanup must preserve a live owner's key and file: $refused", refused is RecoveryStoreResult.Busy)
-            oracle = KernelReleaseWitness(files.lockFile(RecoveryLockName.MAIN_0)).also { it.start() }
             stoppingPeer.set(true)
             try {
                 executor.submit {
@@ -143,7 +158,9 @@ class RecoveryStorageDeviceTest {
                 // Binder death is expected; the kernel lock witness below supplies release proof.
             }
             assertTrue("Creator peer did not die", died.await(10, TimeUnit.SECONDS))
-            checkNotNull(oracle).awaitSuccess()
+            witnessState = WitnessState.UNCONFIRMED
+            remoteWitness(0, original.slot, setOf(peerPid))
+            witnessState = WitnessState.CLOSED
             assertContext(original) // Main reads the UID-owned key after its creating peer died.
             ready(store.cleanupOnWorker(original))
             assertNull(keyStore().getKey(alias(original), null))
@@ -177,16 +194,13 @@ class RecoveryStorageDeviceTest {
                     assertTrue("Owned qualification peer must exit during failure cleanup", died.await(10, TimeUnit.SECONDS))
                 }
             }
-            var sameInodeSafe = oracle == null
-            attempt {
-                sameInodeSafe = oracle?.stopAndConfirm() ?: true
-                assertTrue("Oracle exit/close unconfirmed; preserve the disposable MAIN0 state", sameInodeSafe)
-            }
-            attempt { if (sameInodeSafe) replacement?.let { assertEquals(RecoveryReservationClose.RELEASED, it.closeOnWorker()) } }
+            val canRetireOriginal = witnessState != WitnessState.UNCONFIRMED
+            attempt { assertTrue("Remote witness unconfirmed; preserve disposable MAIN0 state", canRetireOriginal) }
+            attempt { if (canRetireOriginal) replacement?.let { assertEquals(RecoveryReservationClose.RELEASED, it.closeOnWorker()) } }
             attempt { second?.let { assertEquals(RecoveryReservationClose.RELEASED, it.closeOnWorker()) } }
             val store = RecoveryAudioStore(context)
             listOfNotNull(old, second?.ref, replacement?.ref).forEach { ref ->
-                if (!sameInodeSafe && ref.slot == 0) return@forEach
+                if (!canRetireOriginal && ref.slot == 0) return@forEach
                 attempt {
                     when (val marked = store.markTerminalOnWorker(ref, RecoveryDisposition.DISCARDED)) {
                         is RecoveryStoreResult.Ready -> ready(store.cleanupOnWorker(ref))
@@ -198,7 +212,7 @@ class RecoveryStorageDeviceTest {
                     }
                 }
             }
-            attempt { if (sameInodeSafe) assertEquals(listOf(null, null), ready(store.snapshotOnWorker()).ledger.slots) }
+            attempt { if (canRetireOriginal) assertEquals(listOf(null, null), ready(store.snapshotOnWorker()).ledger.slots) }
             attempt { if (bound) context.unbindService(connection) }
             attempt { executor.shutdownNow() }
             if (failures.isNotEmpty()) {
@@ -281,6 +295,135 @@ class RecoveryStorageDeviceTest {
                 val original = bodyFailure
                 if (original != null) failures.forEach(original::addSuppressed)
                 else throw AssertionError("Writer qualification cleanup failed").also { error -> failures.forEach(error::addSuppressed) }
+            }
+        }
+    }
+
+    @Test fun eOneSpentReplayReturnsActualSpeechAndRefusesADuplicateAfterReaderRelease() {
+        assertNondebug()
+        val descriptor = checkNotNull(ModelStorage.usable(context, ModelManifest.parakeet)) {
+            "Prerequisite: stage the verified speech model on this disposable app before case e"
+        }
+        val pcm = InstrumentationRegistry.getInstrumentation().context.assets.open("recovery-quarterly.pcm").use { it.readBytes() }
+        assertEquals("c4ff9f5dd1b604d0271cb5d9c3837640de0983b34df266266a5efba717d7300f",
+            java.security.MessageDigest.getInstance("SHA-256").digest(pcm).joinToString("") { "%02x".format(it) })
+        val store = RecoveryAudioStore(context)
+        val frozen = FrozenRecoveryContext.freeze(UUID.randomUUID(), 123L, ParakeetEngine.RECIPE_ID,
+            "android-pcm-s16le-16000-mono-v1", CleanupOptions(), emptyList())
+        val reservation = ready(store.reserveOnWorker(frozen))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val gotPeer = CountDownLatch(1)
+        val peer = AtomicReference<IAsrService?>()
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, service: IBinder) { peer.set(IAsrService.Stub.asInterface(service)); gotPeer.countDown() }
+            override fun onServiceDisconnected(name: ComponentName) = Unit
+        }
+        var writer: RecoveryAudioStore.AudioWriterLease? = null
+        var replayLease: RecoveryAudioStore.ReplayLease? = null
+        var client: RecoverySpeechClient? = null
+        var witnessState = WitnessState.NOT_REQUESTED
+        val drained = CountDownLatch(1)
+        var bodyFailure: Throwable? = null
+        try {
+            ready(reservation.prepareOnWorker())
+            val active = ready(store.openAudioWriterOnWorker(reservation.ref))
+            writer = active
+            var offset = 0
+            while (offset < pcm.size) {
+                val size = minOf(RecoveryFrameLimits.PAYLOAD_BYTES, pcm.size - offset)
+                active.appendOnWorker(17L + offset / 2, pcm.copyOfRange(offset, offset + size))
+                offset += size
+            }
+            assertTrue(active.completeOnWorker(17L + pcm.size / 2))
+            assertTrue("a live main claim is not an orphan", store.sealOrphanOnWorker(reservation.ref) is RecoveryStoreResult.Busy)
+            assertEquals(RecoveryReservationClose.RELEASED, reservation.closeOnWorker())
+            assertTrue("the actual writer still owns its audio", store.sealOrphanOnWorker(reservation.ref) is RecoveryStoreResult.Busy)
+            assertEquals(RecoveryClaimRelease.RELEASED, active.closeOnWorker())
+            val lease = ready(store.sealOrphanOnWorker(reservation.ref))
+            replayLease = lease
+            assertEquals(frozen.takeId, lease.contextOnWorker().takeId)
+            val authorization = ready(lease.reserveAttemptOnWorker())
+            assertTrue("a reservation cannot be renewed", lease.reserveAttemptOnWorker() is RecoveryStoreResult.Unavailable)
+
+            val result = AtomicReference<RecoveryResult?>()
+            val answered = CountDownLatch(1)
+            val probeBound = AtomicBoolean()
+            val clientStarted = AtomicBoolean()
+            val mainFailure = AtomicReference<Throwable?>()
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                try {
+                    probeBound.set(EngineBindings.bind(context, EngineBindings.Engine.SPEECH, connection, Context.BIND_AUTO_CREATE))
+                    if (probeBound.get()) {
+                        client = RecoverySpeechClient(context, authorization, scope,
+                            result = { result.set(it); answered.countDown() }, drained = { drained.countDown() })
+                        clientStarted.set(checkNotNull(client).start { true })
+                    }
+                } catch (failure: Throwable) { mainFailure.set(failure) }
+            }
+            mainFailure.get()?.let { throw AssertionError("Main-thread replay binding failed", it) }
+            assertTrue("actual ASR probe binding was refused", probeBound.get())
+            assertTrue("actual recovery client was not admitted", clientStarted.get())
+            assertTrue("actual ASR binding did not connect", gotPeer.await(15, TimeUnit.SECONDS))
+            assertTrue("actual encrypted-input speech request did not answer", answered.await(90, TimeUnit.SECONDS))
+            val actual = checkNotNull(result.get()) { "Actual recovery returned unavailable" }
+            assertEquals("The quarterly marker sentence lands tomorrow.", actual.rawText)
+            assertEquals(17L, actual.firstSample)
+            assertEquals(pcm.size / 2L, actual.sampleCount)
+            assertTrue(actual.completedCapture)
+            assertTrue(actual.partial)
+            assertEquals(descriptor.engineId, actual.model.engineId)
+            assertEquals(descriptor.id, actual.model.modelId)
+            assertEquals(descriptor.pinnedRevision, actual.model.pinnedRevision)
+            assertEquals(ParakeetEngine.RECIPE_ID, actual.model.recipeId)
+            assertEquals(descriptor.displayName, actual.model.displayName)
+
+            // A result is not retirement. The separate audio peer owns the only raw witness channel.
+            val asrProcesses = context.getSystemService(android.app.ActivityManager::class.java).runningAppProcesses.orEmpty()
+                .filter { it.uid == Process.myUid() && it.processName == context.packageName + ":asr" }
+            assertEquals("Identify exactly one actual ASR reader process", 1, asrProcesses.size)
+            val asrPid = asrProcesses.single().pid
+            witnessState = WitnessState.UNCONFIRMED
+            val witnessPid = remoteWitness(1, reservation.ref.slot, setOf(asrPid))
+            witnessState = WitnessState.CLOSED
+            val duplicate = CountDownLatch(1)
+            val duplicateResult = AtomicBoolean()
+            val duplicateReason = java.util.concurrent.atomic.AtomicInteger(-1)
+            val peerPid = java.util.concurrent.atomic.AtomicInteger(-1)
+            checkNotNull(peer.get()).transcribeRecovery(reservation.ref.identity.takeId.toString(), reservation.ref.storeId.toString(),
+                reservation.ref.slot, reservation.ref.identity.generation, authorization.attempt.toString(), reservation.ref.identity.context.copyBytes(),
+                object : IAsrCallback.Stub() {
+                    override fun onResult(text: String?) { duplicateResult.set(true); peerPid.set(Binder.getCallingPid()); duplicate.countDown() }
+                    override fun onError(message: String?) { peerPid.set(Binder.getCallingPid()); duplicate.countDown() }
+                    override fun onFailure(reason: Int, detail: String?) { duplicateReason.set(reason); peerPid.set(Binder.getCallingPid()); duplicate.countDown() }
+                })
+            assertTrue("duplicate submission did not settle", duplicate.await(30, TimeUnit.SECONDS))
+            assertFalse("one nonce decoded a second time", duplicateResult.get())
+            assertEquals(AsrFailureReason.AUDIO_UNREADABLE.code, duplicateReason.get())
+            assertEquals("callback must come from the identified ASR process", asrPid, peerPid.get())
+            assertNotEquals("witness must be a separate process from the reader", witnessPid, peerPid.get())
+            assertNotEquals(Process.myPid(), peerPid.get())
+        } catch (failure: Throwable) {
+            bodyFailure = failure
+            throw failure
+        } finally {
+            val failures = ArrayList<Throwable>()
+            fun attempt(action: () -> Unit) { try { action() } catch (failure: Throwable) { failures.add(failure) } }
+            attempt {
+                InstrumentationRegistry.getInstrumentation().runOnMainSync { client?.close(); EngineBindings.unbind(connection) }
+                if (client != null) assertTrue("local recovery transport did not drain", drained.await(15, TimeUnit.SECONDS))
+            }
+            scope.cancel()
+            attempt { writer?.let { assertEquals(RecoveryClaimRelease.RELEASED, it.closeOnWorker()) } }
+            attempt { assertEquals(RecoveryReservationClose.RELEASED, reservation.closeOnWorker()) }
+            attempt { replayLease?.let { assertEquals(RecoveryClaimRelease.RELEASED, it.closeOnWorker()) } }
+            if (witnessState != WitnessState.UNCONFIRMED) {
+                attempt { ready(store.markTerminalOnWorker(reservation.ref, RecoveryDisposition.NO_REPLAY)) }
+                attempt { ready(store.cleanupOnWorker(reservation.ref)) }
+            } // Unknown remote outcome keeps the failed disposable slot/key/files for inspection.
+            if (failures.isNotEmpty()) {
+                val original = bodyFailure
+                if (original != null) failures.forEach(original::addSuppressed)
+                else throw AssertionError("Replay qualification cleanup failed").also { error -> failures.forEach(error::addSuppressed) }
             }
         }
     }
@@ -391,51 +534,39 @@ class RecoveryStorageDeviceTest {
         } finally { input.recycle(); output.recycle() }
     }
 
-    /** Independent test oracle, never overlapping a production channel in this process. */
-    private class KernelReleaseWitness(private val file: File) {
-        private val exited = CountDownLatch(1)
-        private val closed = AtomicBoolean()
-        private val failure = AtomicReference<Throwable?>()
-        private val worker = Thread({
-            var channel: FileChannel? = null
-            var normal = false
-            try {
-                channel = FileChannel.open(file.toPath(), StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)
-                val lock = channel.lock()
-                lock.release()
-                normal = true
-            } catch (error: Throwable) {
-                failure.set(error)
-            } finally {
-                var confirmed = false
-                try {
-                    channel?.close()
-                    confirmed = channel != null
-                } catch (error: Throwable) {
-                    failure.compareAndSet(null, error)
-                } finally {
-                    // Interrupted/error paths remain conservative even if a later close was a no-op.
-                    closed.set(normal && confirmed && failure.get() == null)
-                    exited.countDown()
-                }
-            }
-        }, "recovery-kernel-release-witness").apply { isDaemon = true }
-
-        fun start() = worker.start()
-
-        fun awaitSuccess() {
-            assertTrue("Kernel lock witness did not finish", exited.await(15, TimeUnit.SECONDS))
-            worker.join(1_000)
-            assertFalse("Kernel witness has not actually exited", worker.isAlive)
-            failure.get()?.let { throw AssertionError("Kernel witness failed", it) }
-            assertTrue("Kernel witness channel close is unconfirmed", closed.get())
+    /** A fresh neutral private-peer binding witnesses acquisition and checked close in another process. */
+    private fun remoteWitness(role: Int, slot: Int, forbiddenPids: Set<Int>): Int {
+        val nonce = UUID.randomUUID().toString()
+        val connected = CountDownLatch(1)
+        val binder = AtomicReference<IBinder?>()
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, service: IBinder) { binder.set(service); connected.countDown() }
+            override fun onServiceDisconnected(name: ComponentName) = Unit
         }
-
-        fun stopAndConfirm(): Boolean {
-            if (worker.isAlive) worker.interrupt()
-            if (!exited.await(10, TimeUnit.SECONDS)) return false
-            worker.join(1_000)
-            return !worker.isAlive && closed.get()
+        val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "remote-kernel-witness").apply { isDaemon = true } }
+        var bound = false
+        try {
+            bound = context.bindService(Intent(context, RecoveryQualificationService::class.java)
+                .setIdentifier(nonce).putExtra("nonce", nonce), connection, Context.BIND_AUTO_CREATE)
+            assertTrue("Private witness binding was refused", bound)
+            assertTrue("Private witness did not connect", connected.await(15, TimeUnit.SECONDS))
+            val peer = checkNotNull(binder.get())
+            return executor.submit<Int> {
+                val pid = call(peer, nonce, RecoveryQualificationPeer.HELLO, {}) {
+                    check(readInt() == Process.myUid()) { "Witness UID mismatch" }
+                    val actual = readInt()
+                    check(actual > 0 && actual != Process.myPid() && actual !in forbiddenPids) { "Witness must be a separate actual process" }
+                    check(readString() == context.packageName + ":audio") { "Unexpected witness process" }
+                    actual
+                }
+                call(peer, nonce, RecoveryQualificationPeer.WITNESS_RELEASE, { writeInt(role); writeInt(slot) }) {
+                    check(readInt() == 1) { "Witness acquisition/closure unconfirmed" }
+                }
+                pid
+            }.get(20, TimeUnit.SECONDS)
+        } finally {
+            try { if (bound) context.unbindService(connection) }
+            finally { executor.shutdown() } // Do not interrupt/pretend to retire a blocked RPC.
         }
     }
 }

@@ -79,7 +79,7 @@ class AsrWatchdogTest {
         val service = java.io.File("src/main/java/com/envi/wispr/asr/AsrService.kt").readText()
         assertTrue(service.contains("releaseBoundMs = AsrBounds.RELEASE_BOUND_MS,"))
         assertTrue(service.contains("owner.load(AsrBounds.LOAD_BOUND_MS) { initRecognizer() }"))
-        assertEquals("both entry points pass a sized bound", 2, Regex("""owner\.use\(transcriptionBoundMs\(""").findAll(service).count())
+        assertEquals("ordinary file, byte-array and recovery work pass a sized bound", 3, Regex("""owner\.use\(transcriptionBoundMs\(""").findAll(service).count())
         assertTrue(service.contains("override fun isReady(): Boolean = owner.isReady && !watchdog.wedged"))
     }
 

@@ -1,6 +1,7 @@
 package com.envi.wispr.asr;
 
 interface IAsrCallback {
+    // Plain text for ordinary requests; EWR-RESULT-1 envelope only for transcribeRecovery.
     void onResult(String text);
     void onError(String message);
 
@@ -9,7 +10,7 @@ interface IAsrCallback {
     // generated classes (#330), so a removed or renamed one fails when that test invokes it.
 
     /**
-     * A typed failure, emitted ONLY for a request made through IAsrService.transcribeFileForTake.
+     * A typed failure for transcribeFileForTake or transcribeRecovery.
      * reason is AsrFailureReason.code; detail is local diagnostic text and must never leave the phone.
      * The legacy transcribeFile/transcribe requests keep answering onResult/onError exactly as before.
      */

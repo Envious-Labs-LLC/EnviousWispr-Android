@@ -513,6 +513,9 @@ internal class DictationSessionRig {
      * push another take's ending, which the owner must discard.
      */
     inner class FakeCapture : CaptureLink {
+        override fun attachRecovery(ref: com.envi.wispr.recovery.RecoveryRecordRef) {
+            events += "recovery ${ref.identity.takeId}"
+        }
         private val binderThread = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "fake-audio-binder") }
         /** The id the owner passed to the last start; the fake's events carry it. */
         @Volatile var currentTakeId = ""

@@ -56,6 +56,9 @@ class ModelBootstrapApplication : Application() {
         /** The process's one start-up History recovery (#346), shared by the session owner and the History screen. */
         internal fun historyRecovery(context: Context): com.envi.wispr.history.HistoryRecoveryCoordinator =
             (context.applicationContext as ModelBootstrapApplication).historyRecovery
+
+        internal fun recordingProtection(context: Context): com.envi.wispr.ui.RecordingProtectionOwner =
+            (context.applicationContext as ModelBootstrapApplication).recordingProtection
     }
 
     /** Set once in `onCreate`, behind the main-process gate; read only on the main thread. */
@@ -103,6 +106,10 @@ class ModelBootstrapApplication : Application() {
             TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()),
             onOverload = { Telemetry.defect(AppDefect.HistoryQueueOverloaded) },
         )
+    }
+
+    private val recordingProtection by lazy {
+        com.envi.wispr.ui.RecordingProtectionOwner(this, historyWrites, CoroutineScope(SupervisorJob() + Dispatchers.IO))
     }
 
     override fun onCreate() {

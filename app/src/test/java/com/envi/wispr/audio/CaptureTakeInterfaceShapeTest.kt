@@ -8,7 +8,7 @@ import java.io.File
 
 /**
  * Drift Guard (#220, audit REF-06), counted as such: the session owner holds a take-sized capture interface.
- * The new AIDL declares exactly the five operations a take uses, in order; the owner's proxy names only
+ * The AIDL keeps the original operations in order and appends recovery attachment; the owner's proxy names only
  * that interface and binds it with the take action and a fresh identifier; the service hands the take
  * binder only to that action; and each take-binder method is one call of a service function the legacy
  * binder also calls, so the two interfaces cannot drift apart in behaviour.
@@ -30,10 +30,10 @@ class CaptureTakeInterfaceShapeTest {
         return text.substring(from).substringBefore("\n    }\n")
     }
 
-    @Test fun theTakeInterfaceDeclaresExactlyTheFiveOperationsInOrder() {
-        val methods = Regex("""^\s*(?:boolean|void)\s+(\w+)\(""", RegexOption.MULTILINE).findAll(takeAidl).map { it.groupValues[1] }.toList()
+    @Test fun theTakeInterfacePreservesExistingOperationsAndAppendsRecovery() {
+        val methods = Regex("""^\s*(?:oneway\s+)?(?:boolean|void)\s+(\w+)\(""", RegexOption.MULTILINE).findAll(takeAidl).map { it.groupValues[1] }.toList()
         assertEquals(
-            listOf("startCaptureForTake", "stopCapture", "finishTake", "registerSpectrumListener", "registerTakeListener"),
+            listOf("startCaptureForTake", "stopCapture", "finishTake", "registerSpectrumListener", "registerTakeListener", "attachRecoveryForTake"),
             methods,
         )
     }

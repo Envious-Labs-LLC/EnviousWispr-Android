@@ -34,7 +34,13 @@ internal class TakeStartPreparation(
     val policy: Prepared<PolicyRead>,
     val priorPolicy: PolishPolicy?,
     val jobs: List<Job>,
-)
+) {
+    /** The accepted matcher's exact inputs; a failed compile restores no terms. */
+    val effectiveTerms: List<CustomTerm> = when (matcher) {
+        is Prepared.Ready -> start.terms.structuredTerms
+        is Prepared.Failed -> emptyList()
+    }
+}
 
 /**
  * The work a take does before the owner decides to bind (#281, moved from `beginSession`): the settings answer wait and

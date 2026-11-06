@@ -2,6 +2,7 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.polish.PolishOutcome
 import com.envi.wispr.polish.PolishPolicy
+import com.envi.wispr.recovery.RecoveryRecordRef
 
 /**
  * The three helper processes as the session owner sees them (#186): exactly the AIDL members the owner
@@ -46,7 +47,7 @@ internal data class TakeEnding(
 )
 
 /**
- * `IAudioCaptureService`, the members the owner uses (#115): three COMMANDS and two listener members. The
+ * `IAudioTakeService`, the commands and listeners the owner uses (#115). The
  * owner reads nothing from the audio process; every fact it needs is pushed through [TakeListener] and
  * [SpectrumListener]. A synchronous call into a process that stops answering has no timeout, so the fewer
  * there are the smaller the surface the owner's silence bound has to cover.
@@ -55,6 +56,7 @@ internal interface CaptureLink {
     fun startCaptureForTake(autoStopOnSilence: Boolean, pauseSeconds: Float, inputDevicePick: String, keepEarbudsReady: Boolean, takeId: String): Boolean
     fun stopCapture()
     fun finishTake(): Boolean
+    fun attachRecovery(ref: RecoveryRecordRef)
     /**
      * Receive the recorder's picture as the audio process publishes it (#187): the production link
      * builds the binder Stub and registers it; a later call replaces the earlier registration.

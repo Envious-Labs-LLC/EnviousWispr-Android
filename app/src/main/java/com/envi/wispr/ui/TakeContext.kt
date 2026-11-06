@@ -31,6 +31,7 @@ internal class TakeContext(
     val acceptedAtMs: Long,
     /** The take-bound log (#378): every line of this take carries its id to the local log file. */
     val log: SessionLog,
+    val protection: RecordingProtectionOwner.RecordingProtection? = null,
 ) {
     companion object {
         /** Before any admission: an empty id, an arbiter that refuses everything, no target, no History. */

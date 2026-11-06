@@ -30,6 +30,9 @@ class CaptureBinderAdaptersTest {
         }
         override fun finishTake(): Boolean { calls += "finish"; return answer }
         override fun stopCapture() { calls += "stop" }
+        override fun attachRecovery(takeId: String?, storeId: String?, slot: Int, generation: Long, contextDigest: ByteArray?) {
+            calls += "recovery $takeId $storeId $slot $generation ${contextDigest?.joinToString()}"
+        }
         override val takePeakAmplitude = 0.5f
         override val liveState = AudioCaptureService.LIVE_READY
         override val liveAfterMs = 120L
@@ -51,6 +54,13 @@ class CaptureBinderAdaptersTest {
     private val takeEvents = slots.slot<ITakeListener> { it }
     private val adapters = CaptureBinderAdapters(ops, spectrum, takeEvents)
     private val legacy = adapters.legacy as IAudioCaptureService.Stub
+
+    /** Harness Contract: the appended operation preserves every identity operand. */
+    @Test fun recoveryAttachmentPassesTheExactRecordIdentity() {
+        val take = adapters.forTake(slots.openTakeEpoch("a")) as IAudioTakeService.Stub
+        take.attachRecoveryForTake("take", "store", 1, 42L, byteArrayOf(3, 7, 11))
+        assertEquals(listOf("recovery take store 1 42 3, 7, 11"), calls)
+    }
 
     /**
      * Row 1: the four legacy starts are refusal-only starts with the arguments they always had; the take start is

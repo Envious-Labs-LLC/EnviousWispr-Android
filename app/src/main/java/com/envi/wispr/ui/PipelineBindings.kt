@@ -151,6 +151,9 @@ internal class PipelineBindings(
             service.registerSpectrumListener(stub)
         }
         override fun finishTake(): Boolean = service.finishTake()
+        override fun attachRecovery(ref: com.envi.wispr.recovery.RecoveryRecordRef) =
+            service.attachRecoveryForTake(ref.identity.takeId.toString(), ref.storeId.toString(), ref.slot,
+                ref.identity.generation, ref.identity.context.copyBytes())
 
         override fun listenForTake(listener: TakeListener) {
             val stub = object : ITakeListener.Stub() {

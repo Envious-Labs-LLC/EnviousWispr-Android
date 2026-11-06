@@ -50,6 +50,41 @@ class RescuedWordsTest {
 
     private fun file() = File(dir, "$take.words")
 
+    /** Harness Contract: pending, failed and zero-id receipts are not proof that words survived. */
+    @Test fun anUnconfirmedWordsSaveDoesNotAuthorizeAudioDisposal() {
+        for (outcome in listOf(SaveOutcome.Failed(IllegalStateException("fixture")), SaveOutcome.Saved(0L))) {
+            val saved = SaveSlot()
+            val rescue = CompletableDeferred<RescueOutcome>()
+            val proof = CompletableDeferred<Unit>()
+            observeDurableWords(saved, rescue, proof)
+            assertFalse("starting both writes is not persistence", proof.isCompleted)
+            saved.answer(outcome) { 0L }
+            rescue.complete(RescueOutcome.FAILED)
+            assertFalse("neither failed path authorizes disposal", proof.isCompleted)
+        }
+    }
+
+    /** Harness Contract: an actual positive History id permits disposal without waiting on rescue. */
+    @Test fun aPositiveHistoryReceiptAuthorizesAudioDisposal() {
+        val saved = SaveSlot()
+        val proof = CompletableDeferred<Unit>()
+        observeDurableWords(saved, CompletableDeferred(), proof)
+        saved.answer(SaveOutcome.Saved(7L)) { 0L }
+        assertTrue(proof.isCompleted)
+    }
+
+    /** Harness Contract: the existing KEPT rescue receipt suffices when History failed. */
+    @Test fun aKeptRescueReceiptAuthorizesAudioDisposal() {
+        val saved = SaveSlot()
+        val rescue = CompletableDeferred<RescueOutcome>()
+        val proof = CompletableDeferred<Unit>()
+        observeDurableWords(saved, rescue, proof)
+        saved.answer(SaveOutcome.Failed(IllegalStateException("fixture"))) { 0L }
+        assertFalse(proof.isCompleted)
+        rescue.complete(RescueOutcome.KEPT)
+        assertTrue(proof.isCompleted)
+    }
+
     private fun awaitUntil(what: String, condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
         while (!condition()) {

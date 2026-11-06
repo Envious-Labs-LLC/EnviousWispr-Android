@@ -534,4 +534,48 @@ class RecognizerOwnerTest {
         assertTrue(rig.watchdog.wedged)
         assertEquals(1, rig.endings.size)
     }
+
+    @Test fun actualOwnerRetirementWaitsForARegistrationThatReturnsAfterNativeFree() {
+        val worker = QueueWorker()
+        val scheduler = com.envi.wispr.process.ManualDeadlineScheduler()
+        val watchdog = AsrWatchdog(com.envi.wispr.process.EngineDeadline(scheduler)) { error(it) }
+        val lane = RecognizerLane(worker, watchdog)
+        val first = RecognizerOwner<Recognizer>(lane, watchdog, worker,
+            free = { events += "free old" }, discarded = {}, releaseBoundMs = 7)
+        first.load(5) { Recognizer("old") }
+        worker.runAll()
+        val pending = first.request(cleanup = { events += "unlink old" }, retired = {}, controlFailed = { throw it })
+        first.close { events += "old retired" }
+        val second = RecognizerOwner<Recognizer>(lane, watchdog, worker, free = {}, discarded = {}, releaseBoundMs = 7)
+        second.load(5) { events += "open new"; Recognizer("new") }
+        worker.runAll()
+        assertEquals(listOf("free old"), events.toList())
+        assertFalse(second.isReady)
+        pending.registrationComplete()
+        worker.runAll()
+        assertEquals(listOf("free old", "unlink old", "old retired", "open new"), events.toList())
+        assertTrue(second.isReady)
+        second.close()
+        worker.runAll()
+    }
+
+    @Test fun anActualOwnerFreeFailureNeverAcknowledgesRetirementOrLoadsTheNextModel() {
+        val worker = QueueWorker()
+        val scheduler = com.envi.wispr.process.ManualDeadlineScheduler()
+        val endings = mutableListOf<String>()
+        val watchdog = AsrWatchdog(com.envi.wispr.process.EngineDeadline(scheduler)) { endings += it }
+        val lane = RecognizerLane(worker, watchdog)
+        val first = RecognizerOwner<Recognizer>(lane, watchdog, worker,
+            free = { events += "free attempted"; error("native free failed") }, discarded = {}, releaseBoundMs = 7)
+        first.load(5) { Recognizer("old") }
+        worker.runAll()
+        first.close { error("Failed free cannot acknowledge retirement") }
+        val second = RecognizerOwner<Recognizer>(lane, watchdog, worker, free = {}, discarded = {}, releaseBoundMs = 7)
+        second.load(5) { events += "unsafe new model"; Recognizer("new") }
+        worker.runAll()
+        assertEquals(listOf("free attempted"), events.toList())
+        assertTrue(watchdog.wedged)
+        assertEquals(listOf("Speech model release did not complete native cleanup"), endings)
+        assertFalse(second.isReady)
+    }
 }

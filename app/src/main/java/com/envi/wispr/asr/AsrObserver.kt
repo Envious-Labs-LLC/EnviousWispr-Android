@@ -6,6 +6,7 @@ import ai.onnxruntime.OrtException
 internal interface AsrObserver {
     enum class Phase { CONVERSION, WINDOW, SPEECH_END, FRAME, FINALIZATION, MERGE, REPAIR, TEXT }
     enum class Stage { PREPROCESSOR, ENCODER, DECODER }
+    /** options is an invocation-local allocation serial, not a native pointer. */
     data class Call(val model: Long, val invocation: Long, val serial: Long, val stage: Stage, val session: Int, val options: Long, val thread: Long)
 
     fun phase(phase: Phase, index: Int) { }

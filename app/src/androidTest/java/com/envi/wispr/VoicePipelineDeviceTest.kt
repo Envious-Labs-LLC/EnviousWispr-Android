@@ -22,6 +22,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.envi.wispr.asr.AsrService
+import com.envi.wispr.asr.AsrProbeEvents
+import com.envi.wispr.asr.AsrRequest
 import com.envi.wispr.asr.IAsrCallback
 import com.envi.wispr.asr.IAsrService
 import com.envi.wispr.debug.DebugLogger
@@ -35,6 +37,8 @@ import com.envi.wispr.polish.PolishOutcome
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.polish.PolishService
+import com.envi.wispr.providers.PolishMode
+import com.envi.wispr.providers.ProviderConfigurationRepository
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.shortcuts.DictationNotificationController
 import com.envi.wispr.ui.DictationSessionService
@@ -65,6 +69,8 @@ import org.junit.runner.RunWith
  * (an ordinary tile dictation is reported as broken), and [transcribesThenPolishesWithSavedCustomWords]
  * (the polish limb drops the user's own spellings), and [aSilenceStoppedTakeLandsInTheFocusedEditorExactlyOnce]
  * (with stop-on-silence on, a take the user simply stops talking in never ends, or its words do not land).
+ *
+ * [cancellingSpeechLeavesTheEditorEmptyAndTheNextTakeInsertsOnce] protects Cancel followed by a fresh take.
  *
  * Every wait here is on a signal the SUBJECT fires, never elapsed time: the session owner's phase writes
  * (`DictationSurfaceState`, read through an `OnSharedPreferenceChangeListener`), the History row the
@@ -215,6 +221,67 @@ class VoicePipelineDeviceTest {
         assertEquals("the words appear exactly once", 1, occurrences(text, expected.trim()))
         assertEquals("the owner recorded the commit route", InsertionResults.COMMITTED, row.insertionResult)
         DebugLogger.log("VoicePipelineDeviceTest", "sideButtonTake chars=${text.length} result=${row.insertionResult}")
+    }
+
+    /**
+     * Product Outcome: Cancel during actual speech processing, then dictate again into the same editor.
+     * The external driver feeds its same synthetic sentence twice; only the second take may insert it.
+     * REVERT: omit engine cancellation, accept the abandoned result, or duplicate the next editor write.
+     * Component retirement and the editor receipt are separate assertions; neither substitutes for the other.
+     */
+    @Test
+    fun cancellingSpeechLeavesTheEditorEmptyAndTheNextTakeInsertsOnce() {
+        val policy = ProviderConfigurationRepository(context)
+        val savedMode = policy.loadMode()
+        val preferences = AppPreferences(context)
+        val savedAutoStop = runBlocking { preferences.authoritativeState.first().autoStopOnSilenceEnabled }
+        try {
+            awaitNoSessionService()
+            policy.setMode(PolishMode.OFF)
+            assertEquals(PolishMode.OFF, policy.loadMode())
+            runBlocking { preferences.setAutoStopOnSilenceEnabled(false) }
+            assertFalse(runBlocking { preferences.authoritativeState.first().autoStopOnSilenceEnabled })
+            startRig(twoFields = false)
+            AsrProbeEvents(context).use { events ->
+                events.register(5_000)
+                val first = SideButtonRun()
+                first.recordOneTake(stage = {})
+                val active = try {
+                    events.await("encoder", 15_000)
+                } catch (failure: Throwable) {
+                    try { first.cancelAfterStopAndAwaitIdle() } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+                    throw failure
+                }
+                first.cancelAfterStopAndAwaitIdle()
+                val request = AsrProbeEvents.number(active, "request")
+                val pid = AsrProbeEvents.number(active, "pid")
+                val abandonedTake = active.getString("take")
+                assertTrue("the observer did not identify the recorder's take", abandonedTake.isNotBlank())
+                val retired = events.await("retired", 5_000) {
+                    AsrProbeEvents.number(it, "request") == request && AsrProbeEvents.number(it, "pid") == pid
+                }
+                assertEquals("the recorder Cancel did not cancel its actual speech request", true, retired.get("cancelled"))
+                assertEquals(AsrRequest.Retirement.BODY_COMPLETED.name, retired.getString("outcome"))
+                assertEquals("cancelled words reached the editor", "", receipt(PasteTargetActivity.RECEIPT_NAME))
+
+                awaitNoSessionService()
+                val second = SideButtonRun()
+                second.recordOneTake(stage = {})
+                val row = try { second.awaitFinalRow() } catch (failure: Throwable) {
+                    try { second.cancelAfterStopAndAwaitIdle() } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+                    throw failure
+                }
+                val expected = expectedFinal()
+                assertEquals("the complete second take must land once", expected, receipt(PasteTargetActivity.RECEIPT_NAME))
+                assertEquals(InsertionResults.COMMITTED, row.insertionResult)
+                assertTrue("the replacement row belongs to the abandoned take", row.takeId != abandonedTake)
+                val rows = runBlocking { EnviousWisprDatabase.get(context).transcriptDao().observeAll().first() }
+                assertFalse("the abandoned take returned to History", rows.any { it.takeId == abandonedTake })
+            }
+        } finally {
+            try { runBlocking { preferences.setAutoStopOnSilenceEnabled(savedAutoStop) } }
+            finally { policy.setMode(savedMode) }
+        }
     }
 
     /**
@@ -424,6 +491,30 @@ class VoicePipelineDeviceTest {
         }
 
         fun phaseNow(): String? = surfaceState.getString(SURFACE_STATE_PHASE, null)
+
+        /** Processing has already received Stop; require the owner's ending and actual capture ending. */
+        fun cancelAfterStopAndAwaitIdle() {
+            // awaitFinalRow may already have released the ordinary observer on its failure path.
+            // Own a fresh observer before issuing cleanup, including an already-published IDLE.
+            val ended = CountDownLatch(1)
+            val endingListener = SharedPreferences.OnSharedPreferenceChangeListener { store, key ->
+                if (key == SURFACE_STATE_PHASE && store.getString(key, null) == "IDLE") ended.countDown()
+            }
+            surfaceState.registerOnSharedPreferenceChangeListener(endingListener)
+            try {
+                if (phaseNow() == "IDLE") ended.countDown()
+                context.startActivity(
+                    Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)
+                        .putExtra(com.envi.wispr.ui.VoiceInputActivity.EXTRA_CANCEL, true)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                )
+                assertTrue("Cancel never returned the recorder to IDLE; phase=${phaseNow()}", ended.await(30, TimeUnit.SECONDS))
+                assertEquals("the stopped take did not close capture exactly once", 1, captureEndings().size)
+            } finally {
+                surfaceState.unregisterOnSharedPreferenceChangeListener(endingListener)
+                surfaceState.unregisterOnSharedPreferenceChangeListener(phaseListener)
+            }
+        }
 
         /**
          * [stopByUser] false (#239): no stop is sent; the take must end by itself, and the take stays this run's

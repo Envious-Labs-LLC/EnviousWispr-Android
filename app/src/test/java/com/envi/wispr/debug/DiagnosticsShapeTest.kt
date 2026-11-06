@@ -15,7 +15,8 @@ import java.io.File
  *     of a throwable;
  * (b) nothing anywhere prints a stack (`printStackTrace`, `stackTraceToString`, the platform's
  *     stack-string helper), reads a localized message, or reaches into a cause's message; the throwable's
- *     stack-trace array is read in ONE place, the renderer;
+ *     stack-trace array is read in ONE place, the renderer. The native qualification fixture separately
+ *     samples one explicitly typed Thread for JNI residency, writing only its owned local report;
  * (c) no diagnostic call span (a `DebugLogger.*`, `SessionLog` `log.*`, `logInfo`/`logWarn`, or the
  *     speech process's `failure.report(`) carries `.message`, a throwable's `toString()`, a template of a
  *     conventionally named throwable, or a `format` whose value argument is one;
@@ -139,6 +140,15 @@ class DiagnosticsShapeTest {
         assertEquals(emptyList<String>(), found)
     }
 
+    @Test
+    fun nativeThreadSamplingDoesNotExemptThrowableStacksOrOtherFiles() {
+        assertEquals(emptyList<String>(), stackTraceReads(nativeSampleOwner, nativeThreadSample))
+        assertEquals(1, stackTraceReads(nativeSampleOwner, nativeThreadSample + "\nval leaked = error.stackTrace").size)
+        assertEquals(1, stackTraceReads("src/main/java/Other.kt", nativeThreadSample).size)
+        assertEquals(1, stackTraceReads(nativeSampleOwner, nativeThreadSample + "\n" + nativeThreadSample).size)
+        assertEquals(1, stackTraceReads(nativeSampleOwner, "val frames = throwable.stackTrace").size)
+    }
+
     private fun scanAll(path: String, text: String): List<String> =
         androidLogUses(path, text) + stackOrChainUses(path, text) + stackTraceReads(path, text) +
             exceptionTextInDiagnosticSpans(path, text) + threeArgumentLogCalls(path, text) + fileSinkUses(path, text)
@@ -158,8 +168,14 @@ class DiagnosticsShapeTest {
     }
 
     /** `.stackTrace` as a property read; `stackTraceToString` is (b)'s and `fillInStackTrace` is a different word. */
-    private fun stackTraceReads(path: String, text: String): List<String> =
-        Regex("""\.stackTrace\b""").findAll(text).map { "$path .stackTrace" }.toList()
+    private val nativeSampleOwner = "src/androidTest/java/com/envi/wispr/asr/ParakeetCancellationDeviceTest.kt"
+    private val nativeThreadSample = "val workerThread: Thread = checkNotNull(worker.thread.get())\n                    val frames = workerThread.stackTrace"
+    private fun stackTraceReads(path: String, text: String): List<String> {
+        // One exact, typed Thread sample in this test-only owner; all throwable reads and extra samples
+        // still fail, including within that same file. No complete source file is exempted.
+        val checked = if (path == nativeSampleOwner) text.replaceFirst(nativeThreadSample, "") else text
+        return Regex("""\.stackTrace\b""").findAll(checked).map { "$path .stackTrace" }.toList()
+    }
 
     private fun fileSinkUses(path: String, text: String): List<String> = buildList {
         listOf("Environment", "FileWriter").forEach { token -> if (Regex("""\b$token\b""").containsMatchIn(text)) add("$path $token") }

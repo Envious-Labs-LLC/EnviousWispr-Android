@@ -327,7 +327,7 @@ class AsrSpeedDeviceTest {
         return am.getProcessMemoryInfo(intArrayOf(pid)).single().totalPss / 1024L
     }
 
-    private fun stageParakeet() {
+    internal fun stageParakeet() {
         val model = ModelManifest.parakeet
         val source = Files.createTempDirectory(context.cacheDir.toPath(), "firebase-parakeet-").toFile()
         try {
@@ -344,7 +344,7 @@ class AsrSpeedDeviceTest {
         }
     }
 
-    private fun copyFromTmp(name: String, into: File): File {
+    internal fun copyFromTmp(name: String, into: File): File {
         val target = File(into, name)
         val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("cat /data/local/tmp/$name")
         ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input -> target.outputStream().use { input.copyTo(it) } }

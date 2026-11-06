@@ -2,82 +2,122 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.asr.AsrBounds
 
-/**
- * One take's speech lifetime: one deadline, at most two admitted requests after a helper loss.
- * An opaque attempt owns its callbacks; a disconnected attempt cannot answer or close its replacement.
- * Cancellation before arm is permanent. Reconnection never extends the original deadline.
- */
+/** One original deadline, at most one reconnect retry, and one exact active/answered-tail submission. */
 internal class SpeechWait(private val host: SessionHost) {
-    private enum class State { NEW, OPEN, DONE }
     enum class Loss { WAITING, RETRYING, EXHAUSTED, FINISHED }
     class Attempt internal constructor(internal val peer: SpeechLink)
-
+    private class Slot(val attempt: Attempt, var submission: SpeechSubmission? = null)
+    private sealed interface State {
+        data object New : State
+        data class Open(val slot: Slot?) : State
+        data class Answered(val tail: SpeechSubmission?) : State
+        data object Closed : State
+    }
+    private sealed interface Retry {
+        data object First : Retry
+        data class Used(val failedPeer: SpeechLink) : Retry
+    }
     private val lock = Any()
-    private var state = State.NEW
-    private var attempt: Attempt? = null
-    private var failedPeer: SpeechLink? = null
-    private var retried = false
+    private var state: State = State.New
+    private var retry: Retry = Retry.First
     private var onExpired: (() -> Unit)? = null
     private val expiry = Runnable {
-        val action = synchronized(lock) {
-            if (state != State.OPEN) return@Runnable
-            state = State.DONE
-            attempt = null
-            onExpired
+        val expired = synchronized(lock) {
+            val open = state as? State.Open ?: return@Runnable
+            state = State.Closed
+            val action = onExpired
+            onExpired = null
+            open.slot?.submission to action
         }
-        action?.invoke()
+        expired.first?.cancel()
+        expired.second?.invoke()
     }
 
     fun arm(audioMs: Long, onExpired: () -> Unit): Boolean = synchronized(lock) {
-        if (state != State.NEW) return false
-        state = State.OPEN
+        if (state != State.New) return false
+        state = State.Open(null)
         this.onExpired = onExpired
         host.postToMainDelayed(AsrBounds.requestBoundMs(audioMs), expiry)
         true
     }
 
-    /** The worker admits a request against the current proxy, never the proxy that already failed. */
     fun claimAttempt(readPeer: () -> SpeechLink?): Attempt? = synchronized(lock) {
+        val open = state as? State.Open ?: return null
         val peer = readPeer() ?: return null
-        if (state != State.OPEN || attempt != null || peer === failedPeer) return null
-        Attempt(peer).also { attempt = it }
+        if (open.slot != null || (retry as? Retry.Used)?.failedPeer === peer) return null
+        Attempt(peer).also { state = State.Open(Slot(it)) }
     }
 
-    /** Main-thread connection loss, or a token-scoped dead-Binder throw posted there by its worker. */
-    fun disconnected(token: Attempt? = null): Loss = synchronized(lock) {
-        if (token != null && attempt !== token) return Loss.FINISHED
-        when (state) {
-            State.NEW -> Loss.WAITING
-            State.DONE -> Loss.FINISHED
-            State.OPEN -> {
-                val lost = attempt ?: return Loss.WAITING
-                failedPeer = lost.peer
-                attempt = null
-                if (retried) {
-                    finish()
-                    Loss.EXHAUSTED
-                } else {
-                    retried = true
-                    Loss.RETRYING
+    /** Preparation issues no RPC. Attach before submit; a late/replacement handle is cancelled outside the lock. */
+    fun attach(token: Attempt, submission: SpeechSubmission): Boolean {
+        val accepted = synchronized(lock) {
+            val slot = (state as? State.Open)?.slot
+            if (slot?.attempt !== token) false else {
+                val previous = slot.submission
+                if (previous == null || previous === submission) { slot.submission = submission; true } else false
+            }
+        }
+        if (!accepted) submission.cancel()
+        return accepted
+    }
+
+    fun disconnected(token: Attempt? = null): Loss {
+        var abandoned: SpeechSubmission? = null
+        val loss = synchronized(lock) {
+            when (val current = state) {
+                State.New -> if (token == null) Loss.WAITING else Loss.FINISHED
+                is State.Answered, State.Closed -> Loss.FINISHED
+                is State.Open -> {
+                    val slot = current.slot
+                    if (token != null && slot?.attempt !== token) return@synchronized Loss.FINISHED
+                    if (slot == null) return@synchronized Loss.WAITING
+                    abandoned = slot.submission
+                    when (retry) {
+                        Retry.First -> {
+                            retry = Retry.Used(slot.attempt.peer)
+                            state = State.Open(null)
+                            Loss.RETRYING
+                        }
+                        is Retry.Used -> {
+                            state = State.Closed
+                            onExpired = null
+                            host.cancelMainDelayed(expiry)
+                            Loss.EXHAUSTED
+                        }
+                    }
                 }
             }
         }
+        abandoned?.cancel()
+        return loss
     }
 
-    /** Only this admitted attempt may accept an answer or an ordinary request exception. */
+    /** Every accepted callback/ordinary throw transfers the SAME handle into one answered-tail slot. */
     fun answer(token: Attempt): Boolean = synchronized(lock) {
-        if (state != State.OPEN || attempt !== token) return false
-        finish()
+        val slot = (state as? State.Open)?.slot ?: return false
+        if (slot.attempt !== token) return false
+        state = State.Answered(slot.submission)
+        onExpired = null
+        host.cancelMainDelayed(expiry)
+        true
     }
 
-    /** Any terminal ending. Closing NEW permanently refuses an arm racing cancellation. */
-    fun close(): Boolean = synchronized(lock) { finish() }
-
-    private fun finish(): Boolean {
-        val wasOpen = state == State.OPEN
-        state = State.DONE
-        attempt = null
-        if (wasOpen) host.cancelMainDelayed(expiry)
-        return wasOpen
+    /** Closing an answered wait still cancels its tail, while false preserves existing PCM deletion ownership. */
+    fun close(): Boolean {
+        val closed = synchronized(lock) {
+            val previous = state
+            val submission = when (previous) {
+                State.New, State.Closed -> null
+                is State.Open -> previous.slot?.submission
+                is State.Answered -> previous.tail
+            }
+            val wasOpen = previous is State.Open
+            state = State.Closed
+            onExpired = null
+            if (wasOpen) host.cancelMainDelayed(expiry)
+            wasOpen to submission
+        }
+        closed.second?.cancel()
+        return closed.first
     }
 }

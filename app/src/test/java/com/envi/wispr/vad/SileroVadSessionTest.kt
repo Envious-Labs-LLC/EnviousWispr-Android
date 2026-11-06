@@ -59,7 +59,7 @@ class SileroVadSessionTest {
         // Two decoders for one wire format is how the detector and the speech engine end up hearing
         // different audio. Compared against the one the capture path already uses.
         val pcm = ByteArray(1024) { ((it * 37) % 251 - 125).toByte() }
-        val expected = com.envi.wispr.audio.PcmAudio.toFloatSamples(pcm)
+        val expected = com.envi.wispr.audio.PcmAudio.toFloatSamples(pcm) { }
 
         val actual = FloatArray(SilenceStopDetector.SAMPLES_PER_BLOCK)
         val written = SileroVadSession.decodeInto(pcm, actual)

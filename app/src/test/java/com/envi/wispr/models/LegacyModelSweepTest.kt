@@ -92,9 +92,9 @@ class LegacyModelSweepTest {
         assertTrue(File(folder.root, "parakeet-ultra/encoder-model.int8.onnx").exists())
     }
 
-    private class Callback(val throws: Boolean) : IAsrCallback {
+    private class Callback(val throws: Boolean, private val afterResult: () -> Unit = {}) : IAsrCallback {
         val results = ArrayList<String>()
-        override fun onResult(text: String) { if (throws) throw IllegalStateException("binder died"); results += text }
+        override fun onResult(text: String) { if (throws) throw IllegalStateException("binder died"); results += text; afterResult() }
         override fun onError(message: String) = Unit
         override fun onFailure(reason: Int, detail: String) = Unit
         override fun asBinder(): IBinder? = null
@@ -117,8 +117,33 @@ class LegacyModelSweepTest {
     /** Harness contract on the source: the service routes its result through [AsrService.deliverResult] with the sweep. */
     @Test fun theServiceSweepsThroughTheDeliveryRule() {
         val service = File("src/main/java/com/envi/wispr/asr/AsrService.kt").readText()
-        assertEquals(1, Regex("""deliverResult\(callback, rawText, onDelivered = ::sweepLegacyModelOnce\)""").findAll(service).count())
+        assertEquals(1, Regex("""deliverResult\(callback, rawText, onDelivered = \{ request\.check\(\); sweepLegacyModelOnce\(\); request\.check\(\) \}\)""").findAll(service).count())
         assertEquals("called from exactly one place", 1, Regex("""sweepLegacyModelOnce(\(\)|\b)""").findAll(service).count() - 1)
         assertFalse("no direct onResult outside the rule", Regex("""callback\??\.onResult""").containsMatchIn(service.replace("callback.onResult(text)", "")))
+    }
+
+    /** Harness Contract: cancellation during the actual callback prevents successful legacy cleanup afterward. */
+    @Test fun cancellationInsideADeliveredCallbackSkipsTheSweepWithoutFabricatingAnotherFailure() {
+        val scheduler = com.envi.wispr.process.ManualDeadlineScheduler()
+        val watchdog = com.envi.wispr.asr.AsrWatchdog(com.envi.wispr.process.EngineDeadline(scheduler)) { error(it) }
+        val retired = mutableListOf<com.envi.wispr.asr.AsrRequest.Retirement>()
+        val request = com.envi.wispr.asr.AsrRequest(watchdog, java.util.concurrent.Executor { it.run() },
+            ownerOpen = { true }, cleanup = {}, retired = { retired += it }, controlFailed = { throw it })
+        request.registrationComplete()
+        assertTrue(request.claim(50))
+        var swept = 0
+        var failed = 0
+        val callback = Callback(throws = false, afterResult = { request.cancel() })
+        assertTrue(request.deliver {
+            org.junit.Assert.assertThrows(com.envi.wispr.asr.AsrCancelled::class.java) {
+                AsrService.deliverResult(callback, "hello", onDelivered = { request.check(); swept++; request.check() }) { failed++ }
+            }
+        })
+        request.finish()
+        assertEquals(listOf("hello"), callback.results)
+        assertEquals(0, swept)
+        assertEquals(0, failed)
+        assertEquals(listOf(com.envi.wispr.asr.AsrRequest.Retirement.BODY_COMPLETED), retired)
+        assertFalse(watchdog.wedged)
     }
 }

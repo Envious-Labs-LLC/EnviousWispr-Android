@@ -3,6 +3,7 @@ package com.envi.wispr.asr
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.os.RemoteException
 import android.os.SystemClock
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.debug.TakeLog
@@ -13,8 +14,9 @@ import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.process.EngineDeadline
 import java.io.File
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * ASR service running in a separate process (:asr).
@@ -27,6 +29,7 @@ class AsrService : Service() {
 
     companion object {
         private const val TAG = "AsrService"
+        private val processResources by lazy { ProcessResources() }
 
         /**
          * Hands the text over; [onDelivered] runs only when a callback existed and did not throw. The legacy model
@@ -50,38 +53,74 @@ class AsrService : Service() {
             "This recording is longer than the ${RecordingLimits.MAX_DURATION_MINUTES} minute limit."
     }
 
-    private val transcriptionExecutor: ExecutorService = Executors.newSingleThreadExecutor {
-        Thread(it, "AsrTranscriptionThread").apply { isDaemon = true }
+    /** Process-owned scheduling/control only; every model remains owned by its service instance. */
+    private class ProcessResources {
+        private val worker = Executors.newSingleThreadExecutor {
+            Thread(it, "AsrTranscriptionThread").apply { isDaemon = true }
+        }
+        val control = Executors.newSingleThreadExecutor {
+            Thread(it, "AsrNativeControl").apply { isDaemon = true }
+        }
+        private val scheduler = ScheduledThreadPoolExecutor(1) {
+            Thread(it, "AsrWatchdog").apply { isDaemon = true }
+        }.apply { removeOnCancelPolicy = true }
+        val watchdog = AsrWatchdog(EngineDeadline(scheduler)) { why ->
+            DebugLogger.warn(TAG, "Ending the speech process: $why")
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
+        val lane = RecognizerLane(worker, watchdog)
+        val requests = AtomicLong()
     }
-
-    /** The watchdog's own thread (#357): never the worker it bounds. */
-    private val watchdogScheduler = Executors.newSingleThreadScheduledExecutor {
-        Thread(it, "AsrWatchdog").apply { isDaemon = true }
-    }
-
-    private val watchdog = AsrWatchdog(EngineDeadline(watchdogScheduler)) { why ->
-        DebugLogger.warn(TAG, "Ending the speech process: $why")
-        android.os.Process.killProcess(android.os.Process.myPid())
-    }
-
-    /**
-     * Load, every decode and the release run on [transcriptionExecutor], in that order (#212), and each runs whole
-     * under the watchdog (#357): a task that outlives its bound ends this process and its late result delivers nothing.
-     */
+    private val resources = processResources
+    private val watchdog = resources.watchdog
     private val owner = RecognizerOwner<ParakeetEngine>(
-        transcriptionExecutor,
+        resources.lane, watchdog, resources.control,
         free = { engine ->
             engine.close()
             DebugLogger.log(TAG, "Speech engine closed")
         },
         discarded = { DebugLogger.log(TAG, "ASR answer discarded: the service closed during the decode") },
         releaseBoundMs = AsrBounds.RELEASE_BOUND_MS,
-        bounded = { boundMs, what, task ->
-            if (watchdog.guard(boundMs, what, task) == null) {
-                DebugLogger.warn(TAG, "A task returned after its bound; the process is ending")
-            }
-        },
     )
+
+    private val entriesLock = Any()
+    private val entries = mutableSetOf<Entry>()
+
+    /** Preparing requests retain their cleanup obligation until linkToDeath really returns. */
+    private inner class Entry(val takeId: String, val callback: IAsrCallback?) {
+        val callbackBinder: IBinder? = callback?.asBinder()
+        private val identity = resources.requests.incrementAndGet()
+        private val callbackIdentity = System.identityHashCode(callbackBinder)
+        private var linked = false
+        private val death = IBinder.DeathRecipient {
+            request.cancel()
+            AsrDiagnostics.callbackDied(owner.generationIdentity, identity, takeId, callbackIdentity)
+        }
+        val request: AsrRequest = owner.request(
+            cleanup = {
+                try { if (linked) callbackBinder?.unlinkToDeath(death, 0) }
+                finally { synchronized(entriesLock) { entries.remove(this) } }
+            },
+            retired = { AsrDiagnostics.retired(owner.generationIdentity, identity, takeId, callbackIdentity, it, request.cancellation.isCancelled) },
+            controlFailed = { DebugLogger.warn(TAG, "Speech cancellation control failed: ${it.javaClass.simpleName}") },
+        )
+        fun register() {
+            synchronized(entriesLock) { entries += this }
+            AsrDiagnostics.registered(owner.generationIdentity, identity, takeId, callbackIdentity)
+            try {
+                if (callbackBinder != null) {
+                    try { callbackBinder.linkToDeath(death, 0); linked = true }
+                    catch (_: RemoteException) { request.cancel() }
+                }
+            } catch (failure: Throwable) {
+                watchdog.poison("Speech callback registration")
+                request.cancel()
+                throw failure
+            } finally { request.registrationComplete() }
+        }
+        fun active() = AsrDiagnostics.active(owner.generationIdentity, identity, takeId, callbackIdentity)
+        fun observer(): AsrObserver = AsrDiagnostics.observer(owner.generationIdentity, identity, takeId, callbackIdentity)
+    }
 
     /**
      * How a request wants to hear about a failure. The legacy transactions answer `onError` with the
@@ -135,38 +174,50 @@ class AsrService : Service() {
             DebugLogger.warn(TAG, "Legacy transcribe(ByteArray) called — prefer transcribeFile()")
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
             val failure = legacyReporter(callback)
-            owner.use(transcriptionBoundMs(audioData.size.toLong()), refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
-                doTranscribe(rec, audioData, durationSec, callback, failure, TakeLog(LEGACY_TAKE, TAG))
+            val entry = Entry("", callback).also { it.register() }
+            owner.use(transcriptionBoundMs(audioData.size.toLong()), entry.request) { rec ->
+                entry.active()
+                doTranscribe(rec, audioData, durationSec, callback, failure, TakeLog(LEGACY_TAKE, TAG), entry.request, entry.observer())
             }
         }
 
         override fun isReady(): Boolean = owner.isReady && !watchdog.wedged
+
+        override fun cancelTranscription(takeId: String?, callback: IAsrCallback?) {
+            val binder = callback?.asBinder() ?: return
+            val matching = synchronized(entriesLock) {
+                entries.filter { it.takeId == takeId.orEmpty() && it.callbackBinder === binder }
+            }
+            matching.forEach { it.request.cancel() }
+        }
     }
 
     private fun transcribeFromFile(audioFilePath: String, takeId: String, callback: IAsrCallback?, failure: FailureReporter) {
         // This process's start of the take (#378): the take id travels to the local log as a field.
         val log = TakeLog(takeId, TAG).also { it.startPipeline() }
-        val file = File(audioFilePath)
-        if (!file.exists()) {
-            log.error("Audio file not found (take=$takeId)")
-            failure.report(AsrFailureReason.AUDIO_MISSING, "Audio file not found: $audioFilePath")
-            return
-        }
-        // Not an independent limit. `RecordingLimits` owns the number and the capture process
-        // stops a take before this can be reached, so arriving here means something upstream is
-        // wrong rather than that the user talked for too long.
-        // Read once, on the binder thread, never on the worker (#357 review round 2): it sizes the task's bound too.
-        val audioBytes = file.length()
-        if (audioBytes > RecordingLimits.MAX_AUDIO_BYTES) {
-            log.warn(
-                "Audio file is $audioBytes bytes, over the " +
-                    "${RecordingLimits.MAX_AUDIO_BYTES} byte ceiling",
-            )
-            failure.report(AsrFailureReason.OVER_LIMIT, OVER_LIMIT_MESSAGE)
-            return
-        }
-
-        owner.use(transcriptionBoundMs(audioBytes), refused = { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }) { rec ->
+        val entry = Entry(takeId, callback).also { it.register() }
+        owner.use(transcriptionBoundMs(RecordingLimits.MAX_AUDIO_BYTES), entry.request) { rec ->
+            entry.active()
+            entry.request.check()
+            val file = File(audioFilePath)
+            if (!file.exists()) {
+                log.error("Audio file not found (take=$takeId)")
+                return@use { failure.report(AsrFailureReason.AUDIO_MISSING, "Audio file not found: $audioFilePath") }
+            }
+            // Not an independent limit. `RecordingLimits` owns the number and the capture process
+            // stops a take before this can be reached, so arriving here means something upstream is
+            // wrong rather than that the user talked for too long.
+            // Metadata belongs to the same guarded worker; tighten from its original start, never restart the budget.
+            val audioBytes = file.length()
+            if (audioBytes > RecordingLimits.MAX_AUDIO_BYTES) {
+                log.warn(
+                    "Audio file is $audioBytes bytes, over the " +
+                        "${RecordingLimits.MAX_AUDIO_BYTES} byte ceiling",
+                )
+                return@use { failure.report(AsrFailureReason.OVER_LIMIT, OVER_LIMIT_MESSAGE) }
+            }
+            if (!entry.request.tighten(transcriptionBoundMs(audioBytes))) return@use { }
+            entry.request.check()
             // The read is its own boundary (G1 D4): a failure here is the FILE, never the decoder.
             val audioData = try {
                 file.readBytes()
@@ -178,11 +229,12 @@ class AsrService : Service() {
             val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
             log.log("Read ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) for take $takeId")
             log.mark("asr_file_read")
-            doTranscribe(rec, audioData, durationSec, callback, failure, log)
+            entry.request.check()
+            doTranscribe(rec, audioData, durationSec, callback, failure, log, entry.request, entry.observer())
         }
     }
 
-    /** One whole transcription task's bound (#357): past the owner's own request bound, sized before the task runs. */
+    /** One task's bound: maximum before metadata, then exact remaining time from the SAME task start. */
     private fun transcriptionBoundMs(audioBytes: Long): Long =
         AsrBounds.requestBoundMs((PcmAudio.durationSeconds(audioBytes) * 1000f).toLong()) + AsrBounds.DECODE_GRACE_MS
 
@@ -197,6 +249,8 @@ class AsrService : Service() {
         callback: IAsrCallback?,
         failure: FailureReporter,
         log: TakeLog,
+        request: AsrRequest,
+        observer: AsrObserver,
     ): () -> Unit {
         log.log("Transcribing ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) (PID: ${android.os.Process.myPid()})")
 
@@ -208,12 +262,14 @@ class AsrService : Service() {
         // The decode is its own boundary (G1 D4): only the recogniser's own work is inside this try, so
         // a throwing DELIVERY below can never be reported as a decode failure or produce a second callback.
         val rawText = try {
-            val samples = PcmAudio.toFloatSamples(audioData)
+            request.check()
+            val samples = PcmAudio.toFloatSamples(audioData) { request.check() }
+            request.check()
             log.mark("pcm_to_float")
 
             val t0 = SystemClock.elapsedRealtime()
 
-            val result = rec.transcribe(samples)
+            val result = rec.transcribe(samples, request.cancellation, observer)
 
             val decodeMs = SystemClock.elapsedRealtime() - t0
             val text = result.text.trim()
@@ -225,6 +281,10 @@ class AsrService : Service() {
             log.log("Decode: ${decodeMs}ms, RTF=${String.format("%.2f", rtf)}, textChars=${text.length}, windows=${result.windows}, repairs=${result.repairs}")
             log.words("raw_speech") { text }
             text
+        } catch (cancelled: AsrCancelled) {
+            throw cancelled
+        } catch (cleanup: AsrCleanupFailure) {
+            throw cleanup
         } catch (e: Exception) {
             log.error("Transcription failed", e)
             val detail = e.javaClass.simpleName
@@ -233,7 +293,7 @@ class AsrService : Service() {
 
         log.log(DebugLogger.pipelineSummary())
         return {
-            deliverResult(callback, rawText, onDelivered = ::sweepLegacyModelOnce) {
+            deliverResult(callback, rawText, onDelivered = { request.check(); sweepLegacyModelOnce(); request.check() }) {
                 log.warn("Result delivery threw: ${it.javaClass.simpleName}; not reported as a decode failure")
             }
         }
@@ -263,10 +323,8 @@ class AsrService : Service() {
     }
 
     override fun onDestroy() {
-        // Never waits and never frees here: the release is queued behind the decode in flight (#212).
-        // The watchdog's thread stops only after the release, which it also bounds (review round 1); a bound still
-        // armed for a wedged task survives `shutdown` (never `shutdownNow`) and still ends the process.
-        owner.close { watchdogScheduler.shutdown() }
+        // Borrowed process resources survive this instance; actual retirement gates the next generation's LOAD.
+        owner.close { AsrDiagnostics.ownerRetired(owner.generationIdentity) }
         super.onDestroy()
         DebugLogger.log(TAG, "AsrService destroyed; recognizer release queued")
     }
@@ -281,9 +339,12 @@ class AsrService : Service() {
                 return null
             }
             val preprocessor = assets.open(ParakeetEngine.PREPROCESSOR_ASSET).use { it.readBytes() }
+            AsrDiagnostics.modelOpening(owner.generationIdentity)
             val engine = ParakeetEngine.open(ModelStorage.directory(this, ModelManifest.parakeet), preprocessor)
             DebugLogger.log(TAG, "Speech engine initialized in ${SystemClock.elapsedRealtime() - t0}ms (${ModelManifest.parakeet.id})")
             engine
+        } catch (cleanup: AsrCleanupFailure) {
+            throw cleanup
         } catch (e: Throwable) {
             // The class name only: an ONNX Runtime message can quote paths or model internals.
             DebugLogger.warn(TAG, "Failed to initialize the speech engine: ${e.javaClass.simpleName}")

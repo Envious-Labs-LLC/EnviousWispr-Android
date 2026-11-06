@@ -20,10 +20,15 @@ class TdtRecipeTest {
      * with duration 1. Records every encode call and the state each window's FIRST step received.
      */
     private inner class FakeRunner(val script: (window: Int, frame: Int, previous: Int) -> Pair<Int, Int> = { _, _, _ -> blank to 1 }) : TdtRunner {
+        override val cancellation = AsrCancellation()
+        override var observer: AsrObserver = AsrObserver.NONE
         override val vocab: List<String> = this@TdtRecipeTest.vocab
         val encodes = ArrayList<Pair<Int, Int>>() // (padded size, real length)
         val firstStepStates = ArrayList<DecoderState>()
         val zeroStates = ArrayList<DecoderState>()
+        var afterEncode: () -> Unit = {}
+        var closedWindows = 0
+        var steps = 0
         private var window = -1
         private var stepped = false
 
@@ -32,12 +37,14 @@ class TdtRecipeTest {
             window++
             stepped = false
             val frames = (length + 1279) / 1280
-            return object : Encoded { override val frames = frames; override fun close() = Unit }
+            afterEncode()
+            return object : Encoded { override val frames = frames; override fun close() { closedWindows++ } }
         }
 
         override fun initialState() = DecoderState(FloatArray(1), FloatArray(1)).also { zeroStates += it }
 
         override fun step(encoded: Encoded, frame: Int, previousToken: Int, state: DecoderState): Step {
+            steps++
             if (!stepped) { firstStepStates += state; stepped = true }
             val (token, bin) = script(window, frame, previousToken)
             return Step(token, bin, DecoderState(FloatArray(1) { frame.toFloat() }, FloatArray(1)))
@@ -232,5 +239,78 @@ class TdtRecipeTest {
         val quiet = FakeRunner { _, frame, _ -> if (frame == 17) 5 to 1 else blank to 1 }
         val untouched = TdtRecipe(quiet).repairSeamGaps(silence(3.0), listOf(Token(2, 0, 1), Token(7, 35, 1)))
         assertEquals("a gap with no speech is left alone", "cat mat", TdtRecipe(quiet).text(untouched))
+    }
+
+    /** Harness Contracts for actual recipe-loop cancellation; these are not native ORT preemption proof. */
+    private fun cancelAt(runner: FakeRunner, phase: AsrObserver.Phase) {
+        runner.observer = object : AsrObserver {
+            override fun phase(observed: AsrObserver.Phase, index: Int) {
+                if (observed == phase && index >= 0) runner.cancellation.requestCancellation()
+            }
+        }
+    }
+
+    @Test fun cancellationBeforeRecognitionNeverCallsTheModel() {
+        val runner = FakeRunner()
+        runner.cancellation.requestCancellation()
+        org.junit.Assert.assertThrows(AsrCancelled::class.java) { TdtRecipe(runner).transcribe(loud(1.0)) }
+        assertTrue(runner.encodes.isEmpty())
+    }
+
+    @Test fun cancellationWhenEncodingReturnsClosesTheWindowWithoutStartingTheDecoder() {
+        val runner = FakeRunner()
+        runner.afterEncode = { runner.cancellation.requestCancellation() }
+        org.junit.Assert.assertThrows(AsrCancelled::class.java) { TdtRecipe(runner).transcribe(loud(1.0)) }
+        assertEquals(1, runner.encodes.size)
+        assertEquals(0, runner.steps)
+        assertEquals(1, runner.closedWindows)
+    }
+
+    @Test fun cancellationDuringADecoderStepPreventsTheNextStepAndFinalization() {
+        lateinit var runner: FakeRunner
+        runner = FakeRunner { _, _, _ -> runner.cancellation.requestCancellation(); 2 to 1 }
+        org.junit.Assert.assertThrows(AsrCancelled::class.java) { TdtRecipe(runner).transcribe(loud(1.0)) }
+        assertEquals(1, runner.steps)
+        assertEquals(1, runner.closedWindows)
+    }
+
+    @Test fun cancellationDuringPunctuationFinalizationCannotPublishATranscript() {
+        val runner = FakeRunner { _, _, _ -> blank to 4 }
+        cancelAt(runner, AsrObserver.Phase.FINALIZATION)
+        org.junit.Assert.assertThrows(AsrCancelled::class.java) { TdtRecipe(runner).transcribe(loud(1.0)) }
+        assertEquals(1, runner.closedWindows)
+    }
+
+    @Test fun cancellationDuringSpeechEndScanningNeverStartsAWindow() {
+        val runner = FakeRunner()
+        cancelAt(runner, AsrObserver.Phase.SPEECH_END)
+        org.junit.Assert.assertThrows(AsrCancelled::class.java) { TdtRecipe(runner).transcribe(silence(40.0)) }
+        assertTrue(runner.encodes.isEmpty())
+    }
+
+    @Test fun cancellationInsideMergeCannotReturnAPartialMergedTranscript() {
+        val runner = FakeRunner()
+        cancelAt(runner, AsrObserver.Phase.MERGE)
+        org.junit.Assert.assertThrows(AsrCancelled::class.java) {
+            TdtRecipe(runner).merge(listOf(Token(0, 100, 1), Token(2, 104, 1)), listOf(Token(2, 104, 1), Token(5, 108, 1)))
+        }
+        assertTrue(runner.encodes.isEmpty())
+    }
+
+    @Test fun cancellationInsideRepairScanningNeverStartsARepairModelCall() {
+        val runner = FakeRunner()
+        cancelAt(runner, AsrObserver.Phase.REPAIR)
+        org.junit.Assert.assertThrows(AsrCancelled::class.java) {
+            TdtRecipe(runner).repairSeamGaps(loud(3.0), listOf(Token(2, 0, 1), Token(7, 35, 1)))
+        }
+        assertTrue(runner.encodes.isEmpty())
+    }
+
+    @Test fun cancellationInsideTextAssemblyCannotReturnPartialWords() {
+        val runner = FakeRunner()
+        cancelAt(runner, AsrObserver.Phase.TEXT)
+        org.junit.Assert.assertThrows(AsrCancelled::class.java) {
+            TdtRecipe(runner).text(listOf(Token(2, 0, 1), Token(5, 2, 1)))
+        }
     }
 }

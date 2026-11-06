@@ -9,7 +9,8 @@ import java.io.File
 internal class ParakeetEngine private constructor(private val model: TdtModel) : AutoCloseable {
     private val recipe = TdtRecipe(model)
 
-    fun transcribe(samples: FloatArray): TdtRecipe.Result = recipe.transcribe(samples)
+    fun transcribe(samples: FloatArray, cancellation: AsrCancellation, observer: AsrObserver = AsrObserver.NONE): TdtRecipe.Result =
+        model.withInvocation(cancellation, observer) { recipe.transcribe(samples) }
 
     override fun close() = model.close()
 

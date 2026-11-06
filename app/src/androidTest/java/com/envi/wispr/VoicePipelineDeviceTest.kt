@@ -245,9 +245,20 @@ class VoicePipelineDeviceTest {
             AsrProbeEvents(context).use { events ->
                 events.register(5_000)
                 val first = SideButtonRun()
-                first.recordOneTake(stage = {})
+                var abandonedTake: String? = null
+                first.recordOneTake(stage = {
+                    val draft = runBlocking {
+                        withTimeoutOrNull(15_000) {
+                            EnviousWisprDatabase.get(context).transcriptDao().observeAll().first { rows ->
+                                rows.any { it.createdAtMs >= first.startedAtMs && it.status == TranscriptEntity.STATUS_DRAFT }
+                            }.single { it.createdAtMs >= first.startedAtMs && it.status == TranscriptEntity.STATUS_DRAFT }
+                        }
+                    }
+                    abandonedTake = draft?.takeId
+                    assertTrue("the recorder did not publish its own draft/take identity before Stop", !abandonedTake.isNullOrBlank())
+                })
                 val active = try {
-                    events.await("encoder", 15_000)
+                    events.await("encoder", 15_000) { it.getString("take") == abandonedTake }
                 } catch (failure: Throwable) {
                     try { first.cancelAfterStopAndAwaitIdle() } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
                     throw failure
@@ -255,10 +266,8 @@ class VoicePipelineDeviceTest {
                 first.cancelAfterStopAndAwaitIdle()
                 val request = AsrProbeEvents.number(active, "request")
                 val pid = AsrProbeEvents.number(active, "pid")
-                val abandonedTake = active.getString("take")
-                assertTrue("the observer did not identify the recorder's take", abandonedTake.isNotBlank())
                 val retired = events.await("retired", 5_000) {
-                    AsrProbeEvents.number(it, "request") == request && AsrProbeEvents.number(it, "pid") == pid
+                    it.getString("take") == abandonedTake && AsrProbeEvents.number(it, "request") == request && AsrProbeEvents.number(it, "pid") == pid
                 }
                 assertEquals("the recorder Cancel did not cancel its actual speech request", true, retired.get("cancelled"))
                 assertEquals(AsrRequest.Retirement.BODY_COMPLETED.name, retired.getString("outcome"))
@@ -274,7 +283,7 @@ class VoicePipelineDeviceTest {
                 val expected = expectedFinal()
                 assertEquals("the complete second take must land once", expected, receipt(PasteTargetActivity.RECEIPT_NAME))
                 assertEquals(InsertionResults.COMMITTED, row.insertionResult)
-                assertTrue("the replacement row belongs to the abandoned take", row.takeId != abandonedTake)
+                assertTrue("the replacement row has no fresh take identity", !row.takeId.isNullOrBlank() && row.takeId != abandonedTake)
                 val rows = runBlocking { EnviousWisprDatabase.get(context).transcriptDao().observeAll().first() }
                 assertFalse("the abandoned take returned to History", rows.any { it.takeId == abandonedTake })
             }

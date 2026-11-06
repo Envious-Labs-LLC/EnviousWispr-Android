@@ -4,7 +4,7 @@
         <service
             android:name=".asr.AsrCancellationClientProbe"
             android:exported="false"
-            android:process=":asr-client-probe" />
+            android:process=":asr_client_probe" />
         <receiver
             android:name=".asr.AsrCancellationProbeReceiver"
             android:exported="false"

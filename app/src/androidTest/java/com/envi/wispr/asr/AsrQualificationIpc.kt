@@ -195,7 +195,7 @@ internal class AsrQualificationIpc(
         checkNotNull(helper).unbindKeepingDeathObserver() // Remove AUTO_CREATE before kill without dropping its actual death signal.
         val cancellationStart = System.nanoTime()
         val command = File("/proc/$helperPid/cmdline").readBytes().toString(Charsets.UTF_8).trimEnd('\u0000')
-        check(command == context.packageName + ":asr-client-probe") { "Refusing to kill an unidentified process" }
+        check(command == context.packageName + ":asr_client_probe") { "Refusing to kill an unidentified process" }
         Process.killProcess(helperPid) // Same call verified this exact same-UID helper PID/command.
         step.await(helperDied, "helper Binder death")
         events.await("callback_died", step.left()) { number(it, "request") == oldId && number(it, "pid") == pid }

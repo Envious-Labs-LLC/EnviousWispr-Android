@@ -4117,7 +4117,7 @@ def launch_emulator(avd=PLAY_AVD, restart=False):
     if not os.access(EMULATOR_BIN, os.X_OK):
         raise Blocked(f"{EMULATOR_BIN} is not executable; is the Android SDK installed?")
     log = open(os.path.join(os.environ.get("TMPDIR", "/tmp"), f"{avd}.log"), "ab")
-    subprocess.Popen([EMULATOR_BIN, "-avd", avd, "-gpu", "swiftshader_indirect", "-no-boot-anim",
+    subprocess.Popen([EMULATOR_BIN, "-avd", avd, "-gpu", "host", "-no-boot-anim",
                       "-allow-host-audio", "-grpc", GRPC_ENDPOINT.rsplit(":", 1)[1]],
                      stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
     for _ in range(180):

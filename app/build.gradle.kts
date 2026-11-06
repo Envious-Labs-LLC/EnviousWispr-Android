@@ -5,6 +5,12 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Opt-in component qualification. Lab helpers are excluded from ordinary debug/release builds.
+val recoveryQualification = providers.gradleProperty("recoveryQualification").orNull?.let {
+    require(it == "true") { "recoveryQualification accepts only true or an absent property" }
+    true
+} ?: false
+
 android {
     namespace = "com.envi.wispr"
     compileSdk = 36
@@ -96,6 +102,17 @@ android {
     sourceSets {
         getByName("test").resources.srcDir("src/main/assets")
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
+        if (recoveryQualification) {
+            getByName("release").java.srcDir("src/recoveryQualificationApp/java")
+            getByName("release").manifest.srcFile("src/recoveryQualificationApp/AndroidManifest.xml")
+            getByName("androidTest").java.setSrcDirs(listOf("src/recoveryQualification/java"))
+            getByName("androidTest").manifest.srcFile("src/recoveryQualification/AndroidManifest.xml")
+        }
+    }
+    if (recoveryQualification) {
+        testBuildType = "release"
+        // Both lab APKs use the existing development certificate, never production signing secrets.
+        buildTypes.getByName("release").signingConfig = signingConfigs.getByName("debug")
     }
 }
 
@@ -110,6 +127,8 @@ ksp {
 tasks.withType<Test>().configureEach {
     inputs.dir("src/debug/java").withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.dir("src/androidTest/java").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/recoveryQualification").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/recoveryQualificationApp").withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.file("../llama-android/src/main/cpp/s1_jni.cpp").withPathSensitivity(PathSensitivity.RELATIVE)
 }
 

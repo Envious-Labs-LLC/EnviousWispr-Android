@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Update
 import com.envi.wispr.insertion.InsertionResults
 import kotlinx.coroutines.flow.Flow
 
@@ -16,6 +17,9 @@ internal interface TranscriptDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(transcript: TranscriptEntity): Long
+
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateRecovered(transcript: TranscriptEntity): Int
 
     @Query("UPDATE transcripts SET kept = :kept WHERE id = :id")
     suspend fun setKept(id: Long, kept: Boolean)
@@ -181,6 +185,32 @@ internal interface TranscriptDao {
     suspend fun deleteForGood(transcript: TranscriptEntity) {
         transcript.takeId?.let { insertDeletedTakes(listOf(DeletedTake(it))) }
         delete(transcript)
+    }
+
+    /** Cancel can commit deletion before a draft row exists. Late inserts use this same permanent mark. */
+    @Transaction
+    suspend fun discardTakeForGood(takeId: String) {
+        insertDeletedTakes(listOf(DeletedTake(takeId)))
+        findByTakeId(takeId)?.let { delete(it) }
+    }
+
+    /** The tombstone, existing words and replacement/insert are decided in one database transaction. */
+    @Transaction
+    suspend fun saveRecovered(transcript: TranscriptEntity): RecoverySaveOutcome {
+        val takeId = requireNotNull(transcript.takeId)
+        if (isTakeDeleted(takeId)) return RecoverySaveOutcome.Deleted
+        val existing = findByTakeId(takeId)
+        if (existing != null && (existing.finalText.isNotBlank() || existing.originalText.isNotBlank())) {
+            return RecoverySaveOutcome.PreservedExisting(existing.id)
+        }
+        if (existing == null) {
+            val id = insertUnlessDeleted(transcript)
+            return if (id > 0L) RecoverySaveOutcome.Saved(id) else RecoverySaveOutcome.Deleted
+        }
+        val updated = updateRecovered(transcript.copy(id = existing.id, kept = existing.kept,
+            captureDevice = existing.captureDevice, liveAfterMs = existing.liveAfterMs))
+        return if (updated == 1) RecoverySaveOutcome.Saved(existing.id)
+            else RecoverySaveOutcome.Failed(RecoveryWriteFailure.WRITE_FAILED)
     }
 
     /**

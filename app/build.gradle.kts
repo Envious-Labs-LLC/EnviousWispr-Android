@@ -105,7 +105,7 @@ android {
         if (recoveryQualification) {
             getByName("release").java.srcDir("src/recoveryQualificationApp/java")
             getByName("release").manifest.srcFile("src/recoveryQualificationApp/AndroidManifest.xml")
-            getByName("androidTest").java.setSrcDirs(listOf("src/recoveryQualification/java"))
+            getByName("androidTest").java.setSrcDirs(listOf("src/recoveryQualification/java", "src/androidTest/java/com/envi/wispr/history"))
             getByName("androidTest").manifest.srcFile("src/recoveryQualification/AndroidManifest.xml")
         }
     }

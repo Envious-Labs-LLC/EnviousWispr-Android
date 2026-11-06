@@ -3,6 +3,10 @@ package com.envi.wispr.ui
 import android.system.Os
 import android.system.OsConstants
 import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.history.RecoveredWordsRecord
+import com.envi.wispr.history.RecoverySaveOutcome
+import com.envi.wispr.history.RecoveryWordsCodec
+import com.envi.wispr.recovery.RecoveryTextLimits
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -12,7 +16,15 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
+import java.io.FileInputStream
+import java.io.DataInputStream
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.NoSuchFileException
+import java.nio.file.LinkOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.ConcurrentHashMap
+import java.util.UUID
 
 /** The measured state of one take's rescue write (#288). */
 internal enum class RescueOutcome { KEPT, FAILED, PENDING }
@@ -99,6 +111,52 @@ internal class RescuedWords(
         return write
     }
 
+    /** Produced recovery text keeps its provenance through the existing write-ahead and settlement owner. */
+    fun keepRecovered(record: RecoveredWordsRecord, save: Deferred<RecoverySaveOutcome>): Deferred<RescueOutcome> {
+        val takeId = record.transcript.takeId
+        if (takeId == null || !TAKE_ID.matches(takeId)) return scope.async { RescueOutcome.FAILED }
+        tracked += takeId
+        live += takeId
+        record(takeId, RescueOutcome.PENDING)
+        val write = scope.async {
+            val outcome = lock.withLock {
+                beforeWrite()
+                if (takeId in deleted) RescueOutcome.FAILED else writeRecovered(takeId, record)
+            }
+            record(takeId, outcome)
+            outcome
+        }
+        scope.launch {
+            val answer = runCatching { save.await() }.getOrNull()
+            write.await()
+            when (answer) {
+                is RecoverySaveOutcome.Saved, is RecoverySaveOutcome.PreservedExisting -> settle(takeId)
+                RecoverySaveOutcome.Deleted -> forget(listOf(takeId))
+                is RecoverySaveOutcome.Failed, null -> Unit
+            }
+        }
+        scope.launch {
+            runCatching { withTimeoutOrNull(trackingBoundMs) { save.await() } }
+            write.await()
+            tracked -= takeId
+            runCatching { save.await() }
+            live -= takeId
+        }
+        return write
+    }
+
+    /** Absence is accepted only from an actual ENOENT answer. Pending/unknown text must defer audio replay. */
+    suspend fun hasPendingOrStoredWords(take: UUID): Boolean = lock.withLock {
+        val takeId = take.toString()
+        if (takeId in live) return@withLock true
+        listOf(SUFFIX, RECOVERED_SUFFIX).any { suffix ->
+            try {
+                Files.readAttributes(File(dir, "$takeId$suffix").toPath(), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+                true
+            } catch (_: NoSuchFileException) { false }
+        }
+    }
+
     /** Whether recovery must still leave [takeId]'s file alone: its save may yet land. */
     fun tracking(takeId: String): Boolean = takeId in tracked
 
@@ -107,7 +165,7 @@ internal class RescuedWords(
 
     /** The take's words are in History: its file is no longer needed. The outcome stays, since they are not lost. */
     private suspend fun settle(takeId: String) {
-        lock.withLock { File(dir, "$takeId$SUFFIX").delete() }
+        lock.withLock { deleteWords(takeId) }
     }
 
     /**
@@ -125,8 +183,11 @@ internal class RescuedWords(
      * to [delete], which marks them with every row's take in its own transaction; once it has committed, their
      * rescues go too. A take that begins after this point keeps its words. A failed delete leaves everything as it was.
      */
-    suspend fun clearing(delete: suspend (liveTakes: Set<String>) -> Unit) {
-        val takes = lock.withLock { live + files().map { it.name.removeSuffix(SUFFIX) }.filter { TAKE_ID.matches(it) } }
+    suspend fun clearing(delete: suspend (liveTakes: Set<String>) -> Unit) = clearing(emptySet(), delete)
+
+    /** The caller's verified protected/pending identities join this same committed deletion snapshot. */
+    suspend fun clearing(protectedTakes: Set<UUID>, delete: suspend (liveTakes: Set<String>) -> Unit) {
+        val takes = lock.withLock { live + files().mapNotNull(::fileTakeId) + protectedTakes.map(UUID::toString) }
         delete(takes)
         forget(takes)
     }
@@ -134,11 +195,29 @@ internal class RescuedWords(
     /** After a committed delete: the takes' files go, and a write still queued for one writes nothing. */
     private suspend fun forget(takes: Collection<String>) = lock.withLock {
         deleted += takes
-        for (take in takes) File(dir, "$take$SUFFIX").delete()
+        for (take in takes) deleteWords(take)
         synchronized(outcomes) { outcomes -= takes.toSet() }
     }
 
-    private fun files() = dir.listFiles().orEmpty().filter { it.name.endsWith(SUFFIX) }
+    private fun files() = directoryFiles().filter { fileTakeId(it) != null }
+
+    private fun directoryFiles(): List<File> = try {
+        Files.newDirectoryStream(dir.toPath()).use { entries -> entries.map { it.toFile() } }
+    } catch (_: NoSuchFileException) { emptyList() }
+
+    private fun fileTakeId(file: File): String? {
+        val take = when {
+            file.name.endsWith(RECOVERED_SUFFIX) -> file.name.removeSuffix(RECOVERED_SUFFIX)
+            file.name.endsWith(SUFFIX) -> file.name.removeSuffix(SUFFIX)
+            else -> return null
+        }
+        return take.takeIf { TAKE_ID.matches(it) }
+    }
+
+    private fun deleteWords(takeId: String) {
+        File(dir, "$takeId$SUFFIX").delete()
+        File(dir, "$takeId$RECOVERED_SUFFIX").delete()
+    }
 
     /**
      * Writes every untracked rescue file into History through [repository] and deletes it only after the write
@@ -147,9 +226,35 @@ internal class RescuedWords(
      */
     suspend fun recover(repository: TranscriptRepository): Int = lock.withLock {
         var recovered = 0
-        for (file in dir.listFiles().orEmpty()) {
+        for (file in directoryFiles().sortedBy { if (it.name.endsWith(SUFFIX)) 0 else 1 }) {
             if (file.name.endsWith(TEMP)) {
                 file.delete()
+                continue
+            }
+            if (file.name.endsWith(RECOVERED_SUFFIX)) {
+                val takeId = fileTakeId(file) ?: continue
+                if (takeId in tracked) continue
+                val attempt = runCatching {
+                    val bytes = FileInputStream(file).use { input ->
+                        val size = input.channel.size()
+                        if (size !in 1L..RecoveryTextLimits.WORDS_BYTES.toLong()) throw IOException("Recovery text unavailable")
+                        ByteArray(size.toInt()).also { bytes ->
+                            DataInputStream(input).readFully(bytes)
+                            if (input.read() != -1) throw IOException("Recovery text unavailable")
+                        }
+                    }
+                    repository.saveRecovered(RecoveryWordsCodec.decode(bytes, takeId).transcript)
+                }
+                val failed = attempt.exceptionOrNull()
+                if (failed is kotlinx.coroutines.CancellationException) throw failed
+                val result = attempt.getOrNull()
+                when (result) {
+                    is RecoverySaveOutcome.Saved, is RecoverySaveOutcome.PreservedExisting -> {
+                        file.delete(); record(takeId, RescueOutcome.KEPT); recovered++
+                    }
+                    RecoverySaveOutcome.Deleted -> { file.delete(); deleted += takeId }
+                    is RecoverySaveOutcome.Failed, null -> Unit
+                }
                 continue
             }
             val takeId = file.name.removeSuffix(SUFFIX)
@@ -201,6 +306,20 @@ internal class RescuedWords(
         RescueOutcome.FAILED
     }
 
+    private fun writeRecovered(takeId: String, record: RecoveredWordsRecord): RescueOutcome = try {
+        val bytes = RecoveryWordsCodec.encode(record)
+        if (!dir.isDirectory && dir.mkdirs()) syncDirectory(dir.parentFile ?: dir)
+        val temp = File(dir, "$takeId$RECOVERED_SUFFIX$TEMP")
+        FileOutputStream(temp).use { output -> output.write(bytes); output.fd.sync() }
+        if (temp.renameTo(File(dir, "$takeId$RECOVERED_SUFFIX"))) {
+            syncDirectory(dir)
+            RescueOutcome.KEPT
+        } else { temp.delete(); RescueOutcome.FAILED }
+    } catch (_: Throwable) {
+        warn("Recovery text rescue unavailable")
+        RescueOutcome.FAILED
+    }
+
     private fun syncDirectory(directory: File) {
         val fd = Os.open(directory.path, OsConstants.O_RDONLY, 0)
         try {
@@ -215,6 +334,7 @@ internal class RescuedWords(
         const val RESCUE_WRITE_BOUND_MS = 250L
         private const val OUTCOMES_KEPT = 64
         private const val SUFFIX = ".words"
+        private const val RECOVERED_SUFFIX = ".recovery-words-v1"
         private const val TEMP = ".tmp"
         private val TAKE_ID = Regex("\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z")
     }

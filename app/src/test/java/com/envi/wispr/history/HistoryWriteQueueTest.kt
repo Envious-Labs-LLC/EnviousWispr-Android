@@ -3,10 +3,16 @@ package com.envi.wispr.history
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
@@ -18,14 +24,20 @@ import java.util.concurrent.TimeUnit
  * error, or `ready` after a teardown marked it `interrupted`, because two writes to one row landed in the
  * wrong order. The queue applies every write in the order it was enqueued, on one worker, and a write
  * that throws costs itself and nothing after it. The DAO is a fake that records the order writes landed.
+ * Harness Contract: recovery receipt cases check pending/rejected/failed/observed answers; real Room proves transactions.
  */
 class HistoryWriteQueueTest {
     private class RecordingDao : TranscriptDao {
         val landed = CopyOnWriteArrayList<String>()
+        @Volatile var failInsert = false
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(emptyList())
-        override suspend fun insert(transcript: TranscriptEntity): Long { landed += "insert"; return 1L }
+        override suspend fun insert(transcript: TranscriptEntity): Long {
+            if (failInsert) error("synthetic disk failure")
+            landed += "insert"; return 1L
+        }
+        override suspend fun updateRecovered(transcript: TranscriptEntity): Int = error("Use the real Room recovery fixture")
         override suspend fun findByTakeId(takeId: String): TranscriptEntity? = null
-        override suspend fun insertDeletedTakes(takes: List<DeletedTake>) = Unit
+        override suspend fun insertDeletedTakes(takes: List<DeletedTake>) { takes.forEach { landed += "tombstone:${it.takeId}" } }
         override suspend fun isTakeDeleted(takeId: String): Boolean = false
         override suspend fun rowTakeIds(): List<String> = emptyList()
         override suspend fun setKept(id: Long, kept: Boolean) = Unit
@@ -248,4 +260,59 @@ class HistoryWriteQueueTest {
         assertEquals(null, com.envi.wispr.telemetry.TelemetryChannels.historySaveDefect(HistoryQueueFullException()))
         assertTrue(com.envi.wispr.telemetry.TelemetryChannels.historySaveDefect(IllegalStateException()) is com.envi.wispr.telemetry.AppDefect.HistoryContractViolation)
     }
+
+    @Test fun acceptedDiscardIsNotReportedCommittedWhileItsWriteIsPending() = runBlocking {
+        val held = HeldQueue(capacity = 4, ordinaryLimit = 3)
+        held.hold("held")
+        try {
+            val receipt = held.queue.discardTakeForGood("pending-discard")
+            assertFalse(receipt.isCompleted)
+            held.release.countDown()
+            assertEquals(RecoveryDiscardOutcome.Committed, withTimeout(2_000L) { receipt.await() })
+            assertEquals(listOf("held", "tombstone:pending-discard"), held.dao.landed.toList())
+        } finally { held.release.countDown() }
+    }
+
+    @Test fun refusedDiscardAndSaveHaveImmediateUnconfirmedAnswers() = runBlocking {
+        val held = HeldQueue(capacity = 2, ordinaryLimit = 1)
+        held.hold("held")
+        try {
+            assertEquals(Enqueued.ACCEPTED, held.write("terminal fill", WriteKind.TERMINAL))
+            val discard = held.queue.discardTakeForGood("refused-discard")
+            val save = held.queue.saveRecovered(recoveryRow())
+            assertTrue(discard.isCompleted && save.isCompleted)
+            assertEquals(RecoveryDiscardOutcome.Unconfirmed(RecoveryWriteFailure.QUEUE_REJECTED), withTimeout(2_000L) { discard.await() })
+            assertEquals(RecoverySaveOutcome.Failed(RecoveryWriteFailure.QUEUE_REJECTED), withTimeout(2_000L) { save.await() })
+        } finally { held.release.countDown() }
+    }
+
+    @Test fun failedRecoveryWriteAnswersFailedAndDoesNotBlockLaterWrites() = runBlocking {
+        dao.failInsert = true
+        val receipt = queue.saveRecovered(recoveryRow())
+        assertEquals(RecoverySaveOutcome.Failed(RecoveryWriteFailure.WRITE_FAILED), withTimeout(2_000L) { receipt.await() })
+        assertTrue(drained().await(10, TimeUnit.SECONDS))
+        assertEquals(listOf("History write failed (recovered_words): IllegalStateException"), warnings.toList())
+    }
+
+    @Test fun cancelingTheObserverCannotCancelAnAcceptedDiscard() = runBlocking {
+        val held = HeldQueue(capacity = 4, ordinaryLimit = 3)
+        held.hold("held")
+        try {
+            val receipt = held.queue.discardTakeForGood("observer-left")
+            val observer = launch(start = CoroutineStart.UNDISPATCHED) { receipt.await() }
+            observer.cancelAndJoin()
+            assertFalse(receipt.isCompleted)
+            held.release.countDown()
+            assertEquals(RecoveryDiscardOutcome.Committed, withTimeout(2_000L) { receipt.await() })
+            assertTrue("tombstone:observer-left" in held.dao.landed)
+        } finally { held.release.countDown() }
+    }
+
+    private fun recoveryRow() = TranscriptEntity(
+        originalText = "raw words", finalText = "Words.", createdAtMs = 1L, durationMs = 1L,
+        speechEngine = "synthetic", polishEngine = "", polishLatencyMs = 0L,
+        insertionResult = com.envi.wispr.insertion.InsertionResults.HISTORY_ONLY,
+        recovered = true, takeId = "recovery-receipt", recoveryStartSample = 0L,
+        recoveryPartial = true, recoveryModelIdentity = "synthetic-model-v1",
+    )
 }

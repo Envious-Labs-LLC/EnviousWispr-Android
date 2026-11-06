@@ -33,6 +33,7 @@ class InsertionOutcomeRecorderTest {
         val timings = mutableListOf<Pair<Long?, Long?>>()
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(emptyList())
         override suspend fun insert(transcript: TranscriptEntity): Long = 1L
+        override suspend fun updateRecovered(transcript: TranscriptEntity): Int = error("Use the real Room recovery fixture")
         override suspend fun findByTakeId(takeId: String): TranscriptEntity? = null
         override suspend fun insertDeletedTakes(takes: List<DeletedTake>) = Unit
         override suspend fun isTakeDeleted(takeId: String): Boolean = false

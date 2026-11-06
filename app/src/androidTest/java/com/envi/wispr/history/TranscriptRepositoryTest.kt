@@ -4,8 +4,24 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import com.envi.wispr.ui.RescuedWords
+import com.envi.wispr.ui.RescueOutcome
+import java.io.File
+import java.util.UUID
+import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.polish.PolishEngineLabels
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -29,7 +45,7 @@ class TranscriptRepositoryTest {
             ApplicationProvider.getApplicationContext(),
             EnviousWisprDatabase::class.java,
         ).allowMainThreadQueries().build()
-        repository = TranscriptRepository(database.transcriptDao())
+        repository = TranscriptRepository(database.transcriptDao(), clock = { 4_242L })
     }
 
     @After fun tearDown() = database.close()
@@ -95,5 +111,107 @@ class TranscriptRepositoryTest {
         assertEquals(0, repository.pruneWordlessRows())
 
         assertEquals(1, repository.transcripts.first().size)
+    }
+
+    private fun recovered(takeId: String, text: String = "Recovered words.") =
+        row(TranscriptEntity.STATUS_COMPLETED, text).copy(
+            originalText = "raw recovered words", durationMs = 128L,
+            polishEngine = PolishEngineLabels.OFF, insertionResult = InsertionResults.HISTORY_ONLY,
+            recovered = true, takeId = takeId, recoveryStartSample = 320L,
+            recoveryPartial = true, recoveryModelIdentity = "synthetic-model-v1",
+        )
+
+    @Test fun cancelBeforeDraftCreationPreventsBothLateDraftAndAudioRecovery() = runBlocking {
+        val kept = repository.insert(row(TranscriptEntity.STATUS_COMPLETED, "Keep these finished words."))
+        repository.discardTakeForGood("canceled-before-draft")
+        assertTrue(repository.isTakeDeleted("canceled-before-draft"))
+        assertEquals(0L, repository.insert(row(TranscriptEntity.STATUS_DRAFT).copy(takeId = "canceled-before-draft")))
+        assertEquals(RecoverySaveOutcome.Deleted, repository.saveRecovered(recovered("canceled-before-draft")))
+        assertEquals(listOf(kept), repository.transcripts.first().map { it.id })
+    }
+
+    @Test fun audioRecoveryFillsTheEmptyDraftOnceAndPreservesItsUserFacts() = runBlocking {
+        val id = repository.insert(row(TranscriptEntity.STATUS_DRAFT).copy(
+            takeId = "empty-draft", kept = true, captureDevice = "AirPods Pro 3", liveAfterMs = 22L,
+        ))
+        assertEquals(RecoverySaveOutcome.Saved(id), repository.saveRecovered(recovered("empty-draft")))
+        val saved = repository.transcripts.first().single()
+        assertEquals(id, saved.id)
+        assertEquals("Recovered words.", saved.finalText)
+        assertEquals("raw recovered words", saved.originalText)
+        assertEquals(128L, saved.durationMs)
+        assertEquals(4_242L, saved.stateChangedAtMs)
+        assertEquals(320L, saved.recoveryStartSample)
+        assertEquals(true, saved.recoveryPartial)
+        assertEquals("synthetic-model-v1", saved.recoveryModelIdentity)
+        assertEquals(InsertionResults.HISTORY_ONLY, saved.insertionResult)
+        assertEquals(PolishEngineLabels.OFF, saved.polishEngine)
+        assertTrue(saved.recovered && saved.kept && !saved.interrupted)
+        assertEquals("AirPods Pro 3", saved.captureDevice)
+        assertEquals(22L, saved.liveAfterMs)
+    }
+
+    @Test fun laterRecoveryPreservesExistingWordsAndEveryStoredRecoveryFact() = runBlocking {
+        val first = repository.saveRecovered(recovered("one-result")) as RecoverySaveOutcome.Saved
+        val before = repository.transcripts.first().single()
+        assertEquals("Recovered words.", before.finalText)
+        val late = recovered("one-result", "Wrong late words.").copy(
+            durationMs = 999L, recoveryStartSample = 0L, recoveryPartial = false, recoveryModelIdentity = "other-model",
+        )
+        assertEquals(RecoverySaveOutcome.PreservedExisting(first.id), repository.saveRecovered(late))
+        assertEquals(listOf(before), repository.transcripts.first())
+    }
+
+    @Test fun concurrentDiscardAndRecoveryCannotLeaveResurrectedWords() = runBlocking {
+        val entered = CountDownLatch(2)
+        val start = CompletableDeferred<Unit>()
+        val save = async(Dispatchers.IO) { entered.countDown(); start.await(); repository.saveRecovered(recovered("racing-discard")) }
+        val discard = async(Dispatchers.IO) { entered.countDown(); start.await(); repository.discardTakeForGood("racing-discard") }
+        assertTrue("Both real Room operations must be ready", entered.await(10, TimeUnit.SECONDS))
+        start.complete(Unit)
+        val answer = withTimeout(10_000L) { discard.await(); save.await() }
+        assertTrue(answer is RecoverySaveOutcome.Saved || answer == RecoverySaveOutcome.Deleted)
+        assertTrue(repository.isTakeDeleted("racing-discard"))
+        assertTrue(repository.transcripts.first().isEmpty())
+    }
+
+    @Test fun deleteAllIncludesAProtectedTakeThatHasNoHistoryRowYet() = runBlocking {
+        repository.insert(row(TranscriptEntity.STATUS_COMPLETED, "Existing words.").copy(takeId = "existing-row"))
+        repository.deleteAll(listOf("pending-protected-take"))
+        assertEquals(RecoverySaveOutcome.Deleted, repository.saveRecovered(recovered("pending-protected-take")))
+        assertTrue(repository.isTakeDeleted("existing-row"))
+        assertTrue(repository.transcripts.first().isEmpty())
+    }
+
+    @Test fun aFreshTextReaderWritesRecoveryProvenanceIntoRealRoom() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val take = UUID.randomUUID().toString()
+        val dir = File(context.noBackupFilesDir, "recovery-text-test-$take")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val first = RescuedWords(dir, scope, wallClock = { 999L }, warn = {})
+            val failedSave = CompletableDeferred<RecoverySaveOutcome>().apply {
+                complete(RecoverySaveOutcome.Failed(RecoveryWriteFailure.WRITE_FAILED))
+            }
+            assertEquals(RescueOutcome.KEPT,
+                withTimeout(10_000L) { first.keepRecovered(RecoveredWordsRecord(recovered(take), 2_048L), failedSave).await() })
+            val file = File(dir, "$take.recovery-words-v1")
+            assertTrue(file.isFile)
+            val restarted = RescuedWords(dir, scope, wallClock = { 999L }, warn = {})
+            assertEquals(1, restarted.recover(repository))
+            val saved = requireNotNull(database.transcriptDao().findByTakeId(take))
+            assertEquals("Recovered words.", saved.finalText)
+            assertEquals("raw recovered words", saved.originalText)
+            assertEquals(320L, saved.recoveryStartSample)
+            assertEquals(true, saved.recoveryPartial)
+            assertEquals("synthetic-model-v1", saved.recoveryModelIdentity)
+            assertEquals(InsertionResults.HISTORY_ONLY, saved.insertionResult)
+            assertEquals(0, restarted.recover(repository))
+            assertFalse(file.exists())
+        } finally {
+            scope.cancel()
+            listOf("$take.recovery-words-v1", "$take.recovery-words-v1.tmp").forEach { File(dir, it).delete() }
+            dir.delete()
+        }
     }
 }

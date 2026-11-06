@@ -1024,6 +1024,10 @@ internal class DictationSessionRig {
             return id
         }
         override suspend fun setKept(id: Long, kept: Boolean) { rows.computeIfPresent(id) { _, row -> row.copy(kept = kept) } }
+        override suspend fun updateRecovered(transcript: TranscriptEntity): Int {
+            if (failInserts) throw IllegalStateException("disk full")
+            return if (rows.replace(transcript.id, transcript) != null) 1 else 0
+        }
         override suspend fun delete(transcript: TranscriptEntity) { rows.remove(transcript.id) }
         override suspend fun deleteAll() = rows.clear()
         /** The takes the user deleted (#288); the fake's transactions are the interface's own bodies. */

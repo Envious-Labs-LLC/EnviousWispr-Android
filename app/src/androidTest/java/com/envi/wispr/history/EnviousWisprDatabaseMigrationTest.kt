@@ -1,6 +1,8 @@
 package com.envi.wispr.history
 
 import androidx.room.testing.MigrationTestHelper
+import androidx.room.Room
+import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -10,7 +12,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlinx.coroutines.runBlocking
 
+/** Product Outcome: supported database upgrades preserve stored words, dictionary and deletion facts. */
 @RunWith(AndroidJUnit4::class)
 class EnviousWisprDatabaseMigrationTest {
     @get:Rule
@@ -228,15 +232,72 @@ class EnviousWisprDatabaseMigrationTest {
         }
     }
 
-    /** The whole supported chain, 1 through 10, against the exported schemas: what an old install walks. */
+    @Test fun migration10To11PreservesExistingDataAndKeepsLegacyRecoveryFactsUnknown() {
+        fun snapshot(database: SupportSQLiteDatabase, table: String): Map<String, String?> =
+            database.query("SELECT * FROM $table").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                val row = cursor.columnNames.mapIndexed { index, name ->
+                    name to if (cursor.isNull(index)) null else cursor.getString(index)
+                }.toMap()
+                assertTrue("One seeded row required in $table", !cursor.moveToNext())
+                row
+            }
+        val before = mutableMapOf<String, Map<String, String?>>()
+        val tables = listOf("transcripts", "custom_terms", "deleted_takes", "take_journal")
+        helper.createDatabase(TEST_DATABASE, 10).use { database ->
+            database.execSQL("INSERT INTO transcripts (id, originalText, finalText, createdAtMs, durationMs, speechEngine, " +
+                "polishEngine, polishLatencyMs, insertionResult, kept, recovered, interrupted, status, stateChangedAtMs, " +
+                "polishReason, polishStatus, polishContext, captureDevice, takeId, liveAfterMs, asrMs, insertionMs, endToEndMs) " +
+                "VALUES (12, 'canary raw', 'canary final', 1000, 2000, 'Parakeet', 'S1-mini', 410, 'committed', 1, 0, 0, " +
+                "'completed', 3000, 'POLISHED', 0, 'general', 'AirPods Pro 3', 'legacy-take', 11, 22, 33, 44)")
+            database.execSQL("INSERT INTO custom_terms (id, spelling, aliases, category, priority, forceReplace, " +
+                "caseSensitive, usageCount, imported, createdAtMs, updatedAtMs, minSimilarityOverride) " +
+                "VALUES (3, 'CanaryTerm', 'canary alias', 'product', 2, 1, 0, 5, 0, 10, 20, 0.8)")
+            database.execSQL("INSERT INTO deleted_takes (takeId) VALUES ('deleted-take')")
+            database.execSQL("INSERT INTO take_journal (take_id, process_run_id, admitted_at_ms, stage, stage_seq, " +
+                "transcript_id, terminal_result, terminal_reason, terminal_at_ms, trigger_source) " +
+                "VALUES ('journal-take', 'synthetic-run', 77, 'ADMITTED', 0, 12, NULL, NULL, NULL, 'UNKNOWN')")
+            tables.forEach { before[it] = snapshot(database, it) }
+            assertEquals("canary final", before.getValue("transcripts")["finalText"])
+            assertEquals("CanaryTerm", before.getValue("custom_terms")["spelling"])
+            assertEquals("deleted-take", before.getValue("deleted_takes")["takeId"])
+            assertEquals("ADMITTED", before.getValue("take_journal")["stage"])
+        }
+        helper.runMigrationsAndValidate(TEST_DATABASE, 11, true, EnviousWisprDatabase.MIGRATION_10_11).use { database ->
+            tables.forEach { table ->
+                val original = before.getValue(table)
+                assertEquals(original, snapshot(database, table).filterKeys { it in original })
+            }
+            database.query("SELECT recoveryStartSample, recoveryPartial, recoveryModelIdentity FROM transcripts WHERE id = 12").use {
+                assertTrue(it.moveToFirst())
+                for (column in 0..2) assertTrue("Legacy recovery provenance must remain unknown", it.isNull(column))
+            }
+        }
+        val reopened = Room.databaseBuilder(InstrumentationRegistry.getInstrumentation().targetContext,
+            EnviousWisprDatabase::class.java, TEST_DATABASE).build()
+        try {
+            runBlocking {
+                val row = requireNotNull(reopened.transcriptDao().findByTakeId("legacy-take"))
+                assertEquals("canary final", row.finalText)
+                assertEquals(44L, row.endToEndMs)
+                assertNull(row.recoveryStartSample)
+                assertNull(row.recoveryPartial)
+                assertNull(row.recoveryModelIdentity)
+                assertTrue(reopened.transcriptDao().isTakeDeleted("deleted-take"))
+            }
+        } finally { reopened.close() }
+    }
+
+    /** The whole supported chain, 1 through 11, against the exported schemas: what an old install walks. */
     @Test
-    fun theWholeMigrationChainReachesVersion10() {
+    fun theWholeMigrationChainReachesVersion11() {
         helper.createDatabase(TEST_DATABASE, 1).close()
         helper.runMigrationsAndValidate(
-            TEST_DATABASE, 10, true,
+            TEST_DATABASE, 11, true,
             EnviousWisprDatabase.MIGRATION_1_2, EnviousWisprDatabase.MIGRATION_2_3, EnviousWisprDatabase.MIGRATION_3_4,
             EnviousWisprDatabase.MIGRATION_4_5, EnviousWisprDatabase.MIGRATION_5_6, EnviousWisprDatabase.MIGRATION_6_7,
             EnviousWisprDatabase.MIGRATION_7_8, EnviousWisprDatabase.MIGRATION_8_9, EnviousWisprDatabase.MIGRATION_9_10,
+            EnviousWisprDatabase.MIGRATION_10_11,
         ).close()
     }
 

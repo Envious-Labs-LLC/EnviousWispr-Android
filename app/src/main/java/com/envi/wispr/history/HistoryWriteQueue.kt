@@ -2,6 +2,8 @@ package com.envi.wispr.history
 
 import com.envi.wispr.debug.DebugLogger
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
@@ -84,6 +86,33 @@ internal class HistoryWriteQueue(
 
     /** Accepted writes not yet finished (for the tests' drain). */
     internal fun pendingForTest(): Int = synchronized(lock) { pending }
+
+    fun discardTakeForGood(takeId: String): Deferred<RecoveryDiscardOutcome> = observeTerminal(
+        "protected_discard", { it.discardTakeForGood(takeId); RecoveryDiscardOutcome.Committed },
+        { RecoveryDiscardOutcome.Unconfirmed(it) },
+    )
+
+    fun saveRecovered(transcript: TranscriptEntity): Deferred<RecoverySaveOutcome> = observeTerminal(
+        "recovered_words", { it.saveRecovered(transcript) }, { RecoverySaveOutcome.Failed(it) },
+    )
+
+    /** Observer cancellation cannot cancel the application-owned write or turn enqueue acceptance into commit. */
+    private fun <T> observeTerminal(
+        label: String,
+        body: suspend (TranscriptRepository) -> T,
+        failure: (RecoveryWriteFailure) -> T,
+    ): Deferred<T> {
+        val answer = CompletableDeferred<T>()
+        val accepted = enqueue(label, WriteKind.TERMINAL) { repository ->
+            try { answer.complete(body(repository)) }
+            catch (error: Throwable) {
+                answer.complete(failure(RecoveryWriteFailure.WRITE_FAILED))
+                throw error
+            }
+        }
+        if (accepted == Enqueued.REJECTED) answer.complete(failure(RecoveryWriteFailure.QUEUE_REJECTED))
+        return answer
+    }
 
     /**
      * Queue one write. Returns at once, never suspending and never blocking. [label] names the write for the log

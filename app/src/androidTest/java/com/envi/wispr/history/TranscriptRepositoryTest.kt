@@ -124,10 +124,13 @@ class TranscriptRepositoryTest {
     @Test fun cancelBeforeDraftCreationPreventsBothLateDraftAndAudioRecovery() = runBlocking {
         val kept = repository.insert(row(TranscriptEntity.STATUS_COMPLETED, "Keep these finished words."))
         repository.discardTakeForGood("canceled-before-draft")
+        val lateDraft = repository.insert(row(TranscriptEntity.STATUS_DRAFT).copy(takeId = "canceled-before-draft"))
+        val lateRecovery = repository.saveRecovered(recovered("canceled-before-draft"))
+        val remaining = repository.transcripts.first()
+        assertEquals(0L, lateDraft)
+        assertEquals(RecoverySaveOutcome.Deleted, lateRecovery)
         assertTrue(repository.isTakeDeleted("canceled-before-draft"))
-        assertEquals(0L, repository.insert(row(TranscriptEntity.STATUS_DRAFT).copy(takeId = "canceled-before-draft")))
-        assertEquals(RecoverySaveOutcome.Deleted, repository.saveRecovered(recovered("canceled-before-draft")))
-        assertEquals(listOf(kept), repository.transcripts.first().map { it.id })
+        assertEquals(listOf(kept), remaining.map { it.id })
     }
 
     @Test fun audioRecoveryFillsTheEmptyDraftOnceAndPreservesItsUserFacts() = runBlocking {

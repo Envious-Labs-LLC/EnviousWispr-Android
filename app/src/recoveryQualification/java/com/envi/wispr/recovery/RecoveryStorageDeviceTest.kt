@@ -214,6 +214,77 @@ class RecoveryStorageDeviceTest {
         assertFalse(CountDownLatch(1).await(1, TimeUnit.MILLISECONDS))
     }
 
+    @Test fun dEncryptedWriterDrainsItsTailAndTornSuffixKeepsTheEarlierAudio() {
+        assertNondebug()
+        val store = RecoveryAudioStore(context)
+        val reservation = ready(store.reserveOnWorker(RecoveryQualificationPeer.fixture(UUID.randomUUID())))
+        var writer: RecoveryAudioWriter? = null
+        var bodyFailure: Throwable? = null
+        try {
+            ready(reservation.prepareOnWorker())
+            val activeWriter = checkNotNull(RecoveryAudioWriter.startOnWorker(ready(store.openAudioWriterOnWorker(reservation.ref))))
+            writer = activeWriter
+            val block = ByteArray(1_024) { 42 }
+            repeat(32) { activeWriter.offer(block, block.size, it * 1_024L) }
+            activeWriter.offer(byteArrayOf(1, 0, 2, 0), 4, 32_768L)
+            activeWriter.finishOnCaptureClosed(32_772L, true)
+            val closed = activeWriter.completion.get(15, TimeUnit.SECONDS)
+            assertEquals(RecoveryClaimRelease.RELEASED, closed.released)
+            assertEquals(16_386, closed.sampleCount)
+            assertEquals(0L, closed.firstSample)
+            assertTrue(closed.completedCapture)
+            assertFalse(closed.failed)
+
+            val file = File(root, "slot-${reservation.ref.slot}.audio")
+            val key = keyStore().getKey(alias(reservation.ref), null) as SecretKey
+            fun prefix() = Files.newInputStream(file.toPath()).use {
+                RecoveryAudioPrefix.read(it, reservation.ref.identity, key) {}
+            }
+            fun digest(prefix: RecoveryPcmPrefix): String = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(prefix.pcm.copyOf(prefix.byteCount)).joinToString("") { "%02x".format(it) }
+
+            prefix().use {
+                assertEquals(32_772, it.byteCount)
+                // Independently computed from 32768 literal 0x2a bytes, then 01 00 02 00.
+                assertEquals("808d45051b09de1782d0c0232305dff52684dd887a1bccbfcbd4face4b443541", digest(it))
+                assertTrue(it.completedCapture)
+            }
+            // A crash during the footer cannot erase either already-authenticated audio frame.
+            FileChannel.open(file.toPath(), StandardOpenOption.WRITE).use { it.truncate(it.size() - 5L) }
+            prefix().use {
+                assertEquals(32_772, it.byteCount)
+                assertFalse(it.completedCapture)
+            }
+            // A crash during the second audio frame retains the first full frame, without a gap.
+            FileChannel.open(file.toPath(), StandardOpenOption.WRITE).use { it.truncate(32_768L + RecoveryFrameLimits.OVERHEAD_BYTES + 10L) }
+            prefix().use {
+                assertEquals(32_768, it.byteCount)
+                assertEquals("e1319fe98edde6e1fb2bed9422ee3b250239b1d8ae1fa88d0f8c10b7cdb81236", digest(it))
+                assertTrue(it.partial)
+            }
+        } catch (failure: Throwable) {
+            bodyFailure = failure
+            throw failure
+        } finally {
+            val failures = ArrayList<Throwable>()
+            fun attempt(action: () -> Unit) { try { action() } catch (failure: Throwable) { failures.add(failure) } }
+            attempt {
+                writer?.let {
+                    it.finishOnCaptureClosed(0L, false)
+                    assertEquals(RecoveryClaimRelease.RELEASED, it.completion.get(15, TimeUnit.SECONDS).released)
+                }
+            }
+            attempt { assertEquals(RecoveryReservationClose.RELEASED, reservation.closeOnWorker()) }
+            attempt { ready(store.markTerminalOnWorker(reservation.ref, RecoveryDisposition.NO_REPLAY)) }
+            attempt { ready(store.cleanupOnWorker(reservation.ref)) }
+            if (failures.isNotEmpty()) {
+                val original = bodyFailure
+                if (original != null) failures.forEach(original::addSuppressed)
+                else throw AssertionError("Writer qualification cleanup failed").also { error -> failures.forEach(error::addSuppressed) }
+            }
+        }
+    }
+
     @Test fun zUnknownCreationConsumesCapacityAndPositiveAnomalyPermanentlyBlocksAllocation() {
         assertNondebug()
         val store = RecoveryAudioStore(context)

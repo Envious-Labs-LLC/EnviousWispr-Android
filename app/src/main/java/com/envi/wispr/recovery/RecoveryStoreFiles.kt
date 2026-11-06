@@ -101,6 +101,21 @@ internal class RecoveryStoreFiles(context: Context) {
         syncDirectory(root)
     }
 
+    /** The caller already holds this occupant's audio claim and has committed WRITING. */
+    fun createAudio(slot: Int): FileChannel = io {
+        verifyDataFiles(slot)
+        val channel = FileChannel.open(dataFile(slot, "audio").toPath(), StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)
+        var transferred = false
+        try {
+            syncDirectory(root)
+            transferred = true
+            channel
+        } finally {
+            if (!transferred) RecoveryIoClose.using(channel) { }
+        }
+    }
+
     fun hasRecordFiles(slot: Int): Boolean = io {
         verifyDataFiles(slot)
         listOf("context", "context.pending", "audio").any { statOrMissing(dataFile(slot, it)) != null }

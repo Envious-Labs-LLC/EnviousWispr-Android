@@ -4,10 +4,13 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.security.KeyStore
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
 
 internal sealed interface RecoveryStoreResult<out T> {
     data class Ready<T>(val value: T) : RecoveryStoreResult<T>
@@ -76,6 +79,94 @@ internal class RecoveryAudioStore(context: Context) {
     /** Metadata only, not encrypted-envelope validation or Delete all authorization. Missing is never empty. */
     fun snapshotOnWorker(): RecoveryStoreResult<RecoveryStoreSnapshot> = withLedger {
         RecoveryStoreSnapshot(it, if (files.isQuarantined()) RecoveryAllocationState.QUARANTINED else RecoveryAllocationState.NOT_QUARANTINED)
+    }
+
+    /** Optional attachment work only. The capture loop never calls the store or waits for this. */
+    fun openAudioWriterOnWorker(ref: RecoveryRecordRef): RecoveryStoreResult<AudioWriterLease> {
+        var claim: RecoveryFileClaim? = null
+        var channel: FileChannel? = null
+        var transferred = false
+        try {
+            val admission = withLedger { ledger ->
+                val current = record(ledger, ref)
+                if (current.phase != RecoveryRecordPhase.ARMABLE || current.keyStage != RecoveryKeyStage.SETTLED) fail(RecoveryStoreFailure.INELIGIBLE)
+                claim = acquire(ownerNames(ref.slot)[1])
+                replace(ledger, ref, current.copy(phase = RecoveryRecordPhase.WRITING))
+            }
+            when (admission) {
+                RecoveryStoreResult.Busy -> return RecoveryStoreResult.Busy
+                is RecoveryStoreResult.Unavailable -> return admission
+                is RecoveryStoreResult.Ready -> Unit
+            }
+            val key = keyStore().getKey(RecoveryKeyAliases.of(ref), null) as? SecretKey
+                ?: return RecoveryStoreResult.Unavailable(RecoveryStoreFailure.KEY_UNAVAILABLE)
+            channel = files.createAudio(ref.slot)
+            return RecoveryStoreResult.Ready(AudioWriterLease(ref.identity, key, channel, checkNotNull(claim))).also { transferred = true }
+        } catch (error: RecoveryStoreException) {
+            if (error.reason == RecoveryStoreFailure.IO_UNAVAILABLE) claim?.poisonOnWorker()
+            return RecoveryStoreResult.Unavailable(error.reason)
+        } catch (_: Exception) {
+            return RecoveryStoreResult.Unavailable(RecoveryStoreFailure.KEY_UNAVAILABLE)
+        } finally {
+            if (!transferred) {
+                try { channel?.close() } catch (_: Throwable) { claim?.poisonOnWorker() }
+                claim?.release()
+            }
+        }
+    }
+
+    /** One writer worker owns this lease from creation through actual final close. */
+    internal class AudioWriterLease internal constructor(
+        private val identity: RecoveryRecordIdentity,
+        private val key: SecretKey,
+        private val channel: FileChannel,
+        private val claim: RecoveryFileClaim,
+    ) {
+        private var closed: RecoveryClaimRelease? = null
+        private var frames = 0L
+        var firstSample: Long? = null
+            private set
+        var sampleCount: Int = 0
+            private set
+
+        fun appendOnWorker(startSample: Long, pcm: ByteArray) {
+            if (startSample != (firstSample?.plus(sampleCount) ?: startSample)) {
+                throw RecoveryFrameException(RecoveryFrameFailure.MALFORMED)
+            }
+            val frame = RecoveryFrameCodec.seal(
+                RecoveryFrameHeader(identity, RecoveryFrameKind.AUDIO, frames, startSample, pcm.size / 2), pcm, key,
+            )
+            writeOnWorker(frame)
+            if (firstSample == null) firstSample = startSample
+            sampleCount += pcm.size / 2
+            frames++
+        }
+
+        fun completeOnWorker(endSample: Long): Boolean {
+            if (frames == 0L || firstSample?.plus(sampleCount) != endSample) return false
+            writeOnWorker(RecoveryFrameCodec.seal(
+                RecoveryFrameHeader(identity, RecoveryFrameKind.COMPLETED_CAPTURE, frames, endSample, sampleCount), ByteArray(0), key,
+            ))
+            return true
+        }
+
+        private fun writeOnWorker(frame: ByteArray) {
+            check(closed == null)
+            try {
+                val buffer = ByteBuffer.wrap(frame)
+                while (buffer.hasRemaining()) if (channel.write(buffer) <= 0) throw RecoveryStoreException(RecoveryStoreFailure.IO_UNAVAILABLE)
+                channel.force(true)
+            } catch (_: Exception) {
+                claim.poisonOnWorker()
+                throw RecoveryStoreException(RecoveryStoreFailure.IO_UNAVAILABLE)
+            }
+        }
+
+        fun closeOnWorker(): RecoveryClaimRelease {
+            closed?.let { return it }
+            try { channel.close() } catch (_: Throwable) { claim.poisonOnWorker() }
+            return claim.release().also { closed = it }
+        }
     }
 
     fun markTerminalOnWorker(ref: RecoveryRecordRef, disposition: RecoveryDisposition): RecoveryStoreResult<Unit> = withLedger { ledger ->

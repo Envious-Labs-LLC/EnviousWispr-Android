@@ -1,7 +1,7 @@
 # Issue #521: Google Play install referrals, 2026-11-07
 
 GitHub issue: https://github.com/Envious-Labs-LLC/EnviousWispr-Android/issues/521
-Tier: MEDIUM. Status: APPROVED, implementation in progress. Founder explicitly requested research, plan and execution, then approved a one-time backfill and a proportionate investment in acquisition insights.
+Tier: LARGE because the optional collector is wired at app startup. Status: IMPLEMENTED, delivery pending. Founder explicitly requested research, plan and execution, then approved a one-time backfill and a proportionate investment in acquisition insights. The higher tier changes no product scope; required planning and code reviews were completed.
 
 **Lane:** Code
 mixed_pr: true

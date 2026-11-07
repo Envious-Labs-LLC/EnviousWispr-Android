@@ -54,6 +54,9 @@ internal object PayloadSanitizer {
         // onboarding, model delivery, providers
         "elapsed_s", "lesson", "outcome", "model", "source_host", "bytes_bucket", "duration_s", "first_run",
         "provider", "action",
+        // Play referral snapshots: publisher campaign labels, never the raw query or advertising IDs.
+        "referral_status", "referral_source", "referral_medium", "referral_campaign", "referral_content",
+        "referral_click_s", "referral_install_s",
         // PostHog SDK context we keep (the rest of the SDK's `$` keys are dropped below). `$is_emulator`
         // stays because it is how a reader excludes our own emulator rows; the network booleans, the
         // timezone, the namespace and the device type answer no forecast question and are dropped.

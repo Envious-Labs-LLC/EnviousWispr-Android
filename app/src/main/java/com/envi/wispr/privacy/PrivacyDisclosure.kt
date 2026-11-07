@@ -20,6 +20,7 @@ internal object PrivacyDisclosures {
      */
     const val TELEMETRY_SUMMARY = "EnviousWispr sends limited usage and crash reports so problems can be found and fixed: " +
         "whether a dictation finished, how long each step took, which settings are on, which app the words went to, " +
+        "limited campaign labels and install timing from Google Play to understand how people find the app, " +
         "and a crash report when the app fails. It never sends audio, your dictated words, names you enter, file contents, or API keys. " +
         "A crash report can include the technical location in the code where it failed. " +
         "A random id tells one install from another; it is not an account. If you send feedback, that report can link to earlier usage from the same install."

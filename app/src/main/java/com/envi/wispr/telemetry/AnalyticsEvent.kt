@@ -29,7 +29,7 @@ internal sealed class AnalyticsEvent(val name: String) {
          * it against the subclasses' literals.
          */
         val NAMES: Set<String> = setOf(
-            "app.launched", "dictation.terminal", "insertion.terminal", "dictation.interrupted", "dictation.refused",
+            "app.launched", "install_referrer.received", "dictation.terminal", "insertion.terminal", "dictation.interrupted", "dictation.refused",
             "onboarding.stage_reached", "onboarding.completed", "onboarding.practice", "model_delivery.terminal",
             "settings.changed", "api_key.changed", "api_key.validation_completed",
         )
@@ -67,6 +67,23 @@ internal sealed class AnalyticsEvent(val name: String) {
             "install_source" to installSource.wire,
             "test_lab" to testLab,
         ) + settings
+    }
+
+    /** Referral snapshot, not an installation count: existing installations can report once after an update. */
+    class InstallReferrerReceived(
+        private val referral: InstallReferral,
+        private val clickSeconds: Long?,
+        private val installSeconds: Long?,
+    ) : AnalyticsEvent("install_referrer.received") {
+        override fun properties(): Map<String, Any?> = mapOf(
+            "referral_status" to referral.status.wire,
+            "referral_source" to referral.source,
+            "referral_medium" to referral.medium,
+            "referral_campaign" to referral.campaign,
+            "referral_content" to referral.content,
+            "referral_click_s" to clickSeconds?.takeIf { it > 0 },
+            "referral_install_s" to installSeconds?.takeIf { it > 0 },
+        )
     }
 
     /** The one row per take, at the arbiter's commit. Facts absent when they were never measured. */

@@ -139,7 +139,7 @@ class TelemetryContractsTest {
     fun everyDeclaredEventIsKeptAndStampedAndSdkNoiseIsDropped() {
         val kept = TelemetryVolumePolicy.decide("dictation.terminal", mapOf("result" to "completed", "\$user_agent" to "x", "\$os_version" to "16"))
         assertEquals(
-            TelemetryVolumePolicy.Decision.Keep(mapOf("result" to "completed", "\$os_version" to "16", "telemetry_policy_version" to 1)),
+            TelemetryVolumePolicy.Decision.Keep(mapOf("result" to "completed", "\$os_version" to "16", "telemetry_policy_version" to 2)),
             kept,
         )
         assertEquals(TelemetryVolumePolicy.Decision.Drop, TelemetryVolumePolicy.decide("Application Opened", emptyMap()))
@@ -202,7 +202,7 @@ class TelemetryContractsTest {
             "app_version" to "0.1.0",
             "app_build" to 150,
             "process_run_id" to "2f7a4b3c-1d2e-4f5a-8b6c-9d0e1f2a3b4c",
-            "telemetry_policy_version" to 1,
+            "telemetry_policy_version" to 2,
         )
         assertEquals(expected, payload)
         assertFalse("a completed take carries no reason", payload!!.containsKey("reason"))
@@ -229,12 +229,13 @@ class TelemetryContractsTest {
     @Test
     fun everyEventNameIsOnTheClosedList() {
         val names = listOf(
-            "app.launched", "dictation.terminal", "insertion.terminal", "dictation.interrupted", "dictation.refused",
+            "app.launched", "install_referrer.received", "dictation.terminal", "insertion.terminal", "dictation.interrupted", "dictation.refused",
             "onboarding.stage_reached", "onboarding.completed", "onboarding.practice", "model_delivery.terminal",
             "settings.changed", "api_key.changed", "api_key.validation_completed",
         )
         val built = listOf(
             AnalyticsEvent.AppLaunched("m", "16", false, true, true, true, true, 0, InstallSource.PLAY, false, emptyMap()).name,
+            AnalyticsEvent.InstallReferrerReceived(InstallReferral.parse(""), null, null).name,
             AnalyticsEvent.DictationTerminal("t", TerminalReason.COMPLETED, null, TriggerSource.APP, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null).name,
             AnalyticsEvent.InsertionTerminal("t", null, InsertionResultKind.PASTED, InsertionRouteKind.PASTE, null, null, null, false).name,
             AnalyticsEvent.DictationInterrupted("t", TakeStage.RECORDING, "tile").name,

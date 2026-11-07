@@ -7,6 +7,8 @@ import android.system.OsConstants
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.channels.Channels
+import java.io.InputStream
 import java.nio.file.LinkOption
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
@@ -99,6 +101,47 @@ internal class RecoveryStoreFiles(context: Context) {
         }
         Os.rename(pending.path, dataFile(slot, "context").path)
         syncDirectory(root)
+    }
+
+    /** The caller already holds this occupant's audio claim and has committed WRITING. */
+    fun createAudio(slot: Int): FileChannel = io {
+        verifyDataFiles(slot)
+        val channel = FileChannel.open(dataFile(slot, "audio").toPath(), StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)
+        var transferred = false
+        try {
+            syncDirectory(root)
+            transferred = true
+            channel
+        } finally {
+            if (!transferred) RecoveryIoClose.using(channel) { }
+        }
+    }
+
+    /** Caller holds this occupant's main or ASR claim. Context is immutable after ARMABLE publication. */
+    fun readContext(slot: Int): ByteArray = io {
+        verifyDataFiles(slot)
+        RecoveryIoClose.using(FileChannel.open(dataFile(slot, "context").toPath(), StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) { channel ->
+            val size = channel.size()
+            if (size !in RecoveryFrameLimits.OVERHEAD_BYTES.toLong()..RecoveryFrameLimits.MAX_FRAME_BYTES.toLong()) unavailable()
+            val bytes = ByteArray(size.toInt())
+            val buffer = ByteBuffer.wrap(bytes)
+            while (buffer.hasRemaining()) if (channel.read(buffer) <= 0) unavailable()
+            if (channel.read(ByteBuffer.allocate(1)) != -1) unavailable()
+            bytes
+        }
+    }
+
+    /** No path travels over Binder, and no plaintext recording is reconstructed on disk. */
+    fun openAudioInput(slot: Int): InputStream = io {
+        verifyDataFiles(slot)
+        val channel = FileChannel.open(dataFile(slot, "audio").toPath(), StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)
+        try {
+            Channels.newInputStream(channel)
+        } catch (failure: Throwable) {
+            RecoveryIoClose.using(channel) { }
+            throw failure
+        }
     }
 
     fun hasRecordFiles(slot: Int): Boolean = io {

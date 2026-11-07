@@ -50,7 +50,7 @@ internal object InsertionResults {
      */
     const val UNVERIFIED_NOT_COPIED = "unverified_not_copied"
 
-    /** Auto-copy is off, so the words reached History and nowhere else. */
+    /** Words reached History without an editor or clipboard write, including deliberate audio recovery. */
     const val HISTORY_ONLY = "history_only"
 
     /** Nothing took the words except History, because the clipboard write itself failed. */

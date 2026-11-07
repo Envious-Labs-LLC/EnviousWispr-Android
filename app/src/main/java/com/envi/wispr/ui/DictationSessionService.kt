@@ -257,6 +257,7 @@ class DictationSessionService : Service() {
             historySaves = ModelBootstrapApplication.historySaves(applicationContext),
             rescuedWords = ModelBootstrapApplication.rescuedWords(applicationContext),
             historyRecovery = ModelBootstrapApplication.historyRecovery(applicationContext),
+            recordingProtection = ModelBootstrapApplication.recordingProtection(applicationContext),
             languageDetector = languageDetector,
             loadPolicy = { providerConfiguration.loadPolicy() },
             lastReadPolicy = { ProviderConfigurationRepository.lastProcessRead() },

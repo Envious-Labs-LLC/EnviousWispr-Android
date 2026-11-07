@@ -12,11 +12,26 @@ import com.envi.wispr.audio.RecordingLimits
 import com.envi.wispr.models.LegacyModelSweep
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
+import com.envi.wispr.recovery.RecoveryAudioStore
+import com.envi.wispr.recovery.RecoveryClaimRelease
+import com.envi.wispr.recovery.RecoveryContextDigest
+import com.envi.wispr.recovery.RecoveryModelIdentity
+import com.envi.wispr.recovery.RecoveryRecordIdentity
+import com.envi.wispr.recovery.RecoveryRecordRef
+import com.envi.wispr.recovery.RecoveryReplayRef
+import com.envi.wispr.recovery.RecoveryResult
+import com.envi.wispr.recovery.RecoveryResultCodec
+import com.envi.wispr.recovery.RecoveryStoreResult
+import com.envi.wispr.recovery.RecoveryStoreException
+import com.envi.wispr.recovery.RecoveryStoreFailure
 import com.envi.wispr.process.EngineDeadline
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import java.util.UUID
 
 /**
  * ASR service running in a separate process (:asr).
@@ -26,6 +41,12 @@ import java.util.concurrent.atomic.AtomicLong
  * Returns raw text so the isolated polish service can run S1-mini or a safe fallback.
  */
 class AsrService : Service() {
+    internal enum class WorkKind { FOREGROUND, RECOVERY }
+    private data class LoadedRecognizer(val engine: ParakeetEngine, val model: RecoveryModelIdentity)
+    internal sealed class ResultRoute {
+        internal data object Ordinary : ResultRoute()
+        internal data class Recovery(val replay: RecoveryReplayRef, val first: Long, val count: Long, val completed: Boolean) : ResultRoute()
+    }
 
     companion object {
         private const val TAG = "AsrService"
@@ -70,13 +91,59 @@ class AsrService : Service() {
         }
         val lane = RecognizerLane(worker, watchdog)
         val requests = AtomicLong()
+        private val admission = Any()
+        private var foreground = 0
+        private val recoveries = mutableSetOf<Enrollment>()
+
+        internal inner class Enrollment(val kind: WorkKind) {
+            private val revoked = AtomicBoolean()
+            private val request = AtomicReference<AsrRequest?>()
+            private var retired = false // admission lock
+            val allowed: Boolean get() = !revoked.get()
+            fun markRevoked() { revoked.set(true) }
+            fun cancelRevoked() { if (revoked.get()) request.get()?.cancel() }
+            fun attach(value: AsrRequest) { request.set(value); cancelRevoked() }
+            fun retire() {
+                synchronized(admission) {
+                    if (!retired) {
+                        retired = true
+                        when (kind) {
+                            WorkKind.FOREGROUND -> { check(foreground > 0); foreground-- }
+                            WorkKind.RECOVERY -> recoveries.remove(this)
+                        }
+                    }
+                }
+            }
+        }
+
+        fun enroll(kind: WorkKind): Enrollment {
+            val revoked: List<Enrollment>
+            val entry: Enrollment
+            synchronized(admission) {
+                entry = Enrollment(kind)
+                when (kind) {
+                    WorkKind.FOREGROUND -> {
+                        foreground++
+                        revoked = recoveries.toList()
+                        revoked.forEach { it.markRevoked() }
+                    }
+                    WorkKind.RECOVERY -> {
+                        revoked = emptyList()
+                        if (foreground > 0 || watchdog.wedged) entry.markRevoked() else recoveries += entry
+                    }
+                }
+            }
+            // No callback, request lock, native control or cleanup under process admission.
+            revoked.forEach { it.cancelRevoked() }
+            return entry
+        }
     }
     private val resources = processResources
     private val watchdog = resources.watchdog
-    private val owner = RecognizerOwner<ParakeetEngine>(
+    private val owner = RecognizerOwner<LoadedRecognizer>(
         resources.lane, watchdog, resources.control,
-        free = { engine ->
-            engine.close()
+        free = { loaded ->
+            loaded.engine.close()
             DebugLogger.log(TAG, "Speech engine closed")
         },
         discarded = { DebugLogger.log(TAG, "ASR answer discarded: the service closed during the decode") },
@@ -87,7 +154,9 @@ class AsrService : Service() {
     private val entries = mutableSetOf<Entry>()
 
     /** Preparing requests retain their cleanup obligation until linkToDeath really returns. */
-    private inner class Entry(val takeId: String, val callback: IAsrCallback?) {
+    private inner class Entry(val takeId: String, val callback: IAsrCallback?, kind: WorkKind = WorkKind.FOREGROUND) {
+        val enrollment = resources.enroll(kind)
+        var recoveryInput: RecoveryAudioStore.ReplayInputLease? = null
         val callbackBinder: IBinder? = callback?.asBinder()
         private val identity = resources.requests.incrementAndGet()
         private val callbackIdentity = System.identityHashCode(callbackBinder)
@@ -98,12 +167,26 @@ class AsrService : Service() {
         }
         val request: AsrRequest = owner.request(
             cleanup = {
-                try { if (linked) callbackBinder?.unlinkToDeath(death, 0) }
+                try {
+                    closeAsrNative(listOf(
+                        AutoCloseable {
+                            val input = recoveryInput
+                            recoveryInput = null
+                            if (input != null && input.closeOnWorker() != RecoveryClaimRelease.RELEASED) {
+                                throw RecoveryStoreException(RecoveryStoreFailure.OWNERSHIP_UNCERTAIN)
+                            }
+                        },
+                        AutoCloseable { if (linked) callbackBinder?.unlinkToDeath(death, 0); Unit },
+                    ))
+                }
                 finally { synchronized(entriesLock) { entries.remove(this) } }
             },
-            retired = { AsrDiagnostics.retired(owner.generationIdentity, identity, takeId, callbackIdentity, it, request.cancellation.isCancelled) },
+            retired = {
+                try { AsrDiagnostics.retired(owner.generationIdentity, identity, takeId, callbackIdentity, it, request.cancellation.isCancelled) }
+                finally { enrollment.retire() }
+            },
             controlFailed = { DebugLogger.warn(TAG, "Speech cancellation control failed: ${it.javaClass.simpleName}") },
-        )
+        ).also(enrollment::attach)
         fun register() {
             synchronized(entriesLock) { entries += this }
             AsrDiagnostics.registered(owner.generationIdentity, identity, takeId, callbackIdentity)
@@ -190,6 +273,55 @@ class AsrService : Service() {
             }
             matching.forEach { it.request.cancel() }
         }
+
+        override fun transcribeRecovery(takeId: String?, storeId: String?, slot: Int, generation: Long, attempt: String?, contextDigest: ByteArray?, callback: IAsrCallback?) {
+            val failure = typedReporter(callback)
+            val replay = runCatching {
+                fun uuid(value: String?): UUID {
+                    require(value?.length == 36)
+                    return UUID.fromString(value).also { require(it.toString() == value) }
+                }
+                require(slot in 0..1 && generation > 0L)
+                RecoveryReplayRef(RecoveryRecordRef(uuid(storeId), slot,
+                    RecoveryRecordIdentity(uuid(takeId), generation, RecoveryContextDigest.of(requireNotNull(contextDigest)))), uuid(attempt))
+            }.getOrNull()
+            if (replay == null) {
+                failure.report(AsrFailureReason.AUDIO_UNREADABLE, "protected_recovery_unavailable")
+                return
+            }
+            this@AsrService.transcribeRecovery(replay, callback, failure)
+        }
+    }
+
+    private fun transcribeRecovery(replay: RecoveryReplayRef, callback: IAsrCallback?, failure: FailureReporter) {
+        val takeId = replay.record.identity.takeId.toString()
+        val entry = Entry(takeId, callback, WorkKind.RECOVERY).also { it.register() }
+        owner.use(transcriptionBoundMs(RecordingLimits.MAX_AUDIO_BYTES), entry.request) work@{ rec ->
+            entry.active()
+            entry.request.check()
+            if (!entry.enrollment.allowed) throw AsrCancelled()
+            try {
+                val input = when (val answer = RecoveryAudioStore(applicationContext).consumeReplayOnWorker(replay)) {
+                    is RecoveryStoreResult.Ready -> answer.value
+                    RecoveryStoreResult.Busy, is RecoveryStoreResult.Unavailable ->
+                        return@work { failure.report(AsrFailureReason.AUDIO_UNREADABLE, "protected_recovery_unavailable") }
+                }
+                entry.recoveryInput = input
+                input.readPrefixOnWorker { entry.request.check() }.use { prefix ->
+                    if (prefix.byteCount == 0) return@work { failure.report(AsrFailureReason.AUDIO_UNREADABLE, "protected_recovery_unavailable") }
+                    if (!entry.request.tighten(transcriptionBoundMs(prefix.byteCount.toLong()))) return@work { }
+                    doTranscribe(rec, prefix.pcm, PcmAudio.durationSeconds(prefix.byteCount.toLong()), callback, failure,
+                        TakeLog(takeId, TAG), entry.request, entry.observer(), prefix.byteCount,
+                        ResultRoute.Recovery(replay, prefix.firstSample, prefix.sampleCount.toLong(), prefix.completedCapture))
+                }
+            } catch (cancelled: AsrCancelled) {
+                throw cancelled
+            } catch (cleanup: AsrCleanupFailure) {
+                throw cleanup
+            } catch (_: Exception) {
+                { failure.report(AsrFailureReason.AUDIO_UNREADABLE, "protected_recovery_unavailable") }
+            }
+        }
     }
 
     private fun transcribeFromFile(audioFilePath: String, takeId: String, callback: IAsrCallback?, failure: FailureReporter) {
@@ -243,7 +375,7 @@ class AsrService : Service() {
      * discard an answer that finished after the service closed (#212). Every path returns exactly one.
      */
     private fun doTranscribe(
-        rec: ParakeetEngine?,
+        rec: LoadedRecognizer?,
         audioData: ByteArray,
         durationSec: Float,
         callback: IAsrCallback?,
@@ -251,8 +383,10 @@ class AsrService : Service() {
         log: TakeLog,
         request: AsrRequest,
         observer: AsrObserver,
+        validBytes: Int = audioData.size,
+        route: ResultRoute = ResultRoute.Ordinary,
     ): () -> Unit {
-        log.log("Transcribing ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) (PID: ${android.os.Process.myPid()})")
+        log.log("Transcribing $validBytes bytes (${String.format("%.1f", durationSec)}s) (PID: ${android.os.Process.myPid()})")
 
         if (rec == null) {
             log.error("Recognizer not initialized")
@@ -263,13 +397,13 @@ class AsrService : Service() {
         // a throwing DELIVERY below can never be reported as a decode failure or produce a second callback.
         val rawText = try {
             request.check()
-            val samples = PcmAudio.toFloatSamples(audioData) { request.check() }
+            val samples = PcmAudio.toFloatSamples(audioData, validBytes) { request.check() }
             request.check()
             log.mark("pcm_to_float")
 
             val t0 = SystemClock.elapsedRealtime()
 
-            val result = rec.transcribe(samples, request.cancellation, observer)
+            val result = rec.engine.transcribe(samples, request.cancellation, observer)
 
             val decodeMs = SystemClock.elapsedRealtime() - t0
             val text = result.text.trim()
@@ -277,23 +411,39 @@ class AsrService : Service() {
 
             log.mark("asr_decode")
             // Transcript text is user content and never enters logcat: logcat keeps only the aggregate. The
-            // words go to the local log file alone, and only while Detailed log is on (#378).
+            // ordinary words go to the local log file alone, and only while Detailed log is on (#378).
+            // Recovery never invokes the word-bearing logger or evaluates its lazy content supplier.
             log.log("Decode: ${decodeMs}ms, RTF=${String.format("%.2f", rtf)}, textChars=${text.length}, windows=${result.windows}, repairs=${result.repairs}")
-            log.words("raw_speech") { text }
+            if (route == ResultRoute.Ordinary) log.words("raw_speech") { text }
             text
         } catch (cancelled: AsrCancelled) {
             throw cancelled
         } catch (cleanup: AsrCleanupFailure) {
             throw cleanup
         } catch (e: Exception) {
-            log.error("Transcription failed", e)
-            val detail = e.javaClass.simpleName
+            if (route == ResultRoute.Ordinary) log.error("Transcription failed", e)
+            else log.warn("Protected speech decode failed")
+            val detail = if (route == ResultRoute.Ordinary) e.javaClass.simpleName else "protected_recovery_unavailable"
             return { failure.report(AsrFailureReason.DECODE_FAILED, detail) }
         }
 
+        val resultText = try {
+            when (route) {
+                ResultRoute.Ordinary -> rawText
+                is ResultRoute.Recovery -> RecoveryResultCodec.encode(RecoveryResult(
+                    route.replay, route.first, route.count, route.completed, rec.model, rawText,
+                ))
+            }
+        } catch (_: Exception) {
+            return { failure.report(AsrFailureReason.DECODE_FAILED, "protected_recovery_unavailable") }
+        }
         log.log(DebugLogger.pipelineSummary())
         return {
-            deliverResult(callback, rawText, onDelivered = { request.check(); sweepLegacyModelOnce(); request.check() }) {
+            deliverResult(callback, resultText, onDelivered = {
+                request.check()
+                if (route == ResultRoute.Ordinary) sweepLegacyModelOnce()
+                request.check()
+            }) {
                 log.warn("Result delivery threw: ${it.javaClass.simpleName}; not reported as a decode failure")
             }
         }
@@ -330,19 +480,20 @@ class AsrService : Service() {
     }
 
     /** Returns the loaded engine, or null when the model is not verified or fails to load. */
-    private fun initRecognizer(): ParakeetEngine? {
+    private fun initRecognizer(): LoadedRecognizer? {
         return try {
             val t0 = SystemClock.elapsedRealtime()
             // The current revision or a previous one this engine loads (#108): an update in progress keeps dictating.
-            if (ModelStorage.usable(this, ModelManifest.parakeet) == null) {
+            val descriptor = ModelStorage.usable(this, ModelManifest.parakeet)
+            if (descriptor == null) {
                 DebugLogger.warn(TAG, "Parakeet model is not verified in app-private storage")
                 return null
             }
             val preprocessor = assets.open(ParakeetEngine.PREPROCESSOR_ASSET).use { it.readBytes() }
             AsrDiagnostics.modelOpening(owner.generationIdentity)
-            val engine = ParakeetEngine.open(ModelStorage.directory(this, ModelManifest.parakeet), preprocessor)
-            DebugLogger.log(TAG, "Speech engine initialized in ${SystemClock.elapsedRealtime() - t0}ms (${ModelManifest.parakeet.id})")
-            engine
+            val engine = ParakeetEngine.open(ModelStorage.directory(this, descriptor), preprocessor)
+            DebugLogger.log(TAG, "Speech engine initialized in ${SystemClock.elapsedRealtime() - t0}ms (${descriptor.id})")
+            LoadedRecognizer(engine, RecoveryModelIdentity.loaded(descriptor))
         } catch (cleanup: AsrCleanupFailure) {
             throw cleanup
         } catch (e: Throwable) {

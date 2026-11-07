@@ -16,6 +16,7 @@ import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.debug.TakeLog
 import com.envi.wispr.telemetry.AppDefect
 import com.envi.wispr.telemetry.Telemetry
+import com.envi.wispr.recovery.RecoveryAudioWriter
 import com.envi.wispr.vad.SilenceStopDetector
 import java.io.File
 import java.io.FileOutputStream
@@ -133,6 +134,7 @@ class AudioCaptureService : Service() {
 
         /** The one owner of how this take ended. First claim wins; see `CaptureEndingClaim`. */
         val endingClaim = CaptureEndingClaim()
+        val recovery = AtomicReference<RecoveryAudioWriter?>()
 
         val stopRequested: Boolean get() = endingClaim.ended
 
@@ -142,6 +144,15 @@ class AudioCaptureService : Service() {
 
     private val sessionLock = Any()
     @Volatile private var session: CaptureSession? = null
+    private val recoveryAttachment by lazy {
+        RecoveryCaptureAttachment(applicationContext) { ref, writer ->
+            synchronized(sessionLock) {
+                val active = session
+                !destroyed && active != null && !active.stopRequested &&
+                    active.takeId == ref.identity.takeId.toString() && active.recovery.compareAndSet(null, writer)
+            }
+        }
+    }
 
     /**
      * The most recent take's device record. Kept after the take ends until the next start, so the
@@ -268,6 +279,8 @@ class AudioCaptureService : Service() {
 
         override fun finishTake(): Boolean = finishTakeHold()
         override fun stopCapture() = stopRecording()
+        override fun attachRecovery(takeId: String?, storeId: String?, slot: Int, generation: Long, contextDigest: ByteArray?) =
+            recoveryAttachment.request(takeId, storeId, slot, generation, contextDigest)
         override val takePeakAmplitude: Float get() = this@AudioCaptureService.takePeakAmplitude
 
         override val liveState: Int
@@ -673,6 +686,7 @@ class AudioCaptureService : Service() {
                 }
                 active.detector.offer(buffer, bytesRead, position)
                 active.picture.offer(buffer, bytesRead, position)
+                active.recovery.get()?.offer(buffer, bytesRead, position)
 
                 var sum = 0L
                 var peak = 0
@@ -875,6 +889,7 @@ class AudioCaptureService : Service() {
             holding = warmHoldOwner.eligible(active.route, active.endingClaim.ending, active.keepEarbudsReady, destroyed) &&
                 warmHoldOwner.start(active.route)
             resourcesClosed = closeResources(active, keepRoute = holding)
+            active.recovery.get()?.finishOnCaptureClosed(active.bytesWritten, resourcesClosed)
             lastSilenceStatus = active.detector.status
             session = null
             if (captureThread === Thread.currentThread()) captureThread = null

@@ -5,6 +5,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.security.GeneralSecurityException
 import java.security.ProviderException
 import java.util.UUID
@@ -54,6 +55,22 @@ internal object RecoveryFrameCodec {
     fun open(frame: ByteArray, expected: RecoveryRecordIdentity, key: SecretKey): AuthenticatedFrame =
         AuthenticatedFrame.authenticate(frame, expected, key)
 
+    /** Read one bounded audio/footer envelope. Input lifetime belongs to the service's reader claim. */
+    fun readAudioFrame(input: InputStream, expected: RecoveryRecordIdentity, key: SecretKey): AuthenticatedFrame? {
+        val first = input.read()
+        if (first == -1) return null
+        val aad = ByteArray(RecoveryFrameLimits.AAD_BYTES)
+        aad[0] = first.toByte()
+        DataInputStream(input).readFully(aad, 1, aad.size - 1)
+        val (header, payloadBytes) = readHeader(DataInputStream(ByteArrayInputStream(aad)))
+        validate(header, payloadBytes)
+        if (header.kind == RecoveryFrameKind.CONTEXT || payloadBytes > RecoveryFrameLimits.PAYLOAD_BYTES) malformed()
+        val frame = ByteArray(payloadBytes + RecoveryFrameLimits.OVERHEAD_BYTES)
+        aad.copyInto(frame)
+        DataInputStream(input).readFully(frame, aad.size, frame.size - aad.size)
+        return open(frame, expected, key)
+    }
+
     internal class AuthenticatedFrame private constructor(
         val header: RecoveryFrameHeader,
         private val plaintext: ByteArray,
@@ -61,6 +78,12 @@ internal object RecoveryFrameCodec {
         val payloadBytes: Int get() = plaintext.size
 
         fun copyPayload(): ByteArray = plaintext.copyOf()
+
+        fun copyPayloadInto(destination: ByteArray, offset: Int) {
+            plaintext.copyInto(destination, offset)
+        }
+
+        fun clearPayload() { plaintext.fill(0) }
 
         companion object {
             fun authenticate(frame: ByteArray, expected: RecoveryRecordIdentity, key: SecretKey): AuthenticatedFrame {

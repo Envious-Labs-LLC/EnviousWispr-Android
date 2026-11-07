@@ -199,6 +199,9 @@ private fun HistoryCard(
     // `InsertionOutcomeMessages.historyStatusLine`. It stays on the COLLAPSED card too: a row the
     // list is being scanned for is exactly where a failure must not hide behind a tap.
     val statusLine = InsertionOutcomeMessages.historyStatusLine(transcript.status)
+    val recoveryLine = if (transcript.recovered) transcript.recoveryPartial?.let {
+        if (it) "Recovered part of your recording" else "Recovered recording"
+    } else null
     val polishLine = PolishEngineLabels.historySummary(
         transcript.polishEngine,
         transcript.polishLatencyMs,
@@ -240,6 +243,10 @@ private fun HistoryCard(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    if (recoveryLine != null) {
+                        Text(recoveryLine, style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     if (statusLine.isNotEmpty()) {
                         Text(
                             statusLine,

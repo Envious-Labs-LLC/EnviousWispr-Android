@@ -11,6 +11,9 @@ import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.EnglishSpelling
 import com.envi.wispr.vocabulary.CustomTerm
 import java.util.UUID
+import java.nio.channels.FileChannel
+import java.nio.file.LinkOption
+import java.nio.file.StandardOpenOption
 
 /** Protocol shared only by the opt-in lab app and its test APK. */
 internal object RecoveryQualificationPeer {
@@ -19,6 +22,7 @@ internal object RecoveryQualificationPeer {
     const val CLOSE = 2
     const val KILL_SELF = 3
     const val HELLO = 4
+    const val WITNESS_RELEASE = 5
 
     internal fun fixture(take: UUID): FrozenRecoveryContext = FrozenRecoveryContext.freeze(
         take, 1L, "qualification-recipe-v1", "qualification-pcm-v1",
@@ -45,7 +49,7 @@ class RecoveryQualificationService : Service() {
         var held: RecoveryAudioStore.Reservation? = null
         val peer = object : Binder() {
             override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
-                if (code !in RecoveryQualificationPeer.CREATE..RecoveryQualificationPeer.HELLO) return super.onTransact(code, data, reply, flags)
+                if (code !in RecoveryQualificationPeer.CREATE..RecoveryQualificationPeer.WITNESS_RELEASE) return super.onTransact(code, data, reply, flags)
                 check(Binder.getCallingUid() == Process.myUid()) { "Qualification caller UID mismatch" }
                 data.enforceInterface(RecoveryQualificationPeer.DESCRIPTOR)
                 check(data.readString() == nonce) { "Qualification nonce mismatch" }
@@ -59,6 +63,26 @@ class RecoveryQualificationService : Service() {
                     reply.writeInt(Process.myUid())
                     reply.writeInt(Process.myPid())
                     reply.writeString(Application.getProcessName())
+                    return true
+                }
+                if (code == RecoveryQualificationPeer.WITNESS_RELEASE) {
+                    check(synchronized(monitor) { held == null }) { "A witness binding cannot own a production reservation" }
+                    val role = data.readInt()
+                    val slot = data.readInt()
+                    val name = when (role to slot) {
+                        0 to 0 -> RecoveryLockName.MAIN_0
+                        0 to 1 -> RecoveryLockName.MAIN_1
+                        1 to 0 -> RecoveryLockName.ASR_0
+                        1 to 1 -> RecoveryLockName.ASR_1
+                        else -> error("Unsupported witness lock")
+                    }
+                    val file = RecoveryStoreFiles(context).lockFile(name)
+                    FileChannel.open(file.toPath(), StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use { channel ->
+                        channel.lock().use { }
+                    }
+                    // Only a completed lock acquisition AND checked lock/channel close can reach this reply.
+                    checkNotNull(reply).writeNoException()
+                    reply.writeInt(1)
                     return true
                 }
                 synchronized(monitor) {

@@ -40,6 +40,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -109,6 +110,7 @@ internal class DictationSessionCoordinator(
     private val recordProcessing: (com.envi.wispr.processing.ProcessingObservation) -> Unit = {},
     /** The main process's model-swap gate (#108); a test passes its own. */
     private val swapGate: com.envi.wispr.models.ModelSwapGate = com.envi.wispr.models.ModelSwapGate.main,
+    private val recordingProtection: RecordingProtectionOwner? = null,
 ) : PipelineController.Listener {
     companion object {
         /**
@@ -145,6 +147,8 @@ internal class DictationSessionCoordinator(
      * everything. Published once, in `beginSession`.
      */
     @Volatile private var take: TakeContext = TakeContext.NONE
+    @Volatile private var captureClosedSafely = true
+    private var endingFailureLine: String? = null
 
     /** The take's peak loudness, read ONCE at stop like the device label; null when it could not be read. */
     @Volatile private var takePeakAmplitude: Float? = null
@@ -380,6 +384,7 @@ internal class DictationSessionCoordinator(
         }
         // The pre-capture chain's origin (#258): the accepted start command, right after IDLE -> STARTING.
         val acceptedAtMs = host.elapsedRealtimeMs()
+        historyRecovery.recordAdmitted()
         val takeId = UUID.randomUUID().toString().lowercase()
         runCatching { host.beginRecordingFeedback(takeId) }
         // The take's own log (#378), before any of its lines: it carries the id to the local log file and starts
@@ -392,7 +397,12 @@ internal class DictationSessionCoordinator(
         fun sinceAccepted() = host.elapsedRealtimeMs() - acceptedAtMs
         // The referee for THIS take, in memory, before anything else (G2 D2). Its sink is a limb: it
         // hands the committed reason to telemetry and never waits on storage or the network.
-        val arbiter = TakeArbiter { reason -> endingSink(takeFacts, reason) }
+        val protection = recordingProtection?.begin(takeId, System.currentTimeMillis())
+        val arbiter = TakeArbiter { reason ->
+            runCatching { protection?.ended(reason) }
+            runCatching { historyRecovery.ordinaryEnded() }
+            endingSink(takeFacts, reason)
+        }
         // Every take-fact stamp, journal stage and take breadcrumb goes through the take's recorder (#329).
         val outcome = TakeOutcomeRecorder(takeFacts, defect = ::reportDefect)
         outcome.admitted()
@@ -424,7 +434,7 @@ internal class DictationSessionCoordinator(
         surface.nameTarget(if (targetPin == DictationTargetPin.PINNED) insertion.pinnedFieldId() else null)
         // The take, published once (#216). `beginSession` is one uninterrupted main-thread call, and nothing
         // is bound and no coroutine launched before this line, so nothing reads half of one take.
-        take = TakeContext(takeId, trigger, takeFacts, outcome, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs, takeLog)
+        take = TakeContext(takeId, trigger, takeFacts, outcome, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs, takeLog, protection)
         // After the take, in the same main-thread call, and before anything is bound (#237).
         polish = TakePolishController(
             lock = polishSubmissionLock,
@@ -487,6 +497,12 @@ internal class DictationSessionCoordinator(
                 }
                 val policy = takePolicy(read)
                 sessionPreferences = preferences.freeze(prepared.start, matcher, policy)
+                protection?.arm(sessionPreferences.cleanup, prepared.effectiveTerms) { ref ->
+                    host.postToMain {
+                        if (!destroyed.get() && take.takeId == takeId && take.arbiter.isOpen &&
+                            (state.get() == SessionState.STARTING || state.get() == SessionState.RECORDING)) capture.attachRecovery(ref)
+                    }
+                }
                 feedbackPreferencesReady = true
                 if (sessionPreferences.recordingSoundsEnabled) runCatching { host.prepareRecordingSound(takeId, sessionPreferences.recordingSoundPairing) {
                     if (take.takeId == takeId && !destroyed.get() && state.get() == SessionState.RECORDING) soundCue.prepared()
@@ -636,7 +652,9 @@ internal class DictationSessionCoordinator(
             // timer, nothing written. The frozen snapshot, never the live source: a settings emission after
             // the take's answer belongs to the next take (#193).
             val preferences = sessionPreferences
+            captureClosedSafely = false
             captureStarted = capture.start(preferences)
+            if (!captureStarted) captureClosedSafely = true
         } catch (error: Exception) {
             if (captureStarted) {
                 capture.stop("stop after a failed start")
@@ -657,6 +675,7 @@ internal class DictationSessionCoordinator(
             is CaptureEvent.Tick -> onTakeTick(event.elapsedMs)
             is CaptureEvent.SilenceStatus -> publishSilenceNoticeIfNeeded(event.status)
             is CaptureEvent.Closed -> {
+                captureClosedSafely = event.resourcesClosed
                 take.log.log("Sound capture closure confirmed=${event.resourcesClosed}")
                 soundCue.captureClosed(event.resourcesClosed)
             }
@@ -1082,6 +1101,7 @@ internal class DictationSessionCoordinator(
             val reserved = current.arbiter.reserve(Claimants.PUBLICATION) ?: return@synchronized null
             if (finalText.isNotBlank()) {
                 finalizer.enqueueSave(current.history, payload, saved, takeId)
+                current.protection?.observeWords(saved, current.history.rescue)
             }
             reserved
         }
@@ -1145,11 +1165,12 @@ internal class DictationSessionCoordinator(
      * service its `finishTake` (a cancelled take leaves the earbuds warm like a finished one).
      */
     private fun cancelCaptureAndFinish(cancel: TakeArbiter.Token, cancelled: TerminalReason) {
+        take.protection?.cancel()
         soundCue.ending()
         surface.showProcessing()
         insertion.releasePinnedTarget()
-        host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
-        recordingVibrate(HapticCue.SESSION_CANCELED)
+        if (take.protection?.potentiallyProtected != true) host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
+        if (take.protection?.potentiallyProtected != true) recordingVibrate(HapticCue.SESSION_CANCELED)
         // A cancel before the capture process was even bound has nothing to stop: the quiet finish the
         // old cancelStarting always took. Committed BEFORE the draft goes (G2 D2).
         if (!capture.isBound) {
@@ -1199,10 +1220,11 @@ internal class DictationSessionCoordinator(
         }
         // The engine hears the cancel after the lock is released (#237).
         closed?.let { requestId -> polish?.sendCancel(requestId) }
+        take.protection?.cancel()
         surface.showProcessing()
         insertion.releasePinnedTarget()
-        host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
-        recordingVibrate(HapticCue.SESSION_CANCELED)
+        if (take.protection?.potentiallyProtected != true) host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
+        if (take.protection?.potentiallyProtected != true) recordingVibrate(HapticCue.SESSION_CANCELED)
         // Committed before the draft goes (G2 D2); a destruction that revoked it owns the row instead.
         if (!take.arbiter.commit(cancel, TerminalReason.CANCELLED_PROCESSING)) return
         take.history.discard()
@@ -1266,9 +1288,10 @@ internal class DictationSessionCoordinator(
         polish?.cancelOpen()
         surface.showProcessing()
         insertion.releasePinnedTarget()
-        host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
+        if (take.protection?.potentiallyProtected != true) host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
         host.vibrate(HapticCue.FAILURE)
-        if (line != null) notices.sayFailure(line)
+        if (take.protection?.potentiallyProtected == true) endingFailureLine = line
+        else if (line != null) notices.sayFailure(line)
         pipeline.stopAudioService()
         finishSession()
     }
@@ -1319,11 +1342,30 @@ internal class DictationSessionCoordinator(
         if (state.getAndSet(SessionState.FINISHING) == SessionState.FINISHING) return
         polish?.cancelOpen()
         surface.showProcessing()
-        host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
-        // The take's History writes are on the application's queue, in order; nothing here waits for
-        // them (#115). The Service may stop while the last of them is still landing.
+        if (take.protection?.potentiallyProtected != true || take.arbiter.committed == TerminalReason.COMPLETED) {
+            host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
+        }
+        // Ordinary delivery never waits here. A protected wordless ending observes its application-owned
+        // disposition for the existing bounded save window; timing out cannot cancel that write.
         scope.launch {
+            val current = take
+            val protection = current.protection
+            val needsConfirmation = protection?.potentiallyProtected == true && current.arbiter.committed != TerminalReason.COMPLETED
+            val confirmed = if (needsConfirmation) withTimeoutOrNull(HistorySaveObserver.HISTORY_SAVE_BOUND_MS) {
+                protection?.awaitConfirmedEnding()
+            } == true else true
             host.postToMain {
+                if (destroyed.get() || take !== current) return@postToMain
+                if (needsConfirmation) {
+                    when {
+                        !captureClosedSafely -> notices.sayFailure(endingFailureLine ?:
+                            requireNotNull(TakeNotices.line(TerminalReason.CAPTURE_CLOSE_UNSAFE_ON_CANCEL)))
+                        !confirmed -> notices.sayFailure(TakeNotices.DISCARD_UNCONFIRMED)
+                        protection?.cancelRequested == true -> recordingVibrate(HapticCue.SESSION_CANCELED)
+                        else -> endingFailureLine?.let(notices::sayFailure)
+                    }
+                }
+                host.updateSurfacePhase(DictationSurfaceState.Phase.IDLE)
                 soundCue.abandon()
                 runCatching { host.finishRecordingFeedback(take.takeId) }
                 polish?.cancelOpen()

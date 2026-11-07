@@ -17,6 +17,11 @@ class PcmAudioTest {
         assertEquals(2f, PcmAudio.durationSeconds(64_000L), 0.0001f)
     }
 
+    @Test fun recoveryConvertsOnlyValidAudioRatherThanUnusedBufferCapacity() {
+        val pcm = byteArrayOf(0xFF.toByte(), 0x7F, 0x00, 0x80.toByte())
+        assertArrayEquals(floatArrayOf(0.9999695f), PcmAudio.toFloatSamples(pcm, 2) {}, 0.00001f)
+    }
+
     @Test fun cancellationInsideConversionNeverReturnsAPartialSampleArray() {
         val checkpoints = mutableListOf<Int>()
         val cancelled = java.util.concurrent.CancellationException("cancelled")

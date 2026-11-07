@@ -64,7 +64,12 @@ internal class HistoryActions(
     val onKeep: (TranscriptEntity) -> Unit,
     val onDelete: (TranscriptEntity) -> Unit,
     val onDeleteAll: () -> Unit,
-)
+    val onOpen: () -> Unit = {},
+) {
+    constructor(onSearchChange: (String) -> Unit, onKeep: (TranscriptEntity) -> Unit,
+        onDelete: (TranscriptEntity) -> Unit, onDeleteAll: () -> Unit) :
+        this(onSearchChange, onKeep, onDelete, onDeleteAll, {})
+}
 
 internal class DictionaryActions(
     val onSearchChange: (String) -> Unit,

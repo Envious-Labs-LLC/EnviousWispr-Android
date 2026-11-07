@@ -56,6 +56,12 @@ class ModelBootstrapApplication : Application() {
         /** The process's one start-up History recovery (#346), shared by the session owner and the History screen. */
         internal fun historyRecovery(context: Context): com.envi.wispr.history.HistoryRecoveryCoordinator =
             (context.applicationContext as ModelBootstrapApplication).historyRecovery
+
+        internal fun recordingProtection(context: Context): com.envi.wispr.ui.RecordingProtectionOwner =
+            (context.applicationContext as ModelBootstrapApplication).recordingProtection
+
+        internal fun protectedHistoryDeletion(context: Context): com.envi.wispr.history.ProtectedHistoryDeletion =
+            (context.applicationContext as ModelBootstrapApplication).protectedHistoryDeletion
     }
 
     /** Set once in `onCreate`, behind the main-process gate; read only on the main thread. */
@@ -73,7 +79,7 @@ class ModelBootstrapApplication : Application() {
             clock = System::currentTimeMillis,
             log = { DebugSessionLog.log(it) },
             warn = { DebugSessionLog.warn(it) },
-        )
+        ).also { it.connectAudio(audioHistoryRecovery) }
     }
 
     private val rescuedWords: RescuedWords by lazy {
@@ -105,6 +111,26 @@ class ModelBootstrapApplication : Application() {
         )
     }
 
+    private val recordingProtection by lazy {
+        com.envi.wispr.ui.RecordingProtectionOwner(this, historyWrites, CoroutineScope(SupervisorJob() + Dispatchers.IO))
+    }
+
+    private val audioHistoryRecovery by lazy {
+        com.envi.wispr.history.AudioHistoryRecovery(this,
+            TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()), historyWrites, rescuedWords,
+            CoroutineScope(SupervisorJob() + Dispatchers.IO), recordingProtection,
+            transform = { raw, frozen ->
+                com.envi.wispr.polish.MlKitLanguageDetector(this).use { detector ->
+                    com.envi.wispr.cleanup.recoverDeterministicText(raw, frozen.cleanup, frozen.terms, detector)
+                }
+            })
+    }
+
+    private val protectedHistoryDeletion by lazy {
+        com.envi.wispr.history.ProtectedHistoryDeletion(this,
+            TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()), rescuedWords, recordingProtection, audioHistoryRecovery)
+    }
+
     override fun onCreate() {
         super.onCreate()
         com.envi.wispr.cleanup.CleanupResources.installAssetReader { name -> assets.open("cleanup/$name") }
@@ -120,6 +146,10 @@ class ModelBootstrapApplication : Application() {
         // After Sentry's handler exists, so the local log's crash flush wraps it and calls it exactly once.
         LocalLog.installCrashHook()
         if (!isMain) return
+        // A new main process has no live session owner; a prior process's tile status cannot survive it.
+        runCatching {
+            com.envi.wispr.shortcuts.DictationSurfaceState.update(this, com.envi.wispr.shortcuts.DictationSurfaceState.Phase.IDLE)
+        }.onFailure { com.envi.wispr.debug.DebugLogger.error("DictationSurface", "Startup status reset failed", it) }
         com.envi.wispr.feedback.FeedbackDelivery.recover(this)
         // Main owns the switches: repair the flag files from DataStore before the adb door serves a call.
         DeveloperSwitches.of(this).coldStartRepair()

@@ -2,6 +2,13 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.history.RecoveredWordsRecord
+import com.envi.wispr.history.RecoverySaveOutcome
+import com.envi.wispr.history.RecoveryWriteFailure
+import com.envi.wispr.history.RecoveryWordsCodec
+import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.polish.PolishEngineLabels
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -9,10 +16,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
@@ -23,6 +33,7 @@ import java.util.concurrent.TimeUnit
  * leaves only when History answers SAVED, and is written into History by the next recovery otherwise, once. Each row
  * waits on a condition the store makes true, never on a sleep it assumes, and names the mutation that turns it red.
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class RescuedWordsTest {
     private val dir: File = Files.createTempDirectory("rescued-words").toFile()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -38,6 +49,41 @@ class RescuedWordsTest {
     }
 
     private fun file() = File(dir, "$take.words")
+
+    /** Harness Contract: pending, failed and zero-id receipts are not proof that words survived. */
+    @Test fun anUnconfirmedWordsSaveDoesNotAuthorizeAudioDisposal() {
+        for (outcome in listOf(SaveOutcome.Failed(IllegalStateException("fixture")), SaveOutcome.Saved(0L))) {
+            val saved = SaveSlot()
+            val rescue = CompletableDeferred<RescueOutcome>()
+            val proof = CompletableDeferred<Unit>()
+            observeDurableWords(saved, rescue, proof)
+            assertFalse("starting both writes is not persistence", proof.isCompleted)
+            saved.answer(outcome) { 0L }
+            rescue.complete(RescueOutcome.FAILED)
+            assertFalse("neither failed path authorizes disposal", proof.isCompleted)
+        }
+    }
+
+    /** Harness Contract: an actual positive History id permits disposal without waiting on rescue. */
+    @Test fun aPositiveHistoryReceiptAuthorizesAudioDisposal() {
+        val saved = SaveSlot()
+        val proof = CompletableDeferred<Unit>()
+        observeDurableWords(saved, CompletableDeferred(), proof)
+        saved.answer(SaveOutcome.Saved(7L)) { 0L }
+        assertTrue(proof.isCompleted)
+    }
+
+    /** Harness Contract: the existing KEPT rescue receipt suffices when History failed. */
+    @Test fun aKeptRescueReceiptAuthorizesAudioDisposal() {
+        val saved = SaveSlot()
+        val rescue = CompletableDeferred<RescueOutcome>()
+        val proof = CompletableDeferred<Unit>()
+        observeDurableWords(saved, rescue, proof)
+        saved.answer(SaveOutcome.Failed(IllegalStateException("fixture"))) { 0L }
+        assertFalse(proof.isCompleted)
+        rescue.complete(RescueOutcome.KEPT)
+        assertTrue(proof.isCompleted)
+    }
 
     private fun awaitUntil(what: String, condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
@@ -256,5 +302,93 @@ class RescuedWordsTest {
         assertTrue(warnings.none { it.contains("Keep these words") })
         dir.delete()
         Unit
+    }
+
+    private fun recoveredRecord() = RecoveredWordsRecord(TranscriptEntity(
+        originalText = "raw recovered words", finalText = "Recovered words.", createdAtMs = 123L, durationMs = 128L,
+        speechEngine = "Parakeet Ultra", polishEngine = PolishEngineLabels.OFF, polishLatencyMs = 0L,
+        insertionResult = InsertionResults.HISTORY_ONLY, recovered = true, takeId = take,
+        recoveryStartSample = 320L, recoveryPartial = true, recoveryModelIdentity = "synthetic-model-v1",
+    ), 2_048L)
+
+    @Test fun structuredWordsSurviveRestartWithTheirProvenanceAndNoDuplicateRow() = runBlocking {
+        val answer = CompletableDeferred<RecoverySaveOutcome>().apply { complete(RecoverySaveOutcome.Failed(RecoveryWriteFailure.WRITE_FAILED)) }
+        assertEquals(RescueOutcome.KEPT, store.keepRecovered(recoveredRecord(), answer).await())
+        val file = File(dir, "$take.recovery-words-v1")
+        assertTrue(file.exists())
+        val restarted = RescuedWords(dir, scope, wallClock = { 999L }, warn = {})
+        assertEquals(1, restarted.recover(repository))
+        val row = dao.rows.values.single()
+        assertEquals("raw recovered words", row.originalText)
+        assertEquals("Recovered words.", row.finalText)
+        assertEquals(123L, row.createdAtMs)
+        assertEquals(320L, row.recoveryStartSample)
+        assertEquals(true, row.recoveryPartial)
+        assertEquals("synthetic-model-v1", row.recoveryModelIdentity)
+        assertEquals(InsertionResults.HISTORY_ONLY, row.insertionResult)
+        assertTrue(row.recovered && !row.interrupted)
+        assertFalse(file.exists())
+        assertEquals(0, restarted.recover(repository))
+        assertEquals(1, dao.rows.size)
+    }
+
+    @Test fun aSavedAnswerCannotSettleBeforeTheLateStructuredWrite() = runBlocking {
+        val tasks = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        val dispatcher = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { tasks.add(block) }
+        }
+        val appScope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val app = RescuedWords(dir, appScope, wallClock = { 1L }, warn = {})
+            val answer = CompletableDeferred<RecoverySaveOutcome>().apply { complete(RecoverySaveOutcome.Saved(7L)) }
+            val write = app.keepRecovered(recoveredRecord(), answer)
+            val writer = checkNotNull(tasks.poll()) { "Writer task not scheduled" }
+            val settlement = checkNotNull(tasks.poll()) { "Settlement task not scheduled" }
+            // The real IO pool may run settlement before the earlier-submitted writer starts.
+            settlement.run()
+            assertFalse(write.isCompleted)
+            writer.run()
+            assertEquals(RescueOutcome.KEPT, write.await())
+            assertTrue("The actual structured file must exist before settlement resumes", File(dir, "$take.recovery-words-v1").exists())
+            while (true) { val task = tasks.poll() ?: break; task.run() }
+            assertFalse(File(dir, "$take.recovery-words-v1").exists())
+        } finally { appScope.cancel() }
+    }
+
+    @Test fun deleteAllIncludesStructuredWordsWhoseHistorySaveIsPending() = runTest {
+        val app = RescuedWords(dir, backgroundScope, wallClock = { 1L }, warn = {})
+        val answer = CompletableDeferred<RecoverySaveOutcome>()
+        val write = app.keepRecovered(recoveredRecord(), answer)
+        runCurrent()
+        assertEquals(RescueOutcome.KEPT, write.await())
+        app.clearing { ids -> assertEquals(setOf(take), ids); repository.deleteAll(ids) }
+        assertFalse(File(dir, "$take.recovery-words-v1").exists())
+        assertTrue(take in dao.deletedTakes)
+    }
+
+    @Test fun deleteAllIncludesTheProtectedTakeBeforeItsLateWordsExist() = runTest {
+        val app = RescuedWords(dir, backgroundScope, wallClock = { 1L }, warn = {})
+        app.clearing(setOf(java.util.UUID.fromString(take))) { repository.deleteAll(it) }
+        val write = app.keepRecovered(recoveredRecord(), CompletableDeferred())
+        runCurrent()
+        assertEquals(RescueOutcome.FAILED, write.await())
+        assertFalse(File(dir, "$take.recovery-words-v1").exists())
+        assertTrue(take in dao.deletedTakes)
+    }
+
+    @Test fun ordinarySavedWordsHavePriorityWhenBothRescueFormatsArePresent() = runBlocking {
+        file().writeText("1000\nThe full ordinary words.")
+        File(dir, "$take.recovery-words-v1").writeBytes(RecoveryWordsCodec.encode(recoveredRecord()))
+        store.recover(repository)
+        assertEquals("The full ordinary words.", dao.rows.values.single().finalText)
+        assertEquals(1, dao.rows.size)
+    }
+
+    @Test fun aFailedDirectoryQueryCannotClaimDeleteAllSucceeded() {
+        val blocked = File(dir, "not-a-directory").apply { writeText("synthetic") }
+        val app = RescuedWords(blocked, scope, wallClock = { 1L }, warn = {})
+        var deleted = false
+        assertThrows(java.io.IOException::class.java) { runBlocking { app.clearing { deleted = true } } }
+        assertFalse(deleted)
     }
 }

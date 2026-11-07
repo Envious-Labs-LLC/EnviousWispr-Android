@@ -15,6 +15,8 @@ internal class ParakeetEngine private constructor(private val model: TdtModel) :
     override fun close() = model.close()
 
     companion object {
+        /** Versioned identity of this application's deterministic TDT decoding recipe. */
+        const val RECIPE_ID = "parakeet-tdt-android-v1"
         /** Name of the audio front end shipped in the APK (onnx-asr 0.12.0, MIT). */
         const val PREPROCESSOR_ASSET = "nemo128.onnx"
         const val THREADS = 4

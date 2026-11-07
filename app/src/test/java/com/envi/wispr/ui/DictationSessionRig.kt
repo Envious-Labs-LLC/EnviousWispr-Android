@@ -513,6 +513,9 @@ internal class DictationSessionRig {
      * push another take's ending, which the owner must discard.
      */
     inner class FakeCapture : CaptureLink {
+        override fun attachRecovery(ref: com.envi.wispr.recovery.RecoveryRecordRef) {
+            events += "recovery ${ref.identity.takeId}"
+        }
         private val binderThread = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "fake-audio-binder") }
         /** The id the owner passed to the last start; the fake's events carry it. */
         @Volatile var currentTakeId = ""
@@ -726,6 +729,8 @@ internal class DictationSessionRig {
 
     /** The speech process: the test answers the request by hand, as a binder thread would. */
     class FakeSpeech : SpeechLink {
+        override fun prepareRecovery(replay: com.envi.wispr.recovery.RecoveryReplayRef, listener: RecoverySpeechListener): SpeechSubmission =
+            error("ordinary dictation fixture does not stage audio recovery")
         @Volatile var listener: SpeechListener? = null
         private val requested = CountDownLatch(1)
         val requests = CopyOnWriteArrayList<Pair<String, String>>()
@@ -1024,6 +1029,10 @@ internal class DictationSessionRig {
             return id
         }
         override suspend fun setKept(id: Long, kept: Boolean) { rows.computeIfPresent(id) { _, row -> row.copy(kept = kept) } }
+        override suspend fun updateRecovered(transcript: TranscriptEntity): Int {
+            if (failInserts) throw IllegalStateException("disk full")
+            return if (rows.replace(transcript.id, transcript) != null) 1 else 0
+        }
         override suspend fun delete(transcript: TranscriptEntity) { rows.remove(transcript.id) }
         override suspend fun deleteAll() = rows.clear()
         /** The takes the user deleted (#288); the fake's transactions are the interface's own bodies. */

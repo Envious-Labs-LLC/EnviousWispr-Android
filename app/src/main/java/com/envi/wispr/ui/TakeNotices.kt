@@ -12,6 +12,7 @@ import com.envi.wispr.audio.AudioCaptureService
  * event worth reporting (founder, 2026-08-31).
  */
 internal object TakeNotices {
+    const val DISCARD_UNCONFIRMED = "Recording stopped. Couldn't confirm it was discarded."
 
     /**
      * Today's line for every other start failure, unchanged. Also the live-wait deadline's line:

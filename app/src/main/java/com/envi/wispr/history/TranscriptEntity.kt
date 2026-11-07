@@ -48,6 +48,10 @@ internal data class TranscriptEntity(
     val insertionMs: Long? = null,
     /** Accepted to the insertion's ending, or to the delivery when no insertion ran. */
     val endToEndMs: Long? = null,
+    /** Verified audio-recovery facts. Null on every row created before protected audio recovery. */
+    val recoveryStartSample: Long? = null,
+    val recoveryPartial: Boolean? = null,
+    val recoveryModelIdentity: String? = null,
 ) {
     companion object {
         const val STATUS_DRAFT = "draft"

@@ -20,6 +20,7 @@ internal interface CaptureOperations {
     /** The take is over: the warm hold decides whether the service outlives the owner's unbind (#26). */
     fun finishTake(): Boolean
     fun stopCapture()
+    fun attachRecovery(takeId: String?, storeId: String?, slot: Int, generation: Long, contextDigest: ByteArray?)
     val takePeakAmplitude: Float
     val liveState: Int
     val liveAfterMs: Long
@@ -40,7 +41,7 @@ internal interface CaptureOperations {
 /**
  * The capture process's two binder interfaces (#361), apart from the service. [legacy] keeps every
  * `IAudioCaptureService` transaction and its old meaning for the older clients and the device tests
- * (`architecture-rules.md` RULE: aidl-is-append-only); [forTake] is the owner's five-operation take interface
+ * (`architecture-rules.md` RULE: aidl-is-append-only); [forTake] is the owner's take interface
  * (#220), one binder per take binding, so a registration issued after its unbind reaches a closed epoch and is
  * refused. Each method is one call of [ops] or one listener slot, except two legacy ones that read no service state:
  * `getMaxDurationMs` returns the one recording limit, and `getAudioData` is the empty answer of a transaction
@@ -115,7 +116,7 @@ internal class CaptureBinderAdapters(
     }
 
     /**
-     * The owner's take-sized interface (#220): the five operations a take uses. Each method is a one-line call of
+     * The owner's take-sized interface (#220). Each method is a one-line call of
      * the same operation the legacy binder calls, so the two interfaces cannot drift apart in behaviour.
      */
     fun forTake(epoch: Long): IBinder = object : IAudioTakeService.Stub() {
@@ -135,6 +136,9 @@ internal class CaptureBinderAdapters(
         override fun registerTakeListener(listener: ITakeListener?) {
             if (!takeListener.register(from, listener)) DebugLogger.warn(TAG, "Take listener refused: its take binding already ended")
         }
+
+        override fun attachRecoveryForTake(takeId: String?, storeId: String?, slot: Int, generation: Long, contextDigest: ByteArray?) =
+            ops.attachRecovery(takeId, storeId, slot, generation, contextDigest)
     }
 
     private companion object {

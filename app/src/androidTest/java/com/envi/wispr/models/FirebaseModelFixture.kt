@@ -21,11 +21,7 @@ internal object FirebaseModelFixture {
         try {
             // Test Lab --other-files uploads here before instrumentation starts. Shell can read
             // this approved path; the app needs no shared-storage permission. Never interpolate input.
-            val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation
-                .executeShellCommand("cat /data/local/tmp/s1-mini-q4_k_m.gguf")
-            ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input ->
-                local.outputStream().use { output -> input.copyTo(output) }
-            }
+            copyFromTmp(entry.name, source)
             assertEquals("Test Lab model fixture is incomplete", entry.expectedBytes, local.length())
             val store = ModelDeliveryStore(ModelStorage.root(context))
             assertEquals("Pinned model admission failed", DownloadState.READY, store.adoptExisting(model, source).state)
@@ -35,5 +31,31 @@ internal object FirebaseModelFixture {
             check(local.delete() || !local.exists()) { "Could not remove test fixture copy" }
             check(source.delete() || !source.exists()) { "Could not remove test fixture directory" }
         }
+    }
+
+    /** Existing speech benchmark fixture, shared with recovery qualification. */
+    fun stageParakeet(context: Context) {
+        val model = ModelManifest.parakeet
+        val source = Files.createTempDirectory(context.cacheDir.toPath(), "firebase-parakeet-").toFile()
+        try {
+            model.files.forEach { entry ->
+                val local = copyFromTmp(entry.name, source)
+                assertEquals("Test Lab fixture ${entry.name} is incomplete", entry.expectedBytes, local.length())
+            }
+            val store = ModelDeliveryStore(ModelStorage.root(context))
+            assertEquals("Pinned Parakeet admission failed", DownloadState.READY, store.adoptExisting(model, source).state)
+            assertTrue("Admitted Parakeet did not verify", store.isVerified(model))
+        } finally {
+            source.listFiles()?.forEach { it.delete() }
+            source.delete()
+        }
+    }
+
+    internal fun copyFromTmp(name: String, into: File): File {
+        val target = File(into, name)
+        val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("cat /data/local/tmp/$name")
+        ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input -> target.outputStream().use { input.copyTo(it) } }
+        assertTrue("Test Lab did not upload $name", target.length() > 0)
+        return target
     }
 }

@@ -33,7 +33,10 @@ internal class HistoryViewModel(
     private val rescuedWords: RescuedWords,
     /** The start-up History recovery's one owner (#346), shared with the session owner. */
     private val recovery: HistoryRecoveryCoordinator,
+    private val protectedDeletion: com.envi.wispr.history.ProtectedHistoryDeletion? = null,
 ) : ViewModel() {
+    constructor(repository: TranscriptRepository, rescuedWords: RescuedWords, recovery: HistoryRecoveryCoordinator) :
+        this(repository, rescuedWords, recovery, null)
     private val historySearch = MutableStateFlow("")
     private val historyError = MutableStateFlow<String?>(null)
 
@@ -86,11 +89,19 @@ internal class HistoryViewModel(
     fun deleteHistory(transcript: TranscriptEntity) {
         // Deleted words stay deleted (#288): the delete marks the take in its own transaction, and the take's rescue goes
         // once it has committed, so neither a late save, a queued rescue write nor a recovery can bring them back.
-        updateHistory { rescuedWords.deleting(transcript.takeId) { repository.delete(transcript) } }
+        updateHistory {
+            val protected = protectedDeletion
+            if (protected != null) protected.delete(transcript)
+            else rescuedWords.deleting(transcript.takeId) { repository.delete(transcript) }
+        }
     }
 
     fun deleteAllHistory() {
-        updateHistory { rescuedWords.clearing { liveTakes -> repository.deleteAll(liveTakes) } }
+        updateHistory {
+            val protected = protectedDeletion
+            if (protected != null) protected.deleteAll()
+            else rescuedWords.clearing { liveTakes -> repository.deleteAll(liveTakes) }
+        }
     }
 
     private fun updateHistory(operation: suspend () -> Unit) {
@@ -107,11 +118,14 @@ internal class HistoryViewModel(
         private val repository: TranscriptRepository,
         private val rescuedWords: RescuedWords,
         private val recovery: HistoryRecoveryCoordinator,
+        private val protectedDeletion: com.envi.wispr.history.ProtectedHistoryDeletion? = null,
     ) : ViewModelProvider.Factory {
+        constructor(repository: TranscriptRepository, rescuedWords: RescuedWords, recovery: HistoryRecoveryCoordinator) :
+            this(repository, rescuedWords, recovery, null)
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             require(modelClass.isAssignableFrom(HistoryViewModel::class.java))
-            return HistoryViewModel(repository, rescuedWords, recovery) as T
+            return HistoryViewModel(repository, rescuedWords, recovery, protectedDeletion) as T
         }
     }
 }

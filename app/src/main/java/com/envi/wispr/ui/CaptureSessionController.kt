@@ -86,6 +86,8 @@ internal class CaptureSessionController(
     /** The begun take's id; an event carrying any other id is discarded. */
     @Volatile private var takeId = ""
     @Volatile private var phase: TakePhaseView? = null
+    private val recoveryRef = java.util.concurrent.atomic.AtomicReference<com.envi.wispr.recovery.RecoveryRecordRef?>()
+    private var startReturned = false // Capture command lane only.
 
     /** Set once the ending has been claimed for this take, so a duplicate or a late event changes nothing. */
     private val endingConsumed = AtomicBoolean(false)
@@ -173,7 +175,23 @@ internal class CaptureSessionController(
                 log.warn("Capture started for a take that already ended; stopping it")
                 runCatching { capture.stopCapture() }
                 pipeline.stopAudioService()
+            } else {
+                startReturned = true
+                attachPendingRecovery(capture)
             }
+        }
+    }
+
+    /** Optional attachment uses the same command lane and exact take as the ordinary start. */
+    fun attachRecovery(ref: com.envi.wispr.recovery.RecoveryRecordRef) {
+        if (ref.identity.takeId.toString() != takeId || phase?.hasEnded(takeId) != false) return
+        recoveryRef.set(ref)
+        command("protect recording", ::attachPendingRecovery)
+    }
+
+    private fun attachPendingRecovery(link: CaptureLink) {
+        if (startReturned && !endingConsumed.get() && phase?.hasEnded(takeId) == false) {
+            recoveryRef.getAndSet(null)?.let(link::attachRecovery)
         }
     }
 

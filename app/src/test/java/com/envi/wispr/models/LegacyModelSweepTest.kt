@@ -117,7 +117,8 @@ class LegacyModelSweepTest {
     /** Harness contract on the source: the service routes its result through [AsrService.deliverResult] with the sweep. */
     @Test fun theServiceSweepsThroughTheDeliveryRule() {
         val service = File("src/main/java/com/envi/wispr/asr/AsrService.kt").readText()
-        assertEquals(1, Regex("""deliverResult\(callback, rawText, onDelivered = \{ request\.check\(\); sweepLegacyModelOnce\(\); request\.check\(\) \}\)""").findAll(service).count())
+        assertEquals(1, Regex("""deliverResult\(callback, resultText, onDelivered = \{\s*request\.check\(\)\s*if \(route == ResultRoute\.Ordinary\) sweepLegacyModelOnce\(\)\s*request\.check\(\)\s*\}\)""").findAll(service).count())
+        assertTrue("ordinary callers still receive plain text", service.contains("ResultRoute.Ordinary -> rawText"))
         assertEquals("called from exactly one place", 1, Regex("""sweepLegacyModelOnce(\(\)|\b)""").findAll(service).count() - 1)
         assertFalse("no direct onResult outside the rule", Regex("""callback\??\.onResult""").containsMatchIn(service.replace("callback.onResult(text)", "")))
     }

@@ -25,6 +25,23 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     /** The user's Delete all (#288); [liveTakes] are takes with words and no row yet, deleted with the rest. */
     suspend fun deleteAll(liveTakes: Collection<String> = emptyList()) = dao.deleteAllForGood(liveTakes)
 
+    suspend fun deleteAllWithSnapshot(snapshot: (Set<String>) -> Set<String>): Set<String> =
+        dao.deleteAllForGoodWithSnapshot(snapshot)
+
+    suspend fun discardTakeForGood(takeId: String) = dao.discardTakeForGood(takeId)
+
+    /** Successful reads are authoritative; a failed query throws rather than claiming absence. */
+    suspend fun isTakeDeleted(takeId: String): Boolean = dao.isTakeDeleted(takeId)
+    suspend fun hasSavedWords(takeId: String): Boolean = dao.findByTakeId(takeId)?.let {
+        it.finalText.isNotBlank() || it.originalText.isNotBlank()
+    } ?: false
+
+    suspend fun saveRecovered(transcript: TranscriptEntity): RecoverySaveOutcome {
+        require(transcript.recovered && transcript.takeId != null && transcript.finalText.isNotBlank())
+        require(transcript.recoveryStartSample != null && transcript.recoveryPartial != null && transcript.recoveryModelIdentity != null)
+        return dao.saveRecovered(transcript.copy(stateChangedAtMs = clock()))
+    }
+
     /** Removes one row outright. The session owner's exit for a dictation with no words in it. */
     suspend fun discard(id: Long) = dao.deleteById(id)
 

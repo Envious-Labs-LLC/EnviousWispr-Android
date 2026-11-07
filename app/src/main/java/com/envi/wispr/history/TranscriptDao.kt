@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Update
 import com.envi.wispr.insertion.InsertionResults
 import kotlinx.coroutines.flow.Flow
 
@@ -16,6 +17,9 @@ internal interface TranscriptDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(transcript: TranscriptEntity): Long
+
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateRecovered(transcript: TranscriptEntity): Int
 
     @Query("UPDATE transcripts SET kept = :kept WHERE id = :id")
     suspend fun setKept(id: Long, kept: Boolean)
@@ -183,14 +187,49 @@ internal interface TranscriptDao {
         delete(transcript)
     }
 
+    /** Cancel can commit deletion before a draft row exists. Late inserts use this same permanent mark. */
+    @Transaction
+    suspend fun discardTakeForGood(takeId: String) {
+        insertDeletedTakes(listOf(DeletedTake(takeId)))
+        findByTakeId(takeId)?.let { delete(it) }
+    }
+
+    /** The tombstone, existing words and replacement/insert are decided in one database transaction. */
+    @Transaction
+    suspend fun saveRecovered(transcript: TranscriptEntity): RecoverySaveOutcome {
+        val takeId = requireNotNull(transcript.takeId)
+        if (isTakeDeleted(takeId)) return RecoverySaveOutcome.Deleted
+        val existing = findByTakeId(takeId)
+        if (existing != null && (existing.finalText.isNotBlank() || existing.originalText.isNotBlank())) {
+            return RecoverySaveOutcome.PreservedExisting(existing.id)
+        }
+        if (existing == null) {
+            val id = insertUnlessDeleted(transcript)
+            return if (id > 0L) RecoverySaveOutcome.Saved(id) else RecoverySaveOutcome.Deleted
+        }
+        val updated = updateRecovered(transcript.copy(id = existing.id, kept = existing.kept,
+            captureDevice = existing.captureDevice, liveAfterMs = existing.liveAfterMs))
+        return if (updated == 1) RecoverySaveOutcome.Saved(existing.id)
+            else RecoverySaveOutcome.Failed(RecoveryWriteFailure.WRITE_FAILED)
+    }
+
     /**
      * The user deletes all History (#288): every row's take and every take in [liveTakes] (words written or still on
      * their way, with no row yet) is marked, and every row deleted, in one transaction.
      */
     @Transaction
     suspend fun deleteAllForGood(liveTakes: Collection<String>) {
-        insertDeletedTakes((rowTakeIds() + liveTakes).distinct().map(::DeletedTake))
+        deleteAllForGoodWithSnapshot { liveTakes.toSet() }
+    }
+
+    /** Row writers are excluded while the caller takes its final bounded metadata/owner snapshot. */
+    @Transaction
+    suspend fun deleteAllForGoodWithSnapshot(snapshot: (Set<String>) -> Set<String>): Set<String> {
+        val rows = rowTakeIds().toSet()
+        val takes = rows + snapshot(rows)
+        insertDeletedTakes(takes.map(::DeletedTake))
         deleteAll()
+        return takes
     }
 
     /** Inserts [transcript] unless the user deleted its take (#288), in one transaction; 0 when deleted. */

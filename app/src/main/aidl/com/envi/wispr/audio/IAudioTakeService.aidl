@@ -4,8 +4,8 @@ import com.envi.wispr.audio.IAudioSpectrumListener;
 import com.envi.wispr.audio.ITakeListener;
 
 /**
- * The session owner's interface to the capture service (#220): the five operations a take uses, and
- * nothing else. Bound with `AudioCaptureService.ACTION_BIND_TAKE` and a fresh identifier per bind; every
+ * The session owner's interface to the capture service (#220). Bound with
+ * `AudioCaptureService.ACTION_BIND_TAKE` and a fresh identifier per bind; every
  * other bind gets the legacy `IAudioCaptureService`.
  *
  * APPEND-ONLY from its first release, like the legacy interface (architecture-rules.md RULE:
@@ -22,4 +22,7 @@ interface IAudioTakeService {
     void registerSpectrumListener(IAudioSpectrumListener listener);
 
     void registerTakeListener(ITakeListener listener);
+
+    /** Optional protection request. Storage/crypto work is scheduled by the service, never by the recorder. */
+    oneway void attachRecoveryForTake(String takeId, String storeId, int slot, long generation, in byte[] contextDigest);
 }

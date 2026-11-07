@@ -53,6 +53,19 @@ class TakeStartPreparerTest {
 
     private fun facts() = TakeFacts("0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d", TriggerSource.APP)
 
+    /** Harness Contract: recovery receives the accepted matcher input, including its empty fallback. */
+    @Test fun recoveryTermsFollowTheActualMatcherOutcome() {
+        val terms = listOf(com.envi.wispr.vocabulary.CustomTerm(spelling = "EnviousWispr", aliases = listOf("envious whisper")))
+        val start = PreferenceStart(SettingsSnapshot(), TermsSnapshot(structuredTerms = terms))
+        val accepted = TakeStartPreparation(start, Prepared.Ready(StructuredTermRestorer.compile(terms)),
+            Prepared.Ready(PolicyRead.Fresh(PolishPolicy.Off)), null, emptyList())
+        val fallback = TakeStartPreparation(start, Prepared.Failed("error"),
+            Prepared.Ready(PolicyRead.Fresh(PolishPolicy.Off)), null, emptyList())
+        assertEquals(listOf("EnviousWispr"), accepted.effectiveTerms.map { it.spelling })
+        assertEquals(listOf("envious whisper"), accepted.effectiveTerms.single().aliases)
+        assertTrue(fallback.effectiveTerms.isEmpty())
+    }
+
     /** Row 1: an unstarted reader is a timed-out answer; its token, its warn, and every stamp in order. MUTATION m5 is the source row. */
     @Test fun theSettingsFallbackAndTheStampsAreWrittenInOrder() = runBlocking {
         val facts = facts()

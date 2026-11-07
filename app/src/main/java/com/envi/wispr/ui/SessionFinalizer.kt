@@ -225,6 +225,17 @@ internal sealed interface SaveOutcome {
 /** The save's answer and the monotonic time the History worker produced it (#277), never the time someone saw it. */
 internal class SaveAnswer(val outcome: SaveOutcome, val answeredAtMs: Long)
 
+/** Only an actual positive persistence receipt makes an ordinary recording dispensable. */
+internal fun observeDurableWords(saved: SaveSlot, rescue: Deferred<RescueOutcome>?, proof: CompletableDeferred<Unit>) {
+    saved.onAnswered { answer ->
+        val outcome = answer.outcome
+        if (outcome is SaveOutcome.Saved && outcome.id > 0L) proof.complete(Unit)
+    }
+    rescue?.invokeOnCompletion { failure ->
+        if (failure == null && rescue.getCompleted() == RescueOutcome.KEPT) proof.complete(Unit)
+    }
+}
+
 /**
  * One take's save answer (#277). The History worker stamps and publishes it in ONE step under [lock], so a reader
  * that finds no answer under the same lock knows any stamp still to come is later than that moment. That is what

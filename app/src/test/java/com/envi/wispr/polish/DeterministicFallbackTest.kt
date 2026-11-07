@@ -4,6 +4,8 @@ import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.DetectedLanguage
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.PolishPipeline
+import com.envi.wispr.cleanup.recoverDeterministicText
+import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.ui.SessionSources
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -19,6 +21,17 @@ class DeterministicFallbackTest {
 
     /** A detector with no answer, so cleanup behaves exactly as an English-only build did. */
     private val silent = LanguageDetector { null }
+
+    /** Product Outcome: recovery uses the recorded vocabulary/options without invoking AI. */
+    @Test fun recoveredWordsUseTheFrozenVocabularyAndCleanupOptions() {
+        val terms = listOf(CustomTerm("GitHub", listOf("git hub"), "synthetic", 50, true, false, 0.92, 7L, false))
+        assertEquals("GitHub ships 10 features.", recoverDeterministicText(
+            "git hub ships ten features.", CleanupOptions(), terms, silent))
+        assertEquals("GitHub ships 10 features comma", recoverDeterministicText(
+            "git hub ships ten features comma", CleanupOptions(spokenPunctuation = false), terms, silent))
+        assertEquals("GitHub ships 10 features,", recoverDeterministicText(
+            "git hub ships ten features comma", CleanupOptions(spokenPunctuation = true), terms, silent))
+    }
 
     @Test fun sessionOwnerFallbackAndEngineOffPathReturnTheSameLiteral() {
         val options = CleanupOptions()

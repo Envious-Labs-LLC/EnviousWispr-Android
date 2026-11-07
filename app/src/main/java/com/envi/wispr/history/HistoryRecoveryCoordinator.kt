@@ -52,6 +52,14 @@ internal class HistoryRecoveryCoordinator(
     class StaleRecoveryTimeout : IllegalStateException("Stale history recovery timed out")
 
     private val lock = Any()
+    private var audio: AudioHistoryRecovery? = null
+
+    /** Application composition installs the subordinate before publishing this existing recovery owner. */
+    fun connectAudio(recovery: AudioHistoryRecovery) { check(audio == null); audio = recovery }
+    fun foregroundStarted(): AutoCloseable = audio?.foregroundStarted { recover().await().failure == null } ?: AutoCloseable { }
+    fun historyOpened() { audio?.historyOpened { recover().await().failure == null } }
+    fun recordAdmitted() { audio?.recordAdmitted() }
+    fun ordinaryEnded() { audio?.requestCleanup() }
 
     /** The run most recently started (it may be done), and the follow-up not yet begun. Guarded by [lock]. */
     private var current: Deferred<Outcome>? = null

@@ -4,10 +4,13 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.security.KeyStore
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
 
 internal sealed interface RecoveryStoreResult<out T> {
     data class Ready<T>(val value: T) : RecoveryStoreResult<T>
@@ -16,6 +19,7 @@ internal sealed interface RecoveryStoreResult<out T> {
 }
 
 internal data class RecoveryRecordRef(val storeId: UUID, val slot: Int, val identity: RecoveryRecordIdentity)
+internal data class RecoveryReplayRef(val record: RecoveryRecordRef, val attempt: UUID)
 
 /** Allocator disposition only, never a key-service or negative-census health verdict. */
 internal enum class RecoveryAllocationState { NOT_QUARANTINED, QUARANTINED }
@@ -76,6 +80,263 @@ internal class RecoveryAudioStore(context: Context) {
     /** Metadata only, not encrypted-envelope validation or Delete all authorization. Missing is never empty. */
     fun snapshotOnWorker(): RecoveryStoreResult<RecoveryStoreSnapshot> = withLedger {
         RecoveryStoreSnapshot(it, if (files.isQuarantined()) RecoveryAllocationState.QUARANTINED else RecoveryAllocationState.NOT_QUARANTINED)
+    }
+
+    /** A positive missing-root result is distinct from a failed/incomplete allocator query. */
+    fun snapshotIfPresentOnWorker(): RecoveryStoreResult<RecoveryStoreSnapshot?> = try {
+        if (!files.hasRoot()) RecoveryStoreResult.Ready(null) else snapshotOnWorker()
+    } catch (failure: RecoveryStoreException) { RecoveryStoreResult.Unavailable(failure.reason) }
+
+    /** Delete-all identity proof for an orphan. Live identities come from their actual in-process owner. */
+    fun authenticateTakeOnWorker(ref: RecoveryRecordRef): RecoveryStoreResult<UUID> {
+        val claims = ArrayList<RecoveryFileClaim>()
+        var released = true
+        val result = try {
+            when (val admission = withLedger { ledger ->
+                val current = record(ledger, ref)
+                if (current.keyStage != RecoveryKeyStage.SETTLED) fail(RecoveryStoreFailure.INELIGIBLE)
+                ownerNames(ref.slot).forEach { claims.add(acquire(it)) }
+            }) {
+                RecoveryStoreResult.Busy -> RecoveryStoreResult.Busy
+                is RecoveryStoreResult.Unavailable -> admission
+                is RecoveryStoreResult.Ready -> {
+                    val bytes = contextPlaintextOnWorker(ref, existingKeyOnWorker(ref))
+                    try {
+                        RecoveryStoreResult.Ready(RecoveryContextCodec.decode(bytes, ref.identity.takeId).takeId)
+                    } finally { bytes.fill(0) }
+                }
+            }
+        } catch (failure: RecoveryStoreException) {
+            if (failure.reason == RecoveryStoreFailure.IO_UNAVAILABLE) claims.forEach { it.poisonOnWorker() }
+            RecoveryStoreResult.Unavailable(failure.reason)
+        } catch (_: Exception) {
+            RecoveryStoreResult.Unavailable(RecoveryStoreFailure.CRYPTO_UNAVAILABLE)
+        } finally {
+            claims.asReversed().forEach { if (it.release() != RecoveryClaimRelease.RELEASED) released = false }
+        }
+        return if (released) result else RecoveryStoreResult.Unavailable(RecoveryStoreFailure.OWNERSHIP_UNCERTAIN)
+    }
+
+    /** Seal only after all actual owners have gone; attachment and this transition share metadata coordination. */
+    fun sealOrphanOnWorker(ref: RecoveryRecordRef): RecoveryStoreResult<ReplayLease> {
+        val claims = ArrayList<RecoveryFileClaim>()
+        var transferred = false
+        try {
+            val answer = withLedger { ledger ->
+                val current = record(ledger, ref)
+                if (current.keyStage != RecoveryKeyStage.SETTLED || current.disposition != RecoveryDisposition.NONE ||
+                    current.phase !in setOf(RecoveryRecordPhase.ARMABLE, RecoveryRecordPhase.WRITING, RecoveryRecordPhase.SEALED)) {
+                    fail(RecoveryStoreFailure.INELIGIBLE)
+                }
+                ownerNames(ref.slot).forEach { claims.add(acquire(it)) }
+                replace(ledger, ref, current.copy(phase = RecoveryRecordPhase.SEALED))
+            }
+            when (answer) {
+                RecoveryStoreResult.Busy -> return RecoveryStoreResult.Busy
+                is RecoveryStoreResult.Unavailable -> return answer
+                is RecoveryStoreResult.Ready -> Unit
+            }
+            var uncertain = false
+            claims.drop(1).asReversed().forEach { if (it.release() != RecoveryClaimRelease.RELEASED) uncertain = true }
+            if (uncertain) {
+                claims.first().poisonOnWorker()
+                return RecoveryStoreResult.Unavailable(RecoveryStoreFailure.OWNERSHIP_UNCERTAIN)
+            }
+            return RecoveryStoreResult.Ready(ReplayLease(this, ref, claims.first())).also { transferred = true }
+        } finally {
+            if (!transferred) claims.asReversed().forEach { it.release() }
+        }
+    }
+
+    internal class ReplayLease internal constructor(
+        private val store: RecoveryAudioStore,
+        val ref: RecoveryRecordRef,
+        private val main: RecoveryFileClaim,
+    ) {
+        fun contextOnWorker(): FrozenRecoveryContext {
+            var bytes: ByteArray? = null
+            try {
+                val key = store.existingKeyOnWorker(ref)
+                bytes = store.contextPlaintextOnWorker(ref, key)
+                return RecoveryContextCodec.decode(bytes, ref.identity.takeId)
+            } catch (failure: RecoveryStoreException) {
+                if (failure.reason == RecoveryStoreFailure.IO_UNAVAILABLE) main.poisonOnWorker()
+                throw failure
+            } finally { bytes?.fill(0) }
+        }
+
+        /** A failed/ambiguous commit never authorizes binding or model loading. No retry resets this nonce. */
+        fun reserveAttemptOnWorker(): RecoveryStoreResult<RecoveryReplayRef> {
+            val nonce = UUID.randomUUID()
+            return store.withLedger { ledger ->
+            val current = store.record(ledger, ref)
+            if (!main.matches(store.files, store.ownerNames(ref.slot).first()) ||
+                current.phase != RecoveryRecordPhase.SEALED || current.disposition != RecoveryDisposition.NONE) {
+                store.fail(RecoveryStoreFailure.INELIGIBLE)
+            }
+            store.replace(ledger, ref, current.copy(phase = RecoveryRecordPhase.ATTEMPT_RESERVED, attempt = nonce))
+            RecoveryReplayRef(ref, nonce)
+            }
+        }
+
+        fun closeOnWorker(): RecoveryClaimRelease = main.release()
+    }
+
+    /** The deadline-owned ASR worker consumes one authorization before touching a key or input file. */
+    fun consumeReplayOnWorker(replay: RecoveryReplayRef): RecoveryStoreResult<ReplayInputLease> {
+        var claim: RecoveryFileClaim? = null
+        var transferred = false
+        try {
+            val answer = withLedger { ledger ->
+                val ref = replay.record
+                val current = record(ledger, ref)
+                if (current.phase != RecoveryRecordPhase.ATTEMPT_RESERVED || current.attempt != replay.attempt ||
+                    current.disposition != RecoveryDisposition.NONE || current.keyStage != RecoveryKeyStage.SETTLED) {
+                    fail(RecoveryStoreFailure.INELIGIBLE)
+                }
+                claim = acquire(ownerNames(ref.slot)[2])
+                replace(ledger, ref, current.copy(phase = RecoveryRecordPhase.NATIVE_CONSUMED))
+            }
+            return when (answer) {
+                RecoveryStoreResult.Busy -> RecoveryStoreResult.Busy
+                is RecoveryStoreResult.Unavailable -> answer
+                is RecoveryStoreResult.Ready -> RecoveryStoreResult.Ready(ReplayInputLease(this, replay.record, checkNotNull(claim)))
+                    .also { transferred = true }
+            }
+        } finally { if (!transferred) claim?.release() }
+    }
+
+    internal class ReplayInputLease internal constructor(
+        private val store: RecoveryAudioStore,
+        private val ref: RecoveryRecordRef,
+        private val asr: RecoveryFileClaim,
+    ) {
+        /** Input closes before delivery; the ASR claim remains until the request's actual cleanup. */
+        fun readPrefixOnWorker(checkpoint: () -> Unit): RecoveryPcmPrefix {
+            var prefix: RecoveryPcmPrefix? = null
+            try {
+                checkpoint()
+                val key = store.existingKeyOnWorker(ref)
+                checkpoint()
+                store.contextPlaintextOnWorker(ref, key).fill(0)
+                checkpoint()
+                RecoveryIoClose.using(store.files.openAudioInput(ref.slot)) { input ->
+                    prefix = RecoveryAudioPrefix.read(input, ref.identity, key, checkpoint)
+                }
+                checkpoint()
+                return checkNotNull(prefix)
+            } catch (failure: Throwable) {
+                prefix?.close()
+                if (failure is RecoveryStoreException && failure.reason == RecoveryStoreFailure.IO_UNAVAILABLE) asr.poisonOnWorker()
+                throw failure
+            }
+        }
+
+        fun closeOnWorker(): RecoveryClaimRelease = asr.release()
+    }
+
+    private fun existingKeyOnWorker(ref: RecoveryRecordRef): SecretKey =
+        keyStore().getKey(RecoveryKeyAliases.of(ref), null) as? SecretKey ?: fail(RecoveryStoreFailure.KEY_UNAVAILABLE)
+
+    private fun contextPlaintextOnWorker(ref: RecoveryRecordRef, key: SecretKey): ByteArray {
+        val frame = RecoveryFrameCodec.open(files.readContext(ref.slot), ref.identity, key)
+        return try {
+            if (frame.header.kind != RecoveryFrameKind.CONTEXT) fail(RecoveryStoreFailure.MALFORMED)
+            frame.copyPayload().also {
+                if (RecoveryContextCodec.digest(it) != ref.identity.context) {
+                    it.fill(0)
+                    fail(RecoveryStoreFailure.MALFORMED)
+                }
+            }
+        } finally { frame.clearPayload() }
+    }
+
+    /** Optional attachment work only. The capture loop never calls the store or waits for this. */
+    fun openAudioWriterOnWorker(ref: RecoveryRecordRef): RecoveryStoreResult<AudioWriterLease> {
+        var claim: RecoveryFileClaim? = null
+        var channel: FileChannel? = null
+        var transferred = false
+        try {
+            val admission = withLedger { ledger ->
+                val current = record(ledger, ref)
+                if (current.phase != RecoveryRecordPhase.ARMABLE || current.keyStage != RecoveryKeyStage.SETTLED) fail(RecoveryStoreFailure.INELIGIBLE)
+                claim = acquire(ownerNames(ref.slot)[1])
+                replace(ledger, ref, current.copy(phase = RecoveryRecordPhase.WRITING))
+            }
+            when (admission) {
+                RecoveryStoreResult.Busy -> return RecoveryStoreResult.Busy
+                is RecoveryStoreResult.Unavailable -> return admission
+                is RecoveryStoreResult.Ready -> Unit
+            }
+            val key = keyStore().getKey(RecoveryKeyAliases.of(ref), null) as? SecretKey
+                ?: return RecoveryStoreResult.Unavailable(RecoveryStoreFailure.KEY_UNAVAILABLE)
+            channel = files.createAudio(ref.slot)
+            return RecoveryStoreResult.Ready(AudioWriterLease(ref.identity, key, channel, checkNotNull(claim))).also { transferred = true }
+        } catch (error: RecoveryStoreException) {
+            if (error.reason == RecoveryStoreFailure.IO_UNAVAILABLE) claim?.poisonOnWorker()
+            return RecoveryStoreResult.Unavailable(error.reason)
+        } catch (_: Exception) {
+            return RecoveryStoreResult.Unavailable(RecoveryStoreFailure.KEY_UNAVAILABLE)
+        } finally {
+            if (!transferred) {
+                try { channel?.close() } catch (_: Throwable) { claim?.poisonOnWorker() }
+                claim?.release()
+            }
+        }
+    }
+
+    /** One writer worker owns this lease from creation through actual final close. */
+    internal class AudioWriterLease internal constructor(
+        private val identity: RecoveryRecordIdentity,
+        private val key: SecretKey,
+        private val channel: FileChannel,
+        private val claim: RecoveryFileClaim,
+    ) {
+        private var closed: RecoveryClaimRelease? = null
+        private var frames = 0L
+        var firstSample: Long? = null
+            private set
+        var sampleCount: Int = 0
+            private set
+
+        fun appendOnWorker(startSample: Long, pcm: ByteArray) {
+            if (startSample != (firstSample?.plus(sampleCount) ?: startSample)) {
+                throw RecoveryFrameException(RecoveryFrameFailure.MALFORMED)
+            }
+            val frame = RecoveryFrameCodec.seal(
+                RecoveryFrameHeader(identity, RecoveryFrameKind.AUDIO, frames, startSample, pcm.size / 2), pcm, key,
+            )
+            writeOnWorker(frame)
+            if (firstSample == null) firstSample = startSample
+            sampleCount += pcm.size / 2
+            frames++
+        }
+
+        fun completeOnWorker(endSample: Long): Boolean {
+            if (frames == 0L || firstSample?.plus(sampleCount) != endSample) return false
+            writeOnWorker(RecoveryFrameCodec.seal(
+                RecoveryFrameHeader(identity, RecoveryFrameKind.COMPLETED_CAPTURE, frames, endSample, sampleCount), ByteArray(0), key,
+            ))
+            return true
+        }
+
+        private fun writeOnWorker(frame: ByteArray) {
+            check(closed == null)
+            try {
+                val buffer = ByteBuffer.wrap(frame)
+                while (buffer.hasRemaining()) if (channel.write(buffer) <= 0) throw RecoveryStoreException(RecoveryStoreFailure.IO_UNAVAILABLE)
+                channel.force(true)
+            } catch (_: Exception) {
+                claim.poisonOnWorker()
+                throw RecoveryStoreException(RecoveryStoreFailure.IO_UNAVAILABLE)
+            }
+        }
+
+        fun closeOnWorker(): RecoveryClaimRelease {
+            closed?.let { return it }
+            try { channel.close() } catch (_: Throwable) { claim.poisonOnWorker() }
+            return claim.release().also { closed = it }
+        }
     }
 
     fun markTerminalOnWorker(ref: RecoveryRecordRef, disposition: RecoveryDisposition): RecoveryStoreResult<Unit> = withLedger { ledger ->

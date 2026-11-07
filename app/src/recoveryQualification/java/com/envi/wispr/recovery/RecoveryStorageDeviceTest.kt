@@ -62,7 +62,7 @@ import android.security.keystore.KeyProperties
 /**
  * Product Outcome: real same-UID Android keys/claims must survive process death and prevent stale cleanup.
  * Harness Contract: the unsent-callback control checks the required deadline primitive only.
- * Only disposable lab apps. Case e uses the actual speech model with a committed file fixture;
+ * Only disposable lab apps. Cases e-g use the actual speech model with a committed file fixture;
  * other cases do not use a model. No microphone, editor or complete recovery UAT claim.
  */
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -555,6 +555,150 @@ class RecoveryStorageDeviceTest {
                 val original = bodyFailure
                 if (original != null) failures.forEach(original::addSuppressed)
                 else throw AssertionError("Foreground recovery qualification cleanup failed").also { error -> failures.forEach(error::addSuppressed) }
+            }
+        }
+    }
+
+    /** Product Outcome: the accepted recovery envelope must complete without exhausting either process. */
+    @Test fun gMaximumAcceptedRecoveryAllocationsCompleteAndRecordActualPeaks() {
+        assertNondebug()
+        checkNotNull(ModelStorage.usable(context, ModelManifest.parakeet))
+        val ref = stageMaximumMemoryInput()
+        val output = File(checkNotNull(context.getExternalFilesDir("recovery-memory")), ref.identity.takeId.toString())
+        val connected = CountDownLatch(1)
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, service: IBinder?) { connected.countDown() }
+            override fun onServiceDisconnected(name: ComponentName?) = Unit
+        }
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        var bound = false
+        try {
+            instrumentation.runOnMainSync {
+                bound = EngineBindings.bind(context, EngineBindings.Engine.SPEECH, connection, Context.BIND_AUTO_CREATE)
+            }
+            assertTrue("Memory qualification speech binding refused", bound)
+            assertTrue("Memory qualification speech binding did not connect", connected.await(30, TimeUnit.SECONDS))
+            fun speechPid(): Int {
+                val processes = context.getSystemService(android.app.ActivityManager::class.java).runningAppProcesses.orEmpty()
+                    .filter { it.uid == Process.myUid() && it.processName == context.packageName + ":asr" }
+                assertEquals("Memory probe must retain exactly one actual ASR process", 1, processes.size)
+                return processes.single().pid
+            }
+            val asrPid = speechPid()
+            ActivityScenario.launch(SettingsActivity::class.java).use {
+                val row = runBlocking {
+                    withTimeout(com.envi.wispr.asr.AsrBounds.LOAD_BOUND_MS +
+                        com.envi.wispr.asr.AsrBounds.requestBoundMs(com.envi.wispr.audio.RecordingLimits.MAX_DURATION_MS) +
+                        com.envi.wispr.asr.AsrBounds.DECODE_GRACE_MS + 30_000L) {
+                        EnviousWisprDatabase.get(context).transcriptDao().observeAll().first { rows ->
+                            rows.any { it.takeId == ref.identity.takeId.toString() && it.finalText.isNotBlank() }
+                        }.single { it.takeId == ref.identity.takeId.toString() }
+                    }
+                }
+                assertTrue("Maximum input returned no witnessed speech", row.originalText.contains("quarterly", ignoreCase = true))
+                assertEquals(0L, row.recoveryStartSample)
+                assertEquals(false, row.recoveryPartial)
+                assertEquals(com.envi.wispr.audio.RecordingLimits.MAX_DURATION_MS, row.durationMs)
+                assertEquals("Speech process changed during maximum recovery qualification", asrPid, speechPid())
+                val mainStatus = File("/proc/self/status").readText()
+                File(output, "main-status.txt").writeText(mainStatus)
+                // Android hides another nondebug process's proc files from the app, including its own UID.
+                val asrStatus = android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                    instrumentation.uiAutomation.executeShellCommand("cat /proc/$asrPid/status")
+                ).bufferedReader().use { it.readText() }
+                assertEquals("Speech process changed while measuring its peak", asrPid, speechPid())
+                File(output, "asr-status.txt").writeText(asrStatus)
+                fun highWater(text: String): Long = checkNotNull(Regex("(?m)^VmHWM:\\s+(\\d+) kB$").find(text)) {
+                    "Kernel peak RSS was not available"
+                }.groupValues[1].toLong()
+                val memory = android.app.ActivityManager.MemoryInfo().also {
+                    context.getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(it)
+                }
+                val report = org.json.JSONObject(File(output, "input.json").readText())
+                    .put("result", "COMPLETED_PENDING_MEMORY_REVIEW").put("main_pid", Process.myPid()).put("asr_pid", asrPid)
+                    .put("main_peak_rss_kb", highWater(mainStatus)).put("asr_peak_rss_kb", highWater(asrStatus))
+                    .put("main_java_heap_max_bytes", Runtime.getRuntime().maxMemory())
+                    .put("main_java_heap_used_bytes", Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory())
+                    .put("total_ram_bytes", memory.totalMem).put("available_ram_bytes", memory.availMem)
+                    .put("low_memory", memory.lowMemory).put("actual_raw_characters", row.originalText.length)
+                File(output, "result.json").writeText(report.toString(2))
+                assertFalse("Android reported low memory during maximum recovery qualification", memory.lowMemory)
+                runBlocking { ModelBootstrapApplication.protectedHistoryDeletion(context).delete(row) }
+            }
+        } finally {
+            instrumentation.runOnMainSync { if (bound) EngineBindings.unbind(connection) }
+        }
+    }
+
+    /** Creator locals leave scope before the real foreground consumer starts; no retained fixture PCM array. */
+    private fun stageMaximumMemoryInput(): RecoveryRecordRef {
+        val take = UUID.randomUUID()
+        val output = File(checkNotNull(context.getExternalFilesDir("recovery-memory")), take.toString())
+        check(output.isDirectory || output.mkdirs())
+        File(output, "input.json").writeText(org.json.JSONObject().put("take_id", take.toString())
+            .put("result", "STAGING_MAXIMUM_ACCEPTED_INPUT").toString(2))
+        val terms = (0 until 2_000).map { index ->
+            val suffix = index.toString().padStart(4, '0')
+            CustomTerm("term$suffix" + "s".repeat(192), listOf("alias$suffix" + "a".repeat(191)),
+                "c".repeat(200), 50, false, false, 0.92, 0L, false)
+        } + com.envi.wispr.vocabulary.BuiltinVocabulary.terms
+        fun freeze(words: Set<String>) = FrozenRecoveryContext.freeze(take, System.currentTimeMillis(), ParakeetEngine.RECIPE_ID,
+            "android-pcm-s16le-16000-mono-v1", CleanupOptions(spellingProtectedWords = words), terms)
+        val baseBytes = RecoveryContextCodec.encode(freeze(emptySet())).size
+        val words = LinkedHashSet<String>()
+        repeat(2_000 * 201) { index -> words += "p${index.toString().padStart(6, '0')}abcdefgh" }
+        var extraUnits = (RecoveryFrameLimits.CONTEXT_BYTES - baseBytes - words.size * (4 + 15 * 2)) / 2
+        check(extraUnits >= 0)
+        var index = 0
+        while (extraUnits > 0) {
+            val word = "p${index.toString().padStart(6, '0')}abcdefgh"
+            val count = minOf(extraUnits, 8_192 - word.length)
+            check(words.remove(word))
+            words += word + "x".repeat(count)
+            extraUnits -= count
+            index++
+        }
+        val frozen = freeze(words)
+        val store = RecoveryAudioStore(context)
+        val reservation = ready(store.reserveOnWorker(frozen))
+        var writer: RecoveryAudioStore.AudioWriterLease? = null
+        try {
+            ready(reservation.prepareOnWorker())
+            val contextBytes = File(root, "slot-${reservation.ref.slot}.context").length() - RecoveryFrameLimits.OVERHEAD_BYTES
+            assertTrue("Memory context did not reach the accepted byte envelope", contextBytes in (RecoveryFrameLimits.CONTEXT_BYTES - 1).toLong()..RecoveryFrameLimits.CONTEXT_BYTES.toLong())
+            val active = ready(store.openAudioWriterOnWorker(reservation.ref))
+            writer = active
+            val clip = InstrumentationRegistry.getInstrumentation().context.assets.open("recovery-quarterly.pcm").use { it.readBytes() }
+            val maximum = com.envi.wispr.audio.RecordingLimits.MAX_AUDIO_BYTES
+            var offset = 0L
+            var source = 0
+            while (offset < maximum) {
+                val chunk = ByteArray(minOf(RecoveryFrameLimits.PAYLOAD_BYTES.toLong(), maximum - offset).toInt())
+                var into = 0
+                while (into < chunk.size) {
+                    val count = minOf(chunk.size - into, clip.size - source)
+                    clip.copyInto(chunk, into, source, source + count)
+                    into += count
+                    source = (source + count) % clip.size
+                }
+                active.appendOnWorker(offset / 2, chunk)
+                offset += chunk.size
+            }
+            assertTrue(active.completeOnWorker(maximum / 2))
+            assertEquals(RecoveryClaimRelease.RELEASED, active.closeOnWorker())
+            writer = null
+            File(output, "input.json").writeText(org.json.JSONObject().put("take_id", take.toString())
+                .put("result", "MAXIMUM_ACCEPTED_INPUT_READY").put("encoded_context_bytes", contextBytes)
+                .put("user_terms", 2_000).put("user_aliases", 2_000).put("protected_words", words.size)
+                .put("pcm_bytes", maximum).put("float_bytes", maximum / 2 * 4)
+                .put("context_frame_bytes", contextBytes + RecoveryFrameLimits.OVERHEAD_BYTES)
+                .put("encrypted_audio_file_bytes", File(root, "slot-${reservation.ref.slot}.audio").length())
+                .put("audio_frame_payload_max_bytes", RecoveryFrameLimits.PAYLOAD_BYTES)
+                .put("notes", "Repeated synthetic speech stresses allocation, not ten-minute speech fidelity or acoustics").toString(2))
+            return reservation.ref
+        } finally {
+            try { writer?.closeOnWorker() } finally {
+                assertEquals(RecoveryReservationClose.RELEASED, reservation.closeOnWorker())
             }
         }
     }

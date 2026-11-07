@@ -146,6 +146,10 @@ class ModelBootstrapApplication : Application() {
         // After Sentry's handler exists, so the local log's crash flush wraps it and calls it exactly once.
         LocalLog.installCrashHook()
         if (!isMain) return
+        // A new main process has no live session owner; a prior process's tile status cannot survive it.
+        runCatching {
+            com.envi.wispr.shortcuts.DictationSurfaceState.update(this, com.envi.wispr.shortcuts.DictationSurfaceState.Phase.IDLE)
+        }.onFailure { com.envi.wispr.debug.DebugLogger.error("DictationSurface", "Startup status reset failed", it) }
         com.envi.wispr.feedback.FeedbackDelivery.recover(this)
         // Main owns the switches: repair the flag files from DataStore before the adb door serves a call.
         DeveloperSwitches.of(this).coldStartRepair()

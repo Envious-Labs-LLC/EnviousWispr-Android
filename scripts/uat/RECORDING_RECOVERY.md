@@ -91,3 +91,43 @@ repeat produced a different opening word and correctly failed its literal check;
 that failed capture was retained. The final fixture adds silent pre-roll and retains
 the actual captured prefix. No recognition model, application code or word oracle
 was changed to obtain the successful run.
+
+## Starting a new recording during recovery
+
+Use the same owned emulator and reviewed paired APKs. This separate native row
+stages a protected recording, observes its real speech work, then starts a new
+recording while Settings stays visible. Its existing audio driver waits for that
+priority check before feeding the new phrase. No human timing window is needed.
+
+From the repository root, retain the entire command output in a private run folder:
+
+```sh
+WISPR_SERIAL=emulator-5554 python3 - <<'PY'
+import sys
+sys.path.insert(0, "scripts/uat")
+import wispr_eyes as eyes
+try:
+    print(eyes.device(), eyes.ready(), eyes.bound())
+    print(eyes.stage_uat_fixture("the quarterly marker sentence lands tomorrow"))
+    print(eyes.look())
+    print(eyes.stop_agent())
+    for line in eyes.run_device_test(
+        "com.envi.wispr.VoicePipelineDeviceTest#recordingDuringRecoveryKeepsOnlyTheNewWordsAndReleasesTheModelPermit",
+        "the quarterly marker sentence lands tomorrow",
+    ):
+        print(line)
+finally:
+    print(eyes.restore())
+    print(eyes.stop_agent())
+PY
+```
+
+Require the named native `VERIFIED` verdict, with no issue or staging failure.
+The matching recovery request must retire as cancelled after Record is requested.
+The fixture confirms retirement at the new take's LISTENING stage, before delivering
+its audio or issuing Stop. It then checks the new literal words once in History and on the clipboard,
+no recovered old row, and the actual app's model permit released. Reopening checks
+the durable refusal of a second replay; it does not infer completion from a quiet
+period. This in-app recording has no target editor. Third-party insertion keeps
+its separate qualification. Repeated long input supplies scheduling room only;
+it does not qualify ten-minute word accuracy, microphone capacity or acoustics.

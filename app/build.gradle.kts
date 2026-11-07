@@ -169,6 +169,8 @@ dependencies {
     // from `ModelBootstrapApplication` through `telemetry/Telemetry.bootstrap`.
     implementation("io.sentry:sentry-android:8.57.0")
     implementation("com.posthog:posthog-android:3.67.0")
+    // Google Play campaign attribution, read once per installation (including one-time backfill).
+    implementation("com.android.installreferrer:installreferrer:2.2")
     ksp("androidx.room:room-compiler:2.8.4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

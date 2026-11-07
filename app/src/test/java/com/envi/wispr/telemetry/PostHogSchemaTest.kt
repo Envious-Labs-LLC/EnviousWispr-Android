@@ -45,7 +45,7 @@ class PostHogSchemaTest {
         "polish_queue_ms", "polish_generation_ms", "polish_last_load_ms", "polish_last_load_age_ms",
         "polish_last_load_major_faults", "polish_wait_ms",
         "is_fresh_install", "models_ready", "accessibility_granted", "mic_granted", "onboarding_complete",
-        "custom_words_count", "test_lab", "elapsed_s", "duration_s", "first_run",
+        "custom_words_count", "test_lab", "elapsed_s", "duration_s", "first_run", "referral_click_s", "referral_install_s",
         "\$is_emulator", "\$process_person_profile", "\$sample_threshold",
     )
 
@@ -55,8 +55,8 @@ class PostHogSchemaTest {
         assertEquals("the two lists are disjoint", emptySet<String>(), numberOrBooleanKeys intersect ruled)
         assertEquals("every rule is for an allowed key", emptySet<String>(), ruled - PayloadSanitizer.allowedKeys)
         assertEquals("every allowed key is one or the other", PayloadSanitizer.allowedKeys, numberOrBooleanKeys + ruled)
-        assertEquals(99, PayloadSanitizer.allowedKeys.size)
-        assertEquals(36, numberOrBooleanKeys.size)
+        assertEquals(106, PayloadSanitizer.allowedKeys.size)
+        assertEquals(38, numberOrBooleanKeys.size)
     }
 
     @Test
@@ -64,7 +64,7 @@ class PostHogSchemaTest {
         // A device or build label is printable ASCII by shape, so a word fits it; every other key refuses one.
         val labels = PostHogSchema.values.filterValues { it is PostHogSchema.ValueRule.Shaped }.keys -
             setOf("settings_fallback", "from", "to", "take_id", "distinct_id", "process_run_id", "\$session_id", "target_app")
-        assertEquals(14, labels.size)
+        assertEquals(18, labels.size)
         for (key in PostHogSchema.values.keys - labels) {
             assertNull("hello under $key", PayloadSanitizer.sanitizeValue(key, "hello"))
         }
@@ -80,6 +80,51 @@ class PostHogSchemaTest {
         assertEquals(mapOf("result" to "completed"), out)
         assertEquals(listOf("reason"), heard)
         assertTrue(heard.none { it.contains("hello") })
+    }
+
+    @Test
+    fun playReferralPreservesOnlyTheFourPublisherLabelsAndPositiveServerTimes() {
+        val referral = InstallReferral.parse(
+            "utm_source=reddit&utm_medium=social&utm_campaign=android%5Flaunch&utm_content=post_1" +
+                "&utm_term=someone%40example.com&gclid=secret&arbitrary=private",
+        )
+        val row = AnalyticsEvent.InstallReferrerReceived(referral, 1_799_990_000L, 1_800_000_000L)
+        assertEquals("install_referrer.received", row.name)
+        assertEquals(
+            mapOf(
+                "referral_status" to "tagged", "referral_source" to "reddit", "referral_medium" to "social",
+                "referral_campaign" to "android_launch", "referral_content" to "post_1",
+                "referral_click_s" to 1_799_990_000L, "referral_install_s" to 1_800_000_000L,
+            ),
+            PayloadSanitizer.sanitizeProperties(row.properties()),
+        )
+        assertEquals(
+            mapOf("referral_status" to "unattributed"),
+            PayloadSanitizer.sanitizeProperties(AnalyticsEvent.InstallReferrerReceived(InstallReferral.parse(""), 0L, -1L).properties()),
+        )
+        assertEquals(
+            mapOf("referral_status" to "unattributed"),
+            PayloadSanitizer.sanitizeProperties(AnalyticsEvent.InstallReferrerReceived(InstallReferral.parse("gclid=secret&utm_term=private"), null, null).properties()),
+        )
+        assertEquals(emptyMap<String, Any>(), PayloadSanitizer.sanitizeProperties(mapOf("install_referrer" to "utm_source=reddit", "gclid" to "secret")))
+        assertNull(PayloadSanitizer.sanitizeValue("referral_source", "https://example.com/?secret=private"))
+    }
+
+    @Test
+    fun ambiguousMalformedOrUnsafePlayLabelsNeverBecomeAttribution() {
+        val invalid = listOf(
+            "utm_source=reddit&utm_source=youtube", "utm_source=reddit&utm_%73ource=youtube",
+            "utm_source=%ZZ", "utm_source=hello+there", "utm_source=someone%40example.com",
+            "utm_source=https%3A%2F%2Fexample.com", "utm_source=reddit#private", "utm_source=",
+            "utm_source=sk-abcdefghijklmnop12345678", "utm_source=" + "a".repeat(65),
+            "utm_source=%E6%B5%8B%E8%AF%95", "unknown=" + "x".repeat(4096),
+        )
+        for (raw in invalid) {
+            val event = AnalyticsEvent.InstallReferrerReceived(InstallReferral.parse(raw), null, null)
+            assertEquals("input must be rejected", mapOf("referral_status" to "invalid"), PayloadSanitizer.sanitizeProperties(event.properties()))
+        }
+        assertEquals("z".repeat(64), InstallReferral.parse("utm_source=" + "z".repeat(64)).source)
+        assertEquals("google-play", InstallReferral.parse("utm_source=google-play&utm_medium=organic").source)
     }
 
     @Test

@@ -12,6 +12,10 @@ chosen provider under the user's own key. Model downloads use the Envious Labs m
 Hugging Face fallback. Automatic PostHog/Sentry reports include usage, app/result/timing metadata,
 crash locations and a random install identifier; PostHog may derive approximate location from IP.
 Automatic reports exclude audio, dictated words, entered names, file contents and keys.
+The referral-tracking candidate also reports bounded publisher campaign labels (source, medium,
+campaign and placement) and available Google Play server click/install-start times through the same
+PostHog analytics path. It does not send the raw referral string, search terms or advertising click IDs.
+This describes the candidate's behavior, not a new Console submission or confirmed public availability.
 Voluntary feedback separately sends the chosen message, optional reply email and previewed diagnostics
 to Envious Labs via Sentry. Do not describe all outbound data as content-free.
 

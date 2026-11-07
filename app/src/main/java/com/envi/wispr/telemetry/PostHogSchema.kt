@@ -125,6 +125,11 @@ internal object PostHogSchema {
 
         // app.launched
         "install_source" to ValueRule.Closed(InstallSource.entries.map { it.wire }.toSet()),
+        "referral_status" to ValueRule.Closed(InstallReferral.Status.entries.map { it.wire }.toSet()),
+        "referral_source" to ValueRule.Shaped(InstallReferral.LABEL),
+        "referral_medium" to ValueRule.Shaped(InstallReferral.LABEL),
+        "referral_campaign" to ValueRule.Shaped(InstallReferral.LABEL),
+        "referral_content" to ValueRule.Shaped(InstallReferral.LABEL),
 
         // settings.changed
         "setting" to ValueRule.Closed(AppLaunchFacts.SETTING_NAMES.toSet()),

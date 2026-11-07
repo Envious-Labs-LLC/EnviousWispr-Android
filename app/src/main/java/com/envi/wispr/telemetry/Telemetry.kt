@@ -12,6 +12,7 @@ import io.sentry.SentryLevel
 import io.sentry.protocol.Message
 import io.sentry.protocol.SentryId
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
@@ -93,7 +94,19 @@ internal object Telemetry {
                 .getOrElse { DebugLogger.warn(TAG, "PostHog did not start: ${it.javaClass.simpleName}"); false }
         }
         DebugLogger.log(TAG, "Telemetry bootstrap: process=${cfg.processTag} sentry=$sentryOn posthog=$postHogOn identity=${id != null}")
-        if (cfg.isMainProcess) startMainProcessWork(app, cfg, freshInstall)
+        if (cfg.isMainProcess) {
+            startMainProcessWork(app, cfg, freshInstall)
+            // Independent of launch facts/journal recovery: Play cannot hold up any existing startup work.
+            if (postHogOn) launchScope.launch {
+                try {
+                    reportPlayInstallReferral(app, ::capture)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    DebugLogger.warn(TAG, "Install referral unavailable: ${failure.javaClass.simpleName}")
+                }
+            }
+        }
     }
 
     /** The take journal's one writer; null outside main and before bootstrap. */

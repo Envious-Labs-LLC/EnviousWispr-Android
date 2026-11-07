@@ -3,6 +3,7 @@ package com.envi.wispr
 import android.app.ActivityManager
 import android.app.NotificationManager
 import android.app.UiAutomation
+import android.content.ClipboardManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -17,7 +18,10 @@ import android.media.AudioTrack
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.core.app.NotificationManagerCompat
+import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -31,6 +35,7 @@ import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.models.ModelSwapGate
 import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.IPolishCallback
@@ -41,6 +46,19 @@ import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.polish.PolishService
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.ProviderConfigurationRepository
+import com.envi.wispr.cleanup.CleanupOptions
+import com.envi.wispr.asr.ParakeetEngine
+import com.envi.wispr.recovery.FrozenRecoveryContext
+import com.envi.wispr.recovery.RecoveryAudioStore
+import com.envi.wispr.recovery.RecoveryClaimRelease
+import com.envi.wispr.recovery.RecoveryDisposition
+import com.envi.wispr.recovery.RecoveryFrameLimits
+import com.envi.wispr.recovery.RecoveryRecordPhase
+import com.envi.wispr.recovery.RecoveryRecordRef
+import com.envi.wispr.recovery.RecoveryReservationClose
+import com.envi.wispr.recovery.RecoveryStoreFailure
+import com.envi.wispr.recovery.RecoveryStoreResult
+import com.envi.wispr.ui.SettingsActivity
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.settings.SpeechModelUnload
 import com.envi.wispr.shortcuts.DictationNotificationController
@@ -647,6 +665,184 @@ class VoicePipelineDeviceTest {
         DebugLogger.log("VoiceFallbackDeviceTest", "handoff=$handoff shadeAfterDictation=empty")
     }
 
+    /** Product Outcome: Record interrupts active audio recovery and delivers only the new take's words.
+     * Settings stays visible, so this reaches Record priority rather than background cancellation.
+     * The existing external-audio driver supplies the ordinary take; replay repeats its cached PCM only
+     * to provide scheduling headroom, not to assert ten-minute word fidelity or microphone capacity. */
+    @Test
+    fun recordingDuringRecoveryKeepsOnlyTheNewWordsAndReleasesTheModelPermit() {
+        assertEquals("This row must remain silent", AUDIO_EXTERNAL, arguments.getString(ARG_AUDIO, AUDIO_EXTERNAL))
+        val policy = ProviderConfigurationRepository(context)
+        val savedMode = policy.loadMode()
+        val preferences = AppPreferences(context)
+        val saved = runBlocking { preferences.authoritativeState.first() }
+        val store = RecoveryAudioStore(context)
+        var orphan: RecoveryRecordRef? = null
+        try {
+            awaitNoSessionService()
+            policy.setMode(PolishMode.OFF)
+            runBlocking {
+                preferences.setAutoStopOnSilenceEnabled(false)
+                preferences.setRecordingSoundsEnabled(false)
+                preferences.setRecordingVibrationEnabled(false)
+                preferences.setAutoCopyToClipboard(true)
+                preferences.setSpeechModelUnload(SpeechModelUnload.IMMEDIATELY)
+            }
+            assertTrue("silent ordinary take preferences did not settle", runBlocking {
+                withTimeoutOrNull(5_000) { preferences.authoritativeState.first {
+                    !it.autoStopOnSilenceEnabled && !it.recordingSoundsEnabled && !it.recordingVibrationEnabled &&
+                        it.autoCopyToClipboard && it.speechModelUnload == SpeechModelUnload.IMMEDIATELY
+                } }
+            } != null)
+            assertEquals(PolishMode.OFF, policy.loadMode())
+            AsrProbeEvents(context).use { events ->
+                shell("logcat -c")
+                events.register(5_000)
+                val ref = stageLongRecoveryOrphan(store)
+                orphan = ref
+                val take = ref.identity.takeId.toString()
+                var attempt: java.util.UUID? = null
+                val expected = expectedFinal().trimEnd()
+                ActivityScenario.launch(SettingsActivity::class.java).use { settings ->
+                    val settingsStopped = AtomicBoolean()
+                    settings.onActivity { activity ->
+                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("preemption baseline", "Before this recording"))
+                        assertEquals("Before this recording", clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString())
+                        activity.lifecycle.addObserver(LifecycleEventObserver { _, event ->
+                            if (event == Lifecycle.Event.ON_STOP) settingsStopped.set(true)
+                        })
+                    }
+                    val encoder = events.await("encoder", 90_000) { it.getString("take") == take }
+                    val spent = recoveryReady(store.snapshotOnWorker()).ledger.slots[ref.slot]
+                    assertEquals("the exact orphan must have reached native input", ref.identity, checkNotNull(spent).identity)
+                    assertEquals(RecoveryRecordPhase.NATIVE_CONSUMED, spent.phase)
+                    attempt = checkNotNull(spent.attempt) { "native recovery must have a durable attempt" }
+                    val run = SideButtonRun()
+                    var recordNanos = 0L
+                    run.recordOneTake(stage = {
+                        assertFalse("NOT STAGED: leaving Settings cancelled recovery before Record", settingsStopped.get())
+                        val retired = events.await("retired", 30_000) { it.getString("take") == take }
+                        assertEquals(AsrProbeEvents.number(encoder, "request"), AsrProbeEvents.number(retired, "request"))
+                        assertEquals(AsrProbeEvents.number(encoder, "pid"), AsrProbeEvents.number(retired, "pid"))
+                        assertEquals(AsrProbeEvents.number(encoder, "generation"), AsrProbeEvents.number(retired, "generation"))
+                        assertTrue("NOT STAGED: the native request retired before Record", AsrProbeEvents.number(retired, "nanos") > recordNanos)
+                        assertTrue("the old recovery request must actually be cancelled", retired.getBoolean("cancelled"))
+                        assertFalse("NOT STAGED: Settings stopped instead of Record preempting recovery", settingsStopped.get())
+                    }, beforeStart = {
+                        assertFalse("NOT STAGED: recovery had already retired", events.seen("retired") { it.getString("take") == take })
+                        assertFalse("NOT STAGED: the actual recovery permit is not held", ModelSwapGate.main.idle)
+                        recordNanos = System.nanoTime()
+                    })
+                    withRecorderPostStopCleanup(run) {
+                        val row = awaitRecorderRow(run)
+                        assertTrue("ordinary take never returned to IDLE", run.awaitIdle())
+                        awaitNoSessionService()
+                        assertEquals("the new take alone reaches History", expected, row.finalText)
+                        assertFalse("the ordinary take was mislabeled as recovery", row.recovered)
+                        assertEquals("the in-app Record path must have no editor", "NO_PINNED_TARGET", observedHandoff())
+                        settings.onActivity {
+                            val clip = context.getSystemService(ClipboardManager::class.java).primaryClip
+                            assertEquals("the clipboard contains only the new take", expected, clip?.getItemAt(0)?.coerceToText(context)?.toString())
+                            assertTrue("the actual application model gate retained a permit", ModelSwapGate.main.idle)
+                        }
+                        val rows = runBlocking { EnviousWisprDatabase.get(context).transcriptDao().observeAll().first() }
+                        assertEquals("ordinary History row appears once", 1, rows.count { it.takeId == row.takeId })
+                        assertFalse("cancelled recovery published old words", rows.any { it.takeId == take })
+                    }
+                }
+                // A durable spent record, or its completed cleanup, forbids another attempt. Reopen
+                // Settings through its real foreground event; no quiet-period timer claims completion.
+                ActivityScenario.launch(SettingsActivity::class.java).use { settings ->
+                    val after = recoveryReady(store.snapshotOnWorker()).ledger.slots[ref.slot]
+                    if (after?.identity == ref.identity) {
+                        assertEquals("reopen changed the spent attempt", attempt, after.attempt)
+                        assertTrue("reopen made spent audio replayable", after.phase in setOf(
+                            RecoveryRecordPhase.NATIVE_CONSUMED, RecoveryRecordPhase.TEXT_PENDING, RecoveryRecordPhase.TERMINAL))
+                        assertTrue("spent attempt lost its durable identity", after.attempt != null)
+                    }
+                    when (val retry = store.sealOrphanOnWorker(ref)) {
+                        is RecoveryStoreResult.Ready -> {
+                            retry.value.closeOnWorker()
+                            throw AssertionError("reopen allowed the spent orphan to reserve a second replay")
+                        }
+                        is RecoveryStoreResult.Unavailable -> assertTrue(
+                            "spent replay refusal must be durable ineligibility, not an unreadable store: ${retry.reason}",
+                            retry.reason in setOf(RecoveryStoreFailure.INELIGIBLE, RecoveryStoreFailure.STALE_IDENTITY),
+                        )
+                        RecoveryStoreResult.Busy -> throw AssertionError("cannot establish spent replay refusal while ownership is busy")
+                    }
+                    val registered = events.snapshot()
+                    assertEquals("the spent take registered native speech again", 1, (0 until registered.length()).count {
+                        registered.getJSONObject(it).let { event -> event.getString("kind") == "registered" && event.getString("take") == take }
+                    })
+                    assertFalse("reopen resurrected the abandoned words", runBlocking {
+                        EnviousWisprDatabase.get(context).transcriptDao().observeAll().first().any { it.takeId == take }
+                    })
+                    settings.onActivity {
+                        assertTrue(ModelSwapGate.main.idle)
+                        val clip = context.getSystemService(ClipboardManager::class.java).primaryClip
+                        assertEquals("reopen replaced the new words", expected, clip?.getItemAt(0)?.coerceToText(context)?.toString())
+                    }
+                }
+            }
+        } finally {
+            // Only this row's synthetic orphan is eligible for cleanup; never raw-delete protected files.
+            try { orphan?.let { if (store.markTerminalOnWorker(it, RecoveryDisposition.DISCARDED) is RecoveryStoreResult.Ready) store.cleanupOnWorker(it) } }
+            finally {
+                try { runBlocking {
+                    preferences.setAutoStopOnSilenceEnabled(saved.autoStopOnSilenceEnabled)
+                    preferences.setRecordingSoundsEnabled(saved.recordingSoundsEnabled)
+                    preferences.setRecordingVibrationEnabled(saved.recordingVibrationEnabled)
+                    preferences.setAutoCopyToClipboard(saved.autoCopyToClipboard)
+                    preferences.setSpeechModelUnload(saved.speechModelUnload)
+                } } finally { policy.setMode(savedMode) }
+            }
+        }
+    }
+
+    private fun <T> recoveryReady(result: RecoveryStoreResult<T>): T = when (result) {
+        is RecoveryStoreResult.Ready -> result.value
+        RecoveryStoreResult.Busy -> throw AssertionError("recovery staging ownership is busy")
+        is RecoveryStoreResult.Unavailable -> throw AssertionError("recovery staging unavailable: ${result.reason}")
+    }
+
+    private fun stageLongRecoveryOrphan(store: RecoveryAudioStore): RecoveryRecordRef {
+        val clip = File(fixturePath).readBytes()
+        assertTrue("stage_uat_fixture must supply nonempty 16kHz PCM", clip.isNotEmpty() && clip.size % 2 == 0)
+        val frozen = FrozenRecoveryContext.freeze(java.util.UUID.randomUUID(), System.currentTimeMillis(),
+            ParakeetEngine.RECIPE_ID, "android-pcm-s16le-16000-mono-v1", CleanupOptions(), emptyList())
+        val reservation = recoveryReady(store.reserveOnWorker(frozen))
+        var writer: RecoveryAudioStore.AudioWriterLease? = null
+        try {
+            recoveryReady(reservation.prepareOnWorker())
+            val active = recoveryReady(store.openAudioWriterOnWorker(reservation.ref))
+            writer = active
+            val maximum = com.envi.wispr.audio.RecordingLimits.MAX_AUDIO_BYTES
+            var offset = 0L
+            var source = 0
+            while (offset < maximum) {
+                val chunk = ByteArray(minOf(RecoveryFrameLimits.PAYLOAD_BYTES.toLong(), maximum - offset).toInt())
+                var into = 0
+                while (into < chunk.size) {
+                    val count = minOf(chunk.size - into, clip.size - source)
+                    clip.copyInto(chunk, into, source, source + count)
+                    into += count
+                    source = (source + count) % clip.size
+                }
+                active.appendOnWorker(offset / 2, chunk)
+                offset += chunk.size
+            }
+            assertTrue(active.completeOnWorker(maximum / 2))
+            assertEquals(RecoveryClaimRelease.RELEASED, active.closeOnWorker())
+            writer = null
+            return reservation.ref
+        } finally {
+            try { writer?.closeOnWorker() }
+            finally { assertEquals(RecoveryReservationClose.RELEASED, reservation.closeOnWorker()) }
+        }
+    }
+
     // ---- one side-button take, every wait on a signal -----------------------------------------------------
 
     /**
@@ -743,7 +939,7 @@ class VoicePipelineDeviceTest {
          * [stopByUser] false (#239): no stop is sent; the take must end by itself, and the take stays this run's
          * to end through the verdict ([ownTheVerdict]).
          */
-        fun recordOneTake(stage: () -> Unit, stopByUser: Boolean = true) {
+        fun recordOneTake(stage: () -> Unit, stopByUser: Boolean = true, beforeStart: () -> Unit = {}) {
             surfaceState.registerOnSharedPreferenceChangeListener(phaseListener)
             val audio = audioForThisRun()
             var handedOff = false
@@ -758,6 +954,7 @@ class VoicePipelineDeviceTest {
                         "enable_auto_paste() in the harness rebinds it)",
                     bound == true,
                 )
+                beforeStart()
                 takeStarted = true
                 context.startActivity(
                     Intent(context, com.envi.wispr.ui.VoiceInputActivity::class.java)

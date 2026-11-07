@@ -42,7 +42,7 @@ llama.cpp
 PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
 ===========================================================
 
-177 components, each with the licence its own POM declares.
+178 components, each with the licence its own POM declares.
 
   androidx.activity:activity:1.10.1                                 Apache-2.0
   androidx.activity:activity-compose:1.10.1                         Apache-2.0
@@ -173,9 +173,10 @@ PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
   androidx.window:window:1.5.0                                      Apache-2.0
   androidx.window:window-core:1.5.0                                 Apache-2.0
   androidx.window:window-core-android:1.5.0                         Apache-2.0
-  androidx.work:work-runtime:2.10.1                                 Apache-2.0
-  androidx.work:work-runtime-ktx:2.10.1                             Apache-2.0
+  androidx.work:work-runtime:2.10.5                                 Apache-2.0
+  androidx.work:work-runtime-ktx:2.10.5                             Apache-2.0
   com.abovevacant:epitaph:0.1.1                                     MIT
+  com.android.installreferrer:installreferrer:2.2                   Android Software Development Kit License
   com.google.android.datatransport:transport-api:2.2.1              Apache-2.0
   com.google.android.datatransport:transport-backend-cct:2.3.3      Apache-2.0
   com.google.android.datatransport:transport-runtime:2.2.6          Apache-2.0
@@ -232,6 +233,7 @@ of terms that can change would become a second version of them.
 
   Android Software Development Kit License
       https://developer.android.com/studio/terms.html
+      com.android.installreferrer:installreferrer:2.2
       com.google.android.gms:play-services-base:18.5.0
       com.google.android.gms:play-services-basement:18.4.0
       com.google.android.gms:play-services-tasks:18.2.0

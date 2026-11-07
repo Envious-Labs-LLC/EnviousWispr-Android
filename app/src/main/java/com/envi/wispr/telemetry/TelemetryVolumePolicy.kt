@@ -16,8 +16,8 @@ package com.envi.wispr.telemetry
  * Pure: no SDK types, no clock, no random source.
  */
 internal object TelemetryVolumePolicy {
-    /** Bumped whenever a rule changes what leaves. 1: #176, nothing sampled, SDK context reduced. */
-    const val POLICY_VERSION = 1
+    /** 1: original metadata policy. 2: bounded Google Play install campaign labels (#521). Nothing sampled. */
+    const val POLICY_VERSION = 2
     const val POLICY_VERSION_KEY = "telemetry_policy_version"
 
     sealed class Decision {

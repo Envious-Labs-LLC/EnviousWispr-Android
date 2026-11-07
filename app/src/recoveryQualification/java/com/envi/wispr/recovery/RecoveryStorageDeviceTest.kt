@@ -30,6 +30,9 @@ import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.ui.SettingsActivity
 import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.debug.DeveloperLogs
+import com.envi.wispr.debug.DeveloperSwitches
+import com.envi.wispr.feedback.FeedbackDiagnostics
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.first
@@ -50,6 +53,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.zip.ZipFile
 import javax.crypto.SecretKey
 import javax.crypto.KeyGenerator
 import android.security.keystore.KeyGenParameterSpec
@@ -63,6 +67,16 @@ import android.security.keystore.KeyProperties
  */
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class RecoveryStorageDeviceTest {
+    companion object {
+        @JvmStatic
+        @org.junit.BeforeClass
+        fun stageUploadedSpeechModelIfRequested() {
+            val option = InstrumentationRegistry.getArguments().getString("firebaseParakeetFixture") ?: return
+            require(option == "true") { "firebaseParakeetFixture must be true when supplied" }
+            com.envi.wispr.models.FirebaseModelFixture.stageParakeet(InstrumentationRegistry.getInstrumentation().targetContext)
+        }
+    }
+
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val root get() = File(context.noBackupFilesDir, "protected-recovery.v1")
     private enum class WitnessState { NOT_REQUESTED, UNCONFIRMED, CLOSED }
@@ -446,13 +460,26 @@ class RecoveryStorageDeviceTest {
         val pcm = InstrumentationRegistry.getInstrumentation().context.assets.open("recovery-quarterly.pcm").use { it.readBytes() }
         val store = RecoveryAudioStore(context)
         val take = UUID.randomUUID()
+        val contextCanary = "QzContextDawn-$take"
         val frozen = FrozenRecoveryContext.freeze(take, System.currentTimeMillis(), ParakeetEngine.RECIPE_ID,
-            "android-pcm-s16le-16000-mono-v1", CleanupOptions(), emptyList())
+            "android-pcm-s16le-16000-mono-v1", CleanupOptions(), listOf(
+                CustomTerm("QuarterlyMarker", listOf("quarterly marker"), "synthetic", 50, true, false, 0.92, 7L, false),
+                CustomTerm(contextCanary, listOf("unspoken dawn phrase"), "synthetic", 0, true, false, 0.92, 0L, false),
+            ))
         val reservation = ready(store.reserveOnWorker(frozen))
         var writer: RecoveryAudioStore.AudioWriterLease? = null
         val dao = EnviousWisprDatabase.get(context).transcriptDao()
         val repository = TranscriptRepository(dao)
+        val switches = DeveloperSwitches.of(context)
+        var priorDetailed: DeveloperSwitches.Switch? = null
+        var bodyFailure: Throwable? = null
         try {
+            runBlocking { withTimeout(30_000L) { switches.ready.await() } }
+            val previous = switches.state.value.detailedLog
+            check(previous == DeveloperSwitches.Switch.On || previous == DeveloperSwitches.Switch.Off)
+            priorDetailed = previous
+            assertEquals(DeveloperSwitches.Switch.On,
+                runBlocking { withTimeout(30_000L) { switches.requestDetailedLog(true).await() } })
             ready(reservation.prepareOnWorker())
             val active = ready(store.openAudioWriterOnWorker(reservation.ref))
             writer = active
@@ -472,12 +499,31 @@ class RecoveryStorageDeviceTest {
                         .single { it.takeId == take.toString() }
                 }
                 assertEquals("The quarterly marker sentence lands tomorrow.", row.originalText)
-                assertEquals(row.originalText, row.finalText)
+                assertEquals("The QuarterlyMarker sentence lands tomorrow.", row.finalText)
                 assertTrue(row.recovered)
                 assertEquals(0L, row.recoveryStartSample)
                 assertEquals(false, row.recoveryPartial)
                 assertEquals(InsertionResults.HISTORY_ONLY, row.insertionResult)
                 assertTrue(checkNotNull(row.recoveryModelIdentity).startsWith("EWR-MODEL-1"))
+                // Snapshot while the words are present. Only these synthetic fixture artifacts are retained.
+                val diagnostics = FeedbackDiagnostics.snapshot(context, FeedbackDiagnostics.context())
+                val output = File(checkNotNull(context.getExternalFilesDir("recovery-qualification")), take.toString())
+                check(output.isDirectory || output.mkdirs())
+                File(output, "feedback-diagnostics.json").writeText(diagnostics)
+                val built = DeveloperLogs.of(context).doorZip().get(30, TimeUnit.SECONDS)
+                val savedZip = File(output, "logs.zip")
+                built.zip.copyTo(savedZip)
+                check(built.zip.delete()) { "Could not remove the copied log export" }
+                val lines = ZipFile(savedZip).use { zip ->
+                    zip.entries().asSequence().filter { !it.isDirectory && it.name.startsWith("logs/") }
+                        .flatMap { entry -> zip.getInputStream(entry).bufferedReader().use { it.readLines() }.asSequence() }.toList()
+                }
+                val scoped = lines.filter { it.contains("take=$take") }
+                assertTrue("Detailed log did not retain this actual recovery decode", scoped.any { it.contains("Decode:") })
+                assertFalse("Recovery words entered the detailed log", scoped.any { it.contains("words stage=") })
+                assertFalse("Frozen context entered the exported log", lines.any { it.contains(contextCanary) })
+                assertTrue("The actual feedback snapshot is missing its metadata", diagnostics.contains("recent_dictations") && diagnostics.contains("api_level"))
+                assertFalse("Recovery words entered feedback diagnostics", diagnostics.contains("quarterly marker", ignoreCase = true) || diagnostics.contains("QuarterlyMarker") || diagnostics.contains(contextCanary))
                 runBlocking {
                     ModelBootstrapApplication.protectedHistoryDeletion(context).delete(row)
                     assertTrue(repository.isTakeDeleted(take.toString()))
@@ -486,12 +532,29 @@ class RecoveryStorageDeviceTest {
                     assertNull(dao.findByTakeId(take.toString()))
                 }
             }
+        } catch (failure: Throwable) {
+            bodyFailure = failure
+            throw failure
         } finally {
-            writer?.let { assertEquals(RecoveryClaimRelease.RELEASED, it.closeOnWorker()) }
-            assertEquals(RecoveryReservationClose.RELEASED, reservation.closeOnWorker())
+            val failures = ArrayList<Throwable>()
+            fun attempt(action: () -> Unit) { try { action() } catch (failure: Throwable) { failures.add(failure) } }
+            attempt { writer?.let { assertEquals(RecoveryClaimRelease.RELEASED, it.closeOnWorker()) } }
+            attempt { assertEquals(RecoveryReservationClose.RELEASED, reservation.closeOnWorker()) }
             // Unknown/busy ownership is retained on a failed run; never remove raw files or lock inodes.
-            if (store.markTerminalOnWorker(reservation.ref, RecoveryDisposition.DISCARDED) is RecoveryStoreResult.Ready) {
-                store.cleanupOnWorker(reservation.ref)
+            attempt {
+                if (store.markTerminalOnWorker(reservation.ref, RecoveryDisposition.DISCARDED) is RecoveryStoreResult.Ready) {
+                    store.cleanupOnWorker(reservation.ref)
+                }
+            }
+            attempt { priorDetailed?.let { previous ->
+                assertEquals(previous, runBlocking { withTimeout(30_000L) {
+                    switches.requestDetailedLog(previous == DeveloperSwitches.Switch.On).await()
+                } })
+            } }
+            if (failures.isNotEmpty()) {
+                val original = bodyFailure
+                if (original != null) failures.forEach(original::addSuppressed)
+                else throw AssertionError("Foreground recovery qualification cleanup failed").also { error -> failures.forEach(error::addSuppressed) }
             }
         }
     }

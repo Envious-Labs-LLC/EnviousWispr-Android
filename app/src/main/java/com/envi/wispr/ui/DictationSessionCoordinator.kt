@@ -384,6 +384,7 @@ internal class DictationSessionCoordinator(
         }
         // The pre-capture chain's origin (#258): the accepted start command, right after IDLE -> STARTING.
         val acceptedAtMs = host.elapsedRealtimeMs()
+        historyRecovery.recordAdmitted()
         val takeId = UUID.randomUUID().toString().lowercase()
         runCatching { host.beginRecordingFeedback(takeId) }
         // The take's own log (#378), before any of its lines: it carries the id to the local log file and starts
@@ -399,6 +400,7 @@ internal class DictationSessionCoordinator(
         val protection = recordingProtection?.begin(takeId, System.currentTimeMillis())
         val arbiter = TakeArbiter { reason ->
             runCatching { protection?.ended(reason) }
+            runCatching { historyRecovery.ordinaryEnded() }
             endingSink(takeFacts, reason)
         }
         // Every take-fact stamp, journal stage and take breadcrumb goes through the take's recorder (#329).

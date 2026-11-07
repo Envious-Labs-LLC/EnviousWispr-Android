@@ -219,8 +219,17 @@ internal interface TranscriptDao {
      */
     @Transaction
     suspend fun deleteAllForGood(liveTakes: Collection<String>) {
-        insertDeletedTakes((rowTakeIds() + liveTakes).distinct().map(::DeletedTake))
+        deleteAllForGoodWithSnapshot { liveTakes.toSet() }
+    }
+
+    /** Row writers are excluded while the caller takes its final bounded metadata/owner snapshot. */
+    @Transaction
+    suspend fun deleteAllForGoodWithSnapshot(snapshot: (Set<String>) -> Set<String>): Set<String> {
+        val rows = rowTakeIds().toSet()
+        val takes = rows + snapshot(rows)
+        insertDeletedTakes(takes.map(::DeletedTake))
         deleteAll()
+        return takes
     }
 
     /** Inserts [transcript] unless the user deleted its take (#288), in one transaction; 0 when deleted. */

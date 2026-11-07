@@ -25,6 +25,9 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     /** The user's Delete all (#288); [liveTakes] are takes with words and no row yet, deleted with the rest. */
     suspend fun deleteAll(liveTakes: Collection<String> = emptyList()) = dao.deleteAllForGood(liveTakes)
 
+    suspend fun deleteAllWithSnapshot(snapshot: (Set<String>) -> Set<String>): Set<String> =
+        dao.deleteAllForGoodWithSnapshot(snapshot)
+
     suspend fun discardTakeForGood(takeId: String) = dao.discardTakeForGood(takeId)
 
     /** Successful reads are authoritative; a failed query throws rather than claiming absence. */

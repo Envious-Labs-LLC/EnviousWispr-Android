@@ -217,4 +217,32 @@ class TranscriptRepositoryTest {
             dir.delete()
         }
     }
+
+    /** Product Outcome: a completed rescue published after preflight joins the actual deletion transaction. */
+    @Test fun deleteAllIncludesRescuedWordsPublishedBetweenPreflightAndRoomSnapshot() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val take = UUID.randomUUID().toString()
+        val dir = File(context.noBackupFilesDir, "recovery-delete-test-$take")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val words = RescuedWords(dir, scope, wallClock = { 999L }, warn = {})
+            val failedSave = CompletableDeferred<RecoverySaveOutcome>(RecoverySaveOutcome.Failed(RecoveryWriteFailure.WRITE_FAILED))
+            words.clearingWithSnapshot { snapshot ->
+                assertEquals(RescueOutcome.KEPT, withTimeout(10_000L) {
+                    words.keepRecovered(RecoveredWordsRecord(recovered(take), 2_048L), failedSave).await()
+                })
+                assertTrue(File(dir, "$take.recovery-words-v1").isFile)
+                repository.deleteAllWithSnapshot { snapshot() }
+            }
+            assertTrue("the actual Room deletion must include the later completed rescue", repository.isTakeDeleted(take))
+            val restarted = RescuedWords(dir, scope, wallClock = { 999L }, warn = {})
+            assertEquals(0, restarted.recover(repository))
+            assertTrue(repository.transcripts.first().isEmpty())
+            assertFalse(File(dir, "$take.recovery-words-v1").exists())
+        } finally {
+            scope.cancel()
+            listOf("$take.recovery-words-v1", "$take.recovery-words-v1.tmp").forEach { File(dir, it).delete() }
+            dir.delete()
+        }
+    }
 }

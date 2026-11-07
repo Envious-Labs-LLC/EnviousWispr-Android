@@ -82,6 +82,41 @@ internal class RecoveryAudioStore(context: Context) {
         RecoveryStoreSnapshot(it, if (files.isQuarantined()) RecoveryAllocationState.QUARANTINED else RecoveryAllocationState.NOT_QUARANTINED)
     }
 
+    /** A positive missing-root result is distinct from a failed/incomplete allocator query. */
+    fun snapshotIfPresentOnWorker(): RecoveryStoreResult<RecoveryStoreSnapshot?> = try {
+        if (!files.hasRoot()) RecoveryStoreResult.Ready(null) else snapshotOnWorker()
+    } catch (failure: RecoveryStoreException) { RecoveryStoreResult.Unavailable(failure.reason) }
+
+    /** Delete-all identity proof for an orphan. Live identities come from their actual in-process owner. */
+    fun authenticateTakeOnWorker(ref: RecoveryRecordRef): RecoveryStoreResult<UUID> {
+        val claims = ArrayList<RecoveryFileClaim>()
+        var released = true
+        val result = try {
+            when (val admission = withLedger { ledger ->
+                val current = record(ledger, ref)
+                if (current.keyStage != RecoveryKeyStage.SETTLED) fail(RecoveryStoreFailure.INELIGIBLE)
+                ownerNames(ref.slot).forEach { claims.add(acquire(it)) }
+            }) {
+                RecoveryStoreResult.Busy -> RecoveryStoreResult.Busy
+                is RecoveryStoreResult.Unavailable -> admission
+                is RecoveryStoreResult.Ready -> {
+                    val bytes = contextPlaintextOnWorker(ref, existingKeyOnWorker(ref))
+                    try {
+                        RecoveryStoreResult.Ready(RecoveryContextCodec.decode(bytes, ref.identity.takeId).takeId)
+                    } finally { bytes.fill(0) }
+                }
+            }
+        } catch (failure: RecoveryStoreException) {
+            if (failure.reason == RecoveryStoreFailure.IO_UNAVAILABLE) claims.forEach { it.poisonOnWorker() }
+            RecoveryStoreResult.Unavailable(failure.reason)
+        } catch (_: Exception) {
+            RecoveryStoreResult.Unavailable(RecoveryStoreFailure.CRYPTO_UNAVAILABLE)
+        } finally {
+            claims.asReversed().forEach { if (it.release() != RecoveryClaimRelease.RELEASED) released = false }
+        }
+        return if (released) result else RecoveryStoreResult.Unavailable(RecoveryStoreFailure.OWNERSHIP_UNCERTAIN)
+    }
+
     /** Seal only after all actual owners have gone; attachment and this transition share metadata coordination. */
     fun sealOrphanOnWorker(ref: RecoveryRecordRef): RecoveryStoreResult<ReplayLease> {
         val claims = ArrayList<RecoveryFileClaim>()

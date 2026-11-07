@@ -187,9 +187,24 @@ internal class RescuedWords(
 
     /** The caller's verified protected/pending identities join this same committed deletion snapshot. */
     suspend fun clearing(protectedTakes: Set<UUID>, delete: suspend (liveTakes: Set<String>) -> Unit) {
-        val takes = lock.withLock { live + files().mapNotNull(::fileTakeId) + protectedTakes.map(UUID::toString) }
+        val takes = lock.withLock { currentTakes() + protectedTakes.map(UUID::toString) }
         delete(takes)
         forget(takes)
+    }
+
+    /** The Room owner invokes the nonblocking snapshot inside its transaction, then returns committed IDs. */
+    suspend fun clearingWithSnapshot(delete: suspend (snapshot: () -> Set<String>) -> Set<String>): Set<String> {
+        val deletedTakes = delete(::deletionSnapshot)
+        forget(deletedTakes)
+        return deletedTakes
+    }
+
+    private fun currentTakes(): Set<String> = live.toSet() + files().mapNotNull(::fileTakeId)
+
+    /** Never wait under Room: recovery can already hold this mutex while waiting for that database. */
+    private fun deletionSnapshot(): Set<String> {
+        if (!lock.tryLock()) throw IOException("Rescued-word deletion snapshot unavailable")
+        try { return currentTakes() } finally { lock.unlock() }
     }
 
     /** After a committed delete: the takes' files go, and a write still queued for one writes nothing. */

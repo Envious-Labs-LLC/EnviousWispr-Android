@@ -59,6 +59,9 @@ class ModelBootstrapApplication : Application() {
 
         internal fun recordingProtection(context: Context): com.envi.wispr.ui.RecordingProtectionOwner =
             (context.applicationContext as ModelBootstrapApplication).recordingProtection
+
+        internal fun protectedHistoryDeletion(context: Context): com.envi.wispr.history.ProtectedHistoryDeletion =
+            (context.applicationContext as ModelBootstrapApplication).protectedHistoryDeletion
     }
 
     /** Set once in `onCreate`, behind the main-process gate; read only on the main thread. */
@@ -76,7 +79,7 @@ class ModelBootstrapApplication : Application() {
             clock = System::currentTimeMillis,
             log = { DebugSessionLog.log(it) },
             warn = { DebugSessionLog.warn(it) },
-        )
+        ).also { it.connectAudio(audioHistoryRecovery) }
     }
 
     private val rescuedWords: RescuedWords by lazy {
@@ -110,6 +113,22 @@ class ModelBootstrapApplication : Application() {
 
     private val recordingProtection by lazy {
         com.envi.wispr.ui.RecordingProtectionOwner(this, historyWrites, CoroutineScope(SupervisorJob() + Dispatchers.IO))
+    }
+
+    private val audioHistoryRecovery by lazy {
+        com.envi.wispr.history.AudioHistoryRecovery(this,
+            TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()), historyWrites, rescuedWords,
+            CoroutineScope(SupervisorJob() + Dispatchers.IO), recordingProtection,
+            transform = { raw, frozen ->
+                com.envi.wispr.polish.MlKitLanguageDetector(this).use { detector ->
+                    com.envi.wispr.cleanup.recoverDeterministicText(raw, frozen.cleanup, frozen.terms, detector)
+                }
+            })
+    }
+
+    private val protectedHistoryDeletion by lazy {
+        com.envi.wispr.history.ProtectedHistoryDeletion(this,
+            TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()), rescuedWords, recordingProtection, audioHistoryRecovery)
     }
 
     override fun onCreate() {

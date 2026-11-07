@@ -33,6 +33,7 @@ import kotlinx.coroutines.withContext
 
 class SettingsActivity : ComponentActivity() {
     private var modelReadinessGeneration = 0L
+    private var recoveryForeground: AutoCloseable? = null
     // One view model per feature (#218), each built from its own dependencies only.
     private val shellViewModel: EnviousWisprViewModel by viewModels {
         EnviousWisprViewModel.Factory(appPreferences = AppPreferences(applicationContext))
@@ -42,6 +43,7 @@ class SettingsActivity : ComponentActivity() {
             repository = TranscriptRepository(EnviousWisprDatabase.get(applicationContext).transcriptDao()),
             rescuedWords = com.envi.wispr.models.ModelBootstrapApplication.rescuedWords(applicationContext),
             recovery = com.envi.wispr.models.ModelBootstrapApplication.historyRecovery(applicationContext),
+            protectedDeletion = com.envi.wispr.models.ModelBootstrapApplication.protectedHistoryDeletion(applicationContext),
         )
     }
     private val dictionaryViewModel: DictionaryViewModel by viewModels {
@@ -125,6 +127,7 @@ class SettingsActivity : ComponentActivity() {
                             onComplete = shellViewModel::completeOnboarding,
                         ),
                         history = HistoryActions(
+                            onOpen = { com.envi.wispr.models.ModelBootstrapApplication.historyRecovery(applicationContext).historyOpened() },
                             onSearchChange = historyViewModel::updateHistorySearch,
                             onKeep = historyViewModel::setHistoryKept,
                             onDelete = historyViewModel::deleteHistory,
@@ -197,6 +200,17 @@ class SettingsActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        recoveryForeground = com.envi.wispr.models.ModelBootstrapApplication.historyRecovery(applicationContext).foregroundStarted()
+    }
+
+    override fun onStop() {
+        recoveryForeground?.close()
+        recoveryForeground = null
+        super.onStop()
     }
 
     override fun onResume() {

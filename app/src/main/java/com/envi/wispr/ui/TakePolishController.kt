@@ -2,7 +2,8 @@ package com.envi.wispr.ui
 
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
-import com.envi.wispr.cleanup.TextSafety
+import com.envi.wispr.cleanup.deterministicText
+import com.envi.wispr.cleanup.restoreVocabularySafely
 import com.envi.wispr.polish.PolishContext
 import com.envi.wispr.polish.PolishEngineLabels
 import com.envi.wispr.polish.PolishFallback
@@ -452,21 +453,19 @@ internal class TakePolishController(
     private fun preparedFallback(rawText: String, takePreferences: SessionPreferences, reason: PolishReason): PreparedText.Fallback =
         PreparedText.Fallback(deterministic(rawText, takePreferences), reason, PolishContext.from(takePreferences.policy), localWaitMs)
 
-    private fun deterministic(rawText: String, takePreferences: SessionPreferences): String {
-        val prepared = restoreVocabulary(rawText, takePreferences, STEP_RESTORE_RAW) ?: return rawText
-        // The engine resolves the same answer on its own side. Detecting here too is what keeps this terminal
-        // from being the one that still applies English rules to foreign words when the engine is the side
-        // that failed (#107); the alternative was a new AIDL transaction to carry it across, which
-        // `workflow-process.md` RULE: tier-routing classifies as REFACTOR for a limb feature.
-        val cleaned = guarded(STEP_CLEANUP) { cleanup(prepared, takePreferences.cleanup, languageDetector) } ?: return prepared
-        log.words(STEP_CLEANUP) { cleaned }
-        return restoreVocabulary(cleaned, takePreferences, STEP_RESTORE_CLEANED) ?: cleaned
-    }
+    private fun deterministic(rawText: String, takePreferences: SessionPreferences): String = deterministicText(
+        rawText,
+        restoreRaw = { restoreVocabulary(it, takePreferences, STEP_RESTORE_RAW) },
+        clean = { prepared ->
+            guarded(STEP_CLEANUP) { cleanup(prepared, takePreferences.cleanup, languageDetector) }
+                ?.also { cleaned -> log.words(STEP_CLEANUP) { cleaned } }
+        },
+        restoreCleaned = { restoreVocabulary(it, takePreferences, STEP_RESTORE_CLEANED) },
+    )
 
     /** The vocabulary restore, or null when it threw ([step] names it in the one preparation defect). */
     private fun restoreVocabulary(text: String, takePreferences: SessionPreferences, step: String): String? = guarded(step) {
-        val restored = restore(text, takePreferences.matcher)
-        val kept = if (TextSafety.isSafe(text, restored, checkNumbers = false)) restored else text
+        val kept = restoreVocabularySafely(text, takePreferences.matcher, restore)
         // The take's words after this restore step (#378), into the local log file only.
         log.words(step) { kept }
         kept

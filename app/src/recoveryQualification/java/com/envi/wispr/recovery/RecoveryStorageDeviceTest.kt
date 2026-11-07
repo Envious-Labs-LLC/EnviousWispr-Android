@@ -23,6 +23,16 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.core.app.ActivityScenario
+import com.envi.wispr.history.EnviousWisprDatabase
+import com.envi.wispr.history.RecoverySaveOutcome
+import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.models.ModelBootstrapApplication
+import com.envi.wispr.ui.SettingsActivity
+import com.envi.wispr.insertion.InsertionResults
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.first
 import com.envi.wispr.vocabulary.CustomTerm
 import org.junit.Assert.*
 import org.junit.FixMethodOrder
@@ -424,6 +434,64 @@ class RecoveryStorageDeviceTest {
                 val original = bodyFailure
                 if (original != null) failures.forEach(original::addSuppressed)
                 else throw AssertionError("Replay qualification cleanup failed").also { error -> failures.forEach(error::addSuppressed) }
+            }
+        }
+    }
+
+    /** Product Outcome: the real foreground owner writes an orphan's words into real History once.
+     * This stages encrypted file audio, not microphone input or an actual main-process crash. */
+    @Test fun fForegroundRecoverySavesRealHistoryAndCommittedDeletionRejectsLateWords() {
+        assertNondebug()
+        checkNotNull(ModelStorage.usable(context, ModelManifest.parakeet))
+        val pcm = InstrumentationRegistry.getInstrumentation().context.assets.open("recovery-quarterly.pcm").use { it.readBytes() }
+        val store = RecoveryAudioStore(context)
+        val take = UUID.randomUUID()
+        val frozen = FrozenRecoveryContext.freeze(take, System.currentTimeMillis(), ParakeetEngine.RECIPE_ID,
+            "android-pcm-s16le-16000-mono-v1", CleanupOptions(), emptyList())
+        val reservation = ready(store.reserveOnWorker(frozen))
+        var writer: RecoveryAudioStore.AudioWriterLease? = null
+        val dao = EnviousWisprDatabase.get(context).transcriptDao()
+        val repository = TranscriptRepository(dao)
+        try {
+            ready(reservation.prepareOnWorker())
+            val active = ready(store.openAudioWriterOnWorker(reservation.ref))
+            writer = active
+            var offset = 0
+            while (offset < pcm.size) {
+                val size = minOf(RecoveryFrameLimits.PAYLOAD_BYTES, pcm.size - offset)
+                active.appendOnWorker(offset / 2L, pcm.copyOfRange(offset, offset + size))
+                offset += size
+            }
+            assertTrue(active.completeOnWorker(pcm.size / 2L))
+            assertEquals(RecoveryClaimRelease.RELEASED, active.closeOnWorker())
+            writer = null
+            assertEquals(RecoveryReservationClose.RELEASED, reservation.closeOnWorker())
+            ActivityScenario.launch(SettingsActivity::class.java).use {
+                val row = runBlocking {
+                    withTimeout(90_000) { dao.observeAll().first { rows -> rows.any { it.takeId == take.toString() } } }
+                        .single { it.takeId == take.toString() }
+                }
+                assertEquals("The quarterly marker sentence lands tomorrow.", row.originalText)
+                assertEquals(row.originalText, row.finalText)
+                assertTrue(row.recovered)
+                assertEquals(0L, row.recoveryStartSample)
+                assertEquals(false, row.recoveryPartial)
+                assertEquals(InsertionResults.HISTORY_ONLY, row.insertionResult)
+                assertTrue(checkNotNull(row.recoveryModelIdentity).startsWith("EWR-MODEL-1"))
+                runBlocking {
+                    ModelBootstrapApplication.protectedHistoryDeletion(context).delete(row)
+                    assertTrue(repository.isTakeDeleted(take.toString()))
+                    assertNull(dao.findByTakeId(take.toString()))
+                    assertEquals(RecoverySaveOutcome.Deleted, repository.saveRecovered(row.copy(id = 0)))
+                    assertNull(dao.findByTakeId(take.toString()))
+                }
+            }
+        } finally {
+            writer?.let { assertEquals(RecoveryClaimRelease.RELEASED, it.closeOnWorker()) }
+            assertEquals(RecoveryReservationClose.RELEASED, reservation.closeOnWorker())
+            // Unknown/busy ownership is retained on a failed run; never remove raw files or lock inodes.
+            if (store.markTerminalOnWorker(reservation.ref, RecoveryDisposition.DISCARDED) is RecoveryStoreResult.Ready) {
+                store.cleanupOnWorker(reservation.ref)
             }
         }
     }

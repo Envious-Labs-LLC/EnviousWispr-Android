@@ -16,6 +16,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -36,6 +37,15 @@ internal class RecordingProtectionOwner(
     /** Includes an arming take before it has a persistent slot, for the existing Delete all snapshot. */
     fun pendingTakeIds(): Set<UUID> = pending.keys.toSet()
 
+    fun discardCommitted(takes: Set<UUID>) { takes.forEach { pending[it]?.discardCommitted() } }
+
+    fun forgetDisposed(ref: RecoveryRecordRef) {
+        pending[ref.identity.takeId]?.let { if (it.recordRef == ref) pending.remove(ref.identity.takeId, it) }
+    }
+
+    /** Retry only finished, unconfirmed disposition writes, never arming or native speech. */
+    fun retryClosedOnWorker() { pending.values.forEach { it.retryClosedOnWorker() } }
+
     internal inner class RecordingProtection internal constructor(
         private val takeId: UUID,
         private val createdAtMs: Long,
@@ -47,6 +57,10 @@ internal class RecordingProtectionOwner(
         private var ending: Deferred<Boolean>? = null
         private val prepared = CompletableDeferred<Unit>()
         private val durableWords = CompletableDeferred<Unit>()
+        private val discarded = CompletableDeferred<Unit>()
+        @Volatile internal var recordRef: RecoveryRecordRef? = null
+            private set
+        @Volatile private var endingDisposition: RecoveryDisposition? = null
         private var reservation: RecoveryAudioStore.Reservation? = null
         private var discard: Deferred<RecoveryDiscardOutcome>? = null
 
@@ -75,6 +89,7 @@ internal class RecordingProtectionOwner(
                         RecoveryStoreResult.Busy, is RecoveryStoreResult.Unavailable -> return@launch
                     }
                     reservation = held
+                    recordRef = held.ref
                     if (synchronized(lock) { closed }) return@launch
                     when (held.prepareOnWorker()) {
                         is RecoveryStoreResult.Ready -> if (!synchronized(lock) { closed }) attach(held.ref)
@@ -95,8 +110,38 @@ internal class RecordingProtectionOwner(
                 cancelled = true
                 closed = true
                 if (started && discard == null) discard = writes.discardTakeForGood(takeId.toString())
+                discard?.let(::observeDiscard)
             }
             finish(RecoveryDisposition.DISCARDED, cleanup = true)
+        }
+
+        private fun observeDiscard(answer: Deferred<RecoveryDiscardOutcome>) {
+            answer.invokeOnCompletion { failure ->
+                if (failure == null && answer.getCompleted() == RecoveryDiscardOutcome.Committed) discarded.complete(Unit)
+            }
+        }
+
+        internal fun discardCommitted() {
+            synchronized(lock) {
+                cancelled = true
+                closed = true
+                discard = CompletableDeferred(RecoveryDiscardOutcome.Committed)
+                discarded.complete(Unit)
+            }
+            finish(RecoveryDisposition.DISCARDED, cleanup = true)
+        }
+
+        internal fun retryClosedOnWorker() {
+            val state = synchronized(lock) {
+                if (ending?.isCompleted != true) return
+                val ref = recordRef ?: return
+                val disposition = if (cancelled) RecoveryDisposition.DISCARDED else endingDisposition ?: return
+                ref to disposition
+            }
+            if (store.markTerminalOnWorker(state.first, state.second) is RecoveryStoreResult.Ready) {
+                pending.remove(takeId, this)
+                store.cleanupOnWorker(state.first)
+            }
         }
 
         /** Seal first, then settle on the application worker, which survives recorder-service teardown. */
@@ -106,11 +151,17 @@ internal class RecordingProtectionOwner(
             if (!started) return@synchronized CompletableDeferred(true).also { ending = it }
             scope.async(Dispatchers.IO) {
                 prepared.await()
+                var settled = false
                 try {
-                    val held = reservation ?: return@async true
+                    val held = reservation ?: return@async true.also { settled = true }
                     // COMPLETED decides delivery, not persistence. Keep replay eligible until actual words survive.
-                    if (requiresWords) durableWords.await()
-                    val result = store.markTerminalOnWorker(held.ref, disposition)
+                    val authorized = if (requiresWords) select<RecoveryDisposition> {
+                        durableWords.onAwait { if (cancelRequested) RecoveryDisposition.DISCARDED else disposition }
+                        discarded.onAwait { RecoveryDisposition.DISCARDED }
+                    } else if (cancelRequested) RecoveryDisposition.DISCARDED else disposition
+                    endingDisposition = authorized
+                    val result = store.markTerminalOnWorker(held.ref, authorized)
+                    settled = result is RecoveryStoreResult.Ready
                     // End the live main claim even if the disposition could not be written.
                     held.closeOnWorker()
                     if (cleanup && result is RecoveryStoreResult.Ready) store.cleanupOnWorker(held.ref)
@@ -120,7 +171,7 @@ internal class RecordingProtectionOwner(
                     false
                 } finally {
                     reservation = null
-                    pending.remove(takeId, this@RecordingProtection)
+                    if (settled) pending.remove(takeId, this@RecordingProtection)
                 }
             }.also { ending = it }
         }

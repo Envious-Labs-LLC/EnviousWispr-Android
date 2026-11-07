@@ -155,7 +155,10 @@ internal fun EnviousWisprApp(
             snackbarHostState = snackbarHostState,
             onOpenDrawer = { scope.launch { drawerState.open() } },
             onBack = closePages,
-            onSelectDestination = { destinationName = it.name },
+            onSelectDestination = {
+                destinationName = it.name
+                if (it == AppDestination.History) actions.history.onOpen()
+            },
             onFeedback = { feedbackOpen = true },
             onStartDictation = {
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
@@ -270,6 +273,7 @@ internal fun EnviousWisprApp(
                             onOpenTab = { tab ->
                                 destinationName = tab.name
                                 closePages()
+                                if (tab == AppDestination.History) actions.history.onOpen()
                             },
                             onRequestMicrophone = actions.permissions.onRequestMicrophone,
                             onRequestNotifications = actions.permissions.onRequestNotifications,

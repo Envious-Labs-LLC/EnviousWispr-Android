@@ -10,7 +10,7 @@ import com.envi.wispr.cleanup.PolishPipeline
  * it for every failure outcome and the session owner for every failure it handles itself, so the
  * words a user gets cannot depend on which side failed (issue #69).
  *
- * It takes the DETECTOR, not an already-resolved language. There are exactly two cleanup terminals, and
+ * It takes the DETECTOR, not an already-resolved language. At the cleanup terminals,
  * a `CleanupLanguage` parameter let a caller hand over a constant abstention while still looking wired —
  * review round 2 showed the source-text drift guard stayed green against exactly that edit.
  *
